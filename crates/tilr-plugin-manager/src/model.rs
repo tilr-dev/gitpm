@@ -109,6 +109,10 @@ pub(crate) fn manifest(repo: &Path) -> Result<Manifest> {
         InvalidManifest,
         "version must not be empty"
     );
+    crate::catalog::version_key(&m.version)?;
+    if let Some(base) = &m.fork_of {
+        crate::catalog::version_key(&base.version)?;
+    }
     ensure!(
         m.dependencies.is_empty(),
         Unsupported,
@@ -306,7 +310,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "known defect: manifest() does not validate the version format"]
     fn manifest_rejects_non_numeric_versions() {
         let dir = TempDir::new("model");
         for version in ["1.0", "1.0.0-beta", "1.0.0+build", "banana", "01.0.0"] {
