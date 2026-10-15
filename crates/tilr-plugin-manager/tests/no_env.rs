@@ -1,0 +1,61 @@
+//! The library takes all settings explicitly: PM_* variables must have no effect.
+//! Single test in its own binary, so changing the process environment is race-free.
+use std::fs;
+use tilr_plugin_manager::{Manager, Options, check, identity, scaffold};
+
+#[test]
+fn garbage_pm_environment_is_ignored() {
+    let dir = std::env::temp_dir().join(format!("pm-no-env-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let garbage = dir.join("must-not-be-used");
+    // SAFETY: the only test in this binary; no other threads read the environment.
+    unsafe {
+        for key in [
+            "PM_ROOT",
+            "PM_CATALOG",
+            "PM_REMOTE_CATALOG",
+            "PM_SOURCES",
+            "PM_CONFIG",
+            "PM_PUBLIC_URL",
+        ] {
+            std::env::set_var(key, &garbage);
+        }
+        std::env::set_var("PM_NAMESPACE", "garbage-namespace");
+    }
+    let config = dir.join("pm.json");
+    assert_eq!(
+        identity::resolve_namespace(None, &config).unwrap(),
+        identity::DEFAULT_NAMESPACE
+    );
+    identity::write_namespace(&config, "explicit").unwrap();
+    assert_eq!(
+        identity::resolve_namespace(None, &config).unwrap(),
+        "explicit"
+    );
+    let author = scaffold::create_namespaced(&dir.join("demo"), "explicit").unwrap();
+    let catalog_dir = dir.join("catalog");
+    let catalog = catalog_dir.to_str().unwrap().to_owned();
+    tilr_plugin_manager::catalog::register(&catalog, author.to_str().unwrap(), "HEAD").unwrap();
+    let root = dir.join("workspace");
+    let m = Manager::open_with(
+        &root,
+        Options {
+            catalog: Some(catalog.clone()),
+        },
+    )
+    .unwrap();
+    let installed = m.install_from_catalog("explicit/demo", None).unwrap();
+    assert_eq!(installed.id, "explicit/demo");
+    assert!(root.join("dist/explicit/demo/index.js").exists());
+    assert_eq!(m.list().unwrap().len(), 1);
+    let rows = m.check().unwrap();
+    assert_eq!(rows[0].status, check::CheckStatus::UpToDate);
+    assert_eq!(check::check(&root, &catalog).unwrap().len(), 1);
+    assert!(m.browse_catalog().unwrap().items.len() >= 2);
+    drop(m);
+    assert!(!garbage.exists());
+    assert!(!dir.join("garbage-namespace").exists());
+    if std::env::var_os("PM_KEEP_TEST_ARTIFACTS").is_none() {
+        let _ = fs::remove_dir_all(&dir);
+    }
+}

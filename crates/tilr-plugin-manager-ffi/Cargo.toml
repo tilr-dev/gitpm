@@ -1,0 +1,23 @@
+[package]
+name = "tilr-plugin-manager-ffi"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "UniFFI bindings (Swift/Kotlin) for tilr-plugin-manager"
+
+[lib]
+name = "tilr_plugin_manager_ffi"
+crate-type = ["staticlib", "lib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen"]
+
+[features]
+bindgen = ["uniffi/cli"]
+
+[dependencies]
+tilr-plugin-manager = { path = "../tilr-plugin-manager" }
+thiserror = "2"
+uniffi = "0.32.2"

@@ -1,0 +1,12 @@
+# Git configuration for `cargo test` in this workspace (see .cargo/config.toml).
+# Replaces the developer's ~/.gitconfig so tests never depend on its identity,
+# signing, default branch, hooks or credential settings.
+[user]
+	name = Test
+	email = test@example.invalid
+[init]
+	defaultBranch = main
+[commit]
+	gpgsign = false
+[tag]
+	gpgsign = false
