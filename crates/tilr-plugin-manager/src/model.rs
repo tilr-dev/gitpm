@@ -150,6 +150,39 @@ pub(crate) fn resolve_ref(repo: &Path, reference: &str) -> Result<String> {
     )
 }
 
+/// Resolve a user ref in an installed clone after `fetch`: a tag, then the fetched
+/// upstream branch (`refs/remotes/origin/X`), then a commit ID. Local branches of the
+/// installed clone are never used: they are stale copies of upstream.
+pub(crate) fn resolve_upstream_ref(repo: &Path, reference: &str) -> Result<String> {
+    ensure!(
+        !reference.is_empty() && !reference.starts_with('-'),
+        InvalidArgument,
+        "invalid git ref"
+    );
+    if let Some(rest) = reference.strip_prefix("refs/") {
+        ensure!(
+            !rest.starts_with("heads/"),
+            InvalidArgument,
+            "local branches of an installed clone are stale; use the branch name"
+        );
+        return resolve_ref(repo, reference);
+    }
+    for candidate in [
+        format!("refs/tags/{reference}"),
+        format!("refs/remotes/origin/{reference}"),
+    ] {
+        if let Ok(commit) = resolve_ref(repo, &candidate) {
+            return Ok(commit);
+        }
+    }
+    ensure!(
+        (4..=64).contains(&reference.len()) && reference.bytes().all(|c| c.is_ascii_hexdigit()),
+        InvalidArgument,
+        "unknown ref {reference}: not a tag, upstream branch or commit"
+    );
+    resolve_ref(repo, reference)
+}
+
 pub(crate) fn manifest_json(m: &Manifest) -> Result<String> {
     Ok(format!("{}\n", serde_json::to_string_pretty(m)?))
 }

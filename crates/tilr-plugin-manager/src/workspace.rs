@@ -7,7 +7,7 @@ use crate::{
     exec::git,
     identity,
     lost_work::{self, clean},
-    model::{manifest, manifest_json, resolve_ref, revision},
+    model::{manifest, manifest_json, resolve_ref, resolve_upstream_ref, revision},
     releases, scaffold, valid_id,
 };
 use serde::Serialize;
@@ -578,11 +578,11 @@ impl Manager {
                 "local commits detected; update would discard them",
             )?;
             git(&repo, &["fetch", "origin", "--tags"])?;
-            if dev {
+            if dev || reference == Some("HEAD") {
                 git(&repo, &["remote", "set-head", "origin", "--auto"])?;
             }
             let target = if let Some(reference) = reference {
-                resolve_ref(&repo, reference)?
+                resolve_upstream_ref(&repo, reference)?
             } else if dev {
                 resolve_ref(&repo, "refs/remotes/origin/HEAD")?
             } else {
@@ -1434,7 +1434,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "known defect: update --ref <branch> resolves the stale local branch"]
     fn update_to_a_branch_uses_the_fetched_upstream_branch() {
         let id = "dan/demo1";
         let (ws, m) = Ws::installed(id);
@@ -1442,6 +1441,13 @@ mod tests {
         let change = m.update_ref(id, Some("main")).unwrap();
         assert!(change.changed, "branch moved upstream");
         assert_eq!(change.to.commit, next);
+        // HEAD means upstream HEAD, not the detached checkout.
+        let head = ws.author.commit("0.3.0");
+        assert_eq!(m.update_ref(id, Some("HEAD")).unwrap().to.commit, head);
+        ws.refuses("invalid_argument", || {
+            m.update_ref(id, Some("refs/heads/main"))
+        });
+        ws.refuses("invalid_argument", || m.update_ref(id, Some("no-such-ref")));
     }
 
     // ---- enable / forget / uninstall ------------------------------------------------
