@@ -435,6 +435,7 @@ impl Manager {
     }
     /// Install an exact catalog release; manifest and dist hashes are verified.
     pub fn install_release(&self, release: &catalog::Release) -> Result<InstallResult> {
+        catalog::validate_release(release, &release.manifest.id, &release.manifest.version)?;
         self.install_checked(
             &release.source,
             Some(&release.commit),
@@ -1574,7 +1575,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "known defect: a release with empty `files` skips dist hash verification"]
     fn release_with_empty_files_is_still_verified() {
         let ws = Ws::new("dan/demo1");
         let m = ws.open();

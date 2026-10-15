@@ -117,7 +117,7 @@ pub fn hash_files(dist: &Path) -> Result<BTreeMap<String, FileDigest>> {
 fn valid_hash(hash: &str) -> bool {
     hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit())
 }
-fn validate_release(release: &Release, id: &str, version: &str) -> Result<()> {
+pub(crate) fn validate_release(release: &Release, id: &str, version: &str) -> Result<()> {
     valid_id(id)?;
     version_key(version)?;
     ensure!(
@@ -130,6 +130,13 @@ fn validate_release(release: &Release, id: &str, version: &str) -> Result<()> {
             && release.commit.bytes().all(|c| c.is_ascii_hexdigit()),
         Catalog,
         "invalid catalog commit"
+    );
+    // Releases of v1 catalogs (legacy unscoped IDs) may lack file hashes; every
+    // namespaced release must carry them, or dist could not be verified on install.
+    ensure!(
+        !id.contains('/') || !release.files.is_empty(),
+        Catalog,
+        "catalog release has no file hashes"
     );
     for (name, file) in &release.files {
         ensure!(
@@ -1104,6 +1111,17 @@ pub(crate) mod tests {
             sha256: ABC.to_uppercase(),
         });
         assert!(validate_release(&with_build, "dan/demo1", "1.0.0").is_ok());
+        let mut no_files = good.clone();
+        no_files.files.clear();
+        assert_eq!(
+            validate_release(&no_files, "dan/demo1", "1.0.0")
+                .unwrap_err()
+                .to_string(),
+            "catalog release has no file hashes"
+        );
+        let mut legacy = release("demo1", "1.0.0", SOURCE, 'a');
+        legacy.files.clear();
+        assert!(validate_release(&legacy, "demo1", "1.0.0").is_ok());
 
         assert_eq!(
             validate_release(&good, "dan/other", "1.0.0")
