@@ -1,5 +1,6 @@
 //! Workspace: locked directory with plugin clones, deployed `dist/` and `state.json`.
-//! Every modification runs on a full staged copy and is switched in with two renames.
+//! Every modification stages only the paths it touches and commits them through a
+//! journal (see `txn`), so a crash at any point leaves a consistent workspace.
 use crate::error::{Context, Error, Require, Result, ensure};
 use crate::{
     ForkOf, Installed, InstalledPlugin, LostWork, Manifest, Revision, State, catalog,
@@ -7,6 +8,7 @@ use crate::{
     exec::git,
     identity,
     lost_work::{self, clean},
+    txn::{self, Txn},
     model::{manifest, manifest_json, resolve_ref, resolve_upstream_ref, revision},
     releases, scaffold, valid_id,
 };
@@ -56,28 +58,32 @@ pub struct UninstallPlan {
 
 pub struct Manager {
     root: PathBuf,
-    stage: PathBuf,
-    backup: PathBuf,
     options: Options,
     /// Serializes operations of this handle (stage/backup paths are shared).
     busy: Mutex<()>,
     _lock: crate::lock::FileLock,
 }
 
-pub(crate) fn copy_tree(from: &Path, to: &Path) -> Result<()> {
+/// Copy a tree. With `symlinks` they are recreated as symlinks (a repository may
+/// track them); without, any symlink is refused (deployed `dist/` must be plain files).
+pub(crate) fn copy_tree(from: &Path, to: &Path, symlinks: bool) -> Result<()> {
     let meta =
         fs::symlink_metadata(from).context(Error::Io, format!("missing {}", from.display()))?;
-    ensure!(
-        !meta.file_type().is_symlink(),
-        Unsupported,
-        "symlinks are not supported: {}",
-        from.display()
-    );
+    if meta.file_type().is_symlink() {
+        ensure!(
+            symlinks,
+            Unsupported,
+            "symlinks are not supported: {}",
+            from.display()
+        );
+        std::os::unix::fs::symlink(fs::read_link(from)?, to)?;
+        return Ok(());
+    }
     if meta.is_dir() {
         fs::create_dir_all(to)?;
         for entry in fs::read_dir(from)? {
             let entry = entry?;
-            copy_tree(&entry.path(), &to.join(entry.file_name()))?;
+            copy_tree(&entry.path(), &to.join(entry.file_name()), symlinks)?;
         }
     } else {
         ensure!(
@@ -89,17 +95,6 @@ pub(crate) fn copy_tree(from: &Path, to: &Path) -> Result<()> {
         fs::copy(from, to)?;
     }
     Ok(())
-}
-fn remove(path: &Path) -> Result<()> {
-    if path.exists() {
-        fs::remove_dir_all(path)?;
-    }
-    Ok(())
-}
-fn deploy(root: &Path, id: &str) -> Result<()> {
-    let dest = root.join("dist").join(id);
-    remove(&dest)?;
-    copy_tree(&root.join("plugins").join(id).join("dist"), &dest)
 }
 /// Each component of `id` exists under `base` with exactly this spelling. On a
 /// case-insensitive file system `Vendor/Module` must not resolve to `vendor/module`.
@@ -181,20 +176,13 @@ impl Manager {
         )?;
         let manager = Self {
             root: root.clone(),
-            stage: parent.join(format!(".{name}.stage")),
-            backup: parent.join(format!(".{name}.backup")),
             options,
             busy: Mutex::new(()),
             _lock: lock,
         };
-        if manager.backup.exists() {
-            if !root.exists() {
-                fs::rename(&manager.backup, &root)?;
-            } else {
-                remove(&manager.backup)?;
-            }
+        if root.join("state.json").exists() {
+            txn::recover(&root)?;
         }
-        remove(&manager.stage)?;
         if root.exists() && !root.join("state.json").exists() {
             ensure!(
                 fs::read_dir(&root)?.next().is_none(),
@@ -239,28 +227,15 @@ impl Manager {
     pub fn list(&self) -> Result<Vec<InstalledPlugin>> {
         Ok(self.state()?.installed())
     }
-    fn transaction<T>(&self, action: impl FnOnce(&Path, &mut State) -> Result<T>) -> Result<T> {
+    /// Run `action` on a transaction that stages only the paths it touches; nothing
+    /// in the live workspace changes unless the action succeeds.
+    fn transaction<T>(&self, action: impl FnOnce(&mut Txn, &mut State) -> Result<T>) -> Result<T> {
         let _busy = self.busy();
+        let mut txn = Txn::begin(&self.root)?;
         let mut state = self.state()?;
-        copy_tree(&self.root, &self.stage)?;
-        let result = (|| {
-            let value = action(&self.stage, &mut state)?;
-            fs::write(
-                self.stage.join("state.json"),
-                serde_json::to_vec_pretty(&state)?,
-            )?;
-            fs::rename(&self.root, &self.backup)?;
-            if let Err(error) = fs::rename(&self.stage, &self.root) {
-                fs::rename(&self.backup, &self.root)?;
-                return Err(error.into());
-            }
-            remove(&self.backup)?;
-            Ok(value)
-        })();
-        if self.stage.exists() {
-            remove(&self.stage)?;
-        }
-        result
+        let value = action(&mut txn, &mut state)?;
+        txn.commit(&state)?;
+        Ok(value)
     }
 
     /// Compare installed versions with the configured catalog. Read-only.
@@ -345,7 +320,7 @@ impl Manager {
         fs::create_dir_all(parent)?;
         fs::create_dir(&destination)?;
         let result = (|| {
-            copy_tree(&source, &destination)?;
+            copy_tree(&source, &destination, true)?;
             let remotes = git(&destination, &["remote"])?;
             if remotes.lines().any(|r| r == "origin") {
                 git(&destination, &["remote", "remove", "origin"])?;
@@ -497,13 +472,14 @@ impl Manager {
         } else {
             source.to_owned()
         };
-        self.transaction(|root, state| {
-            let repo = root.join("incoming");
-            ensure!(!repo.exists(), Workspace, "unexpected incoming directory");
+        self.transaction(|txn, state| {
+            let repo = txn.scratch("incoming");
+            fs::create_dir_all(repo.parent().unwrap())?;
             git(
-                root,
+                repo.parent().unwrap(),
                 &["clone", "--no-hardlinks", "--", &source, "incoming"],
             )?;
+            let root = txn.root().to_path_buf();
             let commit = match reference {
                 Some(reference) => resolve_ref(&repo, reference)?,
                 None => releases::latest(&repo, None)?.commit,
@@ -562,9 +538,8 @@ impl Manager {
                 });
             }
             let current = revision(&repo, &m)?;
-            fs::create_dir_all(dest.parent().unwrap())?;
-            fs::rename(repo, dest)?;
-            deploy(root, &m.id)?;
+            txn.add_repo(&m.id, &repo)?;
+            txn.deploy(&m.id)?;
             let installed = Installed {
                 source: source.clone(),
                 current: current.clone(),
@@ -600,19 +575,20 @@ impl Manager {
             "--channel dev conflicts with --ref"
         );
         valid_id(id)?;
-        self.transaction(|root, state| {
+        self.transaction(|txn, state| {
             let p = state
                 .plugins
                 .get_mut(id)
                 .ok_or_else(|| Error::NotInstalled { id: id.into() })?;
-            let repo = root.join("plugins").join(id);
-            clean(&repo, id)?;
+            let live = plugin_repo(txn.root(), id)?;
+            clean(&live, id)?;
             lost_work::require_head(
-                &repo,
+                &live,
                 id,
                 &p.current.commit,
                 "local commits detected; update would discard them",
             )?;
+            let repo = txn.repo(id, &live)?;
             git(&repo, &["fetch", "origin", "--tags"])?;
             if dev || reference == Some("HEAD") {
                 git(&repo, &["remote", "set-head", "origin", "--auto"])?;
@@ -669,7 +645,7 @@ impl Manager {
             p.previous = Some(p.current.clone());
             p.current = next.clone();
             p.fork_of = m.fork_of.clone();
-            deploy(root, id)?;
+            txn.deploy(id)?;
             Ok(RevisionChange {
                 id: id.into(),
                 from,
@@ -681,7 +657,7 @@ impl Manager {
     /// Swap current and previous version (offline).
     pub fn rollback(&self, id: &str) -> Result<RevisionChange> {
         valid_id(id)?;
-        self.transaction(|root, state| {
+        self.transaction(|txn, state| {
             let p = state
                 .plugins
                 .get_mut(id)
@@ -690,9 +666,10 @@ impl Manager {
                 .previous
                 .clone()
                 .ok_or_else(|| Error::NoPreviousVersion { id: id.into() })?;
-            let repo = root.join("plugins").join(id);
-            clean(&repo, id)?;
-            lost_work::require_head(&repo, id, &p.current.commit, "local commits detected")?;
+            let live = plugin_repo(txn.root(), id)?;
+            clean(&live, id)?;
+            lost_work::require_head(&live, id, &p.current.commit, "local commits detected")?;
+            let repo = txn.repo(id, &live)?;
             git(&repo, &["checkout", "--detach", &previous.commit])?;
             let m = manifest(&repo)?;
             ensure!(
@@ -704,7 +681,7 @@ impl Manager {
             p.previous = Some(p.current.clone());
             p.current = previous.clone();
             p.fork_of = m.fork_of.clone();
-            deploy(root, id)?;
+            txn.deploy(id)?;
             Ok(RevisionChange {
                 id: id.into(),
                 from,
@@ -743,14 +720,14 @@ impl Manager {
     /// Re-register a retained (forgotten) clean repository; previous history is not restored.
     pub fn restore(&self, id: &str) -> Result<InstallResult> {
         valid_id(id)?;
-        self.transaction(|root, state| {
+        self.transaction(|txn, state| {
             if state.plugins.contains_key(id) {
                 return Err(Error::AlreadyInstalled {
                     id: id.into(),
                     message: "plugin is already registered".into(),
                 });
             }
-            let repo = plugin_repo(root, id)?;
+            let repo = plugin_repo(txn.root(), id)?;
             clean(&repo, id)?;
             let m = manifest(&repo)?;
             ensure!(m.id == id, InvalidManifest, "plugin id mismatch");
@@ -768,7 +745,7 @@ impl Manager {
                 fork_of: installed.fork_of.clone(),
             };
             state.plugins.insert(id.to_owned(), installed);
-            deploy(root, id)?;
+            txn.deploy(id)?;
             Ok(result)
         })
     }
@@ -798,8 +775,8 @@ impl Manager {
     /// refuses with [`Error::LocalChanges`]; `confirm == true` deletes it anyway.
     pub fn uninstall(&self, id: &str, confirm: bool) -> Result<()> {
         valid_id(id)?;
-        self.transaction(|root, state| {
-            let repo = plugin_repo(root, id)?;
+        self.transaction(|txn, state| {
+            let repo = plugin_repo(txn.root(), id)?;
             if !confirm {
                 let recorded = state.plugins.get(id).map(|p| p.current.commit.as_str());
                 let items = lost_work::detect(&repo, recorded)?;
@@ -807,8 +784,7 @@ impl Manager {
                     return Err(lost_work::refusal(id, items));
                 }
             }
-            remove(&repo)?;
-            remove(&root.join("dist").join(id))?;
+            txn.delete(id)?;
             state.plugins.remove(id);
             Ok(())
         })
@@ -862,10 +838,10 @@ mod tests {
             Author::new(self.dir.join(name), id)
         }
         fn no_leftovers(&self) {
-            for name in [".workspace.stage", ".workspace.backup"] {
-                assert!(!self.dir.join(name).exists(), "{name} left behind");
-            }
-            assert!(!self.root.join("incoming").exists(), "incoming left behind");
+            assert!(
+                !self.root.join(txn::DIR).exists(),
+                "transaction directory left behind"
+            );
         }
         /// Run a failing operation and prove the workspace is byte-identical afterwards.
         fn refuses<T: Debug>(&self, kind: &str, op: impl FnOnce() -> Result<T>) -> Error {
@@ -909,14 +885,20 @@ mod tests {
         fs::create_dir_all(from.join("empty")).unwrap();
         fs::write(from.join("a/b/c.txt"), "c").unwrap();
         fs::write(from.join("top"), [0u8, 255]).unwrap();
-        copy_tree(&from, &dir.join("to")).unwrap();
+        copy_tree(&from, &dir.join("to"), false).unwrap();
         assert_eq!(tree_hash(&dir.join("to")), tree_hash(&from));
 
         std::os::unix::fs::symlink("top", from.join("a/link")).unwrap();
-        let error = copy_tree(&from, &dir.join("to2")).unwrap_err();
+        let error = copy_tree(&from, &dir.join("to2"), false).unwrap_err();
         assert_eq!(error.kind(), "unsupported");
         assert!(error.to_string().contains("symlinks are not supported"));
-        let error = copy_tree(&dir.join("missing"), &dir.join("to3")).unwrap_err();
+        // Repository copies keep symlinks as symlinks.
+        copy_tree(&from, &dir.join("to4"), true).unwrap();
+        assert_eq!(
+            fs::read_link(dir.join("to4/a/link")).unwrap(),
+            Path::new("top")
+        );
+        let error = copy_tree(&dir.join("missing"), &dir.join("to3"), false).unwrap_err();
         assert_eq!(error.kind(), "io");
         assert!(error.to_string().starts_with("missing "));
     }
@@ -1007,28 +989,71 @@ mod tests {
         }
     }
 
+    /// Run `op` with a simulated crash after `renames` commit renames.
+    fn crash_after<T>(renames: usize, op: impl FnOnce() -> Result<T>) -> Error {
+        txn::CRASH_AFTER.with(|c| c.set(Some(renames)));
+        let result = op();
+        txn::CRASH_AFTER.with(|c| c.set(None));
+        result.err().expect("simulated crash")
+    }
+
     #[test]
-    fn open_recovers_an_interrupted_switch() {
+    fn open_rolls_an_interrupted_commit_forward() {
+        let id = "dan/demo1";
+        // An update commit makes 5 renames (repo out/in, dist out/in, state.json).
+        for renames in 0..5 {
+            let (ws, m) = Ws::installed(id);
+            ws.author.release("0.2.0");
+            crash_after(renames, || m.update(id));
+            assert!(ws.root.join(txn::DIR).join("journal.json").exists());
+            drop(m);
+            let m = ws.open();
+            let p = &m.list().unwrap()[0];
+            assert_eq!(p.current.version, "0.2.0", "crash after {renames}");
+            assert_eq!(p.previous.as_ref().unwrap().version, "0.1.0");
+            assert_eq!(
+                fixture_git(&ws.repo(), &["rev-parse", "HEAD"]),
+                ws.author.head()
+            );
+            assert_eq!(
+                tree_hash(&ws.dist()),
+                tree_hash(&ws.author.path.join("dist"))
+            );
+            ws.no_leftovers();
+        }
+    }
+
+    #[test]
+    fn open_discards_an_uncommitted_transaction() {
         let (ws, m) = Ws::installed("dan/demo1");
         drop(m);
-        let state = read(&ws.root.join("state.json"));
-        let backup = ws.dir.join(".workspace.backup");
-        let stage = ws.dir.join(".workspace.stage");
-        // Crash between the two renames: only the backup exists.
-        fs::rename(&ws.root, &backup).unwrap();
-        fs::create_dir_all(stage.join("half")).unwrap();
+        let before = tree_hash(&ws.root);
+        // Crash while staging: no journal yet.
+        fs::create_dir_all(ws.root.join(txn::DIR).join("new/plugins/dan/half")).unwrap();
         let m = ws.open();
-        assert_eq!(read(&ws.root.join("state.json")), state);
-        assert_eq!(m.list().unwrap()[0].id, "dan/demo1");
+        assert_eq!(tree_hash(&ws.root), before);
         ws.no_leftovers();
+        // A failed operation in the same handle recovers too.
         drop(m);
-        // Crash after the switch: the old backup is stale and removed.
-        copy_tree(&ws.root, &backup).unwrap();
-        fs::write(backup.join("state.json"), "{stale").unwrap();
+        fs::create_dir_all(ws.root.join(txn::DIR).join("scratch")).unwrap();
         let m = ws.open();
-        assert_eq!(read(&ws.root.join("state.json")), state);
+        m.disable("dan/demo1").unwrap();
         ws.no_leftovers();
+    }
+
+    #[test]
+    fn neighbours_named_like_old_stage_folders_are_never_touched() {
+        let (ws, m) = Ws::installed("dan/demo1");
         drop(m);
+        for name in [".workspace.stage", ".workspace.backup"] {
+            fs::create_dir_all(ws.dir.join(name)).unwrap();
+            fs::write(ws.dir.join(name).join("user.txt"), "user data").unwrap();
+        }
+        let m = ws.open();
+        m.disable("dan/demo1").unwrap();
+        for name in [".workspace.stage", ".workspace.backup"] {
+            assert_eq!(read(&ws.dir.join(name).join("user.txt")), "user data");
+        }
     }
 
     // ---- failures change nothing ----------------------------------------------------
@@ -1298,7 +1323,7 @@ mod tests {
         assert!(matches!(error, Error::LocalChanges { items, .. } if items.len() == 1));
         fixture_git(&ws.repo(), &["checkout", "-q", "--", "dist/index.js"]);
         // The repository's manifest names another plugin.
-        copy_tree(&ws.repo(), &ws.root.join("plugins/dan/alias2")).unwrap();
+        copy_tree(&ws.repo(), &ws.root.join("plugins/dan/alias2"), true).unwrap();
         let error = ws.refuses("invalid_manifest", || m.restore("dan/alias2"));
         assert_eq!(error.to_string(), "plugin id mismatch");
     }
@@ -1754,7 +1779,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "known defect: a symlink outside dist/ in one plugin blocks every workspace operation"]
     fn symlink_outside_dist_does_not_block_other_plugins() {
         let (ws, m) = Ws::installed("dan/demo1");
         let linked = ws.other_author("linked", "dan/linked");
@@ -1768,5 +1792,21 @@ mod tests {
         m.install(linked.source()).expect("dist/ has no symlink");
         m.disable("dan/demo1")
             .expect("other plugins stay manageable");
+        // The plugin itself stays updatable; its repository symlink is kept.
+        linked.release("0.2.0");
+        m.update("dan/linked").unwrap();
+        assert!(
+            fs::symlink_metadata(ws.root.join("plugins/dan/linked/manifest-link"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        // A symlink inside dist/ is refused before anything is committed.
+        let bad = ws.other_author("bad", "dan/bad");
+        std::os::unix::fs::symlink("index.js", bad.path.join("dist/link.js")).unwrap();
+        fixture_git(&bad.path, &["add", "--all"]);
+        fixture_git(&bad.path, &["commit", "-q", "-m", "symlink in dist"]);
+        fixture_git(&bad.path, &["tag", "-f", "dan/bad@0.1.0"]);
+        ws.refuses("unsupported", || m.install(bad.source()));
     }
 }

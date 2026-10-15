@@ -24,6 +24,7 @@ pub mod releases;
 pub mod scaffold;
 #[cfg(test)]
 mod test_support;
+mod txn;
 mod workspace;
 
 pub use error::{Error, Result};

@@ -138,7 +138,7 @@ diagnosis, error kinds and messages, lost-work descriptions) and use small real 
 repositories in temp directories for workspace transactions, release discovery,
 lost-work detection, catalog registration/generation, scaffold and fork. Every failing
 `Manager` operation is checked to leave the workspace byte-identical (tree hash) with
-no stage/backup left behind.
+no transaction directory left behind; interrupted commits are rolled forward.
 
 Isolation: tests never read `PM_*`, `HOME` or the network. `.cargo/config.toml` points
 `GIT_CONFIG_GLOBAL` at `tests/gitconfig` and sets `GIT_CONFIG_NOSYSTEM=1`; this applies
