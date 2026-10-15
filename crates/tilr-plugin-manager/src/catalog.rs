@@ -2119,7 +2119,10 @@ pub(crate) mod tests {
         assert_eq!(report.skipped[0].source, author.source());
         assert_eq!(report.skipped[0].tag.name, "v0.0.9");
         assert_eq!(
-            lookup(loc(&cat), "dan/demo1", None).unwrap().manifest.version,
+            lookup(loc(&cat), "dan/demo1", None)
+                .unwrap()
+                .manifest
+                .version,
             "0.2.0"
         );
     }

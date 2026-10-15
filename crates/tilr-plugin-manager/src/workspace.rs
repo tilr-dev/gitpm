@@ -8,9 +8,10 @@ use crate::{
     exec::git,
     identity,
     lost_work::{self, clean},
-    txn::{self, Txn},
     model::{manifest, manifest_json, resolve_ref, resolve_upstream_ref, revision},
-    releases, scaffold, valid_id,
+    releases, scaffold,
+    txn::{self, Txn},
+    valid_id,
 };
 use serde::Serialize;
 use std::{
@@ -281,7 +282,10 @@ impl Manager {
         );
         ensure!(
             !ids_collide(&new_id, id)
-                && !state.plugins.keys().any(|other| ids_collide(other, &new_id)),
+                && !state
+                    .plugins
+                    .keys()
+                    .any(|other| ids_collide(other, &new_id)),
             InvalidArgument,
             "fork ID {new_id} differs only in letter case from an installed plugin"
         );

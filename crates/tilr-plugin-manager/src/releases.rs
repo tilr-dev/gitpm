@@ -245,7 +245,11 @@ mod tests {
         assert_eq!(names(&found.tags), ["dan/demo1@0.1.0"]);
         assert_eq!(found.skipped.len(), 1);
         assert_eq!(found.skipped[0].name, "dan/demo1@0.2.0");
-        assert!(found.skipped[0].reason.contains("disagrees with manifest version"));
+        assert!(
+            found.skipped[0]
+                .reason
+                .contains("disagrees with manifest version")
+        );
         // ... but it would be the latest release, so selecting latest fails.
         let error = latest(&author.path, None).unwrap_err();
         assert_eq!(error.kind(), "version_conflict");

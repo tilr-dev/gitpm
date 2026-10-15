@@ -13,7 +13,8 @@ use std::{
 const GIT_TIMEOUT: Duration = Duration::from_secs(600);
 /// Noninteractive SSH for git transports: never prompts for passphrases or
 /// unknown host keys, and gives up on dead connections.
-const BATCH_SSH: &str = "ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4";
+const BATCH_SSH: &str =
+    "ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4";
 
 /// `git -C repo` that can never wait for user input: no terminal prompts, closed
 /// stdin, bounded transfers. The user's own `core.sshCommand` or `GIT_SSH_COMMAND`
@@ -27,14 +28,11 @@ fn git_command(repo: &Path, args: &[&str]) -> Result<Command> {
         }),
     };
     let mut command = Command::new("git");
-    command.args([
-        "-c",
-        "http.lowSpeedLimit=1",
-        "-c",
-        "http.lowSpeedTime=20",
-    ]);
+    command.args(["-c", "http.lowSpeedLimit=1", "-c", "http.lowSpeedTime=20"]);
     if !custom_ssh {
-        command.arg("-c").arg(format!("core.sshCommand={BATCH_SSH}"));
+        command
+            .arg("-c")
+            .arg(format!("core.sshCommand={BATCH_SSH}"));
     }
     command
         .arg("-C")

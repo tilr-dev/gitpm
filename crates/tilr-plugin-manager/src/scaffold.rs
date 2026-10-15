@@ -59,7 +59,10 @@ fn create_with_id(parent: &Path, name: &str, id: &str) -> Result<PathBuf> {
             &directory,
             &["commit", "-m", &format!("Create {name} 0.1.0")],
         )?;
-        git(&directory, &["tag", "--", &identity::release_tag(id, "0.1.0")])?;
+        git(
+            &directory,
+            &["tag", "--", &identity::release_tag(id, "0.1.0")],
+        )?;
         Ok(fs::canonicalize(&directory)?)
     })();
     if result.is_err() {
@@ -124,33 +127,59 @@ pub fn commit(repo: &Path, version: &str) -> Result<String> {
         "pass the repository root"
     );
     let mut m = model::manifest(&repo)?;
-    ensure!(
-        m.version != version,
-        VersionConflict,
-        "choose a new version"
-    );
     let tag = identity::release_tag(&m.id, version);
     ensure!(
         git(&repo, &["tag", "--list", "--", &tag])?.is_empty(),
         VersionConflict,
         "tag already exists: {tag}"
     );
+    if m.version == version {
+        // Retry after a failed tag: the release commit exists, only the tag is missing.
+        let head: Manifest = serde_json::from_str(&git(&repo, &["show", "HEAD:plugin.json"])?)
+            .map_err(|e| Error::InvalidManifest(format!("invalid plugin.json at HEAD: {e}")))?;
+        ensure!(
+            head.version == version
+                && git(&repo, &["status", "--porcelain"])?.is_empty()
+                && git(&repo, &["log", "-1", "--format=%s"])?
+                    == format!("Release {} {version}", m.id),
+            VersionConflict,
+            "choose a new version"
+        );
+        git(&repo, &["tag", "--", &tag])?;
+        return Ok(tag);
+    }
     git(&repo, &["var", "GIT_AUTHOR_IDENT"])?;
     git(&repo, &["var", "GIT_COMMITTER_IDENT"])?;
+    // A failed commit (hook, signing) must leave the manifest and the index as they were.
+    let original = fs::read(repo.join("plugin.json"))?;
+    let index = PathBuf::from(git(
+        &repo,
+        &["rev-parse", "--path-format=absolute", "--git-path", "index"],
+    )?);
+    let saved_index = fs::read(&index).ok();
     m.version = version.to_owned();
     fs::write(repo.join("plugin.json"), model::manifest_json(&m)?)?;
-    git(&repo, &["add", "--all", "--", "."])?;
-    git(
-        &repo,
-        &["commit", "-m", &format!("Release {} {version}", m.id)],
-    )
-    .context(
-        Error::Git,
-        "commit failed; your edits and staged files remain in the repository",
-    )?;
+    let committed = git(&repo, &["add", "--all", "--", "."]).and_then(|_| {
+        git(
+            &repo,
+            &["commit", "-m", &format!("Release {} {version}", m.id)],
+        )
+    });
+    if let Err(error) = committed {
+        fs::write(repo.join("plugin.json"), original)?;
+        match saved_index {
+            Some(bytes) => fs::write(&index, bytes)?,
+            None => {
+                let _ = fs::remove_file(&index);
+            }
+        }
+        return Err(Error::Git(format!(
+            "commit failed; plugin.json and the index were restored, your edits remain: {error}"
+        )));
+    }
     git(&repo, &["tag", "--", &tag]).context(
         Error::Git,
-        "commit succeeded but tag creation failed; inspect the repository before retrying",
+        "commit succeeded but tag creation failed; run the same commit again to create the tag",
     )?;
     Ok(tag)
 }
@@ -357,6 +386,57 @@ mod tests {
         assert_eq!(
             fs::read_to_string(repo.join("dist/index.js")).unwrap(),
             "pending edit"
+        );
+    }
+
+    #[test]
+    fn failed_commit_restores_manifest_and_index() {
+        let dir = TempDir::new("scaffold");
+        let repo = create_at(&dir.join("demo1")).unwrap();
+        fs::write(repo.join("dist/index.js"), "edit").unwrap();
+        fs::write(repo.join("dist/staged.js"), "staged").unwrap();
+        fixture_git(&repo, &["add", "dist/staged.js"]);
+        let status = fixture_git(&repo, &["status", "--porcelain"]);
+        let hook = repo.join(".git/hooks/pre-commit");
+        fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+        fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let error = commit(&repo, "0.2.0").unwrap_err();
+        assert_eq!(error.kind(), "git");
+        assert!(error.to_string().contains("restored"), "{error}");
+        assert_eq!(model::manifest(&repo).unwrap().version, "0.1.0");
+        assert_eq!(fixture_git(&repo, &["status", "--porcelain"]), status);
+        assert_eq!(fixture_git(&repo, &["tag", "--list"]), "v0.1.0");
+    }
+
+    #[test]
+    fn commit_can_be_retried_after_a_failed_tag() {
+        let dir = TempDir::new("scaffold");
+        let repo = create_namespaced(&dir.join("demo1"), "dan").unwrap();
+        fs::write(repo.join("dist/index.js"), "v2").unwrap();
+        // A stale ref lock makes tag creation fail after the commit.
+        let lock = repo.join(".git/refs/tags/dan/demo1@0.2.0.lock");
+        fs::create_dir_all(lock.parent().unwrap()).unwrap();
+        fs::write(&lock, "").unwrap();
+        let error = commit(&repo, "0.2.0").unwrap_err();
+        assert!(
+            error.to_string().contains("run the same commit again"),
+            "{error}"
+        );
+        let head = fixture_git(&repo, &["rev-parse", "HEAD"]);
+        fs::remove_file(&lock).unwrap();
+        assert_eq!(commit(&repo, "0.2.0").unwrap(), "dan/demo1@0.2.0");
+        assert_eq!(fixture_git(&repo, &["rev-parse", "dan/demo1@0.2.0"]), head);
+        // Once tagged, the same version is a conflict again.
+        assert_eq!(
+            commit(&repo, "0.2.0").unwrap_err().kind(),
+            "version_conflict"
+        );
+        // An edited tree after the release commit is not a retry.
+        fs::write(repo.join("dist/index.js"), "v3").unwrap();
+        fixture_git(&repo, &["tag", "-d", "dan/demo1@0.2.0"]);
+        assert_eq!(
+            commit(&repo, "0.2.0").unwrap_err().kind(),
+            "version_conflict"
         );
     }
 
