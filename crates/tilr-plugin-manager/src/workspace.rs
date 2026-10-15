@@ -715,7 +715,7 @@ impl Manager {
                     message: "plugin is already registered".into(),
                 });
             }
-            let repo = root.join("plugins").join(id);
+            let repo = plugin_repo(root, id)?;
             clean(&repo, id)?;
             let m = manifest(&repo)?;
             ensure!(m.id == id, InvalidManifest, "plugin id mismatch");
@@ -1056,7 +1056,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "new defect: restore of a missing repository reports `git` instead of `repository_not_found`"]
     fn restore_of_a_missing_repository_is_repository_not_found() {
         let (ws, m) = Ws::installed("dan/demo1");
         ws.refuses("repository_not_found", || m.restore("dan/missing"));
