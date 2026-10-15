@@ -351,16 +351,15 @@ pub fn ensure_publishable(location: &str) -> Result<PathBuf> {
     Ok(fs::canonicalize(location)?)
 }
 
-struct CatalogLock(PathBuf);
-impl Drop for CatalogLock {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
-    }
-}
-
 fn atomic_json(path: &Path, value: &impl Serialize) -> Result<()> {
     fs::create_dir_all(path.parent().unwrap())?;
-    let temporary = path.with_extension("json.tmp");
+    // Unique per writer: a file left by a killed writer never blocks the next one.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let temporary = path.with_extension(format!(
+        "json.{}-{}.tmp",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -376,15 +375,41 @@ fn atomic_json(path: &Path, value: &impl Serialize) -> Result<()> {
     }
     result
 }
-fn lock(path: &Path) -> Result<CatalogLock> {
-    fs::create_dir_all(path.parent().unwrap())?;
-    let lock_path = path.with_extension("json.lock");
-    fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&lock_path)
-        .context(Error::Locked, "catalog locked")?;
-    Ok(CatalogLock(lock_path))
+/// Writer lock of a local catalog. Released with the process, so a killed writer
+/// never blocks the catalog; its leftover temporary files are removed here.
+fn lock(path: &Path) -> Result<crate::lock::FileLock> {
+    let root = path.parent().unwrap();
+    fs::create_dir_all(root)?;
+    // Beside the catalog folder, so the published tree stays clean.
+    let root = fs::canonicalize(root)?;
+    let name = root
+        .file_name()
+        .require(Error::InvalidArgument, "catalog needs a folder name")?
+        .to_string_lossy()
+        .into_owned();
+    let lock = crate::lock::try_lock(
+        &root
+            .parent()
+            .require(Error::InvalidArgument, "catalog needs a parent folder")?
+            .join(format!(".{name}.catalog.lock")),
+        "catalog locked",
+    )?;
+    remove_stale_temporaries(&root)?;
+    Ok(lock)
+}
+/// Only called under the catalog lock: every `*.tmp` is then from a dead writer.
+fn remove_stale_temporaries(dir: &Path) -> Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        let name = entry.file_name();
+        if kind.is_dir() {
+            remove_stale_temporaries(&entry.path())?;
+        } else if kind.is_file() && name.to_string_lossy().ends_with(".tmp") {
+            fs::remove_file(entry.path())?;
+        }
+    }
+    Ok(())
 }
 fn link_directory(path: &Path, name: &str, link: &str) -> Result<()> {
     let mut directory: Directory = if path.exists() {
@@ -1433,35 +1458,30 @@ pub(crate) mod tests {
         let dir = TempDir::new("catalog");
         let cat = dir.join("catalog");
         fs::create_dir_all(&cat).unwrap();
-        let lock_path = cat.join("catalog.json.lock");
-        fs::write(&lock_path, "").unwrap();
+        let lock_path = dir.join(".catalog.catalog.lock");
         let path = cat.join("catalog.json");
+        let held = lock(&path).unwrap();
         let error = save_release(&path, &release("dan/demo1", "0.1.0", SOURCE, 'a')).unwrap_err();
         assert_eq!(error.kind(), "locked");
         assert_eq!(migrate(loc(&cat)).unwrap_err().kind(), "locked");
-        assert_eq!(
-            files(&cat),
-            ["catalog.json.lock"],
-            "nothing written while locked"
-        );
-        fs::remove_file(&lock_path).unwrap();
+        assert!(files(&cat).is_empty(), "nothing written while locked");
+        drop(held);
         save(&cat, &release("dan/demo1", "0.1.0", SOURCE, 'a'));
-        assert!(!lock_path.exists());
         // A failed write releases the lock too.
         let mut bad = release("dan/demo1", "0.1.0", SOURCE, 'b');
         bad.commit = "c".repeat(40);
         assert!(save_release(&path, &bad).is_err());
-        assert!(!lock_path.exists());
+        drop(lock(&path).expect("released after a failed write"));
+        assert!(lock_path.exists(), "the lock file is kept");
     }
 
     #[test]
-    #[ignore = "known defect: catalog lock left after a killed writer blocks the catalog forever"]
     fn stale_catalog_lock_from_a_dead_writer_does_not_block() {
         let dir = TempDir::new("catalog");
         let cat = dir.join("catalog");
         fs::create_dir_all(&cat).unwrap();
         // Left behind by a process that was killed while holding the lock.
-        fs::write(cat.join("catalog.json.lock"), "").unwrap();
+        fs::write(dir.join(".catalog.catalog.lock"), "").unwrap();
         save_release(
             &cat.join("catalog.json"),
             &release("dan/demo1", "0.1.0", SOURCE, 'a'),
@@ -1470,7 +1490,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[ignore = "known defect: a .json.tmp left after a killed writer blocks that file forever"]
     fn stale_temporary_file_from_a_dead_writer_does_not_block() {
         let dir = TempDir::new("catalog");
         let cat = dir.join("catalog");
@@ -1481,6 +1500,7 @@ pub(crate) mod tests {
             &release("dan/demo1", "0.2.0", SOURCE, 'b'),
         )
         .expect("a stale temporary file must not block new releases");
+        assert!(!cat.join("namespaces/dan/demo1/plugin.json.tmp").exists());
     }
 
     // ---- reading --------------------------------------------------------------------
