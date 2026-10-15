@@ -13,7 +13,7 @@ use crate::{
 use serde::Serialize;
 use std::{
     collections::BTreeMap,
-    fs::{self, File},
+    fs,
     path::{Path, PathBuf},
     sync::{Mutex, MutexGuard},
 };
@@ -61,7 +61,7 @@ pub struct Manager {
     options: Options,
     /// Serializes operations of this handle (stage/backup paths are shared).
     busy: Mutex<()>,
-    _lock: File,
+    _lock: crate::lock::FileLock,
 }
 
 pub(crate) fn copy_tree(from: &Path, to: &Path) -> Result<()> {
@@ -174,13 +174,11 @@ impl Manager {
             .parent()
             .require(Error::Workspace, "workspace needs a parent")?;
         fs::create_dir_all(parent)?;
-        let lock = File::options()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(parent.join(format!(".{name}.lock")))?;
-        lock.try_lock()
-            .map_err(|_| Error::Locked("workspace is already in use".into()))?;
+        // Keyed by the real path: a symlinked spelling of the parent is the same lock.
+        let lock = crate::lock::try_lock(
+            &fs::canonicalize(parent)?.join(format!(".{name}.lock")),
+            "workspace is already in use",
+        )?;
         let manager = Self {
             root: root.clone(),
             stage: parent.join(format!(".{name}.stage")),

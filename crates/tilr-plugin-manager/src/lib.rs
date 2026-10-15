@@ -17,6 +17,7 @@ pub mod check;
 mod error;
 mod exec;
 pub mod identity;
+mod lock;
 mod lost_work;
 mod model;
 pub mod releases;
