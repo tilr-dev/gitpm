@@ -20,6 +20,8 @@ pub enum CheckStatus {
     UpdateAvailable,
     UpToDate,
     NewerThanCatalog,
+    /// Installed from another catalog than the selected one; not compared.
+    OtherCatalog,
 }
 impl CheckStatus {
     /// Human-readable status (Russian, as shown by the stand CLI).
@@ -34,6 +36,7 @@ impl CheckStatus {
             CheckStatus::UpdateAvailable => "доступно обновление",
             CheckStatus::UpToDate => "актуален",
             CheckStatus::NewerThanCatalog => "новее каталога",
+            CheckStatus::OtherCatalog => "установлен из другого каталога",
         }
     }
 }
@@ -47,6 +50,21 @@ pub struct CheckRow {
     pub enabled: bool,
     pub update_available: bool,
     pub status: CheckStatus,
+    /// For a fork: the original's latest catalog release against the fork base.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<Upstream>,
+}
+
+/// Where a fork's original stands in the catalog.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Upstream {
+    pub id: String,
+    /// Original version the fork started from (`forkOf.version`).
+    pub base: String,
+    /// Latest catalog release of the original, `None` if unknown.
+    pub latest: Option<String>,
+    /// The original has a release newer than the fork base.
+    pub newer: bool,
 }
 /// Backwards-compatible name.
 pub type Row = CheckRow;
@@ -66,6 +84,24 @@ pub fn read_state(root: &Path) -> Result<State> {
 }
 
 pub fn compare(state: &State, catalog: &Catalog) -> Vec<CheckRow> {
+    compare_in(state, catalog, None)
+}
+
+fn latest_version(catalog: &Catalog, id: &str) -> Option<String> {
+    catalog
+        .plugins
+        .get(id)?
+        .versions
+        .keys()
+        .filter_map(|v| Some((version_key(v).ok()?, v)))
+        .max()
+        .map(|(_, v)| v.clone())
+}
+
+/// [`compare`] for the catalog at `location` (canonical, see
+/// [`crate::catalog::canonical_location`]): plugins installed from another catalog
+/// are reported as [`CheckStatus::OtherCatalog`] instead of being compared.
+pub fn compare_in(state: &State, catalog: &Catalog, location: Option<&str>) -> Vec<CheckRow> {
     state
         .plugins
         .iter()
@@ -77,7 +113,24 @@ pub fn compare(state: &State, catalog: &Catalog) -> Vec<CheckRow> {
                 enabled: installed.enabled,
                 update_available: false,
                 status: CheckStatus::NotInCatalog,
+                upstream: installed.fork_of.as_ref().map(|base| {
+                    let latest = latest_version(catalog, &base.id);
+                    Upstream {
+                        id: base.id.clone(),
+                        base: base.version.clone(),
+                        newer: latest.as_deref().is_some_and(|l| {
+                            matches!((version_key(l), version_key(&base.version)), (Ok(l), Ok(b)) if l > b)
+                        }),
+                        latest,
+                    }
+                }),
             };
+            if let (Some(from), Some(selected)) = (installed.catalog.as_deref(), location)
+                && from != selected
+            {
+                row.status = CheckStatus::OtherCatalog;
+                return row;
+            }
             let Some(plugin) = catalog.plugins.get(id) else {
                 return row;
             };
@@ -141,7 +194,8 @@ pub fn check(root: &Path, catalog_location: &str) -> Result<Vec<CheckRow>> {
         return Ok(Vec::new());
     }
     let snapshot = crate::catalog::selected(catalog_location, &state)?;
-    Ok(compare(&state, &snapshot))
+    let location = crate::catalog::canonical_location(catalog_location).ok();
+    Ok(compare_in(&state, &snapshot, location.as_deref()))
 }
 
 #[cfg(test)]

@@ -532,3 +532,49 @@ fn one_catalog_per_workspace() {
     m.install_from_catalog("x/p", None)
         .expect_err("already installed");
 }
+
+#[test]
+fn check_shows_fork_upstream_and_other_catalogs() {
+    use tilr_plugin_manager::check::CheckStatus;
+    let f = Fixture::new();
+    let a = f.catalog("catalog-a");
+    f.publish(&a, "vendor/p", "1.0.0", &[]);
+    let m = f.open(&a);
+    m.install_from_catalog("vendor/p", None).unwrap();
+    let fork = m
+        .fork_in_namespace("vendor/p", &f.path("forks/p"), "mine")
+        .unwrap();
+    scaffold::commit(&fork, "1.0.1").unwrap();
+    m.install(fork.to_str().unwrap()).unwrap();
+    let row = |m: &Manager, id: &str| m.check().unwrap().into_iter().find(|r| r.id == id).unwrap();
+    let upstream = row(&m, "mine/p").upstream.unwrap();
+    assert_eq!(
+        (
+            upstream.id.as_str(),
+            upstream.base.as_str(),
+            upstream.latest.as_deref(),
+            upstream.newer
+        ),
+        ("vendor/p", "1.0.0", Some("1.0.0"), false)
+    );
+    assert!(row(&m, "vendor/p").upstream.is_none());
+    // The original releases 1.1.0: the fork shows it, without changing anything.
+    f.publish(&a, "vendor/p", "1.1.0", &[]);
+    let before = f.snapshot();
+    let upstream = row(&m, "mine/p").upstream.unwrap();
+    assert_eq!(
+        (upstream.latest.as_deref(), upstream.newer),
+        (Some("1.1.0"), true)
+    );
+    assert_eq!(row(&m, "vendor/p").status, CheckStatus::UpdateAvailable);
+    assert!(f.snapshot() == before);
+
+    // Another catalog selected: plugins from catalog A are not compared against it.
+    let b = f.catalog("catalog-b");
+    let other = f.author("y/q");
+    let tag = f.release(&other, "y/q", "1.0.0", &[]);
+    catalog::register(&b, other.to_str().unwrap(), &tag).unwrap();
+    drop(m);
+    let m = f.open(&b);
+    assert_eq!(row(&m, "vendor/p").status, CheckStatus::OtherCatalog);
+}

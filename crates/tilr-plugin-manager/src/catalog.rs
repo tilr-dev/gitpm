@@ -284,19 +284,28 @@ fn plugin_index(location: &str, id: &str) -> Result<Option<PluginIndex>> {
 /// Catalog entries relevant to the installed plugins: latest and currently installed versions.
 pub fn selected(location: &str, state: &crate::State) -> Result<Catalog> {
     let mut result = Catalog::default();
+    // Installed plugins with their current and latest release; originals of forks
+    // with their latest release only.
+    let mut wanted: BTreeMap<&str, Option<&str>> = BTreeMap::new();
+    for installed in state.plugins.values() {
+        if let Some(base) = &installed.fork_of {
+            wanted.entry(base.id.as_str()).or_insert(None);
+        }
+    }
     for (id, installed) in &state.plugins {
+        wanted.insert(id, Some(installed.current.version.as_str()));
+    }
+    for (id, current) in wanted {
         if let Some(index) = plugin_index(location, id)? {
             let mut versions = BTreeMap::new();
             let latest = index
                 .versions
                 .keys()
                 .max_by_key(|v| version_key(v).unwrap());
-            for version in latest.into_iter().chain(
-                index
-                    .versions
-                    .get_key_value(&installed.current.version)
-                    .map(|(v, _)| v),
-            ) {
+            for version in latest
+                .into_iter()
+                .chain(current.and_then(|c| index.versions.get_key_value(c).map(|(v, _)| v)))
+            {
                 if !versions.contains_key(version) {
                     versions.insert(
                         version.clone(),
@@ -305,7 +314,7 @@ pub fn selected(location: &str, state: &crate::State) -> Result<Catalog> {
                 }
             }
             result.plugins.insert(
-                id.clone(),
+                id.to_owned(),
                 Plugin {
                     source: index.source,
                     versions,
@@ -316,7 +325,7 @@ pub fn selected(location: &str, state: &crate::State) -> Result<Catalog> {
             if value.get("plugins").is_some() {
                 let old: Catalog = serde_json::from_value(value)?;
                 if let Some(plugin) = old.plugins.get(id) {
-                    result.plugins.insert(id.clone(), plugin.clone());
+                    result.plugins.insert(id.to_owned(), plugin.clone());
                 }
             }
         }

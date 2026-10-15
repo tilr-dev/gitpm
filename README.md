@@ -109,7 +109,10 @@ keep declaring `replaces`. Uninstalling or forgetting the fork drops its binding
 
 A workspace uses one catalog. `install_from_catalog` records the canonical catalog
 location per plugin (`plugins.<id>.catalog`) and refuses to install from a different
-catalog while plugins from another one are installed.
+catalog while plugins from another one are installed. `check` reports plugins from
+another catalog as `other_catalog` instead of comparing them, and for a fork adds
+`upstream { id, base, latest, newer }`: the original's latest catalog release against
+the version the fork started from.
 
 ### Error kinds
 
@@ -149,8 +152,9 @@ gains no files to sign. Its checkout is expected at `../plugin-manager` next to 
 `PluginManagerService.swift` (and the app's `--probe`).
 
 FFI surface: `PluginManager` (open, list, check, browseCatalog, catalogRelease, install,
-installFromCatalog, update, rollback, enable, disable, forget, restore, uninstallPlan,
-uninstall, fork), free functions `authCheck`, `browseCatalog`, `catalogRelease`,
+installFromCatalog, update, rollback, enable, disable(force), forget(force), restore,
+uninstallPlan, uninstall(confirm, force), fork, replacePlan, replace, switchBackPlan,
+switchBack; `force` defaults to false), free functions `authCheck`, `browseCatalog`, `catalogRelease`,
 `readInstalled`, `describeLostWork`; errors are the `PmError` enum (one case per kind,
 each with `message`; `LocalChanges` carries `items`). Author/catalog-generation commands
 are not exposed.

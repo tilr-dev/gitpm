@@ -1,9 +1,10 @@
 //! UniFFI bindings for native apps (Swift/Kotlin). Consumer operations only: open a
 //! workspace, browse a catalog, install/update/rollback/enable/disable/forget/restore,
-//! plan and confirm uninstall, fork, check repository access.
+//! plan and confirm uninstall, fork, replace a plugin by a fork and switch back,
+//! check repository access.
 //!
 //! All calls block (Git/network); call them off the main thread.
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 use tilr_plugin_manager as pm;
 
 uniffi::setup_scaffolding!();
@@ -54,6 +55,23 @@ pub enum PmError {
     Auth { message: String },
     #[error("{message}")]
     Unsupported { message: String },
+    /// Dependencies cannot be satisfied; `message` is the solver's explanation.
+    #[error("{message}")]
+    DependencyConflict { message: String },
+    /// Other installed plugins depend on `id`; retry with `force` to proceed anyway.
+    #[error("{message}")]
+    HasDependents {
+        id: String,
+        message: String,
+        dependents: Vec<String>,
+    },
+    /// `consumers` do not accept the new provider's version; retry with `confirm`.
+    #[error("{message}")]
+    IncompatibleReplacement {
+        id: String,
+        message: String,
+        consumers: Vec<String>,
+    },
     #[error("{message}")]
     InvalidData { message: String },
     #[error("{message}")]
@@ -89,6 +107,19 @@ impl From<pm::Error> for PmError {
             pm::Error::Http(_) => PmError::Http { message },
             pm::Error::Auth(_) => PmError::Auth { message },
             pm::Error::Unsupported(_) => PmError::Unsupported { message },
+            pm::Error::DependencyConflict(_) => PmError::DependencyConflict { message },
+            pm::Error::HasDependents { id, dependents, .. } => PmError::HasDependents {
+                id,
+                message,
+                dependents,
+            },
+            pm::Error::IncompatibleReplacement { id, consumers, .. } => {
+                PmError::IncompatibleReplacement {
+                    id,
+                    message,
+                    consumers,
+                }
+            }
             pm::Error::InvalidData(_) => PmError::InvalidData { message },
             pm::Error::Io(_) => PmError::Io { message },
             other => PmError::Other {
@@ -134,6 +165,45 @@ impl From<pm::ForkOf> for ForkOf {
     }
 }
 
+/// The plugin can stand in for `id` at `version` (used only after an explicit replace).
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct Replaces {
+    pub id: String,
+    pub version: String,
+}
+impl From<pm::Replaces> for Replaces {
+    fn from(r: pm::Replaces) -> Self {
+        Self {
+            id: r.id,
+            version: r.version,
+        }
+    }
+}
+
+/// One dependency of an installed plugin and the plugin that provides it.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct DependencyStatus {
+    pub id: String,
+    pub requirement: String,
+    /// Installed provider (the replacement fork when `id` is replaced).
+    pub provider: Option<String>,
+    pub version: Option<String>,
+    pub satisfied: bool,
+    pub problem: Option<String>,
+}
+impl From<pm::deps::DependencyStatus> for DependencyStatus {
+    fn from(d: pm::deps::DependencyStatus) -> Self {
+        Self {
+            id: d.id,
+            requirement: d.requirement,
+            provider: d.provider,
+            version: d.version,
+            satisfied: d.satisfied,
+            problem: d.problem,
+        }
+    }
+}
+
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct InstalledPlugin {
     pub id: String,
@@ -142,6 +212,14 @@ pub struct InstalledPlugin {
     pub previous: Option<Revision>,
     pub enabled: bool,
     pub fork_of: Option<ForkOf>,
+    pub replaces: Option<Replaces>,
+    /// Catalog it was installed from; `None` for Git installs.
+    pub catalog: Option<String>,
+    pub dependencies: Vec<DependencyStatus>,
+    /// Original IDs this plugin currently provides for every consumer.
+    pub replacing: Vec<String>,
+    /// Installed plugins that depend on this one.
+    pub dependents: Vec<String>,
 }
 impl From<pm::InstalledPlugin> for InstalledPlugin {
     fn from(p: pm::InstalledPlugin) -> Self {
@@ -152,6 +230,47 @@ impl From<pm::InstalledPlugin> for InstalledPlugin {
             previous: p.previous.map(Into::into),
             enabled: p.enabled,
             fork_of: p.fork_of.map(Into::into),
+            replaces: p.replaces.map(Into::into),
+            catalog: p.catalog,
+            dependencies: p.dependencies.into_iter().map(Into::into).collect(),
+            replacing: p.replacing,
+            dependents: p.dependents,
+        }
+    }
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct IncompatibleConsumer {
+    pub id: String,
+    pub requirement: String,
+}
+/// What replacing (or switching back) would change; see `PluginManager.replace`.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ReplacementPlan {
+    pub original: String,
+    pub provider: String,
+    pub version: String,
+    pub current: Option<String>,
+    pub consumers: Vec<String>,
+    /// Non-empty: ask the user, then call again with `confirm = true`.
+    pub incompatible: Vec<IncompatibleConsumer>,
+}
+impl From<pm::ReplacementPlan> for ReplacementPlan {
+    fn from(p: pm::ReplacementPlan) -> Self {
+        Self {
+            original: p.original,
+            provider: p.provider,
+            version: p.version,
+            current: p.current,
+            consumers: p.consumers,
+            incompatible: p
+                .incompatible
+                .into_iter()
+                .map(|c| IncompatibleConsumer {
+                    id: c.id,
+                    requirement: c.requirement,
+                })
+                .collect(),
         }
     }
 }
@@ -257,6 +376,8 @@ pub struct UninstallPlan {
     /// Empty: uninstall without asking. Otherwise show it and call `uninstall(id, true)`
     /// only after the user confirmed.
     pub lost_work: Vec<LostWork>,
+    /// Installed plugins that depend on it: uninstall refuses unless `force`.
+    pub dependents: Vec<String>,
 }
 impl From<pm::UninstallPlan> for UninstallPlan {
     fn from(p: pm::UninstallPlan) -> Self {
@@ -265,6 +386,7 @@ impl From<pm::UninstallPlan> for UninstallPlan {
             registered: p.registered,
             deletes: p.deletes,
             lost_work: p.lost_work.into_iter().map(Into::into).collect(),
+            dependents: p.dependents,
         }
     }
 }
@@ -280,6 +402,7 @@ pub enum CheckStatus {
     UpdateAvailable,
     UpToDate,
     NewerThanCatalog,
+    OtherCatalog,
 }
 impl From<pm::check::CheckStatus> for CheckStatus {
     fn from(s: pm::check::CheckStatus) -> Self {
@@ -294,6 +417,7 @@ impl From<pm::check::CheckStatus> for CheckStatus {
             S::UpdateAvailable => CheckStatus::UpdateAvailable,
             S::UpToDate => CheckStatus::UpToDate,
             S::NewerThanCatalog => CheckStatus::NewerThanCatalog,
+            S::OtherCatalog => CheckStatus::OtherCatalog,
         }
     }
 }
@@ -308,6 +432,17 @@ pub struct CheckRow {
     pub status: CheckStatus,
     /// Human-readable status text.
     pub status_message: String,
+    /// For a fork: where its original stands in the catalog.
+    pub upstream: Option<Upstream>,
+}
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct Upstream {
+    pub id: String,
+    /// Original version the fork started from.
+    pub base: String,
+    pub latest: Option<String>,
+    /// The original has a newer release than the fork base.
+    pub newer: bool,
 }
 impl From<pm::check::CheckRow> for CheckRow {
     fn from(r: pm::check::CheckRow) -> Self {
@@ -319,6 +454,12 @@ impl From<pm::check::CheckRow> for CheckRow {
             enabled: r.enabled,
             update_available: r.update_available,
             status: r.status.into(),
+            upstream: r.upstream.map(|u| Upstream {
+                id: u.id,
+                base: u.base,
+                latest: u.latest,
+                newer: u.newer,
+            }),
         }
     }
 }
@@ -392,6 +533,9 @@ pub struct CatalogRelease {
     pub reference: String,
     pub file_count: u64,
     pub fork_of: Option<ForkOf>,
+    pub replaces: Option<Replaces>,
+    /// Dependency ID → version requirement.
+    pub dependencies: HashMap<String, String>,
     pub build_url: Option<String>,
     pub build_sha256: Option<String>,
 }
@@ -405,6 +549,8 @@ impl From<pm::catalog::Release> for CatalogRelease {
             reference: r.reference,
             file_count: r.files.len() as u64,
             fork_of: r.manifest.fork_of.map(Into::into),
+            replaces: r.manifest.replaces.map(Into::into),
+            dependencies: r.manifest.dependencies.into_iter().collect(),
             build_url: r.build.as_ref().map(|b| b.url.clone()),
             build_sha256: r.build.map(|b| b.sha256),
         }
@@ -520,12 +666,16 @@ impl PluginManager {
     pub fn enable(&self, id: String) -> Result<()> {
         Ok(self.inner.enable(&id)?)
     }
-    pub fn disable(&self, id: String) -> Result<()> {
-        Ok(self.inner.disable(&id)?)
+    /// Refuses with `HasDependents` if others depend on it, unless `force`.
+    #[uniffi::method(default(force = false))]
+    pub fn disable(&self, id: String, force: bool) -> Result<()> {
+        Ok(self.inner.set_enabled_with(&id, false, force)?)
     }
-    /// Unregister; repository and deployed files stay on disk.
-    pub fn forget(&self, id: String) -> Result<()> {
-        Ok(self.inner.forget(&id)?)
+    /// Unregister; repository and deployed files stay on disk. Dependents refuse
+    /// unless `force`.
+    #[uniffi::method(default(force = false))]
+    pub fn forget(&self, id: String, force: bool) -> Result<()> {
+        Ok(self.inner.forget_with(&id, force)?)
     }
     /// Re-register a forgotten repository.
     pub fn restore(&self, id: String) -> Result<InstallResult> {
@@ -534,9 +684,32 @@ impl PluginManager {
     pub fn uninstall_plan(&self, id: String) -> Result<UninstallPlan> {
         Ok(self.inner.uninstall_plan(&id)?.into())
     }
-    /// `confirm = false` refuses with `LocalChanges` if anything would be lost.
-    pub fn uninstall(&self, id: String, confirm: bool) -> Result<()> {
-        Ok(self.inner.uninstall(&id, confirm)?)
+    /// `confirm = false` refuses with `LocalChanges` if anything would be lost;
+    /// dependents refuse with `HasDependents` unless `force`.
+    #[uniffi::method(default(force = false))]
+    pub fn uninstall(&self, id: String, confirm: bool, force: bool) -> Result<()> {
+        Ok(self.inner.uninstall_with(&id, confirm, force)?)
+    }
+    /// Read-only: what replacing `original` by `replacement` would change.
+    pub fn replace_plan(&self, original: String, replacement: String) -> Result<ReplacementPlan> {
+        Ok(self.inner.replace_plan(&original, &replacement)?.into())
+    }
+    /// Make `replacement` the provider of `original` for every consumer. Unsatisfied
+    /// consumers refuse with `IncompatibleReplacement` unless `confirm`.
+    pub fn replace(
+        &self,
+        original: String,
+        replacement: String,
+        confirm: bool,
+    ) -> Result<ReplacementPlan> {
+        Ok(self.inner.replace(&original, &replacement, confirm)?.into())
+    }
+    pub fn switch_back_plan(&self, original: String) -> Result<ReplacementPlan> {
+        Ok(self.inner.switch_back_plan(&original)?.into())
+    }
+    /// Every consumer uses the installed original again (same confirmation rule).
+    pub fn switch_back(&self, original: String, confirm: bool) -> Result<ReplacementPlan> {
+        Ok(self.inner.switch_back(&original, confirm)?.into())
     }
     /// Fork an installed plugin into `namespace` at `destination` (outside the workspace).
     pub fn fork(&self, id: String, destination: String, namespace: String) -> Result<ForkResult> {
@@ -658,6 +831,17 @@ mod tests {
             pm::Error::Http(m()),
             pm::Error::Auth(m()),
             pm::Error::Unsupported(m()),
+            pm::Error::DependencyConflict(m()),
+            pm::Error::HasDependents {
+                id: "x/one".into(),
+                message: m(),
+                dependents: vec!["app/a".into()],
+            },
+            pm::Error::IncompatibleReplacement {
+                id: "x/one".into(),
+                message: m(),
+                consumers: vec!["app/b".into()],
+            },
             pm::Error::InvalidData(m()),
             pm::Error::Io(m()),
         ]
@@ -683,6 +867,9 @@ mod tests {
             PmError::Http { .. } => "http",
             PmError::Auth { .. } => "auth",
             PmError::Unsupported { .. } => "unsupported",
+            PmError::DependencyConflict { .. } => "dependency_conflict",
+            PmError::HasDependents { .. } => "has_dependents",
+            PmError::IncompatibleReplacement { .. } => "incompatible_replacement",
             PmError::InvalidData { .. } => "invalid_data",
             PmError::Io { .. } => "io",
             PmError::Other { kind, .. } => return format!("other:{kind}"),
@@ -709,6 +896,9 @@ mod tests {
             | PmError::Http { message }
             | PmError::Auth { message }
             | PmError::Unsupported { message }
+            | PmError::DependencyConflict { message }
+            | PmError::HasDependents { message, .. }
+            | PmError::IncompatibleReplacement { message, .. }
             | PmError::InvalidData { message }
             | PmError::Io { message }
             | PmError::Other { message, .. } => message,
@@ -718,7 +908,7 @@ mod tests {
     #[test]
     fn every_library_error_maps_to_its_own_case_with_the_full_message() {
         let errors = library_errors();
-        assert_eq!(errors.len(), 20);
+        assert_eq!(errors.len(), 23);
         for error in errors {
             let kind = error.kind();
             let display = error.to_string();
@@ -902,6 +1092,7 @@ mod tests {
             (S::UpdateAvailable, "UpdateAvailable"),
             (S::UpToDate, "UpToDate"),
             (S::NewerThanCatalog, "NewerThanCatalog"),
+            (S::OtherCatalog, "OtherCatalog"),
         ];
         for (status, name) in statuses {
             let row = CheckRow::from(pm::check::CheckRow {
@@ -911,6 +1102,7 @@ mod tests {
                 enabled: false,
                 update_available: status == S::UpdateAvailable,
                 status,
+                upstream: None,
             });
             assert_eq!(format!("{:?}", row.status), name);
             assert_eq!(row.status_message, status.message());

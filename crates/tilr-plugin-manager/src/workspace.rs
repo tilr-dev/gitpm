@@ -248,8 +248,10 @@ impl Manager {
         if state.plugins.is_empty() {
             return Ok(Vec::new());
         }
-        let snapshot = catalog::selected(self.catalog_location()?, &state)?;
-        Ok(check::compare(&state, &snapshot))
+        let location = self.catalog_location()?;
+        let snapshot = catalog::selected(location, &state)?;
+        let canonical = catalog::canonical_location(location).ok();
+        Ok(check::compare_in(&state, &snapshot, canonical.as_deref()))
     }
     /// Bounded overview of the configured catalog.
     pub fn browse_catalog(&self) -> Result<catalog::CatalogOverview> {
