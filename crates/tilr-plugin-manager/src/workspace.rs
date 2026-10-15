@@ -125,6 +125,30 @@ fn exact_path(base: &Path, id: &str) -> Result<bool> {
     }
     Ok(true)
 }
+/// Refuse an ID that would land on an existing path spelled differently (`Dan/p` vs
+/// `dan/p` on a case-insensitive file system): it would share or overwrite that clone.
+fn ensure_no_case_collision(base: &Path, id: &str) -> Result<()> {
+    let mut prefix = String::new();
+    for part in id.split('/') {
+        if !prefix.is_empty() {
+            prefix.push('/');
+        }
+        prefix.push_str(part);
+        if base.join(&prefix).exists() && !exact_path(base, &prefix)? {
+            return Err(Error::Workspace(format!(
+                "plugin ID {id} collides with an existing path that differs only in letter case"
+            )));
+        }
+    }
+    Ok(())
+}
+fn ids_collide(a: &str, b: &str) -> bool {
+    let (a, b): (Vec<_>, Vec<_>) = (a.split('/').collect(), b.split('/').collect());
+    a.iter()
+        .zip(&b)
+        .take_while(|(x, y)| x.eq_ignore_ascii_case(y))
+        .any(|(x, y)| x != y)
+}
 fn plugin_repo(root: &Path, id: &str) -> Result<PathBuf> {
     let plugins = root.join("plugins");
     let repo = plugins.join(id);
@@ -281,6 +305,12 @@ impl Manager {
             new_id != id,
             InvalidArgument,
             "fork needs a different namespace; use --namespace NAME"
+        );
+        ensure!(
+            !ids_collide(&new_id, id)
+                && !state.plugins.keys().any(|other| ids_collide(other, &new_id)),
+            InvalidArgument,
+            "fork ID {new_id} differs only in letter case from an installed plugin"
         );
         let source = self.root.join("plugins").join(id);
         ensure!(
@@ -512,6 +542,13 @@ impl Manager {
                 Workspace,
                 "plugin ID conflicts with an installed namespace path"
             );
+            if let Some(other) = state.plugins.keys().find(|id| ids_collide(id, &m.id)) {
+                return Err(Error::Workspace(format!(
+                    "plugin ID {} differs only in letter case from installed {other}",
+                    m.id
+                )));
+            }
+            ensure_no_case_collision(&root.join("plugins"), &m.id)?;
             let dest = root.join("plugins").join(&m.id);
             if m.id.contains('/') {
                 ensure!(
@@ -1586,6 +1623,31 @@ mod tests {
             build: None,
         };
         ws.refuses("catalog", || m.install_release(&release));
+    }
+
+    #[test]
+    fn ids_differing_only_in_case_are_refused() {
+        assert!(ids_collide("dan/p", "Dan/p"));
+        assert!(ids_collide("dan/p", "Dan/q"), "namespace folder is shared");
+        assert!(ids_collide("dan/p", "dan/P"));
+        assert!(!ids_collide("dan/p", "dan/p"));
+        assert!(!ids_collide("dan/p", "dan/q"));
+        assert!(!ids_collide("dan/p", "other/P"));
+        let (ws, m) = Ws::installed("dan/p");
+        let upper = ws.other_author("upper", "Dan/p");
+        let error = ws.refuses("workspace", || m.install(upper.source()));
+        assert!(error.to_string().contains("letter case"), "{error}");
+        let sibling = ws.other_author("sibling", "Dan/q");
+        ws.refuses("workspace", || m.install(sibling.source()));
+        // A forgotten repository still occupies its path.
+        m.forget("dan/p").unwrap();
+        let error = ws.refuses("workspace", || m.install(upper.source()));
+        assert!(error.to_string().contains("letter case"), "{error}");
+        m.restore("dan/p").unwrap();
+        let error = ws.refuses("invalid_argument", || {
+            m.fork_in_namespace("dan/p", &ws.dir.join("forks/p"), "Dan")
+        });
+        assert!(error.to_string().contains("letter case"), "{error}");
     }
 
     // ---- fork -----------------------------------------------------------------------
