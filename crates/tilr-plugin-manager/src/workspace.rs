@@ -622,8 +622,9 @@ impl Manager {
             git(&repo, &["checkout", "--detach", &target])?;
             let m = manifest(&repo)?;
             ensure!(m.id == id, InvalidManifest, "plugin id changed upstream");
+            // Dev identity is the commit; release channels require a version bump.
             ensure!(
-                m.version != p.current.version,
+                dev || m.version != p.current.version,
                 VersionConflict,
                 "upstream changed without a version bump"
             );
@@ -1423,6 +1424,16 @@ mod tests {
             (change.to.commit.as_str(), change.to.version.as_str()),
             (next.as_str(), "0.2.0")
         );
+        // On dev a new commit is an update even without a version bump.
+        let same = same_version_commit(&ws.author);
+        let change = m.update_channel(id, None, true).unwrap();
+        assert!(change.changed);
+        assert_eq!(
+            (change.to.commit.as_str(), change.to.version.as_str()),
+            (same.as_str(), "0.2.0")
+        );
+        m.rollback(id).unwrap();
+        m.update_channel(id, None, true).unwrap();
         // Rewrite upstream history: the installed commit is no longer an ancestor.
         fixture_git(&ws.author.path, &["reset", "-q", "--hard", "HEAD~1"]);
         ws.author.commit("0.3.0");
