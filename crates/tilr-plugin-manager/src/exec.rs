@@ -152,7 +152,9 @@ pub(crate) fn ls_remote(
     })
 }
 
-/// HTTP GET result. `None` body means HTTP 404.
+/// HTTP GET result. `None` body means HTTP 404. Redirects are not followed (a 3xx
+/// is an error, so a catalog cannot be moved to another host silently) and bodies
+/// over 16 MiB are refused.
 pub(crate) fn http_get(url: &str) -> Result<Option<Vec<u8>>> {
     let output = Command::new("curl")
         .args([
@@ -163,6 +165,10 @@ pub(crate) fn http_get(url: &str) -> Result<Option<Vec<u8>>> {
             "5",
             "--max-time",
             "20",
+            "--proto",
+            "=https,http",
+            "--max-filesize",
+            "16777216",
             "--write-out",
             "\n%{http_code}",
             "--url",

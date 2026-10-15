@@ -181,8 +181,32 @@ pub fn version_key(version: &str) -> Result<(u64, u64, u64)> {
 pub fn is_local(location: &str) -> Result<bool> {
     Ok(local_file(location)?.is_some())
 }
+/// Plain HTTP lets anyone on the path swap commits and sources, so remote catalogs
+/// must use HTTPS. `http://` is accepted only for loopback test servers.
+fn ensure_secure_url(url: &str) -> Result<()> {
+    if let Some(rest) = url.strip_prefix("http://") {
+        let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+        let host = match authority.rsplit_once('@') {
+            Some(_) => "",
+            None if authority.starts_with('[') => {
+                authority.split_once(']').map_or("", |(h, _)| &h[1..])
+            }
+            None => authority.split(':').next().unwrap_or_default(),
+        };
+        ensure!(
+            host == "localhost"
+                || host
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|ip| ip.is_loopback()),
+            InvalidArgument,
+            "catalog URL must use HTTPS (http:// only for localhost)"
+        );
+    }
+    Ok(())
+}
 fn local_file(location: &str) -> Result<Option<PathBuf>> {
     if location.starts_with("http://") || location.starts_with("https://") {
+        ensure_secure_url(location)?;
         return Ok(None);
     }
     ensure!(
@@ -1242,7 +1266,26 @@ pub(crate) mod tests {
         assert!(is_local("catalog-local").unwrap());
         assert!(is_local("/abs/catalog.json").unwrap());
         assert!(!is_local("https://pkg.example").unwrap());
-        assert!(!is_local("http://pkg.example/catalog.json").unwrap());
+        for loopback in [
+            "http://localhost:8000/catalog.json",
+            "http://127.0.0.1:8000",
+            "http://[::1]:8000/",
+        ] {
+            assert!(!is_local(loopback).unwrap(), "{loopback}");
+        }
+        for insecure in [
+            "http://pkg.example/catalog.json",
+            "http://localhost.evil.example/",
+            "http://localhost@evil.example/",
+            "http://127.0.0.1@evil.example/",
+            "http://127.evil.example/",
+        ] {
+            assert_eq!(
+                is_local(insecure).unwrap_err().kind(),
+                "invalid_argument",
+                "{insecure}"
+            );
+        }
         for bad in ["ftp://pkg.example", "file:///tmp/catalog", "s3://bucket"] {
             assert_eq!(
                 is_local(bad).unwrap_err().kind(),
