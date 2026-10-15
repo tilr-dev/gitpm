@@ -11,7 +11,29 @@ pub struct Tag {
     pub manifest: Manifest,
 }
 
+/// A release-looking tag that could not be used; reported as data, never fatal by itself.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct SkippedTag {
+    pub name: String,
+    pub version: String,
+    pub reason: String,
+}
+
+/// Valid releases in version order plus tags that were skipped.
+#[derive(Clone, Debug, Default)]
+pub struct Discovery {
+    pub tags: Vec<Tag>,
+    pub skipped: Vec<SkippedTag>,
+}
+
 pub fn discover(repo: &Path, expected_id: Option<&str>) -> Result<Vec<Tag>> {
+    Ok(discover_all(repo, expected_id)?.tags)
+}
+
+/// Release discovery that tolerates broken historical tags: a tag whose manifest is
+/// unreadable or disagrees with the tag version is skipped and reported. Two different
+/// commits for one version stay a hard conflict.
+pub fn discover_all(repo: &Path, expected_id: Option<&str>) -> Result<Discovery> {
     let head: Manifest =
         serde_json::from_str(&git(repo, &["show", "HEAD:plugin.json"])?).map_err(|e| {
             Error::InvalidManifest(format!("invalid plugin.json at repository HEAD: {e}"))
@@ -19,6 +41,7 @@ pub fn discover(repo: &Path, expected_id: Option<&str>) -> Result<Vec<Tag>> {
     let id = expected_id.unwrap_or(&head.id);
     valid_id(id)?;
     let mut releases = BTreeMap::new();
+    let mut skipped = Vec::new();
     for name in git(repo, &["tag", "--list"])?.lines() {
         let version = name
             .strip_prefix(&format!("{id}@"))
@@ -27,23 +50,36 @@ pub fn discover(repo: &Path, expected_id: Option<&str>) -> Result<Vec<Tag>> {
         let Ok(key) = version_key(version) else {
             continue;
         };
+        let mut skip = |reason: String| {
+            skipped.push(SkippedTag {
+                name: name.into(),
+                version: version.into(),
+                reason,
+            })
+        };
         let reference = format!("refs/tags/{name}");
         let commit = resolve_ref(repo, &reference)?;
-        let manifest: Manifest =
-            serde_json::from_str(&git(repo, &["show", &format!("{commit}:plugin.json")])?)
-                .map_err(|e| {
-                    Error::InvalidManifest(format!("invalid manifest in release tag {name}: {e}"))
-                })?;
+        let manifest: Manifest = match git(repo, &["show", &format!("{commit}:plugin.json")])
+            .and_then(|text| {
+                serde_json::from_str(&text).map_err(|e| Error::InvalidManifest(e.to_string()))
+            }) {
+            Ok(manifest) => manifest,
+            Err(e) => {
+                skip(format!("invalid manifest in release tag {name}: {e}"));
+                continue;
+            }
+        };
         // Forks retain upstream tags. They are not releases of the fork.
         if manifest.id != id {
             continue;
         }
-        ensure!(
-            manifest.version == version,
-            VersionConflict,
-            "tag {name} disagrees with manifest version {}",
-            manifest.version
-        );
+        if manifest.version != version {
+            skip(format!(
+                "tag {name} disagrees with manifest version {}",
+                manifest.version
+            ));
+            continue;
+        }
         if let Some(old) = releases.get(&key) {
             let old: &Tag = old;
             ensure!(
@@ -65,13 +101,47 @@ pub fn discover(repo: &Path, expected_id: Option<&str>) -> Result<Vec<Tag>> {
     ensure!(
         !releases.is_empty(),
         NoReleases,
-        "no release tags for {id}; create vVERSION or {id}@VERSION, or use --channel dev"
+        "no release tags for {id}; create vVERSION or {id}@VERSION, or use --channel dev{}",
+        skipped
+            .iter()
+            .map(|s| format!("; skipped {}", s.reason))
+            .collect::<String>()
     );
-    Ok(releases.into_values().collect())
+    Ok(Discovery {
+        tags: releases.into_values().collect(),
+        skipped,
+    })
 }
 
+impl Discovery {
+    /// Fails if a skipped tag is newer than every valid release: that broken tag is the
+    /// one a caller would select, so it must not silently fall back to an older version.
+    pub fn ensure_latest_is_valid(&self) -> Result<()> {
+        let latest = match self.tags.last() {
+            Some(tag) => version_key(&tag.manifest.version)?,
+            None => return Err(Error::NoReleases("no releases".into())),
+        };
+        if let Some(newer) = self
+            .skipped
+            .iter()
+            .filter(|s| version_key(&s.version).is_ok_and(|key| key > latest))
+            .max_by_key(|s| version_key(&s.version).ok())
+        {
+            return Err(Error::VersionConflict(format!(
+                "latest release tag is broken: {}",
+                newer.reason
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// The newest release; see [`Discovery::ensure_latest_is_valid`].
 pub fn latest(repo: &Path, expected_id: Option<&str>) -> Result<Tag> {
-    discover(repo, expected_id)?
+    let mut found = discover_all(repo, expected_id)?;
+    found.ensure_latest_is_valid()?;
+    found
+        .tags
         .pop()
         .ok_or_else(|| Error::NoReleases("no releases".into()))
 }
@@ -170,7 +240,14 @@ mod tests {
         let dir = TempDir::new("releases");
         let author = Author::new(dir.join("repo"), "dan/demo1");
         git(&author.path, &["tag", "dan/demo1@0.2.0"]);
-        let error = discover(&author.path, None).unwrap_err();
+        // Discovery skips the broken tag and reports it ...
+        let found = discover_all(&author.path, None).unwrap();
+        assert_eq!(names(&found.tags), ["dan/demo1@0.1.0"]);
+        assert_eq!(found.skipped.len(), 1);
+        assert_eq!(found.skipped[0].name, "dan/demo1@0.2.0");
+        assert!(found.skipped[0].reason.contains("disagrees with manifest version"));
+        // ... but it would be the latest release, so selecting latest fails.
+        let error = latest(&author.path, None).unwrap_err();
         assert_eq!(error.kind(), "version_conflict");
         assert!(error.to_string().contains("dan/demo1@0.2.0"));
     }
@@ -218,7 +295,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "known defect: one bad historical tag breaks release discovery"]
     fn bad_historical_tag_does_not_hide_valid_releases() {
         let dir = TempDir::new("releases");
         let author = Author::new(dir.join("repo"), "dan/demo1");
@@ -230,5 +306,8 @@ mod tests {
         let tags = discover(&author.path, None).expect("valid releases stay discoverable");
         assert_eq!(names(&tags), ["dan/demo1@0.1.0", "dan/demo1@0.2.0"]);
         assert_eq!(latest(&author.path, None).unwrap().commit, good);
+        let found = discover_all(&author.path, None).unwrap();
+        assert_eq!(found.skipped.len(), 1);
+        assert_eq!(found.skipped[0].name, "v0.0.1");
     }
 }

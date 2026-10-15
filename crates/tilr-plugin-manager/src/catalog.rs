@@ -620,6 +620,16 @@ pub struct UpdateSourcesReport {
     /// Number of release tags checked (new or already published).
     pub releases: usize,
     pub sources: Vec<String>,
+    /// Release-looking tags that were skipped (broken manifest, version mismatch).
+    pub skipped: Vec<SkippedSourceTag>,
+}
+
+/// A skipped tag of one source in [`UpdateSourcesReport`].
+#[derive(Debug, Clone, Serialize)]
+pub struct SkippedSourceTag {
+    pub source: String,
+    #[serde(flatten)]
+    pub tag: crate::releases::SkippedTag,
 }
 
 /// Read-only source discovery and hashing precede any catalog changes.
@@ -670,6 +680,7 @@ pub fn update_sources(
     let temp = Scratch::new("pm-generate")?;
     let mut pending = BTreeMap::new();
     let mut owners = BTreeMap::new();
+    let mut skipped = Vec::new();
     for (number, source) in sources.iter().enumerate() {
         progress(Progress::ReadingReleases {
             source: source.clone(),
@@ -685,7 +696,13 @@ pub fn update_sources(
                 repo.to_str().require(Error::Io, "invalid temporary path")?,
             ],
         )?;
-        for tag in crate::releases::discover(&repo, None)? {
+        let found = crate::releases::discover_all(&repo, None)?;
+        found.ensure_latest_is_valid()?;
+        skipped.extend(found.skipped.into_iter().map(|tag| SkippedSourceTag {
+            source: source.clone(),
+            tag,
+        }));
+        for tag in found.tags {
             let id = tag.manifest.id.clone();
             if let Some(owner) = owners.insert(id.clone(), source.clone()) {
                 ensure!(
@@ -775,6 +792,7 @@ pub fn update_sources(
     Ok(UpdateSourcesReport {
         releases: pending.len(),
         sources: sources.into_iter().collect(),
+        skipped,
     })
 }
 
@@ -2005,6 +2023,26 @@ pub(crate) mod tests {
         );
     }
 
+    #[test]
+    fn update_sources_skips_and_reports_a_broken_historical_tag() {
+        let dir = TempDir::new("catalog");
+        let author = Author::new(dir.join("repo"), "dan/demo1");
+        // Old tag pointing at a commit whose manifest says another version.
+        fixture_git(&author.path, &["tag", "v0.0.9"]);
+        author.release("0.2.0");
+        let cat = dir.join("catalog");
+        let list = sources(dir.path(), "repo\n");
+        let report = update_sources(loc(&cat), &list, &mut |_| {}).unwrap();
+        assert_eq!(report.releases, 2);
+        assert_eq!(report.skipped.len(), 1);
+        assert_eq!(report.skipped[0].source, author.source());
+        assert_eq!(report.skipped[0].tag.name, "v0.0.9");
+        assert_eq!(
+            lookup(loc(&cat), "dan/demo1", None).unwrap().manifest.version,
+            "0.2.0"
+        );
+    }
+
     fn sources(dir: &Path, lines: &str) -> PathBuf {
         let path = dir.join("sources.txt");
         fs::write(&path, lines).unwrap();
@@ -2025,6 +2063,7 @@ pub(crate) mod tests {
         })
         .unwrap();
         assert_eq!(report.releases, 3);
+        assert!(report.skipped.is_empty());
         assert_eq!(report.sources, [legacy.source(), scoped.source()]);
         assert_eq!(seen, report.sources);
         let latest = lookup(loc(&cat), "dan/demo1", None).unwrap();
