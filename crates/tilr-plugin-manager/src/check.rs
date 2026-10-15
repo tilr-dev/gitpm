@@ -160,7 +160,7 @@ mod tests {
             },
             previous: None,
             enabled: false,
-            fork_of: None,
+            ..Default::default()
         };
         let versions = ["1.9.0", "1.10.0"]
             .into_iter()
@@ -171,8 +171,7 @@ mod tests {
                         manifest: Manifest {
                             id: "demo".into(),
                             version: version.into(),
-                            dependencies: Default::default(),
-                            fork_of: None,
+                            ..Default::default()
                         },
                         source: installed.source.clone(),
                         commit: if version == "1.9.0" {
@@ -200,6 +199,7 @@ mod tests {
         (
             State {
                 plugins: [("demo".into(), installed)].into(),
+                ..Default::default()
             },
             catalog,
         )

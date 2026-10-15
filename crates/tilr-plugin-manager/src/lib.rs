@@ -14,6 +14,7 @@
 pub mod auth;
 pub mod catalog;
 pub mod check;
+pub mod deps;
 mod error;
 mod exec;
 pub mod identity;
@@ -29,5 +30,10 @@ mod workspace;
 
 pub use error::{Error, Result};
 pub use lost_work::LostWork;
-pub use model::{ForkOf, Installed, InstalledPlugin, Manifest, Revision, State, valid_id};
-pub use workspace::{InstallResult, Manager, Options, RevisionChange, UninstallPlan};
+pub use model::{
+    ForkOf, Installed, InstalledPlugin, Manifest, Replaces, Revision, State, valid_id,
+};
+pub use workspace::{
+    IncompatibleConsumer, InstallResult, Manager, Options, ReplacementPlan, RevisionChange,
+    UninstallPlan,
+};

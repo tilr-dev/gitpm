@@ -828,6 +828,11 @@ mod tests {
             previous: Some(revision("0.9.0")),
             enabled: false,
             fork_of: Some(fork_of()),
+            replaces: None,
+            catalog: None,
+            dependencies: vec![],
+            replacing: vec![],
+            dependents: vec![],
         });
         assert_eq!(
             (plugin.id.as_str(), plugin.source.as_str(), plugin.enabled),
@@ -873,6 +878,7 @@ mod tests {
             registered: false,
             deletes: vec!["/w/plugins/me/x".into(), "/w/dist/me/x".into()],
             lost_work: all_lost_work(),
+            dependents: vec![],
         });
         assert!(!plan.registered);
         assert_eq!(plan.deletes, ["/w/plugins/me/x", "/w/dist/me/x"]);
@@ -988,8 +994,8 @@ mod tests {
             manifest: pm::Manifest {
                 id: "me/x".into(),
                 version: "1.0.0".into(),
-                dependencies: Default::default(),
                 fork_of: Some(fork_of()),
+                ..Default::default()
             },
             source: "src".into(),
             commit: "c".repeat(40),
@@ -1019,8 +1025,7 @@ mod tests {
             manifest: pm::Manifest {
                 id: "x".into(),
                 version: "1.0.0".into(),
-                dependencies: Default::default(),
-                fork_of: None,
+                ..Default::default()
             },
             source: "s".into(),
             commit: "c".repeat(40),

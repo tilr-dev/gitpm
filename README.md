@@ -10,7 +10,7 @@ scripts/build-apple.sh           universal macOS staticlib + Swift bindings
 ```
 
 Plugins are Git repositories with a `plugin.json` manifest (`id`, `version`,
-`dependencies`, optional `forkOf`) and a ready `dist/` folder. Installing clones the
+`dependencies`, optional `forkOf` and `replaces`) and a ready `dist/` folder. Installing clones the
 repository into a workspace and copies `dist/`; nothing is built or executed.
 Releases are Git tags (`vVERSION` or `namespace/name@VERSION`). The catalog is a tree
 of static JSON files (local folder or HTTP) with exact commits and file hashes.
@@ -45,7 +45,12 @@ pm.update("dan/demo1")?;  pm.update_channel(id, None, true)?;
 pm.rollback(id)?;  pm.enable(id)?;  pm.disable(id)?;  pm.forget(id)?;  pm.restore(id)?;
 let plan = pm.uninstall_plan(id)?;                    // deletes + lost_work
 pm.uninstall(id, /* confirm */ !plan.lost_work.is_empty() && user_said_yes)?;
-pm.fork_in_namespace(id, Path::new("../forks/demo1"), "me")?;
+pm.fork_in_namespace(id, Path::new("../forks/demo1"), "me")?;   // sets forkOf + replaces
+let plan = pm.replace_plan("vendor/base", "mine/base")?;       // consumers + incompatible
+pm.replace("vendor/base", "mine/base", /* confirm */ !plan.incompatible.is_empty() && yes)?;
+pm.switch_back("vendor/base", confirm)?;                       // back to the original
+pm.uninstall_with(id, confirm, /* force: ignore dependents */ false)?;
+pm.set_enabled_with(id, false, force)?;  pm.forget_with(id, force)?;
 pm.list()?;  pm.state()?;  pm.check()?;  pm.browse_catalog()?;  pm.catalog_release(id, None)?;
 ```
 
@@ -70,12 +75,49 @@ lost_work }`. `lost_work` lists `LostWork` items: `Modified`, `Untracked`, `Igno
 deletes anyway. The caller decides how to ask the user. IDs match exactly: on a
 case-insensitive file system `Vendor/Module` never resolves to `vendor/module`.
 
+### Dependencies
+
+`dependencies` maps plugin IDs to Cargo-style requirements (`1.2` = `^1.2`, `~1.2`,
+`>=1.3, <2`, `=1.0.0`, `1.*`, `*`; no pre-releases). Install resolves them with PubGrub
+(`deps` module): installed plugins stay at their versions, missing ones are installed
+from the configured catalog in the same transaction (a direct Git install without a
+catalog only accepts already installed dependencies). Update and rollback are refused
+with `dependency_conflict` when the new version breaks a dependent; new dependencies of
+an update are installed. Conflicts carry the solver's explanation naming the plugins.
+State keeps the edges (`plugins.<id>.dependencies`); `list()` reports for each
+dependency its provider, version and whether it is satisfied, plus each plugin's
+`dependents`. Disable, forget and uninstall of a plugin others depend on refuse with
+`has_dependents` (names in `dependents`) unless `force`; `UninstallPlan.dependents`
+lists them up front. Already broken consumers (after a forced removal) are reported,
+not enforced, so they do not block unrelated operations.
+
+### Replacement by a fork
+
+A fork declares `"replaces": {"id": "vendor/base", "version": "1.4.0"}` (`fork` sets
+it to the forked version). Nothing is redirected until `replace(original, fork,
+confirm)`: then the single global binding `state.replacements[original] = fork`
+makes every consumer of `original` — existing and future — resolve to the fork, which
+the solver sees as `original` at the declared version. Compatibility is by versions
+only: consumers whose requirement the declared version does not satisfy are listed in
+`ReplacementPlan.incompatible` and refuse with `incompatible_replacement` unless
+confirmed. Self-replacement and cycles are always refused. Replacing again switches the
+binding; `switch_back` returns all consumers to the installed original (same
+confirmation rule). The active fork is guarded like any provider; a fork update must
+keep declaring `replaces`. Uninstalling or forgetting the fork drops its binding.
+
+### Catalog
+
+A workspace uses one catalog. `install_from_catalog` records the canonical catalog
+location per plugin (`plugins.<id>.catalog`) and refuses to install from a different
+catalog while plugins from another one are installed.
+
 ### Error kinds
 
 `not_installed`, `already_installed`, `local_changes`, `locked`, `invalid_id`,
 `invalid_manifest`, `invalid_version`, `invalid_argument`, `version_conflict`,
 `no_previous_version`, `no_releases`, `repository_not_found`, `workspace`, `catalog`,
-`git`, `http`, `auth`, `unsupported`, `invalid_data`, `io`.
+`git`, `http`, `auth`, `unsupported`, `dependency_conflict`, `has_dependents`,
+`incompatible_replacement`, `invalid_data`, `io`.
 
 ## Consumers
 

@@ -4,15 +4,26 @@ use crate::{exec::git, identity};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fs, path::Path};
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
     pub id: String,
     pub version: String,
+    /// Other plugins by ID with a Cargo-style version requirement.
     #[serde(default)]
     pub dependencies: BTreeMap<String, String>,
     #[serde(default, rename = "forkOf", skip_serializing_if = "Option::is_none")]
     pub fork_of: Option<ForkOf>,
+    /// This plugin can stand in for another one at the declared version. Used only when
+    /// the user explicitly replaces that plugin; never applied automatically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaces: Option<Replaces>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Replaces {
+    pub id: String,
+    pub version: String,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -21,12 +32,12 @@ pub struct ForkOf {
     pub version: String,
     pub commit: String,
 }
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Revision {
     pub version: String,
     pub commit: String,
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Installed {
     pub source: String,
     pub current: Revision,
@@ -34,10 +45,30 @@ pub struct Installed {
     pub enabled: bool,
     #[serde(default, rename = "forkOf", skip_serializing_if = "Option::is_none")]
     pub fork_of: Option<ForkOf>,
+    /// Dependency edges of the current revision (copied from its manifest).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub dependencies: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaces: Option<Replaces>,
+    /// Catalog the plugin was installed from (canonical location); `None` for Git installs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog: Option<String>,
+}
+impl Installed {
+    /// Take the manifest-derived fields of a new current revision.
+    pub(crate) fn adopt(&mut self, m: &Manifest) {
+        self.fork_of = m.fork_of.clone();
+        self.dependencies = m.dependencies.clone();
+        self.replaces = m.replaces.clone();
+    }
 }
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct State {
     pub plugins: BTreeMap<String, Installed>,
+    /// Global replacements: original ID → installed plugin that provides it for every
+    /// consumer in this workspace.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub replacements: BTreeMap<String, String>,
 }
 
 /// Flat view of one installed plugin (convenient for UIs and FFI).
@@ -50,6 +81,19 @@ pub struct InstalledPlugin {
     pub enabled: bool,
     #[serde(rename = "forkOf", skip_serializing_if = "Option::is_none")]
     pub fork_of: Option<ForkOf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replaces: Option<Replaces>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub catalog: Option<String>,
+    /// Each dependency with the plugin that provides it and whether it is satisfied.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub dependencies: Vec<crate::deps::DependencyStatus>,
+    /// Original IDs this plugin currently stands in for (active replacements).
+    #[serde(rename = "replacing", skip_serializing_if = "Vec::is_empty")]
+    pub replacing: Vec<String>,
+    /// Installed plugins that depend on this one (directly, through any replacement).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub dependents: Vec<String>,
 }
 impl State {
     pub fn installed(&self) -> Vec<InstalledPlugin> {
@@ -62,6 +106,16 @@ impl State {
                 previous: p.previous.clone(),
                 enabled: p.enabled,
                 fork_of: p.fork_of.clone(),
+                replaces: p.replaces.clone(),
+                catalog: p.catalog.clone(),
+                dependencies: crate::deps::status(self, p),
+                replacing: self
+                    .replacements
+                    .iter()
+                    .filter(|(_, fork)| *fork == id)
+                    .map(|(original, _)| original.clone())
+                    .collect(),
+                dependents: crate::deps::dependents(self, id),
             })
             .collect()
     }
@@ -113,11 +167,16 @@ pub(crate) fn manifest(repo: &Path) -> Result<Manifest> {
     if let Some(base) = &m.fork_of {
         crate::catalog::version_key(&base.version)?;
     }
-    ensure!(
-        m.dependencies.is_empty(),
-        Unsupported,
-        "dependencies are not supported in this first prototype"
-    );
+    if let Some(replaces) = &m.replaces {
+        valid_id(&replaces.id)?;
+        ensure!(
+            replaces.id != m.id,
+            InvalidManifest,
+            "a plugin cannot replace itself"
+        );
+        crate::catalog::version_key(&replaces.version)?;
+    }
+    crate::deps::validate(&m)?;
     ensure!(
         repo.join("dist").is_dir(),
         InvalidManifest,
@@ -307,9 +366,34 @@ mod tests {
                 "invalid_manifest",
             ),
             (
-                r#"{"id":"demo1","version":"0.1.0","dependencies":{"dan/base":"^1.0.0"}}"#.into(),
+                r#"{"id":"demo1","version":"0.1.0","dependencies":{"dan/base":"banana"}}"#.into(),
                 true,
-                "unsupported",
+                "invalid_manifest",
+            ),
+            (
+                r#"{"id":"demo1","version":"0.1.0","dependencies":{"demo1":"^1"}}"#.into(),
+                true,
+                "invalid_manifest",
+            ),
+            (
+                r#"{"id":"demo1","version":"0.1.0","dependencies":{"../x":"^1"}}"#.into(),
+                true,
+                "invalid_id",
+            ),
+            (
+                r#"{"id":"me/demo1","version":"0.1.0","replaces":{"id":"me/demo1","version":"0.1.0"}}"#.into(),
+                true,
+                "invalid_manifest",
+            ),
+            (
+                r#"{"id":"me/demo1","version":"0.1.0","replaces":{"id":"dan/demo1","version":"1.0"}}"#.into(),
+                true,
+                "invalid_version",
+            ),
+            (
+                r#"{"id":"me/demo1","version":"0.1.0","replaces":{"id":"dan/demo1"}}"#.into(),
+                true,
+                "invalid_manifest",
             ),
             (fork("me/demo1", "0.1.0", COMMIT), true, "invalid_manifest"),
             (fork("dan/demo1", " ", COMMIT), true, "invalid_manifest"),
@@ -363,8 +447,7 @@ mod tests {
         let mut m = Manifest {
             id: "dan/demo1".into(),
             version: "0.1.0".into(),
-            dependencies: Default::default(),
-            fork_of: None,
+            ..Default::default()
         };
         assert_eq!(
             manifest_json(&m).unwrap(),

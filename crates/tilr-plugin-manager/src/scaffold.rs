@@ -34,8 +34,7 @@ fn create_with_id(parent: &Path, name: &str, id: &str) -> Result<PathBuf> {
         let m = Manifest {
             id: id.to_owned(),
             version: "0.1.0".into(),
-            dependencies: Default::default(),
-            fork_of: None,
+            ..Default::default()
         };
         fs::write(directory.join("plugin.json"), model::manifest_json(&m)?)?;
         fs::create_dir(directory.join("dist"))?;

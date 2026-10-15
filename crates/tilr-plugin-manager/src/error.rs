@@ -58,6 +58,24 @@ pub enum Error {
     Auth(String),
     #[error("{0}")]
     Unsupported(String),
+    /// Dependencies cannot be satisfied; the message explains why (solver report).
+    #[error("{0}")]
+    DependencyConflict(String),
+    /// Other installed plugins depend on this one; pass `force` to proceed anyway.
+    #[error("{message}")]
+    HasDependents {
+        id: String,
+        message: String,
+        dependents: Vec<String>,
+    },
+    /// Some consumers do not accept the version the new provider declares; confirm
+    /// to replace anyway. `consumers` are the unsatisfied ones.
+    #[error("{message}")]
+    IncompatibleReplacement {
+        id: String,
+        message: String,
+        consumers: Vec<String>,
+    },
     /// Malformed JSON/state data.
     #[error("{0}")]
     InvalidData(String),
@@ -87,6 +105,9 @@ impl Error {
             Error::Http(_) => "http",
             Error::Auth(_) => "auth",
             Error::Unsupported(_) => "unsupported",
+            Error::DependencyConflict(_) => "dependency_conflict",
+            Error::HasDependents { .. } => "has_dependents",
+            Error::IncompatibleReplacement { .. } => "incompatible_replacement",
             Error::InvalidData(_) => "invalid_data",
             Error::Io(_) => "io",
         }
@@ -205,6 +226,23 @@ mod tests {
             (Error::Http(s()), "http"),
             (Error::Auth(s()), "auth"),
             (Error::Unsupported(s()), "unsupported"),
+            (Error::DependencyConflict(s()), "dependency_conflict"),
+            (
+                Error::HasDependents {
+                    id: "a/b".into(),
+                    message: s(),
+                    dependents: vec![],
+                },
+                "has_dependents",
+            ),
+            (
+                Error::IncompatibleReplacement {
+                    id: "a/b".into(),
+                    message: s(),
+                    consumers: vec![],
+                },
+                "incompatible_replacement",
+            ),
             (Error::InvalidData(s()), "invalid_data"),
             (Error::Io(s()), "io"),
         ]
@@ -230,6 +268,9 @@ mod tests {
             | Error::Http(_)
             | Error::Auth(_)
             | Error::Unsupported(_)
+            | Error::DependencyConflict(_)
+            | Error::HasDependents { .. }
+            | Error::IncompatibleReplacement { .. }
             | Error::InvalidData(_)
             | Error::Io(_) => {}
         }
@@ -238,7 +279,7 @@ mod tests {
     #[test]
     fn every_variant_has_its_stable_kind() {
         let all = all();
-        assert_eq!(all.len(), 20);
+        assert_eq!(all.len(), 23);
         for (error, kind) in &all {
             covered(error);
             assert_eq!(error.kind(), *kind, "{error:?}");

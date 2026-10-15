@@ -1,10 +1,11 @@
 //! Workspace: locked directory with plugin clones, deployed `dist/` and `state.json`.
 //! Every modification stages only the paths it touches and commits them through a
 //! journal (see `txn`), so a crash at any point leaves a consistent workspace.
-use crate::error::{Context, Error, Require, Result, ensure};
+use crate::error::{Context, Error, Require, Result, ensure, fail};
 use crate::{
-    ForkOf, Installed, InstalledPlugin, LostWork, Manifest, Revision, State, catalog,
+    ForkOf, Installed, InstalledPlugin, LostWork, Manifest, Replaces, Revision, State, catalog,
     check::{self, CheckRow},
+    deps,
     exec::git,
     identity,
     lost_work::{self, clean},
@@ -55,6 +56,8 @@ pub struct UninstallPlan {
     pub deletes: Vec<String>,
     /// Empty for a clean clone: then uninstall needs no confirmation.
     pub lost_work: Vec<LostWork>,
+    /// Installed plugins that depend on this one: uninstall refuses unless forced.
+    pub dependents: Vec<String>,
 }
 
 pub struct Manager {
@@ -372,6 +375,12 @@ impl Manager {
             );
             let mut m = manifest(&destination)?;
             m.id = new_id.clone();
+            // The fork can stand in for the original at the version it started from;
+            // this is used only if the user explicitly replaces the original.
+            m.replaces = Some(Replaces {
+                id: id.into(),
+                version: base.version.clone(),
+            });
             m.fork_of = Some(ForkOf {
                 id: id.into(),
                 version: base.version,
@@ -424,7 +433,15 @@ impl Manager {
         reference: Option<&str>,
         expected: Option<&Manifest>,
     ) -> Result<InstallResult> {
-        self.install_checked(source, reference, expected, None)
+        self.install_checked(
+            Fetch {
+                source,
+                reference,
+                expected,
+                files: None,
+            },
+            None,
+        )
     }
     /// Stable channel installs the latest release tag (or `reference`); dev follows HEAD.
     pub fn install_channel(
@@ -441,124 +458,149 @@ impl Manager {
         self.install_ref(source, if dev { Some("HEAD") } else { reference }, None)
     }
     /// Install an exact catalog release; manifest and dist hashes are verified.
+    /// Missing dependencies come from the configured catalog.
     pub fn install_release(&self, release: &catalog::Release) -> Result<InstallResult> {
-        catalog::validate_release(release, &release.manifest.id, &release.manifest.version)?;
-        self.install_checked(
-            &release.source,
-            Some(&release.commit),
-            Some(&release.manifest),
-            if release.files.is_empty() {
-                None
-            } else {
-                Some(&release.files)
-            },
-        )
+        self.install_release_from(release, None)
     }
-    /// Look up `id` (latest if `version` is `None`) in the configured catalog and install it.
-    pub fn install_from_catalog(&self, id: &str, version: Option<&str>) -> Result<InstallResult> {
-        let release = self.catalog_release(id, version)?;
-        self.install_release(&release)
-    }
-    fn install_checked(
+    fn install_release_from(
         &self,
-        source: &str,
-        reference: Option<&str>,
-        expected: Option<&Manifest>,
-        files: Option<&BTreeMap<String, catalog::FileDigest>>,
+        release: &catalog::Release,
+        origin: Option<String>,
     ) -> Result<InstallResult> {
+        catalog::validate_release(release, &release.manifest.id, &release.manifest.version)?;
+        self.install_checked(Fetch::release(release), origin)
+    }
+    /// Look up `id` (latest if `version` is `None`) in the configured catalog and install
+    /// it with its dependencies. The workspace works with one catalog: installing from
+    /// another one than earlier catalog installs is refused.
+    pub fn install_from_catalog(&self, id: &str, version: Option<&str>) -> Result<InstallResult> {
+        let origin = catalog::canonical_location(self.catalog_location()?)?;
+        ensure_single_catalog(&self.state()?, &origin)?;
+        let release = self.catalog_release(id, version)?;
+        self.install_release_from(&release, Some(origin))
+    }
+    fn install_checked(&self, fetch: Fetch, origin: Option<String>) -> Result<InstallResult> {
         ensure!(
-            !source.starts_with('-'),
+            !fetch.source.starts_with('-'),
             InvalidArgument,
             "invalid git source"
         );
-        let source = if Path::new(source).exists() {
-            fs::canonicalize(source)?.to_string_lossy().into_owned()
+        let source = if Path::new(fetch.source).exists() {
+            fs::canonicalize(fetch.source)?
+                .to_string_lossy()
+                .into_owned()
         } else {
-            source.to_owned()
+            fetch.source.to_owned()
         };
         self.transaction(|txn, state| {
-            let repo = txn.scratch("incoming");
-            fs::create_dir_all(repo.parent().unwrap())?;
-            git(
-                repo.parent().unwrap(),
-                &["clone", "--no-hardlinks", "--", &source, "incoming"],
-            )?;
-            let root = txn.root().to_path_buf();
-            let commit = match reference {
-                Some(reference) => resolve_ref(&repo, reference)?,
-                None => releases::latest(&repo, None)?.commit,
+            let fetch = Fetch {
+                source: &source,
+                ..fetch
             };
-            git(&repo, &["checkout", "--detach", &commit])?;
-            let m = manifest(&repo)?;
-            if let Some(expected) = expected {
-                ensure!(
-                    serde_json::to_value(&m)? == serde_json::to_value(expected)?,
-                    Catalog,
-                    "catalog manifest does not match git revision"
-                );
+            let (repo, m) = clone_revision(txn, &fetch, "incoming")?;
+            check_new_id(txn.root(), state, &m)?;
+            // Everything installed stays at its version; the new plugin is added on top.
+            let mut next = state.clone();
+            next.plugins.insert(m.id.clone(), Installed::default());
+            next.plugins.get_mut(&m.id).unwrap().current.version = m.version.clone();
+            next.plugins.get_mut(&m.id).unwrap().adopt(&m);
+            let mut roots = deps::healthy_roots(state)?;
+            if !state.replacements.contains_key(&m.id) {
+                roots.insert(m.id.clone(), deps::version(&m.version)?);
             }
-            if let Some(expected_files) = files {
-                ensure!(
-                    catalog::hash_files(&repo.join("dist"))? == *expected_files,
-                    Catalog,
-                    "catalog file hashes do not match git dist"
-                );
+            let mut fixed = deps::fixed_from_state(&next)?;
+            if let Some(new) = fixed.get_mut(&m.id) {
+                new.note = Some(format!("being installed at {}", m.version));
             }
-            if state.plugins.contains_key(&m.id) {
-                return Err(Error::AlreadyInstalled {
-                    message: format!("already installed: {}", m.id),
-                    id: m.id,
-                });
-            }
-            // A legacy ID can be a prefix of a scoped ID; never nest a repository in another.
-            ensure!(
-                !state
-                    .plugins
-                    .keys()
-                    .any(|id| id.starts_with(&format!("{}/", m.id))
-                        || m.id.starts_with(&format!("{id}/"))),
-                Workspace,
-                "plugin ID conflicts with an installed namespace path"
-            );
-            if let Some(other) = state.plugins.keys().find(|id| ids_collide(id, &m.id)) {
-                return Err(Error::Workspace(format!(
-                    "plugin ID {} differs only in letter case from installed {other}",
-                    m.id
-                )));
-            }
-            ensure_no_case_collision(&root.join("plugins"), &m.id)?;
-            let dest = root.join("plugins").join(&m.id);
-            if m.id.contains('/') {
-                ensure!(
-                    !dest.parent().unwrap().join(".git").exists(),
-                    Workspace,
-                    "namespace path is an existing plugin repository"
-                );
-            }
-            if dest.exists() {
-                return Err(Error::AlreadyInstalled {
-                    message: format!("repository already exists: {}; use restore", m.id),
-                    id: m.id,
-                });
-            }
-            let current = revision(&repo, &m)?;
-            txn.add_repo(&m.id, &repo)?;
-            txn.deploy(&m.id)?;
-            let installed = Installed {
-                source: source.clone(),
-                current: current.clone(),
-                previous: None,
-                enabled: true,
-                fork_of: m.fork_of.clone(),
-            };
-            state.plugins.insert(m.id.clone(), installed);
-            Ok(InstallResult {
-                id: m.id,
-                source: source.clone(),
-                current,
-                fork_of: m.fork_of,
-            })
+            let missing = deps::solve(&fixed, &roots, self.options.catalog.as_deref())?;
+            self.install_missing(txn, state, &missing)?;
+            adopt(txn, state, &repo, &m, source.clone(), origin.clone())
         })
+    }
+    /// Install catalog releases chosen by the solver (inside the current transaction).
+    fn install_missing(
+        &self,
+        txn: &mut Txn,
+        state: &mut State,
+        missing: &BTreeMap<String, semver::Version>,
+    ) -> Result<()> {
+        if missing.is_empty() {
+            return Ok(());
+        }
+        let location = self.catalog_location()?;
+        let origin = catalog::canonical_location(location)?;
+        ensure_single_catalog(state, &origin)?;
+        for (number, (id, version)) in missing.iter().enumerate() {
+            let release = catalog::lookup(location, id, Some(&version.to_string()))?;
+            catalog::validate_release(&release, id, &release.manifest.version)?;
+            let (repo, m) = clone_revision(
+                txn,
+                &Fetch::release(&release),
+                &format!("dependency-{number}"),
+            )?;
+            check_new_id(txn.root(), state, &m)?;
+            adopt(
+                txn,
+                state,
+                &repo,
+                &m,
+                release.source.clone(),
+                Some(origin.clone()),
+            )?;
+        }
+        Ok(())
+    }
+    /// Check that `id` moving to manifest `m` keeps every working dependency working;
+    /// with `fetch`, dependencies the new revision adds are installed from the catalog.
+    fn check_change(
+        &self,
+        txn: &mut Txn,
+        state: &mut State,
+        id: &str,
+        m: &Manifest,
+        fetch: bool,
+    ) -> Result<()> {
+        for (original, fork) in &state.replacements {
+            ensure!(
+                fork != id || m.replaces.as_ref().is_some_and(|r| r.id == *original),
+                VersionConflict,
+                "{id} {} no longer declares that it replaces {original}; switch {original} back first",
+                m.version
+            );
+        }
+        let mut next = state.clone();
+        let entry = next
+            .plugins
+            .get_mut(id)
+            .ok_or_else(|| Error::NotInstalled { id: id.into() })?;
+        entry.current.version = m.version.clone();
+        entry.adopt(m);
+        let mut roots = BTreeMap::new();
+        for root in deps::healthy_roots(state)?
+            .into_keys()
+            .chain([id.to_owned()])
+        {
+            if !next.replacements.contains_key(&root) {
+                roots.insert(
+                    root.clone(),
+                    deps::version(&next.plugins[&root].current.version)?,
+                );
+            }
+        }
+        let mut fixed = deps::fixed_from_state(&next)?;
+        if let Some(changed) = fixed.get_mut(id) {
+            changed.note = Some(format!("being changed to {}", m.version));
+        }
+        let missing = deps::solve(
+            &fixed,
+            &roots,
+            if fetch {
+                self.options.catalog.as_deref()
+            } else {
+                None
+            },
+        )?;
+        self.install_missing(txn, state, &missing)
     }
     pub fn update(&self, id: &str) -> Result<RevisionChange> {
         self.update_ref(id, None)
@@ -567,6 +609,7 @@ impl Manager {
         self.update_channel(id, reference, false)
     }
     /// Update to `reference`, the latest release tag (stable) or origin HEAD (dev).
+    /// Refused if the new version breaks a dependent; new dependencies are installed.
     pub fn update_channel(
         &self,
         id: &str,
@@ -582,7 +625,8 @@ impl Manager {
         self.transaction(|txn, state| {
             let p = state
                 .plugins
-                .get_mut(id)
+                .get(id)
+                .cloned()
                 .ok_or_else(|| Error::NotInstalled { id: id.into() })?;
             let live = plugin_repo(txn.root(), id)?;
             clean(&live, id)?;
@@ -644,27 +688,29 @@ impl Manager {
                 VersionConflict,
                 "upstream changed without a version bump"
             );
+            self.check_change(txn, state, id, &m, true)?;
             let next = revision(&repo, &m)?;
-            let from = p.current.clone();
-            p.previous = Some(p.current.clone());
-            p.current = next.clone();
-            p.fork_of = m.fork_of.clone();
+            let entry = state.plugins.get_mut(id).unwrap();
+            entry.previous = Some(p.current.clone());
+            entry.current = next.clone();
+            entry.adopt(&m);
             txn.deploy(id)?;
             Ok(RevisionChange {
                 id: id.into(),
-                from,
+                from: p.current,
                 to: next,
                 changed: true,
             })
         })
     }
-    /// Swap current and previous version (offline).
+    /// Swap current and previous version (offline). Refused if it breaks a dependent.
     pub fn rollback(&self, id: &str) -> Result<RevisionChange> {
         valid_id(id)?;
         self.transaction(|txn, state| {
             let p = state
                 .plugins
-                .get_mut(id)
+                .get(id)
+                .cloned()
                 .ok_or_else(|| Error::NotInstalled { id: id.into() })?;
             let previous = p
                 .previous
@@ -681,27 +727,35 @@ impl Manager {
                 InvalidManifest,
                 "rollback manifest mismatch"
             );
-            let from = p.current.clone();
-            p.previous = Some(p.current.clone());
-            p.current = previous.clone();
-            p.fork_of = m.fork_of.clone();
+            self.check_change(txn, state, id, &m, false)?;
+            let entry = state.plugins.get_mut(id).unwrap();
+            entry.previous = Some(p.current.clone());
+            entry.current = previous.clone();
+            entry.adopt(&m);
             txn.deploy(id)?;
             Ok(RevisionChange {
                 id: id.into(),
-                from,
+                from: p.current,
                 to: previous,
                 changed: true,
             })
         })
     }
     pub fn set_enabled(&self, id: &str, enabled: bool) -> Result<()> {
+        self.set_enabled_with(id, enabled, false)
+    }
+    /// Disabling a plugin others depend on is refused with [`Error::HasDependents`]
+    /// unless `force`.
+    pub fn set_enabled_with(&self, id: &str, enabled: bool, force: bool) -> Result<()> {
         valid_id(id)?;
         self.transaction(|_, state| {
-            state
-                .plugins
-                .get_mut(id)
-                .ok_or_else(|| Error::NotInstalled { id: id.into() })?
-                .enabled = enabled;
+            if !state.plugins.contains_key(id) {
+                return Err(Error::NotInstalled { id: id.into() });
+            }
+            if !enabled && !force {
+                refuse_dependents(state, id, "disable")?;
+            }
+            state.plugins.get_mut(id).unwrap().enabled = enabled;
             Ok(())
         })
     }
@@ -713,11 +767,21 @@ impl Manager {
     }
     /// Forget registration but retain both repository and deployed files.
     pub fn forget(&self, id: &str) -> Result<()> {
+        self.forget_with(id, false)
+    }
+    /// Like [`Manager::forget`]; dependents refuse unless `force`. Replacements this
+    /// plugin provides are dropped (their consumers go back to the original).
+    pub fn forget_with(&self, id: &str, force: bool) -> Result<()> {
         valid_id(id)?;
         self.transaction(|_, state| {
-            if state.plugins.remove(id).is_none() {
+            if !state.plugins.contains_key(id) {
                 return Err(Error::NotInstalled { id: id.into() });
             }
+            if !force {
+                refuse_dependents(state, id, "forget")?;
+            }
+            state.plugins.remove(id);
+            state.replacements.retain(|_, fork| fork != id);
             Ok(())
         })
     }
@@ -735,13 +799,14 @@ impl Manager {
             clean(&repo, id)?;
             let m = manifest(&repo)?;
             ensure!(m.id == id, InvalidManifest, "plugin id mismatch");
-            let installed = Installed {
+            let mut installed = Installed {
                 source: git(&repo, &["remote", "get-url", "origin"])?,
                 current: revision(&repo, &m)?,
                 previous: None,
                 enabled: true,
-                fork_of: m.fork_of.clone(),
+                ..Default::default()
             };
+            installed.adopt(&m);
             let result = InstallResult {
                 id: id.into(),
                 source: installed.source.clone(),
@@ -753,7 +818,8 @@ impl Manager {
             Ok(result)
         })
     }
-    /// Read-only: what `uninstall` would delete and which local work would be lost.
+    /// Read-only: what `uninstall` would delete, which local work would be lost and
+    /// which installed plugins depend on it.
     /// Matches the exact ID spelling (never a case variant on a case-insensitive FS).
     pub fn uninstall_plan(&self, id: &str) -> Result<UninstallPlan> {
         valid_id(id)?;
@@ -772,15 +838,25 @@ impl Manager {
             registered: state.plugins.contains_key(id),
             deletes,
             lost_work,
+            dependents: deps::dependents(&state, id),
         })
     }
     /// Remove state entry, repository and dist. With `confirm == false` any local work
     /// (changes, untracked/ignored files, unpublished commits/branches/tags, stash)
     /// refuses with [`Error::LocalChanges`]; `confirm == true` deletes it anyway.
+    /// Dependents refuse with [`Error::HasDependents`]; see [`Manager::uninstall_with`].
     pub fn uninstall(&self, id: &str, confirm: bool) -> Result<()> {
+        self.uninstall_with(id, confirm, false)
+    }
+    /// [`Manager::uninstall`] that removes a plugin others depend on when `force`; the
+    /// dependents then report an unsatisfied dependency.
+    pub fn uninstall_with(&self, id: &str, confirm: bool, force: bool) -> Result<()> {
         valid_id(id)?;
         self.transaction(|txn, state| {
             let repo = plugin_repo(txn.root(), id)?;
+            if !force {
+                refuse_dependents(state, id, "uninstall")?;
+            }
             if !confirm {
                 let recorded = state.plugins.get(id).map(|p| p.current.commit.as_str());
                 let items = lost_work::detect(&repo, recorded)?;
@@ -790,9 +866,367 @@ impl Manager {
             }
             txn.delete(id)?;
             state.plugins.remove(id);
+            state.replacements.retain(|_, fork| fork != id);
             Ok(())
         })
     }
+
+    /// Read-only: what replacing `original` by `replacement` for every consumer in the
+    /// workspace would do. Compatibility is by version only: each consumer's
+    /// requirement on `original` against the version `replacement` declares in
+    /// `replaces`.
+    pub fn replace_plan(&self, original: &str, replacement: &str) -> Result<ReplacementPlan> {
+        let _busy = self.busy();
+        replacement_plan(&self.state()?, original, Some(replacement))
+    }
+    /// Make `replacement` (an installed plugin declaring `replaces: original`) the
+    /// provider of `original` for every consumer. Unsatisfied consumers refuse with
+    /// [`Error::IncompatibleReplacement`] unless `confirm`. Self and cyclic replacement
+    /// are always refused. Replacing again switches the single binding.
+    pub fn replace(
+        &self,
+        original: &str,
+        replacement: &str,
+        confirm: bool,
+    ) -> Result<ReplacementPlan> {
+        self.transaction(|_, state| {
+            let plan = replacement_plan(state, original, Some(replacement))?;
+            plan.refuse_unless(confirm)?;
+            state
+                .replacements
+                .insert(original.into(), replacement.into());
+            Ok(plan)
+        })
+    }
+    /// Read-only plan for [`Manager::switch_back`].
+    pub fn switch_back_plan(&self, original: &str) -> Result<ReplacementPlan> {
+        let _busy = self.busy();
+        replacement_plan(&self.state()?, original, None)
+    }
+    /// Drop the replacement of `original`: every consumer uses the installed original
+    /// again. The original must be installed; unsatisfied consumers refuse unless
+    /// `confirm`. The fork stays installed.
+    pub fn switch_back(&self, original: &str, confirm: bool) -> Result<ReplacementPlan> {
+        self.transaction(|_, state| {
+            let plan = replacement_plan(state, original, None)?;
+            plan.refuse_unless(confirm)?;
+            state.replacements.remove(original);
+            Ok(plan)
+        })
+    }
+}
+
+/// Where an install takes its revision from.
+#[derive(Clone, Copy)]
+struct Fetch<'a> {
+    source: &'a str,
+    reference: Option<&'a str>,
+    expected: Option<&'a Manifest>,
+    files: Option<&'a BTreeMap<String, catalog::FileDigest>>,
+}
+impl<'a> Fetch<'a> {
+    fn release(release: &'a catalog::Release) -> Self {
+        Fetch {
+            source: &release.source,
+            reference: Some(&release.commit),
+            expected: Some(&release.manifest),
+            files: (!release.files.is_empty()).then_some(&release.files),
+        }
+    }
+}
+
+/// Clone into the transaction's scratch area, check out and verify the revision.
+fn clone_revision(txn: &Txn, fetch: &Fetch, name: &str) -> Result<(PathBuf, Manifest)> {
+    let repo = txn.scratch(name);
+    let parent = repo.parent().unwrap();
+    fs::create_dir_all(parent)?;
+    git(
+        parent,
+        &["clone", "--no-hardlinks", "--", fetch.source, name],
+    )?;
+    let commit = match fetch.reference {
+        Some(reference) => resolve_ref(&repo, reference)?,
+        None => releases::latest(&repo, None)?.commit,
+    };
+    git(&repo, &["checkout", "--detach", &commit])?;
+    let m = manifest(&repo)?;
+    if let Some(expected) = fetch.expected {
+        ensure!(
+            serde_json::to_value(&m)? == serde_json::to_value(expected)?,
+            Catalog,
+            "catalog manifest does not match git revision"
+        );
+    }
+    if let Some(expected_files) = fetch.files {
+        ensure!(
+            catalog::hash_files(&repo.join("dist"))? == *expected_files,
+            Catalog,
+            "catalog file hashes do not match git dist"
+        );
+    }
+    Ok((repo, m))
+}
+
+/// The new plugin's ID must not collide with anything installed or retained.
+fn check_new_id(root: &Path, state: &State, m: &Manifest) -> Result<()> {
+    if state.plugins.contains_key(&m.id) {
+        return Err(Error::AlreadyInstalled {
+            message: format!("already installed: {}", m.id),
+            id: m.id.clone(),
+        });
+    }
+    // A legacy ID can be a prefix of a scoped ID; never nest a repository in another.
+    ensure!(
+        !state
+            .plugins
+            .keys()
+            .any(|id| id.starts_with(&format!("{}/", m.id)) || m.id.starts_with(&format!("{id}/"))),
+        Workspace,
+        "plugin ID conflicts with an installed namespace path"
+    );
+    if let Some(other) = state.plugins.keys().find(|id| ids_collide(id, &m.id)) {
+        return Err(Error::Workspace(format!(
+            "plugin ID {} differs only in letter case from installed {other}",
+            m.id
+        )));
+    }
+    ensure_no_case_collision(&root.join("plugins"), &m.id)?;
+    let dest = root.join("plugins").join(&m.id);
+    if m.id.contains('/') {
+        ensure!(
+            !dest.parent().unwrap().join(".git").exists(),
+            Workspace,
+            "namespace path is an existing plugin repository"
+        );
+    }
+    if dest.exists() {
+        return Err(Error::AlreadyInstalled {
+            message: format!("repository already exists: {}; use restore", m.id),
+            id: m.id.clone(),
+        });
+    }
+    Ok(())
+}
+
+/// Stage the verified clone as an installed plugin and register it.
+fn adopt(
+    txn: &mut Txn,
+    state: &mut State,
+    repo: &Path,
+    m: &Manifest,
+    source: String,
+    catalog: Option<String>,
+) -> Result<InstallResult> {
+    let current = revision(repo, m)?;
+    txn.add_repo(&m.id, repo)?;
+    txn.deploy(&m.id)?;
+    let mut installed = Installed {
+        source: source.clone(),
+        current: current.clone(),
+        previous: None,
+        enabled: true,
+        catalog,
+        ..Default::default()
+    };
+    installed.adopt(m);
+    state.plugins.insert(m.id.clone(), installed);
+    Ok(InstallResult {
+        id: m.id.clone(),
+        source,
+        current,
+        fork_of: m.fork_of.clone(),
+    })
+}
+
+/// One catalog per workspace: plugins from another catalog must not be mixed in.
+fn ensure_single_catalog(state: &State, origin: &str) -> Result<()> {
+    if let Some((id, other)) = state.plugins.iter().find_map(|(id, p)| {
+        p.catalog
+            .as_deref()
+            .filter(|c| *c != origin)
+            .map(|c| (id, c))
+    }) {
+        return Err(Error::Catalog(format!(
+            "this workspace uses catalog {other} ({id} was installed from it); \
+             mixing catalogs is not supported, select that catalog or uninstall its plugins"
+        )));
+    }
+    Ok(())
+}
+
+fn refuse_dependents(state: &State, id: &str, action: &str) -> Result<()> {
+    let dependents = deps::dependents(state, id);
+    if dependents.is_empty() {
+        return Ok(());
+    }
+    Err(Error::HasDependents {
+        message: format!(
+            "cannot {action} {id}: required by {}; use --force to {action} anyway",
+            dependents.join(", ")
+        ),
+        id: id.into(),
+        dependents,
+    })
+}
+
+/// A consumer whose requirement the new provider's version does not satisfy.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct IncompatibleConsumer {
+    pub id: String,
+    pub requirement: String,
+}
+/// What a replacement (or switching back) changes.
+#[derive(Clone, Debug, Serialize)]
+pub struct ReplacementPlan {
+    pub original: String,
+    /// Plugin that provides `original` afterwards (the original itself when switching back).
+    pub provider: String,
+    /// Version consumers see: the fork's declared `replaces.version`, or the original's.
+    pub version: String,
+    /// Current provider if `original` is replaced now.
+    pub current: Option<String>,
+    /// Installed plugins that depend on `original`.
+    pub consumers: Vec<String>,
+    /// Consumers whose requirement `version` does not satisfy (need confirmation).
+    pub incompatible: Vec<IncompatibleConsumer>,
+}
+impl ReplacementPlan {
+    fn refuse_unless(&self, confirm: bool) -> Result<()> {
+        if confirm || self.incompatible.is_empty() {
+            return Ok(());
+        }
+        let list = self
+            .incompatible
+            .iter()
+            .map(|c| format!("{} needs {} {}", c.id, self.original, c.requirement))
+            .collect::<Vec<_>>()
+            .join("; ");
+        Err(Error::IncompatibleReplacement {
+            message: format!(
+                "{} provides {} {}, which some consumers do not accept: {list}; confirm to apply anyway",
+                self.provider, self.original, self.version
+            ),
+            id: self.original.clone(),
+            consumers: self.incompatible.iter().map(|c| c.id.clone()).collect(),
+        })
+    }
+}
+
+fn replacement_plan(
+    state: &State,
+    original: &str,
+    replacement: Option<&str>,
+) -> Result<ReplacementPlan> {
+    valid_id(original)?;
+    let current = state.replacements.get(original).cloned();
+    let (provider, version) = match replacement {
+        Some(fork) => {
+            valid_id(fork)?;
+            ensure!(
+                fork != original,
+                InvalidArgument,
+                "cannot replace {original} by itself"
+            );
+            let installed = state
+                .plugins
+                .get(fork)
+                .ok_or_else(|| Error::NotInstalled { id: fork.into() })?;
+            let declared = installed
+                .replaces
+                .as_ref()
+                .filter(|r| r.id == original)
+                .require(
+                    Error::InvalidArgument,
+                    format!(
+                        "{fork} does not declare that it replaces {original} \
+                         (plugin.json \"replaces\": {{\"id\": \"{original}\", \"version\": \"...\"}})"
+                    ),
+                )?;
+            if let Some(other) = state.replacements.get(fork) {
+                fail!(
+                    InvalidArgument,
+                    "cyclic replacement: {fork} is itself replaced by {other}"
+                );
+            }
+            if let Some((replaced, _)) = state.replacements.iter().find(|(_, p)| *p == original) {
+                fail!(
+                    InvalidArgument,
+                    "cyclic replacement: {original} provides {replaced}"
+                );
+            }
+            ensure!(
+                !installed.dependencies.contains_key(original),
+                InvalidArgument,
+                "cyclic replacement: {fork} depends on {original}"
+            );
+            (fork.to_owned(), declared.version.clone())
+        }
+        None => {
+            current.as_deref().require(
+                Error::InvalidArgument,
+                format!("{original} is not replaced"),
+            )?;
+            let installed = state
+                .plugins
+                .get(original)
+                .ok_or_else(|| Error::NotInstalled {
+                    id: original.into(),
+                })?;
+            (original.to_owned(), installed.current.version.clone())
+        }
+    };
+    let consumers: Vec<String> = state
+        .plugins
+        .iter()
+        .filter(|(id, p)| **id != provider && p.dependencies.contains_key(original))
+        .map(|(id, _)| id.clone())
+        .collect();
+    let incompatible = consumers
+        .iter()
+        .filter_map(|id| {
+            let requirement = &state.plugins[id].dependencies[original];
+            (!deps::matches(requirement, &version)).then(|| IncompatibleConsumer {
+                id: id.clone(),
+                requirement: requirement.clone(),
+            })
+        })
+        .collect();
+    // The new provider's own dependencies must work in the resulting workspace.
+    let mut next = state.clone();
+    match replacement {
+        Some(fork) => {
+            next.replacements.insert(original.into(), fork.into());
+        }
+        None => {
+            next.replacements.remove(original);
+        }
+    }
+    let broken: Vec<String> = deps::status(&next, &next.plugins[&provider])
+        .into_iter()
+        .filter(|s| !s.satisfied)
+        .map(|s| {
+            format!(
+                "{} {} ({})",
+                s.id,
+                s.requirement,
+                s.problem.unwrap_or_default()
+            )
+        })
+        .collect();
+    ensure!(
+        broken.is_empty(),
+        DependencyConflict,
+        "{provider} has unsatisfied dependencies: {}",
+        broken.join(", ")
+    );
+    Ok(ReplacementPlan {
+        original: original.into(),
+        provider,
+        version,
+        current,
+        consumers,
+        incompatible,
+    })
 }
 
 #[cfg(test)]
@@ -1243,12 +1677,13 @@ mod tests {
         let mut with_deps = make_manifest("dan/deps", "0.2.0");
         with_deps
             .dependencies
-            .insert("dan/demo1".into(), "^0.1.0".into());
+            .insert("dan/missing".into(), "^1.0".into());
         write_manifest(&deps.path, &with_deps);
         fixture_git(&deps.path, &["commit", "-q", "-am", "deps"]);
-        ws.refuses("unsupported", || {
+        let error = ws.refuses("dependency_conflict", || {
             m.install_ref(deps.source(), Some("HEAD"), None)
         });
+        assert!(error.to_string().contains("dan/missing"), "{error}");
 
         let no_dist = Author::new(ws.dir.join("nodist"), "dan/nodist");
         fixture_git(&no_dist.path, &["rm", "-q", "-r", "dist"]);

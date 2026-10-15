@@ -86,8 +86,7 @@ pub(crate) fn manifest(id: &str, version: &str) -> Manifest {
     Manifest {
         id: id.into(),
         version: version.into(),
-        dependencies: Default::default(),
-        fork_of: None,
+        ..Default::default()
     }
 }
 pub(crate) fn write_manifest(repo: &Path, m: &Manifest) {
@@ -232,8 +231,9 @@ pub(crate) fn state_with(id: &str, source: &str, version: &str, commit: &str) ->
                 },
                 previous: None,
                 enabled: true,
-                fork_of: None,
+                ..Default::default()
             },
         )]),
+        ..Default::default()
     }
 }

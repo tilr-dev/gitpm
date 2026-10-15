@@ -559,6 +559,44 @@ fn save_release(path: &Path, release: &Release) -> Result<Release> {
     Ok(serde_json::from_slice(&fs::read(stored)?)?)
 }
 /// Exact release of `id` (the latest one if `version` is `None`).
+/// Published versions of `id` (unordered); empty if the catalog does not know the plugin.
+pub fn versions(location: &str, id: &str) -> Result<Vec<String>> {
+    valid_id(id)?;
+    if let Some(index) = plugin_index(location, id)? {
+        return Ok(index.versions.into_keys().collect());
+    }
+    let root = list(location)?;
+    if root.get("plugins").is_none() {
+        return Ok(Vec::new());
+    }
+    let catalog: Catalog =
+        serde_json::from_value(root).context(Error::Catalog, "invalid catalog")?;
+    Ok(catalog
+        .plugins
+        .get(id)
+        .map(|plugin| plugin.versions.keys().cloned().collect())
+        .unwrap_or_default())
+}
+
+/// One spelling per catalog, for remembering where a plugin came from: the real path
+/// of a local `catalog.json`, or an HTTP(S) base URL without `/catalog.json`.
+pub fn canonical_location(location: &str) -> Result<String> {
+    Ok(match local_file(location)? {
+        Some(path) => fs::canonicalize(&path)
+            .context(
+                Error::Catalog,
+                format!("catalog not found: {}", path.display()),
+            )?
+            .to_string_lossy()
+            .into_owned(),
+        None => location
+            .trim_end_matches('/')
+            .trim_end_matches("/catalog.json")
+            .trim_end_matches('/')
+            .to_owned(),
+    })
+}
+
 pub fn lookup(location: &str, id: &str, version: Option<&str>) -> Result<Release> {
     valid_id(id)?;
     if let Some(version) = version {
@@ -605,12 +643,14 @@ pub fn lookup(location: &str, id: &str, version: Option<&str>) -> Result<Release
 }
 struct Scratch(PathBuf);
 impl Scratch {
-    /// Unique directory under the OS temporary directory.
+    /// Unique directory under the OS temporary directory (also across threads).
     fn new(prefix: &str) -> Result<Self> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
-            "{prefix}-{}-{}",
+            "{prefix}-{}-{}-{}",
             std::process::id(),
-            SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+            SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         fs::create_dir(&path)?;
         Ok(Self(path))
