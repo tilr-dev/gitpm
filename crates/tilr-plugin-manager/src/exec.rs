@@ -3,42 +3,102 @@
 use crate::error::{Context, Error, Result, ensure};
 use std::{
     path::Path,
-    process::{Command, Stdio},
+    process::{Command, Output, Stdio},
+    sync::OnceLock,
+    time::{Duration, Instant},
 };
 
-/// `git -C repo ARGS`, noninteractive. Returns trimmed stdout.
-pub(crate) fn git(repo: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
+/// Upper bound for one git subprocess; network stalls are cut earlier by
+/// `http.lowSpeed*` and SSH keepalives, this only stops a wedged process.
+const GIT_TIMEOUT: Duration = Duration::from_secs(600);
+/// Noninteractive SSH for git transports: never prompts for passphrases or
+/// unknown host keys, and gives up on dead connections.
+const BATCH_SSH: &str = "ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4";
+
+/// `git -C repo` that can never wait for user input: no terminal prompts, closed
+/// stdin, bounded transfers. The user's own `core.sshCommand` or `GIT_SSH_COMMAND`
+/// (inherited by the child) keeps precedence over the batch SSH command.
+fn git_command(repo: &Path, args: &[&str]) -> Result<Command> {
+    static CUSTOM_SSH: OnceLock<bool> = OnceLock::new();
+    let custom_ssh = match CUSTOM_SSH.get() {
+        Some(value) => *value,
+        None => *CUSTOM_SSH.get_or_init(|| {
+            git_config_defined("core.sshCommand", "cannot start git").unwrap_or(true)
+        }),
+    };
+    let mut command = Command::new("git");
+    command.args([
+        "-c",
+        "http.lowSpeedLimit=1",
+        "-c",
+        "http.lowSpeedTime=20",
+    ]);
+    if !custom_ssh {
+        command.arg("-c").arg(format!("core.sshCommand={BATCH_SSH}"));
+    }
+    command
         .arg("-C")
         .arg(repo)
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
+        .stdin(Stdio::null());
+    Ok(command)
+}
+
+/// Run to completion with a wall-clock limit; stdout/stderr are drained concurrently.
+fn output_within(mut command: Command, limit: Duration, what: &str) -> Result<Output> {
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .context(Error::Git, "cannot start git")?;
-    ensure!(
-        output.status.success(),
-        Git,
-        "git {}: {}",
-        args.join(" "),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    Ok(String::from_utf8(output.stdout)?.trim().to_owned())
+    let drain = |pipe: Option<Box<dyn std::io::Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut buffer = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut buffer);
+            }
+            buffer
+        })
+    };
+    let stdout = drain(child.stdout.take().map(|p| Box::new(p) as _));
+    let stderr = drain(child.stderr.take().map(|p| Box::new(p) as _));
+    let deadline = Instant::now() + limit;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(Error::Git(format!(
+                "{what}: timed out after {}s",
+                limit.as_secs()
+            )));
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    Ok(Output {
+        status,
+        stdout: stdout.join().unwrap_or_default(),
+        stderr: stderr.join().unwrap_or_default(),
+    })
+}
+
+/// `git -C repo ARGS`, noninteractive. Returns trimmed stdout.
+pub(crate) fn git(repo: &Path, args: &[&str]) -> Result<String> {
+    let output = git_raw(repo, args)?;
+    Ok(String::from_utf8(output)?.trim().to_owned())
 }
 
 /// Raw stdout (untrimmed) for NUL-separated output such as `status -z`.
 pub(crate) fn git_raw(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
-        .context(Error::Git, "cannot start git")?;
+    let what = format!("git {}", args.join(" "));
+    let output = output_within(git_command(repo, args)?, GIT_TIMEOUT, &what)?;
     ensure!(
         output.status.success(),
         Git,
-        "git {}: {}",
-        args.join(" "),
+        "{what}: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     Ok(output.stdout)
@@ -170,6 +230,30 @@ mod tests {
             git_raw(&author.path, &["bad-command"]).unwrap_err().kind(),
             "git"
         );
+    }
+
+    #[test]
+    fn wedged_subprocess_is_killed_at_the_limit() {
+        let mut command = Command::new("sleep");
+        command.arg("5");
+        let started = Instant::now();
+        let error = output_within(command, Duration::from_millis(200), "sleep").unwrap_err();
+        assert_eq!(error.kind(), "git");
+        assert!(error.to_string().contains("timed out"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[test]
+    fn git_never_reads_stdin_or_prompts() {
+        let dir = TempDir::new("exec");
+        let author = Author::new(dir.join("repo"), "demo1");
+        // A credential prompt would block; with prompts disabled it fails fast.
+        let error = git(
+            &author.path,
+            &["ls-remote", "--", "https://127.0.0.1:9/none.git"],
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), "git");
     }
 
     #[test]
