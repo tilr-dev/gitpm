@@ -204,3 +204,217 @@ pub fn set_remote(repo: &Path, url: &str) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{TempDir, git as fixture_git, tree_hash};
+
+    #[test]
+    fn shell_quote_survives_single_quotes() {
+        assert_eq!(shell_quote("/a b/c"), "'/a b/c'");
+        assert_eq!(shell_quote("it's"), r#"'it'"'"'s'"#);
+        assert_eq!(shell_quote(""), "''");
+        assert_eq!(shell_quote("$(rm -rf /)"), "'$(rm -rf /)'");
+    }
+
+    #[test]
+    fn create_at_makes_a_tagged_legacy_plugin() {
+        let dir = TempDir::new("scaffold");
+        let repo = create_at(&dir.join("demo1")).unwrap();
+        assert_eq!(repo, dir.join("demo1"));
+        let m = model::manifest(&repo).unwrap();
+        assert_eq!((m.id.as_str(), m.version.as_str()), ("demo1", "0.1.0"));
+        assert_eq!(fixture_git(&repo, &["tag", "--list"]), "v0.1.0");
+        assert_eq!(
+            fixture_git(&repo, &["status", "--porcelain", "--ignored"]),
+            ""
+        );
+        assert_eq!(fixture_git(&repo, &["branch", "--show-current"]), "main");
+        assert_eq!(
+            fixture_git(&repo, &["remote"]),
+            "",
+            "no remote is configured"
+        );
+        let files = fixture_git(&repo, &["ls-files"]);
+        assert_eq!(files, ".gitignore\nREADME.md\ndist/index.js\nplugin.json");
+        let readme = fs::read_to_string(repo.join("README.md")).unwrap();
+        assert!(readme.contains("--ref v0.1.0"), "{readme}");
+        assert!(readme.contains(&shell_quote(repo.to_str().unwrap())));
+        assert_eq!(crate::releases::latest(&repo, None).unwrap().name, "v0.1.0");
+    }
+
+    #[test]
+    fn create_namespaced_uses_the_scoped_id_and_tag() {
+        let dir = TempDir::new("scaffold");
+        let repo = create_namespaced(&dir.join("nested/demo1"), "dan").unwrap();
+        assert_eq!(model::manifest(&repo).unwrap().id, "dan/demo1");
+        assert_eq!(fixture_git(&repo, &["tag", "--list"]), "dan/demo1@0.1.0");
+        assert!(
+            fs::read_to_string(repo.join("README.md"))
+                .unwrap()
+                .contains("--ref dan/demo1@0.1.1")
+        );
+    }
+
+    #[test]
+    fn create_never_overwrites_and_validates_names() {
+        let dir = TempDir::new("scaffold");
+        let existing = dir.join("demo1");
+        fs::create_dir(&existing).unwrap();
+        fs::write(existing.join("keep.txt"), "mine").unwrap();
+        let before = tree_hash(dir.path());
+        let error = create(dir.path(), "demo1").unwrap_err();
+        assert_eq!(error.kind(), "workspace");
+        assert_eq!(tree_hash(dir.path()), before);
+
+        for bad in ["..", "a b", "", "x/y"] {
+            assert_eq!(
+                create(dir.path(), bad).unwrap_err().kind(),
+                "invalid_id",
+                "{bad:?}"
+            );
+        }
+        assert_eq!(validate_name("ok-name_1").map_err(|e| e.kind()), Ok(()));
+        assert_eq!(
+            create_namespaced(&dir.join("x"), "bad ns")
+                .unwrap_err()
+                .kind(),
+            "invalid_id"
+        );
+        assert_eq!(
+            create_at(Path::new("/")).unwrap_err().kind(),
+            "invalid_argument"
+        );
+        assert_eq!(
+            create_at(&dir.join("..")).unwrap_err().kind(),
+            "invalid_argument"
+        );
+        assert_eq!(
+            tree_hash(dir.path()),
+            before,
+            "failed creates leave nothing behind"
+        );
+    }
+
+    #[test]
+    fn commit_bumps_version_commits_everything_and_tags() {
+        let dir = TempDir::new("scaffold");
+        let repo = create_namespaced(&dir.join("demo1"), "dan").unwrap();
+        fs::write(repo.join("dist/index.js"), "v2").unwrap();
+        fs::write(repo.join("dist/new.js"), "new").unwrap();
+        let tag = commit(&repo, "0.2.0").unwrap();
+        assert_eq!(tag, "dan/demo1@0.2.0");
+        assert_eq!(model::manifest(&repo).unwrap().version, "0.2.0");
+        assert_eq!(fixture_git(&repo, &["status", "--porcelain"]), "");
+        assert_eq!(
+            fixture_git(&repo, &["rev-parse", "HEAD"]),
+            fixture_git(&repo, &["rev-parse", &tag])
+        );
+        assert_eq!(
+            fixture_git(&repo, &["log", "-1", "--format=%s"]),
+            "Release dan/demo1 0.2.0"
+        );
+        let latest = crate::releases::latest(&repo, None).unwrap();
+        assert_eq!(latest.manifest.version, "0.2.0");
+        // The manifest stays in canonical form.
+        assert_eq!(
+            fs::read_to_string(repo.join("plugin.json")).unwrap(),
+            "{\n  \"id\": \"dan/demo1\",\n  \"version\": \"0.2.0\",\n  \"dependencies\": {}\n}\n"
+        );
+    }
+
+    #[test]
+    fn commit_refusals_leave_the_repository_untouched() {
+        let dir = TempDir::new("scaffold");
+        let repo = create_at(&dir.join("demo1")).unwrap();
+        fs::write(repo.join("dist/index.js"), "pending edit").unwrap();
+        // A tag for the next version already exists (for example created by hand).
+        fixture_git(&repo, &["tag", "v0.3.0"]);
+        let before = tree_hash(&repo);
+        let cases = [
+            ("0.1.0", "version_conflict"),
+            ("0.3.0", "version_conflict"),
+            ("0.2", "invalid_version"),
+            ("1.0.0-beta", "invalid_version"),
+        ];
+        for (version, kind) in cases {
+            assert_eq!(
+                commit(&repo, version).unwrap_err().kind(),
+                kind,
+                "{version}"
+            );
+        }
+        assert_eq!(
+            commit(&repo.join("dist"), "0.2.0").unwrap_err().kind(),
+            "invalid_argument"
+        );
+        assert_eq!(
+            commit(&dir.join("missing"), "0.2.0").unwrap_err().kind(),
+            "io"
+        );
+        assert_eq!(tree_hash(&repo), before);
+        assert_eq!(
+            fs::read_to_string(repo.join("dist/index.js")).unwrap(),
+            "pending edit"
+        );
+    }
+
+    #[test]
+    fn set_remote_adds_or_replaces_origin_without_network() {
+        let dir = TempDir::new("scaffold");
+        let repo = create_namespaced(&dir.join("demo1"), "dan").unwrap();
+        set_remote(&repo, "git@example.com:dan/demo1.git").unwrap();
+        assert_eq!(
+            fixture_git(&repo, &["remote", "get-url", "origin"]),
+            "git@example.com:dan/demo1.git"
+        );
+        fixture_git(
+            &repo,
+            &[
+                "config",
+                "--add",
+                "remote.origin.url",
+                "https://old.example/second.git",
+            ],
+        );
+        fixture_git(
+            &repo,
+            &[
+                "config",
+                "remote.origin.pushurl",
+                "https://old.example/push.git",
+            ],
+        );
+        set_remote(&repo, "https://example.com/dan/demo1.git").unwrap();
+        assert_eq!(
+            fixture_git(&repo, &["config", "--get-all", "remote.origin.url"]),
+            "https://example.com/dan/demo1.git"
+        );
+        assert_eq!(
+            fixture_git(&repo, &["config", "--get-all", "remote.origin.pushurl"]),
+            "https://example.com/dan/demo1.git"
+        );
+
+        let before = tree_hash(&repo);
+        for bad in ["", "  ", "-uevil", "https://x\n.git"] {
+            assert_eq!(
+                set_remote(&repo, bad).unwrap_err().kind(),
+                "invalid_argument",
+                "{bad:?}"
+            );
+        }
+        assert_eq!(
+            set_remote(&repo.join("dist"), "https://x")
+                .unwrap_err()
+                .kind(),
+            "invalid_argument"
+        );
+        assert_eq!(tree_hash(&repo), before);
+        fs::remove_file(repo.join("plugin.json")).unwrap();
+        assert_eq!(
+            set_remote(&repo, "https://x").unwrap_err().kind(),
+            "invalid_manifest"
+        );
+    }
+}

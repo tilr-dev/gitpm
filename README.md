@@ -113,6 +113,45 @@ uninstall, fork), free functions `authCheck`, `browseCatalog`, `catalogRelease`,
 each with `message`; `LocalChanges` carries `items`). Author/catalog-generation commands
 are not exposed.
 
+## Tests
+
+```text
+crates/tilr-plugin-manager/src/*.rs     unit tests in each module's #[cfg(test)] mod tests
+crates/tilr-plugin-manager/src/test_support.rs  shared fixtures (temp dirs, hermetic git,
+                                         plugin repos, tree hash), compiled only for tests
+crates/tilr-plugin-manager/tests/       integration tests of the public API
+                                         (robustness, uninstall, no_env)
+crates/tilr-plugin-manager-ffi/src/lib.rs  FFI conversion tests (errors, records, free functions)
+../temp-plugin-manager/manager/tests/   CLI tests of the stand (separate repository)
+```
+
+```sh
+cargo test                                   # whole workspace, ~10 s
+cargo test -p tilr-plugin-manager --lib      # unit tests only
+cargo test -p tilr-plugin-manager --lib -- --ignored   # known-defect tests (expected to fail)
+cargo clippy --all-targets -- -D warnings
+```
+
+Unit tests cover pure parts directly (ID/namespace rules, version keys and ordering,
+manifest/state/catalog serialization, catalog validation, check statuses, auth
+diagnosis, error kinds and messages, lost-work descriptions) and use small real Git
+repositories in temp directories for workspace transactions, release discovery,
+lost-work detection, catalog registration/generation, scaffold and fork. Every failing
+`Manager` operation is checked to leave the workspace byte-identical (tree hash) with
+no stage/backup left behind.
+
+Isolation: tests never read `PM_*`, `HOME` or the network. `.cargo/config.toml` points
+`GIT_CONFIG_GLOBAL` at `tests/gitconfig` and sets `GIT_CONFIG_NOSYSTEM=1`; this applies
+only when cargo runs from this repository (cargo reads config from the current
+directory). Unit-test fixtures additionally pass identity/signing settings with
+`git -c`, so they do not depend on the developer's Git config. Temp directories are
+removed unless `PM_KEEP_TEST_ARTIFACTS` is set (the stand's `verify.command` keeps them
+for its report).
+
+`#[ignore = "known defect: …"]` tests assert the intended contract and currently fail;
+they keep known defects visible (`cargo test -- --ignored` lists them). Remove the
+attribute together with the fix.
+
 ## Build
 
 ```sh

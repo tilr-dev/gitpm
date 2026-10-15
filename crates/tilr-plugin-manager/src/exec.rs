@@ -133,3 +133,71 @@ pub(crate) fn http_get(url: &str) -> Result<Option<Vec<u8>>> {
     );
     Ok(Some(output.stdout[..split].to_vec()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{Author, TempDir};
+    use std::fs;
+
+    #[test]
+    fn git_returns_trimmed_stdout_and_reports_failures_as_git_errors() {
+        let dir = TempDir::new("exec");
+        let author = Author::new(dir.join("repo"), "demo1");
+        let head = git(&author.path, &["rev-parse", "HEAD"]).unwrap();
+        assert_eq!(head.len(), 40);
+        assert!(!head.ends_with('\n'));
+        let error = git(&author.path, &["rev-parse", "--verify", "nope"]).unwrap_err();
+        assert_eq!(error.kind(), "git");
+        let message = error.to_string();
+        assert!(
+            message.starts_with("git rev-parse --verify nope: "),
+            "{message}"
+        );
+        // A missing repository directory is a git failure too, not a panic.
+        let error = git(&dir.join("missing"), &["status"]).unwrap_err();
+        assert_eq!(error.kind(), "git");
+    }
+
+    #[test]
+    fn git_raw_keeps_nul_separated_output_untrimmed() {
+        let dir = TempDir::new("exec");
+        let author = Author::new(dir.join("repo"), "demo1");
+        fs::write(author.path.join("a b.txt"), "x").unwrap();
+        let raw = git_raw(&author.path, &["status", "--porcelain=v1", "-z"]).unwrap();
+        assert_eq!(raw, b"?? a b.txt\0");
+        assert_eq!(
+            git_raw(&author.path, &["bad-command"]).unwrap_err().kind(),
+            "git"
+        );
+    }
+
+    #[test]
+    fn git_config_defined_detects_missing_keys() {
+        assert!(!git_config_defined("pm-unit-test.surely-undefined-key", "start").unwrap());
+    }
+
+    #[test]
+    fn ls_remote_reports_success_and_stderr_without_failing() {
+        let dir = TempDir::new("exec");
+        let author = Author::new(dir.join("repo"), "demo1");
+        let ok = ls_remote(author.source(), Some("false"), "start").unwrap();
+        assert!(ok.success);
+        let missing = dir.join("missing");
+        let failed = ls_remote(missing.to_str().unwrap(), None, "start").unwrap();
+        assert!(!failed.success);
+        assert!(!failed.stderr.is_empty());
+    }
+
+    #[test]
+    fn http_get_rejects_non_http_responses() {
+        // curl reports status 000 for file:// URLs; only HTTP 200 counts as a body.
+        let dir = TempDir::new("exec");
+        let file = dir.join("catalog.json");
+        fs::write(&file, "{}").unwrap();
+        let error = http_get(&format!("file://{}", file.display())).unwrap_err();
+        assert_eq!(error.kind(), "http");
+        let error = http_get(&format!("file://{}", dir.join("missing").display())).unwrap_err();
+        assert_eq!(error.kind(), "http");
+    }
+}

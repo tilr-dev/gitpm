@@ -158,3 +158,203 @@ impl<T> Require<T> for Option<T> {
         self.ok_or_else(|| make(message.to_string()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    /// One value of every variant with the kind it must report.
+    fn all() -> Vec<(Error, &'static str)> {
+        let s = || "message".to_owned();
+        vec![
+            (Error::NotInstalled { id: "a/b".into() }, "not_installed"),
+            (
+                Error::AlreadyInstalled {
+                    id: "a/b".into(),
+                    message: s(),
+                },
+                "already_installed",
+            ),
+            (
+                Error::LocalChanges {
+                    id: "a/b".into(),
+                    message: s(),
+                    items: vec![],
+                },
+                "local_changes",
+            ),
+            (Error::Locked(s()), "locked"),
+            (Error::InvalidId(s()), "invalid_id"),
+            (Error::InvalidManifest(s()), "invalid_manifest"),
+            (Error::InvalidVersion(s()), "invalid_version"),
+            (Error::InvalidArgument(s()), "invalid_argument"),
+            (Error::VersionConflict(s()), "version_conflict"),
+            (
+                Error::NoPreviousVersion { id: "a/b".into() },
+                "no_previous_version",
+            ),
+            (Error::NoReleases(s()), "no_releases"),
+            (
+                Error::RepositoryNotFound { id: "a/b".into() },
+                "repository_not_found",
+            ),
+            (Error::Workspace(s()), "workspace"),
+            (Error::Catalog(s()), "catalog"),
+            (Error::Git(s()), "git"),
+            (Error::Http(s()), "http"),
+            (Error::Auth(s()), "auth"),
+            (Error::Unsupported(s()), "unsupported"),
+            (Error::InvalidData(s()), "invalid_data"),
+            (Error::Io(s()), "io"),
+        ]
+    }
+    /// Fails to compile when a variant is added, reminding to extend `all()`.
+    fn covered(error: &Error) {
+        match error {
+            Error::NotInstalled { .. }
+            | Error::AlreadyInstalled { .. }
+            | Error::LocalChanges { .. }
+            | Error::Locked(_)
+            | Error::InvalidId(_)
+            | Error::InvalidManifest(_)
+            | Error::InvalidVersion(_)
+            | Error::InvalidArgument(_)
+            | Error::VersionConflict(_)
+            | Error::NoPreviousVersion { .. }
+            | Error::NoReleases(_)
+            | Error::RepositoryNotFound { .. }
+            | Error::Workspace(_)
+            | Error::Catalog(_)
+            | Error::Git(_)
+            | Error::Http(_)
+            | Error::Auth(_)
+            | Error::Unsupported(_)
+            | Error::InvalidData(_)
+            | Error::Io(_) => {}
+        }
+    }
+
+    #[test]
+    fn every_variant_has_its_stable_kind() {
+        let all = all();
+        assert_eq!(all.len(), 20);
+        for (error, kind) in &all {
+            covered(error);
+            assert_eq!(error.kind(), *kind, "{error:?}");
+        }
+        let unique: BTreeSet<_> = all.iter().map(|(e, _)| e.kind()).collect();
+        assert_eq!(unique.len(), all.len(), "kinds must be unique");
+        for (_, kind) in &all {
+            assert!(
+                kind.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'),
+                "{kind} is not snake_case"
+            );
+        }
+    }
+
+    #[test]
+    fn readme_lists_exactly_the_error_kinds() {
+        let readme = include_str!("../../../README.md");
+        let section = readme
+            .split("### Error kinds")
+            .nth(1)
+            .expect("README has an Error kinds section");
+        let section = section.split("\n#").next().unwrap();
+        let listed: BTreeSet<_> = section
+            .split('`')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_owned)
+            .collect();
+        let kinds: BTreeSet<_> = all().iter().map(|(e, _)| e.kind().to_owned()).collect();
+        assert_eq!(listed, kinds);
+    }
+
+    #[test]
+    fn display_is_the_complete_message() {
+        assert_eq!(
+            Error::NotInstalled { id: "a/b".into() }.to_string(),
+            "plugin is not installed"
+        );
+        assert_eq!(
+            Error::NoPreviousVersion { id: "a/b".into() }.to_string(),
+            "no previous version"
+        );
+        assert_eq!(
+            Error::RepositoryNotFound { id: "a/b".into() }.to_string(),
+            "plugin repository not found (a namespace directory is not a plugin)"
+        );
+        // Every other variant renders exactly its message.
+        for (error, _) in all() {
+            if !matches!(
+                error,
+                Error::NotInstalled { .. }
+                    | Error::NoPreviousVersion { .. }
+                    | Error::RepositoryNotFound { .. }
+            ) {
+                assert_eq!(error.to_string(), "message", "{error:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn conversions_choose_the_documented_kind() {
+        let io: Error = std::io::Error::new(std::io::ErrorKind::NotFound, "gone").into();
+        assert_eq!((io.kind(), io.to_string().as_str()), ("io", "gone"));
+        let json: Error = serde_json::from_str::<u8>("{").unwrap_err().into();
+        assert_eq!(json.kind(), "invalid_data");
+        let utf8: Error = String::from_utf8(vec![0xff]).unwrap_err().into();
+        assert_eq!(utf8.kind(), "invalid_data");
+        let int: Error = "x".parse::<u64>().unwrap_err().into();
+        assert_eq!(int.kind(), "invalid_version");
+        let prefix: Error = std::path::Path::new("/a")
+            .strip_prefix("/b")
+            .unwrap_err()
+            .into();
+        assert_eq!(prefix.kind(), "io");
+        let time: Error = std::time::UNIX_EPOCH
+            .duration_since(std::time::SystemTime::now())
+            .unwrap_err()
+            .into();
+        assert_eq!(time.kind(), "io");
+    }
+
+    fn checked(value: u32) -> Result<u32> {
+        ensure!(value < 10, InvalidArgument, "too big: {value}");
+        if value == 7 {
+            fail!(VersionConflict, "unlucky {}", value);
+        }
+        Ok(value)
+    }
+    #[test]
+    fn helper_macros_and_traits_build_variants() {
+        assert_eq!(checked(3).unwrap(), 3);
+        let error = checked(12).unwrap_err();
+        assert_eq!(
+            (error.kind(), error.to_string()),
+            ("invalid_argument", "too big: 12".into())
+        );
+        let error = checked(7).unwrap_err();
+        assert_eq!(
+            (error.kind(), error.to_string()),
+            ("version_conflict", "unlucky 7".into())
+        );
+
+        let failed: std::result::Result<(), &str> = Err("cause");
+        let error = failed.context(Error::Git, "cannot start git").unwrap_err();
+        assert_eq!(
+            (error.kind(), error.to_string()),
+            ("git", "cannot start git: cause".into())
+        );
+        let ok: std::result::Result<u8, &str> = Ok(1);
+        assert_eq!(ok.context(Error::Git, "unused").unwrap(), 1);
+
+        let error = None::<u8>.require(Error::Catalog, "missing").unwrap_err();
+        assert_eq!(
+            (error.kind(), error.to_string()),
+            ("catalog", "missing".into())
+        );
+        assert_eq!(Some(2).require(Error::Catalog, "unused").unwrap(), 2);
+    }
+}

@@ -21,6 +21,8 @@ mod lost_work;
 mod model;
 pub mod releases;
 pub mod scaffold;
+#[cfg(test)]
+mod test_support;
 mod workspace;
 
 pub use error::{Error, Result};

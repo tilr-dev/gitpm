@@ -628,4 +628,503 @@ mod tests {
         drop(manager);
         let _ = std::fs::remove_dir_all(dir);
     }
+
+    /// Every library error with the FFI case it must become (`kind` of the case).
+    fn library_errors() -> Vec<pm::Error> {
+        let m = || "msg".to_owned();
+        vec![
+            pm::Error::NotInstalled { id: "a/b".into() },
+            pm::Error::AlreadyInstalled {
+                id: "a/b".into(),
+                message: m(),
+            },
+            pm::Error::LocalChanges {
+                id: "a/b".into(),
+                message: m(),
+                items: vec![],
+            },
+            pm::Error::Locked(m()),
+            pm::Error::InvalidId(m()),
+            pm::Error::InvalidManifest(m()),
+            pm::Error::InvalidVersion(m()),
+            pm::Error::InvalidArgument(m()),
+            pm::Error::VersionConflict(m()),
+            pm::Error::NoPreviousVersion { id: "a/b".into() },
+            pm::Error::NoReleases(m()),
+            pm::Error::RepositoryNotFound { id: "a/b".into() },
+            pm::Error::Workspace(m()),
+            pm::Error::Catalog(m()),
+            pm::Error::Git(m()),
+            pm::Error::Http(m()),
+            pm::Error::Auth(m()),
+            pm::Error::Unsupported(m()),
+            pm::Error::InvalidData(m()),
+            pm::Error::Io(m()),
+        ]
+    }
+    /// Stable kind of an FFI error case (exhaustive: a new case must be added here).
+    fn ffi_kind(error: &PmError) -> String {
+        match error {
+            PmError::NotInstalled { .. } => "not_installed",
+            PmError::AlreadyInstalled { .. } => "already_installed",
+            PmError::LocalChanges { .. } => "local_changes",
+            PmError::Locked { .. } => "locked",
+            PmError::InvalidId { .. } => "invalid_id",
+            PmError::InvalidManifest { .. } => "invalid_manifest",
+            PmError::InvalidVersion { .. } => "invalid_version",
+            PmError::InvalidArgument { .. } => "invalid_argument",
+            PmError::VersionConflict { .. } => "version_conflict",
+            PmError::NoPreviousVersion { .. } => "no_previous_version",
+            PmError::NoReleases { .. } => "no_releases",
+            PmError::RepositoryNotFound { .. } => "repository_not_found",
+            PmError::Workspace { .. } => "workspace",
+            PmError::Catalog { .. } => "catalog",
+            PmError::Git { .. } => "git",
+            PmError::Http { .. } => "http",
+            PmError::Auth { .. } => "auth",
+            PmError::Unsupported { .. } => "unsupported",
+            PmError::InvalidData { .. } => "invalid_data",
+            PmError::Io { .. } => "io",
+            PmError::Other { kind, .. } => return format!("other:{kind}"),
+        }
+        .into()
+    }
+    fn ffi_message(error: &PmError) -> &str {
+        match error {
+            PmError::NotInstalled { message, .. }
+            | PmError::AlreadyInstalled { message, .. }
+            | PmError::LocalChanges { message, .. }
+            | PmError::Locked { message }
+            | PmError::InvalidId { message }
+            | PmError::InvalidManifest { message }
+            | PmError::InvalidVersion { message }
+            | PmError::InvalidArgument { message }
+            | PmError::VersionConflict { message }
+            | PmError::NoPreviousVersion { message, .. }
+            | PmError::NoReleases { message }
+            | PmError::RepositoryNotFound { message, .. }
+            | PmError::Workspace { message }
+            | PmError::Catalog { message }
+            | PmError::Git { message }
+            | PmError::Http { message }
+            | PmError::Auth { message }
+            | PmError::Unsupported { message }
+            | PmError::InvalidData { message }
+            | PmError::Io { message }
+            | PmError::Other { message, .. } => message,
+        }
+    }
+
+    #[test]
+    fn every_library_error_maps_to_its_own_case_with_the_full_message() {
+        let errors = library_errors();
+        assert_eq!(errors.len(), 20);
+        for error in errors {
+            let kind = error.kind();
+            let display = error.to_string();
+            let mapped = PmError::from(error);
+            assert_eq!(ffi_kind(&mapped), kind, "{mapped:?}");
+            assert_eq!(ffi_message(&mapped), display);
+            assert_eq!(mapped.to_string(), display);
+        }
+    }
+
+    #[test]
+    fn ids_and_lost_work_items_are_preserved() {
+        let id_of = |error: PmError| match error {
+            PmError::NotInstalled { id, .. }
+            | PmError::AlreadyInstalled { id, .. }
+            | PmError::LocalChanges { id, .. }
+            | PmError::NoPreviousVersion { id, .. }
+            | PmError::RepositoryNotFound { id, .. } => id,
+            other => panic!("no id: {other:?}"),
+        };
+        for error in [
+            pm::Error::NotInstalled { id: "x/one".into() },
+            pm::Error::AlreadyInstalled {
+                id: "x/one".into(),
+                message: "m".into(),
+            },
+            pm::Error::NoPreviousVersion { id: "x/one".into() },
+            pm::Error::RepositoryNotFound { id: "x/one".into() },
+        ] {
+            assert_eq!(id_of(error.into()), "x/one");
+        }
+        let items = all_lost_work();
+        let error = PmError::from(pm::Error::LocalChanges {
+            id: "x/one".into(),
+            message: "local commits detected".into(),
+            items: items.clone(),
+        });
+        let PmError::LocalChanges {
+            id,
+            message,
+            items: mapped,
+        } = error
+        else {
+            panic!()
+        };
+        assert_eq!(
+            (id.as_str(), message.as_str()),
+            ("x/one", "local commits detected")
+        );
+        let back: Vec<pm::LostWork> = mapped.into_iter().map(Into::into).collect();
+        assert_eq!(back, items, "order and content are kept");
+    }
+
+    fn all_lost_work() -> Vec<pm::LostWork> {
+        vec![
+            pm::LostWork::Modified { path: "m".into() },
+            pm::LostWork::Untracked { path: "u".into() },
+            pm::LostWork::Ignored { path: "i".into() },
+            pm::LostWork::HeadMoved {
+                head: "h".into(),
+                recorded: "r".into(),
+            },
+            pm::LostWork::UnpublishedCommit {
+                commit: "c".into(),
+                summary: "s".into(),
+            },
+            pm::LostWork::UnpublishedBranch {
+                name: "b".into(),
+                commits: 7,
+            },
+            pm::LostWork::UnpublishedTag { name: "t".into() },
+            pm::LostWork::Stash {
+                entry: "stash@{0}".into(),
+            },
+        ]
+    }
+
+    #[test]
+    fn lost_work_round_trips_and_describes_like_the_library() {
+        for item in all_lost_work() {
+            let ffi = LostWork::from(item.clone());
+            assert_eq!(describe_lost_work(ffi.clone()), item.describe());
+            assert_eq!(pm::LostWork::from(ffi), item);
+        }
+    }
+
+    fn revision(v: &str) -> pm::Revision {
+        pm::Revision {
+            version: v.into(),
+            commit: format!("{v}-commit"),
+        }
+    }
+    fn fork_of() -> pm::ForkOf {
+        pm::ForkOf {
+            id: "vendor/x".into(),
+            version: "0.9.0".into(),
+            commit: "f".repeat(40),
+        }
+    }
+
+    #[test]
+    fn records_convert_field_by_field() {
+        let plugin = InstalledPlugin::from(pm::InstalledPlugin {
+            id: "me/x".into(),
+            source: "src".into(),
+            current: revision("1.0.0"),
+            previous: Some(revision("0.9.0")),
+            enabled: false,
+            fork_of: Some(fork_of()),
+        });
+        assert_eq!(
+            (plugin.id.as_str(), plugin.source.as_str(), plugin.enabled),
+            ("me/x", "src", false)
+        );
+        assert_eq!(
+            (
+                plugin.current.version.as_str(),
+                plugin.current.commit.as_str()
+            ),
+            ("1.0.0", "1.0.0-commit")
+        );
+        assert_eq!(plugin.previous.unwrap().version, "0.9.0");
+        let f = plugin.fork_of.unwrap();
+        assert_eq!(
+            (f.id.as_str(), f.version.as_str(), f.commit),
+            ("vendor/x", "0.9.0", "f".repeat(40))
+        );
+
+        let result = InstallResult::from(pm::InstallResult {
+            id: "me/x".into(),
+            source: "src".into(),
+            current: revision("1.0.0"),
+            fork_of: None,
+        });
+        assert!(result.fork_of.is_none());
+        assert_eq!(result.current.commit, "1.0.0-commit");
+
+        let change = RevisionChange::from(pm::RevisionChange {
+            id: "me/x".into(),
+            from: revision("1.0.0"),
+            to: revision("1.1.0"),
+            changed: true,
+        });
+        assert!(change.changed);
+        assert_eq!(
+            (change.from.version.as_str(), change.to.version.as_str()),
+            ("1.0.0", "1.1.0")
+        );
+
+        let plan = UninstallPlan::from(pm::UninstallPlan {
+            id: "me/x".into(),
+            registered: false,
+            deletes: vec!["/w/plugins/me/x".into(), "/w/dist/me/x".into()],
+            lost_work: all_lost_work(),
+        });
+        assert!(!plan.registered);
+        assert_eq!(plan.deletes, ["/w/plugins/me/x", "/w/dist/me/x"]);
+        assert_eq!(plan.lost_work.len(), 8);
+        assert!(matches!(
+            plan.lost_work[5],
+            LostWork::UnpublishedBranch { commits: 7, .. }
+        ));
+    }
+
+    #[test]
+    fn check_rows_carry_status_and_message() {
+        use pm::check::CheckStatus as S;
+        let statuses = [
+            (S::NotInCatalog, "NotInCatalog"),
+            (S::DifferentSource, "DifferentSource"),
+            (S::InvalidCatalogData, "InvalidCatalogData"),
+            (S::NoVersions, "NoVersions"),
+            (S::UncomparableVersion, "UncomparableVersion"),
+            (S::SameVersionDifferentCommit, "SameVersionDifferentCommit"),
+            (S::UpdateAvailable, "UpdateAvailable"),
+            (S::UpToDate, "UpToDate"),
+            (S::NewerThanCatalog, "NewerThanCatalog"),
+        ];
+        for (status, name) in statuses {
+            let row = CheckRow::from(pm::check::CheckRow {
+                id: "me/x".into(),
+                installed: "1.0.0".into(),
+                latest: Some("1.1.0".into()),
+                enabled: false,
+                update_available: status == S::UpdateAvailable,
+                status,
+            });
+            assert_eq!(format!("{:?}", row.status), name);
+            assert_eq!(row.status_message, status.message());
+            assert_eq!(row.update_available, status == S::UpdateAvailable);
+            assert_eq!(
+                (row.installed.as_str(), row.latest.as_deref(), row.enabled),
+                ("1.0.0", Some("1.1.0"), false)
+            );
+        }
+    }
+
+    #[test]
+    fn catalog_records_convert() {
+        use pm::catalog::{
+            Build, CatalogFormat as F, CatalogOverview as O, FileDigest, OverviewItem as I,
+            PluginSummary as P, Release,
+        };
+        let overview = CatalogOverview::from(O {
+            location: "https://pkg.example".into(),
+            remote: true,
+            format: F::V2,
+            items: vec![
+                I::Directory {
+                    depth: 1,
+                    name: "namespaces".into(),
+                },
+                I::Empty { depth: 2 },
+                I::Plugin {
+                    depth: 3,
+                    plugin: P {
+                        id: "dan/x".into(),
+                        source: "src".into(),
+                        versions: vec!["1.9.0".into(), "1.10.0".into()],
+                        latest: Some("1.10.0".into()),
+                    },
+                },
+            ],
+            truncated: true,
+        });
+        assert_eq!(
+            (
+                overview.location.as_str(),
+                overview.remote,
+                overview.truncated
+            ),
+            ("https://pkg.example", true, true)
+        );
+        assert!(matches!(overview.format, CatalogFormat::V2));
+        assert!(
+            matches!(&overview.items[0], OverviewItem::Directory { depth: 1, name } if name == "namespaces")
+        );
+        assert!(matches!(
+            overview.items[1],
+            OverviewItem::Empty { depth: 2 }
+        ));
+        let OverviewItem::Plugin { depth: 3, plugin } = &overview.items[2] else {
+            panic!()
+        };
+        assert_eq!(plugin.versions, ["1.9.0", "1.10.0"]);
+        assert_eq!(plugin.latest.as_deref(), Some("1.10.0"));
+        let v1 = CatalogOverview::from(O {
+            location: "l".into(),
+            remote: false,
+            format: F::V1,
+            items: vec![],
+            truncated: false,
+        });
+        assert!(matches!(v1.format, CatalogFormat::V1) && v1.items.is_empty());
+
+        let mut files = std::collections::BTreeMap::new();
+        for name in ["a.js", "b/c.js"] {
+            files.insert(
+                name.to_owned(),
+                FileDigest {
+                    sha256: "0".repeat(64),
+                    size: 1,
+                },
+            );
+        }
+        let release = CatalogRelease::from(Release {
+            manifest: pm::Manifest {
+                id: "me/x".into(),
+                version: "1.0.0".into(),
+                dependencies: Default::default(),
+                fork_of: Some(fork_of()),
+            },
+            source: "src".into(),
+            commit: "c".repeat(40),
+            reference: "me/x@1.0.0".into(),
+            files,
+            build: Some(Build {
+                url: "https://pkg.example/x.tar.zst".into(),
+                sha256: "d".repeat(64),
+            }),
+        });
+        assert_eq!(
+            (
+                release.id.as_str(),
+                release.version.as_str(),
+                release.file_count
+            ),
+            ("me/x", "1.0.0", 2)
+        );
+        assert_eq!(release.reference, "me/x@1.0.0");
+        assert_eq!(release.fork_of.unwrap().id, "vendor/x");
+        assert_eq!(
+            release.build_url.as_deref(),
+            Some("https://pkg.example/x.tar.zst")
+        );
+        assert_eq!(release.build_sha256, Some("d".repeat(64)));
+        let bare = CatalogRelease::from(Release {
+            manifest: pm::Manifest {
+                id: "x".into(),
+                version: "1.0.0".into(),
+                dependencies: Default::default(),
+                fork_of: None,
+            },
+            source: "s".into(),
+            commit: "c".repeat(40),
+            reference: "v1.0.0".into(),
+            files: Default::default(),
+            build: None,
+        });
+        assert!(bare.build_url.is_none() && bare.build_sha256.is_none() && bare.fork_of.is_none());
+        assert_eq!(bare.file_count, 0);
+    }
+
+    #[test]
+    fn free_functions_return_ffi_errors() {
+        assert!(matches!(
+            auth_check(String::new(), true),
+            Err(PmError::InvalidArgument { .. })
+        ));
+        assert!(matches!(
+            browse_catalog("ftp://x".into()),
+            Err(PmError::InvalidArgument { .. })
+        ));
+        assert!(matches!(
+            catalog_release("/nonexistent-pm-catalog".into(), "../x".into(), None),
+            Err(PmError::InvalidId { .. })
+        ));
+        assert!(matches!(
+            catalog_release(
+                "/nonexistent-pm-catalog".into(),
+                "x".into(),
+                Some("1.0".into())
+            ),
+            Err(PmError::InvalidVersion { .. })
+        ));
+        assert!(matches!(
+            catalog_release("/nonexistent-pm-catalog".into(), "x".into(), None),
+            Err(PmError::Catalog { .. })
+        ));
+        // A workspace that does not exist yet reads as empty and is not created.
+        let missing = std::env::temp_dir().join(format!("pm-ffi-missing-{}", std::process::id()));
+        assert!(
+            read_installed(missing.to_string_lossy().into())
+                .unwrap()
+                .is_empty()
+        );
+        assert!(!missing.exists());
+    }
+
+    #[test]
+    fn read_installed_and_manager_report_state_errors() {
+        let dir = std::env::temp_dir().join(format!("pm-ffi-state-{}", std::process::id()));
+        let root = dir.join("workspace");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("state.json"),
+            r#"{"plugins":{"me/x":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":false,"forkOf":{"id":"vendor/x","version":"0.9.0","commit":"f"}}}}"#,
+        )
+        .unwrap();
+        let list = read_installed(root.to_string_lossy().into()).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!((list[0].id.as_str(), list[0].enabled), ("me/x", false));
+        assert_eq!(list[0].fork_of.as_ref().unwrap().id, "vendor/x");
+
+        let manager =
+            PluginManager::open(root.to_string_lossy().into(), ManagerOptions::default()).unwrap();
+        assert_eq!(manager.root(), root.to_string_lossy());
+        assert_eq!(manager.list().unwrap()[0].current.version, "1.0.0");
+        assert!(matches!(
+            manager.check(),
+            Err(PmError::InvalidArgument { .. })
+        ));
+        assert!(matches!(
+            manager.browse_catalog(),
+            Err(PmError::InvalidArgument { .. })
+        ));
+        assert!(matches!(
+            manager.enable("../x".into()),
+            Err(PmError::InvalidId { .. })
+        ));
+        assert!(
+            matches!(manager.rollback("me/missing".into()), Err(PmError::NotInstalled { id, .. }) if id == "me/missing")
+        );
+        assert!(matches!(
+            manager.install("x".into(), Some("v1.0.0".into()), Channel::Dev),
+            Err(PmError::InvalidArgument { .. })
+        ));
+        assert!(matches!(
+            manager.update("me/x".into(), Some("main".into()), Channel::Dev),
+            Err(PmError::InvalidArgument { .. })
+        ));
+        assert!(matches!(
+            manager.fork(
+                "me/x".into(),
+                dir.join("fork").to_string_lossy().into(),
+                "bad ns".into()
+            ),
+            Err(PmError::InvalidId { .. })
+        ));
+        drop(manager);
+
+        std::fs::write(root.join("state.json"), "{broken").unwrap();
+        assert!(matches!(
+            read_installed(root.to_string_lossy().into()),
+            Err(PmError::InvalidData { .. })
+        ));
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

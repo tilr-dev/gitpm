@@ -245,4 +245,203 @@ mod tests {
             "новее каталога"
         );
     }
+    fn status(state: &State, catalog: &Catalog) -> CheckStatus {
+        compare(state, catalog)[0].status
+    }
+
+    #[test]
+    fn invalid_catalog_entries_are_reported_not_trusted() {
+        let (state, catalog) = fixture();
+        let mutate: [fn(&mut Release); 4] = [
+            |r| r.manifest.id = "other".into(),
+            |r| r.manifest.version = "1.10.1".into(),
+            |r| r.source = "elsewhere".into(),
+            |_| {},
+        ];
+        for (n, change) in mutate.into_iter().enumerate() {
+            let mut catalog = catalog.clone();
+            change(
+                catalog
+                    .plugins
+                    .get_mut("demo")
+                    .unwrap()
+                    .versions
+                    .get_mut("1.10.0")
+                    .unwrap(),
+            );
+            let row = &compare(&state, &catalog)[0];
+            if n == 3 {
+                assert_eq!(row.status, CheckStatus::UpdateAvailable);
+            } else {
+                assert_eq!(row.status, CheckStatus::InvalidCatalogData, "case {n}");
+                assert!(row.latest.is_none() && !row.update_available);
+            }
+        }
+        // A version key that is not MAJOR.MINOR.PATCH invalidates the entry too.
+        let mut bad = catalog.clone();
+        let plugin = bad.plugins.get_mut("demo").unwrap();
+        let mut release = plugin.versions["1.10.0"].clone();
+        release.manifest.version = "2.0".into();
+        plugin.versions.insert("2.0".into(), release);
+        assert_eq!(status(&state, &bad), CheckStatus::InvalidCatalogData);
+    }
+
+    #[test]
+    fn no_versions_and_uncomparable_installed_version() {
+        let (mut state, mut catalog) = fixture();
+        catalog.plugins.get_mut("demo").unwrap().versions.clear();
+        let row = &compare(&state, &catalog)[0];
+        assert_eq!(row.status, CheckStatus::NoVersions);
+        assert!(row.latest.is_none());
+
+        let (_, catalog) = fixture();
+        state.plugins.get_mut("demo").unwrap().current.version = "1.9".into();
+        let row = &compare(&state, &catalog)[0];
+        assert_eq!(row.status, CheckStatus::UncomparableVersion);
+        assert_eq!(row.latest.as_deref(), Some("1.10.0"));
+        assert!(!row.update_available);
+    }
+
+    #[test]
+    fn installed_version_missing_from_catalog_still_compares_numerically() {
+        let (mut state, catalog) = fixture();
+        let current = &mut state.plugins.get_mut("demo").unwrap().current;
+        current.version = "1.9.5".into();
+        current.commit = "f".repeat(40);
+        let row = &compare(&state, &catalog)[0];
+        assert_eq!(row.status, CheckStatus::UpdateAvailable);
+        assert!(row.update_available);
+    }
+
+    #[test]
+    fn rows_follow_state_order_and_match_full_ids() {
+        let (state, catalog) = fixture();
+        let mut state = state;
+        let demo = state.plugins["demo"].clone();
+        // Same name in another namespace is a different plugin.
+        state.plugins.insert("dan/demo".into(), demo.clone());
+        state.plugins.insert("a/zzz".into(), demo);
+        let rows = compare(&state, &catalog);
+        let summary: Vec<_> = rows.iter().map(|r| (r.id.as_str(), r.status)).collect();
+        assert_eq!(
+            summary,
+            [
+                ("a/zzz", CheckStatus::NotInCatalog),
+                ("dan/demo", CheckStatus::NotInCatalog),
+                ("demo", CheckStatus::UpdateAvailable),
+            ]
+        );
+        assert_eq!(rows[0].installed, "1.9.0");
+        assert!(compare(&State::default(), &catalog).is_empty());
+    }
+
+    #[test]
+    fn statuses_have_distinct_messages_and_snake_case_names() {
+        use std::collections::BTreeSet;
+        let all = [
+            (CheckStatus::NotInCatalog, "not_in_catalog"),
+            (CheckStatus::DifferentSource, "different_source"),
+            (CheckStatus::InvalidCatalogData, "invalid_catalog_data"),
+            (CheckStatus::NoVersions, "no_versions"),
+            (CheckStatus::UncomparableVersion, "uncomparable_version"),
+            (
+                CheckStatus::SameVersionDifferentCommit,
+                "same_version_different_commit",
+            ),
+            (CheckStatus::UpdateAvailable, "update_available"),
+            (CheckStatus::UpToDate, "up_to_date"),
+            (CheckStatus::NewerThanCatalog, "newer_than_catalog"),
+        ];
+        for (status, name) in all {
+            assert_eq!(serde_json::to_value(status).unwrap(), name);
+            assert!(!status.message().is_empty());
+        }
+        let messages: BTreeSet<_> = all.iter().map(|(s, _)| s.message()).collect();
+        assert_eq!(messages.len(), all.len());
+        assert_eq!(
+            CheckStatus::UpdateAvailable.message(),
+            "доступно обновление"
+        );
+        let (state, catalog) = fixture();
+        let row: Row = compare(&state, &catalog).remove(0);
+        let value = serde_json::to_value(row).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "id": "demo", "installed": "1.9.0", "latest": "1.10.0",
+                "enabled": false, "update_available": true, "status": "update_available"
+            })
+        );
+    }
+
+    #[test]
+    fn read_state_never_creates_or_locks_a_workspace() {
+        use crate::test_support::TempDir;
+        let dir = TempDir::new("check");
+        let root = dir.join("workspace");
+        assert!(read_state(&root).unwrap().plugins.is_empty());
+        assert!(!root.exists(), "read_state must not create the workspace");
+        // An existing directory without state.json is not an empty workspace.
+        fs::create_dir(&root).unwrap();
+        assert_eq!(read_state(&root).unwrap_err().kind(), "io");
+        fs::write(root.join("state.json"), "{truncated").unwrap();
+        let error = read_state(&root).unwrap_err();
+        assert_eq!(error.kind(), "invalid_data");
+        assert!(
+            error
+                .to_string()
+                .starts_with("invalid workspace state.json")
+        );
+        let (state, _) = fixture();
+        fs::write(
+            root.join("state.json"),
+            serde_json::to_vec_pretty(&state).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(read_state(&root).unwrap().plugins.len(), 1);
+    }
+
+    #[test]
+    fn check_skips_the_catalog_for_an_empty_workspace_and_fails_on_a_bad_catalog() {
+        use crate::test_support::TempDir;
+        let dir = TempDir::new("check");
+        let root = dir.join("workspace");
+        // The catalog location is invalid, but it is never read.
+        assert!(check(&root, "ftp://invalid").unwrap().is_empty());
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("state.json"), r#"{"plugins":{}}"#).unwrap();
+        assert!(check(&root, "ftp://invalid").unwrap().is_empty());
+
+        let (state, _) = fixture();
+        fs::write(root.join("state.json"), serde_json::to_vec(&state).unwrap()).unwrap();
+        assert_eq!(
+            check(&root, "ftp://invalid").unwrap_err().kind(),
+            "invalid_argument"
+        );
+        // A missing catalog is an error, not "no updates".
+        let missing = dir.join("missing-catalog");
+        assert_eq!(
+            check(&root, missing.to_str().unwrap()).unwrap_err().kind(),
+            "catalog"
+        );
+    }
+
+    #[test]
+    fn check_reads_a_local_v2_catalog() {
+        use crate::test_support::{TempDir, release};
+        let dir = TempDir::new("check");
+        let catalog = dir.join("catalog");
+        let source = "https://example.com/demo.git";
+        for (version, c) in [("1.9.0", 'a'), ("1.10.0", 'b'), ("1.2.0", 'c')] {
+            crate::catalog::tests::save(&catalog, &release("dan/demo", version, source, c));
+        }
+        let root = dir.join("workspace");
+        fs::create_dir(&root).unwrap();
+        let state = crate::test_support::state_with("dan/demo", source, "1.9.0", &"a".repeat(40));
+        fs::write(root.join("state.json"), serde_json::to_vec(&state).unwrap()).unwrap();
+        let rows = check(&root, catalog.to_str().unwrap()).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, CheckStatus::UpdateAvailable);
+        assert_eq!(rows[0].latest.as_deref(), Some("1.10.0"));
+    }
 }

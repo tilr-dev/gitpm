@@ -176,4 +176,119 @@ mod tests {
             assert!(validate(value).is_ok());
         }
     }
+    #[test]
+    fn validate_covers_every_rule() {
+        let cases: &[(&str, Option<&str>)] = &[
+            ("", Some("Укажи Git URL")),
+            ("-oProxyCommand=x", Some("Укажи Git URL")),
+            ("https://example.com/repo\n.git", Some("Укажи Git URL")),
+            (
+                "ftp://example.com/repo.git",
+                Some("Неподдерживаемый протокол"),
+            ),
+            ("https:///repo.git", Some("не указан хост")),
+            ("ssh:///repo.git", Some("не указан хост")),
+            (
+                "https://token@example.com/repo.git",
+                Some("Не передавай логин/токен"),
+            ),
+            (
+                "https://example.com/repo.git#frag",
+                Some("Не передавай логин/токен"),
+            ),
+            (
+                "ssh://git:pw@example.com/repo.git",
+                Some("Не передавай пароль"),
+            ),
+            ("ext::sh -c x", Some("remote helpers")),
+            ("repo-without-scheme", Some("полный Git URL")),
+            ("file:///srv/repo.git", None),
+            ("http://example.com/repo.git", None),
+            ("git://example.com/repo.git", None),
+            ("ssh://example.com/repo.git", None),
+            ("ssh://git@example.com/repo.git", None),
+            ("/srv/missing/repo.git", None),
+            ("./relative/repo", None),
+        ];
+        for (source, expected) in cases {
+            match (validate(source), expected) {
+                (Ok(()), None) => {}
+                (Err(error), Some(text)) => {
+                    assert_eq!(error.kind(), "invalid_argument", "{source}");
+                    assert!(error.to_string().contains(text), "{source}: {error}");
+                    // The source (and any secret in it) is never echoed.
+                    assert!(!error.to_string().contains("pw@"), "{error}");
+                }
+                (result, _) => panic!("{source}: unexpected {result:?}"),
+            }
+        }
+        // An existing local path is accepted even without a leading '/' or '.'.
+        let dir = crate::test_support::TempDir::new("auth");
+        assert!(validate(dir.path().to_str().unwrap()).is_ok());
+    }
+
+    #[test]
+    fn failure_maps_every_category_and_hides_stderr() {
+        let cases = [
+            (
+                "WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!",
+                "host key",
+            ),
+            (
+                "git@x: Permission denied (keyboard-interactive).",
+                "SSH не предоставил",
+            ),
+            ("ssh: Could not resolve hostname x", "DNS"),
+            ("nodename nor servname provided", "DNS"),
+            ("Connection timed out", "недоступен по сети"),
+            (
+                "connect to host x port 22: Connection refused",
+                "недоступен по сети",
+            ),
+            ("SSL certificate problem: self signed certificate", "TLS"),
+            (
+                "fatal: 'x' does not appear to be a git repository",
+                "не найден",
+            ),
+            ("The requested URL returned error: 403", "авторизацию"),
+            ("remote: HTTP Basic: Access denied", "авторизацию"),
+            (
+                "fatal: Authentication failed for 'https://x'",
+                "авторизацию",
+            ),
+            (
+                "something unexpected: secret-token-123",
+                "Подробный stderr скрыт",
+            ),
+        ];
+        for (stderr, text) in cases {
+            let message = failure(stderr);
+            assert!(message.contains(text), "{stderr}: {message}");
+            assert!(!message.contains("secret-token-123"));
+        }
+    }
+
+    #[test]
+    fn check_reads_local_repositories_without_cloning() {
+        use crate::test_support::{Author, TempDir};
+        let dir = TempDir::new("auth");
+        let author = Author::new(dir.join("repo"), "dan/demo1");
+        let before = crate::test_support::tree_hash(dir.path());
+        let options = AuthOptions { custom_ssh: true };
+        let result = check(author.source(), &options).unwrap();
+        assert_eq!(result.source, author.source());
+        assert!(result.message.starts_with("Доступ на чтение подтверждён"));
+        assert_eq!(crate::test_support::tree_hash(dir.path()), before);
+
+        // An empty repository without refs is still readable.
+        let empty = dir.join("empty");
+        std::fs::create_dir(&empty).unwrap();
+        crate::test_support::git(&empty, &["init", "-q", "--bare"]);
+        assert!(check(empty.to_str().unwrap(), &AuthOptions::default()).is_ok());
+
+        let error = check(dir.join("missing").to_str().unwrap(), &options).unwrap_err();
+        assert_eq!(error.kind(), "auth");
+        assert!(error.to_string().contains("не найден"), "{error}");
+        assert_eq!(check("", &options).unwrap_err().kind(), "invalid_argument");
+    }
 }
