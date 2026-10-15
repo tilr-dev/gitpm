@@ -59,7 +59,7 @@ fn create_with_id(parent: &Path, name: &str, id: &str) -> Result<PathBuf> {
             &directory,
             &["commit", "-m", &format!("Create {name} 0.1.0")],
         )?;
-        git(&directory, &["tag", &identity::release_tag(id, "0.1.0")])?;
+        git(&directory, &["tag", "--", &identity::release_tag(id, "0.1.0")])?;
         Ok(fs::canonicalize(&directory)?)
     })();
     if result.is_err() {
@@ -131,7 +131,7 @@ pub fn commit(repo: &Path, version: &str) -> Result<String> {
     );
     let tag = identity::release_tag(&m.id, version);
     ensure!(
-        git(&repo, &["tag", "--list", &tag])?.is_empty(),
+        git(&repo, &["tag", "--list", "--", &tag])?.is_empty(),
         VersionConflict,
         "tag already exists: {tag}"
     );
@@ -148,7 +148,7 @@ pub fn commit(repo: &Path, version: &str) -> Result<String> {
         Error::Git,
         "commit failed; your edits and staged files remain in the repository",
     )?;
-    git(&repo, &["tag", &tag]).context(
+    git(&repo, &["tag", "--", &tag]).context(
         Error::Git,
         "commit succeeded but tag creation failed; inspect the repository before retrying",
     )?;
@@ -200,7 +200,7 @@ pub fn set_remote(repo: &Path, url: &str) -> Result<()> {
             )?;
         }
     } else {
-        git(&repo, &["remote", "add", "origin", url])?;
+        git(&repo, &["remote", "add", "--", "origin", url])?;
     }
     Ok(())
 }

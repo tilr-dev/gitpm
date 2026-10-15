@@ -327,7 +327,7 @@ impl Manager {
             }
             git(
                 &destination,
-                &["remote", "add", "upstream", &installed.source],
+                &["remote", "add", "--", "upstream", &installed.source],
             )?;
             let mut branch = "fork".to_owned();
             let mut number = 2;

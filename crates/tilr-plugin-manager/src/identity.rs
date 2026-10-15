@@ -9,11 +9,12 @@ pub fn valid_part(part: &str) -> Result<()> {
     ensure!(
         !part.is_empty()
             && part.len() <= 80
+            && !part.starts_with('-')
             && part
                 .bytes()
                 .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_'),
         InvalidId,
-        "namespace/name must use 1–80 ASCII letters, digits, '-' or '_' per component"
+        "namespace/name must use 1–80 ASCII letters, digits, '-' or '_' per component, not starting with '-'"
     );
     Ok(())
 }
@@ -86,8 +87,8 @@ mod tests {
             "a",
             "Z",
             "0",
-            "-",
             "_",
+            "_-",
             "a-b",
             "a_b",
             "Demo1",
@@ -108,6 +109,9 @@ mod tests {
             "a\0",
             "a\n",
             "~",
+            "-",
+            "-x",
+            "--help",
         ] {
             let error = valid_part(bad).unwrap_err();
             assert_eq!(error.kind(), "invalid_id", "{bad:?}");

@@ -217,6 +217,8 @@ mod tests {
             "dan\\demo1",
             "dan/demo 1",
             "Dan/démo",
+            "-x/demo1",
+            "dan/-demo1",
             &"x".repeat(81),
         ] {
             assert_eq!(valid_id(bad).unwrap_err().kind(), "invalid_id", "{bad:?}");
