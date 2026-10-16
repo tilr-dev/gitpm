@@ -358,7 +358,7 @@ fn create_requires_a_namespace_and_never_prompts_or_reads_the_environment() {
     for (args, message) in [
         (
             &["create", "hello"][..],
-            "plugin id needs a namespace: use NAMESPACE/NAME, for example dan/hello",
+            "plugin id needs a namespace: use NAMESPACE/NAME, for example acme/hello",
         ),
         (&["init", "hello"][..], "plugin id needs a namespace"),
         (&["create"][..], "create: expected 1 argument(s), got 0"),
@@ -482,7 +482,7 @@ fn fork_rejects_managed_destinations_and_unknown_plugins() {
     for (args, message) in [
         (
             &["fork", "hello", "me"][..],
-            "plugin id needs a namespace: use NAMESPACE/NAME, for example dan/me",
+            "plugin id needs a namespace: use NAMESPACE/NAME, for example acme/me",
         ),
         (
             &["fork", "hello", "me/other"][..],

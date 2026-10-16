@@ -89,7 +89,7 @@ fn option(args: &mut Vec<String>, key: &str) -> Result<Option<String>> {
 /// namespace is mandatory: there is no default and no config file.
 fn split_id(value: &str) -> Result<(&str, &str)> {
     let Some((namespace, name)) = value.split_once('/') else {
-        bail!("plugin id needs a namespace: use NAMESPACE/NAME, for example dan/{value}");
+        bail!("plugin id needs a namespace: use NAMESPACE/NAME, for example acme/{value}");
     };
     identity::qualified(namespace, name)?;
     Ok((namespace, name))

@@ -20,23 +20,23 @@ binary, the licenses and the README.
 
 ## Usage
 
-A package is a Git repository with `plugin.json` (`{"id": "hello", "version": "0.1.0"}`)
-and a `dist/` folder, released with a tag (`v0.1.0`):
+A package is a Git repository with `plugin.json` (`{"id": "acme/greeter", "version": "0.1.0"}`)
+and a `dist/` folder, released with a tag (`acme/greeter@0.1.0`):
 
 ```sh
-gitpm install ./hello                # latest release tag → ./gitpm-workspace
+gitpm install ./acme/greeter         # latest release tag → ./gitpm-workspace
 gitpm list                           # installed state (JSON)
-gitpm update hello                   # newest release tag
-gitpm rollback hello                 # back to the previous version
+gitpm update acme/greeter            # newest release tag
+gitpm rollback acme/greeter          # back to the previous version
 
-echo './hello' > sources.txt
+echo './acme/greeter' > sources.txt
 gitpm --catalog ./catalog catalog-update     # local catalog from release tags
 gitpm --catalog ./catalog check              # installed versions vs the catalog
-gitpm --catalog ./catalog --root ./other install-catalog hello   # hashes verified
+gitpm --catalog ./catalog --root ./other install-catalog acme/greeter   # hashes verified
 
-gitpm create dan/hello               # new plugin repository ./dan/hello, ID dan/hello
-gitpm install ./dan/hello
-gitpm fork dan/hello me/hello        # copy installed dan/hello to ./me/hello as me/hello
+gitpm create acme/hello              # new plugin repository ./acme/hello, ID acme/hello
+gitpm install ./acme/hello
+gitpm fork acme/hello me/hello       # copy installed acme/hello to ./me/hello as me/hello
 ```
 
 `create`/`init` and `fork` take an explicit `NAMESPACE/NAME`: the folder mirrors it

@@ -42,94 +42,96 @@ Everything below works on local folders: plugin repositories and the catalog are
 directories, nothing is pushed or uploaded.
 
 A plugin is a Git repository with `plugin.json` and a ready `dist/` folder; a release is
-a `vVERSION` tag (or `namespace/name@VERSION`):
+a `namespace/name@VERSION` tag (or `vVERSION` for a legacy plugin without a namespace).
+Source folders mirror the plugin ID (`./acme/greeter`):
 
 ```console
-$ mkdir -p hello/dist && cd hello && git init -q -b main
-$ echo '{"id": "hello", "version": "0.1.0"}' > plugin.json
-$ echo 'export const greeting = "hello v1";' > dist/index.js
-$ git add . && git commit -qm "hello 0.1.0" && git tag v0.1.0 && cd ..
-$ gitpm install ./hello
-OK: install ./hello
-$ cat gitpm-workspace/dist/hello/index.js
-export const greeting = "hello v1";
+$ mkdir -p acme/greeter/dist && cd acme/greeter && git init -q -b main
+$ echo '{"id": "acme/greeter", "version": "0.1.0"}' > plugin.json
+$ echo 'export const greeting = "greeter v1";' > dist/index.js
+$ git add . && git commit -qm "greeter 0.1.0" && git tag acme/greeter@0.1.0 && cd ../..
+$ gitpm install ./acme/greeter
+OK: install ./acme/greeter
+$ cat gitpm-workspace/dist/acme/greeter/index.js
+export const greeting = "greeter v1";
 $ gitpm list
 {
   "plugins": {
-    "hello": {
-      "source": "/…/hello",
+    "acme/greeter": {
+      "source": "/…/acme/greeter",
       "current": {
         "version": "0.1.0",
-        "commit": "9aed5aa…"
+        "commit": "4b377fe…"
 …
 ```
 
 Release 0.2.0, update, roll back (one previous version is kept):
 
 ```console
-$ echo 'export const greeting = "hello v2";' > hello/dist/index.js
-$ echo '{"id": "hello", "version": "0.2.0"}' > hello/plugin.json
-$ git -C hello commit -qam "hello 0.2.0" && git -C hello tag v0.2.0
-$ gitpm update hello
-OK: update hello
-$ cat gitpm-workspace/dist/hello/index.js
-export const greeting = "hello v2";
-$ gitpm rollback hello
-OK: rollback hello
-$ cat gitpm-workspace/dist/hello/index.js
-export const greeting = "hello v1";
-$ gitpm update hello
-OK: update hello
+$ echo 'export const greeting = "greeter v2";' > acme/greeter/dist/index.js
+$ echo '{"id": "acme/greeter", "version": "0.2.0"}' > acme/greeter/plugin.json
+$ git -C acme/greeter commit -qam "greeter 0.2.0" && git -C acme/greeter tag acme/greeter@0.2.0
+$ gitpm update acme/greeter
+OK: update acme/greeter
+$ cat gitpm-workspace/dist/acme/greeter/index.js
+export const greeting = "greeter v2";
+$ gitpm rollback acme/greeter
+OK: rollback acme/greeter
+$ cat gitpm-workspace/dist/acme/greeter/index.js
+export const greeting = "greeter v1";
+$ gitpm update acme/greeter
+OK: update acme/greeter
 ```
 
 A catalog is generated from the release tags of the repositories listed in a sources
 file (paths are relative to that file). `gitpm init NAMESPACE/NAME` (same as `create`)
-scaffolds the plugin repository `./NAMESPACE/NAME` (the folder mirrors the ID) with its
-first release; the namespace is required, there is no default. `gitpm commit` bumps the
-version, commits everything and tags:
+scaffolds the plugin repository `./NAMESPACE/NAME` with its first release; the namespace
+is required, there is no default. `gitpm commit` bumps the version, commits everything
+and tags:
 
 ```console
 $ export GITPM_CATALOG=$PWD/catalog
-$ echo './hello' > sources.txt
+$ echo './acme/greeter' > sources.txt
 $ gitpm catalog-update
-Reading releases: /…/hello
+Reading releases: /…/acme/greeter
 Catalog ready: 2 release(s) checked from sources.
 $ gitpm info
 Catalog: /…/catalog
 Type: local folder/JSON
 Format: v2
 Directories and plugins:
-  legacy/
-    hello/
-      hello — latest: 0.2.0, versions: 2
-          Git: /…/hello
+  namespaces/
+    acme/
+      greeter/
+        acme/greeter — latest: 0.2.0, versions: 2
+            Git: /…/acme/greeter
 $ gitpm init hello
-Error: plugin id needs a namespace: use NAMESPACE/NAME, for example dan/hello
-$ gitpm init dan/hello
+Error: plugin id needs a namespace: use NAMESPACE/NAME, for example acme/hello
+$ gitpm init acme/hello
 
-Created: /…/dan/hello
-ID: dan/hello
-Version 0.1.0: Git commit and tag dan/hello@0.1.0.
+Created: /…/acme/hello
+ID: acme/hello
+Version 0.1.0: Git commit and tag acme/hello@0.1.0.
 …
-$ echo 'export const greeting = "dan/hello v2";' > dan/hello/dist/index.js
-$ gitpm commit dan/hello 0.1.1
-Created local commit and tag dan/hello@0.1.1.
-$ echo './dan/hello' >> sources.txt
+$ echo 'export const greeting = "hello v2";' > acme/hello/dist/index.js
+$ gitpm commit acme/hello 0.1.1
+Created local commit and tag acme/hello@0.1.1.
+$ echo './acme/hello' >> sources.txt
 $ gitpm catalog-update
-Reading releases: /…/dan/hello
-Reading releases: /…/hello
+Reading releases: /…/acme/greeter
+Reading releases: /…/acme/hello
 Catalog ready: 4 release(s) checked from sources.
-$ gitpm install-catalog dan/hello
-OK: install-catalog dan/hello
-$ cat gitpm-workspace/dist/dan/hello/index.js
-export const greeting = "dan/hello v2";
+$ gitpm install-catalog acme/hello
+OK: install-catalog acme/hello
+$ cat gitpm-workspace/dist/acme/hello/index.js
+export const greeting = "hello v2";
 $ gitpm check
 Workspace: gitpm-workspace
 Catalog: /…/catalog
 
 PLUGIN                   INSTALLED      LATEST         ENABLED  STATUS
-dan/hello                0.1.1          0.1.1          yes      up to date
-hello                    0.2.0          0.2.0          yes      up to date
+acme/greeter             0.2.0          0.2.0          yes      up to date
+acme/hello               0.1.1          0.1.1          yes      up to date
 
 Updates: 0. Nothing was changed.
 ```
@@ -139,20 +141,21 @@ edits) into the new folder `./NAMESPACE/NAME` under that ID. The name stays the 
 only the namespace changes, so the original and the fork sit side by side:
 
 ```console
-$ gitpm fork dan/hello me/hi
+$ gitpm fork acme/hello me/hi
 Error: fork keeps the plugin name: use NAMESPACE/hello, not me/hi
-$ gitpm fork dan/hello me/hello
+$ gitpm fork acme/hello me/hello
 Fork created: /…/me/hello
 Git history and local edits are kept; the original repository is the upstream remote.
-New ID: me/hello. forkOf records the origin; replaces says the fork can stand in for dan/hello
-(used only after an explicit: gitpm replace dan/hello --with me/hello).
+New ID: me/hello. forkOf records the origin; replaces says the fork can stand in for acme/hello
+(used only after an explicit: gitpm replace acme/hello --with me/hello).
 …
-OK: fork dan/hello
-$ ls -d */hello
-dan/hello
+OK: fork acme/hello
+$ ls -d acme/* me/*
+acme/greeter
+acme/hello
 me/hello
-$ gitpm uninstall dan/hello
-OK: uninstall dan/hello
+$ gitpm uninstall acme/hello
+OK: uninstall acme/hello
 ```
 
 Settings: each has a flag, an environment variable and a default (`gitpm --help` lists
@@ -191,10 +194,10 @@ read-only).
 use gitpm::{Manager, Options};
 
 let pm = Manager::open_with("/path/to/workspace", Options { catalog: Some(url) })?;
-pm.install("git@github.com:dan/demo1.git")?;          // latest release tag
-pm.install_channel(src, Some("dan/demo1@0.2.0"), false)?; // explicit ref; dev=true follows HEAD
-pm.install_from_catalog("dan/demo1", None)?;          // exact catalog release, hashes verified
-pm.update("dan/demo1")?;  pm.update_channel(id, None, true)?;
+pm.install("git@github.com:acme/demo1.git")?;          // latest release tag
+pm.install_channel(src, Some("acme/demo1@0.2.0"), false)?; // explicit ref; dev=true follows HEAD
+pm.install_from_catalog("acme/demo1", None)?;          // exact catalog release, hashes verified
+pm.update("acme/demo1")?;  pm.update_channel(id, None, true)?;
 pm.rollback(id)?;  pm.enable(id)?;  pm.disable(id)?;  pm.forget(id)?;  pm.restore(id)?;
 let plan = pm.uninstall_plan(id)?;                    // deletes + lost_work
 pm.uninstall(id, /* confirm */ !plan.lost_work.is_empty() && user_said_yes)?;
@@ -285,9 +288,9 @@ library and use the generated API:
 import Gitpm
 
 let pm = try PluginManager.open(root: workspace, options: ManagerOptions(catalog: catalogURL))
-let plan = try pm.uninstallPlan(id: "dan/demo1")
+let plan = try pm.uninstallPlan(id: "acme/demo1")
 if plan.lostWork.isEmpty || userConfirmed(plan.lostWork.map(describeLostWork)) {
-    try pm.uninstall(id: "dan/demo1", confirm: !plan.lostWork.isEmpty)
+    try pm.uninstall(id: "acme/demo1", confirm: !plan.lostWork.isEmpty)
 }
 ```
 
