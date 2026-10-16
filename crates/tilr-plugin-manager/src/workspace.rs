@@ -131,17 +131,22 @@ fn exact_path(base: &Path, id: &str) -> Result<bool> {
 /// Refuse an ID that would land on an existing path spelled differently (`Dan/p` vs
 /// `dan/p` on a case-insensitive file system): it would share or overwrite that clone.
 fn ensure_no_case_collision(base: &Path, id: &str) -> Result<()> {
-    let mut prefix = String::new();
+    let mut current = base.to_path_buf();
     for part in id.split('/') {
-        if !prefix.is_empty() {
-            prefix.push('/');
+        let entries = match fs::read_dir(&current) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e.into()),
+        };
+        for entry in entries {
+            let name = entry?.file_name();
+            if name != part && name.to_string_lossy().eq_ignore_ascii_case(part) {
+                return Err(Error::Workspace(format!(
+                    "plugin ID {id} collides with an existing path that differs only in letter case"
+                )));
+            }
         }
-        prefix.push_str(part);
-        if base.join(&prefix).exists() && !exact_path(base, &prefix)? {
-            return Err(Error::Workspace(format!(
-                "plugin ID {id} collides with an existing path that differs only in letter case"
-            )));
-        }
+        current.push(part);
     }
     Ok(())
 }
@@ -265,9 +270,7 @@ impl Manager {
             return Ok(Vec::new());
         }
         let location = self.catalog_location()?;
-        let snapshot = catalog::selected(location, &state)?;
-        let canonical = catalog::canonical_location(location).ok();
-        Ok(check::compare_in(&state, &snapshot, canonical.as_deref()))
+        check::check_state(&state, location)
     }
     /// Bounded overview of the configured catalog.
     pub fn browse_catalog(&self) -> Result<catalog::CatalogOverview> {
@@ -656,12 +659,17 @@ impl Manager {
                 &p.current.commit,
                 "local commits detected; update would discard them",
             )?;
-            lost_work::require_no_hidden(
+            lost_work::require_no_hidden_for_update(
                 &live,
                 id,
                 "local branches, tags or stash hold unpublished work; keep or remove them before updating",
             )?;
             let repo = txn.repo(id, &live)?;
+            let known_releases = match releases::discover(&repo, Some(id)) {
+                Ok(tags) => tags,
+                Err(Error::NoReleases(_)) => Vec::new(),
+                Err(error) => return Err(error),
+            };
             // Mirror upstream tags exactly: a deleted release disappears, a moved one is
             // seen at its new commit (and refused below as a version conflict). Local
             // tags holding unpublished commits were refused above, so nothing is lost.
@@ -669,6 +677,22 @@ impl Manager {
                 &repo,
                 &["fetch", "origin", "--prune", "--prune-tags", "--force", "--tags"],
             )?;
+            for known in known_releases {
+                let tag = format!("refs/tags/{}", known.name);
+                // Deleting a tag is allowed; moving an observed release is not.
+                if git(&repo, &["tag", "--list", &known.name])? == known.name {
+                    ensure!(
+                        resolve_ref(&repo, &tag)? == known.commit,
+                        VersionConflict,
+                        "{}",
+                        if known.manifest.version == p.current.version {
+                            "release commit changed for installed version".to_owned()
+                        } else {
+                            format!("release tag {} changed commit", known.name)
+                        }
+                    );
+                }
+            }
             if dev || reference == Some("HEAD") {
                 git(&repo, &["remote", "set-head", "origin", "--auto"])?;
             }
@@ -1914,6 +1938,39 @@ mod tests {
             error.to_string(),
             "release commit changed for installed version"
         );
+    }
+
+    #[test]
+    fn update_refuses_moved_fetched_but_not_installed_release() {
+        let (ws, m) = Ws::installed("dan/demo1");
+        ws.author.release("0.1.1");
+        let original = ws.author.release("0.1.2");
+        m.update_ref("dan/demo1", Some("dan/demo1@0.1.1")).unwrap();
+        assert_eq!(
+            resolve_ref(&ws.repo(), "dan/demo1@0.1.2").unwrap(),
+            original
+        );
+        same_version_commit(&ws.author);
+        fixture_git(&ws.author.path, &["tag", "-f", "dan/demo1@0.1.2"]);
+        for reference in [None, Some("dan/demo1@0.1.2")] {
+            ws.refuses("version_conflict", || m.update_ref("dan/demo1", reference));
+            assert_eq!(
+                resolve_ref(&ws.repo(), "dan/demo1@0.1.2").unwrap(),
+                original
+            );
+        }
+    }
+
+    #[test]
+    fn stable_update_refuses_scoped_tag_with_another_manifest_id() {
+        let (ws, m) = Ws::installed("dan/demo1");
+        ws.author.commit("0.1.1");
+        write_manifest(&ws.author.path, &make_manifest("dan/renamed", "0.1.1"));
+        fixture_git(&ws.author.path, &["add", "."]);
+        fixture_git(&ws.author.path, &["commit", "-qm", "rename"]);
+        ws.author.tag("0.1.1");
+        let error = ws.refuses("version_conflict", || m.update("dan/demo1"));
+        assert!(error.to_string().contains("manifest ID dan/renamed"));
     }
 
     #[test]

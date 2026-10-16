@@ -125,6 +125,10 @@ pub(crate) fn validate_release(release: &Release, id: &str, version: &str) -> Re
         Catalog,
         "catalog identity mismatch"
     );
+    validate_release_payload(release, id)
+}
+
+fn validate_release_payload(release: &Release, id: &str) -> Result<()> {
     ensure!(
         matches!(release.commit.len(), 40 | 64)
             && release.commit.bytes().all(|c| c.is_ascii_hexdigit()),
@@ -283,6 +287,16 @@ fn plugin_index(location: &str, id: &str) -> Result<Option<PluginIndex>> {
 }
 /// Catalog entries relevant to the installed plugins: latest and currently installed versions.
 pub fn selected(location: &str, state: &crate::State) -> Result<Catalog> {
+    selected_impl(location, state, false)
+}
+
+/// Read-only diagnostics retain identity mismatches for per-plugin status reporting.
+/// Transport, syntax and unsafe payload errors still fail the operation.
+pub(crate) fn selected_for_check(location: &str, state: &crate::State) -> Result<Catalog> {
+    selected_impl(location, state, true)
+}
+
+fn selected_impl(location: &str, state: &crate::State, diagnostic: bool) -> Result<Catalog> {
     let mut result = Catalog::default();
     // Installed plugins with their current and latest release; originals of forks
     // with their latest release only.
@@ -309,7 +323,7 @@ pub fn selected(location: &str, state: &crate::State) -> Result<Catalog> {
                 if !versions.contains_key(version) {
                     versions.insert(
                         version.clone(),
-                        read_release(location, id, version, &index)?,
+                        read_release_impl(location, id, version, &index, diagnostic)?,
                     );
                 }
             }
@@ -333,20 +347,34 @@ pub fn selected(location: &str, state: &crate::State) -> Result<Catalog> {
     Ok(result)
 }
 fn read_release(location: &str, id: &str, version: &str, index: &PluginIndex) -> Result<Release> {
-    let link = index
-        .versions
-        .get(version)
-        .require(Error::Catalog, "version not found in catalog")?;
+    read_release_impl(location, id, version, index, false)
+}
+
+fn read_release_impl(
+    location: &str,
+    id: &str,
+    version: &str,
+    index: &PluginIndex,
+    diagnostic: bool,
+) -> Result<Release> {
+    let link = index.versions.get(version).require(
+        Error::Catalog,
+        format!("version not found in catalog: {id}@{version}"),
+    )?;
     let release: Release = serde_json::from_value(
         read_json(location, &format!("{}/{link}", folder(id)?))?
             .require(Error::Catalog, "release not found")?,
     )?;
-    validate_release(&release, id, version)?;
-    ensure!(
-        release.source == index.source,
-        Catalog,
-        "release source mismatch"
-    );
+    if diagnostic {
+        validate_release_payload(&release, id)?;
+    } else {
+        validate_release(&release, id, version)?;
+        ensure!(
+            release.source == index.source,
+            Catalog,
+            "release source mismatch"
+        );
+    }
     Ok(release)
 }
 
@@ -460,7 +488,7 @@ fn write_release(root: &Path, release: &Release) -> Result<()> {
     ensure!(
         index.schema == 2 && index.id == *id && index.source == release.source,
         Catalog,
-        "plugin is registered from a different source or identity"
+        "plugin {id} is registered from a different source or identity"
     );
     let link = format!("versions/{version}/release.json");
     let release_path = root.join(&folder).join(&link);
@@ -476,7 +504,7 @@ fn write_release(root: &Path, release: &Release) -> Result<()> {
         ensure!(
             serde_json::to_value(&old)? == serde_json::to_value(&candidate)?,
             VersionConflict,
-            "version already exists and is immutable"
+            "version {id}@{version} already exists and is immutable"
         );
     } else {
         atomic_json(&release_path, release)?;
@@ -622,12 +650,20 @@ pub fn lookup(location: &str, id: &str, version: Option<&str>) -> Result<Release
         };
         return read_release(location, id, version, &index);
     }
-    let catalog: Catalog = serde_json::from_value(list(location)?)
-        .context(Error::Catalog, "plugin not found in catalog")?;
+    let value = list(location)?;
+    ensure!(
+        value.get("schema").and_then(|v| v.as_u64()) != Some(2),
+        Catalog,
+        "plugin not found in catalog: {id}"
+    );
+    let catalog: Catalog = serde_json::from_value(value).context(
+        Error::Catalog,
+        format!("invalid catalog while looking up {id}"),
+    )?;
     let plugin = catalog
         .plugins
         .get(id)
-        .require(Error::Catalog, "plugin not found in catalog")?;
+        .require(Error::Catalog, format!("plugin not found in catalog: {id}"))?;
     let version = match version {
         Some(v) => v.to_owned(),
         None => {
@@ -645,7 +681,10 @@ pub fn lookup(location: &str, id: &str, version: Option<&str>) -> Result<Release
     let release = plugin
         .versions
         .get(&version)
-        .require(Error::Catalog, "version not found in catalog")?
+        .require(
+            Error::Catalog,
+            format!("version not found in catalog: {id}@{version}"),
+        )?
         .clone();
     validate_release(&release, id, &version)?;
     Ok(release)
@@ -1473,7 +1512,10 @@ pub(crate) mod tests {
         for changed in [moved, rebuilt, with_build] {
             let error = save_release(&path, &changed).unwrap_err();
             assert_eq!(error.kind(), "version_conflict");
-            assert_eq!(error.to_string(), "version already exists and is immutable");
+            assert_eq!(
+                error.to_string(),
+                "version dan/demo1@0.1.0 already exists and is immutable"
+            );
         }
         let mut other_source = release("dan/demo1", "0.2.0", "https://elsewhere/x.git", 'c');
         let error = save_release(&path, &other_source).unwrap_err();
@@ -1577,7 +1619,10 @@ pub(crate) mod tests {
         let error = lookup(loc(&cat), "dan/demo1", Some("2.0.0")).unwrap_err();
         assert_eq!(
             (error.kind(), error.to_string()),
-            ("catalog", "version not found in catalog".into())
+            (
+                "catalog",
+                "version not found in catalog: dan/demo1@2.0.0".into()
+            )
         );
         assert_eq!(
             lookup(loc(&cat), "dan/demo1", Some("2.0"))

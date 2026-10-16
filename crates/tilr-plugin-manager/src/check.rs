@@ -206,9 +206,13 @@ pub fn check(root: &Path, catalog_location: &str) -> Result<Vec<CheckRow>> {
     if state.plugins.is_empty() {
         return Ok(Vec::new());
     }
-    let snapshot = crate::catalog::selected(catalog_location, &state)?;
-    let location = crate::catalog::canonical_location(catalog_location).ok();
-    Ok(compare_in(&state, &snapshot, location.as_deref()))
+    check_state(&state, catalog_location)
+}
+
+pub(crate) fn check_state(state: &State, location: &str) -> Result<Vec<CheckRow>> {
+    let snapshot = crate::catalog::selected_for_check(location, state)?;
+    let canonical = crate::catalog::canonical_location(location).ok();
+    Ok(compare_in(state, &snapshot, canonical.as_deref()))
 }
 
 #[cfg(test)]
@@ -518,6 +522,40 @@ mod tests {
             check(&root, missing.to_str().unwrap()).unwrap_err().kind(),
             "catalog"
         );
+    }
+
+    #[test]
+    fn check_reports_invalid_release_without_hiding_healthy_plugins() {
+        use crate::test_support::{TempDir, release, state_with};
+        let dir = TempDir::new("check-invalid");
+        let cat = dir.join("catalog");
+        let source = "https://example.com/demo.git";
+        let mut state = State::default();
+        for id in ["dan/broken", "dan/healthy"] {
+            crate::catalog::tests::save(&cat, &release(id, "1.0.0", source, 'a'));
+            state
+                .plugins
+                .extend(state_with(id, source, "1.0.0", &"a".repeat(40)).plugins);
+        }
+        let path = cat.join("namespaces/dan/broken/versions/1.0.0/release.json");
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        value["manifest"]["id"] = "dan/wrong".into();
+        fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+        let rows = check_state(&state, cat.to_str().unwrap()).unwrap();
+        assert_eq!(rows[0].status, CheckStatus::InvalidCatalogData);
+        assert_eq!(rows[1].status, CheckStatus::UpToDate);
+        assert!(crate::catalog::lookup(cat.to_str().unwrap(), "dan/broken", None).is_err());
+        // Directory indexes are unrelated to installed-plugin diagnostics.
+        fs::write(cat.join("catalog.json"), "{ broken").unwrap();
+        assert_eq!(check_state(&state, cat.to_str().unwrap()).unwrap().len(), 2);
+        // Unreadable release data must remain a hard error.
+        fs::write(
+            cat.join("namespaces/dan/broken/versions/1.0.0/release.json"),
+            "{ broken",
+        )
+        .unwrap();
+        assert!(check_state(&state, cat.to_str().unwrap()).is_err());
     }
 
     #[test]

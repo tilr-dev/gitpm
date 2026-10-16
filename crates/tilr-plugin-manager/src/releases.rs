@@ -71,6 +71,12 @@ pub fn discover_all(repo: &Path, expected_id: Option<&str>) -> Result<Discovery>
         };
         // Forks retain upstream tags. They are not releases of the fork.
         if manifest.id != id {
+            if name.starts_with(&format!("{id}@")) {
+                skip(format!(
+                    "tag {name} disagrees with manifest ID {}",
+                    manifest.id
+                ));
+            }
             continue;
         }
         if manifest.version != version {

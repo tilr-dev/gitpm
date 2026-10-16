@@ -157,13 +157,28 @@ fn unpublished_refs(repo: &Path, prefix: &str) -> Result<Vec<(String, u64)>> {
 
 /// Local branches and tags with commits no remote-tracking branch contains, and stash
 /// entries: work that survives a checkout but is easy to lose track of.
-fn hidden(repo: &Path) -> Result<Vec<LostWork>> {
+fn hidden(repo: &Path, check_remote: bool) -> Result<Vec<LostWork>> {
     let mut items = Vec::new();
     for (name, commits) in unpublished_refs(repo, "refs/heads/")? {
         items.push(LostWork::UnpublishedBranch { name, commits });
     }
-    for (name, _) in unpublished_refs(repo, "refs/tags/")? {
-        items.push(LostWork::UnpublishedTag { name });
+    let tags = unpublished_refs(repo, "refs/tags/")?;
+    // A published tag need not be reachable from any remote branch (forks
+    // commonly retain upstream tags). Verify the exact ref and object remotely.
+    let published = if tags.is_empty() || !check_remote {
+        String::new()
+    } else {
+        git(repo, &["ls-remote", "--tags", "origin"])?
+    };
+    for (name, _) in tags {
+        let reference = format!("refs/tags/{name}");
+        let object = git(repo, &["rev-parse", &reference])?;
+        if !published
+            .lines()
+            .any(|line| line == format!("{object}\t{reference}"))
+        {
+            items.push(LostWork::UnpublishedTag { name });
+        }
     }
     for entry in git(repo, &["stash", "list"])?.lines() {
         items.push(LostWork::Stash {
@@ -173,9 +188,22 @@ fn hidden(repo: &Path) -> Result<Vec<LostWork>> {
     Ok(items)
 }
 
+/// Updating already needs the origin; account for tags published outside branches.
+pub(crate) fn require_no_hidden_for_update(repo: &Path, id: &str, message: &str) -> Result<()> {
+    let items = hidden(repo, true)?;
+    if items.is_empty() {
+        return Ok(());
+    }
+    Err(Error::LocalChanges {
+        id: id.into(),
+        message: message.into(),
+        items,
+    })
+}
+
 /// Refuse when local branches/tags hold unpublished commits or the stash is not empty.
 pub(crate) fn require_no_hidden(repo: &Path, id: &str, message: &str) -> Result<()> {
-    let items = hidden(repo)?;
+    let items = hidden(repo, false)?;
     if items.is_empty() {
         return Ok(());
     }
@@ -217,7 +245,7 @@ pub(crate) fn detect(repo: &Path, recorded: Option<&str>) -> Result<Vec<LostWork
             summary: summary.into(),
         });
     }
-    items.extend(hidden(repo)?);
+    items.extend(hidden(repo, false)?);
     Ok(items)
 }
 
