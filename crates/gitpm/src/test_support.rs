@@ -197,7 +197,7 @@ pub(crate) fn tree_hash(root: &Path) -> String {
     }
     let mut hasher = Sha256::new();
     walk(root, root, &mut hasher);
-    format!("{:x}", hasher.finalize())
+    crate::catalog::hex(&hasher.finalize())
 }
 
 /// A syntactically valid catalog release for `id@version` (no Git needed).

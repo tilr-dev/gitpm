@@ -66,6 +66,17 @@ fn folder(id: &str) -> Result<String> {
         format!("legacy/{id}")
     })
 }
+/// Lowercase hex of a digest (sha2 0.11 output no longer implements `LowerHex`).
+pub(crate) fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut out, b| {
+            let _ = write!(out, "{b:02x}");
+            out
+        })
+}
+
 pub fn hash_files(dist: &Path) -> Result<BTreeMap<String, FileDigest>> {
     use sha2::{Digest, Sha256};
     use std::io::Read;
@@ -102,7 +113,7 @@ pub fn hash_files(dist: &Path) -> Result<BTreeMap<String, FileDigest>> {
             result.insert(
                 name,
                 FileDigest {
-                    sha256: format!("{:x}", hasher.finalize()),
+                    sha256: hex(&hasher.finalize()),
                     size,
                 },
             );
