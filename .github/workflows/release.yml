@@ -1,7 +1,10 @@
 # Releases: release-please keeps a release PR open from the Conventional Commits on main
 # (version bump in crates/gitpm/Cargo.toml and Cargo.lock, CHANGELOG); merging it
-# tags vX.Y.Z and creates the GitHub release, and `publish` then publishes that tag to crates.io.
-# Only the core crate is released; the FFI crate (publish = false) keeps its own version.
+# tags vX.Y.Z and creates the GitHub release; `publish` then publishes that tag to crates.io
+# and `binaries` attaches prebuilt `gitpm` binaries to the release.
+# Two crates are released, in lockstep: gitpm (the library, the release-please package) and
+# gitpm-cli (binary `gitpm`), whose version and gitpm dependency follow through extra-files.
+# The FFI crate (publish = false) keeps its own version.
 # Cargo.lock is bumped through an extra-files TOML jsonpath in release-please-config.json: the
 # `rust` strategy only updates a Cargo.lock next to the crate, and the cargo-workspace plugin
 # would also release the FFI crate as a dependent. The filter reads `@.name.value` because
@@ -14,15 +17,26 @@
 # release PR goes through the same required checks, and merging it is the release approval.
 #
 # publish: crates.io trusted publishing (OIDC, no long-lived CARGO_REGISTRY_TOKEN secret).
-# The crate's trusted publisher on crates.io is bound to this repository, this file
-# (release.yml) and the `crates-io` environment. That environment is restricted to `main` and
-# has no required reviewer (org decision, as in plugin-sdk): the merged release PR is the gate.
-# rust-lang/crates-io-auth-action exchanges the job's OIDC token for a short-lived publish token.
-# Trusted publishing can only be configured for a crate that already exists, so the first
-# version (0.1.0) is published by hand (`cargo publish -p gitpm`) and tagged v0.1.0;
-# release-please starts from there (.release-please-manifest.json).
+# Both crates (gitpm and gitpm-cli) have a trusted publisher on crates.io bound to this
+# repository, this file (release.yml) and the `crates-io` environment. That environment is
+# restricted to `main` and has no required reviewer (org decision, as in plugin-sdk): the
+# merged release PR is the gate. rust-lang/crates-io-auth-action exchanges the job's OIDC
+# token for a short-lived publish token.
+# Trusted publishing can only be configured for a crate that already exists, so each crate's
+# first version was published by hand: gitpm 0.1.0 (`cargo publish -p gitpm`, tagged v0.1.0;
+# release-please starts from there, .release-please-manifest.json) and gitpm-cli at the
+# then-current gitpm version (`cargo publish -p gitpm-cli`).
 # `publish` runs in this workflow, gated on release-please's `release_created`, rather than on
 # `release: published`, so the trusted publisher stays bound to release.yml.
+#
+# binaries: `build` compiles `gitpm` per target with read-only permissions (dependency build
+# scripts run there), and `upload` attaches the archives to the tag's GitHub release. Only
+# `upload` gets a writable token: the GITHUB_TOKEN with contents: write, for that job alone.
+# GITHUB_TOKEN can upload assets to a release created by tilr-bot (release assets are a
+# repository permission, not tied to the release's author), so the App's private key is not
+# needed here and the App token keeps only the release-please job's scope. Asset names match
+# [package.metadata.binstall] in crates/gitpm-cli/Cargo.toml (scripts/package-cli.sh).
+
 name: release
 
 on:
@@ -89,6 +103,94 @@ jobs:
       - run: cargo test --workspace --locked
       - uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
         id: auth
-      - run: cargo publish -p gitpm --locked
+      # gitpm first: gitpm-cli depends on the same gitpm version, and its verify build resolves
+      # it from crates.io. Since cargo 1.66, `cargo publish` blocks until the new version is in
+      # the index (60 s timeout, configurable only on nightly: -Zpublish-timeout), so the
+      # second publish sees the first without a sleep. If that wait times out, cargo only
+      # warns; gitpm-cli's verify then fails and the job can be re-run: a version already on
+      # crates.io (checked in the sparse index) is skipped, since crates.io refuses re-uploads.
+      - name: Publish gitpm, then gitpm-cli
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          version="${TAG#v}"
+          for crate in gitpm gitpm-cli; do
+            if curl -sSfL "https://index.crates.io/${crate:0:2}/${crate:2:2}/${crate}" \
+              | jq -e --arg v "$version" 'select(.vers == $v)' >/dev/null; then
+              echo "$crate $version is already on crates.io; skipping"
+              continue
+            fi
+            cargo publish -p "$crate" --locked
+          done
+
+  # Builds start with publish (not after it), so the release is not held up; the upload
+  # waits for publish, so a tag that fails publish's checks gets no binaries.
+  build:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      TARGET: ${{ matrix.target }}
+      TAG: ${{ needs.release-please.outputs.tag_name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Native arm64 macOS runner; x86_64 is cross-compiled there (the macOS SDK has both
+          # architectures), so the build does not depend on an Intel runner image.
+          - { target: aarch64-apple-darwin, os: macos-15, native: true }
+          - { target: x86_64-apple-darwin, os: macos-15, native: false }
+          # Native Linux runners (ubuntu-22.04-arm is free for public repositories). 22.04, not
+          # 24.04: the binary needs the glibc it was linked against or newer, and 22.04's
+          # (2.35) also covers Debian 12 and Ubuntu 22.04 hosts.
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04, native: true }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm, native: true }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+          persist-credentials: false
+      - name: Install Rust (stable, ${{ matrix.target }})
+        run: |
+          rustup toolchain install stable --profile minimal --target "$TARGET"
+          rustup default stable
+      # No cache, as in publish: a release build starts clean.
+      - run: cargo build --release --locked -p gitpm-cli --target "$TARGET"
+      - name: Check the version
+        if: matrix.native
+        run: test "$(target/"$TARGET"/release/gitpm --version)" = "gitpm ${TAG#v}"
+      - run: scripts/package-cli.sh "$TAG" "$TARGET" dist
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gitpm-cli-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  upload:
+    needs: [release-please, publish, build]
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # gh release upload; nothing else in this job runs repository code
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: gitpm-cli-*
+          path: dist
+          merge-multiple: true
+      - name: Verify checksums
+        working-directory: dist
+        run: sha256sum -c ./*.sha256
+      # --clobber: a re-run replaces the assets of a failed or partial upload.
+      - name: Upload to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber

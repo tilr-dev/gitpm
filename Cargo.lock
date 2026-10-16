@@ -278,6 +278,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "gitpm-cli"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "gitpm",
+ "serde_json",
+]
+
+[[package]]
 name = "gitpm-ffi"
 version = "0.1.0"
 dependencies = [

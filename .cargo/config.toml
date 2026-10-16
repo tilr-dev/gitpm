@@ -1,6 +1,6 @@
 # Hermetic Git for cargo test/run in this workspace: the library shells out to git,
 # so the developer's global and system Git config must not change test results.
-# Applies only to processes started by cargo here (the workspace has no app binary).
+# Applies only to processes started by cargo here (cargo test/run), not to an installed `gitpm`.
 [env]
 GIT_CONFIG_GLOBAL = { value = "tests/gitconfig", relative = true, force = true }
 GIT_CONFIG_NOSYSTEM = { value = "1", force = true }

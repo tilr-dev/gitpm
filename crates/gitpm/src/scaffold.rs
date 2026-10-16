@@ -48,7 +48,7 @@ fn create_with_id(parent: &Path, name: &str, id: &str) -> Result<PathBuf> {
         fs::write(
             directory.join("README.md"),
             format!(
-                "# {name}\n\nLocal gitpm demo package, version 0.1.0.\n\nEdit `dist/index.js` directly; there is no build step. `plugin.json` holds the\nplugin ID and version. This is a demo package fixture.\n\nFrom the plugin-manager directory:\n\n```sh\n./pm install {source} --ref {tag}\n# After editing this repository:\n./pm commit {source} 0.1.1\n./pm update {id} --ref {next_tag}\n./pm rollback {id}\n```\n\nTo generate a static catalog: add the repository URL/path to sources.txt, then run:\n\n```sh\n./pm catalog-update\n```\n\nNo remote is configured. If Git identity was missing, the scaffold configured\nPlugin Demo <demo@example.invalid> locally in this repository only.\n"
+                "# {name}\n\nLocal gitpm demo package, version 0.1.0.\n\nEdit `dist/index.js` directly; there is no build step. `plugin.json` holds the\nplugin ID and version. This is a demo package fixture.\n\nWith the `gitpm` CLI (the workspace is `--root DIR`, `GITPM_ROOT` or `./gitpm-workspace`):\n\n```sh\ngitpm install {source} --ref {tag}\n# After editing this repository:\ngitpm commit {source} 0.1.1\ngitpm update {id} --ref {next_tag}\ngitpm rollback {id}\n```\n\nTo generate a static catalog: add the repository URL/path to sources.txt, then run\n(`GITPM_CATALOG` can replace `--catalog`):\n\n```sh\ngitpm --catalog ./catalog catalog-update\n```\n\nNo remote is configured. If Git identity was missing, the scaffold configured\nPlugin Demo <demo@example.invalid> locally in this repository only.\n"
             ),
         )?;
         git(&directory, &["init", "-b", "main"])?;
@@ -268,6 +268,9 @@ mod tests {
         assert_eq!(files, ".gitignore\nREADME.md\ndist/index.js\nplugin.json");
         let readme = fs::read_to_string(repo.join("README.md")).unwrap();
         assert!(readme.contains("--ref v0.1.0"), "{readme}");
+        assert!(readme.contains("\ngitpm install "), "{readme}");
+        assert!(readme.contains("gitpm --catalog ./catalog catalog-update"));
+        assert!(!readme.contains("./pm"), "{readme}");
         assert!(readme.contains(&shell_quote(repo.to_str().unwrap())));
         assert_eq!(crate::releases::latest(&repo, None).unwrap().name, "v0.1.0");
     }

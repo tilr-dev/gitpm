@@ -66,7 +66,7 @@ impl Fixture {
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
-        if std::env::var_os("PM_KEEP_TEST_ARTIFACTS").is_none() {
+        if std::env::var_os("GITPM_KEEP_TEST_ARTIFACTS").is_none() {
             let _ = fs::remove_dir_all(&self.dir);
         }
     }

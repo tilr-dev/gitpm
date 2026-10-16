@@ -14,7 +14,7 @@ use std::{
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
 /// Unique directory under the OS temp dir, removed on drop
-/// (kept when `PM_KEEP_TEST_ARTIFACTS` is set, as in the integration tests).
+/// (kept when `GITPM_KEEP_TEST_ARTIFACTS` is set, as in the integration tests).
 pub(crate) struct TempDir(PathBuf);
 impl TempDir {
     pub(crate) fn new(label: &str) -> Self {
@@ -37,7 +37,7 @@ impl TempDir {
 }
 impl Drop for TempDir {
     fn drop(&mut self) {
-        if std::env::var_os("PM_KEEP_TEST_ARTIFACTS").is_none() {
+        if std::env::var_os("GITPM_KEEP_TEST_ARTIFACTS").is_none() {
             let _ = fs::remove_dir_all(&self.0);
         }
     }

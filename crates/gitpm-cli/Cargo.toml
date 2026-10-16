@@ -1,0 +1,29 @@
+[package]
+name = "gitpm-cli"
+version = "0.1.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Command-line client for gitpm: install, update and roll back packages from Git repositories and a static catalog"
+readme = "README.md"
+keywords = ["package-manager", "git", "cli", "catalog", "plugins"]
+categories = ["command-line-utilities", "development-tools"]
+include = ["src/**/*.rs", "tests/**/*.rs", "Cargo.toml", "LICENSE-*", "README.md"]
+
+# `cargo binstall gitpm-cli`: the assets release.yml attaches to the GitHub release
+# (scripts/package-cli.sh). Tags are vX.Y.Z; targets without an asset fall back to
+# binstall's other strategies (quickinstall, then compiling).
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-{ target }.tar.gz"
+bin-dir = "{ name }-v{ version }-{ target }/{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[[bin]]
+name = "gitpm"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+serde_json = "1"
+gitpm = { path = "../gitpm", version = "0.1.1" }

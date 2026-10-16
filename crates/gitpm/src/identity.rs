@@ -37,13 +37,13 @@ struct Config {
     namespace: String,
 }
 
-/// Namespace stored in a `.pm.json`-style config file; `None` if the file does not exist.
+/// Namespace stored in a JSON config file (`{"namespace": ...}`); `None` if the file does not exist.
 pub fn read_namespace(config: &Path) -> Result<Option<String>> {
     if !config.exists() {
         return Ok(None);
     }
     let value = serde_json::from_slice::<Config>(&fs::read(config)?)
-        .map_err(|e| Error::InvalidData(format!("invalid .pm.json: {e}")))?
+        .map_err(|e| Error::InvalidData(format!("invalid namespace config: {e}")))?
         .namespace;
     valid_part(&value)?;
     Ok(Some(value))
@@ -176,7 +176,7 @@ mod tests {
         fs::write(&config, "{broken").unwrap();
         let error = resolve_namespace(None, &config).unwrap_err();
         assert_eq!(error.kind(), "invalid_data");
-        assert!(error.to_string().starts_with("invalid .pm.json"));
+        assert!(error.to_string().starts_with("invalid namespace config"));
         // An explicit namespace does not read a broken file.
         assert_eq!(resolve_namespace(Some("dan"), &config).unwrap(), "dan");
     }
