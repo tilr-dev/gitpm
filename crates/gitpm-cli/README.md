@@ -27,6 +27,8 @@ and a `dist/` folder, released with a tag (`acme/greeter@0.1.0`):
 gitpm install ./acme/greeter         # latest release tag → ./gitpm-workspace
 gitpm list                           # installed state (JSON)
 gitpm update acme/greeter            # newest release tag
+gitpm update all --dry-run           # preview a joint compatible upgrade
+gitpm update all                     # apply all selected versions atomically
 gitpm rollback acme/greeter          # back to the previous version
 
 echo './acme/greeter' > sources.txt

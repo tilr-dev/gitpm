@@ -153,6 +153,7 @@ Workspace (installed plugins):
   check                            compare installed versions with the catalog
   update ID [--ref REF]             update to the latest Git release; --channel dev follows
                                    origin HEAD
+  update all [--dry-run]           jointly upgrade compatible releases; preview with --dry-run
   rollback ID                      swap current and previous version
   enable ID | disable ID [--force]  change state only; disable refuses while other
                                    installed plugins depend on ID unless --force
@@ -221,6 +222,7 @@ fn run() -> Result<()> {
     let with = option(&mut args, "--with")?;
     let back = flag(&mut args, "--back")?;
     let force = flag(&mut args, "--force")?;
+    let dry_run = flag(&mut args, "--dry-run")?;
     ensure!(!args.is_empty(), "command required; use --help");
     if let Some(unknown) = args.iter().find(|a| a.len() > 1 && a.starts_with('-')) {
         bail!("unknown option: {unknown}; use --help");
@@ -285,6 +287,12 @@ fn run() -> Result<()> {
         args.len() - 1
     );
     let id = args.get(1).map(String::as_str).unwrap_or("");
+    let update_all = command == "update" && id == "all";
+    ensure!(!dry_run || update_all, "--dry-run requires update all");
+    ensure!(
+        !update_all || (reference.is_none() && !dev),
+        "update all supports stable releases only; --ref and --channel dev are not supported"
+    );
     // Validate input before opening the workspace: a rejected command creates nothing.
     if matches!(
         command,
@@ -298,7 +306,8 @@ fn run() -> Result<()> {
             | "install-catalog"
             | "replace"
             | "fork"
-    ) {
+    ) && !update_all
+    {
         gitpm::valid_id(id)?;
     }
     if command == "fork" {
@@ -478,7 +487,37 @@ fn run() -> Result<()> {
             manager.install_from_catalog(id, version.as_deref())?;
         }
         "update" => {
-            manager.update_channel(id, reference.as_deref(), dev)?;
+            if update_all {
+                let plan = if dry_run {
+                    manager.update_all_plan()?
+                } else {
+                    manager.update_all()?
+                };
+                for change in &plan.updates {
+                    println!(
+                        "Update {}: {} -> {}",
+                        change.id, change.from.version, change.to.version
+                    );
+                }
+                for install in &plan.installs {
+                    println!("Install {}: {}", install.id, install.current.version);
+                }
+                for held in &plan.kept_back {
+                    println!(
+                        "Kept back {}: selected {}, latest {} (dependency constraints)",
+                        held.id, held.selected, held.latest
+                    );
+                }
+                println!(
+                    "{} updates, {} installs, {} kept back.{}",
+                    plan.updates.len(),
+                    plan.installs.len(),
+                    plan.kept_back.len(),
+                    if dry_run { " Nothing was changed." } else { "" }
+                );
+            } else {
+                manager.update_channel(id, reference.as_deref(), dev)?;
+            }
         }
         "rollback" => {
             manager.rollback(id)?;

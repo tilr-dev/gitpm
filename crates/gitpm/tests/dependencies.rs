@@ -578,3 +578,191 @@ fn check_shows_fork_upstream_and_other_catalogs() {
     let m = f.open(&b);
     assert_eq!(row(&m, "vendor/p").status, CheckStatus::OtherCatalog);
 }
+
+#[test]
+fn update_all_coordinates_versions_and_adds_dependencies_atomically() {
+    let f = Fixture::new();
+    let cat = f.catalog("catalog");
+    f.publish(&cat, "lib/core", "1.0.0", &[]);
+    f.publish(&cat, "app/a", "1.0.0", &[("lib/core", "^1")]);
+    let m = f.open(&cat);
+    m.install_from_catalog("app/a", None).unwrap();
+    f.publish(&cat, "lib/core", "2.0.0", &[]);
+    f.publish(&cat, "lib/extra", "1.0.0", &[]);
+    f.publish(
+        &cat,
+        "app/a",
+        "2.0.0",
+        &[("lib/core", "^2"), ("lib/extra", "^1")],
+    );
+    // Neither individual update can cross the version boundary alone.
+    f.refuses("dependency_conflict", || m.update("lib/core"));
+    f.refuses("dependency_conflict", || m.update("app/a"));
+    let before = f.snapshot();
+    let plan = m.update_all_plan().unwrap();
+    assert!(
+        f.snapshot() == before,
+        "planning must not change refs, files or state"
+    );
+    assert_eq!(plan.updates.len(), 2);
+    assert_eq!(plan.installs[0].id, "lib/extra");
+    assert!(plan.kept_back.is_empty());
+    let applied = m.update_all().unwrap();
+    assert_eq!(
+        serde_json::to_value(plan).unwrap(),
+        serde_json::to_value(applied).unwrap()
+    );
+    for id in ["app/a", "lib/core"] {
+        assert_eq!(plugin(&m, id).current.version, "2.0.0");
+        assert_eq!(
+            m.state().unwrap().plugins[id]
+                .previous
+                .as_ref()
+                .unwrap()
+                .version,
+            "1.0.0"
+        );
+        assert_eq!(
+            fs::read_to_string(f.path(&format!("workspace/dist/{id}/index.js"))).unwrap(),
+            format!("{id} 2.0.0")
+        );
+    }
+    assert!(plugin(&m, "app/a").dependencies.iter().all(|d| d.satisfied));
+    assert!(m.update_all().unwrap().updates.is_empty());
+}
+
+#[test]
+fn update_all_backtracks_to_compatible_versions_and_keeps_current_fallback() {
+    let f = Fixture::new();
+    let cat = f.catalog("catalog");
+    f.publish(&cat, "lib/core", "1.0.0", &[]);
+    f.publish(&cat, "app/a", "1.0.0", &[("lib/core", "^1")]);
+    f.publish(&cat, "app/b", "1.0.0", &[("lib/core", "^1")]);
+    let m = f.open(&cat);
+    m.install_from_catalog("app/a", None).unwrap();
+    m.install_from_catalog("app/b", None).unwrap();
+    f.publish(&cat, "lib/core", "1.5.0", &[]);
+    f.publish(&cat, "lib/core", "2.0.0", &[]);
+    f.publish(&cat, "app/a", "1.5.0", &[("lib/core", "^1")]);
+    f.publish(&cat, "app/a", "2.0.0", &[("lib/core", "^2")]);
+    let plan = m.update_all().unwrap();
+    assert_eq!(plugin(&m, "app/a").current.version, "1.5.0");
+    assert_eq!(plugin(&m, "lib/core").current.version, "1.5.0");
+    assert_eq!(plugin(&m, "app/b").current.version, "1.0.0");
+    assert_eq!(
+        plan.kept_back
+            .iter()
+            .map(|p| p.id.as_str())
+            .collect::<Vec<_>>(),
+        ["app/a", "lib/core"]
+    );
+    // An unavailable new dependency makes this release unusable, not the whole upgrade.
+    f.publish(&cat, "app/b", "2.0.0", &[("lib/missing", "^1")]);
+    let plan = m.update_all().unwrap();
+    assert!(plan.updates.is_empty());
+    assert_eq!(plan.kept_back.len(), 3);
+}
+
+#[test]
+fn update_all_handles_cycles_without_a_catalog() {
+    let f = Fixture::new();
+    let a = f.author("x/a");
+    let b = f.author("x/b");
+    f.release(&a, "x/a", "1.0.0", &[]);
+    f.release(&b, "x/b", "1.0.0", &[("x/a", "^1")]);
+    let m = Manager::open(f.path("workspace")).unwrap();
+    m.install(a.to_str().unwrap()).unwrap();
+    m.install(b.to_str().unwrap()).unwrap();
+    f.release(&a, "x/a", "2.0.0", &[("x/b", "^2")]);
+    f.release(&b, "x/b", "2.0.0", &[("x/a", "^2")]);
+    assert_eq!(m.update_all().unwrap().updates.len(), 2);
+    assert!(plugin(&m, "x/a").dependencies[0].satisfied);
+    assert!(plugin(&m, "x/b").dependencies[0].satisfied);
+}
+
+#[test]
+fn update_all_preserves_local_work_and_never_partially_deploys() {
+    let f = Fixture::new();
+    let cat = f.catalog("catalog");
+    for id in ["x/a", "x/b"] {
+        f.publish(&cat, id, "1.0.0", &[]);
+    }
+    let m = f.open(&cat);
+    for id in ["x/a", "x/b"] {
+        m.install_from_catalog(id, None).unwrap();
+        f.publish(&cat, id, "2.0.0", &[]);
+    }
+    let local = f.path("workspace/plugins/x/b/dist/local.js");
+    fs::write(&local, "local work").unwrap();
+    f.refuses("local_changes", || m.update_all());
+    f.refuses("local_changes", || m.update_all_plan());
+    fs::remove_file(local).unwrap();
+    let repo = f.path("authors/x/b");
+    // A valid manifest with an undeployable payload fails after x/a has been staged.
+    fs::remove_dir_all(repo.join("dist")).unwrap();
+    git(&repo, &["add", "--all"]);
+    git(&repo, &["commit", "-qm", "remove dist"]);
+    git(&repo, &["tag", "-f", "x/b@2.0.0"]);
+    f.refuses("invalid_manifest", || m.update_all());
+    assert_eq!(plugin(&m, "x/a").current.version, "1.0.0");
+}
+
+#[test]
+fn update_all_does_not_downgrade_or_accept_mutated_releases() {
+    let f = Fixture::new();
+    let cat = f.catalog("catalog");
+    f.publish(&cat, "x/a", "2.0.0", &[]);
+    let m = f.open(&cat);
+    m.install_from_catalog("x/a", None).unwrap();
+    let repo = f.path("authors/x/a");
+    git(&repo, &["tag", "-d", "x/a@2.0.0"]);
+    f.release(&repo, "x/a", "1.0.0", &[]);
+    assert!(m.update_all().unwrap().updates.is_empty());
+    assert_eq!(plugin(&m, "x/a").current.version, "2.0.0");
+    f.release(&repo, "x/a", "2.0.0", &[]);
+    f.refuses("version_conflict", || m.update_all());
+}
+
+#[test]
+fn update_all_reports_unsatisfiable_state_and_preserves_disabled_flags() {
+    let f = Fixture::new();
+    let cat = f.catalog("catalog");
+    f.publish(&cat, "lib/core", "1.0.0", &[]);
+    f.publish(&cat, "app/a", "1.0.0", &[("lib/core", "^1")]);
+    let m = f.open(&cat);
+    m.install_from_catalog("app/a", None).unwrap();
+    m.set_enabled_with("lib/core", false, true).unwrap();
+    let error = f.refuses("dependency_conflict", || m.update_all());
+    assert!(error.to_string().contains("lib/core"));
+    m.enable("lib/core").unwrap();
+    m.disable("app/a").unwrap();
+    f.publish(&cat, "app/a", "2.0.0", &[("lib/core", "^1")]);
+    m.update_all().unwrap();
+    assert!(!plugin(&m, "app/a").enabled);
+}
+
+#[test]
+fn update_all_resolves_replacement_versions_together_with_consumers() {
+    let f = Fixture::new();
+    let cat = f.catalog("catalog");
+    f.publish(&cat, "vendor/base", "1.0.0", &[]);
+    f.publish(&cat, "app/a", "1.0.0", &[("vendor/base", "^1")]);
+    let m = f.open(&cat);
+    m.install_from_catalog("app/a", None).unwrap();
+    let fork = f.author("mine/base");
+    f.release_manifest(&fork, json!({"id":"mine/base", "version":"1.0.0", "replaces":{"id":"vendor/base", "version":"1.0.0"}}));
+    m.install(fork.to_str().unwrap()).unwrap();
+    m.replace("vendor/base", "mine/base", false).unwrap();
+    f.release_manifest(&fork, json!({"id":"mine/base", "version":"2.0.0", "replaces":{"id":"vendor/base", "version":"2.0.0"}}));
+    // A newer fork that drops its declaration is not an eligible replacement.
+    f.release_manifest(&fork, json!({"id":"mine/base", "version":"3.0.0"}));
+    f.publish(&cat, "app/a", "2.0.0", &[("vendor/base", "^2")]);
+    m.update_all().unwrap();
+    assert_eq!(plugin(&m, "mine/base").current.version, "2.0.0");
+    assert_eq!(plugin(&m, "app/a").current.version, "2.0.0");
+    assert_eq!(plugin(&m, "vendor/base").current.version, "1.0.0");
+    assert_eq!(
+        provider(&m, "app/a", "vendor/base"),
+        (Some("mine/base".into()), true)
+    );
+}

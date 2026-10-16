@@ -231,6 +231,45 @@ lost_work }`. `lost_work` lists `LostWork` items: `Modified`, `Untracked`, `Igno
 deletes anyway. The caller decides how to ask the user. IDs match exactly: on a
 case-insensitive file system `Vendor/Module` never resolves to `vendor/module`.
 
+### Joint upgrades
+
+```sh
+gitpm update all --dry-run        # resolve and validate, without applying
+gitpm update all                  # apply the compatible set atomically
+```
+
+The library exposes `Manager::update_all_plan()` and `Manager::update_all()`;
+Swift/Kotlin bindings expose the same operations. Both return `UpdateAllPlan`
+with `updates`, new dependency `installs`, and `kept_back` entries (selected and
+latest versions). Apply resolves again under the workspace lock; a preview is
+not a saved plan and upstream changes can change the result.
+
+The solver considers all installed plugins together, using stable release tags
+from each repository's origin and the installed revision as a fallback. Missing
+dependencies are resolved from the configured catalog. It prefers newer versions,
+prioritizes installed packages in lexical ID order, and backtracks when a choice
+cannot satisfy the whole graph. This is a deterministic compatible solution,
+not a guarantee of maximizing the number of upgraded packages. A plugin may
+advance to an intermediate compatible release while its newest release is kept
+back. Existing single-plugin install/update behavior remains unchanged.
+
+No plugins are removed or downgraded. Active fork replacements constrain consumers
+using each candidate's declared `replaces.version`; disabled flags are preserved
+and disabled plugins cannot satisfy dependencies. If the existing state is broken
+and no compatible solution repairs it, resolution fails with an explanation.
+Local changes, unpublished work and moved release tags block the operation.
+Dev branches and explicit refs are supported by single-plugin update only.
+
+All selected repositories and payloads are prepared and validated before the
+transaction commits. A preparation failure leaves the workspace unchanged;
+interrupted commits use the existing journal recovery. A dry run also stages and
+validates payloads temporarily, so it can require network access and disk space.
+
+The policy follows the non-removing approach of
+[APT upgrade](https://manpages.debian.org/testing/apt/apt.8.en.html), allowing new
+dependencies. GitPM uses its existing PubGrub dependency solver; it does not invoke
+APT or implement `full-upgrade` removals.
+
 ### Dependencies
 
 `dependencies` maps plugin IDs to Cargo-style requirements (`1.2` = `^1.2`, `~1.2`,
