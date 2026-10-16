@@ -100,7 +100,7 @@ mod tests {
                 "--nocapture",
                 "--test-threads=1",
             ])
-            .env("PM_TEST_HOLD_LOCK", &path)
+            .env("GITPM_TEST_HOLD_LOCK", &path)
             .stdout(std::process::Stdio::piped())
             .spawn()
             .unwrap();
@@ -123,7 +123,7 @@ mod tests {
     #[test]
     #[ignore = "helper process for lock_is_exclusive_across_processes"]
     fn hold_lock_helper() {
-        let Some(path) = std::env::var_os("PM_TEST_HOLD_LOCK") else {
+        let Some(path) = std::env::var_os("GITPM_TEST_HOLD_LOCK") else {
             return;
         };
         let _lock = try_lock(Path::new(&path), "busy").unwrap();

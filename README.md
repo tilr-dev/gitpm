@@ -83,11 +83,13 @@ OK: update hello
 ```
 
 A catalog is generated from the release tags of the repositories listed in a sources
-file (paths are relative to that file). `gitpm init` scaffolds a namespaced plugin with
-its first release; `gitpm commit` bumps the version, commits everything and tags:
+file (paths are relative to that file). `gitpm init NAMESPACE/NAME` (same as `create`)
+scaffolds the plugin repository `./NAMESPACE/NAME` (the folder mirrors the ID) with its
+first release; the namespace is required, there is no default. `gitpm commit` bumps the
+version, commits everything and tags:
 
 ```console
-$ export PM_CATALOG=$PWD/catalog
+$ export GITPM_CATALOG=$PWD/catalog
 $ echo './hello' > sources.txt
 $ gitpm catalog-update
 Reading releases: /…/hello
@@ -101,49 +103,66 @@ Directories and plugins:
     hello/
       hello — latest: 0.2.0, versions: 2
           Git: /…/hello
-$ gitpm namespace me
-Default namespace saved: me (.gitpm.json)
-$ gitpm init greeter
+$ gitpm init hello
+Error: plugin id needs a namespace: use NAMESPACE/NAME, for example dan/hello
+$ gitpm init dan/hello
 
-Created: /…/greeter
-ID: me/greeter
-Version 0.1.0: Git commit and tag me/greeter@0.1.0.
+Created: /…/dan/hello
+ID: dan/hello
+Version 0.1.0: Git commit and tag dan/hello@0.1.0.
 …
-$ echo 'export const greeting = "greeter v2";' > greeter/dist/index.js
-$ gitpm commit greeter 0.1.1
-Created local commit and tag me/greeter@0.1.1.
-$ echo './greeter' >> sources.txt
+$ echo 'export const greeting = "dan/hello v2";' > dan/hello/dist/index.js
+$ gitpm commit dan/hello 0.1.1
+Created local commit and tag dan/hello@0.1.1.
+$ echo './dan/hello' >> sources.txt
 $ gitpm catalog-update
-Reading releases: /…/greeter
+Reading releases: /…/dan/hello
 Reading releases: /…/hello
 Catalog ready: 4 release(s) checked from sources.
-$ gitpm install-catalog me/greeter
-OK: install-catalog me/greeter
-$ cat gitpm-workspace/dist/me/greeter/index.js
-export const greeting = "greeter v2";
+$ gitpm install-catalog dan/hello
+OK: install-catalog dan/hello
+$ cat gitpm-workspace/dist/dan/hello/index.js
+export const greeting = "dan/hello v2";
 $ gitpm check
 Workspace: gitpm-workspace
 Catalog: /…/catalog
 
 PLUGIN                   INSTALLED      LATEST         ENABLED  STATUS
+dan/hello                0.1.1          0.1.1          yes      up to date
 hello                    0.2.0          0.2.0          yes      up to date
-me/greeter               0.1.1          0.1.1          yes      up to date
 
 Updates: 0. Nothing was changed.
-$ gitpm uninstall me/greeter
-OK: uninstall me/greeter
+```
+
+`gitpm fork ID NAMESPACE/NAME` copies an installed plugin (with its Git history and local
+edits) into the new folder `./NAMESPACE/NAME` under that ID. The name stays the same,
+only the namespace changes, so the original and the fork sit side by side:
+
+```console
+$ gitpm fork dan/hello me/hi
+Error: fork keeps the plugin name: use NAMESPACE/hello, not me/hi
+$ gitpm fork dan/hello me/hello
+Fork created: /…/me/hello
+Git history and local edits are kept; the original repository is the upstream remote.
+New ID: me/hello. forkOf records the origin; replaces says the fork can stand in for dan/hello
+(used only after an explicit: gitpm replace dan/hello --with me/hello).
+…
+OK: fork dan/hello
+$ ls -d */hello
+dan/hello
+me/hello
+$ gitpm uninstall dan/hello
+OK: uninstall dan/hello
 ```
 
 Settings: each has a flag, an environment variable and a default (`gitpm --help` lists
-all commands).
+all commands). There is no config file; the old `PM_*` variables are ignored.
 
 | Flag | Variable | Default |
 | --- | --- | --- |
-| `--root DIR` | `PM_ROOT` | `./gitpm-workspace` |
-| `--catalog LOC` (folder, `catalog.json` or HTTP(S) URL) | `PM_CATALOG` | none: catalog commands, `install-catalog` and `check` ask for it |
-| `--sources FILE` | `PM_SOURCES` | `./sources.txt` |
-| `--namespace NAME` (init/create/fork) | `PM_NAMESPACE` | the config file, then `local` |
-| | `PM_CONFIG` | `./.gitpm.json` (default namespace) |
+| `--root DIR` | `GITPM_ROOT` | `./gitpm-workspace` |
+| `--catalog LOC` (folder, `catalog.json` or HTTP(S) URL) | `GITPM_CATALOG` | none: catalog commands, `install-catalog` and `check` ask for it |
+| `--sources FILE` | `GITPM_SOURCES` | `./sources.txt` |
 
 Publishing a catalog is up to you: it is a folder of static files, so any static host
 works (`catalog-update` and `register` write only to a local folder; HTTP(S) catalogs are
@@ -315,14 +334,14 @@ lost-work detection, catalog registration/generation, scaffold and fork. Every f
 `Manager` operation is checked to leave the workspace byte-identical (tree hash) with
 no transaction directory left behind; interrupted commits are rolled forward.
 
-Isolation: tests never read `PM_*`, `HOME` or the network. `.cargo/config.toml` points
+Isolation: tests never read `GITPM_*`/`PM_*`, `HOME` or the network. `.cargo/config.toml` points
 `GIT_CONFIG_GLOBAL` at `tests/gitconfig` and sets `GIT_CONFIG_NOSYSTEM=1`; this applies
 only when cargo runs from this repository (cargo reads config from the current
 directory). CLI tests run the binary with a cleared environment, a fixture
-`HOME`/`TMPDIR` and Git config, and every `PM_*` path inside their temp directory.
+`HOME`/`TMPDIR` and Git config, and every `GITPM_*` path inside their temp directory.
 Unit-test fixtures additionally pass identity/signing settings with
 `git -c`, so they do not depend on the developer's Git config. Temp directories are
-removed unless `PM_KEEP_TEST_ARTIFACTS` is set (the stand's `verify.command` keeps them
+removed unless `GITPM_KEEP_TEST_ARTIFACTS` is set (the stand's `verify.command` keeps them
 for its report).
 
 `#[ignore = "known defect: …"]` tests assert the intended contract and currently fail;

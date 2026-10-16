@@ -1,4 +1,5 @@
-//! The library takes all settings explicitly: PM_* variables must have no effect.
+//! The library takes all settings explicitly: GITPM_* (and legacy PM_*) variables must
+//! have no effect.
 //! Single test in its own binary, so changing the process environment is race-free.
 use gitpm::{Manager, Options, check, identity, scaffold};
 use std::fs;
@@ -17,10 +18,14 @@ fn garbage_pm_environment_is_ignored() {
             "PM_SOURCES",
             "PM_CONFIG",
             "PM_PUBLIC_URL",
+            "GITPM_ROOT",
+            "GITPM_CATALOG",
+            "GITPM_SOURCES",
         ] {
             std::env::set_var(key, &garbage);
         }
         std::env::set_var("PM_NAMESPACE", "garbage-namespace");
+        std::env::set_var("GITPM_NAMESPACE", "garbage-namespace");
     }
     let config = dir.join("pm.json");
     assert_eq!(
@@ -55,7 +60,7 @@ fn garbage_pm_environment_is_ignored() {
     drop(m);
     assert!(!garbage.exists());
     assert!(!dir.join("garbage-namespace").exists());
-    if std::env::var_os("PM_KEEP_TEST_ARTIFACTS").is_none() {
+    if std::env::var_os("GITPM_KEEP_TEST_ARTIFACTS").is_none() {
         let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -4,7 +4,7 @@ use anyhow::{Result, bail, ensure};
 use gitpm::{Error as PmError, Manager, Options, auth, catalog, check, identity, scaffold};
 use gitpm_cli::{catalog as catalog_text, check as check_text};
 use std::io::{self, IsTerminal, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 fn main() {
     if let Err(error) = run() {
@@ -85,20 +85,14 @@ fn option(args: &mut Vec<String>, key: &str) -> Result<Option<String>> {
         Ok(None)
     }
 }
-fn config_path() -> PathBuf {
-    std::env::var_os("PM_CONFIG")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| DEFAULT_CONFIG.into())
-}
-/// Precedence: --namespace, PM_NAMESPACE, config file (PM_CONFIG or .gitpm.json), `local`.
-fn namespace(override_value: Option<&str>) -> Result<String> {
-    let explicit = override_value
-        .map(str::to_owned)
-        .or_else(|| std::env::var("PM_NAMESPACE").ok());
-    Ok(identity::resolve_namespace(
-        explicit.as_deref(),
-        &config_path(),
-    )?)
+/// Split the init/create argument `NAMESPACE/NAME` (a plugin ID, not a path). The
+/// namespace is mandatory: there is no default and no config file.
+fn split_id(value: &str) -> Result<(&str, &str)> {
+    let Some((namespace, name)) = value.split_once('/') else {
+        bail!("plugin id needs a namespace: use NAMESPACE/NAME, for example dan/{value}");
+    };
+    identity::qualified(namespace, name)?;
+    Ok((namespace, name))
 }
 /// Ask on a TTY before discarding local work; anything but y/yes keeps everything.
 fn confirm_lost_work(plan: &gitpm::UninstallPlan) -> Result<bool> {
@@ -123,7 +117,6 @@ fn confirm_lost_work(plan: &gitpm::UninstallPlan) -> Result<bool> {
     Ok(matches!(answer.trim().to_lowercase().as_str(), "y" | "yes"))
 }
 const COMMANDS: &[&str] = &[
-    "namespace",
     "init",
     "create",
     "fork",
@@ -150,7 +143,6 @@ const COMMANDS: &[&str] = &[
 ];
 const DEFAULT_ROOT: &str = "gitpm-workspace";
 const DEFAULT_SOURCES: &str = "sources.txt";
-const DEFAULT_CONFIG: &str = ".gitpm.json";
 const USAGE: &str = "gitpm [--root DIR] [--catalog DIR_OR_JSON_OR_URL] COMMAND
 
 Workspace (installed plugins):
@@ -168,15 +160,16 @@ Workspace (installed plugins):
   uninstall ID [--force]            remove state, repository and dist; asks on a TTY
                                    before losing local work and refuses while others
                                    depend on ID; --force skips both
-  fork ID PATH [--namespace NAME]   copy an installed plugin into your namespace at PATH
+  fork ID NAMESPACE/NAME           copy an installed plugin to the new folder
+                                   ./NAMESPACE/NAME with that ID; NAME must equal the name
+                                   part of ID
   replace ORIGINAL --with FORK [--force]  make FORK provide ORIGINAL for every consumer
   replace ORIGINAL --back [--force]  switch every consumer back to the installed ORIGINAL
                                    (incompatible consumers: asks on a TTY, else --force)
 
 Authoring:
-  namespace [NAME]                 show/set the default namespace (local if unset)
-  init [PATH] | create [PATH]       create a plugin repository at PATH (asks for a name
-                                   if omitted); accepts --namespace NAME
+  init NAMESPACE/NAME              create the plugin repository ./NAMESPACE/NAME with
+  create NAMESPACE/NAME            that ID and release 0.1.0 (init = create)
   commit REPO VERSION              stage ALL changes, commit, create a release tag
   remote REPO URL                  add or replace origin (fetch and push)
   auth check GIT_URL               check repository read access without installing
@@ -190,23 +183,21 @@ Catalog (a local folder of static JSON files, or an HTTP(S) URL for reading):
     [--build-url HTTPS_URL --build-sha256 SHA256]  optional build metadata
   migrate-catalog                  split a local v1 catalog into plugin folders
 
-Settings (flag, then environment, then default):
-  --root DIR        PM_ROOT       workspace directory; default ./gitpm-workspace
-  --catalog LOC     PM_CATALOG    catalog folder, catalog.json or URL; no default
-                                  (needed by catalog commands, install-catalog, check)
-  --sources FILE    PM_SOURCES    Git sources list for catalog-update; default ./sources.txt
-  --namespace NAME  PM_NAMESPACE  namespace for init/create/fork; then the config file
-                    PM_CONFIG     config file with the default namespace; default ./.gitpm.json
+Settings (flag, then environment, then default; there is no config file):
+  --root DIR      GITPM_ROOT       workspace directory; default ./gitpm-workspace
+  --catalog LOC   GITPM_CATALOG    catalog folder, catalog.json or URL; no default
+                                   (needed by catalog commands, install-catalog, check)
+  --sources FILE  GITPM_SOURCES    Git sources list for catalog-update; default ./sources.txt
 
 Nothing is built or executed and nothing is pushed or uploaded: gitpm clones Git
 repositories and copies their dist/ folder.";
 fn run() -> Result<()> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let root = option(&mut args, "--root")?
-        .or_else(|| std::env::var("PM_ROOT").ok())
+        .or_else(|| std::env::var("GITPM_ROOT").ok())
         .unwrap_or(DEFAULT_ROOT.into());
     let catalog_location = option(&mut args, "--catalog")?
-        .or_else(|| std::env::var("PM_CATALOG").ok())
+        .or_else(|| std::env::var("GITPM_CATALOG").ok())
         .filter(|location| !location.is_empty());
     if args.is_empty() || matches!(args[0].as_str(), "help" | "--help" | "-h") {
         println!("{USAGE}");
@@ -227,7 +218,6 @@ fn run() -> Result<()> {
         (Some(url), Some(sha256)) => Some(catalog::Build { url, sha256 }),
         _ => bail!("--build-url and --build-sha256 must be provided together"),
     };
-    let namespace_override = option(&mut args, "--namespace")?;
     let with = option(&mut args, "--with")?;
     let back = flag(&mut args, "--back")?;
     let force = flag(&mut args, "--force")?;
@@ -264,10 +254,6 @@ fn run() -> Result<()> {
         "build options require register"
     );
     ensure!(
-        namespace_override.is_none() || matches!(command, "init" | "create" | "fork"),
-        "--namespace is only valid with init/create/fork"
-    );
-    ensure!(
         reference.is_none() || matches!(command, "install" | "update" | "register"),
         "--ref is not valid for {command}"
     );
@@ -288,14 +274,12 @@ fn run() -> Result<()> {
         "replace needs exactly one of --with FORK or --back"
     );
     let expected = match command {
-        "info" | "catalog-update" | "migrate-catalog" | "list" | "check" | "catalog" | "init"
-        | "create" | "namespace" => 1,
+        "info" | "catalog-update" | "migrate-catalog" | "list" | "check" | "catalog" => 1,
         "auth" | "commit" | "remote" | "fork" => 3,
         _ => 2,
     };
     ensure!(
-        args.len() == expected
-            || (matches!(command, "init" | "create" | "namespace") && args.len() == 2),
+        args.len() == expected,
         "{command}: expected {} argument(s), got {}; use --help",
         expected - 1,
         args.len() - 1
@@ -317,6 +301,15 @@ fn run() -> Result<()> {
     ) {
         gitpm::valid_id(id)?;
     }
+    if command == "fork" {
+        let (_, name) = split_id(&args[2])?;
+        let source_name = id.rsplit('/').next().unwrap_or(id);
+        ensure!(
+            name == source_name,
+            "fork keeps the plugin name: use NAMESPACE/{source_name}, not {}",
+            args[2]
+        );
+    }
     if let Some(fork) = &with {
         gitpm::valid_id(fork)?;
     }
@@ -328,7 +321,7 @@ fn run() -> Result<()> {
     let require_catalog = || -> Result<String> {
         catalog_location.clone().ok_or_else(|| {
             anyhow::anyhow!(
-                "{command} needs a catalog: pass --catalog DIR_OR_JSON_OR_URL or set PM_CATALOG"
+                "{command} needs a catalog: pass --catalog DIR_OR_JSON_OR_URL or set GITPM_CATALOG"
             )
         })
     };
@@ -350,7 +343,7 @@ fn run() -> Result<()> {
             let url = require_catalog()?;
             let sources = sources
                 .clone()
-                .or_else(|| std::env::var("PM_SOURCES").ok())
+                .or_else(|| std::env::var("GITPM_SOURCES").ok())
                 .unwrap_or(DEFAULT_SOURCES.into());
             let report = catalog::update_sources(&url, Path::new(&sources), &mut |event| {
                 let catalog::Progress::ReadingReleases { source } = event;
@@ -369,39 +362,10 @@ fn run() -> Result<()> {
             catalog::migrate(&require_catalog()?)?;
             return Ok(());
         }
-        "namespace" => {
-            if args.len() == 2 {
-                let path = config_path();
-                identity::write_namespace(&path, id)?;
-                println!("Default namespace saved: {id} ({})", path.display());
-            } else {
-                println!("{}", namespace(None)?);
-            }
-            return Ok(());
-        }
         "init" | "create" => {
-            let target = if !id.is_empty() {
-                id.to_owned()
-            } else {
-                loop {
-                    print!("Plugin name (for example my-plugin): ");
-                    io::stdout().flush()?;
-                    let mut name = String::new();
-                    ensure!(
-                        io::stdin().read_line(&mut name)? != 0,
-                        "input ended; nothing was created"
-                    );
-                    let name = name.trim();
-                    if scaffold::validate_name(name).is_ok() {
-                        break name.to_owned();
-                    }
-                    eprintln!("Use 1-80 characters: ASCII letters, digits, '-' or '_'.");
-                }
-            };
-            let namespace = namespace(namespace_override.as_deref())?;
-            let path = scaffold::create_namespaced(Path::new(&target), &namespace)?;
-            let plugin_id =
-                identity::qualified(&namespace, path.file_name().unwrap().to_str().unwrap())?;
+            let (namespace, name) = split_id(id)?;
+            let path = scaffold::create_namespaced(&Path::new(namespace).join(name), namespace)?;
+            let plugin_id = identity::qualified(namespace, name)?;
             let tag = identity::release_tag(&plugin_id, "0.1.0");
             let source = scaffold::shell_quote(&path.to_string_lossy());
             let root = scaffold::shell_quote(&root);
@@ -485,9 +449,10 @@ fn run() -> Result<()> {
     let manager = Manager::open_with(root, Options { catalog })?;
     match command {
         "fork" => {
-            let namespace = namespace(namespace_override.as_deref())?;
-            let path = manager.fork_in_namespace(id, Path::new(&args[2]), &namespace)?;
-            let new_id = identity::qualified(&namespace, id.rsplit('/').next().unwrap())?;
+            let (namespace, name) = split_id(&args[2])?;
+            let path =
+                manager.fork_in_namespace(id, &Path::new(namespace).join(name), namespace)?;
+            let new_id = identity::qualified(namespace, name)?;
             println!(
                 "Fork created: {}\nGit history and local edits are kept; the original repository is the upstream remote.\nNew ID: {new_id}. forkOf records the origin; replaces says the fork can stand in for {id}\n(used only after an explicit: gitpm replace {id} --with {new_id}).\nThe ID change is committed separately. Commit local edits before installing the fork.\nThe original installation is unchanged.\nSet your own origin with: gitpm remote {} GIT_URL",
                 path.display(),

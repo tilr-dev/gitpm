@@ -1,6 +1,6 @@
 //! End-to-end tests of the `gitpm` binary on local Git repositories and catalogs.
 //! Hermetic: each test runs the CLI with a cleared environment, a fixture HOME/TMPDIR
-//! and Git config, and every PM_* path inside its own temp directory.
+//! and Git config, and every GITPM_* path inside its own temp directory.
 use std::{
     fs,
     path::PathBuf,
@@ -41,7 +41,7 @@ impl Fixture {
         f
     }
     /// Process with a hermetic environment: nothing from the developer's shell
-    /// (PM_* exported by .env, global/system Git config, TERM, NO_COLOR) reaches it.
+    /// (GITPM_*/PM_* exported by .env, global/system Git config, TERM, NO_COLOR) reaches it.
     /// Only PATH, a fixture HOME/TMPDIR with its own Git config and what the test
     /// sets explicitly.
     fn command(&self, program: impl AsRef<std::ffi::OsStr>) -> Command {
@@ -55,14 +55,13 @@ impl Fixture {
             .env("GIT_CONFIG_GLOBAL", self.dir.join("home/.gitconfig"));
         command
     }
-    /// The CLI under test, with every PM_* path inside the fixture.
+    /// The CLI under test, with every GITPM_* path inside the fixture.
     fn pm(&self) -> Command {
         let mut command = self.command(env!("CARGO_BIN_EXE_gitpm"));
         command
-            .env("PM_ROOT", &self.root)
-            .env("PM_CONFIG", self.dir.join("pm.json"))
-            .env("PM_SOURCES", self.dir.join("sources.txt"))
-            .env("PM_CATALOG", self.dir.join("catalog"));
+            .env("GITPM_ROOT", &self.root)
+            .env("GITPM_SOURCES", self.dir.join("sources.txt"))
+            .env("GITPM_CATALOG", self.dir.join("catalog"));
         command
     }
     fn git(&self, args: &[&str]) {
@@ -120,7 +119,7 @@ impl Fixture {
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
-        if std::env::var_os("PM_KEEP_TEST_ARTIFACTS").is_none() {
+        if std::env::var_os("GITPM_KEEP_TEST_ARTIFACTS").is_none() {
             let _ = fs::remove_dir_all(&self.dir);
         }
     }
@@ -283,101 +282,31 @@ fn explicit_same_commit_and_numeric_versions_sort_correctly() {
     }
 }
 
-#[test]
-fn interactive_init_reprompts_and_creates_installable_repository() {
-    use std::io::Write;
-    use std::process::Stdio;
-    let f = Fixture::new();
-    let mut child = f
-        .pm()
-        .current_dir(&f.dir)
-        .arg("init")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(b"\n../escape\nmy-plugin\n")
-        .unwrap();
-    let output = child.wait_with_output().unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let source = f.dir.join("my-plugin");
-    assert!(source.join(".git").is_dir());
-    assert!(!f.dir.join("gitpm-workspace").exists());
-    f.cli(
-        &[
-            "install",
-            source.to_str().unwrap(),
-            "--ref",
-            "local/my-plugin@0.1.0",
-        ],
-        true,
-    );
-    assert_eq!(
-        f.state()["plugins"]["local/my-plugin"]["current"]["version"],
-        "0.1.0"
-    );
-    assert!(f.root.join("dist/local/my-plugin/index.js").exists());
-}
-
-#[test]
-fn interactive_create_preserves_existing_path_and_handles_eof() {
-    use std::io::Write;
-    use std::process::Stdio;
-    let f = Fixture::new();
-    fs::create_dir(f.dir.join("existing")).unwrap();
-    fs::write(f.dir.join("existing/keep.txt"), "untouched").unwrap();
-    for input in ["existing\n", ""] {
-        let mut child = f
-            .pm()
-            .current_dir(&f.dir)
-            .arg("create")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(input.as_bytes())
-            .unwrap();
-        assert!(!child.wait_with_output().unwrap().status.success());
+/// Every `.gitpm.json` / `pm.json` under `dir`: the CLI has no config file.
+fn config_files(dir: &std::path::Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        if name == ".gitpm.json" || name == "pm.json" || name == ".pm.json" {
+            found.push(path.clone());
+        }
+        if path.is_dir() && !path.is_symlink() {
+            found.extend(config_files(&path));
+        }
     }
-    assert_eq!(
-        fs::read_to_string(f.dir.join("existing/keep.txt")).unwrap(),
-        "untouched"
-    );
-    assert!(!f.dir.join("existing/.git").exists());
+    found
 }
 
 #[test]
-fn create_at_nested_and_absolute_paths_without_prompting() {
+fn create_and_init_take_an_explicit_id_and_create_the_id_folder() {
     use std::process::Stdio;
     let f = Fixture::new();
-    for (command, path) in [
-        ("init", "demo/demo1".to_owned()),
-        (
-            "create",
-            f.dir
-                .join("other folder/demo2")
-                .to_string_lossy()
-                .into_owned(),
-        ),
-    ] {
+    for (command, id) in [("create", "dan/hello"), ("init", "vendor/demo1")] {
         let output = f
             .pm()
             .current_dir(&f.dir)
-            .args([command, &path])
+            .args([command, id])
             .stdin(Stdio::null())
             .output()
             .unwrap();
@@ -386,33 +315,94 @@ fn create_at_nested_and_absolute_paths_without_prompting() {
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
-        let repo = f.dir.join(&path);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains(&format!("ID: {id}\n")), "{stdout}");
+        let repo = f.dir.join(id);
         let m: serde_json::Value =
             serde_json::from_slice(&fs::read(repo.join("plugin.json")).unwrap()).unwrap();
-        assert_eq!(
-            m["id"].as_str().unwrap(),
-            format!("local/{}", repo.file_name().unwrap().to_str().unwrap())
-        );
+        assert_eq!(m["id"], id);
         assert!(repo.join(".git").is_dir());
         f.cli(
             &[
                 "install",
                 repo.to_str().unwrap(),
                 "--ref",
-                &format!("{}@0.1.0", m["id"].as_str().unwrap()),
+                &format!("{id}@0.1.0"),
             ],
             true,
         );
+        assert_eq!(f.state()["plugins"][id]["current"]["version"], "0.1.0");
+        // Never overwrites: the same folder again fails and keeps the repository.
         let retry = f
             .pm()
             .current_dir(&f.dir)
-            .args([command, &path])
-            .stdin(Stdio::null())
+            .args([command, id])
             .output()
             .unwrap();
         assert!(!retry.status.success());
         assert!(repo.join(".git").is_dir());
     }
+    assert!(
+        config_files(&f.dir).is_empty(),
+        "{:?}",
+        config_files(&f.dir)
+    );
+}
+
+#[test]
+fn create_requires_a_namespace_and_never_prompts_or_reads_the_environment() {
+    use std::process::Stdio;
+    let f = Fixture::new();
+    fs::create_dir_all(f.dir.join("dan/existing")).unwrap();
+    fs::write(f.dir.join("dan/existing/keep.txt"), "untouched").unwrap();
+    for (args, message) in [
+        (
+            &["create", "hello"][..],
+            "plugin id needs a namespace: use NAMESPACE/NAME, for example dan/hello",
+        ),
+        (&["init", "hello"][..], "plugin id needs a namespace"),
+        (&["create"][..], "create: expected 1 argument(s), got 0"),
+        (&["init"][..], "init: expected 1 argument(s), got 0"),
+        (&["create", "dan/a/b"][..], "namespace/name"),
+        (&["create", "../escape"][..], "namespace/name"),
+        (&["create", "/hello"][..], "namespace/name"),
+        (&["create", "dan/"][..], "namespace/name"),
+        (
+            &["create", "dan/hello", "--namespace", "me"][..],
+            "unknown option: --namespace",
+        ),
+        (&["create", "dan/existing"][..], "cannot create"),
+    ] {
+        // Legacy and removed namespace variables must not supply a default.
+        let mut child = f
+            .pm()
+            .env("GITPM_NAMESPACE", "me")
+            .env("PM_NAMESPACE", "me")
+            .current_dir(&f.dir)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        // Input is never read: no interactive name prompt.
+        use std::io::Write;
+        let _ = child.stdin.take().unwrap().write_all(b"me/typed\n");
+        let out = child.wait_with_output().unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{args:?} succeeded");
+        assert!(stderr.contains(message), "{args:?}: {stderr}");
+    }
+    assert!(!f.dir.join("hello").exists());
+    assert!(!f.dir.join("dan/hello").exists());
+    assert!(!f.dir.join("me").exists());
+    assert_eq!(
+        fs::read_to_string(f.dir.join("dan/existing/keep.txt")).unwrap(),
+        "untouched"
+    );
+    assert!(!f.dir.join("dan/existing/.git").exists());
+    assert!(!f.root.exists());
+    assert!(config_files(&f.dir).is_empty());
 }
 
 #[test]
@@ -423,8 +413,9 @@ fn fork_preserves_history_edits_and_original_installation() {
     fs::write(installed.join("dist/index.js"), "local edit").unwrap();
     fs::write(installed.join("notes.txt"), "untracked work").unwrap();
     let state = fs::read(f.root.join("state.json")).unwrap();
-    let destination = f.dir.join("authors/my-hello");
-    f.cli(&["fork", "hello", destination.to_str().unwrap()], true);
+    let destination = f.dir.join("me/hello");
+    let out = f.cli(&["fork", "hello", "me/hello"], true);
+    assert!(out.contains("New ID: me/hello."), "{out}");
     let git_at = |path: &std::path::Path, args: &[&str]| {
         let out = f
             .command("git")
@@ -465,7 +456,7 @@ fn fork_preserves_history_edits_and_original_installation() {
         fs::read_to_string(installed.join("dist/index.js")).unwrap(),
         "local edit"
     );
-    f.cli(&["fork", "hello", destination.to_str().unwrap()], false);
+    f.cli(&["fork", "hello", "me/hello"], false);
     assert_eq!(
         fs::read_to_string(destination.join("dist/index.js")).unwrap(),
         "independent edit"
@@ -476,35 +467,67 @@ fn fork_preserves_history_edits_and_original_installation() {
 fn fork_rejects_managed_destinations_and_unknown_plugins() {
     let f = Fixture::new();
     f.install();
-    let nested = f.root.join("plugins/hello/nested/fork");
-    f.cli(&["fork", "hello", nested.to_str().unwrap()], false);
-    assert!(!f.root.join("plugins/hello/nested").exists());
-    let outside = f.dir.join("outside");
-    f.cli(&["fork", "unknown", outside.to_str().unwrap()], false);
-    assert!(!outside.exists());
+    // ./NS/NAME inside a managed repository is refused.
+    let installed = f.root.join("plugins/hello");
+    let out = f
+        .pm()
+        .current_dir(&installed)
+        .args(["fork", "hello", "me/hello"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(!installed.join("me").exists());
+    f.cli(&["fork", "unknown", "me/unknown"], false);
+    assert!(!f.dir.join("me/unknown").exists());
+    for (args, message) in [
+        (
+            &["fork", "hello", "me"][..],
+            "plugin id needs a namespace: use NAMESPACE/NAME, for example dan/me",
+        ),
+        (
+            &["fork", "hello", "me/other"][..],
+            "fork keeps the plugin name: use NAMESPACE/hello, not me/other",
+        ),
+        (&["fork", "hello", "me/a/b"][..], "namespace/name"),
+        (
+            &["fork", "hello"][..],
+            "fork: expected 2 argument(s), got 1",
+        ),
+        (
+            &["fork", "hello", "me/hello", "extra"][..],
+            "fork: expected 2 argument(s), got 3",
+        ),
+        (
+            &["fork", "hello", "me/hello", "--namespace", "x"][..],
+            "unknown option: --namespace",
+        ),
+    ] {
+        let out = f
+            .pm()
+            .env("GITPM_NAMESPACE", "me")
+            .current_dir(&f.dir)
+            .args(args)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{args:?} succeeded");
+        assert!(stderr.contains(message), "{args:?}: {stderr}");
+    }
+    assert!(!f.dir.join("me").exists());
 }
 
 #[test]
 fn namespaced_fork_and_original_coexist_and_release_independently() {
     let f = Fixture::new();
-    f.cli(&["namespace", "vendor"], true);
-    assert_eq!(f.cli(&["namespace"], true).trim(), "vendor");
-    let source = f.dir.join("author/demo");
-    f.cli(&["init", source.to_str().unwrap()], true);
+    let source = f.dir.join("vendor/demo");
+    f.cli(&["init", "vendor/demo"], true);
     f.cli(&["install", source.to_str().unwrap()], true);
     assert!(f.root.join("dist/vendor/demo/index.js").exists());
-    let fork = f.dir.join("forks/different-directory-name");
-    f.cli(&["fork", "vendor/demo", fork.to_str().unwrap()], false); // same namespace
-    f.cli(
-        &[
-            "fork",
-            "vendor/demo",
-            fork.to_str().unwrap(),
-            "--namespace",
-            "dan",
-        ],
-        true,
-    );
+    let fork = f.dir.join("dan/demo");
+    f.cli(&["fork", "vendor/demo", "vendor/demo"], false); // same namespace
+    assert!(!fork.exists());
+    assert!(source.join("plugin.json").exists());
+    f.cli(&["fork", "vendor/demo", "dan/demo"], true);
     let m: serde_json::Value =
         serde_json::from_slice(&fs::read(fork.join("plugin.json")).unwrap()).unwrap();
     assert_eq!(m["id"], "dan/demo");
@@ -531,22 +554,24 @@ fn namespaced_fork_and_original_coexist_and_release_independently() {
     assert!(f.root.join("plugins/dan/demo/.git").exists());
     f.cli(&["uninstall", "dan/demo"], true);
     assert!(f.root.join("dist/vendor/demo/index.js").exists());
-    assert_eq!(f.cli(&["namespace"], true).trim(), "vendor"); // override not persisted
+    assert!(
+        config_files(&f.dir).is_empty(),
+        "{:?}",
+        config_files(&f.dir)
+    );
 }
 
 #[test]
 fn namespaces_reject_path_traversal_and_legacy_prefix_collisions() {
     let f = Fixture::new();
     f.install();
-    f.cli(&["namespace", "../bad"], false);
+    f.cli(&["create", "../bad"], false);
     for id in ["../hello", "a/../hello", "/hello", "a/b/c", "a//b"] {
         f.cli(&["uninstall", id, "--force"], false);
     }
-    let source = f.dir.join("author/demo");
-    f.cli(
-        &["init", source.to_str().unwrap(), "--namespace", "hello"],
-        true,
-    );
+    let source = f.dir.join("hello/demo");
+    f.cli(&["init", "hello/demo"], true);
+    assert!(source.join("plugin.json").exists());
     f.cli(&["install", source.to_str().unwrap()], false);
     assert!(f.root.join("plugins/hello/.git").exists());
 }
@@ -837,11 +862,8 @@ fn catalog_update_validates_every_source_before_writing_and_retains_removed_sour
     let directory = f.dir.join("generated");
     let location = directory.to_str().unwrap();
     let sources = f.dir.join("sources.txt");
-    let no_tags = f.dir.join("no-tags");
-    f.cli(
-        &["init", no_tags.to_str().unwrap(), "--namespace", "dan"],
-        true,
-    );
+    let no_tags = f.dir.join("dan/no-tags");
+    f.cli(&["init", "dan/no-tags"], true);
     assert!(
         f.command("git")
             .arg("-C")
@@ -852,7 +874,7 @@ fn catalog_update_validates_every_source_before_writing_and_retains_removed_sour
             .status
             .success()
     );
-    fs::write(&sources, "./upstream\n./no-tags\n").unwrap();
+    fs::write(&sources, "./upstream\n./dan/no-tags\n").unwrap();
     f.cli(&["--catalog", location, "catalog-update"], false);
     assert!(!directory.exists());
     // Stable installs have no implicit fallback to the development branch.
@@ -863,12 +885,8 @@ fn catalog_update_validates_every_source_before_writing_and_retains_removed_sour
     );
     fs::write(&sources, "./upstream\n").unwrap();
     f.cli(&["--catalog", location, "catalog-update"], true);
-    let source2 = f.dir.join("second");
-    f.cli(
-        &["init", source2.to_str().unwrap(), "--namespace", "dan"],
-        true,
-    );
-    fs::write(&sources, "./second\n").unwrap();
+    f.cli(&["init", "dan/second"], true);
+    fs::write(&sources, "./dan/second\n").unwrap();
     f.cli(&["--catalog", location, "catalog-update"], true);
     assert!(directory.join("legacy/hello/plugin.json").exists());
     assert!(directory.join("namespaces/dan/second/plugin.json").exists());
@@ -1075,7 +1093,13 @@ fn usage_errors_name_the_problem_and_create_nothing() {
             &["install-catalog", "qa/demo", "--version", "1.x"][..],
             "1.x",
         ),
-        (&["namespace", ""][..], "namespace/name"),
+        (&["namespace"][..], "unknown command: namespace"),
+        (&["namespace", "me"][..], "unknown command: namespace"),
+        (&["create", "hello"][..], "plugin id needs a namespace"),
+        (
+            &["list", "--namespace", "me"][..],
+            "unknown option: --namespace",
+        ),
     ] {
         let out = f
             .pm()
@@ -1089,7 +1113,7 @@ fn usage_errors_name_the_problem_and_create_nothing() {
         assert!(!out.status.success(), "{args:?} succeeded");
         assert!(stderr.contains(message), "{args:?}: {stderr}");
         assert!(!f.root.exists(), "{args:?} created the workspace");
-        assert!(!f.dir.join("pm.json").exists(), "{args:?} wrote config");
+        assert!(config_files(&f.dir).is_empty(), "{args:?} wrote config");
     }
 }
 
@@ -1106,7 +1130,7 @@ fn catalog_commands_name_the_missing_catalog_and_create_nothing() {
     ] {
         let out = f
             .pm()
-            .env_remove("PM_CATALOG")
+            .env_remove("GITPM_CATALOG")
             .current_dir(&f.dir)
             .args(args)
             .output()
@@ -1122,14 +1146,14 @@ fn catalog_commands_name_the_missing_catalog_and_create_nothing() {
     // A direct Git install, list and check of an empty workspace need no catalog.
     let out = f
         .pm()
-        .env_remove("PM_CATALOG")
+        .env_remove("GITPM_CATALOG")
         .args(["check"])
         .output()
         .unwrap();
     assert!(out.status.success());
     let out = f
         .pm()
-        .env_remove("PM_CATALOG")
+        .env_remove("GITPM_CATALOG")
         .args(["install", f.repo.to_str().unwrap()])
         .output()
         .unwrap();
@@ -1159,7 +1183,7 @@ fn defaults_are_relative_to_the_current_directory() {
     let out = f
         .command(env!("CARGO_BIN_EXE_gitpm"))
         .current_dir(&f.dir)
-        .args(["namespace", "me"])
+        .args(["create", "me/hello"])
         .output()
         .unwrap();
     assert!(
@@ -1167,7 +1191,115 @@ fn defaults_are_relative_to_the_current_directory() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(f.dir.join(".gitpm.json").exists());
+    assert!(f.dir.join("me/hello/plugin.json").exists());
+    assert!(config_files(&f.dir).is_empty());
+}
+
+#[test]
+fn legacy_pm_variables_are_ignored() {
+    let f = Fixture::new();
+    let legacy = f.dir.join("legacy");
+    // Only legacy names: they must not act as GITPM_ROOT/CATALOG/SOURCES/NAMESPACE.
+    let cli = |args: &[&str]| {
+        f.command(env!("CARGO_BIN_EXE_gitpm"))
+            .current_dir(&f.dir)
+            .env("PM_ROOT", legacy.join("root"))
+            .env("PM_CATALOG", legacy.join("catalog"))
+            .env("PM_SOURCES", legacy.join("sources.txt"))
+            .env("PM_CONFIG", legacy.join("pm.json"))
+            .env("PM_NAMESPACE", "legacy")
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let out = cli(&["install", "./upstream"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(f.dir.join("gitpm-workspace/dist/hello/index.js").exists());
+    let out = cli(&["info"]);
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("needs a catalog: pass --catalog DIR_OR_JSON_OR_URL or set GITPM_CATALOG")
+    );
+    let out = cli(&["create", "hello"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("plugin id needs a namespace"));
+    let out = cli(&["create", "dan/hello"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let m: serde_json::Value =
+        serde_json::from_slice(&fs::read(f.dir.join("dan/hello/plugin.json")).unwrap()).unwrap();
+    assert_eq!(m["id"], "dan/hello");
+    // The workspace is ./gitpm-workspace (PM_ROOT ignored), so hello is found there.
+    let out = cli(&["fork", "hello", "me/hello"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(f.dir.join("me/hello/plugin.json").exists());
+    assert!(!legacy.exists());
+    assert!(config_files(&f.dir).is_empty());
+}
+
+#[test]
+fn create_install_and_fork_in_one_directory_mirror_the_ids() {
+    let f = Fixture::new();
+    f.cli(&["create", "dan/hello"], true);
+    f.cli(&["install", "./dan/hello"], true);
+    let out = f.cli(&["fork", "dan/hello", "me/hello"], true);
+    assert!(out.contains("New ID: me/hello."), "{out}");
+    for (folder, id) in [("dan/hello", "dan/hello"), ("me/hello", "me/hello")] {
+        let m: serde_json::Value =
+            serde_json::from_slice(&fs::read(f.dir.join(folder).join("plugin.json")).unwrap())
+                .unwrap();
+        assert_eq!(m["id"], id);
+    }
+    let m: serde_json::Value =
+        serde_json::from_slice(&fs::read(f.dir.join("me/hello/plugin.json")).unwrap()).unwrap();
+    assert_eq!(m["forkOf"]["id"], "dan/hello");
+    f.cli(&["install", "./me/hello", "--channel", "dev"], true);
+    assert!(f.root.join("dist/dan/hello/index.js").exists());
+    assert!(f.root.join("dist/me/hello/index.js").exists());
+    assert!(config_files(&f.dir).is_empty());
+}
+
+#[test]
+fn gitpm_variables_set_root_catalog_and_sources() {
+    let f = Fixture::new();
+    fs::write(f.dir.join("sources.txt"), "./upstream\n").unwrap();
+    // pm() sets GITPM_ROOT, GITPM_CATALOG and GITPM_SOURCES; no flags here.
+    let out = f
+        .pm()
+        .current_dir(&f.dir)
+        .args(["catalog-update"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(f.dir.join("catalog/legacy/hello/plugin.json").exists());
+    let out = f
+        .pm()
+        .current_dir(&f.dir)
+        .args(["install-catalog", "hello"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(f.content(), "hello v1");
 }
 
 #[test]

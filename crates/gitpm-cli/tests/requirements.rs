@@ -39,7 +39,7 @@ impl std::ops::Deref for TempDir {
 }
 impl Drop for TempDir {
     fn drop(&mut self) {
-        if std::env::var_os("PM_KEEP_TEST_ARTIFACTS").is_none() {
+        if std::env::var_os("GITPM_KEEP_TEST_ARTIFACTS").is_none() {
             let _ = fs::remove_dir_all(&self.0);
         }
     }

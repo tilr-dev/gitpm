@@ -33,11 +33,18 @@ echo './hello' > sources.txt
 gitpm --catalog ./catalog catalog-update     # local catalog from release tags
 gitpm --catalog ./catalog check              # installed versions vs the catalog
 gitpm --catalog ./catalog --root ./other install-catalog hello   # hashes verified
+
+gitpm create dan/hello               # new plugin repository ./dan/hello, ID dan/hello
+gitpm install ./dan/hello
+gitpm fork dan/hello me/hello        # copy installed dan/hello to ./me/hello as me/hello
 ```
 
+`create`/`init` and `fork` take an explicit `NAMESPACE/NAME`: the folder mirrors it
+(`./NAMESPACE/NAME`), there is no default namespace, and `fork` keeps the plugin name.
+
 Everything works on local folders; nothing is built, executed, pushed or uploaded.
-Settings come from flags, then `PM_ROOT`, `PM_CATALOG`, `PM_SOURCES`, `PM_NAMESPACE` and
-`PM_CONFIG`. Run `gitpm --help` for all commands, and see the
+Settings come from flags (`--root`, `--catalog`, `--sources`), then `GITPM_ROOT`,
+`GITPM_CATALOG` and `GITPM_SOURCES`; there is no config file. Run `gitpm --help` for all commands, and see the
 [repository README](https://github.com/tilr-dev/gitpm#cli-quickstart) for a walkthrough.
 
 License: MIT OR Apache-2.0.
