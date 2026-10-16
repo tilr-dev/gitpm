@@ -17,7 +17,7 @@ pub struct AuthOptions {
 #[derive(Debug, Clone, Serialize)]
 pub struct AuthCheck {
     pub source: String,
-    /// Human-readable confirmation (Russian, as shown by the stand CLI).
+    /// Human-readable confirmation.
     pub message: String,
 }
 
@@ -28,7 +28,7 @@ fn validate(source: &str) -> Result<()> {
     ensure!(
         !source.is_empty() && !source.starts_with('-') && !source.chars().any(char::is_control),
         InvalidArgument,
-        "Укажи Git URL или локальный путь."
+        "Specify a Git URL or a local path."
     );
     if Path::new(source).exists() {
         return Ok(());
@@ -37,38 +37,38 @@ fn validate(source: &str) -> Result<()> {
         ensure!(
             matches!(scheme, "https" | "http" | "ssh" | "git" | "file"),
             InvalidArgument,
-            "Неподдерживаемый протокол Git URL."
+            "Unsupported Git URL scheme."
         );
         let authority = rest.split('/').next().unwrap_or("");
         ensure!(
             !authority.is_empty() || scheme == "file",
             InvalidArgument,
-            "В Git URL не указан хост."
+            "The Git URL has no host."
         );
         if matches!(scheme, "https" | "http") {
             ensure!(
                 !authority.contains('@') && !rest.contains(['?', '#']),
                 InvalidArgument,
-                "Не передавай логин/токен в HTTP URL; используй Git credential helper/Keychain и чистый URL репозитория."
+                "Do not put a user name or token in an HTTP URL; use a Git credential helper (or the system keychain) and the plain repository URL."
             );
         } else if scheme == "ssh" {
             ensure!(
                 !authority.split('@').next().unwrap_or("").contains(':')
                     || !authority.contains('@'),
                 InvalidArgument,
-                "Не передавай пароль в SSH URL; используй SSH-ключ/agent."
+                "Do not put a password in an SSH URL; use an SSH key or agent."
             );
         }
     } else {
         ensure!(
             !source.contains("::"),
             InvalidArgument,
-            "Git remote helpers не поддерживаются этой проверкой."
+            "Git remote helpers are not supported by this check."
         );
         ensure!(
             source.contains(':') || source.starts_with('/') || source.starts_with('.'),
             InvalidArgument,
-            "Укажи полный Git URL или путь к репозиторию."
+            "Specify a full Git URL or a repository path."
         );
     }
     Ok(())
@@ -79,31 +79,31 @@ fn failure(stderr: &str) -> &'static str {
     if message.contains("host key verification failed")
         || message.contains("remote host identification has changed")
     {
-        "Не удалось проверить SSH host key. Проверь ключ сервера и настрой known_hosts обычным SSH; проверка сервера не отключается."
+        "SSH host key verification failed. Check the server key and set up known_hosts with plain SSH; host verification is never disabled."
     } else if message.contains("permission denied")
         && (message.contains("publickey")
             || message.contains("password")
             || message.contains("keyboard-interactive"))
     {
-        "SSH не предоставил доступ. Проверь ключ в ~/.ssh/config, добавление публичного ключа в Git-хостинг и права на репозиторий. Если ключ зашифрован, заранее разблокируй его через ssh-add."
+        "SSH denied access. Check the key in ~/.ssh/config, that the public key is added to the Git host, and the repository permissions. If the key is encrypted, unlock it beforehand with ssh-add."
     } else if message.contains("could not resolve")
         || message.contains("name or service not known")
         || message.contains("nodename nor servname")
     {
-        "Не удалось разрешить имя Git-сервера. Проверь адрес, DNS и подключение к сети/VPN."
+        "Could not resolve the Git server name. Check the address, DNS and the network or VPN connection."
     } else if message.contains("timed out")
         || message.contains("failed to connect")
         || message.contains("connection refused")
         || message.contains("network is unreachable")
     {
-        "Git-сервер недоступен по сети. Проверь адрес, порт, VPN и подключение."
+        "The Git server is unreachable. Check the address, port, VPN and connection."
     } else if message.contains("certificate") || message.contains("ssl") {
-        "Не удалось проверить TLS-сертификат Git-сервера. Проверь доверенные сертификаты и настройки корпоративного прокси."
+        "Could not verify the Git server's TLS certificate. Check the trusted certificates and proxy settings."
     } else if message.contains("repository not found")
         || message.contains("does not appear to be a git repository")
         || message.contains("not found")
     {
-        "Репозиторий не найден или скрыт из-за отсутствия прав. Проверь URL/путь и доступ аккаунта; приватный репозиторий может отвечать как несуществующий."
+        "Repository not found, or hidden for lack of access. Check the URL or path and the account's access; a private repository may look like a missing one."
     } else if message.contains("authentication")
         || message.contains("could not read username")
         || message.contains("could not read password")
@@ -112,9 +112,9 @@ fn failure(stderr: &str) -> &'static str {
         || message.contains("401")
         || message.contains("access denied")
     {
-        "Git не получил авторизацию или нужные права. Настрой credential helper (например macOS Keychain/Git Credential Manager), войди в Git-хостинг и повтори проверку. Для GitHub HTTPS нужен токен или OAuth, не пароль аккаунта."
+        "Git was not authorized or lacks permissions. Set up a credential helper (for example the macOS Keychain or Git Credential Manager), sign in to the Git host and check again. GitHub over HTTPS needs a token or OAuth, not the account password."
     } else {
-        "Git не смог прочитать репозиторий. Проверь адрес и авторизацию обычным git ls-remote. Подробный stderr скрыт: он может содержать секреты."
+        "Git could not read the repository. Check the address and authorization with a plain git ls-remote. The detailed stderr is hidden because it may contain secrets."
     }
 }
 
@@ -124,19 +124,19 @@ pub fn check(source: &str, options: &AuthOptions) -> Result<AuthCheck> {
     validate(source)?;
     // Preserve explicitly configured SSH transports. Standard SSH remains
     // noninteractive, uses the user's config/agent and requires a known host.
-    let custom_ssh = options.custom_ssh
-        || exec::git_config_defined("core.sshCommand", "Не удалось запустить git")?;
+    let custom_ssh =
+        options.custom_ssh || exec::git_config_defined("core.sshCommand", "cannot start git")?;
     let output = exec::ls_remote(
         source,
         (!custom_ssh).then_some(NONINTERACTIVE_SSH),
-        "Не удалось запустить git; проверь установку Git и PATH",
+        "cannot start git; check the Git installation and PATH",
     )?;
     if !output.success {
         fail!(Auth, "{}", failure(&output.stderr));
     }
     Ok(AuthCheck {
         source: source.into(),
-        message: "Доступ на чтение подтверждён (git ls-remote).\nНичего не установлено. Наличие plugin.json, релизных тегов и права на push не проверялись.".into(),
+        message: "Read access confirmed (git ls-remote).\nNothing was installed. plugin.json, release tags and push access were not checked.".into(),
     })
 }
 
@@ -154,7 +154,7 @@ mod tests {
             .contains("credential helper")
         );
         assert!(!failure("fatal: token=supersecret").contains("supersecret"));
-        assert!(failure("Repository not found").contains("отсутствия прав"));
+        assert!(failure("Repository not found").contains("lack of access"));
         assert!(failure("Could not resolve host").contains("DNS"));
     }
     #[test]
@@ -179,29 +179,29 @@ mod tests {
     #[test]
     fn validate_covers_every_rule() {
         let cases: &[(&str, Option<&str>)] = &[
-            ("", Some("Укажи Git URL")),
-            ("-oProxyCommand=x", Some("Укажи Git URL")),
-            ("https://example.com/repo\n.git", Some("Укажи Git URL")),
+            ("", Some("Specify a Git URL")),
+            ("-oProxyCommand=x", Some("Specify a Git URL")),
+            ("https://example.com/repo\n.git", Some("Specify a Git URL")),
             (
                 "ftp://example.com/repo.git",
-                Some("Неподдерживаемый протокол"),
+                Some("Unsupported Git URL scheme"),
             ),
-            ("https:///repo.git", Some("не указан хост")),
-            ("ssh:///repo.git", Some("не указан хост")),
+            ("https:///repo.git", Some("has no host")),
+            ("ssh:///repo.git", Some("has no host")),
             (
                 "https://token@example.com/repo.git",
-                Some("Не передавай логин/токен"),
+                Some("Do not put a user name or token"),
             ),
             (
                 "https://example.com/repo.git#frag",
-                Some("Не передавай логин/токен"),
+                Some("Do not put a user name or token"),
             ),
             (
                 "ssh://git:pw@example.com/repo.git",
-                Some("Не передавай пароль"),
+                Some("Do not put a password"),
             ),
             ("ext::sh -c x", Some("remote helpers")),
-            ("repo-without-scheme", Some("полный Git URL")),
+            ("repo-without-scheme", Some("full Git URL")),
             ("file:///srv/repo.git", None),
             ("http://example.com/repo.git", None),
             ("git://example.com/repo.git", None),
@@ -236,30 +236,27 @@ mod tests {
             ),
             (
                 "git@x: Permission denied (keyboard-interactive).",
-                "SSH не предоставил",
+                "SSH denied access",
             ),
             ("ssh: Could not resolve hostname x", "DNS"),
             ("nodename nor servname provided", "DNS"),
-            ("Connection timed out", "недоступен по сети"),
+            ("Connection timed out", "unreachable"),
             (
                 "connect to host x port 22: Connection refused",
-                "недоступен по сети",
+                "unreachable",
             ),
             ("SSL certificate problem: self signed certificate", "TLS"),
             (
                 "fatal: 'x' does not appear to be a git repository",
-                "не найден",
+                "not found",
             ),
-            ("The requested URL returned error: 403", "авторизацию"),
-            ("remote: HTTP Basic: Access denied", "авторизацию"),
+            ("The requested URL returned error: 403", "not authorized"),
+            ("remote: HTTP Basic: Access denied", "not authorized"),
             (
                 "fatal: Authentication failed for 'https://x'",
-                "авторизацию",
+                "not authorized",
             ),
-            (
-                "something unexpected: secret-token-123",
-                "Подробный stderr скрыт",
-            ),
+            ("something unexpected: secret-token-123", "stderr is hidden"),
         ];
         for (stderr, text) in cases {
             let message = failure(stderr);
@@ -277,7 +274,7 @@ mod tests {
         let options = AuthOptions { custom_ssh: true };
         let result = check(author.source(), &options).unwrap();
         assert_eq!(result.source, author.source());
-        assert!(result.message.starts_with("Доступ на чтение подтверждён"));
+        assert!(result.message.starts_with("Read access confirmed"));
         assert_eq!(crate::test_support::tree_hash(dir.path()), before);
 
         // An empty repository without refs is still readable.
@@ -288,7 +285,7 @@ mod tests {
 
         let error = check(dir.join("missing").to_str().unwrap(), &options).unwrap_err();
         assert_eq!(error.kind(), "auth");
-        assert!(error.to_string().contains("не найден"), "{error}");
+        assert!(error.to_string().contains("not found"), "{error}");
         assert_eq!(check("", &options).unwrap_err().kind(), "invalid_argument");
     }
 }

@@ -5,10 +5,10 @@
 #   scripts/build-apple.sh [OUT_DIR]        default OUT_DIR: $CARGO_TARGET_DIR/apple or target/apple
 #
 # Output:
-#   OUT_DIR/lib/libtilr_plugin_manager_ffi.a        universal (or host-only, see below)
-#   OUT_DIR/swift/tilr_plugin_manager_ffi.swift     Swift API
-#   OUT_DIR/include/tilr_plugin_manager_ffiFFI.h    C header + module.modulemap
-#   OUT_DIR/TilrPluginManagerFFI.xcframework        when xcodebuild is available
+#   OUT_DIR/lib/libgitpm_ffi.a       universal (or host-only, see below)
+#   OUT_DIR/swift/Gitpm.swift        Swift API (module names: crates/gitpm-ffi/uniffi.toml)
+#   OUT_DIR/include/GitpmFFI.h       C header + module.modulemap (C module GitpmFFI)
+#   OUT_DIR/GitpmFFI.xcframework     when xcodebuild is available
 #
 # A missing rustup target is reported and skipped (install with `rustup target add`);
 # the script never installs toolchains itself.
@@ -16,8 +16,8 @@ set -euo pipefail
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
 OUT=${1:-$TARGET_DIR/apple}
-LIB=libtilr_plugin_manager_ffi.a
-CRATE=tilr-plugin-manager-ffi
+LIB=libgitpm_ffi.a
+CRATE=gitpm-ffi
 export MACOSX_DEPLOYMENT_TARGET=${MACOSX_DEPLOYMENT_TARGET:-13.0}
 case $OUT in /*) ;; *) OUT=$PWD/$OUT ;; esac
 # uniffi-bindgen (library mode) runs `cargo metadata` in the working directory.
@@ -58,13 +58,13 @@ mv "$OUT/swift/"*.modulemap "$OUT/include/module.modulemap"
 
 if command -v xcodebuild >/dev/null 2>&1; then
   xcodebuild -create-xcframework -library "$OUT/lib/$LIB" -headers "$OUT/include" \
-    -output "$OUT/TilrPluginManagerFFI.xcframework" >/dev/null
+    -output "$OUT/GitpmFFI.xcframework" >/dev/null
 fi
 
 echo "Library:  $OUT/lib/$LIB"
-echo "Swift:    $OUT/swift/tilr_plugin_manager_ffi.swift"
+echo "Swift:    $OUT/swift/Gitpm.swift"
 echo "Headers:  $OUT/include"
-[ -d "$OUT/TilrPluginManagerFFI.xcframework" ] && echo "XCFramework: $OUT/TilrPluginManagerFFI.xcframework"
+[ -d "$OUT/GitpmFFI.xcframework" ] && echo "XCFramework: $OUT/GitpmFFI.xcframework"
 if [ "${#missing[@]}" -gt 0 ]; then
   echo "Missing targets (not in the library): ${missing[*]}" >&2
 fi

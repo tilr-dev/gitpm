@@ -1,12 +1,15 @@
 [package]
-name = "tilr-plugin-manager-ffi"
+name = "gitpm-ffi"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
 publish = false
-description = "UniFFI bindings (Swift/Kotlin) for tilr-plugin-manager"
+description = "UniFFI bindings (Swift/Kotlin) for gitpm"
 
 [lib]
-name = "tilr_plugin_manager_ffi"
+name = "gitpm_ffi"
 crate-type = ["staticlib", "lib"]
 
 [[bin]]
@@ -18,6 +21,6 @@ required-features = ["bindgen"]
 bindgen = ["uniffi/cli"]
 
 [dependencies]
-tilr-plugin-manager = { path = "../tilr-plugin-manager" }
+gitpm = { path = "../gitpm" }
 thiserror = "2"
 uniffi = "0.32.2"

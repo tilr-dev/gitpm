@@ -24,19 +24,19 @@ pub enum CheckStatus {
     OtherCatalog,
 }
 impl CheckStatus {
-    /// Human-readable status (Russian, as shown by the stand CLI).
+    /// Human-readable status.
     pub fn message(self) -> &'static str {
         match self {
-            CheckStatus::NotInCatalog => "нет в каталоге",
-            CheckStatus::DifferentSource => "другой source в каталоге",
-            CheckStatus::InvalidCatalogData => "некорректные данные каталога",
-            CheckStatus::NoVersions => "нет версий в каталоге",
-            CheckStatus::UncomparableVersion => "версию нельзя сравнить",
-            CheckStatus::SameVersionDifferentCommit => "тот же номер, другой commit",
-            CheckStatus::UpdateAvailable => "доступно обновление",
-            CheckStatus::UpToDate => "актуален",
-            CheckStatus::NewerThanCatalog => "новее каталога",
-            CheckStatus::OtherCatalog => "установлен из другого каталога",
+            CheckStatus::NotInCatalog => "not in catalog",
+            CheckStatus::DifferentSource => "different source in catalog",
+            CheckStatus::InvalidCatalogData => "invalid catalog data",
+            CheckStatus::NoVersions => "no versions in catalog",
+            CheckStatus::UncomparableVersion => "version cannot be compared",
+            CheckStatus::SameVersionDifferentCommit => "same version, different commit",
+            CheckStatus::UpdateAvailable => "update available",
+            CheckStatus::UpToDate => "up to date",
+            CheckStatus::NewerThanCatalog => "newer than catalog",
+            CheckStatus::OtherCatalog => "installed from another catalog",
         }
     }
 }
@@ -290,17 +290,17 @@ mod tests {
         let (mut state, mut catalog) = fixture();
         assert_eq!(
             compare(&state, &Catalog::default())[0].status.message(),
-            "нет в каталоге"
+            "not in catalog"
         );
         catalog.plugins.get_mut("demo").unwrap().source = "another".into();
         assert_eq!(
             compare(&state, &catalog)[0].status.message(),
-            "другой source в каталоге"
+            "different source in catalog"
         );
         let (_, catalog) = fixture();
         state.plugins.get_mut("demo").unwrap().current.commit = "c".repeat(40);
         let rows = compare(&state, &catalog);
-        assert_eq!(rows[0].status.message(), "тот же номер, другой commit");
+        assert_eq!(rows[0].status.message(), "same version, different commit");
         assert!(!rows[0].update_available);
     }
     #[test]
@@ -309,11 +309,11 @@ mod tests {
         let plugin = state.plugins.get_mut("demo").unwrap();
         plugin.current.version = "1.10.0".into();
         plugin.current.commit = "b".repeat(40);
-        assert_eq!(compare(&state, &catalog)[0].status.message(), "актуален");
+        assert_eq!(compare(&state, &catalog)[0].status.message(), "up to date");
         state.plugins.get_mut("demo").unwrap().current.version = "2.0.0".into();
         assert_eq!(
             compare(&state, &catalog)[0].status.message(),
-            "новее каталога"
+            "newer than catalog"
         );
     }
     #[test]
@@ -456,10 +456,7 @@ mod tests {
         }
         let messages: BTreeSet<_> = all.iter().map(|(s, _)| s.message()).collect();
         assert_eq!(messages.len(), all.len());
-        assert_eq!(
-            CheckStatus::UpdateAvailable.message(),
-            "доступно обновление"
-        );
+        assert_eq!(CheckStatus::UpdateAvailable.message(), "update available");
         let (state, catalog) = fixture();
         let row: Row = compare(&state, &catalog).remove(0);
         let value = serde_json::to_value(row).unwrap();

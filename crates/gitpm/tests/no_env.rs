@@ -1,7 +1,7 @@
 //! The library takes all settings explicitly: PM_* variables must have no effect.
 //! Single test in its own binary, so changing the process environment is race-free.
+use gitpm::{Manager, Options, check, identity, scaffold};
 use std::fs;
-use tilr_plugin_manager::{Manager, Options, check, identity, scaffold};
 
 #[test]
 fn garbage_pm_environment_is_ignored() {
@@ -35,7 +35,7 @@ fn garbage_pm_environment_is_ignored() {
     let author = scaffold::create_namespaced(&dir.join("demo"), "explicit").unwrap();
     let catalog_dir = dir.join("catalog");
     let catalog = catalog_dir.to_str().unwrap().to_owned();
-    tilr_plugin_manager::catalog::register(&catalog, author.to_str().unwrap(), "HEAD").unwrap();
+    gitpm::catalog::register(&catalog, author.to_str().unwrap(), "HEAD").unwrap();
     let root = dir.join("workspace");
     let m = Manager::open_with(
         &root,

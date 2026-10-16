@@ -1,0 +1,22 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      cargo:
+        patterns:
+          - '*'
+  # Actions are pinned by commit SHA; Dependabot moves the SHA and its version comment.
+  # Tools downloaded by URL + SHA-256 in the workflows (gitleaks, cargo-deny) are bumped by hand.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+      include: scope

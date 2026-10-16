@@ -4,8 +4,9 @@ use crate::{exec::git, identity};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fs, path::Path};
 
+/// `plugin.json`. Known keys are validated; any other top-level key is kept in `extra` and
+/// written back unchanged (a host can store its own metadata in the same file).
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct Manifest {
     pub id: String,
     pub version: String,
@@ -18,6 +19,10 @@ pub struct Manifest {
     /// the user explicitly replaces that plugin; never applied automatically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replaces: Option<Replaces>,
+    /// Top-level keys this library does not know, kept for round-trips. Written after the
+    /// known keys, in their original order (serde_json `preserve_order`).
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -302,6 +307,89 @@ mod tests {
     }
 
     #[test]
+    fn manifest_keeps_unknown_top_level_keys_through_read_and_write() {
+        let dir = TempDir::new("model");
+        let repo = repo_with(
+            &dir,
+            r#"{"id":"dan/demo1","version":"0.1.0","name":"Demo","host":{"entry":"index.js","flags":[1,true,null]}}"#,
+            true,
+        );
+        let m = manifest(&repo).unwrap();
+        assert_eq!(m.extra["name"], "Demo");
+        assert_eq!(m.extra["host"]["entry"], "index.js");
+        let text = manifest_json(&m).unwrap();
+        let written: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let original: serde_json::Value = serde_json::from_str(
+            r#"{"id":"dan/demo1","version":"0.1.0","dependencies":{},"name":"Demo","host":{"entry":"index.js","flags":[1,true,null]}}"#,
+        )
+        .unwrap();
+        assert_eq!(written, original);
+        // Known keys come first, then the kept ones.
+        assert!(
+            text.find("\"version\"").unwrap() < text.find("\"host\"").unwrap(),
+            "{text}"
+        );
+        fs::write(repo.join("plugin.json"), &text).unwrap();
+        assert_eq!(manifest(&repo).unwrap().extra, m.extra);
+    }
+
+    #[test]
+    fn manifest_keeps_the_original_order_of_unknown_keys() {
+        let dir = TempDir::new("model");
+        let repo = repo_with(
+            &dir,
+            r#"{"zeta":1,"id":"dan/demo1","alpha":{"z":1,"a":2},"version":"0.1.0","mid":true}"#,
+            true,
+        );
+        let text = manifest_json(&manifest(&repo).unwrap()).unwrap();
+        let keys: Vec<&str> = text
+            .lines()
+            .filter(|line| line.starts_with("  \"") && !line.starts_with("    "))
+            .map(|line| line.trim_start().split('"').nth(1).unwrap())
+            .collect();
+        assert_eq!(
+            keys,
+            ["id", "version", "dependencies", "zeta", "alpha", "mid"],
+            "{text}"
+        );
+        // Nested unknown objects keep their order too.
+        assert!(
+            text.find("\"z\": 1").unwrap() < text.find("\"a\": 2").unwrap(),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn manifest_still_validates_known_keys_next_to_unknown_ones() {
+        let dir = TempDir::new("model");
+        for (json, kind) in [
+            // wrong type for a known key
+            (
+                r#"{"id":"dan/demo1","version":1,"x":1}"#,
+                "invalid_manifest",
+            ),
+            // invalid known value
+            (
+                r#"{"id":"dan/demo1","version":"banana","x":1}"#,
+                "invalid_version",
+            ),
+            (r#"{"id":"../x","version":"0.1.0","x":1}"#, "invalid_id"),
+            // missing required key
+            (r#"{"version":"0.1.0","x":1}"#, "invalid_manifest"),
+            // nested known objects stay strict
+            (
+                r#"{"id":"dan/demo1","version":"0.1.0","replaces":{"id":"dan/other","version":"1.0.0","x":1}}"#,
+                "invalid_manifest",
+            ),
+        ] {
+            let _ = fs::remove_dir_all(dir.join("repo"));
+            let repo = repo_with(&dir, json, true);
+            let error = manifest(&repo).unwrap_err();
+            assert_eq!(error.kind(), kind, "{json}: {error}");
+        }
+    }
+
+    #[test]
     fn manifest_parses_minimal_and_fork_manifests() {
         let dir = TempDir::new("model");
         let repo = repo_with(&dir, r#"{"id":"dan/demo1","version":"0.1.0"}"#, true);
@@ -342,16 +430,6 @@ mod tests {
         let cases: Vec<(String, bool, &str)> = vec![
             ("{".into(), true, "invalid_manifest"),
             (r#"{"id":"demo1"}"#.into(), true, "invalid_manifest"),
-            (
-                r#"{"id":"demo1","version":"0.1.0","extra":true}"#.into(),
-                true,
-                "invalid_manifest",
-            ),
-            (
-                r#"{"id":"demo1","version":"0.1.0","pinned":true}"#.into(),
-                true,
-                "invalid_manifest",
-            ),
             (
                 r#"{"id":"../demo1","version":"0.1.0"}"#.into(),
                 true,

@@ -1,5 +1,6 @@
 //! Dependencies between plugins, dependent guards, global fork replacement and the
 //! single-catalog rule, through the public API (ATQ UC-053..059, UC-066).
+use gitpm::{Error, InstalledPlugin, Manager, Options, catalog, scaffold};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -8,7 +9,6 @@ use std::{
     process::Command,
     sync::atomic::{AtomicU64, Ordering},
 };
-use tilr_plugin_manager::{Error, InstalledPlugin, Manager, Options, catalog, scaffold};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -118,7 +118,7 @@ impl Fixture {
     fn refuses<T: std::fmt::Debug>(
         &self,
         kind: &str,
-        op: impl FnOnce() -> tilr_plugin_manager::Result<T>,
+        op: impl FnOnce() -> gitpm::Result<T>,
     ) -> Error {
         let before = self.snapshot();
         let error = op().expect_err("operation must fail");
@@ -535,7 +535,7 @@ fn one_catalog_per_workspace() {
 
 #[test]
 fn check_shows_fork_upstream_and_other_catalogs() {
-    use tilr_plugin_manager::check::CheckStatus;
+    use gitpm::check::CheckStatus;
     let f = Fixture::new();
     let a = f.catalog("catalog-a");
     f.publish(&a, "vendor/p", "1.0.0", &[]);

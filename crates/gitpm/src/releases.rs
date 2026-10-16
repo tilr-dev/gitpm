@@ -107,7 +107,7 @@ pub fn discover_all(repo: &Path, expected_id: Option<&str>) -> Result<Discovery>
     ensure!(
         !releases.is_empty(),
         NoReleases,
-        "no release tags for {id}; create vVERSION or {id}@VERSION, or use --channel dev{}",
+        "no release tags for {id}; create vVERSION or {id}@VERSION, or use the dev channel{}",
         skipped
             .iter()
             .map(|s| format!("; skipped {}", s.reason))

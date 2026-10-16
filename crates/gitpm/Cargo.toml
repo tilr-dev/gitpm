@@ -1,0 +1,21 @@
+[package]
+name = "gitpm"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Embeddable package manager where packages are folders in Git repositories: releases as tags, a catalog, dependency resolution, forks and transactional installs"
+readme = "../../README.md"
+keywords = ["package-manager", "git", "dependencies", "catalog", "registry"]
+categories = ["development-tools", "filesystem"]
+include = ["src/**/*.rs", "tests/**/*.rs", "examples/**/*.rs", "Cargo.toml", "LICENSE-*", "README.md"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
+thiserror = "2"
+libc = "0.2"
+pubgrub = "0.4"
+semver = "1"

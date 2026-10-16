@@ -1,0 +1,9 @@
+# Foreign-language names of the generated bindings (UniFFI 0.32).
+[bindings.swift]
+# Gitpm.swift: the high-level Swift API.
+module_name = "Gitpm"
+# GitpmFFI.h + GitpmFFI.modulemap: the C module the Swift file imports.
+ffi_module_name = "GitpmFFI"
+
+[bindings.kotlin]
+package_name = "gitpm"

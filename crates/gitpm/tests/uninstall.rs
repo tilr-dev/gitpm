@@ -1,4 +1,5 @@
 //! Confirmation-by-plan uninstall: lost-work detection, refusal, confirmed delete, exact IDs.
+use gitpm::{Error, LostWork, Manager, scaffold};
 use std::{
     collections::BTreeSet,
     fs,
@@ -6,7 +7,6 @@ use std::{
     process::Command,
     sync::atomic::{AtomicU64, Ordering},
 };
-use tilr_plugin_manager::{Error, LostWork, Manager, scaffold};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Fixture {
@@ -206,7 +206,7 @@ fn local_commit_message_is_unchanged() {
     let error = m.uninstall("vendor/module", false).unwrap_err();
     assert_eq!(
         error.to_string(),
-        "local commits detected; use --force to discard"
+        "local commits detected; discarding them requires force"
     );
 }
 

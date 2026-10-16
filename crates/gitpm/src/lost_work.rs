@@ -259,16 +259,16 @@ pub(crate) fn refusal(id: &str, items: Vec<LostWork>) -> Error {
             LostWork::HeadMoved { .. } | LostWork::UnpublishedCommit { .. }
         )
     }) {
-        "local commits detected; use --force to discard"
+        "local commits detected; discarding them requires force"
     } else if items.iter().any(|i| {
         matches!(
             i,
             LostWork::UnpublishedBranch { .. } | LostWork::UnpublishedTag { .. }
         )
     }) {
-        "local branches/tags contain unpublished commits; use --force to discard"
+        "local branches/tags contain unpublished commits; discarding them requires force"
     } else {
-        "stash contains local work; use --force to discard"
+        "stash contains local work; discarding it requires force"
     };
     Error::LocalChanges {
         id: id.into(),
@@ -396,23 +396,23 @@ mod tests {
         );
         assert_eq!(
             message(vec![stash.clone(), branch.clone(), commit]),
-            "local commits detected; use --force to discard"
+            "local commits detected; discarding them requires force"
         );
         assert_eq!(
             message(vec![head]),
-            "local commits detected; use --force to discard"
+            "local commits detected; discarding them requires force"
         );
         assert_eq!(
             message(vec![stash.clone(), tag]),
-            "local branches/tags contain unpublished commits; use --force to discard"
+            "local branches/tags contain unpublished commits; discarding them requires force"
         );
         assert_eq!(
             message(vec![branch]),
-            "local branches/tags contain unpublished commits; use --force to discard"
+            "local branches/tags contain unpublished commits; discarding them requires force"
         );
         assert_eq!(
             message(vec![stash]),
-            "stash contains local work; use --force to discard"
+            "stash contains local work; discarding it requires force"
         );
     }
 

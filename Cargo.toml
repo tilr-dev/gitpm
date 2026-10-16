@@ -1,3 +1,10 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+
+[workspace.package]
+edition = "2024"
+# pubgrub 0.4 requires 1.92 (checked with `cargo +1.92 check`; 1.91 fails).
+rust-version = "1.92"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/tilr-dev/gitpm"

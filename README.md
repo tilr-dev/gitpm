@@ -1,19 +1,21 @@
-# tilr-plugin-manager
+# gitpm
 
-Core of the Tilr plugin manager as a standalone Rust library, plus a UniFFI wrapper
-for native apps.
+Embeddable package manager where packages are folders in Git repositories: releases as
+tags, a catalog, dependency resolution, forks and transactional installs. A Rust library
+(no CLI, no UI), plus a UniFFI wrapper for native apps. Its first host is the Tilr macOS app.
 
 ```text
-crates/tilr-plugin-manager/      pure library (no FFI deps)
-crates/tilr-plugin-manager-ffi/  UniFFI bindings (proc-macros, no UDL), staticlib + lib
+crates/gitpm/                    the library (no FFI deps), published as `gitpm`
+crates/gitpm-ffi/                UniFFI bindings (proc-macros, no UDL), staticlib + lib
 scripts/build-apple.sh           universal macOS staticlib + Swift bindings
 ```
 
-Plugins are Git repositories with a `plugin.json` manifest (`id`, `version`,
-`dependencies`, optional `forkOf` and `replaces`) and a ready `dist/` folder. Installing clones the
-repository into a workspace and copies `dist/`; nothing is built or executed.
-Releases are Git tags (`vVERSION` or `namespace/name@VERSION`). The catalog is a tree
-of static JSON files (local folder or HTTP) with exact commits and file hashes.
+A package is a Git repository with a `plugin.json` manifest (`id`, `version`,
+`dependencies`, optional `forkOf` and `replaces`; other keys are kept as they are) and a
+ready `dist/` folder. Installing clones the repository into a workspace and copies `dist/`;
+nothing is built or executed. Releases are Git tags (`vVERSION` or `namespace/name@VERSION`).
+The catalog is a tree of static JSON files (local folder or HTTP) with exact commits and
+file hashes.
 
 ## Rules of the library
 
@@ -23,7 +25,7 @@ of static JSON files (local folder or HTTP) with exact commits and file hashes.
 - Results are data (`serde::Serialize`): state, install/update results, check rows,
   catalog overview, uninstall plan, auth check. Progress of long catalog operations is
   reported through a callback.
-- Errors are `tilr_plugin_manager::Error` (thiserror). `Error::kind()` is a stable
+- Errors are `gitpm::Error` (thiserror). `Error::kind()` is a stable
   snake_case identifier; `Display` is the complete human message.
 - Blocking API. `Manager` is `Send + Sync`; its operations are serialized internally.
   Call it off the UI thread.
@@ -35,7 +37,7 @@ of static JSON files (local folder or HTTP) with exact commits and file hashes.
 ## API overview
 
 ```rust
-use tilr_plugin_manager::{Manager, Options};
+use gitpm::{Manager, Options};
 
 let pm = Manager::open_with("/path/to/workspace", Options { catalog: Some(url) })?;
 pm.install("git@github.com:dan/demo1.git")?;          // latest release tag
@@ -122,34 +124,21 @@ the version the fork started from.
 `git`, `http`, `auth`, `unsupported`, `dependency_conflict`, `has_dependents`,
 `incompatible_replacement`, `invalid_data`, `io`.
 
-## Consumers
+## Swift bindings
 
-**Test stand** (`../temp-plugin-manager`): `manager/` is a thin CLI (`plugin-manager-demo`,
-wrapper `./pm`) that depends on this crate by path. It reads `PM_*` variables, applies
-defaults, prints, asks `Delete anyway? [y/N]` on a TTY, and runs its own `sync.py`
-uploader after `catalog-update --publish`.
-
-**Native app** (macOS): link the static library and use the generated Swift API:
+`crates/gitpm-ffi` wraps the library with UniFFI: the Swift module `Gitpm` over the C module
+`GitpmFFI` (names in `crates/gitpm-ffi/uniffi.toml`; Kotlin package `gitpm`). Link the static
+library and use the generated API:
 
 ```swift
+import Gitpm
+
 let pm = try PluginManager.open(root: workspace, options: ManagerOptions(catalog: catalogURL))
 let plan = try pm.uninstallPlan(id: "dan/demo1")
 if plan.lostWork.isEmpty || userConfirmed(plan.lostWork.map(describeLostWork)) {
     try pm.uninstall(id: "dan/demo1", confirm: !plan.lostWork.isEmpty)
 }
 ```
-
-How the Tilr Mac app (`../apps/mac`) consumes it: `apps/mac/scripts/build-plugin-manager.sh`
-runs `scripts/build-apple.sh` when this repo's sources (`Cargo.*`, `crates/`, `scripts/`) are
-newer than its last build, copies `TilrPluginManagerFFI.xcframework` to `apps/mac/Vendor/` (a
-SwiftPM `binaryTarget`) and the generated Swift to `apps/mac/Sources/TilrPluginManager/Generated/`
-(both gitignored there). The `TilrPluginManager` Swift target wraps `PluginManager` in an async
-`PluginManagerService` (serial queue, lazy open, reopen on a new workspace/catalog, `PmError` →
-`PluginManagerFailure { kind, message }`). The app's `run.sh` and release scripts call it; the
-library is linked statically into the executable (needs only `-lSystem`), so the app bundle
-gains no files to sign. Its checkout is expected at `../plugin-manager` next to `apps/`
-(`TILR_PLUGIN_MANAGER_DIR` overrides). Changing the FFI API means updating
-`PluginManagerService.swift` (and the app's `--probe`).
 
 FFI surface: `PluginManager` (open, list, check, browseCatalog, catalogRelease, install,
 installFromCatalog, update, rollback, enable, disable(force), forget(force), restore,
@@ -159,22 +148,28 @@ switchBack; `force` defaults to false), free functions `authCheck`, `browseCatal
 each with `message`; `LocalChanges` carries `items`). Author/catalog-generation commands
 are not exposed.
 
+## Hosts
+
+Tilr's Mac app consumes the library through the UniFFI xcframework: `scripts/build-apple.sh`
+builds `GitpmFFI.xcframework` (universal static library + C module) and `Gitpm.swift`, which
+the app adds as a SwiftPM `binaryTarget` and a source target (see [Build](#build)).
+
 ## Tests
 
 ```text
-crates/tilr-plugin-manager/src/*.rs     unit tests in each module's #[cfg(test)] mod tests
-crates/tilr-plugin-manager/src/test_support.rs  shared fixtures (temp dirs, hermetic git,
+crates/gitpm/src/*.rs                    unit tests in each module's #[cfg(test)] mod tests
+crates/gitpm/src/test_support.rs         shared fixtures (temp dirs, hermetic git,
                                          plugin repos, tree hash), compiled only for tests
-crates/tilr-plugin-manager/tests/       integration tests of the public API
+crates/gitpm/tests/                      integration tests of the public API
                                          (robustness, uninstall, no_env)
-crates/tilr-plugin-manager-ffi/src/lib.rs  FFI conversion tests (errors, records, free functions)
+crates/gitpm-ffi/src/lib.rs              FFI conversion tests (errors, records, free functions)
 ../temp-plugin-manager/manager/tests/   CLI tests of the stand (separate repository)
 ```
 
 ```sh
 cargo test                                   # whole workspace, ~10 s
-cargo test -p tilr-plugin-manager --lib      # unit tests only
-cargo test -p tilr-plugin-manager --lib -- --ignored   # known-defect tests (expected to fail)
+cargo test -p gitpm --lib      # unit tests only
+cargo test -p gitpm --lib -- --ignored   # known-defect tests (expected to fail)
 cargo clippy --all-targets -- -D warnings
 ```
 
@@ -205,12 +200,16 @@ cargo test
 cargo clippy --all-targets -- -D warnings
 
 # Swift bindings + universal staticlib (aarch64 + x86_64 macOS):
-scripts/build-apple.sh            # → target/apple/{lib,swift,include}, xcframework
+scripts/build-apple.sh            # → target/apple/{lib,swift,include}, GitpmFFI.xcframework
 # Bindings only, from any built library:
-cargo run -p tilr-plugin-manager-ffi --features bindgen --bin uniffi-bindgen -- \
-  generate --library target/release/libtilr_plugin_manager_ffi.a --language swift --out-dir out
+cargo run -p gitpm-ffi --features bindgen --bin uniffi-bindgen -- \
+  generate --library target/release/libgitpm_ffi.a --language swift --out-dir out
 ```
 
 `build-apple.sh` works from any directory (it runs cargo and the bindgen from the repo root).
 It skips (and reports) a rustup target that is not installed; it never
 installs toolchains. UniFFI version: 0.32.
+
+## License
+
+MIT OR Apache-2.0, at your option: [LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE).

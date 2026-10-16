@@ -1,5 +1,5 @@
 //! Small public-API driver for the Dagger CLI/library parity scenario.
-use tilr_plugin_manager::Manager;
+use gitpm::Manager;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();

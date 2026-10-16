@@ -302,7 +302,7 @@ impl Manager {
         ensure!(
             new_id != id,
             InvalidArgument,
-            "fork needs a different namespace; use --namespace NAME"
+            "fork needs a different namespace; pass another namespace"
         );
         ensure!(
             !ids_collide(&new_id, id)
@@ -474,7 +474,7 @@ impl Manager {
         ensure!(
             !dev || reference.is_none(),
             InvalidArgument,
-            "--channel dev conflicts with --ref"
+            "the dev channel conflicts with an explicit ref"
         );
         self.install_ref(source, if dev { Some("HEAD") } else { reference }, None)
     }
@@ -642,7 +642,7 @@ impl Manager {
         ensure!(
             !dev || reference.is_none(),
             InvalidArgument,
-            "--channel dev conflicts with --ref"
+            "the dev channel conflicts with an explicit ref"
         );
         valid_id(id)?;
         self.transaction(|txn, state| {
@@ -707,7 +707,7 @@ impl Manager {
                 ensure!(
                     latest_version >= current_version,
                     VersionConflict,
-                    "latest release is older than installed version; use an explicit --ref to downgrade"
+                    "latest release is older than installed version; downgrading requires an explicit ref"
                 );
                 ensure!(
                     latest_version != current_version || latest.commit == p.current.commit,
@@ -1138,7 +1138,7 @@ fn refuse_dependents(state: &State, id: &str, action: &str) -> Result<()> {
     }
     Err(Error::HasDependents {
         message: format!(
-            "cannot {action} {id}: required by {}; use --force to {action} anyway",
+            "cannot {action} {id}: required by {}; doing it anyway requires force",
             dependents.join(", ")
         ),
         id: id.into(),

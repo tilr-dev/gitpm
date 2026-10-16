@@ -1,10 +1,10 @@
+use gitpm::{Manager, scaffold};
 use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
     sync::atomic::{AtomicU64, Ordering},
 };
-use tilr_plugin_manager::{Manager, scaffold};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Fixture {

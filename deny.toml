@@ -1,0 +1,34 @@
+# cargo-deny (CI job `deny`): RustSec advisories, the license allowlist, duplicate crates
+# and dependency sources, for the whole workspace (the FFI crate's uniffi tree included).
+[graph]
+all-features = true
+
+[advisories]
+# Every advisory (vulnerability, unmaintained, unsound, notice) fails; yanked versions too.
+yanked = "deny"
+ignore = []
+
+[licenses]
+# The licenses the current dependency tree needs (`cargo deny list`). OR-expressions pass
+# when one side is allowed, so e.g. "LGPL-3.0-or-later OR MPL-2.0" passes via MPL-2.0.
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "MPL-2.0", # pubgrub, version-ranges, uniffi
+    "Unicode-3.0", # unicode-ident
+    "Zlib", # foldhash (serde_json preserve_order)
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Workspace path dependencies (gitpm-ffi's `gitpm = { path = ... }`) have no
+# version; they never reach crates.io (gitpm-ffi is publish = false).
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

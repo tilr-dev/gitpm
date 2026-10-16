@@ -48,7 +48,7 @@ fn create_with_id(parent: &Path, name: &str, id: &str) -> Result<PathBuf> {
         fs::write(
             directory.join("README.md"),
             format!(
-                "# {name}\n\nLocal plugin-manager demo, version 0.1.0.\n\nEdit `dist/index.js` directly; there is no build step. `plugin.json` holds the\nplugin ID and version. This is a package fixture, not a Tilr runtime plugin.\n\nFrom the plugin-manager directory:\n\n```sh\n./pm install {source} --ref {tag}\n# After editing this repository:\n./pm commit {source} 0.1.1\n./pm update {id} --ref {next_tag}\n./pm rollback {id}\n```\n\nTo generate a static catalog: add the repository URL/path to sources.txt, then run:\n\n```sh\n./pm catalog-update\n```\n\nNo remote is configured. If Git identity was missing, the scaffold configured\nPlugin Demo <demo@example.invalid> locally in this repository only.\n"
+                "# {name}\n\nLocal gitpm demo package, version 0.1.0.\n\nEdit `dist/index.js` directly; there is no build step. `plugin.json` holds the\nplugin ID and version. This is a demo package fixture.\n\nFrom the plugin-manager directory:\n\n```sh\n./pm install {source} --ref {tag}\n# After editing this repository:\n./pm commit {source} 0.1.1\n./pm update {id} --ref {next_tag}\n./pm rollback {id}\n```\n\nTo generate a static catalog: add the repository URL/path to sources.txt, then run:\n\n```sh\n./pm catalog-update\n```\n\nNo remote is configured. If Git identity was missing, the scaffold configured\nPlugin Demo <demo@example.invalid> locally in this repository only.\n"
             ),
         )?;
         git(&directory, &["init", "-b", "main"])?;

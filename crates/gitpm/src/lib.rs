@@ -1,6 +1,7 @@
-//! Tilr plugin manager core.
+//! gitpm: an embeddable package manager where packages are folders in Git repositories:
+//! releases as tags, a catalog, dependency resolution, forks and transactional installs.
 //!
-//! Plugins are Git repositories with a `plugin.json` manifest and a ready `dist/` folder.
+//! A package is a Git repository with a `plugin.json` manifest and a ready `dist/` folder.
 //! A [`Manager`] owns one locked workspace (`plugins/` clones, deployed `dist/`,
 //! `state.json`) and applies every change transactionally. Catalog functions read and
 //! write a static JSON catalog (local folder or HTTP). Author functions in [`scaffold`]

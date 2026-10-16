@@ -4,8 +4,8 @@
 //! check repository access.
 //!
 //! All calls block (Git/network); call them off the main thread.
+use gitpm as pm;
 use std::{collections::HashMap, sync::Arc};
-use tilr_plugin_manager as pm;
 
 uniffi::setup_scaffolding!();
 
