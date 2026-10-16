@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/tilr-dev/gitpm/compare/v0.2.0...v0.3.0) (2026-10-16)
+
+
+### Features
+
+* resolve and apply compatible updates for all plugins ([#5](https://github.com/tilr-dev/gitpm/issues/5)) ([1680bfc](https://github.com/tilr-dev/gitpm/commit/1680bfc6f8b55cb6cb7994a540b2e193ca025340))
+
 ## [0.2.0](https://github.com/tilr-dev/gitpm/compare/v0.1.1...v0.2.0) (2026-10-16)
 
 
