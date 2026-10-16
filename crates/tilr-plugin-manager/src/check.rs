@@ -100,90 +100,103 @@ fn latest_version(catalog: &Catalog, id: &str) -> Option<String> {
 
 /// [`compare`] for the catalog at `location` (canonical, see
 /// [`crate::catalog::canonical_location`]): plugins installed from another catalog
-/// are reported as [`CheckStatus::OtherCatalog`] instead of being compared.
+/// are reported as [`CheckStatus::OtherCatalog`] and never offered an update, unless
+/// this catalog has a different source ([`CheckStatus::DifferentSource`]) or exactly
+/// the installed release ([`CheckStatus::UpToDate`]).
 pub fn compare_in(state: &State, catalog: &Catalog, location: Option<&str>) -> Vec<CheckRow> {
     state
         .plugins
         .iter()
         .map(|(id, installed)| {
-            let mut row = CheckRow {
-                id: id.clone(),
-                installed: installed.current.version.clone(),
-                latest: None,
-                enabled: installed.enabled,
-                update_available: false,
-                status: CheckStatus::NotInCatalog,
-                upstream: installed.fork_of.as_ref().map(|base| {
-                    let latest = latest_version(catalog, &base.id);
-                    Upstream {
-                        id: base.id.clone(),
-                        base: base.version.clone(),
-                        newer: latest.as_deref().is_some_and(|l| {
-                            matches!((version_key(l), version_key(&base.version)), (Ok(l), Ok(b)) if l > b)
-                        }),
-                        latest,
-                    }
-                }),
-            };
+            let mut row = compare_one(id, installed, catalog);
+            // Single selected catalog: a plugin installed from another catalog is never
+            // offered an update from this one. A different source and an identical
+            // release are still worth reporting as such.
             if let (Some(from), Some(selected)) = (installed.catalog.as_deref(), location)
                 && from != selected
+                && !matches!(
+                    row.status,
+                    CheckStatus::DifferentSource | CheckStatus::UpToDate
+                )
             {
                 row.status = CheckStatus::OtherCatalog;
-                return row;
-            }
-            let Some(plugin) = catalog.plugins.get(id) else {
-                return row;
-            };
-            // Do not suggest replacing a local fork with an unrelated repository of the same ID.
-            if plugin.source != installed.source {
-                row.status = CheckStatus::DifferentSource;
-                return row;
-            }
-            let versions = plugin
-                .versions
-                .iter()
-                .map(|(version, release)| {
-                    let key = version_key(version).ok()?;
-                    if release.manifest.id != *id
-                        || release.manifest.version != *version
-                        || release.source != plugin.source
-                    {
-                        return None;
-                    }
-                    Some((key, release))
-                })
-                .collect::<Option<Vec<_>>>();
-            let Some(versions) = versions else {
-                row.status = CheckStatus::InvalidCatalogData;
-                return row;
-            };
-            let Some((latest_key, latest)) = versions.into_iter().max_by_key(|(key, _)| *key)
-            else {
-                row.status = CheckStatus::NoVersions;
-                return row;
-            };
-            row.latest = Some(latest.manifest.version.clone());
-            let Ok(current_key) = version_key(&installed.current.version) else {
-                row.status = CheckStatus::UncomparableVersion;
-                return row;
-            };
-            if let Some(current) = plugin.versions.get(&installed.current.version)
-                && current.commit != installed.current.commit
-            {
-                row.status = CheckStatus::SameVersionDifferentCommit;
-                return row;
-            }
-            match latest_key.cmp(&current_key) {
-                std::cmp::Ordering::Greater => {
-                    row.update_available = true;
-                    row.status = CheckStatus::UpdateAvailable;
-                }
-                std::cmp::Ordering::Equal => row.status = CheckStatus::UpToDate,
-                std::cmp::Ordering::Less => row.status = CheckStatus::NewerThanCatalog,
+                row.update_available = false;
             }
             row
         })
         .collect()
+}
+
+fn compare_one(id: &str, installed: &crate::Installed, catalog: &Catalog) -> CheckRow {
+    let mut row = CheckRow {
+        id: id.into(),
+        installed: installed.current.version.clone(),
+        latest: None,
+        enabled: installed.enabled,
+        update_available: false,
+        status: CheckStatus::NotInCatalog,
+        upstream: installed.fork_of.as_ref().map(|base| {
+            let latest = latest_version(catalog, &base.id);
+            Upstream {
+                id: base.id.clone(),
+                base: base.version.clone(),
+                newer: latest.as_deref().is_some_and(|l| {
+                    matches!((version_key(l), version_key(&base.version)), (Ok(l), Ok(b)) if l > b)
+                }),
+                latest,
+            }
+        }),
+    };
+    let Some(plugin) = catalog.plugins.get(id) else {
+        return row;
+    };
+    // Do not suggest replacing a local fork with an unrelated repository of the same ID.
+    if plugin.source != installed.source {
+        row.status = CheckStatus::DifferentSource;
+        return row;
+    }
+    let versions = plugin
+        .versions
+        .iter()
+        .map(|(version, release)| {
+            let key = version_key(version).ok()?;
+            if release.manifest.id != *id
+                || release.manifest.version != *version
+                || release.source != plugin.source
+            {
+                return None;
+            }
+            Some((key, release))
+        })
+        .collect::<Option<Vec<_>>>();
+    let Some(versions) = versions else {
+        row.status = CheckStatus::InvalidCatalogData;
+        return row;
+    };
+    let Some((latest_key, latest)) = versions.into_iter().max_by_key(|(key, _)| *key) else {
+        row.status = CheckStatus::NoVersions;
+        return row;
+    };
+    row.latest = Some(latest.manifest.version.clone());
+    let Ok(current_key) = version_key(&installed.current.version) else {
+        row.status = CheckStatus::UncomparableVersion;
+        return row;
+    };
+    if let Some(current) = plugin.versions.get(&installed.current.version)
+        && current.commit != installed.current.commit
+    {
+        row.status = CheckStatus::SameVersionDifferentCommit;
+        return row;
+    }
+    match latest_key.cmp(&current_key) {
+        std::cmp::Ordering::Greater => {
+            row.update_available = true;
+            row.status = CheckStatus::UpdateAvailable;
+        }
+        std::cmp::Ordering::Equal => row.status = CheckStatus::UpToDate,
+        std::cmp::Ordering::Less => row.status = CheckStatus::NewerThanCatalog,
+    }
+    row
 }
 
 /// Read the workspace state and compare it with the catalog. An empty or missing
@@ -297,6 +310,33 @@ mod tests {
         assert_eq!(
             compare(&state, &catalog)[0].status.message(),
             "новее каталога"
+        );
+    }
+    #[test]
+    fn plugin_from_another_catalog_is_never_offered_an_update() {
+        let (mut state, mut catalog) = fixture();
+        state.plugins.get_mut("demo").unwrap().catalog = Some("/catalogs/a".into());
+        let row = |state: &State, catalog: &Catalog| {
+            compare_in(state, catalog, Some("/catalogs/b"))[0].clone()
+        };
+        // Same source, newer release in B: not an update from a foreign catalog.
+        let r = row(&state, &catalog);
+        assert_eq!(
+            (r.status, r.update_available),
+            (CheckStatus::OtherCatalog, false)
+        );
+        // Exactly the installed release in B: up to date.
+        let plugin = state.plugins.get_mut("demo").unwrap();
+        plugin.current.version = "1.10.0".into();
+        plugin.current.commit = "b".repeat(40);
+        assert_eq!(row(&state, &catalog).status, CheckStatus::UpToDate);
+        // Another source in B: reported as such.
+        catalog.plugins.get_mut("demo").unwrap().source = "another".into();
+        assert_eq!(row(&state, &catalog).status, CheckStatus::DifferentSource);
+        // Not in B at all.
+        assert_eq!(
+            row(&state, &Catalog::default()).status,
+            CheckStatus::OtherCatalog
         );
     }
     fn status(state: &State, catalog: &Catalog) -> CheckStatus {

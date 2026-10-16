@@ -48,6 +48,34 @@ fn remove(path: &Path) -> Result<()> {
     }
     Ok(())
 }
+/// Every directory between the root and a managed path (`plugins`, `plugins/<ns>`,
+/// `dist/<ns>`) must be a real directory: through a symlink a write or delete would
+/// land outside the workspace.
+fn ensure_managed_parents(root: &Path, relative: &str) -> Result<()> {
+    let mut current = root.to_path_buf();
+    let parts: Vec<&str> = relative.split('/').collect();
+    for part in &parts[..parts.len() - 1] {
+        current.push(part);
+        match fs::symlink_metadata(&current) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(Error::Workspace(format!(
+                    "managed path is a symlink: {}",
+                    current.display()
+                )));
+            }
+            Ok(meta) if !meta.is_dir() => {
+                return Err(Error::Workspace(format!(
+                    "managed path is not a directory: {}",
+                    current.display()
+                )));
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
+}
 fn present(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok()
 }
@@ -90,6 +118,7 @@ impl Txn {
     /// Symlinks inside the repository are kept as symlinks.
     pub(crate) fn repo(&mut self, id: &str, live: &Path) -> Result<PathBuf> {
         let relative = format!("plugins/{id}");
+        ensure_managed_parents(&self.root, &relative)?;
         let staged = self.staged(&relative);
         if !self.is_staged(&relative) {
             copy_tree(live, &staged, true)?;
@@ -100,6 +129,7 @@ impl Txn {
     /// Adopt a fresh clone (moved from the scratch area) as the plugin's repository.
     pub(crate) fn add_repo(&mut self, id: &str, clone: &Path) -> Result<PathBuf> {
         let relative = format!("plugins/{id}");
+        ensure_managed_parents(&self.root, &relative)?;
         let staged = self.staged(&relative);
         fs::create_dir_all(staged.parent().unwrap())?;
         fs::rename(clone, &staged)?;
@@ -115,6 +145,8 @@ impl Txn {
             self.root.join(&repo_relative)
         };
         let relative = format!("dist/{id}");
+        ensure_managed_parents(&self.root, &repo_relative)?;
+        ensure_managed_parents(&self.root, &relative)?;
         let staged = self.staged(&relative);
         remove(&staged)?;
         copy_tree(&repo.join("dist"), &staged, false)?;
@@ -124,6 +156,7 @@ impl Txn {
     /// Remove the plugin's repository and deployed files on commit.
     pub(crate) fn delete(&mut self, id: &str) -> Result<()> {
         for relative in [format!("plugins/{id}"), format!("dist/{id}")] {
+            ensure_managed_parents(&self.root, &relative)?;
             remove(&self.staged(&relative))?;
             self.journal.paths.insert(relative, Change::Delete);
         }
@@ -170,6 +203,9 @@ pub(crate) fn recover(root: &Path) -> Result<()> {
 fn apply(root: &Path, dir: &Path) -> Result<()> {
     let journal: Journal = serde_json::from_slice(&fs::read(dir.join(JOURNAL))?)
         .map_err(|e| Error::Workspace(format!("corrupt transaction journal: {e}")))?;
+    for relative in journal.paths.keys() {
+        ensure_managed_parents(root, relative)?;
+    }
     for (relative, change) in &journal.paths {
         let live = root.join(relative);
         let staged = dir.join("new").join(relative);

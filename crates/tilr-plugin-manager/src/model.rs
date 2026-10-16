@@ -136,7 +136,14 @@ pub fn valid_id(id: &str) -> Result<()> {
 }
 
 pub(crate) fn manifest(repo: &Path) -> Result<Manifest> {
-    let m: Manifest = serde_json::from_slice(&fs::read(repo.join("plugin.json"))?)
+    let path = repo.join("plugin.json");
+    let bytes = fs::read(&path).map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => {
+            Error::InvalidManifest(format!("missing plugin.json: {}", path.display()))
+        }
+        _ => Error::Io(format!("cannot read {}: {e}", path.display())),
+    })?;
+    let m: Manifest = serde_json::from_slice(&bytes)
         .map_err(|e| Error::InvalidManifest(format!("invalid plugin.json: {e}")))?;
     valid_id(&m.id)?;
     if let Some(base) = &m.fork_of {
@@ -422,10 +429,12 @@ mod tests {
             let error = manifest(&repo).unwrap_err();
             assert_eq!(error.kind(), kind, "{json}: {error}");
         }
-        // A missing plugin.json is an I/O error.
+        // A missing plugin.json is an invalid manifest that names the path.
         let empty = dir.join("empty");
         fs::create_dir_all(empty.join("dist")).unwrap();
-        assert_eq!(manifest(&empty).unwrap_err().kind(), "io");
+        let error = manifest(&empty).unwrap_err();
+        assert_eq!(error.kind(), "invalid_manifest");
+        assert!(error.to_string().contains("empty/plugin.json"), "{error}");
     }
 
     #[test]

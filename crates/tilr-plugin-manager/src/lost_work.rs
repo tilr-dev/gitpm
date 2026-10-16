@@ -155,6 +155,37 @@ fn unpublished_refs(repo: &Path, prefix: &str) -> Result<Vec<(String, u64)>> {
     Ok(result)
 }
 
+/// Local branches and tags with commits no remote-tracking branch contains, and stash
+/// entries: work that survives a checkout but is easy to lose track of.
+fn hidden(repo: &Path) -> Result<Vec<LostWork>> {
+    let mut items = Vec::new();
+    for (name, commits) in unpublished_refs(repo, "refs/heads/")? {
+        items.push(LostWork::UnpublishedBranch { name, commits });
+    }
+    for (name, _) in unpublished_refs(repo, "refs/tags/")? {
+        items.push(LostWork::UnpublishedTag { name });
+    }
+    for entry in git(repo, &["stash", "list"])?.lines() {
+        items.push(LostWork::Stash {
+            entry: entry.into(),
+        });
+    }
+    Ok(items)
+}
+
+/// Refuse when local branches/tags hold unpublished commits or the stash is not empty.
+pub(crate) fn require_no_hidden(repo: &Path, id: &str, message: &str) -> Result<()> {
+    let items = hidden(repo)?;
+    if items.is_empty() {
+        return Ok(());
+    }
+    Err(Error::LocalChanges {
+        id: id.into(),
+        message: message.into(),
+        items,
+    })
+}
+
 /// Every kind of local work in `repo`. `recorded` is the installed commit from state
 /// (`None` for a forgotten repository).
 pub(crate) fn detect(repo: &Path, recorded: Option<&str>) -> Result<Vec<LostWork>> {
@@ -186,17 +217,7 @@ pub(crate) fn detect(repo: &Path, recorded: Option<&str>) -> Result<Vec<LostWork
             summary: summary.into(),
         });
     }
-    for (name, commits) in unpublished_refs(repo, "refs/heads/")? {
-        items.push(LostWork::UnpublishedBranch { name, commits });
-    }
-    for (name, _) in unpublished_refs(repo, "refs/tags/")? {
-        items.push(LostWork::UnpublishedTag { name });
-    }
-    for entry in git(repo, &["stash", "list"])?.lines() {
-        items.push(LostWork::Stash {
-            entry: entry.into(),
-        });
-    }
+    items.extend(hidden(repo)?);
     Ok(items)
 }
 

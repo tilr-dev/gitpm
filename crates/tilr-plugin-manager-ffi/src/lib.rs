@@ -771,7 +771,7 @@ mod tests {
     fn errors_keep_kind_and_message() {
         let error: PmError = pm::Error::NotInstalled { id: "a/b".into() }.into();
         assert!(matches!(&error, PmError::NotInstalled { id, .. } if id == "a/b"));
-        assert_eq!(error.to_string(), "plugin is not installed");
+        assert_eq!(error.to_string(), "plugin a/b is not installed");
         let error: PmError = pm::Error::LocalChanges {
             id: "a/b".into(),
             message: "dirty".into(),
@@ -1047,6 +1047,7 @@ mod tests {
             source: "src".into(),
             current: revision("1.0.0"),
             fork_of: None,
+            skipped: Vec::new(),
         });
         assert!(result.fork_of.is_none());
         assert_eq!(result.current.commit, "1.0.0-commit");

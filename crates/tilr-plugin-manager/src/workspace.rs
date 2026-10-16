@@ -37,6 +37,10 @@ pub struct InstallResult {
     pub current: Revision,
     #[serde(rename = "forkOf", skip_serializing_if = "Option::is_none")]
     pub fork_of: Option<ForkOf>,
+    /// Broken release tags passed over while choosing the latest release (direct
+    /// installs without an explicit ref); the caller should warn about them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub skipped: Vec<releases::SkippedTag>,
 }
 /// Result of update/rollback: `from` → `to`; `changed` is false for a no-op update.
 #[derive(Clone, Debug, Serialize)]
@@ -164,18 +168,30 @@ impl Manager {
     }
     pub fn open_with(root: impl AsRef<Path>, options: Options) -> Result<Self> {
         let root = std::path::absolute(root)?;
-        let name = root
+        let file_name = root
             .file_name()
-            .require(Error::Workspace, "workspace needs a directory name")?
-            .to_str()
-            .require(Error::Workspace, "non-UTF8 workspace name")?;
+            .require(Error::Workspace, "workspace needs a directory name")?;
         let parent = root
             .parent()
             .require(Error::Workspace, "workspace needs a parent")?;
         fs::create_dir_all(parent)?;
-        // Keyed by the real path: a symlinked spelling of the parent is the same lock.
+        // Keyed by the real path: a symlinked spelling of the root or of its parent is
+        // the same workspace and must take the same lock.
+        let real = if fs::symlink_metadata(&root).is_ok() {
+            fs::canonicalize(&root)?
+        } else {
+            fs::canonicalize(parent)?.join(file_name)
+        };
+        let name = real
+            .file_name()
+            .require(Error::Workspace, "workspace needs a directory name")?
+            .to_str()
+            .require(Error::Workspace, "non-UTF8 workspace name")?;
         let lock = crate::lock::try_lock(
-            &fs::canonicalize(parent)?.join(format!(".{name}.lock")),
+            &real
+                .parent()
+                .require(Error::Workspace, "workspace needs a parent")?
+                .join(format!(".{name}.lock")),
             "workspace is already in use",
         )?;
         let manager = Self {
@@ -499,7 +515,7 @@ impl Manager {
                 source: &source,
                 ..fetch
             };
-            let (repo, m) = clone_revision(txn, &fetch, "incoming")?;
+            let (repo, m, skipped) = clone_revision(txn, &fetch, "incoming")?;
             check_new_id(txn.root(), state, &m)?;
             // Everything installed stays at its version; the new plugin is added on top.
             let mut next = state.clone();
@@ -516,7 +532,9 @@ impl Manager {
             }
             let missing = deps::solve(&fixed, &roots, self.options.catalog.as_deref())?;
             self.install_missing(txn, state, &missing)?;
-            adopt(txn, state, &repo, &m, source.clone(), origin.clone())
+            let mut result = adopt(txn, state, &repo, &m, source.clone(), origin.clone())?;
+            result.skipped = skipped;
+            Ok(result)
         })
     }
     /// Install catalog releases chosen by the solver (inside the current transaction).
@@ -535,7 +553,7 @@ impl Manager {
         for (number, (id, version)) in missing.iter().enumerate() {
             let release = catalog::lookup(location, id, Some(&version.to_string()))?;
             catalog::validate_release(&release, id, &release.manifest.version)?;
-            let (repo, m) = clone_revision(
+            let (repo, m, _) = clone_revision(
                 txn,
                 &Fetch::release(&release),
                 &format!("dependency-{number}"),
@@ -638,8 +656,19 @@ impl Manager {
                 &p.current.commit,
                 "local commits detected; update would discard them",
             )?;
+            lost_work::require_no_hidden(
+                &live,
+                id,
+                "local branches, tags or stash hold unpublished work; keep or remove them before updating",
+            )?;
             let repo = txn.repo(id, &live)?;
-            git(&repo, &["fetch", "origin", "--tags"])?;
+            // Mirror upstream tags exactly: a deleted release disappears, a moved one is
+            // seen at its new commit (and refused below as a version conflict). Local
+            // tags holding unpublished commits were refused above, so nothing is lost.
+            git(
+                &repo,
+                &["fetch", "origin", "--prune", "--prune-tags", "--force", "--tags"],
+            )?;
             if dev || reference == Some("HEAD") {
                 git(&repo, &["remote", "set-head", "origin", "--auto"])?;
             }
@@ -721,6 +750,11 @@ impl Manager {
             let live = plugin_repo(txn.root(), id)?;
             clean(&live, id)?;
             lost_work::require_head(&live, id, &p.current.commit, "local commits detected")?;
+            lost_work::require_no_hidden(
+                &live,
+                id,
+                "local branches, tags or stash hold unpublished work; keep or remove them before rolling back",
+            )?;
             let repo = txn.repo(id, &live)?;
             git(&repo, &["checkout", "--detach", &previous.commit])?;
             let m = manifest(&repo)?;
@@ -791,13 +825,14 @@ impl Manager {
     pub fn restore(&self, id: &str) -> Result<InstallResult> {
         valid_id(id)?;
         self.transaction(|txn, state| {
+            // A missing clone is the real problem even when the ID is still registered.
+            let repo = plugin_repo(txn.root(), id)?;
             if state.plugins.contains_key(id) {
                 return Err(Error::AlreadyInstalled {
                     id: id.into(),
-                    message: "plugin is already registered".into(),
+                    message: format!("plugin {id} is already registered"),
                 });
             }
-            let repo = plugin_repo(txn.root(), id)?;
             clean(&repo, id)?;
             let m = manifest(&repo)?;
             ensure!(m.id == id, InvalidManifest, "plugin id mismatch");
@@ -814,6 +849,7 @@ impl Manager {
                 source: installed.source.clone(),
                 current: installed.current.clone(),
                 fork_of: installed.fork_of.clone(),
+                skipped: Vec::new(),
             };
             state.plugins.insert(id.to_owned(), installed);
             txn.deploy(id)?;
@@ -938,7 +974,11 @@ impl<'a> Fetch<'a> {
 }
 
 /// Clone into the transaction's scratch area, check out and verify the revision.
-fn clone_revision(txn: &Txn, fetch: &Fetch, name: &str) -> Result<(PathBuf, Manifest)> {
+fn clone_revision(
+    txn: &Txn,
+    fetch: &Fetch,
+    name: &str,
+) -> Result<(PathBuf, Manifest, Vec<releases::SkippedTag>)> {
     let repo = txn.scratch(name);
     let parent = repo.parent().unwrap();
     fs::create_dir_all(parent)?;
@@ -946,9 +986,19 @@ fn clone_revision(txn: &Txn, fetch: &Fetch, name: &str) -> Result<(PathBuf, Mani
         parent,
         &["clone", "--no-hardlinks", "--", fetch.source, name],
     )?;
+    let mut skipped = Vec::new();
     let commit = match fetch.reference {
         Some(reference) => resolve_ref(&repo, reference)?,
-        None => releases::latest(&repo, None)?.commit,
+        None => {
+            let mut found = releases::discover_all(&repo, None)?;
+            found.ensure_latest_is_valid()?;
+            skipped = std::mem::take(&mut found.skipped);
+            found
+                .tags
+                .pop()
+                .require(Error::NoReleases, "no releases")?
+                .commit
+        }
     };
     git(&repo, &["checkout", "--detach", &commit])?;
     let m = manifest(&repo)?;
@@ -966,7 +1016,7 @@ fn clone_revision(txn: &Txn, fetch: &Fetch, name: &str) -> Result<(PathBuf, Mani
             "catalog file hashes do not match git dist"
         );
     }
-    Ok((repo, m))
+    Ok((repo, m, skipped))
 }
 
 /// The new plugin's ID must not collide with anything installed or retained.
@@ -1037,6 +1087,7 @@ fn adopt(
         source,
         current,
         fork_of: m.fork_of.clone(),
+        skipped: Vec::new(),
     })
 }
 
@@ -1537,7 +1588,7 @@ mod tests {
                 matches!(&error, Error::NotInstalled { id: e } if e == id),
                 "{error:?}"
             );
-            assert_eq!(error.to_string(), "plugin is not installed");
+            assert_eq!(error.to_string(), format!("plugin {id} is not installed"));
         }
         for error in [
             ws.refuses("repository_not_found", || m.uninstall_plan(id)),
@@ -1752,7 +1803,15 @@ mod tests {
         let p = &m.state().unwrap().plugins["dan/demo1"];
         assert!(p.enabled && p.previous.is_none());
         let error = ws.refuses("already_installed", || m.restore("dan/demo1"));
-        assert_eq!(error.to_string(), "plugin is already registered");
+        assert_eq!(error.to_string(), "plugin dan/demo1 is already registered");
+    }
+
+    #[test]
+    fn restore_of_registered_plugin_without_clone_reports_the_missing_repository() {
+        let (ws, m) = Ws::installed("dan/demo1");
+        fs::remove_dir_all(ws.repo()).unwrap();
+        let error = ws.refuses("repository_not_found", || m.restore("dan/demo1"));
+        assert!(error.to_string().contains("dan/demo1"), "{error}");
     }
 
     #[test]
@@ -1855,6 +1914,37 @@ mod tests {
             error.to_string(),
             "release commit changed for installed version"
         );
+    }
+
+    #[test]
+    fn stable_update_follows_deleted_and_moved_upstream_tags() {
+        let (ws, m) = Ws::installed("dan/demo1");
+        ws.author.release("0.2.0");
+        m.update("dan/demo1").unwrap();
+        // Moved release tag: same version, other commit.
+        same_version_commit(&ws.author);
+        fixture_git(&ws.author.path, &["tag", "-f", "dan/demo1@0.2.0"]);
+        let error = ws.refuses("version_conflict", || m.update("dan/demo1"));
+        assert_eq!(
+            error.to_string(),
+            "release commit changed for installed version"
+        );
+        // Deleted release tag: the installed version is no longer the latest release.
+        fixture_git(&ws.author.path, &["tag", "-d", "dan/demo1@0.2.0"]);
+        let error = ws.refuses("version_conflict", || m.update("dan/demo1"));
+        assert!(error.to_string().starts_with("latest release is older"));
+    }
+
+    #[test]
+    fn direct_install_reports_skipped_broken_release_tags() {
+        let ws = Ws::new("dan/demo1");
+        // An old tag whose manifest disagrees with the tag version.
+        fixture_git(&ws.author.path, &["tag", "dan/demo1@0.0.9"]);
+        ws.author.release("0.2.0");
+        let result = ws.open().install(ws.author.source()).unwrap();
+        assert_eq!(result.current.version, "0.2.0");
+        let names: Vec<_> = result.skipped.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["dan/demo1@0.0.9"]);
     }
 
     #[test]
@@ -2249,5 +2339,86 @@ mod tests {
         fixture_git(&bad.path, &["commit", "-q", "-m", "symlink in dist"]);
         fixture_git(&bad.path, &["tag", "-f", "dan/bad@0.1.0"]);
         ws.refuses("unsupported", || m.install(bad.source()));
+    }
+
+    #[test]
+    fn symlinked_namespace_directory_is_never_followed() {
+        // Install: `plugins/vendor` points outside; nothing may be written there.
+        let ws = Ws::new("vendor/demo1");
+        let m = ws.open();
+        let outside = ws.dir.join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, ws.root.join("plugins/vendor")).unwrap();
+        ws.refuses("workspace", || m.install(ws.author.source()));
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
+
+        // Uninstall/update of an installed plugin whose namespace was swapped for a
+        // symlink: the external directory survives untouched.
+        let (ws, m) = Ws::installed("dan/demo1");
+        let outside = ws.dir.join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::rename(ws.root.join("plugins/dan"), outside.join("dan")).unwrap();
+        std::os::unix::fs::symlink(outside.join("dan"), ws.root.join("plugins/dan")).unwrap();
+        ws.refuses("workspace", || m.uninstall_with("dan/demo1", true, true));
+        assert!(outside.join("dan/demo1/.git").is_dir());
+        ws.author.release("0.2.0");
+        ws.refuses("workspace", || m.update("dan/demo1"));
+
+        let (ws, m) = Ws::installed("dan/demo1");
+        let outside = ws.dir.join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::rename(ws.root.join("dist/dan"), outside.join("dan")).unwrap();
+        std::os::unix::fs::symlink(outside.join("dan"), ws.root.join("dist/dan")).unwrap();
+        ws.refuses("workspace", || m.uninstall_with("dan/demo1", true, true));
+        assert!(outside.join("dan/demo1").is_dir());
+    }
+
+    #[test]
+    fn update_and_rollback_refuse_hidden_local_work() {
+        type Setup = fn(&Path);
+        let cases: [(&str, Setup); 3] = [
+            ("stash", |repo| {
+                fs::write(repo.join("plugin.json"), "{}\n").unwrap();
+                fixture_git(repo, &["stash", "-q"]);
+            }),
+            ("branch", |repo| {
+                fixture_git(repo, &["switch", "-q", "-c", "local-only"]);
+                fs::write(repo.join("extra.txt"), "x\n").unwrap();
+                fixture_git(repo, &["add", "extra.txt"]);
+                fixture_git(repo, &["commit", "-q", "-m", "branch only"]);
+                fixture_git(repo, &["switch", "-q", "--detach", "HEAD~1"]);
+            }),
+            ("tag", |repo| {
+                fixture_git(repo, &["switch", "-q", "--detach"]);
+                fs::write(repo.join("extra.txt"), "x\n").unwrap();
+                fixture_git(repo, &["add", "extra.txt"]);
+                fixture_git(repo, &["commit", "-q", "-m", "tag only"]);
+                fixture_git(repo, &["tag", "local-only"]);
+                fixture_git(repo, &["switch", "-q", "--detach", "HEAD~1"]);
+            }),
+        ];
+        for (name, setup) in cases {
+            let (ws, m) = Ws::installed("dan/demo1");
+            ws.author.release("0.2.0");
+            m.update("dan/demo1").unwrap();
+            ws.author.release("0.3.0");
+            setup(&ws.repo());
+            let error = ws.refuses("local_changes", || m.update("dan/demo1"));
+            assert!(error.to_string().contains("stash"), "{name}: {error}");
+            ws.refuses("local_changes", || m.rollback("dan/demo1"));
+        }
+    }
+
+    #[test]
+    fn symlinked_workspace_root_shares_the_lock() {
+        let ws = Ws::new("dan/demo1");
+        let m = ws.open();
+        let alias = ws.dir.join("alias");
+        std::os::unix::fs::symlink(&ws.root, &alias).unwrap();
+        let error = Manager::open(&alias)
+            .err()
+            .expect("same workspace, same lock");
+        assert_eq!(error.kind(), "locked");
+        drop(m);
     }
 }
