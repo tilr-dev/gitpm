@@ -2,12 +2,15 @@
 
 Embeddable package manager where packages are folders in Git repositories: releases as
 tags, a catalog, dependency resolution, forks and transactional installs. A Rust library
-(no CLI, no UI), plus a UniFFI wrapper for native apps. Its first host is the Tilr macOS app.
+(no CLI, no UI) with a UniFFI wrapper for native apps; the separate `gitpm-cli` crate is a
+command-line client over it. Its first host is the Tilr macOS app.
 
 ```text
 crates/gitpm/                    the library (no FFI deps), published as `gitpm`
 crates/gitpm-ffi/                UniFFI bindings (proc-macros, no UDL), staticlib + lib
+crates/gitpm-cli/                command-line client, published as `gitpm-cli` (binary `gitpm`)
 scripts/build-apple.sh           universal macOS staticlib + Swift bindings
+scripts/package-cli.sh           release archive of the `gitpm` binary (release.yml)
 ```
 
 A package is a Git repository with a `plugin.json` manifest (`id`, `version`,
@@ -16,6 +19,135 @@ ready `dist/` folder. Installing clones the repository into a workspace and copi
 nothing is built or executed. Releases are Git tags (`vVERSION` or `namespace/name@VERSION`).
 The catalog is a tree of static JSON files (local folder or HTTP) with exact commits and
 file hashes.
+
+## Install
+
+`gitpm-cli` installs a `gitpm` binary:
+
+```sh
+cargo install gitpm-cli              # build from source (Rust 1.92+)
+cargo binstall gitpm-cli             # prebuilt binary, via cargo-binstall
+```
+
+Prebuilt binaries for macOS (arm64, x86_64) and Linux (x86_64, aarch64; glibc 2.35+) are
+attached to each [GitHub release](https://github.com/tilr-dev/gitpm/releases) as
+`gitpm-cli-vX.Y.Z-TARGET.tar.gz` with a `.sha256` next to it; the archive holds the `gitpm`
+binary, the licenses and the README.
+
+From this repository: `cargo install --path crates/gitpm-cli`.
+
+## CLI quickstart
+
+Everything below works on local folders: plugin repositories and the catalog are plain
+directories, nothing is pushed or uploaded.
+
+A plugin is a Git repository with `plugin.json` and a ready `dist/` folder; a release is
+a `vVERSION` tag (or `namespace/name@VERSION`):
+
+```console
+$ mkdir -p hello/dist && cd hello && git init -q -b main
+$ echo '{"id": "hello", "version": "0.1.0"}' > plugin.json
+$ echo 'export const greeting = "hello v1";' > dist/index.js
+$ git add . && git commit -qm "hello 0.1.0" && git tag v0.1.0 && cd ..
+$ gitpm install ./hello
+OK: install ./hello
+$ cat gitpm-workspace/dist/hello/index.js
+export const greeting = "hello v1";
+$ gitpm list
+{
+  "plugins": {
+    "hello": {
+      "source": "/…/hello",
+      "current": {
+        "version": "0.1.0",
+        "commit": "9aed5aa…"
+…
+```
+
+Release 0.2.0, update, roll back (one previous version is kept):
+
+```console
+$ echo 'export const greeting = "hello v2";' > hello/dist/index.js
+$ echo '{"id": "hello", "version": "0.2.0"}' > hello/plugin.json
+$ git -C hello commit -qam "hello 0.2.0" && git -C hello tag v0.2.0
+$ gitpm update hello
+OK: update hello
+$ cat gitpm-workspace/dist/hello/index.js
+export const greeting = "hello v2";
+$ gitpm rollback hello
+OK: rollback hello
+$ cat gitpm-workspace/dist/hello/index.js
+export const greeting = "hello v1";
+$ gitpm update hello
+OK: update hello
+```
+
+A catalog is generated from the release tags of the repositories listed in a sources
+file (paths are relative to that file). `gitpm init` scaffolds a namespaced plugin with
+its first release; `gitpm commit` bumps the version, commits everything and tags:
+
+```console
+$ export PM_CATALOG=$PWD/catalog
+$ echo './hello' > sources.txt
+$ gitpm catalog-update
+Reading releases: /…/hello
+Catalog ready: 2 release(s) checked from sources.
+$ gitpm info
+Catalog: /…/catalog
+Type: local folder/JSON
+Format: v2
+Directories and plugins:
+  legacy/
+    hello/
+      hello — latest: 0.2.0, versions: 2
+          Git: /…/hello
+$ gitpm namespace me
+Default namespace saved: me (.gitpm.json)
+$ gitpm init greeter
+
+Created: /…/greeter
+ID: me/greeter
+Version 0.1.0: Git commit and tag me/greeter@0.1.0.
+…
+$ echo 'export const greeting = "greeter v2";' > greeter/dist/index.js
+$ gitpm commit greeter 0.1.1
+Created local commit and tag me/greeter@0.1.1.
+$ echo './greeter' >> sources.txt
+$ gitpm catalog-update
+Reading releases: /…/greeter
+Reading releases: /…/hello
+Catalog ready: 4 release(s) checked from sources.
+$ gitpm install-catalog me/greeter
+OK: install-catalog me/greeter
+$ cat gitpm-workspace/dist/me/greeter/index.js
+export const greeting = "greeter v2";
+$ gitpm check
+Workspace: gitpm-workspace
+Catalog: /…/catalog
+
+PLUGIN                   INSTALLED      LATEST         ENABLED  STATUS
+hello                    0.2.0          0.2.0          yes      up to date
+me/greeter               0.1.1          0.1.1          yes      up to date
+
+Updates: 0. Nothing was changed.
+$ gitpm uninstall me/greeter
+OK: uninstall me/greeter
+```
+
+Settings: each has a flag, an environment variable and a default (`gitpm --help` lists
+all commands).
+
+| Flag | Variable | Default |
+| --- | --- | --- |
+| `--root DIR` | `PM_ROOT` | `./gitpm-workspace` |
+| `--catalog LOC` (folder, `catalog.json` or HTTP(S) URL) | `PM_CATALOG` | none: catalog commands, `install-catalog` and `check` ask for it |
+| `--sources FILE` | `PM_SOURCES` | `./sources.txt` |
+| `--namespace NAME` (init/create/fork) | `PM_NAMESPACE` | the config file, then `local` |
+| | `PM_CONFIG` | `./.gitpm.json` (default namespace) |
+
+Publishing a catalog is up to you: it is a folder of static files, so any static host
+works (`catalog-update` and `register` write only to a local folder; HTTP(S) catalogs are
+read-only).
 
 ## Rules of the library
 
@@ -163,13 +295,15 @@ crates/gitpm/src/test_support.rs         shared fixtures (temp dirs, hermetic gi
 crates/gitpm/tests/                      integration tests of the public API
                                          (robustness, uninstall, no_env)
 crates/gitpm-ffi/src/lib.rs              FFI conversion tests (errors, records, free functions)
-../temp-plugin-manager/manager/tests/   CLI tests of the stand (separate repository)
+crates/gitpm-cli/tests/                  end-to-end tests of the `gitpm` binary
+                                         (lifecycle, requirements)
 ```
 
 ```sh
 cargo test                                   # whole workspace, ~10 s
 cargo test -p gitpm --lib      # unit tests only
 cargo test -p gitpm --lib -- --ignored   # known-defect tests (expected to fail)
+cargo test -p gitpm-cli                  # CLI tests only
 cargo clippy --all-targets -- -D warnings
 ```
 
@@ -184,7 +318,9 @@ no transaction directory left behind; interrupted commits are rolled forward.
 Isolation: tests never read `PM_*`, `HOME` or the network. `.cargo/config.toml` points
 `GIT_CONFIG_GLOBAL` at `tests/gitconfig` and sets `GIT_CONFIG_NOSYSTEM=1`; this applies
 only when cargo runs from this repository (cargo reads config from the current
-directory). Unit-test fixtures additionally pass identity/signing settings with
+directory). CLI tests run the binary with a cleared environment, a fixture
+`HOME`/`TMPDIR` and Git config, and every `PM_*` path inside their temp directory.
+Unit-test fixtures additionally pass identity/signing settings with
 `git -c`, so they do not depend on the developer's Git config. Temp directories are
 removed unless `PM_KEEP_TEST_ARTIFACTS` is set (the stand's `verify.command` keeps them
 for its report).

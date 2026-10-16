@@ -59,8 +59,19 @@ jobs:
       # The tests shell out to the runner's git; .cargo/config.toml points them at
       # tests/gitconfig, so the runner's Git config does not matter.
       - run: cargo test --workspace --locked
+      # Smoke test of the CLI binary as installed: the binary is already built for the
+      # tests above (no rebuild); its tests cover --help, this checks --version against
+      # the crate version (kept in lockstep with gitpm by release-please).
+      - name: Smoke test gitpm binary
+        run: |
+          cargo build -p gitpm-cli --locked
+          version=$(cargo metadata --format-version 1 --no-deps --locked \
+            | jq -r '.packages[] | select(.name == "gitpm-cli") | .version')
+          test "$(target/debug/gitpm --version)" = "gitpm $version"
+          target/debug/gitpm --help >/dev/null
 
   msrv:
+    # The name is a required check in the main ruleset; keep it when the scope changes.
     name: msrv (core crate)
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -76,7 +87,8 @@ jobs:
           rustup toolchain install 1.92 --profile minimal
           rustup default 1.92
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - run: cargo check -p gitpm --all-targets --locked
+      # The published crates; gitpm-ffi is not published and is not checked on the MSRV.
+      - run: cargo check -p gitpm -p gitpm-cli --all-targets --locked
 
   deny:
     name: cargo-deny
