@@ -50,6 +50,21 @@ pub struct RevisionChange {
     pub to: Revision,
     pub changed: bool,
 }
+/// Joint stable-release upgrade plan. No plugins are removed or downgraded.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct UpdateAllPlan {
+    pub updates: Vec<RevisionChange>,
+    pub installs: Vec<InstallResult>,
+    pub kept_back: Vec<HeldBack>,
+}
+/// A newer release exists, but the chosen compatible solution uses an older one.
+#[derive(Clone, Debug, Serialize)]
+pub struct HeldBack {
+    pub id: String,
+    pub selected: String,
+    pub latest: String,
+}
+
 /// What `uninstall` would delete and which local work would be lost.
 #[derive(Clone, Debug, Serialize)]
 pub struct UninstallPlan {
@@ -625,6 +640,175 @@ impl Manager {
         )?;
         self.install_missing(txn, state, &missing)
     }
+    /// Resolve all installed plugins together, without changing installed files or state.
+    /// Reads release tags from each origin; new dependencies come from the catalog.
+    /// Prefers newer versions, with installed IDs in lexical order as tie-breaker.
+    pub fn update_all_plan(&self) -> Result<UpdateAllPlan> {
+        let _busy = self.busy();
+        let mut txn = Txn::begin(&self.root)?;
+        let mut state = self.state()?;
+        self.prepare_update_all(&mut txn, &mut state)
+    }
+
+    /// Resolve and apply a joint upgrade in one recoverable transaction.
+    /// Local work blocks the operation. No merge, deletion or downgrade is attempted.
+    pub fn update_all(&self) -> Result<UpdateAllPlan> {
+        self.transaction(|txn, state| self.prepare_update_all(txn, state))
+    }
+
+    fn prepare_update_all(&self, txn: &mut Txn, state: &mut State) -> Result<UpdateAllPlan> {
+        let mut candidates = crate::upgrade::Candidates::new();
+        let mut repos = BTreeMap::new();
+        let mut latest = BTreeMap::new();
+        for (number, (id, installed)) in state.plugins.iter().enumerate() {
+            let live = plugin_repo(txn.root(), id)?;
+            clean(&live, id)?;
+            lost_work::require_head(
+                &live,
+                id,
+                &installed.current.commit,
+                "local commits detected; update would discard them",
+            )?;
+            lost_work::require_no_hidden_for_update(
+                &live,
+                id,
+                "unpublished local work blocks update all",
+            )?;
+            // Scratch copies ensure even held-back repositories keep their original refs.
+            let repo = txn.scratch(&format!("upgrade-{number}"));
+            copy_tree(&live, &repo, true)?;
+            let known = releases::discover(&repo, Some(id))?;
+            git(
+                &repo,
+                &[
+                    "fetch",
+                    "origin",
+                    "--prune",
+                    "--prune-tags",
+                    "--force",
+                    "--tags",
+                ],
+            )?;
+            for tag in known {
+                if git(&repo, &["tag", "--list", &tag.name])? == tag.name {
+                    ensure!(
+                        resolve_ref(&repo, &format!("refs/tags/{}", tag.name))? == tag.commit,
+                        VersionConflict,
+                        "release tag {} changed commit",
+                        tag.name
+                    );
+                }
+            }
+            let current = deps::version(&installed.current.version)?;
+            let mut newest = current.clone();
+            let mut versions = BTreeMap::new();
+            versions.insert(
+                current.clone(),
+                catalog::Release {
+                    manifest: manifest(&repo)?,
+                    source: installed.source.clone(),
+                    commit: installed.current.commit.clone(),
+                    reference: installed.current.commit.clone(),
+                    files: BTreeMap::new(),
+                    build: None,
+                },
+            );
+            for tag in releases::discover(&repo, Some(id))? {
+                let version = deps::version(&tag.manifest.version)?;
+                if version < current {
+                    continue;
+                }
+                ensure!(
+                    version != current || tag.commit == installed.current.commit,
+                    VersionConflict,
+                    "release commit changed for installed version of {id}"
+                );
+                newest = newest.max(version.clone());
+                // An active replacement must continue providing the same original ID.
+                if state.replacements.iter().any(|(original, fork)| {
+                    fork == id
+                        && tag
+                            .manifest
+                            .replaces
+                            .as_ref()
+                            .is_none_or(|r| r.id != *original)
+                }) {
+                    continue;
+                }
+                deps::validate(&tag.manifest)?;
+                versions.insert(
+                    version,
+                    catalog::Release {
+                        manifest: tag.manifest,
+                        source: installed.source.clone(),
+                        commit: tag.commit,
+                        reference: tag.name,
+                        files: BTreeMap::new(),
+                        build: None,
+                    },
+                );
+            }
+            latest.insert(id.clone(), newest.to_string());
+            candidates.insert(id.clone(), versions);
+            repos.insert(id.clone(), repo);
+        }
+        let selected = crate::upgrade::solve(state, candidates, self.options.catalog.as_deref())?;
+        let mut plan = UpdateAllPlan::default();
+        for (number, (id, release)) in selected.iter().enumerate() {
+            let m = &release.manifest;
+            if let Some(installed) = state.plugins.get_mut(id) {
+                if latest[id] != m.version {
+                    plan.kept_back.push(HeldBack {
+                        id: id.clone(),
+                        selected: m.version.clone(),
+                        latest: latest[id].clone(),
+                    });
+                }
+                if release.commit == installed.current.commit {
+                    continue;
+                }
+                let repo = &repos[id];
+                git(repo, &["checkout", "--detach", &release.commit])?;
+                let actual = manifest(repo)?;
+                ensure!(
+                    serde_json::to_value(&actual)? == serde_json::to_value(m)?,
+                    VersionConflict,
+                    "release manifest changed for {id}"
+                );
+                let next = revision(repo, m)?;
+                plan.updates.push(RevisionChange {
+                    id: id.clone(),
+                    from: installed.current.clone(),
+                    to: next.clone(),
+                    changed: true,
+                });
+                installed.previous = Some(installed.current.clone());
+                installed.current = next;
+                installed.adopt(m);
+                txn.add_repo(id, repo)?;
+                txn.deploy(id)?;
+            } else {
+                let origin = catalog::canonical_location(self.catalog_location()?)?;
+                ensure_single_catalog(state, &origin)?;
+                let (repo, actual, _) = clone_revision(
+                    txn,
+                    &Fetch::release(release),
+                    &format!("upgrade-new-{number}"),
+                )?;
+                check_new_id(txn.root(), state, &actual)?;
+                plan.installs.push(adopt(
+                    txn,
+                    state,
+                    &repo,
+                    &actual,
+                    release.source.clone(),
+                    Some(origin),
+                )?);
+            }
+        }
+        Ok(plan)
+    }
+
     pub fn update(&self, id: &str) -> Result<RevisionChange> {
         self.update_ref(id, None)
     }
@@ -1510,6 +1694,33 @@ mod tests {
         let result = op();
         txn::CRASH_AFTER.with(|c| c.set(None));
         result.err().expect("simulated crash")
+    }
+
+    #[test]
+    fn update_all_recovers_every_plugin_after_an_interrupted_commit() {
+        // Two repositories, two payloads and state.json: nine journal renames.
+        for renames in 0..9 {
+            let (ws, m) = Ws::installed("x/a");
+            let other = ws.other_author("other", "x/b");
+            m.install(other.source()).unwrap();
+            ws.author.release("0.2.0");
+            other.release("0.2.0");
+            crash_after(renames, || m.update_all());
+            drop(m);
+            let recovered = ws.open();
+            for author in [&ws.author, &other] {
+                let state = recovered.state().unwrap();
+                let installed = &state.plugins[&author.id];
+                assert_eq!(installed.current.version, "0.2.0", "crash after {renames}");
+                assert_eq!(installed.previous.as_ref().unwrap().version, "0.1.0");
+                assert_eq!(installed.current.commit, author.head());
+                assert_eq!(
+                    tree_hash(&ws.root.join("dist").join(&author.id)),
+                    tree_hash(&author.path.join("dist"))
+                );
+            }
+            ws.no_leftovers();
+        }
     }
 
     #[test]

@@ -1321,3 +1321,33 @@ fn help_names_the_binary_and_removed_commands_are_unknown() {
     }
     assert!(!f.root.exists());
 }
+
+#[test]
+fn update_all_previews_applies_and_rejects_unsupported_options() {
+    let f = Fixture::new();
+    f.install();
+    f.release("2.0.0", "hello v2");
+    let before = f.state();
+    let preview = f.cli(&["update", "all", "--dry-run"], true);
+    assert!(preview.contains("Update hello: 1.0.0 -> 2.0.0"));
+    assert!(preview.contains("Nothing was changed."));
+    assert_eq!(f.state(), before);
+    assert_eq!(f.content(), "hello v1");
+    for args in [
+        vec!["update", "all", "--ref", "main"],
+        vec!["update", "all", "--channel", "dev"],
+        vec!["update", "hello", "--dry-run"],
+    ] {
+        f.cli(&args, false);
+        assert_eq!(f.state(), before);
+    }
+    assert!(
+        f.cli(&["update", "all"], true)
+            .contains("1 updates, 0 installs")
+    );
+    assert_eq!(f.content(), "hello v2");
+    assert!(
+        f.cli(&["update", "all"], true)
+            .contains("0 updates, 0 installs")
+    );
+}

@@ -312,6 +312,37 @@ impl From<pm::RevisionChange> for RevisionChange {
     }
 }
 
+/// Serializable joint upgrade result, also used for a read-only preview.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct UpdateAllPlan {
+    pub updates: Vec<RevisionChange>,
+    pub installs: Vec<InstallResult>,
+    pub kept_back: Vec<HeldBack>,
+}
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct HeldBack {
+    pub id: String,
+    pub selected: String,
+    pub latest: String,
+}
+impl From<pm::UpdateAllPlan> for UpdateAllPlan {
+    fn from(plan: pm::UpdateAllPlan) -> Self {
+        Self {
+            updates: plan.updates.into_iter().map(Into::into).collect(),
+            installs: plan.installs.into_iter().map(Into::into).collect(),
+            kept_back: plan
+                .kept_back
+                .into_iter()
+                .map(|p| HeldBack {
+                    id: p.id,
+                    selected: p.selected,
+                    latest: p.latest,
+                })
+                .collect(),
+        }
+    }
+}
+
 /// Local work that uninstall would discard.
 #[derive(Debug, Clone, uniffi::Enum)]
 pub enum LostWork {
@@ -660,6 +691,12 @@ impl PluginManager {
             .update_channel(&id, reference.as_deref(), matches!(channel, Channel::Dev))?
             .into())
     }
+    pub fn update_all_plan(&self) -> Result<UpdateAllPlan> {
+        Ok(self.inner.update_all_plan()?.into())
+    }
+    pub fn update_all(&self) -> Result<UpdateAllPlan> {
+        Ok(self.inner.update_all()?.into())
+    }
     pub fn rollback(&self, id: String) -> Result<RevisionChange> {
         Ok(self.inner.rollback(&id)?.into())
     }
@@ -798,6 +835,8 @@ mod tests {
             PluginManager::open(root.to_string_lossy().into(), ManagerOptions::default()),
             Err(PmError::Locked { .. })
         ));
+        assert!(manager.update_all_plan().unwrap().updates.is_empty());
+        assert!(manager.update_all().unwrap().installs.is_empty());
         drop(manager);
         let _ = std::fs::remove_dir_all(dir);
     }

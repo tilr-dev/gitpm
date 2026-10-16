@@ -27,6 +27,7 @@ pub mod scaffold;
 #[cfg(test)]
 mod test_support;
 mod txn;
+mod upgrade;
 mod workspace;
 
 pub use error::{Error, Result};
@@ -35,6 +36,6 @@ pub use model::{
     ForkOf, Installed, InstalledPlugin, Manifest, Replaces, Revision, State, valid_id,
 };
 pub use workspace::{
-    IncompatibleConsumer, InstallResult, Manager, Options, ReplacementPlan, RevisionChange,
-    UninstallPlan,
+    HeldBack, IncompatibleConsumer, InstallResult, Manager, Options, ReplacementPlan,
+    RevisionChange, UninstallPlan, UpdateAllPlan,
 };
