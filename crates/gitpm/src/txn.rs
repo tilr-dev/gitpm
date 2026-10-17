@@ -114,58 +114,89 @@ impl Txn {
     fn is_staged(&self, relative: &str) -> bool {
         self.journal.paths.get(relative) == Some(&Change::Replace)
     }
-    /// Writable copy of an installed clone (`live` is its exact path in the workspace).
-    /// Symlinks inside the repository are kept as symlinks.
-    pub(crate) fn repo(&mut self, id: &str, live: &Path) -> Result<PathBuf> {
-        let relative = format!("plugins/{id}");
-        ensure_managed_parents(&self.root, &relative)?;
-        let staged = self.staged(&relative);
-        if !self.is_staged(&relative) {
+    /// Writable copy of an installed clone at `relative` (`plugins/<id>` or
+    /// `repos/<key>`; `live` is its exact path in the workspace). Symlinks inside the
+    /// repository are kept as symlinks. Staged once per transaction.
+    // TODO: this copies the whole clone (all packages of a shared one, full history) for
+    // every operation that changes it; a worktree or a copy of `.git` plus the touched
+    // folders would be cheaper for large repositories.
+    pub(crate) fn repo(&mut self, relative: &str, live: &Path) -> Result<PathBuf> {
+        ensure_managed_parents(&self.root, relative)?;
+        let staged = self.staged(relative);
+        if !self.is_staged(relative) {
             copy_tree(live, &staged, true)?;
-            self.journal.paths.insert(relative, Change::Replace);
+            self.journal.paths.insert(relative.into(), Change::Replace);
         }
         Ok(staged)
     }
-    /// Adopt a fresh clone (moved from the scratch area) as the plugin's repository.
-    pub(crate) fn add_repo(&mut self, id: &str, clone: &Path) -> Result<PathBuf> {
-        let relative = format!("plugins/{id}");
-        ensure_managed_parents(&self.root, &relative)?;
-        let staged = self.staged(&relative);
+    /// The staged copy of the clone at `relative`, if this transaction staged one.
+    pub(crate) fn staged_repo(&self, relative: &str) -> Option<PathBuf> {
+        self.is_staged(relative).then(|| self.staged(relative))
+    }
+    /// Adopt a fresh clone (moved from the scratch area) as the clone at `relative`.
+    pub(crate) fn add_repo(&mut self, relative: &str, clone: &Path) -> Result<PathBuf> {
+        ensure_managed_parents(&self.root, relative)?;
+        let staged = self.staged(relative);
+        remove(&staged)?;
         fs::create_dir_all(staged.parent().unwrap())?;
         fs::rename(clone, &staged)?;
-        self.journal.paths.insert(relative, Change::Replace);
+        self.journal.paths.insert(relative.into(), Change::Replace);
         Ok(staged)
     }
-    /// Stage `dist/<id>` from the plugin's (staged or live) `dist/`; symlinks refused.
-    pub(crate) fn deploy(&mut self, id: &str) -> Result<()> {
-        let repo_relative = format!("plugins/{id}");
-        let repo = if self.is_staged(&repo_relative) {
-            self.staged(&repo_relative)
-        } else {
-            self.root.join(&repo_relative)
+    /// Stage `dist/<id>` from `<package>/dist` of the (staged or live) clone at
+    /// `repo_relative`; `package` is the folder inside the repository (`None`: root).
+    /// Symlinks refused.
+    pub(crate) fn deploy(
+        &mut self,
+        id: &str,
+        repo_relative: &str,
+        package: Option<&str>,
+    ) -> Result<()> {
+        let repo = match self.staged_repo(repo_relative) {
+            Some(staged) => staged,
+            None => self.root.join(repo_relative),
         };
         let relative = format!("dist/{id}");
-        ensure_managed_parents(&self.root, &repo_relative)?;
+        ensure_managed_parents(&self.root, repo_relative)?;
         ensure_managed_parents(&self.root, &relative)?;
+        let mut source = repo;
+        if let Some(package) = package {
+            crate::packages::validate_path(package)?;
+            for part in package.split('/') {
+                source.push(part);
+                if fs::symlink_metadata(&source)?.file_type().is_symlink() {
+                    return Err(Error::Unsupported(format!(
+                        "symlinks are not supported: {package}"
+                    )));
+                }
+            }
+        }
         let staged = self.staged(&relative);
         remove(&staged)?;
-        copy_tree(&repo.join("dist"), &staged, false)?;
+        copy_tree(&source.join("dist"), &staged, false)?;
         self.journal.paths.insert(relative, Change::Replace);
         Ok(())
     }
-    /// Remove the plugin's repository and deployed files on commit.
-    pub(crate) fn delete(&mut self, id: &str) -> Result<()> {
-        for relative in [format!("plugins/{id}"), format!("dist/{id}")] {
-            ensure_managed_parents(&self.root, &relative)?;
-            remove(&self.staged(&relative))?;
-            self.journal.paths.insert(relative, Change::Delete);
-        }
+    /// Remove a clone (`plugins/<id>` or `repos/<key>`) on commit.
+    pub(crate) fn delete_repo(&mut self, relative: &str) -> Result<()> {
+        ensure_managed_parents(&self.root, relative)?;
+        remove(&self.staged(relative))?;
+        self.journal.paths.insert(relative.into(), Change::Delete);
         Ok(())
     }
+    /// Remove the plugin's deployed files on commit.
+    pub(crate) fn delete_dist(&mut self, id: &str) -> Result<()> {
+        self.delete_repo(&format!("dist/{id}"))
+    }
     pub(crate) fn commit(mut self, state: &State) -> Result<()> {
+        // Always written in the current layout, whatever format was read.
+        let state = State {
+            format: crate::model::STATE_FORMAT,
+            ..state.clone()
+        };
         fs::write(
             self.dir.join("state.json"),
-            serde_json::to_vec_pretty(state)?,
+            serde_json::to_vec_pretty(&state)?,
         )?;
         remove(&self.dir.join("scratch"))?;
         let temporary = self.dir.join("journal.tmp");

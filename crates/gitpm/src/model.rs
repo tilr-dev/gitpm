@@ -58,6 +58,14 @@ pub struct Installed {
     /// Catalog the plugin was installed from (canonical location); `None` for Git installs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catalog: Option<String>,
+    /// Cache key of the shared clone `repos/<clone>` of a multi-package repository (one
+    /// per source, used by every package installed from it); `None`: the plugin's own
+    /// clone `plugins/<id>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clone: Option<String>,
+    /// Package folder inside the repository (from `gitpm.json`); `None`: the root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
 }
 impl Installed {
     /// Take the manifest-derived fields of a new current revision.
@@ -66,14 +74,109 @@ impl Installed {
         self.dependencies = m.dependencies.clone();
         self.replaces = m.replaces.clone();
     }
+    /// The root package of its repository (no `gitpm.json` at the installed revision):
+    /// `path` is `None`. Independent of where the clone lives: a root package that moved
+    /// into a package folder keeps its own clone `plugins/<id>` but is no longer a root
+    /// package.
+    pub fn is_root_package(&self) -> bool {
+        self.path.is_none()
+    }
+    /// Workspace-relative folder of the clone: `repos/<clone>` (shared) or `plugins/<id>`.
+    pub fn clone_folder(&self, id: &str) -> String {
+        match &self.clone {
+            Some(key) => format!("repos/{key}"),
+            None => format!("plugins/{id}"),
+        }
+    }
 }
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+
+/// Version of the `state.json` layout this library writes. 1 (no `format` key) is the
+/// layout of gitpm 0.3 and earlier; 2 adds shared clones (`clone`, `path`) and
+/// `forgotten`. Older formats are read, newer ones refused.
+pub const STATE_FORMAT: u32 = 2;
+fn legacy_format() -> u32 {
+    1
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct State {
+    /// Layout version ([`STATE_FORMAT`] when written; missing in old files: 1).
+    #[serde(default = "legacy_format")]
+    pub format: u32,
     pub plugins: BTreeMap<String, Installed>,
     /// Global replacements: original ID → installed plugin that provides it for every
     /// consumer in this workspace.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub replacements: BTreeMap<String, String>,
+    /// Forgotten packages of shared clones (`clone` set): their clone and `dist/` are kept
+    /// and they still count as users of the clone, so `restore` and `uninstall` find
+    /// them. A forgotten plugin with its own clone needs no record (`plugins/<id>`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub forgotten: BTreeMap<String, Installed>,
+}
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            format: STATE_FORMAT,
+            plugins: BTreeMap::new(),
+            replacements: BTreeMap::new(),
+            forgotten: BTreeMap::new(),
+        }
+    }
+}
+impl State {
+    /// Parse `state.json` and check what serde cannot: the format version, IDs, clone
+    /// keys and package folders.
+    pub(crate) fn parse(bytes: &[u8]) -> Result<Self> {
+        let state: State = serde_json::from_slice(bytes)
+            .map_err(|e| Error::InvalidData(format!("invalid workspace state.json: {e}")))?;
+        ensure!(
+            (1..=STATE_FORMAT).contains(&state.format),
+            Unsupported,
+            "state.json has format {}, but this gitpm reads formats 1 to {STATE_FORMAT}; use a newer gitpm",
+            state.format
+        );
+        for (id, p) in state.plugins.iter().chain(&state.forgotten) {
+            valid_id(id)?;
+            if let Some(key) = &p.clone {
+                valid_clone_key(key)?;
+            }
+            if let Some(path) = &p.path {
+                crate::packages::validate_path(path)?;
+            }
+        }
+        for id in state.forgotten.keys() {
+            ensure!(
+                !state.plugins.contains_key(id),
+                InvalidData,
+                "state.json lists {id} as installed and as forgotten"
+            );
+            ensure!(
+                state.forgotten[id].clone.is_some(),
+                InvalidData,
+                "state.json lists {id} as forgotten without a shared clone"
+            );
+        }
+        Ok(state)
+    }
+}
+
+/// A shared clone's cache key (see `repo_key`): a folder name under `repos/` made of
+/// ASCII letters, digits, `-` and `_`, ending in a 16-digit hex hash.
+pub(crate) fn valid_clone_key(key: &str) -> Result<()> {
+    let hash = key.rsplit('-').next().unwrap_or("");
+    ensure!(
+        key.len() <= 80
+            && !key.starts_with('-')
+            && key
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+            && hash.len() == 16
+            && hash.bytes().all(|c| c.is_ascii_hexdigit()),
+        InvalidData,
+        "invalid clone name {key:?} in state.json: expected a folder name under repos/ such as plugins-0123456789abcdef"
+    );
+    Ok(())
 }
 
 /// Flat view of one installed plugin (convenient for UIs and FFI).
@@ -90,6 +193,9 @@ pub struct InstalledPlugin {
     pub replaces: Option<Replaces>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub catalog: Option<String>,
+    /// Package folder inside the source repository; `None` for the repository root.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
     /// Each dependency with the plugin that provides it and whether it is satisfied.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub dependencies: Vec<crate::deps::DependencyStatus>,
@@ -113,6 +219,7 @@ impl State {
                 fork_of: p.fork_of.clone(),
                 replaces: p.replaces.clone(),
                 catalog: p.catalog.clone(),
+                path: p.path.clone(),
                 dependencies: crate::deps::status(self, p),
                 replacing: self
                     .replacements
@@ -195,6 +302,32 @@ pub(crate) fn manifest(repo: &Path) -> Result<Manifest> {
         "plugin must contain a ready dist/ directory"
     );
     Ok(m)
+}
+
+/// Manifest of the package in `path` (`None`: the root) of a checked-out repository.
+/// Every folder on the way must be a real directory inside the repository.
+pub(crate) fn package_manifest(repo: &Path, path: Option<&str>) -> Result<Manifest> {
+    let Some(path) = path else {
+        return manifest(repo);
+    };
+    crate::packages::validate_path(path)?;
+    let mut current = repo.to_path_buf();
+    for part in path.split('/') {
+        current.push(part);
+        let meta = fs::symlink_metadata(&current)
+            .map_err(|e| Error::InvalidManifest(format!("missing package {path}: {e}")))?;
+        ensure!(
+            !meta.file_type().is_symlink(),
+            Unsupported,
+            "symlinks are not supported: {path}"
+        );
+        ensure!(
+            meta.is_dir(),
+            InvalidManifest,
+            "package {path} is not a directory"
+        );
+    }
+    manifest(&current)
 }
 
 pub(crate) fn revision(repo: &Path, m: &Manifest) -> Result<Revision> {
@@ -555,6 +688,7 @@ mod tests {
 
     /// Byte format written by the stand prototype (`serde_json::to_vec_pretty`, no newline).
     const STATE: &str = r#"{
+  "format": 2,
   "plugins": {
     "dan/demo1": {
       "source": "git@github.com:dan/demo1.git",
@@ -602,8 +736,72 @@ mod tests {
         // Default state is the file a new workspace starts with.
         assert_eq!(
             serde_json::to_string_pretty(&State::default()).unwrap(),
-            "{\n  \"plugins\": {}\n}"
+            "{\n  \"format\": 2,\n  \"plugins\": {}\n}"
         );
+    }
+
+    #[test]
+    fn state_formats_one_and_two_are_read_newer_ones_refused() {
+        // gitpm 0.3: no `format`, no `clone`/`path`/`forgotten`.
+        let legacy = STATE.replace("  \"format\": 2,\n", "");
+        let state = State::parse(legacy.as_bytes()).unwrap();
+        assert_eq!(state.format, 1);
+        assert_eq!(state.plugins.len(), 2);
+        assert!(
+            state
+                .plugins
+                .values()
+                .all(|p| p.clone.is_none() && p.path.is_none())
+        );
+        assert_eq!(State::parse(STATE.as_bytes()).unwrap().format, 2);
+        let newer = STATE.replace("\"format\": 2", "\"format\": 3");
+        let error = State::parse(newer.as_bytes()).unwrap_err();
+        assert_eq!(error.kind(), "unsupported");
+        assert!(error.to_string().contains("format 3"), "{error}");
+        let zero = STATE.replace("\"format\": 2", "\"format\": 0");
+        assert_eq!(
+            State::parse(zero.as_bytes()).unwrap_err().kind(),
+            "unsupported"
+        );
+    }
+
+    #[test]
+    fn state_clone_keys_have_their_own_validator() {
+        for ok in [
+            "mono-0123456789abcdef",
+            "0123456789abcdef",
+            "a_b-c-0123456789abcdef",
+        ] {
+            assert!(valid_clone_key(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "",
+            "mono",
+            "../x-0123456789abcdef",
+            "mono-0123456789abcde",
+            "-0123456789abcdef",
+            "a/b-0123456789abcdef",
+            ".hidden-0123456789abcdef",
+        ] {
+            let error = valid_clone_key(bad).unwrap_err();
+            assert_eq!(error.kind(), "invalid_data", "{bad:?}");
+            assert!(error.to_string().contains("invalid clone name"), "{error}");
+        }
+        let entry = r#"{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true,"clone":"../evil","path":"packages/x"}"#;
+        let text = format!(r#"{{"format":2,"plugins":{{"a/b":{entry}}}}}"#);
+        assert_eq!(
+            State::parse(text.as_bytes()).unwrap_err().kind(),
+            "invalid_data"
+        );
+        // A forgotten record needs a shared clone and must not also be installed.
+        let entry = entry.replace("../evil", "x-0123456789abcdef");
+        let both = format!(r#"{{"plugins":{{"a/b":{entry}}},"forgotten":{{"a/b":{entry}}}}}"#);
+        assert_eq!(
+            State::parse(both.as_bytes()).unwrap_err().kind(),
+            "invalid_data"
+        );
+        let ok = format!(r#"{{"plugins":{{}},"forgotten":{{"a/b":{entry}}}}}"#);
+        assert_eq!(State::parse(ok.as_bytes()).unwrap().forgotten.len(), 1);
     }
 
     #[test]

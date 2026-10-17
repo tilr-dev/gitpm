@@ -35,7 +35,9 @@ impl Fixture {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir_all(&dir).unwrap();
-        let author = scaffold::create_namespaced(&dir.join("module"), "vendor").unwrap();
+        let author = scaffold::init(&dir.join("module"), "vendor", "module")
+            .unwrap()
+            .repo;
         let root = dir.join("workspace");
         let m = Manager::open(&root).unwrap();
         m.install(author.to_str().unwrap()).unwrap();

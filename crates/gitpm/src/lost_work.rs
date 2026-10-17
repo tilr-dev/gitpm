@@ -78,17 +78,37 @@ const DIRTY: &str =
 
 /// Modified, untracked and ignored files (`git status`, without taking optional locks).
 fn status(repo: &Path) -> Result<Vec<LostWork>> {
-    let raw = git_raw(
-        repo,
-        &[
-            "--no-optional-locks",
-            "status",
-            "--porcelain=v1",
-            "-z",
-            "--untracked-files=all",
-            "--ignored",
-        ],
-    )?;
+    status_of(repo, true, &[])
+}
+
+/// Paths under `paths` (pathspecs) that differ from HEAD: modified, staged or untracked
+/// (whatever `status.showUntrackedFiles` says), not ignored ones.
+pub(crate) fn changed_paths(repo: &Path, paths: &[&str]) -> Result<Vec<String>> {
+    Ok(status_of(repo, false, paths)?
+        .into_iter()
+        .filter_map(|item| match item {
+            LostWork::Modified { path } | LostWork::Untracked { path } => Some(path),
+            _ => None,
+        })
+        .collect())
+}
+
+fn status_of(repo: &Path, ignored: bool, paths: &[&str]) -> Result<Vec<LostWork>> {
+    let mut args = vec![
+        "--no-optional-locks",
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+    ];
+    if ignored {
+        args.push("--ignored");
+    }
+    if !paths.is_empty() {
+        args.push("--");
+        args.extend(paths);
+    }
+    let raw = git_raw(repo, &args)?;
     let mut items = Vec::new();
     let mut entries = raw.split(|b| *b == 0).filter(|e| !e.is_empty());
     while let Some(entry) = entries.next() {
@@ -247,6 +267,32 @@ pub(crate) fn detect(repo: &Path, recorded: Option<&str>) -> Result<Vec<LostWork
     }
     items.extend(hidden(repo, false)?);
     Ok(items)
+}
+
+/// Commits that moving HEAD away would leave unreachable: reachable from HEAD but from
+/// no branch, tag, remote-tracking ref or `keep` commit.
+pub(crate) fn unreferenced_head_commits(repo: &Path, keep: &[&str]) -> Result<Vec<LostWork>> {
+    let mut args = vec![
+        "log",
+        MAX_COMMITS,
+        "--format=%H%x09%s",
+        "HEAD",
+        "--not",
+        "--branches",
+        "--tags",
+        "--remotes",
+    ];
+    args.extend(keep.iter().copied());
+    Ok(git(repo, &args)?
+        .lines()
+        .map(|line| {
+            let (commit, summary) = line.split_once('\t').unwrap_or((line, ""));
+            LostWork::UnpublishedCommit {
+                commit: commit.into(),
+                summary: summary.into(),
+            }
+        })
+        .collect())
 }
 
 /// `LocalChanges` with the message of the most important category (as before the split).

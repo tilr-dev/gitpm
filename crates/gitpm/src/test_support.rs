@@ -167,13 +167,22 @@ impl Author {
 /// Deterministic hash of a directory tree: relative paths, entry types, file bytes and
 /// symlink targets (not timestamps). Equal hashes mean a byte-identical tree.
 pub(crate) fn tree_hash(root: &Path) -> String {
-    fn walk(base: &Path, path: &Path, hasher: &mut Sha256) {
+    tree_hash_except(root, &[])
+}
+
+/// [`tree_hash`] without the subtrees `skip` (relative paths), for example the object
+/// store of a repository, where a failed `git add` leaves unreachable loose objects.
+pub(crate) fn tree_hash_except(root: &Path, skip: &[&str]) -> String {
+    fn walk(base: &Path, path: &Path, skip: &[&str], hasher: &mut Sha256) {
         let meta = fs::symlink_metadata(path).unwrap();
         let name = path
             .strip_prefix(base)
             .unwrap()
             .to_string_lossy()
             .into_owned();
+        if skip.contains(&name.as_str()) {
+            return;
+        }
         if meta.file_type().is_symlink() {
             hasher.update(format!(
                 "L {name} -> {}\0",
@@ -187,7 +196,7 @@ pub(crate) fn tree_hash(root: &Path) -> String {
                 .collect();
             entries.sort();
             for entry in entries {
-                walk(base, &entry, hasher);
+                walk(base, &entry, skip, hasher);
             }
         } else {
             let bytes = fs::read(path).unwrap();
@@ -196,7 +205,7 @@ pub(crate) fn tree_hash(root: &Path) -> String {
         }
     }
     let mut hasher = Sha256::new();
-    walk(root, root, &mut hasher);
+    walk(root, root, skip, &mut hasher);
     crate::catalog::hex(&hasher.finalize())
 }
 
@@ -215,6 +224,7 @@ pub(crate) fn release(id: &str, version: &str, source: &str, commit_char: char) 
             },
         )]),
         build: None,
+        path: None,
     }
 }
 
