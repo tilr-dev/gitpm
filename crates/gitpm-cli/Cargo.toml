@@ -1,6 +1,6 @@
 [package]
 name = "gitpm-cli"
-version = "0.3.0"
+version = "0.4.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -26,4 +26,4 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1"
 serde_json = "1"
-gitpm = { path = "../gitpm", version = "0.3.0" }
+gitpm = { path = "../gitpm", version = "0.4.0" }
