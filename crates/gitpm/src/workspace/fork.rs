@@ -5,7 +5,6 @@
 //! multi-package repository gets the package folders added. A single fork is the
 //! one-package case of the same code. See [`Manager::fork_packages`].
 use super::*;
-use crate::exec::git_raw;
 use std::collections::{BTreeSet, HashMap};
 
 /// Step of a fork with `--replace` ([`Manager::fork_packages_replace`]) that failed after
@@ -125,49 +124,6 @@ fn manifest_path(folder: &str) -> String {
     } else {
         format!("{folder}/plugin.json")
     }
-}
-
-/// Copy the folder `path` of `commit` from `repo` into `target` (plain files only).
-fn export_folder(repo: &Path, commit: &str, path: &str, target: &Path) -> Result<()> {
-    let raw = git_raw(
-        repo,
-        &[
-            "ls-tree",
-            "-r",
-            "-z",
-            "--full-tree",
-            commit,
-            "--",
-            &format!("{path}/"),
-        ],
-    )?;
-    for entry in raw.split(|b| *b == 0).filter(|e| !e.is_empty()) {
-        let entry = String::from_utf8_lossy(entry);
-        let (meta, file) = entry
-            .split_once('\t')
-            .require(Error::Git, "unexpected git ls-tree output")?;
-        let mut meta = meta.split(' ');
-        let (Some(mode), Some(kind), Some(object)) = (meta.next(), meta.next(), meta.next()) else {
-            fail!(Git, "unexpected git ls-tree output");
-        };
-        ensure!(
-            kind == "blob" && mode != "120000",
-            Unsupported,
-            "symlinks and submodules are not supported: {file}"
-        );
-        let relative = file
-            .strip_prefix(&format!("{path}/"))
-            .require(Error::Git, "unexpected git ls-tree output")?;
-        packages::validate_path(relative)?;
-        let destination = target.join(relative);
-        fs::create_dir_all(destination.parent().unwrap())?;
-        fs::write(&destination, git_raw(repo, &["cat-file", "blob", object])?)?;
-        if mode == "100755" {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&destination, fs::Permissions::from_mode(0o755))?;
-        }
-    }
-    Ok(())
 }
 
 /// Rewrite the dependencies of `m` that name a key of `forks` to the fork (ID, version

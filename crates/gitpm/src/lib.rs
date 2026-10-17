@@ -39,7 +39,7 @@ pub use model::{
     State, valid_id,
 };
 pub use workspace::{
-    DependencyRewrite, ForkReplacement, ForkStep, ForkedPackage, HeldBack, IncompatibleConsumer,
-    InstallResult, Manager, Options, PackageFork, PackageForkReplacement, ReplacementPlan,
-    RevisionChange, UninstallPlan, UpdateAllPlan,
+    DependencyRewrite, DistSync, ForkReplacement, ForkStep, ForkedPackage, HeldBack,
+    IncompatibleConsumer, InstallResult, Manager, Options, PackageFork, PackageForkReplacement,
+    ReplacementPlan, RevisionChange, SkippedDist, UninstallPlan, UpdateAllPlan,
 };

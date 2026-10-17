@@ -201,8 +201,8 @@ pub struct State {
     /// consumer in this workspace.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub replacements: BTreeMap<String, String>,
-    /// Forgotten packages of shared clones (`clone` set): their clone and `dist/` are kept
-    /// and they still count as users of the clone, so `restore` and `uninstall` find
+    /// Forgotten packages of shared clones (`clone` set): their clone is kept (their
+    /// `dist/` is not: they are not installed) and they still count as users of the clone, so `restore` and `uninstall` find
     /// them. A forgotten plugin with its own clone needs no record (`plugins/<id>`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub forgotten: BTreeMap<String, Installed>,
@@ -218,6 +218,11 @@ impl Default for State {
     }
 }
 impl State {
+    /// `dist/<id>` is deployed exactly for the active plugins: installed, enabled and
+    /// not replaced by another plugin. A host loads everything under `dist/`.
+    pub fn is_active(&self, id: &str) -> bool {
+        self.plugins.get(id).is_some_and(|p| p.enabled) && !self.replacements.contains_key(id)
+    }
     /// Parse `state.json` and check what serde cannot: the format version, IDs, clone
     /// keys and package folders.
     pub(crate) fn parse(bytes: &[u8]) -> Result<Self> {
@@ -280,6 +285,9 @@ pub struct InstalledPlugin {
     pub current: Revision,
     pub previous: Option<Revision>,
     pub enabled: bool,
+    /// Installed, enabled and not replaced ([`State::is_active`]): exactly the plugins
+    /// with `dist/<id>`. `enabled` alone is not enough (a replaced plugin is enabled).
+    pub active: bool,
     #[serde(rename = "forkOf", skip_serializing_if = "Option::is_none")]
     pub fork_of: Option<ForkOf>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -337,6 +345,7 @@ impl State {
                 current: p.current.clone(),
                 previous: p.previous.clone(),
                 enabled: p.enabled,
+                active: self.is_active(id),
                 fork_of: p.fork_of.clone(),
                 replaces: p.replaces.clone(),
                 catalog: p.catalog.clone(),

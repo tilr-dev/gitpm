@@ -170,11 +170,18 @@ fn print_switch_back(manager: &Manager, plan: &gitpm::ReplacementPlan) -> Result
         format!("for: {}", plan.consumers.join(", "))
     };
     // switch_back refuses when nothing is replaced, so `current` names the fork.
+    let fork = plan.current.as_deref().unwrap_or_default();
+    // The fork is not touched: say what is left of it.
+    let remains = match manager.state()?.plugins.get(fork) {
+        Some(p) if p.enabled => {
+            format!("; {fork} stays installed and enabled (disable or uninstall it if not wanted)")
+        }
+        Some(_) => format!("; {fork} stays installed (disabled)"),
+        None => String::new(),
+    };
     println!(
-        "{}: replacement {} removed, original restored ({} {installed} {consumers})",
-        plan.original,
-        plan.current.as_deref().unwrap_or_default(),
-        plan.original
+        "{}: replacement {fork} removed, original restored ({} {installed} {consumers}){remains}",
+        plan.original, plan.original
     );
     Ok(())
 }
@@ -230,6 +237,38 @@ fn print_update_all(before: &gitpm::State, plan: &gitpm::UpdateAllPlan, dry_run:
         plan.kept_back.len(),
         if dry_run { " Nothing was changed." } else { "" }
     );
+}
+/// What sync-dist did (or would do); problems go to stderr.
+fn print_dist_sync(sync: &gitpm::DistSync, dry_run: bool) {
+    let (deploy, remove) = if dry_run {
+        ("Would deploy", "Would remove")
+    } else {
+        ("Deployed", "Removed")
+    };
+    for id in &sync.deployed {
+        println!("{deploy}: dist/{id}");
+    }
+    for id in &sync.removed {
+        println!("{remove}: dist/{id}");
+    }
+    warn_dist(sync);
+    if sync.is_empty() && sync.skipped.is_empty() {
+        println!("dist/ already holds exactly the active plugins.");
+    } else if dry_run {
+        println!("Nothing was changed (--dry-run).");
+    }
+}
+/// Folders under dist/ gitpm leaves alone, and active plugins left without dist/.
+fn warn_dist(sync: &gitpm::DistSync) {
+    for path in &sync.unmanaged {
+        eprintln!("Warning: {path} belongs to no known plugin or is not a folder; left as it is");
+    }
+    for skipped in &sync.skipped {
+        eprintln!(
+            "Warning: {}: dist not deployed ({}); run `gitpm sync-dist`",
+            skipped.id, skipped.reason
+        );
+    }
 }
 /// `ID updated A → B` or `ID up to date (A)`.
 fn print_change(change: &gitpm::RevisionChange) {
@@ -400,6 +439,7 @@ const COMMANDS: &[&str] = &[
     "restore",
     "uninstall",
     "replace",
+    "sync-dist",
 ];
 const DEFAULT_ROOT: &str = "gitpm-workspace";
 const DEFAULT_SOURCES: &str = "sources.txt";
@@ -418,9 +458,10 @@ Workspace (installed plugins):
                                    origin HEAD
   update all [--dry-run]           jointly upgrade compatible releases; preview with --dry-run
   rollback ID                      swap current and previous version
-  enable ID | disable ID [--force]  change state only; disable refuses while other
+  enable ID | disable ID [--force]  deploy / remove dist/ID; disable refuses while other
                                    installed plugins depend on ID unless --force
-  forget ID [--force] | restore ID  unregister / re-register retained files
+  forget ID [--force] | restore ID  unregister (keeps the clone, removes dist/ID) /
+                                   re-register a retained clone
   uninstall ID [--force]            remove state, repository and dist; asks on a TTY
                                    before losing local work and refuses while others
                                    depend on ID; --force skips both
@@ -433,9 +474,15 @@ Workspace (installed plugins):
     [--replace [--version V] [--force]]  then release each fork (tag NS/NAME@V, V defaults
                                    to the forked version), install it and replace ID with
                                    it for every consumer
-  replace ORIGINAL --with FORK [--force]  make FORK provide ORIGINAL for every consumer
+  replace ORIGINAL --with FORK [--force]  make FORK provide ORIGINAL for every consumer;
+                                   removes dist/ORIGINAL (FORK keeps its own dist/)
   replace ORIGINAL --back [--force]  switch every consumer back to the installed ORIGINAL
+                                   and deploy dist/ORIGINAL again
                                    (incompatible consumers: asks on a TTY, else --force)
+  sync-dist [--dry-run]            make dist/ hold exactly the active plugins (installed,
+                                   enabled, not replaced); run once after upgrading a
+                                   workspace from gitpm 0.4 (mutating commands
+                                   reconcile dist/ automatically)
 
 Authoring:
   init NAMESPACE/NAME --into DIR   create the package with release 0.1.0 (init = create):
@@ -581,7 +628,8 @@ fn run() -> Result<()> {
         "replace needs exactly one of --with FORK or --back"
     );
     let expected = match command {
-        "info" | "catalog-update" | "migrate-catalog" | "list" | "check" | "catalog" => 1,
+        "info" | "catalog-update" | "migrate-catalog" | "list" | "check" | "catalog"
+        | "sync-dist" => 1,
         // fork ID [ID...]: one or more installed IDs.
         "fork" => args.len().max(2),
         "auth" | "commit" | "remote" => 3,
@@ -617,7 +665,10 @@ fn run() -> Result<()> {
         gitpm::valid_id(package)?;
     }
     let update_all = command == "update" && id == "all";
-    ensure!(!dry_run || update_all, "--dry-run requires update all");
+    ensure!(
+        !dry_run || update_all || command == "sync-dist",
+        "--dry-run requires update all or sync-dist"
+    );
     ensure!(
         !update_all || (reference.is_none() && !dev),
         "update all supports stable releases only; --ref and --channel dev are not supported"
@@ -929,6 +980,22 @@ fn run() -> Result<()> {
         "restore" => {
             manager.restore(id)?;
         }
+        "sync-dist" => {
+            let sync = if dry_run {
+                manager.sync_dist_plan()?
+            } else {
+                manager.sync_dist()?
+            };
+            print_dist_sync(&sync, dry_run);
+            if !dry_run && !sync.skipped.is_empty() {
+                let failed: Vec<&str> = sync.skipped.iter().map(|s| s.id.as_str()).collect();
+                bail!(
+                    "sync-dist: {} package(s) not deployed: {}",
+                    failed.len(),
+                    failed.join(", ")
+                );
+            }
+        }
         "uninstall" => {
             if force {
                 manager.uninstall_with(id, true, true)?;
@@ -953,8 +1020,31 @@ fn run() -> Result<()> {
         }
         _ => bail!("unknown command: {command}"),
     }
+    // Mutating commands reconcile dist/ (already committed): report what they left alone.
+    let mutating = matches!(
+        command,
+        "install"
+            | "install-catalog"
+            | "update"
+            | "rollback"
+            | "enable"
+            | "disable"
+            | "forget"
+            | "restore"
+            | "uninstall"
+            | "replace"
+    ) || (command == "fork" && replace);
+    if mutating && !dry_run {
+        match manager.sync_dist_plan() {
+            Ok(sync) => warn_dist(&sync),
+            Err(error) => eprintln!("Warning: cannot check dist/: {error}"),
+        }
+    }
     // These print what they did instead.
-    if !matches!(command, "list" | "install" | "install-catalog" | "update") {
+    if !matches!(
+        command,
+        "list" | "install" | "install-catalog" | "update" | "sync-dist"
+    ) {
         println!("OK: {command} {id}");
     }
     Ok(())

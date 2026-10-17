@@ -202,12 +202,81 @@ Changed in 0.5:
   and `list` accept such manifests (published before 0.5) and treat those keys as
   absent, with a warning on stderr for install and update.
 - `replace ID --back` prints `ID: replacement FORK removed, original restored (ID VERSION
-  for: consumers)` instead of `ID → ID VERSION …`.
+  for: consumers); FORK stays installed and enabled (disable or uninstall it if not
+  wanted)` instead of `ID → ID VERSION …`.
 - `init --multi` makes a new (or empty) folder a multi-package repository;
   `init --no-release` commits without the release tag.
 - `list`: `resolved[]` entries carry `clone` (as `plugins.<id>.clone`).
 - Removing a package also removes the folders it leaves empty (`dist/<namespace>`,
   `plugins/<namespace>`, `repos`).
+- `dist/` holds only active packages (installed, enabled, not replaced; see
+  [Workspace layout](#workspace-layout-and-dist)): `replace` removes the original's
+  `dist/`, `replace --back` and `enable` deploy it again, `disable` and `forget` remove
+  it. Hosts no longer need `resolved[].replacing`/`.enabled` to pick what to load: load
+  everything under `dist/` (or use the new `resolved[].active`). A workspace written by 0.4 keeps every installed package
+  there: the first mutating command fixes it; until then (only read-only commands since
+  upgrading) run `gitpm sync-dist` (FFI `syncDist`) once.
+
+## Workspace layout and `dist/`
+
+```text
+state.json              installed plugins, replacements, forgotten records
+plugins/<ns>/<name>/    own clone of a root package
+repos/<name>-<hash>/    shared clone of a multi-package source
+dist/<ns>/<name>/       deployed files of an active package
+.pm-txn/                an interrupted operation (finished or discarded on open)
+```
+
+`dist/<namespace>/<name>/` exists exactly when the package is installed, enabled and not
+replaced by another package (`State::is_active`). A host loads every package folder under
+`dist/` and needs no gitpm knowledge; `list` still reports the full status (installed,
+`enabled`, `replacements`, `resolved[].replacing`) for a UI. Each `resolved[]` entry (and
+the FFI `InstalledPlugin`) has `active`: exactly this rule, so a host using `list` need
+not derive it. `enabled` is not `active`: a replaced package stays `enabled: true` with
+`active: false`. `list --provides SERVICE` keeps inactive packages (it is a status view).
+
+- Every deploy (install, update, rollback, restore, `replace --back`, enable, reconcile)
+  copies `<path>/dist` of the resolved commit from the clone's Git objects (one
+  `git archive`), never the working tree: uncommitted edits in a clone are not deployed,
+  nested folders and the executable bit are kept, symlinks are refused, and a revision
+  without that folder is refused (`invalid_manifest`, "release … has no dist/ folder")
+  instead of deploying an empty folder.
+- `replace X --with Y` removes `dist/X/`; nothing of `Y` is copied there; `dist/Y/` stays.
+  `Y` must be enabled (`invalid_argument`: "Y is disabled; enable it first"), so a
+  replacement never leaves nothing loaded. `replace X --back` deploys `dist/X/` again from
+  `X`'s clone at its installed commit (`plugins.X.current.commit`, folder `path` of a
+  multi-package clone), so a shared clone whose HEAD is another package's revision needs
+  no checkout. `Y` stays deployed: two packages providing the same service is the host's
+  concern.
+- `disable X` removes `dist/X/`; `enable X` deploys it again the same way. Disabling a
+  package that replaces another is refused (`has_dependents`, naming what it replaces)
+  unless `--force`, as for a package other packages depend on.
+- `install`, `update` and `rollback` of a replaced or disabled package change state and
+  clone only; its `dist/` appears on `replace --back` / `enable`. `fork … --replace` ends
+  with the fork deployed and the original's `dist/` removed.
+- `forget X` removes `dist/X/` (the clone stays); `restore X` deploys it. Forgetting or
+  uninstalling a replacement drops its bindings, so each original it replaced is
+  deployed again. Uninstalling or forgetting the original `X` keeps the binding `X → Y`:
+  installing `X` again leaves it replaced (no `dist/X/`) until `replace X --back`.
+- Every change goes through the same transaction as the state, so a crash leaves state
+  and `dist/` consistent; empty `dist/<namespace>` folders are removed.
+
+Every mutating command (install, update, rollback, replace, enable, disable, forget,
+restore, uninstall, fork `--replace`) reconciles all of `dist/` with the state in its
+transaction: it deploys the missing folders of active packages and removes those of
+inactive ones (disabled, replaced, forgotten or retained clones); folders of no known
+package are left alone (the CLI warns about them on stderr), an existing folder of an
+active package is not rewritten. A namespace path under `dist/` that is a symlink or a
+file is reported the same way and nothing is written below it. An active package whose
+clone or installed commit is gone is skipped, so it does not block an unrelated command;
+the CLI warns `Warning: ID: dist not deployed (clone missing); run \`gitpm sync-dist\``
+(`DistSync.skipped` from `sync_dist_plan`). Any other deploy error fails the command.
+Read-only commands such as `list` and `check` never change `dist/`.
+`gitpm sync-dist [--dry-run]` (`Manager::sync_dist`, FFI `syncDist`) does only the
+reconcile: for a workspace written by gitpm 0.4 or earlier (which deployed every
+installed package) that has only seen read-only commands since upgrading, or as an
+explicit repair. It syncs every package it can, then exits non-zero naming the ones it
+could not deploy.
 
 ## Multi-package repositories
 
@@ -265,11 +334,11 @@ packages/theme/dist/…
   (`version_conflict`, naming the tag) when the release tag of an installed revision of
   any package of the clone would move.
 - Forgetting a package of a shared clone keeps a record in `state.json` (`forgotten`): it
-  still holds the clone, `restore` registers it again at its recorded revision, and
-  `uninstall` of the forgotten package removes its `dist/` and, if it was the last user,
-  the clone. Installing a forgotten ID again is refused until it is restored or
-  uninstalled (as for a forgotten root package). If the clone is gone, `uninstall` drops
-  the record (and its `dist/`), and `restore` says so.
+  still holds the clone (its `dist/` is removed by `forget`), `restore` registers it
+  again at its recorded revision and deploys it, and `uninstall` of the forgotten package
+  removes the record and, if it was the last user, the clone. Installing a forgotten ID
+  again is refused until it is restored or uninstalled (as for a forgotten root package).
+  If the clone is gone, `uninstall` drops the record, and `restore` says so.
 - Catalog: a release of a package carries `"path": "packages/store"` next to `source` and
   `commit` (absent for a root package). `catalog-update` publishes every package listed in
   `gitpm.json` at the source's HEAD from its `ID@VERSION` tags (one source line, all
@@ -490,6 +559,7 @@ pm.replace("vendor/base", "mine/base", /* confirm */ !plan.incompatible.is_empty
 pm.switch_back("vendor/base", confirm)?;                       // back to the original
 pm.uninstall_with(id, confirm, /* force: ignore dependents */ false)?;
 pm.set_enabled_with(id, false, force)?;  pm.forget_with(id, force)?;
+let sync = pm.sync_dist()?;   // dist/ = active plugins (sync_dist_plan: read-only preview)
 pm.list()?;  pm.state()?;  pm.check()?;  pm.browse_catalog()?;  pm.catalog_release(id, None)?;
 ```
 
@@ -582,7 +652,11 @@ only: consumers whose requirement the declared version does not satisfy are list
 confirmed. Self-replacement and cycles are always refused. Replacing again switches the
 binding; `switch_back` returns all consumers to the installed original (same
 confirmation rule). The active fork is guarded like any provider; a fork update must
-keep declaring `replaces`. Uninstalling or forgetting the fork drops its binding.
+keep declaring `replaces`. Uninstalling or forgetting the fork drops its binding;
+uninstalling or forgetting the original keeps it (a reinstalled original stays replaced
+until `switch_back`). The fork must be enabled to become the provider, and disabling an
+active fork needs `force`. A replaced original has no `dist/` (see
+[Workspace layout](#workspace-layout-and-dist)).
 
 ### Catalog
 
@@ -624,7 +698,8 @@ disable(force), forget(force), restore, uninstallPlan, uninstall(confirm, force)
 `ForkReplacement`: a failure after the fork exists is reported in `failedStep` (the
 `ForkStep` enum: release, install, replace), `errorKind`, `errorMessage`), forkPackages
 (`PackageFork`), forkPackagesAndReplace (`PackageForkReplacement`: the fork plus one
-`ForkReplacement` per package), replacePlan, replace, switchBackPlan, switchBack; `force`
+`ForkReplacement` per package), replacePlan, replace, switchBackPlan, switchBack,
+syncDistPlan, syncDist (`DistSync`: deployed, removed, unmanaged, skipped); `force`
 defaults to false; `InstalledPlugin.path` and `CatalogRelease.path` name the package
 folder; `InstalledPlugin.clone` names the shared clone; `InstalledPlugin`,
 `PluginSummary` and `CatalogRelease` carry the [metadata](#plugin-metadata); the fork records have the names of the library types `gitpm::ForkReplacement`,
@@ -639,6 +714,9 @@ are not exposed.
 Tilr's Mac app consumes the library through the UniFFI xcframework: `scripts/build-apple.sh`
 builds `GitpmFFI.xcframework` (universal static library + C module) and `Gitpm.swift`, which
 the app adds as a SwiftPM `binaryTarget` and a source target (see [Build](#build)).
+The host loads every package folder under `dist/` (only active packages are deployed,
+see [Workspace layout](#workspace-layout-and-dist)); after upgrading from gitpm 0.4 it
+calls `syncDist()` once before loading (mutating calls also reconcile).
 
 ## Tests
 
@@ -650,7 +728,8 @@ crates/gitpm/tests/                      integration tests of the public API
                                          (robustness, uninstall, no_env)
 crates/gitpm-ffi/src/lib.rs              FFI conversion tests (errors, records, free functions)
 crates/gitpm-cli/tests/                  end-to-end tests of the `gitpm` binary
-                                         (lifecycle, requirements, monorepo)
+                                         (lifecycle, requirements, monorepo, metadata,
+                                         dist_active)
 ```
 
 ```sh
