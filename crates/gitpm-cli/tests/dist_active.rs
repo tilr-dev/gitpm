@@ -383,9 +383,12 @@ fn sync_dist_repairs_a_tree_written_by_an_older_gitpm() {
     let out = f.run(&["sync-dist", "--dry-run"]);
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("Would deploy: dist/dan/demo"), "{stdout}");
     assert!(
-        stdout.contains("Would remove: dist/vendor/demo"),
+        stdout.contains("dan/demo would be deployed to dist/dan/demo"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("vendor/demo would be removed from dist/vendor/demo"),
         "{stdout}"
     );
     assert!(stdout.contains("Nothing was changed"), "{stdout}");
@@ -397,8 +400,11 @@ fn sync_dist_repairs_a_tree_written_by_an_older_gitpm() {
     assert_eq!(f.dist("vendor/demo").as_deref(), Some("stale"));
     assert_eq!(f.dist("dan/demo"), None);
     let out = f.ok(&["sync-dist"]);
-    assert!(out.contains("Deployed: dist/dan/demo"), "{out}");
-    assert!(out.contains("Removed: dist/vendor/demo"), "{out}");
+    assert!(out.contains("dan/demo deployed to dist/dan/demo"), "{out}");
+    assert!(
+        out.contains("vendor/demo removed from dist/vendor/demo"),
+        "{out}"
+    );
     assert_eq!(f.dist("vendor/demo"), None);
     assert!(!dist.join("vendor").exists());
     assert_eq!(f.dist("dan/demo").as_deref(), Some("fork"));
@@ -416,7 +422,10 @@ fn sync_dist_repairs_a_tree_written_by_an_older_gitpm() {
     f.ok(&["disable", "vendor/demo"]);
     fs::create_dir_all(dist.join("vendor/demo")).unwrap();
     let out = f.ok(&["sync-dist"]);
-    assert!(out.contains("Removed: dist/vendor/demo"), "{out}");
+    assert!(
+        out.contains("vendor/demo removed from dist/vendor/demo"),
+        "{out}"
+    );
     assert_eq!(f.dist("vendor/demo"), None);
     // Other options are refused.
     assert!(!f.run(&["sync-dist", "--force"]).status.success());

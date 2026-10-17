@@ -193,7 +193,8 @@ fn rejects_duplicate_path_escape_and_missing_payload() {
     let f = Fixture::new();
     f.install();
     let before = f.state();
-    f.cli(&["install", f.repo.to_str().unwrap()], false);
+    let again = f.cli(&["install", f.repo.to_str().unwrap()], true);
+    assert_eq!(again, "hello already installed (1.0.0)\n");
     f.cli(&["uninstall", "../upstream", "--force"], false);
     assert!(f.repo.exists());
     assert_eq!(f.state(), before);
@@ -431,7 +432,7 @@ fn fork_preserves_history_edits_and_original_installation() {
     let destination = f.dir.join("me/hello");
     let out = f.cli(&["fork", "hello", "--ns", "me", "--into", "me/hello"], true);
     assert!(
-        out.contains("Forked: hello → me/hello (repository root)"),
+        out.contains("me/hello forked from hello (repository root)"),
         "{out}"
     );
     let git_at = |path: &std::path::Path, args: &[&str]| {
@@ -803,7 +804,11 @@ fn migration_preserves_legacy_releases_and_backup() {
     catalog::migrate(location).unwrap();
     let retry = catalog::register(location, f.repo.to_str().unwrap(), "HEAD").unwrap();
     assert!(retry.files.is_empty());
-    f.cli(&["--catalog", location, "migrate-catalog"], true);
+    let out = f.cli(&["--catalog", location, "migrate-catalog"], true);
+    assert_eq!(
+        out,
+        format!("Catalog migrated: {location} (format v2, one folder per plugin)\n")
+    );
     assert_eq!(fs::read(dir.join(".catalog-v1.json")).unwrap(), original);
 }
 
@@ -1125,7 +1130,7 @@ fn uninstall_on_tty_asks_before_losing_work() {
     assert!(repo.join("notes.txt").exists());
     assert_eq!(f.state()["plugins"]["hello"]["enabled"], true);
     let output = ask("y");
-    assert!(output.contains("OK: uninstall hello"), "{output}");
+    assert!(output.contains("hello uninstalled"), "{output}");
     assert!(!repo.exists());
     assert!(f.state()["plugins"].as_object().unwrap().is_empty());
 }
@@ -1320,7 +1325,7 @@ fn create_install_and_fork_into_explicit_folders() {
         true,
     );
     assert!(
-        out.contains("Forked: dan/hello → me/hello (repository root)"),
+        out.contains("me/hello forked from dan/hello (repository root)"),
         "{out}"
     );
     assert!(
@@ -1424,4 +1429,132 @@ fn update_all_previews_applies_and_rejects_unsupported_options() {
     let out = f.cli(&["update", "all"], true);
     assert!(out.contains("0 updates, 0 installs"), "{out}");
     assert!(out.contains("hello up to date (2.0.0)"), "{out}");
+}
+
+#[test]
+fn install_again_reports_already_installed_and_changes_nothing() {
+    let f = Fixture::new();
+    f.install();
+    let source = f.repo.to_str().unwrap();
+    let state = || fs::read(f.root.join("state.json")).unwrap();
+    let dist = f.root.join("dist/hello/index.js");
+    let (before, modified) = (state(), fs::metadata(&dist).unwrap().modified().unwrap());
+    // Same source, same revision.
+    assert_eq!(
+        f.cli(&["install", source], true),
+        "hello already installed (1.0.0)\n"
+    );
+    assert_eq!(state(), before);
+    assert_eq!(fs::metadata(&dist).unwrap().modified().unwrap(), modified);
+    // Same source, a newer release: not installed, update moves to it.
+    f.release("1.1.0", "hello v2");
+    assert_eq!(
+        f.cli(&["install", source], true),
+        "hello already installed (1.0.0); run update\n"
+    );
+    assert_eq!(state(), before);
+    assert!(f.state()["plugins"]["hello"]["previous"].is_null());
+    // An explicit ref or the dev channel is named in the hint, never silently ignored.
+    assert_eq!(
+        f.cli(&["install", source, "--ref", "v1.1.0"], true),
+        "hello already installed (1.0.0); requested --ref v1.1.0 — run update hello --ref v1.1.0\n"
+    );
+    assert_eq!(
+        f.cli(&["install", source, "--ref", "v1.0.0"], true),
+        "hello already installed (1.0.0)\n"
+    );
+    assert_eq!(
+        f.cli(&["install", source, "--channel", "dev"], true),
+        "hello already installed (1.0.0); requested --channel dev — run update hello --channel dev\n"
+    );
+    assert_eq!(state(), before);
+    assert_eq!(f.content(), "hello v1");
+    assert!(!f.root.join(".pm-txn").exists());
+    // Another source with the same ID: refused as before.
+    let other = f.dir.join("other");
+    let out = f
+        .command("git")
+        .args(["clone", "-q", source])
+        .arg(&other)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = f.pm().arg("install").arg(&other).output().unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("already installed: hello")
+            && stderr.contains("Error kind: already_installed"),
+        "{stderr}"
+    );
+    assert_eq!(state(), before);
+    assert_eq!(
+        f.cli(&["update", "hello"], true),
+        "hello updated 1.0.0 → 1.1.0\n"
+    );
+}
+
+#[test]
+fn mutating_commands_print_one_line_per_package_and_no_ok_lines() {
+    let f = Fixture::new();
+    f.install();
+    f.release("1.1.0", "hello v2");
+    f.cli(&["update", "hello"], true);
+    for (args, expected) in [
+        (
+            &["rollback", "hello"][..],
+            "hello rolled back 1.1.0 → 1.0.0\n",
+        ),
+        (&["disable", "hello"][..], "hello disabled\n"),
+        (&["enable", "hello"][..], "hello enabled\n"),
+        (
+            &["forget", "hello"][..],
+            "hello forgotten (clone kept; restore re-registers it)\n",
+        ),
+        (&["restore", "hello"][..], "hello restored 1.0.0\n"),
+        (&["uninstall", "hello"][..], "hello uninstalled\n"),
+    ] {
+        assert_eq!(f.cli(args, true), expected, "{args:?}");
+    }
+}
+
+#[test]
+fn command_help_prints_only_that_command() {
+    let f = Fixture::new();
+    let full = f.cli(&["--help"], true);
+    for flag in ["--help", "-h"] {
+        let init = f.cli(&["init", flag], true);
+        assert!(
+            init.contains("--multi") && init.contains("--no-release"),
+            "{init}"
+        );
+        assert!(
+            init.starts_with("  init ") && !init.contains("sync-dist"),
+            "{init}"
+        );
+        assert!(full.contains(init.trim_end()));
+    }
+    let sync = f.cli(&["sync-dist", "--help"], true);
+    assert!(
+        sync.contains("--dry-run") && sync.starts_with("  sync-dist "),
+        "{sync}"
+    );
+    let list = f.cli(&["list", "--help"], true);
+    assert!(
+        list.contains("--provides") && !list.contains("install GIT_SOURCE"),
+        "{list}"
+    );
+    let update = f.cli(&["update", "-h"], true);
+    assert!(
+        update.contains("update ID") && update.contains("update all"),
+        "{update}"
+    );
+    let out = f.pm().args(["nope", "--help"]).output().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("unknown command: nope"));
+    assert!(!f.root.exists());
 }
