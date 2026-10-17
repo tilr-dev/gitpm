@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.5.0](https://github.com/tilr-dev/gitpm/compare/v0.4.0...v0.5.0) (2026-10-17)
+
+
+### Features
+
+* dist holds only active packages ([#13](https://github.com/tilr-dev/gitpm/issues/13)) ([3819836](https://github.com/tilr-dev/gitpm/commit/381983683796bd1b43948fcbe6e7f23373786d03))
+* plugin metadata and CLI polish ([#11](https://github.com/tilr-dev/gitpm/issues/11)) ([6c2abf1](https://github.com/tilr-dev/gitpm/commit/6c2abf1b264bdfd229ed17c999715252bae4b0ff))
+* unify command output, idempotent install, per-command help ([#14](https://github.com/tilr-dev/gitpm/issues/14)) ([6ea8030](https://github.com/tilr-dev/gitpm/commit/6ea8030abb5ec48bbc3d54a9382e1284c392cacc))
+
 ## [0.4.0](https://github.com/tilr-dev/gitpm/compare/v0.3.0...v0.4.0) (2026-10-17)
 
 
