@@ -455,6 +455,8 @@ fn fork_replace_releases_installs_and_replaces_in_one_step() {
     let fork = f.dir.join("forks/me/theme");
     assert!(fork.join("packages/theme/plugin.json").is_file());
     assert_eq!(f.dist("me/theme"), "my theme");
+    // dist/ holds only active packages: the replaced original is not deployed.
+    assert!(!f.dir.join("workspace/dist/tilr/theme").exists());
     let state = f.state();
     assert_eq!(state["replacements"]["tilr/theme"], "me/theme");
     assert_eq!(provider(&state), "me/theme");
@@ -471,13 +473,16 @@ fn fork_replace_releases_installs_and_replaces_in_one_step() {
     let out = f.ok(&["replace", "tilr/theme", "--back"]);
     assert!(
         out.contains(
-            "tilr/theme: replacement me/theme removed, original restored (tilr/theme 1.0.0 for: app/consumer)"
+            "tilr/theme: replacement me/theme removed, original restored (tilr/theme 1.0.0 for: app/consumer); me/theme stays installed and enabled (disable or uninstall it if not wanted)"
         ),
         "{out}"
     );
     let state = f.state();
     assert!(state.get("replacements").is_none(), "{state:#}");
     assert_eq!(provider(&state), "tilr/theme");
+    // Deployed again from the installed commit (the clone's local edit is not released).
+    assert_eq!(f.dist("tilr/theme"), "theme 1.0.0");
+    assert_eq!(f.dist("me/theme"), "my theme 2");
 }
 
 #[test]

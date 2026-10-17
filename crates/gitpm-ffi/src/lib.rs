@@ -1,7 +1,10 @@
 //! UniFFI bindings for native apps (Swift/Kotlin). Consumer operations only: open a
 //! workspace, browse a catalog, install/update/rollback/enable/disable/forget/restore,
 //! plan and confirm uninstall, fork, replace a plugin by a fork and switch back,
-//! check repository access.
+//! bring `dist/` in line with state (`syncDist`), check repository access.
+//!
+//! `dist/<id>` exists exactly for the active plugins (installed, enabled, not
+//! replaced): a host loads everything under `dist/` without resolving replacements.
 //!
 //! All calls block (Git/network); call them off the main thread.
 use gitpm as pm;
@@ -211,6 +214,9 @@ pub struct InstalledPlugin {
     pub current: Revision,
     pub previous: Option<Revision>,
     pub enabled: bool,
+    /// Enabled and not replaced: exactly the plugins with `dist/<id>` (what a host
+    /// loads). A replaced plugin is `enabled` but not `active`.
+    pub active: bool,
     pub fork_of: Option<ForkOf>,
     pub replaces: Option<Replaces>,
     /// Catalog it was installed from; `None` for Git installs.
@@ -239,6 +245,7 @@ impl From<pm::InstalledPlugin> for InstalledPlugin {
             current: p.current.into(),
             previous: p.previous.map(Into::into),
             enabled: p.enabled,
+            active: p.active,
             fork_of: p.fork_of.map(Into::into),
             replaces: p.replaces.map(Into::into),
             catalog: p.catalog,
@@ -412,6 +419,43 @@ impl From<LostWork> for pm::LostWork {
 #[uniffi::export]
 pub fn describe_lost_work(item: LostWork) -> String {
     pm::LostWork::from(item).describe()
+}
+
+/// What `syncDist` changes (or would change) so that `dist/` holds exactly the active
+/// plugins (installed, enabled, not replaced). IDs are sorted.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct DistSync {
+    /// Active plugins whose missing `dist/<id>` is deployed.
+    pub deployed: Vec<String>,
+    /// Inactive plugins whose `dist/<id>` is removed.
+    pub removed: Vec<String>,
+    /// Workspace-relative paths under `dist/` of no known plugin, or not real folders
+    /// where a namespace folder belongs (left alone).
+    pub unmanaged: Vec<String>,
+    /// Active plugins left without `dist/`, with the reason (clone missing, …).
+    pub skipped: Vec<SkippedDist>,
+}
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct SkippedDist {
+    pub id: String,
+    pub reason: String,
+}
+impl From<pm::DistSync> for DistSync {
+    fn from(s: pm::DistSync) -> Self {
+        Self {
+            deployed: s.deployed,
+            removed: s.removed,
+            unmanaged: s.unmanaged,
+            skipped: s
+                .skipped
+                .into_iter()
+                .map(|s| SkippedDist {
+                    id: s.id,
+                    reason: s.reason,
+                })
+                .collect(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -871,16 +915,18 @@ impl PluginManager {
     pub fn rollback(&self, id: String) -> Result<RevisionChange> {
         Ok(self.inner.rollback(&id)?.into())
     }
+    /// Deploys `dist/<id>` again (unless the plugin is replaced).
     pub fn enable(&self, id: String) -> Result<()> {
         Ok(self.inner.enable(&id)?)
     }
-    /// Refuses with `HasDependents` if others depend on it, unless `force`.
+    /// Removes `dist/<id>`. Refuses with `HasDependents` if others depend on it, unless
+    /// `force`.
     #[uniffi::method(default(force = false))]
     pub fn disable(&self, id: String, force: bool) -> Result<()> {
         Ok(self.inner.set_enabled_with(&id, false, force)?)
     }
-    /// Unregister; repository and deployed files stay on disk. Dependents refuse
-    /// unless `force`.
+    /// Unregister; the repository stays on disk, `dist/<id>` is removed (`restore`
+    /// deploys it again). Dependents refuse unless `force`.
     #[uniffi::method(default(force = false))]
     pub fn forget(&self, id: String, force: bool) -> Result<()> {
         Ok(self.inner.forget_with(&id, force)?)
@@ -888,6 +934,16 @@ impl PluginManager {
     /// Re-register a forgotten repository.
     pub fn restore(&self, id: String) -> Result<InstallResult> {
         Ok(self.inner.restore(&id)?.into())
+    }
+    /// Read-only: what `syncDist` would change.
+    pub fn sync_dist_plan(&self) -> Result<DistSync> {
+        Ok(self.inner.sync_dist_plan()?.into())
+    }
+    /// Make `dist/` hold exactly the active plugins; run once on a workspace written by
+    /// gitpm 0.4 or earlier (it kept every installed plugin in `dist/`). Mutating calls
+    /// reconcile too; `syncDistPlan().skipped` tells which active plugins have no dist.
+    pub fn sync_dist(&self) -> Result<DistSync> {
+        Ok(self.inner.sync_dist()?.into())
     }
     pub fn uninstall_plan(&self, id: String) -> Result<UninstallPlan> {
         Ok(self.inner.uninstall_plan(&id)?.into())
@@ -903,7 +959,8 @@ impl PluginManager {
         Ok(self.inner.replace_plan(&original, &replacement)?.into())
     }
     /// Make `replacement` the provider of `original` for every consumer. Unsatisfied
-    /// consumers refuse with `IncompatibleReplacement` unless `confirm`.
+    /// consumers refuse with `IncompatibleReplacement` unless `confirm`. Removes
+    /// `dist/<original>`; the replacement keeps its own `dist/`.
     pub fn replace(
         &self,
         original: String,
@@ -915,7 +972,8 @@ impl PluginManager {
     pub fn switch_back_plan(&self, original: String) -> Result<ReplacementPlan> {
         Ok(self.inner.switch_back_plan(&original)?.into())
     }
-    /// Every consumer uses the installed original again (same confirmation rule).
+    /// Every consumer uses the installed original again (same confirmation rule);
+    /// `dist/<original>` is deployed again.
     pub fn switch_back(&self, original: String, confirm: bool) -> Result<ReplacementPlan> {
         Ok(self.inner.switch_back(&original, confirm)?.into())
     }
@@ -1316,6 +1374,7 @@ mod tests {
             current: revision("1.0.0"),
             previous: Some(revision("0.9.0")),
             enabled: false,
+            active: false,
             fork_of: Some(fork_of()),
             replaces: None,
             catalog: None,

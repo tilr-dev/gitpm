@@ -143,39 +143,24 @@ impl Txn {
         self.journal.paths.insert(relative.into(), Change::Replace);
         Ok(staged)
     }
-    /// Stage `dist/<id>` from `<package>/dist` of the (staged or live) clone at
-    /// `repo_relative`; `package` is the folder inside the repository (`None`: root).
-    /// Symlinks refused.
+    /// Stage `dist/<id>` from `<package>/dist` at `commit` of the (staged or live) clone
+    /// at `repo_relative`; `package` is the folder inside the repository (`None`: root).
+    /// Read from Git objects (see [`crate::workspace::export_dist`]), so the working tree
+    /// and HEAD of the clone do not matter.
     pub(crate) fn deploy(
         &mut self,
         id: &str,
         repo_relative: &str,
         package: Option<&str>,
+        commit: &str,
     ) -> Result<()> {
+        ensure_managed_parents(&self.root, repo_relative)?;
         let repo = match self.staged_repo(repo_relative) {
             Some(staged) => staged,
             None => self.root.join(repo_relative),
         };
-        let relative = format!("dist/{id}");
-        ensure_managed_parents(&self.root, repo_relative)?;
-        ensure_managed_parents(&self.root, &relative)?;
-        let mut source = repo;
-        if let Some(package) = package {
-            crate::packages::validate_path(package)?;
-            for part in package.split('/') {
-                source.push(part);
-                if fs::symlink_metadata(&source)?.file_type().is_symlink() {
-                    return Err(Error::Unsupported(format!(
-                        "symlinks are not supported: {package}"
-                    )));
-                }
-            }
-        }
-        let staged = self.staged(&relative);
-        remove(&staged)?;
-        copy_tree(&source.join("dist"), &staged, false)?;
-        self.journal.paths.insert(relative, Change::Replace);
-        Ok(())
+        let staged = self.stage_dist(id)?;
+        crate::workspace::export_dist(&repo, commit, package, &staged)
     }
     /// Remove a clone (`plugins/<id>` or `repos/<key>`) on commit.
     pub(crate) fn delete_repo(&mut self, relative: &str) -> Result<()> {
@@ -184,9 +169,32 @@ impl Txn {
         self.journal.paths.insert(relative.into(), Change::Delete);
         Ok(())
     }
-    /// Remove the plugin's deployed files on commit.
+    /// Remove the plugin's deployed files on commit (also drops a staged deploy).
     pub(crate) fn delete_dist(&mut self, id: &str) -> Result<()> {
         self.delete_repo(&format!("dist/{id}"))
+    }
+    /// An empty staged `dist/<id>` to fill (replaces the live one on commit).
+    pub(crate) fn stage_dist(&mut self, id: &str) -> Result<PathBuf> {
+        let relative = format!("dist/{id}");
+        ensure_managed_parents(&self.root, &relative)?;
+        let staged = self.staged(&relative);
+        remove(&staged)?;
+        fs::create_dir_all(&staged)?;
+        self.journal.paths.insert(relative, Change::Replace);
+        Ok(staged)
+    }
+    /// Whether this transaction deploys or deletes `dist/<id>`.
+    pub(crate) fn has_dist(&self, id: &str) -> bool {
+        self.journal.paths.contains_key(&format!("dist/{id}"))
+    }
+    /// IDs whose `dist/` this transaction deploys or deletes.
+    pub(crate) fn staged_dists(&self) -> Vec<String> {
+        self.journal
+            .paths
+            .keys()
+            .filter_map(|relative| relative.strip_prefix("dist/"))
+            .map(str::to_owned)
+            .collect()
     }
     pub(crate) fn commit(mut self, state: &State) -> Result<()> {
         // Always written in the current layout, whatever format was read.

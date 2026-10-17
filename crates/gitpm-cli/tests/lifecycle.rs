@@ -140,14 +140,17 @@ fn lifecycle_and_three_removal_levels() {
     assert_eq!(f.content(), "hello v2");
     f.cli(&["disable", "hello"], true);
     assert_eq!(f.state()["plugins"]["hello"]["enabled"], false);
-    assert!(f.root.join("dist/hello").exists());
+    // dist/ holds only active plugins.
+    assert!(!f.root.join("dist/hello").exists());
     f.cli(&["enable", "hello"], true);
+    assert_eq!(f.content(), "hello v2");
     f.cli(&["forget", "hello"], true);
     assert!(f.state()["plugins"].as_object().unwrap().is_empty());
     assert!(f.root.join("plugins/hello/.git").exists());
-    assert!(f.root.join("dist/hello").exists());
+    assert!(!f.root.join("dist/hello").exists());
     f.cli(&["restore", "hello"], true);
     assert_eq!(f.state()["plugins"]["hello"]["enabled"], true);
+    assert_eq!(f.content(), "hello v2");
     f.cli(&["uninstall", "hello"], true);
     assert!(!f.root.join("plugins/hello").exists());
     assert!(!f.root.join("dist/hello").exists());
@@ -1375,7 +1378,9 @@ fn help_names_the_binary_and_removed_commands_are_unknown() {
     let f = Fixture::new();
     let help = f.cli(&["--help"], true);
     assert!(help.starts_with("gitpm "));
-    assert!(!help.contains("sync"));
+    // The removed `sync` command (sync-dist is another command).
+    assert!(!help.contains("  sync "));
+    assert!(help.contains("  sync-dist "));
     assert!(!help.contains("--publish"));
     for args in [
         &["sync"][..],
