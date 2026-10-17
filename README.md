@@ -13,10 +13,12 @@ scripts/build-apple.sh           universal macOS staticlib + Swift bindings
 scripts/package-cli.sh           release archive of the `gitpm` binary (release.yml)
 ```
 
-A package is a Git repository with a `plugin.json` manifest (`id`, `version`,
+A package is a folder in a Git repository with a `plugin.json` manifest (`id`, `version`,
 `dependencies`, optional `forkOf` and `replaces`; other keys are kept as they are) and a
-ready `dist/` folder. Installing clones the repository into a workspace and copies `dist/`;
-nothing is built or executed. Releases are Git tags (`vVERSION` or `namespace/name@VERSION`).
+ready `dist/` folder: the repository root, or one of several folders a root `gitpm.json`
+lists ([multi-package repositories](#multi-package-repositories)). Installing clones the
+repository into a workspace and copies the package's `dist/`; nothing is built or executed.
+Releases are Git tags (`vVERSION` or `namespace/name@VERSION`).
 The catalog is a tree of static JSON files (local folder or HTTP) with exact commits and
 file hashes.
 
@@ -43,22 +45,23 @@ directories, nothing is pushed or uploaded.
 
 A plugin is a Git repository with `plugin.json` and a ready `dist/` folder; a release is
 a `namespace/name@VERSION` tag (or `vVERSION` for a legacy plugin without a namespace).
-Source folders mirror the plugin ID (`./acme/greeter`):
+Repositories are plain folders named by you (`./greeter`); gitpm never derives a folder
+from an ID:
 
 ```console
-$ mkdir -p acme/greeter/dist && cd acme/greeter && git init -q -b main
+$ mkdir -p greeter/dist && cd greeter && git init -q -b main
 $ echo '{"id": "acme/greeter", "version": "0.1.0"}' > plugin.json
 $ echo 'export const greeting = "greeter v1";' > dist/index.js
-$ git add . && git commit -qm "greeter 0.1.0" && git tag acme/greeter@0.1.0 && cd ../..
-$ gitpm install ./acme/greeter
-OK: install ./acme/greeter
+$ git add . && git commit -qm "greeter 0.1.0" && git tag acme/greeter@0.1.0 && cd ..
+$ gitpm install ./greeter
+OK: install ./greeter
 $ cat gitpm-workspace/dist/acme/greeter/index.js
 export const greeting = "greeter v1";
 $ gitpm list
 {
   "plugins": {
     "acme/greeter": {
-      "source": "/…/acme/greeter",
+      "source": "/…/greeter",
       "current": {
         "version": "0.1.0",
         "commit": "4b377fe…"
@@ -68,9 +71,9 @@ $ gitpm list
 Release 0.2.0, update, roll back (one previous version is kept):
 
 ```console
-$ echo 'export const greeting = "greeter v2";' > acme/greeter/dist/index.js
-$ echo '{"id": "acme/greeter", "version": "0.2.0"}' > acme/greeter/plugin.json
-$ git -C acme/greeter commit -qam "greeter 0.2.0" && git -C acme/greeter tag acme/greeter@0.2.0
+$ echo 'export const greeting = "greeter v2";' > greeter/dist/index.js
+$ echo '{"id": "acme/greeter", "version": "0.2.0"}' > greeter/plugin.json
+$ git -C greeter commit -qam "greeter 0.2.0" && git -C greeter tag acme/greeter@0.2.0
 $ gitpm update acme/greeter
 OK: update acme/greeter
 $ cat gitpm-workspace/dist/acme/greeter/index.js
@@ -84,16 +87,17 @@ OK: update acme/greeter
 ```
 
 A catalog is generated from the release tags of the repositories listed in a sources
-file (paths are relative to that file). `gitpm init NAMESPACE/NAME` (same as `create`)
-scaffolds the plugin repository `./NAMESPACE/NAME` with its first release; the namespace
-is required, there is no default. `gitpm commit` bumps the version, commits everything
-and tags:
+file (paths are relative to that file). `gitpm init NAMESPACE/NAME --into DIR` (same as
+`create`) scaffolds the package with its first release: a new `DIR` becomes a plugin
+repository, a repository with `gitpm.json` gets a package folder. The namespace and `DIR`
+are required, there are no defaults. `gitpm commit` bumps the version, commits
+everything and tags:
 
 ```console
 $ export GITPM_CATALOG=$PWD/catalog
-$ echo './acme/greeter' > sources.txt
+$ echo './greeter' > sources.txt
 $ gitpm catalog-update
-Reading releases: /…/acme/greeter
+Reading releases: /…/greeter
 Catalog ready: 2 release(s) checked from sources.
 $ gitpm info
 Catalog: /…/catalog
@@ -104,22 +108,22 @@ Directories and plugins:
     acme/
       greeter/
         acme/greeter — latest: 0.2.0, versions: 2
-            Git: /…/acme/greeter
-$ gitpm init hello
+            Git: /…/greeter
+$ gitpm init hello --into hello
 Error: plugin id needs a namespace: use NAMESPACE/NAME, for example acme/hello
-$ gitpm init acme/hello
+$ gitpm init acme/hello --into hello
 
-Created: /…/acme/hello
+Created: /…/hello
 ID: acme/hello
 Version 0.1.0: Git commit and tag acme/hello@0.1.0.
 …
-$ echo 'export const greeting = "hello v2";' > acme/hello/dist/index.js
-$ gitpm commit acme/hello 0.1.1
+$ echo 'export const greeting = "hello v2";' > hello/dist/index.js
+$ gitpm commit hello 0.1.1
 Created local commit and tag acme/hello@0.1.1.
-$ echo './acme/hello' >> sources.txt
+$ echo './hello' >> sources.txt
 $ gitpm catalog-update
-Reading releases: /…/acme/greeter
-Reading releases: /…/acme/hello
+Reading releases: /…/greeter
+Reading releases: /…/hello
 Catalog ready: 4 release(s) checked from sources.
 $ gitpm install-catalog acme/hello
 OK: install-catalog acme/hello
@@ -136,26 +140,200 @@ acme/hello               0.1.1          0.1.1          yes      up to date
 Updates: 0. Nothing was changed.
 ```
 
-`gitpm fork ID NAMESPACE/NAME` copies an installed plugin (with its Git history and local
-edits) into the new folder `./NAMESPACE/NAME` under that ID. The name stays the same,
-only the namespace changes, so the original and the fork sit side by side:
+`gitpm fork ID --ns NAMESPACE --into DIR` copies an installed plugin (with its Git
+history and local edits) into the fork repository `DIR` under the ID `NAMESPACE/<same
+name>`: only the namespace changes, so the original and the fork can be installed side by
+side. `DIR` is always given (a new folder; or an existing repository with `gitpm.json`,
+see below); it is never derived from the ID. The output lists the next steps (commit and
+tag, install, replace):
 
 ```console
-$ gitpm fork acme/hello me/hi
-Error: fork keeps the plugin name: use NAMESPACE/hello, not me/hi
-$ gitpm fork acme/hello me/hello
-Fork created: /…/me/hello
+$ gitpm fork acme/hello --ns me --into hello-fork
+Fork created: /…/hello-fork
 Git history and local edits are kept; the original repository is the upstream remote.
-New ID: me/hello. forkOf records the origin; replaces says the fork can stand in for acme/hello
-(used only after an explicit: gitpm replace acme/hello --with me/hello).
-…
+Forked: acme/hello → me/hello (repository root)
+forkOf records each origin; replaces says the fork can stand in for it (used only
+after an explicit replace). The original installations are unchanged.
+
+Next steps (or all at once: add --replace):
+  gitpm commit '/…/hello-fork' NEW_VERSION --package me/hello   commit local edits, tag me/hello@NEW_VERSION
+  gitpm install '/…/hello-fork' me/hello
+  gitpm replace acme/hello --with me/hello
+Set your own origin with: gitpm remote '/…/hello-fork' GIT_URL
 OK: fork acme/hello
-$ ls -d acme/* me/*
-acme/greeter
-acme/hello
-me/hello
+$ ls -d hello*
+hello
+hello-fork
 $ gitpm uninstall acme/hello
 OK: uninstall acme/hello
+```
+
+`fork ID --ns NAMESPACE --into DIR --replace` does all of it at once: fork, release the
+fork right away (tag `NAMESPACE/NAME@VERSION`; `--version V`, default the forked version;
+local edits of the installed copy are committed with it), install it and replace `ID`
+with it for every consumer. Incompatible consumers are handled as by `replace`: asked on a
+TTY, otherwise only with `--force`. The fork folder is never removed again: when the
+release, install or replace step fails, the command says per package what is left and how
+to finish or undo (for example `gitpm install … me/hello` then `gitpm replace …`, or
+`gitpm uninstall me/hello` and delete the folder). `replace` prints the installed version
+of the provider and, when it differs, the version it stands in as (`acme/hello → me/hello
+1.5.0 (as acme/hello 1.0.0) for: …`).
+
+Changed in 0.4: the form `fork ID NAMESPACE/NAME [--into DIR]` (fork folder
+`DIR/NAMESPACE/NAME`, default `./NAMESPACE/NAME`) and `init NAMESPACE/NAME` without a
+folder are gone; `init --in REPO` is now `init --into DIR`.
+
+## Multi-package repositories
+
+One repository can hold several packages. A root `gitpm.json` lists the package folders
+as glob patterns (as in npm or Cargo workspaces); each folder has its own `plugin.json`
+and committed `dist/`:
+
+```text
+gitpm.json                {"packages": ["packages/*"]}
+packages/store/plugin.json  {"id": "tilr/store", "version": "1.2.0"}
+packages/store/dist/…
+packages/theme/plugin.json  {"id": "tilr/theme", "version": "0.4.0"}
+packages/theme/dist/…
+```
+
+- Patterns are relative folders of `/`-separated segments; `*` matches within one segment
+  (`packages/*`, `apps/gitpm-*`, or a literal `tools/cli`). No `**`, `..`, absolute paths
+  or hidden folders (no segment may start with `.`, so `.cache` and `.*` are refused, and
+  `*` never matches a hidden folder). Without `gitpm.json` the repository root is the only
+  package, exactly as before; with it, a root `plugin.json` is not a package.
+- Every package needs a `namespace/name` ID, unique in the repository (in any letter
+  case), a `plugin.json` file (not a symlink) and a committed `dist/` folder (not a
+  symlink); packages cannot nest. Deployed files must be plain files, as for a root
+  package. Only the package being installed, updated or registered must be valid at its
+  commit: a defective sibling folder (no `dist/`, bad ID, …) does not block it
+  (`catalog-update` reports it as a warning and publishes the other packages).
+- Releases are per package: tag `ID@VERSION` (`tilr/store@1.2.0`), so the packages of one
+  repository release independently. The package set is read from `gitpm.json` at the
+  tagged commit, so a package may move to another folder between releases. Legacy
+  `vVERSION` tags are ambiguous in such a repository and are skipped with a warning
+  (`legacy tag … is ambiguous …; tag ID@VERSION instead`); a newest release that is
+  only such a tag, or a tag whose commit lacks its package, fails the install clearly.
+- `gitpm install REPO ID` (or `--package ID`) installs one package. Without an ID a
+  repository with several packages is refused with the list of its packages (`tilr/store
+  (packages/store), tilr/theme (packages/theme)`); one with a single listed package
+  needs none; an `--ref ID@VERSION` tag names the package itself. For a single-package
+  repository a given ID must match its manifest. `--ref` and `--channel dev` (HEAD of the
+  default branch) work per package.
+- Workspace: the packages of one source share one clone, `repos/<name>-<hash of the
+  source>`; state records `clone` (the cache key of that clone) and `path` (the package
+  folder) per plugin, and only `<path>/dist` is deployed to `dist/<namespace>/<name>`.
+  Updating, rolling back or uninstalling one package leaves the other packages alone; the
+  clone is removed with the last package that uses it (its local work is guarded then,
+  as for any clone). Since the clone has one HEAD for all its packages, HEAD only counts
+  as moved when it is neither an installed revision of one of them nor a tagged commit;
+  when a package is uninstalled or forgotten, HEAD moves to the installed revision of a
+  remaining one (working-tree changes are kept; if they conflict with that revision the
+  operation is refused). A root package keeps its own `plugins/<id>` clone, also when it
+  later moves into a package folder (`path` set, `clone` absent).
+- Shared clones keep `refs/gitpm/<namespace>/<name>/current` and `.../previous` for every
+  package that uses them (registered or forgotten), updated with each change and deleted
+  with the package, so an upstream rewrite, a pruned tag or `git gc` never loses another
+  package's installed or rollback revision. One tag policy: fetching takes upstream's tags
+  as they are (moved ones overwritten; `update` also drops deleted ones), but is refused
+  (`version_conflict`, naming the tag) when the release tag of an installed revision of
+  any package of the clone would move.
+- Forgetting a package of a shared clone keeps a record in `state.json` (`forgotten`): it
+  still holds the clone, `restore` registers it again at its recorded revision, and
+  `uninstall` of the forgotten package removes its `dist/` and, if it was the last user,
+  the clone. Installing a forgotten ID again is refused until it is restored or
+  uninstalled (as for a forgotten root package). If the clone is gone, `uninstall` drops
+  the record (and its `dist/`), and `restore` says so.
+- Catalog: a release of a package carries `"path": "packages/store"` next to `source` and
+  `commit` (absent for a root package). `catalog-update` publishes every package listed in
+  `gitpm.json` at the source's HEAD from its `ID@VERSION` tags (one source line, all
+  packages); `register SRC --ref REF --package ID` registers one (an `ID@VERSION` ref names
+  it).
+- Authoring: `gitpm init NAMESPACE/NAME --into DIR` adds a package with release 0.1.0
+  to a repository with `gitpm.json`; an existing repository without `gitpm.json` gets that
+  file (`{"packages": ["packages/*"]}`), unless its root already is a package (moving it
+  into a folder is up to you); a folder that does not exist becomes a single-package
+  repository instead. The folder is `PREFIX/NAME` for the first `PREFIX/*` pattern, else
+  `packages/NAME` (added to `gitpm.json` when no pattern matches it): folders are named
+  after the name part of the ID, so `a/ui` and `b/ui` cannot share a repository (the
+  second `init` is refused naming the package that has the folder). Only `gitpm.json` and
+  the new folder are committed; `gitpm.json` must have no uncommitted changes. If only the
+  tag fails, the commit stays and the error names the tag to create. gitpm never writes
+  a Git identity into an existing repository (no identity: refused as by `commit`); only a
+  repository it creates itself (a new `init` folder, a new fork) gets a local demo identity
+  when the user has none. `gitpm commit REPO VERSION --package ID` releases one
+  package: like for a root package it stages ALL changes of the repository (not only
+  that folder), commits and tags `ID@VERSION`.
+- `gitpm fork ID [ID...] --ns NAMESPACE --into DIR` forks installed packages of one
+  repository into the fork repository `DIR`; each gets the ID `NAMESPACE/<same name>`.
+  One package is the one-package case of the same command. All IDs must be installed
+  from the same repository (otherwise the error lists each ID with its source).
+  - `DIR`: has a `gitpm.json` → the packages are added to it; does not exist → the fork
+    is created there; anything else is refused, as are a `DIR` inside the workspace, with
+    `..`, the source repository itself or a folder inside it. A failed new fork leaves no
+    folder behind (parents it created included).
+  - New fork: a copy of the source repository with history and local edits (upstream
+    remote = the source), on a new `fork` branch (attached HEAD) starting at the newest
+    installed revision of the forked packages (the others must be its ancestors); a
+    package installed at an older revision gets its folder from that revision (refused
+    if that folder has local edits in the clone, which belong to another revision). The
+    folders of packages that are not forked are **removed** from the tree, not just
+    unlisted, and `gitpm.json` lists exactly the forked folders, so the fork cannot
+    release a sibling ID even after someone edits `gitpm.json`. One commit `Fork A, B as
+    me/A, me/B` records it (hooks are not run in this repository gitpm creates); local
+    edits stay uncommitted. A root package (no
+    `gitpm.json`) stays the root of its fork: only its `plugin.json` changes (local
+    commits on top of its installed revision are kept), and it cannot be added to a
+    multi-package repository.
+  - Adding to an existing fork: the package folders (files of the installed revisions,
+    plain files only) are added at their original folders (refused if a folder or ID is
+    already there) and to `gitpm.json` unless a pattern covers them, in one commit of only
+    those paths. `gitpm.json` and the manifests that change must have no uncommitted
+    changes. Remotes and other files are left alone; nothing temporary is written into
+    the repository, and a failed commit (a hook, say) restores it.
+  - Dependencies: a dependency on a package forked in the same command, or (when adding)
+    on an original that a package already in the repository forks (`forkOf` or
+    `replaces`), is rewritten to the fork; packages already in the repository that depend
+    on a newly forked original are rewritten too. The requirement is kept when the fork's
+    version (its manifest version, or `--version V`) satisfies it, else it becomes `^V`;
+    each rewrite is printed (`Dependency: me/panel now depends on me/theme ^1.0 (was
+    tilr/theme)`). Dependencies on packages that are not forked keep the original ID. A
+    manifest that depends on both an original and its fork is refused.
+  - `--replace [--version V] [--force]`: one release commit of the forked folders (with
+    `version` set in each manifest when `--version` is given) and one tag
+    `NAMESPACE/NAME@VERSION` per package, then each package is installed (dependencies
+    first; a dependency cycle between the forked packages is refused before anything is
+    created) and replaces its original. If the release fails, nothing is installed. A
+    failed install or replace of one package does not stop the others; the fork is never
+    removed, the command prints per package what failed and how to finish or undo, and
+    exits non-zero with the first error's kind.
+
+```console
+$ gitpm fork tilr/theme tilr/panel --ns me --into forks/me-plugins
+Fork created: /…/forks/me-plugins
+Git history and local edits are kept; the original repository is the upstream remote.
+Only the forked packages are left in the tree and in gitpm.json.
+Forked: tilr/theme → me/theme (packages/theme)
+Forked: tilr/panel → me/panel (packages/panel)
+Dependency: me/panel now depends on me/theme ^1.0 (was tilr/theme)
+…
+$ gitpm fork tilr/dock --ns me --into forks/me-plugins   # add one more later
+Packages added to: /…/forks/me-plugins
+Forked: tilr/dock → me/dock (packages/dock)
+Dependency: me/dock now depends on me/theme ^1.0 (was tilr/theme)
+```
+
+```console
+$ git init -q tilr-plugins
+$ gitpm init tilr/store --into ./tilr-plugins
+$ gitpm init tilr/theme --into ./tilr-plugins
+$ gitpm install ./tilr-plugins
+Error: repository has 2 packages at commit 4b377fe1c0de; choose one by ID: tilr/store (packages/store), tilr/theme (packages/theme)
+$ gitpm install ./tilr-plugins tilr/store && gitpm install ./tilr-plugins tilr/theme
+$ echo 'export const v = 2;' > tilr-plugins/packages/store/dist/index.js
+$ gitpm commit ./tilr-plugins 0.2.0 --package tilr/store
+Created local commit and tag tilr/store@0.2.0.
+$ gitpm update tilr/store       # tilr/theme stays at 0.1.0
 ```
 
 Settings: each has a flag, an environment variable and a default (`gitpm --help` lists
@@ -185,8 +363,16 @@ read-only).
   Call it off the UI thread.
 - All subprocesses (system `git`, `curl`) go through one internal module (`exec`), the
   place to switch to gix/ureq later.
-- File formats (state.json, plugin.json, catalog v1/v2) are unchanged from the stand
-  prototype; `deny_unknown_fields` is kept where it was.
+- File formats (plugin.json, catalog v1/v2) are unchanged from the stand prototype apart
+  from optional additions (`path` in catalog releases, the new `gitpm.json`);
+  `deny_unknown_fields` is kept where it was. `state.json` carries `"format": 2`
+  (`gitpm::STATE_FORMAT`) since 0.4: written always, a file without it is format 1 (0.3
+  and earlier) and still read, a newer format is refused (`unsupported`). Format 2 adds
+  `clone`/`path` per plugin and `forgotten`.
+- Compatibility: 0.4 is not downgrade-safe. A workspace written by 0.4 with packages of
+  multi-package repositories cannot be used by 0.3 (it ignores `clone`/`path` and looks
+  for `plugins/<id>`), and 0.3 clients cannot install catalog releases that have a `path`
+  (packages of multi-package repositories); root-package releases stay compatible.
 
 ## API overview
 
@@ -196,12 +382,20 @@ use gitpm::{Manager, Options};
 let pm = Manager::open_with("/path/to/workspace", Options { catalog: Some(url) })?;
 pm.install("git@github.com:acme/demo1.git")?;          // latest release tag
 pm.install_channel(src, Some("acme/demo1@0.2.0"), false)?; // explicit ref; dev=true follows HEAD
+pm.install_package(src, Some("tilr/store"), None, false)?;  // one package of a gitpm.json repo
 pm.install_from_catalog("acme/demo1", None)?;          // exact catalog release, hashes verified
 pm.update("acme/demo1")?;  pm.update_channel(id, None, true)?;
 pm.rollback(id)?;  pm.enable(id)?;  pm.disable(id)?;  pm.forget(id)?;  pm.restore(id)?;
 let plan = pm.uninstall_plan(id)?;                    // deletes + lost_work
 pm.uninstall(id, /* confirm */ !plan.lost_work.is_empty() && user_said_yes)?;
-pm.fork_in_namespace(id, Path::new("../forks/demo1"), "me")?;   // sets forkOf + replaces
+// Forks: the fork repository is always explicit (new folder, or a repo with gitpm.json).
+pm.fork_in_namespace(id, Path::new("/work/demo1-fork"), "me")?;   // sets forkOf + replaces
+let done = pm.fork_replace(id, Path::new("/work/demo1-fork"), "me", None, confirm)?; // + release, install, replace
+if let Some(step) = done.failed { /* fork folder kept; done.error says why */ }
+let repo = Path::new("/work/forks/me-plugins");               // created, or added to
+let fork = pm.fork_packages(&["tilr/theme", "tilr/panel"], repo, "me")?; // one repo, deps rewritten
+let done = pm.fork_packages_replace(&ids, repo, "me", Some("2.0.0"), confirm)?; // per-package results
+if let Some(error) = done.error() { /* fork kept; done.packages[i].failed says where */ }
 let plan = pm.replace_plan("vendor/base", "mine/base")?;       // consumers + incompatible
 pm.replace("vendor/base", "mine/base", /* confirm */ !plan.incompatible.is_empty() && yes)?;
 pm.switch_back("vendor/base", confirm)?;                       // back to the original
@@ -214,11 +408,12 @@ Modules with free functions (no workspace lock needed):
 
 | Module | Functions |
 | --- | --- |
-| `catalog` | `browse`, `list`, `lookup`, `selected`, `register`, `register_build`, `update_sources` (progress callback), `migrate`, `hash_files`, `version_key`, `ensure_publishable` |
+| `catalog` | `browse`, `list`, `lookup`, `selected`, `register`, `register_build`, `register_package`, `update_sources` (progress callback), `migrate`, `hash_files`, `version_key`, `ensure_publishable` |
 | `check` | `read_state` (does not create/lock), `compare`, `check`; `CheckStatus::message()` |
 | `auth` | `check(source, &AuthOptions)` — `git ls-remote` only, credentials never stored |
-| `scaffold` | `create_namespaced`, `create_at`, `commit` (version tag), `set_remote`, `shell_quote` |
-| `identity` | `valid_part`, `qualified`, `release_tag`, `resolve_namespace(explicit, config_path)`, `write_namespace` |
+| `scaffold` | `init(dir, namespace, name)` (the `init --into` rule; the only way to create a package besides `create_package`), `create_package` (into a multi-package repo), `commit`, `commit_package` (version tag), `release_current`, `set_remote`, `shell_quote` |
+| `packages` | `config_at`, `layout_at` (packages and defective folders of a commit), `packages_at` (strict), `find_at` (one package of a commit), `read_config`, `packages_in` (working tree), `matches`, `validate_pattern` |
+| `identity` | `valid_part`, `qualified`, `release_tag` (no default namespace, no namespace config) |
 | `releases` | `discover`, `latest` |
 
 ### Uninstall: confirmation by plan
@@ -333,10 +528,18 @@ if plan.lostWork.isEmpty || userConfirmed(plan.lostWork.map(describeLostWork)) {
 }
 ```
 
-FFI surface: `PluginManager` (open, list, check, browseCatalog, catalogRelease, install,
-installFromCatalog, update, rollback, enable, disable(force), forget(force), restore,
-uninstallPlan, uninstall(confirm, force), fork, replacePlan, replace, switchBackPlan,
-switchBack; `force` defaults to false), free functions `authCheck`, `browseCatalog`, `catalogRelease`,
+FFI surface: `PluginManager` (open, list, check, browseCatalog, catalogRelease,
+install(package; defaults to nil), installFromCatalog, update, rollback, enable,
+disable(force), forget(force), restore, uninstallPlan, uninstall(confirm, force), fork
+(one package; `ForkResult`), forkAndReplace(version, confirm; returns a
+`ForkReplacement`: a failure after the fork exists is reported in `failedStep` (the
+`ForkStep` enum: release, install, replace), `errorKind`, `errorMessage`), forkPackages
+(`PackageFork`), forkPackagesAndReplace (`PackageForkReplacement`: the fork plus one
+`ForkReplacement` per package), replacePlan, replace, switchBackPlan, switchBack; `force`
+defaults to false; `InstalledPlugin.path` and `CatalogRelease.path` name the package
+folder; the fork records have the names of the library types `gitpm::ForkReplacement`,
+`PackageFork`, `PackageForkReplacement`, `ForkedPackage`, `DependencyRewrite`,
+`ForkStep`), free functions `authCheck`, `browseCatalog`, `catalogRelease`,
 `readInstalled`, `describeLostWork`; errors are the `PmError` enum (one case per kind,
 each with `message`; `LocalChanges` carries `items`). Author/catalog-generation commands
 are not exposed.
@@ -357,7 +560,7 @@ crates/gitpm/tests/                      integration tests of the public API
                                          (robustness, uninstall, no_env)
 crates/gitpm-ffi/src/lib.rs              FFI conversion tests (errors, records, free functions)
 crates/gitpm-cli/tests/                  end-to-end tests of the `gitpm` binary
-                                         (lifecycle, requirements)
+                                         (lifecycle, requirements, monorepo)
 ```
 
 ```sh

@@ -74,8 +74,7 @@ pub type Row = CheckRow;
 pub fn read_state(root: &Path) -> Result<State> {
     let path = root.join("state.json");
     match fs::read(&path) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map_err(|e| Error::InvalidData(format!("invalid workspace state.json: {e}"))),
+        Ok(bytes) => State::parse(&bytes),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && !root.exists() => {
             Ok(State::default())
         }
@@ -253,6 +252,7 @@ mod tests {
                         reference: format!("v{version}"),
                         files: Default::default(),
                         build: None,
+                        path: None,
                     },
                 )
             })

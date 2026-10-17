@@ -36,13 +36,29 @@ gitpm --catalog ./catalog catalog-update     # local catalog from release tags
 gitpm --catalog ./catalog check              # installed versions vs the catalog
 gitpm --catalog ./catalog --root ./other install-catalog acme/greeter   # hashes verified
 
-gitpm create acme/hello              # new plugin repository ./acme/hello, ID acme/hello
-gitpm install ./acme/hello
-gitpm fork acme/hello me/hello       # copy installed acme/hello to ./me/hello as me/hello
+gitpm create acme/hello --into ./hello   # new plugin repository ./hello, ID acme/hello
+gitpm install ./hello
+gitpm fork acme/hello --ns me --into ./me-hello   # copy installed acme/hello as me/hello
+gitpm fork acme/hello --ns you --into ./you-hello --replace   # fork, release, install, replace
+gitpm fork tilr/store tilr/theme --ns me --into ./me-plugins   # several packages, one repo
+gitpm fork tilr/panel --ns me --into ./me-plugins   # add to that existing fork later
+
+git init -q plugins
+gitpm init tilr/store --into ./plugins   # multi-package repository (gitpm.json, packages/*)
+gitpm install ./plugins tilr/store   # one package of it; packages share one clone
+gitpm commit ./plugins 0.2.0 --package tilr/store   # tag tilr/store@0.2.0
 ```
 
-`create`/`init` and `fork` take an explicit `NAMESPACE/NAME`: the folder mirrors it
-(`./NAMESPACE/NAME`), there is no default namespace, and `fork` keeps the plugin name.
+`create`/`init` and `fork` take an explicit `NAMESPACE/NAME` (for `fork`: `--ns
+NAMESPACE`, the name stays) and an explicit repository `--into DIR`; nothing is derived
+from an ID and there is no default namespace. `init --into DIR`: a new `DIR` becomes a
+single-package repository, a repository with `gitpm.json` (or without one and without a
+root package) gets the folder `PREFIX/NAME` for the first `PREFIX/*` pattern of
+`gitpm.json` (`packages/NAME` by default). `fork ID... --ns NAMESPACE --into DIR`:
+`DIR` with `gitpm.json` gets the packages added, a new `DIR` becomes a copy of the source
+repository with the unforked sibling packages removed, anything else is refused;
+dependencies between the forks are rewritten and `--replace` releases, installs and
+replaces each one.
 
 Everything works on local folders; nothing is built, executed, pushed or uploaded.
 Settings come from flags (`--root`, `--catalog`, `--sources`), then `GITPM_ROOT`,

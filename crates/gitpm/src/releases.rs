@@ -1,7 +1,7 @@
 //! Release tags are the shared source of truth for installs and catalog generation.
 use crate::catalog::version_key;
 use crate::error::{Error, Result, ensure};
-use crate::{Manifest, exec::git, model::resolve_ref, valid_id};
+use crate::{Manifest, exec::git, model::resolve_ref, packages, valid_id};
 use std::{collections::BTreeMap, path::Path};
 
 #[derive(Clone, Debug)]
@@ -9,6 +9,8 @@ pub struct Tag {
     pub name: String,
     pub commit: String,
     pub manifest: Manifest,
+    /// Package folder at the tagged commit; empty for the repository root.
+    pub path: String,
 }
 
 /// A release-looking tag that could not be used; reported as data, never fatal by itself.
@@ -34,12 +36,26 @@ pub fn discover(repo: &Path, expected_id: Option<&str>) -> Result<Vec<Tag>> {
 /// unreadable or disagrees with the tag version is skipped and reported. Two different
 /// commits for one version stay a hard conflict.
 pub fn discover_all(repo: &Path, expected_id: Option<&str>) -> Result<Discovery> {
-    let head: Manifest =
-        serde_json::from_str(&git(repo, &["show", "HEAD:plugin.json"])?).map_err(|e| {
-            Error::InvalidManifest(format!("invalid plugin.json at repository HEAD: {e}"))
-        })?;
-    let id = expected_id.unwrap_or(&head.id);
+    let default_id;
+    let id = match expected_id {
+        Some(id) => id,
+        None if packages::config_at(repo, "HEAD")?.is_some() => {
+            let head = git(repo, &["rev-parse", "HEAD"])?;
+            default_id = packages::find_at(repo, &head, None)?.manifest.id;
+            &default_id
+        }
+        None => {
+            let head: Manifest = serde_json::from_str(&git(repo, &["show", "HEAD:plugin.json"])?)
+                .map_err(|e| {
+                Error::InvalidManifest(format!("invalid plugin.json at repository HEAD: {e}"))
+            })?;
+            default_id = head.id;
+            &default_id
+        }
+    };
     valid_id(id)?;
+    // Package sets per commit: several tags (of several packages) can share a commit.
+    let mut layouts: BTreeMap<String, Result<Option<packages::Layout>>> = BTreeMap::new();
     let mut releases = BTreeMap::new();
     let mut skipped = Vec::new();
     for name in git(repo, &["tag", "--list"])?.lines() {
@@ -59,13 +75,59 @@ pub fn discover_all(repo: &Path, expected_id: Option<&str>) -> Result<Discovery>
         };
         let reference = format!("refs/tags/{name}");
         let commit = resolve_ref(repo, &reference)?;
-        let manifest: Manifest = match git(repo, &["show", &format!("{commit}:plugin.json")])
-            .and_then(|text| {
-                serde_json::from_str(&text).map_err(|e| Error::InvalidManifest(e.to_string()))
-            }) {
-            Ok(manifest) => manifest,
+        let layout = layouts
+            .entry(commit.clone())
+            .or_insert_with(|| packages::layout_at(repo, &commit))
+            .clone();
+        let (manifest, path) = match layout {
+            Ok(None) => {
+                match git(repo, &["show", &format!("{commit}:plugin.json")]).and_then(|text| {
+                    serde_json::from_str(&text).map_err(|e| Error::InvalidManifest(e.to_string()))
+                }) {
+                    Ok(manifest) => (manifest, String::new()),
+                    Err(e) => {
+                        skip(format!("invalid manifest in release tag {name}: {e}"));
+                        continue;
+                    }
+                }
+            }
+            Ok(Some(layout)) => {
+                let scoped = name.starts_with(&format!("{id}@"));
+                let claimed = layout.packages.iter().any(|p| p.manifest.id == id)
+                    || layout.problems.iter().any(|p| p.id.as_deref() == Some(id));
+                if !scoped {
+                    // `vVERSION` cannot say which package of the repository it releases.
+                    if claimed {
+                        skip(format!(
+                            "legacy tag {name} is ambiguous in a repository with several packages; tag {id}@{version} instead"
+                        ));
+                    }
+                    continue;
+                }
+                // Only this package's own folder matters; defective siblings do not.
+                if let Some(problem) = layout.problems.iter().find(|p| {
+                    p.id.as_deref()
+                        .is_some_and(|other| other.eq_ignore_ascii_case(id))
+                }) {
+                    skip(format!(
+                        "package {id} at tag {name} is not usable: {}",
+                        problem.error
+                    ));
+                    continue;
+                }
+                match layout.packages.into_iter().find(|p| p.manifest.id == id) {
+                    Some(package) => (package.manifest, package.path),
+                    None => {
+                        skip(format!(
+                            "tag {name} points to commit {} without package {id}",
+                            &commit[..commit.len().min(12)]
+                        ));
+                        continue;
+                    }
+                }
+            }
             Err(e) => {
-                skip(format!("invalid manifest in release tag {name}: {e}"));
+                skip(format!("invalid packages in release tag {name}: {e}"));
                 continue;
             }
         };
@@ -100,6 +162,7 @@ pub fn discover_all(repo: &Path, expected_id: Option<&str>) -> Result<Discovery>
                     name: name.into(),
                     commit,
                     manifest,
+                    path,
                 },
             );
         }

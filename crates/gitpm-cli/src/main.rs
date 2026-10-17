@@ -116,6 +116,156 @@ fn confirm_lost_work(plan: &gitpm::UninstallPlan) -> Result<bool> {
     }
     Ok(matches!(answer.trim().to_lowercase().as_str(), "y" | "yes"))
 }
+/// `ORIGINAL → PROVIDER INSTALLED_VERSION for: consumers`; the version consumers see
+/// (a fork's declared `replaces.version`) is added when it differs.
+fn print_replacement(manager: &Manager, plan: &gitpm::ReplacementPlan) -> Result<()> {
+    let installed = manager
+        .state()?
+        .plugins
+        .get(&plan.provider)
+        .map(|p| p.current.version.clone())
+        .unwrap_or_else(|| plan.version.clone());
+    println!(
+        "{} → {} {installed}{} for: {}",
+        plan.original,
+        plan.provider,
+        if installed == plan.version {
+            String::new()
+        } else {
+            format!(" (as {} {})", plan.original, plan.version)
+        },
+        if plan.consumers.is_empty() {
+            "no consumers yet".to_owned()
+        } else {
+            plan.consumers.join(", ")
+        }
+    );
+    Ok(())
+}
+/// What a fork created or added, and the rewritten dependencies.
+fn print_package_fork(fork: &gitpm::PackageFork) {
+    let root = fork.packages.iter().any(|p| p.path.is_empty());
+    if fork.created {
+        println!("Fork created: {}", fork.path.display());
+        println!(
+            "Git history and local edits are kept; the original repository is the upstream remote."
+        );
+        if !root {
+            println!("Only the forked packages are left in the tree and in gitpm.json.");
+        }
+    } else {
+        println!("Packages added to: {}", fork.path.display());
+    }
+    for package in &fork.packages {
+        println!(
+            "Forked: {} → {} ({})",
+            package.original,
+            package.id,
+            if package.path.is_empty() {
+                "repository root"
+            } else {
+                &package.path
+            }
+        );
+    }
+    for rewrite in &fork.rewrites {
+        match &rewrite.new_requirement {
+            None => println!(
+                "Dependency: {} now depends on {} {} (was {})",
+                rewrite.package, rewrite.to, rewrite.requirement, rewrite.from
+            ),
+            Some(new) => println!(
+                "Dependency: {} now depends on {} {new} (was {} {}, which the fork's version does not satisfy)",
+                rewrite.package, rewrite.to, rewrite.from, rewrite.requirement
+            ),
+        }
+    }
+}
+/// `fork ID... --ns NAMESPACE --into DIR --replace`: per package release, install,
+/// replace (one package or several, same output). The fork is never removed; every
+/// package that did not finish says how to finish or undo.
+fn fork_packages_replace(
+    manager: &Manager,
+    ids: &[&str],
+    destination: &Path,
+    namespace: &str,
+    version: Option<&str>,
+    force: bool,
+) -> Result<()> {
+    let outcome = manager.fork_packages_replace(ids, destination, namespace, version, force)?;
+    print_package_fork(&outcome.fork);
+    let quoted = scaffold::shell_quote(&outcome.fork.path.to_string_lossy());
+    let mut first_error = None;
+    for package in outcome.packages {
+        let (original, new_id) = (&package.original, &package.id);
+        if let Some(tag) = &package.tag {
+            println!("Released: {tag}");
+        }
+        if let Some(installed) = &package.installed {
+            println!("Installed: {new_id} {}", installed.current.version);
+        }
+        let error = match (package.failed, package.error) {
+            (None, _) => {
+                if let Some(plan) = &package.replacement {
+                    print_replacement(manager, plan)?;
+                }
+                continue;
+            }
+            (
+                Some(gitpm::ForkStep::Replace),
+                Some(error @ PmError::IncompatibleReplacement { .. }),
+            ) if !force => {
+                let plan = manager.replace_plan(original, new_id)?;
+                if confirm_replacement(&plan, false)? {
+                    print_replacement(manager, &manager.replace(original, new_id, true)?)?;
+                    continue;
+                }
+                error
+            }
+            (_, Some(error)) => error,
+            (Some(step), None) => {
+                PmError::InvalidArgument(format!("fork --replace failed at {}", step.name()))
+            }
+        };
+        let step = package
+            .failed
+            .map(gitpm::ForkStep::name)
+            .unwrap_or("replace");
+        eprintln!(
+            "{new_id}: the {step} step failed: {error} (kind: {})",
+            error.kind()
+        );
+        match package.failed {
+            Some(gitpm::ForkStep::Release) => eprintln!(
+                "  Nothing was installed. To finish:\n    gitpm commit {quoted} NEW_VERSION --package {new_id}\n    gitpm install {quoted} {new_id}\n    gitpm replace {original} --with {new_id}"
+            ),
+            Some(gitpm::ForkStep::Install) => eprintln!(
+                "  {new_id} is released but not installed. To finish:\n    gitpm install {quoted} {new_id}\n    gitpm replace {original} --with {new_id}"
+            ),
+            _ => eprintln!(
+                "  {new_id} is installed; {original} is not replaced. To finish:\n    gitpm replace {original} --with {new_id} [--force]\n  To undo: gitpm uninstall {new_id}"
+            ),
+        }
+        first_error.get_or_insert(error);
+    }
+    match first_error {
+        None => Ok(()),
+        Some(error) => {
+            if outcome.fork.created {
+                eprintln!(
+                    "The fork {} is kept. To undo everything: uninstall the installed forks, then delete {quoted}",
+                    outcome.fork.path.display()
+                );
+            } else {
+                eprintln!(
+                    "The fork {} is kept. To undo everything: uninstall the installed forks, then remove the added package folders from {quoted} (or reset the commit that added them)",
+                    outcome.fork.path.display()
+                );
+            }
+            Err(error.into())
+        }
+    }
+}
 const COMMANDS: &[&str] = &[
     "init",
     "create",
@@ -146,8 +296,10 @@ const DEFAULT_SOURCES: &str = "sources.txt";
 const USAGE: &str = "gitpm [--root DIR] [--catalog DIR_OR_JSON_OR_URL] COMMAND
 
 Workspace (installed plugins):
-  install GIT_SOURCE [--ref REF]    install the latest Git release (tag); --ref picks a tag,
-                                   branch or commit; --channel dev follows the default branch
+  install GIT_SOURCE [ID] [--ref REF]  install the latest Git release (tag); --ref picks a
+                                   tag, branch or commit; --channel dev follows the default
+                                   branch. ID (or --package ID) picks a package of a
+                                   repository with gitpm.json (needed when it has several)
   install-catalog ID [--version V]  install an exact catalog release (latest if omitted)
   list                             installed state (JSON)
   check                            compare installed versions with the catalog
@@ -161,17 +313,26 @@ Workspace (installed plugins):
   uninstall ID [--force]            remove state, repository and dist; asks on a TTY
                                    before losing local work and refuses while others
                                    depend on ID; --force skips both
-  fork ID NAMESPACE/NAME           copy an installed plugin to the new folder
-                                   ./NAMESPACE/NAME with that ID; NAME must equal the name
-                                   part of ID
+  fork ID [ID...] --ns NS --into DIR  fork installed packages of one repository as
+                                   NS/<same name> into the fork repository DIR: a new
+                                   folder becomes a copy of the source (history, local
+                                   edits; unforked sibling packages removed), a repository
+                                   with gitpm.json gets the packages added; anything else
+                                   is refused. Dependencies between forks are rewritten
+    [--replace [--version V] [--force]]  then release each fork (tag NS/NAME@V, V defaults
+                                   to the forked version), install it and replace ID with
+                                   it for every consumer
   replace ORIGINAL --with FORK [--force]  make FORK provide ORIGINAL for every consumer
   replace ORIGINAL --back [--force]  switch every consumer back to the installed ORIGINAL
                                    (incompatible consumers: asks on a TTY, else --force)
 
 Authoring:
-  init NAMESPACE/NAME              create the plugin repository ./NAMESPACE/NAME with
-  create NAMESPACE/NAME            that ID and release 0.1.0 (init = create)
-  commit REPO VERSION              stage ALL changes, commit, create a release tag
+  init NAMESPACE/NAME --into DIR   create the package with release 0.1.0 (init = create):
+  create NAMESPACE/NAME --into DIR  a new DIR becomes a single-package repository; a
+                                   repository DIR with gitpm.json (or without one and no
+                                   root package) gets the folder PREFIX/NAME
+  commit REPO VERSION              stage ALL changes, commit, create a release tag;
+    [--package ID]                 --package picks the package of a multi-package repo
   remote REPO URL                  add or replace origin (fetch and push)
   auth check GIT_URL               check repository read access without installing
 
@@ -181,6 +342,7 @@ Catalog (a local folder of static JSON files, or an HTTP(S) URL for reading):
   catalog-update [--sources FILE]   generate/refresh a local catalog from the Git release
                                    tags of the repositories listed in FILE
   register GIT_SOURCE --ref REF     add one committed version to a local catalog
+    [--package ID]                 package of a multi-package repository
     [--build-url HTTPS_URL --build-sha256 SHA256]  optional build metadata
   migrate-catalog                  split a local v1 catalog into plugin folders
 
@@ -220,6 +382,10 @@ fn run() -> Result<()> {
         _ => bail!("--build-url and --build-sha256 must be provided together"),
     };
     let with = option(&mut args, "--with")?;
+    let package = option(&mut args, "--package")?;
+    let into = option(&mut args, "--into")?;
+    let ns = option(&mut args, "--ns")?;
+    let replace = flag(&mut args, "--replace")?;
     let back = flag(&mut args, "--back")?;
     let force = flag(&mut args, "--force")?;
     let dry_run = flag(&mut args, "--dry-run")?;
@@ -260,12 +426,26 @@ fn run() -> Result<()> {
         "--ref is not valid for {command}"
     );
     ensure!(
-        version.is_none() || command == "install-catalog",
+        version.is_none() || command == "install-catalog" || (command == "fork" && replace),
         "--version is not valid for {command}"
     );
     ensure!(
-        !force || matches!(command, "uninstall" | "disable" | "forget" | "replace"),
-        "--force is only valid with uninstall/disable/forget/replace"
+        !force
+            || matches!(command, "uninstall" | "disable" | "forget" | "replace")
+            || (command == "fork" && replace),
+        "--force is only valid with uninstall/disable/forget/replace/fork --replace"
+    );
+    ensure!(
+        package.is_none() || matches!(command, "install" | "commit" | "register"),
+        "--package requires install/commit/register"
+    );
+    ensure!(
+        into.is_none() || matches!(command, "init" | "create" | "fork"),
+        "--into requires init/create/fork"
+    );
+    ensure!(
+        (!replace && ns.is_none()) || command == "fork",
+        "--ns/--replace require fork"
     );
     ensure!(
         (with.is_none() && !back) || command == "replace",
@@ -277,7 +457,11 @@ fn run() -> Result<()> {
     );
     let expected = match command {
         "info" | "catalog-update" | "migrate-catalog" | "list" | "check" | "catalog" => 1,
-        "auth" | "commit" | "remote" | "fork" => 3,
+        // fork ID [ID...]: one or more installed IDs.
+        "fork" => args.len().max(2),
+        "auth" | "commit" | "remote" => 3,
+        // install SOURCE [ID]: a positional package ID instead of --package.
+        "install" if args.len() == 3 => 3,
         _ => 2,
     };
     ensure!(
@@ -287,6 +471,26 @@ fn run() -> Result<()> {
         args.len() - 1
     );
     let id = args.get(1).map(String::as_str).unwrap_or("");
+    if matches!(command, "init" | "create") {
+        split_id(id)?;
+        ensure!(
+            into.is_some(),
+            "{command} needs --into DIR: the repository (a new folder, or a repository with gitpm.json to add the package to)"
+        );
+    }
+    if command == "install" && args.len() == 3 {
+        ensure!(
+            package.is_none(),
+            "give the package ID either as an argument or with --package, not both"
+        );
+    }
+    let package = match command {
+        "install" if args.len() == 3 => Some(args[2].clone()),
+        _ => package,
+    };
+    if let Some(package) = &package {
+        gitpm::valid_id(package)?;
+    }
     let update_all = command == "update" && id == "all";
     ensure!(!dry_run || update_all, "--dry-run requires update all");
     ensure!(
@@ -311,13 +515,25 @@ fn run() -> Result<()> {
         gitpm::valid_id(id)?;
     }
     if command == "fork" {
-        let (_, name) = split_id(&args[2])?;
-        let source_name = id.rsplit('/').next().unwrap_or(id);
+        // One form only: the namespace of the new IDs and the fork repository are given
+        // explicitly; nothing is derived from an ID or a source.
+        let ns = ns.as_deref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "fork needs --ns NAMESPACE: the namespace of the new packages (NAMESPACE/<same name>)"
+            )
+        })?;
+        identity::valid_part(ns)?;
         ensure!(
-            name == source_name,
-            "fork keeps the plugin name: use NAMESPACE/{source_name}, not {}",
-            args[2]
+            into.is_some(),
+            "fork needs --into DIR: the fork repository (a new folder, or a repository with gitpm.json to add the packages to)"
         );
+        for (index, other) in args[1..].iter().enumerate() {
+            gitpm::valid_id(other)?;
+            ensure!(
+                !args[1..index + 1].contains(other),
+                "{other} is given more than once"
+            );
+        }
     }
     if let Some(fork) = &with {
         gitpm::valid_id(fork)?;
@@ -373,16 +589,27 @@ fn run() -> Result<()> {
         }
         "init" | "create" => {
             let (namespace, name) = split_id(id)?;
-            let path = scaffold::create_namespaced(&Path::new(namespace).join(name), namespace)?;
+            let dir = into.as_deref().unwrap_or_default();
+            let created = scaffold::init(Path::new(dir), namespace, name)?;
             let plugin_id = identity::qualified(namespace, name)?;
             let tag = identity::release_tag(&plugin_id, "0.1.0");
-            let source = scaffold::shell_quote(&path.to_string_lossy());
+            let source = scaffold::shell_quote(&created.repo.to_string_lossy());
             let root = scaffold::shell_quote(&root);
-            println!(
-                "\nCreated: {}\nID: {plugin_id}\nVersion 0.1.0: Git commit and tag {tag}.\nEdit: {}/dist/index.js\n\nInstall:\n  gitpm --root {root} install {source}\n\nNew release after editing:\n  gitpm commit {source} 0.1.1\n\nGit uses your configured identity; if there is none, the repository gets a local\nPlugin Demo <demo@example.invalid>.",
-                path.display(),
-                path.display()
-            );
+            match &created.folder {
+                None => println!(
+                    "\nCreated: {}\nID: {plugin_id}\nVersion 0.1.0: Git commit and tag {tag}.\nEdit: {}/dist/index.js\n\nInstall:\n  gitpm --root {root} install {source}\n\nNew release after editing:\n  gitpm commit {source} 0.1.1\n\nGit uses your configured identity; if there is none, the repository gets a local\nPlugin Demo <demo@example.invalid>.",
+                    created.repo.display(),
+                    created.repo.display()
+                ),
+                Some(folder) => {
+                    let path = created.repo.join(folder);
+                    println!(
+                        "\nCreated: {}\nID: {plugin_id}\nVersion 0.1.0: Git commit and tag {tag} (only gitpm.json and this folder are committed).\nEdit: {}/dist/index.js\n\nInstall:\n  gitpm --root {root} install {source} {plugin_id}\n\nNew release after editing (stages ALL changes of the repository):\n  gitpm commit {source} 0.1.1 --package {plugin_id}",
+                        path.display(),
+                        path.display()
+                    );
+                }
+            }
             return Ok(());
         }
         "check" => {
@@ -428,8 +655,12 @@ fn run() -> Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("register requires --ref TAG_OR_COMMIT"))?;
             println!(
                 "{}",
-                serde_json::to_string_pretty(&catalog::register_build(
-                    &url, id, reference, build
+                serde_json::to_string_pretty(&catalog::register_package(
+                    &url,
+                    id,
+                    reference,
+                    package.as_deref(),
+                    build
                 )?)?
             );
             return Ok(());
@@ -440,7 +671,7 @@ fn run() -> Result<()> {
             return Ok(());
         }
         "commit" => {
-            let tag = scaffold::commit(Path::new(id), &args[2])?;
+            let tag = scaffold::commit_package(Path::new(id), &args[2], package.as_deref())?;
             println!("Created local commit and tag {tag}.");
             return Ok(());
         }
@@ -458,15 +689,41 @@ fn run() -> Result<()> {
     let manager = Manager::open_with(root, Options { catalog })?;
     match command {
         "fork" => {
-            let (namespace, name) = split_id(&args[2])?;
-            let path =
-                manager.fork_in_namespace(id, &Path::new(namespace).join(name), namespace)?;
-            let new_id = identity::qualified(namespace, name)?;
-            println!(
-                "Fork created: {}\nGit history and local edits are kept; the original repository is the upstream remote.\nNew ID: {new_id}. forkOf records the origin; replaces says the fork can stand in for {id}\n(used only after an explicit: gitpm replace {id} --with {new_id}).\nThe ID change is committed separately. Commit local edits before installing the fork.\nThe original installation is unchanged.\nSet your own origin with: gitpm remote {} GIT_URL",
-                path.display(),
-                scaffold::shell_quote(&path.to_string_lossy())
-            );
+            let namespace = ns.as_deref().unwrap_or_default();
+            let ids: Vec<&str> = args[1..].iter().map(String::as_str).collect();
+            let destination = Path::new(into.as_deref().unwrap_or_default());
+            if replace {
+                fork_packages_replace(
+                    &manager,
+                    &ids,
+                    destination,
+                    namespace,
+                    version.as_deref(),
+                    force,
+                )?;
+            } else {
+                let fork = manager.fork_packages(&ids, destination, namespace)?;
+                print_package_fork(&fork);
+                let quoted = scaffold::shell_quote(&fork.path.to_string_lossy());
+                println!(
+                    "forkOf records each origin; replaces says the fork can stand in for it (used only\nafter an explicit replace). The original installations are unchanged.\n\nNext steps (or all at once: add --replace):"
+                );
+                for package in &fork.packages {
+                    println!(
+                        "  gitpm commit {quoted} NEW_VERSION --package {}   commit local edits, tag {}@NEW_VERSION",
+                        package.id, package.id
+                    );
+                }
+                for package in &fork.packages {
+                    println!("  gitpm install {quoted} {}", package.id);
+                }
+                for package in &fork.packages {
+                    println!("  gitpm replace {} --with {}", package.original, package.id);
+                }
+                if fork.created {
+                    println!("Set your own origin with: gitpm remote {quoted} GIT_URL");
+                }
+            }
         }
         "list" => {
             // Raw state plus the resolved view (providers, dependents, replacements).
@@ -475,7 +732,8 @@ fn run() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&value)?);
         }
         "install" => {
-            let result = manager.install_channel(id, reference.as_deref(), dev)?;
+            let result =
+                manager.install_package(id, package.as_deref(), reference.as_deref(), dev)?;
             for skipped in &result.skipped {
                 eprintln!(
                     "Warning: skipped release tag {}: {}",
@@ -535,17 +793,7 @@ fn run() -> Result<()> {
                 Some(fork) => manager.replace(id, fork, confirm)?,
                 None => manager.switch_back(id, confirm)?,
             };
-            println!(
-                "{} → {} ({}) for: {}",
-                plan.original,
-                plan.provider,
-                plan.version,
-                if plan.consumers.is_empty() {
-                    "no consumers yet".to_owned()
-                } else {
-                    plan.consumers.join(", ")
-                }
-            );
+            print_replacement(&manager, &plan)?;
         }
         "restore" => {
             manager.restore(id)?;

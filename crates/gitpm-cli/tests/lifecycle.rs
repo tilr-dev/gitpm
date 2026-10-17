@@ -299,14 +299,14 @@ fn config_files(dir: &std::path::Path) -> Vec<PathBuf> {
 }
 
 #[test]
-fn create_and_init_take_an_explicit_id_and_create_the_id_folder() {
+fn create_and_init_take_an_explicit_id_and_repository_folder() {
     use std::process::Stdio;
     let f = Fixture::new();
     for (command, id) in [("create", "dan/hello"), ("init", "vendor/demo1")] {
         let output = f
             .pm()
             .current_dir(&f.dir)
-            .args([command, id])
+            .args([command, id, "--into", id])
             .stdin(Stdio::null())
             .output()
             .unwrap();
@@ -336,7 +336,7 @@ fn create_and_init_take_an_explicit_id_and_create_the_id_folder() {
         let retry = f
             .pm()
             .current_dir(&f.dir)
-            .args([command, id])
+            .args([command, id, "--into", id])
             .output()
             .unwrap();
         assert!(!retry.status.success());
@@ -357,21 +357,33 @@ fn create_requires_a_namespace_and_never_prompts_or_reads_the_environment() {
     fs::write(f.dir.join("dan/existing/keep.txt"), "untouched").unwrap();
     for (args, message) in [
         (
-            &["create", "hello"][..],
+            &["create", "hello", "--into", "hello"][..],
             "plugin id needs a namespace: use NAMESPACE/NAME, for example acme/hello",
         ),
-        (&["init", "hello"][..], "plugin id needs a namespace"),
+        (
+            &["init", "hello", "--into", "hello"][..],
+            "plugin id needs a namespace",
+        ),
         (&["create"][..], "create: expected 1 argument(s), got 0"),
         (&["init"][..], "init: expected 1 argument(s), got 0"),
-        (&["create", "dan/a/b"][..], "namespace/name"),
-        (&["create", "../escape"][..], "namespace/name"),
-        (&["create", "/hello"][..], "namespace/name"),
-        (&["create", "dan/"][..], "namespace/name"),
+        (&["create", "dan/a/b", "--into", "x"][..], "namespace/name"),
+        (
+            &["create", "../escape", "--into", "x"][..],
+            "namespace/name",
+        ),
+        (&["create", "/hello", "--into", "x"][..], "namespace/name"),
+        (&["create", "dan/", "--into", "x"][..], "namespace/name"),
         (
             &["create", "dan/hello", "--namespace", "me"][..],
             "unknown option: --namespace",
         ),
-        (&["create", "dan/existing"][..], "cannot create"),
+        // No default folder: the repository is always given.
+        (&["create", "dan/hello"][..], "create needs --into DIR"),
+        (&["init", "dan/hello"][..], "init needs --into DIR"),
+        (
+            &["create", "dan/existing", "--into", "dan/existing"][..],
+            "is not a Git repository",
+        ),
     ] {
         // Legacy and removed namespace variables must not supply a default.
         let mut child = f
@@ -393,7 +405,7 @@ fn create_requires_a_namespace_and_never_prompts_or_reads_the_environment() {
         assert!(!out.status.success(), "{args:?} succeeded");
         assert!(stderr.contains(message), "{args:?}: {stderr}");
     }
-    assert!(!f.dir.join("hello").exists());
+    assert!(!f.dir.join("hello").exists() && !f.dir.join("x").exists());
     assert!(!f.dir.join("dan/hello").exists());
     assert!(!f.dir.join("me").exists());
     assert_eq!(
@@ -414,8 +426,11 @@ fn fork_preserves_history_edits_and_original_installation() {
     fs::write(installed.join("notes.txt"), "untracked work").unwrap();
     let state = fs::read(f.root.join("state.json")).unwrap();
     let destination = f.dir.join("me/hello");
-    let out = f.cli(&["fork", "hello", "me/hello"], true);
-    assert!(out.contains("New ID: me/hello."), "{out}");
+    let out = f.cli(&["fork", "hello", "--ns", "me", "--into", "me/hello"], true);
+    assert!(
+        out.contains("Forked: hello → me/hello (repository root)"),
+        "{out}"
+    );
     let git_at = |path: &std::path::Path, args: &[&str]| {
         let out = f
             .command("git")
@@ -456,7 +471,11 @@ fn fork_preserves_history_edits_and_original_installation() {
         fs::read_to_string(installed.join("dist/index.js")).unwrap(),
         "local edit"
     );
-    f.cli(&["fork", "hello", "me/hello"], false);
+    // An existing folder that is not a multi-package repository is refused.
+    f.cli(
+        &["fork", "hello", "--ns", "me", "--into", "me/hello"],
+        false,
+    );
     assert_eq!(
         fs::read_to_string(destination.join("dist/index.js")).unwrap(),
         "independent edit"
@@ -467,39 +486,50 @@ fn fork_preserves_history_edits_and_original_installation() {
 fn fork_rejects_managed_destinations_and_unknown_plugins() {
     let f = Fixture::new();
     f.install();
-    // ./NS/NAME inside a managed repository is refused.
+    // A fork repository inside a managed repository is refused.
     let installed = f.root.join("plugins/hello");
     let out = f
         .pm()
         .current_dir(&installed)
-        .args(["fork", "hello", "me/hello"])
+        .args(["fork", "hello", "--ns", "me", "--into", "me-hello"])
         .output()
         .unwrap();
     assert!(!out.status.success());
-    assert!(!installed.join("me").exists());
-    f.cli(&["fork", "unknown", "me/unknown"], false);
+    assert!(!installed.join("me-hello").exists());
+    f.cli(
+        &["fork", "unknown", "--ns", "me", "--into", "me/unknown"],
+        false,
+    );
     assert!(!f.dir.join("me/unknown").exists());
     for (args, message) in [
+        // The old form `fork ID NAMESPACE/NAME` is gone: a second argument is an ID.
         (
-            &["fork", "hello", "me"][..],
-            "plugin id needs a namespace: use NAMESPACE/NAME, for example acme/me",
+            &["fork", "hello", "me/hello", "--ns", "me", "--into", "x"][..],
+            "plugin me/hello is not installed",
         ),
         (
-            &["fork", "hello", "me/other"][..],
-            "fork keeps the plugin name: use NAMESPACE/hello, not me/other",
-        ),
-        (&["fork", "hello", "me/a/b"][..], "namespace/name"),
-        (
-            &["fork", "hello"][..],
-            "fork: expected 2 argument(s), got 1",
+            &["fork", "hello", "--into", "x"][..],
+            "fork needs --ns NAMESPACE",
         ),
         (
-            &["fork", "hello", "me/hello", "extra"][..],
-            "fork: expected 2 argument(s), got 3",
+            &["fork", "hello", "--ns", "me"][..],
+            "fork needs --into DIR",
         ),
         (
-            &["fork", "hello", "me/hello", "--namespace", "x"][..],
+            &["fork", "hello", "--ns", "me/a", "--into", "x"][..],
+            "namespace/name",
+        ),
+        (
+            &["fork", "--ns", "me", "--into", "x"][..],
+            "fork: expected 1 argument(s), got 0",
+        ),
+        (
+            &["fork", "hello", "--namespace", "x"][..],
             "unknown option: --namespace",
+        ),
+        (
+            &["fork", "hello", "--ns", "me", "--into", "../x"][..],
+            "without '..'",
         ),
     ] {
         let out = f
@@ -520,14 +550,42 @@ fn fork_rejects_managed_destinations_and_unknown_plugins() {
 fn namespaced_fork_and_original_coexist_and_release_independently() {
     let f = Fixture::new();
     let source = f.dir.join("vendor/demo");
-    f.cli(&["init", "vendor/demo"], true);
+    f.cli(&["init", "vendor/demo", "--into", "vendor/demo"], true);
     f.cli(&["install", source.to_str().unwrap()], true);
     assert!(f.root.join("dist/vendor/demo/index.js").exists());
     let fork = f.dir.join("dan/demo");
-    f.cli(&["fork", "vendor/demo", "vendor/demo"], false); // same namespace
+    // Same namespace.
+    f.cli(
+        &[
+            "fork",
+            "vendor/demo",
+            "--ns",
+            "vendor",
+            "--into",
+            "dan/demo",
+        ],
+        false,
+    );
     assert!(!fork.exists());
     assert!(source.join("plugin.json").exists());
-    f.cli(&["fork", "vendor/demo", "dan/demo"], true);
+    // The source repository itself is never the fork repository.
+    let before = fs::read(source.join("plugin.json")).unwrap();
+    f.cli(
+        &[
+            "fork",
+            "vendor/demo",
+            "--ns",
+            "dan",
+            "--into",
+            "vendor/demo",
+        ],
+        false,
+    );
+    assert_eq!(fs::read(source.join("plugin.json")).unwrap(), before);
+    f.cli(
+        &["fork", "vendor/demo", "--ns", "dan", "--into", "dan/demo"],
+        true,
+    );
     let m: serde_json::Value =
         serde_json::from_slice(&fs::read(fork.join("plugin.json")).unwrap()).unwrap();
     assert_eq!(m["id"], "dan/demo");
@@ -565,12 +623,12 @@ fn namespaced_fork_and_original_coexist_and_release_independently() {
 fn namespaces_reject_path_traversal_and_legacy_prefix_collisions() {
     let f = Fixture::new();
     f.install();
-    f.cli(&["create", "../bad"], false);
+    f.cli(&["create", "../bad", "--into", "bad"], false);
     for id in ["../hello", "a/../hello", "/hello", "a/b/c", "a//b"] {
         f.cli(&["uninstall", id, "--force"], false);
     }
     let source = f.dir.join("hello/demo");
-    f.cli(&["init", "hello/demo"], true);
+    f.cli(&["init", "hello/demo", "--into", "hello/demo"], true);
     assert!(source.join("plugin.json").exists());
     f.cli(&["install", source.to_str().unwrap()], false);
     assert!(f.root.join("plugins/hello/.git").exists());
@@ -863,7 +921,7 @@ fn catalog_update_validates_every_source_before_writing_and_retains_removed_sour
     let location = directory.to_str().unwrap();
     let sources = f.dir.join("sources.txt");
     let no_tags = f.dir.join("dan/no-tags");
-    f.cli(&["init", "dan/no-tags"], true);
+    f.cli(&["init", "dan/no-tags", "--into", "dan/no-tags"], true);
     assert!(
         f.command("git")
             .arg("-C")
@@ -885,7 +943,7 @@ fn catalog_update_validates_every_source_before_writing_and_retains_removed_sour
     );
     fs::write(&sources, "./upstream\n").unwrap();
     f.cli(&["--catalog", location, "catalog-update"], true);
-    f.cli(&["init", "dan/second"], true);
+    f.cli(&["init", "dan/second", "--into", "dan/second"], true);
     fs::write(&sources, "./dan/second\n").unwrap();
     f.cli(&["--catalog", location, "catalog-update"], true);
     assert!(directory.join("legacy/hello/plugin.json").exists());
@@ -1183,7 +1241,7 @@ fn defaults_are_relative_to_the_current_directory() {
     let out = f
         .command(env!("CARGO_BIN_EXE_gitpm"))
         .current_dir(&f.dir)
-        .args(["create", "me/hello"])
+        .args(["create", "me/hello", "--into", "me/hello"])
         .output()
         .unwrap();
     assert!(
@@ -1225,10 +1283,10 @@ fn legacy_pm_variables_are_ignored() {
         String::from_utf8_lossy(&out.stderr)
             .contains("needs a catalog: pass --catalog DIR_OR_JSON_OR_URL or set GITPM_CATALOG")
     );
-    let out = cli(&["create", "hello"]);
+    let out = cli(&["create", "hello", "--into", "hello"]);
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("plugin id needs a namespace"));
-    let out = cli(&["create", "dan/hello"]);
+    let out = cli(&["create", "dan/hello", "--into", "dan/hello"]);
     assert!(
         out.status.success(),
         "{}",
@@ -1238,7 +1296,7 @@ fn legacy_pm_variables_are_ignored() {
         serde_json::from_slice(&fs::read(f.dir.join("dan/hello/plugin.json")).unwrap()).unwrap();
     assert_eq!(m["id"], "dan/hello");
     // The workspace is ./gitpm-workspace (PM_ROOT ignored), so hello is found there.
-    let out = cli(&["fork", "hello", "me/hello"]);
+    let out = cli(&["fork", "hello", "--ns", "me", "--into", "me/hello"]);
     assert!(
         out.status.success(),
         "{}",
@@ -1250,12 +1308,22 @@ fn legacy_pm_variables_are_ignored() {
 }
 
 #[test]
-fn create_install_and_fork_in_one_directory_mirror_the_ids() {
+fn create_install_and_fork_into_explicit_folders() {
     let f = Fixture::new();
-    f.cli(&["create", "dan/hello"], true);
+    f.cli(&["create", "dan/hello", "--into", "dan/hello"], true);
     f.cli(&["install", "./dan/hello"], true);
-    let out = f.cli(&["fork", "dan/hello", "me/hello"], true);
-    assert!(out.contains("New ID: me/hello."), "{out}");
+    let out = f.cli(
+        &["fork", "dan/hello", "--ns", "me", "--into", "me/hello"],
+        true,
+    );
+    assert!(
+        out.contains("Forked: dan/hello → me/hello (repository root)"),
+        "{out}"
+    );
+    assert!(
+        out.contains("gitpm replace dan/hello --with me/hello"),
+        "{out}"
+    );
     for (folder, id) in [("dan/hello", "dan/hello"), ("me/hello", "me/hello")] {
         let m: serde_json::Value =
             serde_json::from_slice(&fs::read(f.dir.join(folder).join("plugin.json")).unwrap())

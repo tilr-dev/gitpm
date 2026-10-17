@@ -9,8 +9,10 @@ use crate::{
     exec::git,
     identity,
     lost_work::{self, clean},
-    model::{manifest, manifest_json, resolve_ref, resolve_upstream_ref, revision},
-    releases, scaffold,
+    model::{
+        manifest, manifest_json, package_manifest, resolve_ref, resolve_upstream_ref, revision,
+    },
+    packages, releases, scaffold,
     txn::{self, Txn},
     valid_id,
 };
@@ -20,6 +22,17 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{Mutex, MutexGuard},
+};
+
+mod clones;
+mod fork;
+use clones::{
+    configured_origin, guard_clone, installed_repo, place_clone, plugin_repo, removal, settle_head,
+    shared_head_moved,
+};
+pub use fork::{
+    DependencyRewrite, ForkReplacement, ForkStep, ForkedPackage, PackageFork,
+    PackageForkReplacement,
 };
 
 /// Settings passed explicitly by the caller; the library never reads environment variables.
@@ -172,15 +185,6 @@ fn ids_collide(a: &str, b: &str) -> bool {
         .take_while(|(x, y)| x.eq_ignore_ascii_case(y))
         .any(|(x, y)| x != y)
 }
-fn plugin_repo(root: &Path, id: &str) -> Result<PathBuf> {
-    let plugins = root.join("plugins");
-    let repo = plugins.join(id);
-    if !exact_path(&plugins, id)? || !repo.join(".git").is_dir() {
-        return Err(Error::RepositoryNotFound { id: id.into() });
-    }
-    Ok(repo)
-}
-
 impl Manager {
     /// A dedicated workspace only: never point this at the application's live data.
     pub fn open(root: impl AsRef<Path>) -> Result<Self> {
@@ -256,12 +260,9 @@ impl Manager {
             .as_deref()
             .require(Error::InvalidArgument, "no catalog configured")
     }
+    /// The workspace state (`state.json`, any readable format; see [`crate::STATE_FORMAT`]).
     pub fn state(&self) -> Result<State> {
-        let state: State = serde_json::from_slice(&fs::read(self.root.join("state.json"))?)?;
-        for id in state.plugins.keys() {
-            valid_id(id)?;
-        }
-        Ok(state)
+        State::parse(&fs::read(self.root.join("state.json"))?)
     }
     /// Installed plugins as a flat list (sorted by ID).
     pub fn list(&self) -> Result<Vec<InstalledPlugin>> {
@@ -274,7 +275,29 @@ impl Manager {
         let mut txn = Txn::begin(&self.root)?;
         let mut state = self.state()?;
         let value = action(&mut txn, &mut state)?;
+        // The installed revisions of each shared clone stay reachable (see `clones`): in
+        // the staged copy as part of the transaction, else in the live clone afterwards.
+        let keys: std::collections::BTreeSet<&str> = state
+            .plugins
+            .values()
+            .chain(state.forgotten.values())
+            .filter_map(|p| p.clone.as_deref())
+            .collect();
+        let mut live = Vec::new();
+        for key in keys {
+            match txn.staged_repo(&format!("repos/{key}")) {
+                Some(staged) => clones::sync_refs(&staged, &state, key)?,
+                None => live.push(key),
+            }
+        }
         txn.commit(&state)?;
+        for key in live {
+            let repo = self.root.join("repos").join(key);
+            if repo.join(".git").is_dir() {
+                // Best effort: the change is committed; the next fetch syncs again.
+                let _ = clones::sync_refs(&repo, &state, key);
+            }
+        }
         Ok(value)
     }
 
@@ -296,168 +319,6 @@ impl Manager {
         catalog::lookup(self.catalog_location()?, id, version)
     }
 
-    /// Copy the installed repository, including local edits, into an independent author folder.
-    pub fn fork(&self, id: &str, destination: &Path) -> Result<PathBuf> {
-        self.fork_in_namespace(id, destination, identity::DEFAULT_NAMESPACE)
-    }
-    pub fn fork_in_namespace(
-        &self,
-        id: &str,
-        destination: &Path,
-        namespace: &str,
-    ) -> Result<PathBuf> {
-        valid_id(id)?;
-        let _busy = self.busy();
-        let state = self.state()?;
-        let installed = state
-            .plugins
-            .get(id)
-            .ok_or_else(|| Error::NotInstalled { id: id.into() })?;
-        let new_id = identity::qualified(namespace, id.rsplit('/').next().unwrap())?;
-        ensure!(
-            new_id != id,
-            InvalidArgument,
-            "fork needs a different namespace; pass another namespace"
-        );
-        ensure!(
-            !ids_collide(&new_id, id)
-                && !state
-                    .plugins
-                    .keys()
-                    .any(|other| ids_collide(other, &new_id)),
-            InvalidArgument,
-            "fork ID {new_id} differs only in letter case from an installed plugin"
-        );
-        let source = self.root.join("plugins").join(id);
-        ensure!(
-            source.join(".git").is_dir(),
-            Workspace,
-            "expected a standalone plugin git repository"
-        );
-        ensure!(
-            !destination
-                .components()
-                .any(|c| matches!(c, std::path::Component::ParentDir)),
-            InvalidArgument,
-            "use a destination without '..'"
-        );
-        let destination = std::path::absolute(destination)?;
-        ensure!(
-            !destination.try_exists()? && fs::symlink_metadata(&destination).is_err(),
-            InvalidArgument,
-            "destination already exists"
-        );
-        let root = fs::canonicalize(&self.root)?;
-        let ancestor = destination.ancestors().find(|p| p.exists()).require(
-            Error::InvalidArgument,
-            "destination has no existing ancestor",
-        )?;
-        ensure!(
-            !fs::canonicalize(ancestor)?.starts_with(&root),
-            InvalidArgument,
-            "fork destination must be outside the managed workspace"
-        );
-        let parent = destination
-            .parent()
-            .require(Error::InvalidArgument, "destination needs a parent")?;
-        fs::create_dir_all(parent)?;
-        fs::create_dir(&destination)?;
-        let result = (|| {
-            copy_tree(&source, &destination, true)?;
-            let remotes = git(&destination, &["remote"])?;
-            if remotes.lines().any(|r| r == "origin") {
-                git(&destination, &["remote", "remove", "origin"])?;
-            }
-            if remotes.lines().any(|r| r == "upstream") {
-                git(&destination, &["remote", "remove", "upstream"])?;
-            }
-            git(
-                &destination,
-                &["remote", "add", "--", "upstream", &installed.source],
-            )?;
-            let mut branch = "fork".to_owned();
-            let mut number = 2;
-            while !git(&destination, &["branch", "--list", &branch])?.is_empty() {
-                branch = format!("fork-{number}");
-                number += 1;
-            }
-            git(&destination, &["checkout", "-b", &branch])?;
-            // The lineage belongs to this author checkout, not to installed state or the catalog.
-            git(
-                &destination,
-                &[
-                    "config",
-                    "--local",
-                    "pm.forkBase",
-                    &installed.current.commit,
-                ],
-            )?;
-            git(
-                &destination,
-                &[
-                    "config",
-                    "--local",
-                    "pm.forkVersion",
-                    &installed.current.version,
-                ],
-            )?;
-            let base_commit = git(&destination, &["rev-parse", "HEAD"])?;
-            let base: Manifest =
-                serde_json::from_str(&git(&destination, &["show", "HEAD:plugin.json"])?)?;
-            ensure!(
-                base.id == id,
-                InvalidManifest,
-                "installed repository HEAD has a different plugin ID"
-            );
-            let mut m = manifest(&destination)?;
-            m.id = new_id.clone();
-            // The fork can stand in for the original at the version it started from;
-            // this is used only if the user explicitly replaces the original.
-            m.replaces = Some(Replaces {
-                id: id.into(),
-                version: base.version.clone(),
-            });
-            m.fork_of = Some(ForkOf {
-                id: id.into(),
-                version: base.version,
-                commit: base_commit.clone(),
-            });
-            fs::write(destination.join("plugin.json"), manifest_json(&m)?)?;
-            scaffold::ensure_identity(&destination)?;
-            // Commit only the identity change; keep unrelated local edits and staged files intact.
-            git(
-                &destination,
-                &[
-                    "commit",
-                    "--only",
-                    "-m",
-                    &format!("Fork {id} as {new_id}"),
-                    "--",
-                    "plugin.json",
-                ],
-            )?;
-            // No tag yet: local edits must be explicitly committed into a release.
-            git(
-                &destination,
-                &["config", "--local", "pm.forkBase", &base_commit],
-            )?;
-            git(
-                &destination,
-                &[
-                    "config",
-                    "--local",
-                    "pm.forkVersion",
-                    &m.fork_of.as_ref().unwrap().version,
-                ],
-            )?;
-            Ok(fs::canonicalize(&destination)?)
-        })();
-        if result.is_err() {
-            let _ = fs::remove_dir_all(&destination);
-        }
-        result
-    }
-
     /// Install the latest release tag of a Git source.
     pub fn install(&self, source: &str) -> Result<InstallResult> {
         self.install_ref(source, None, None)
@@ -475,6 +336,8 @@ impl Manager {
                 reference,
                 expected,
                 files: None,
+                package: expected.map(|m| m.id.as_str()),
+                path: None,
             },
             None,
         )
@@ -486,12 +349,37 @@ impl Manager {
         reference: Option<&str>,
         dev: bool,
     ) -> Result<InstallResult> {
+        self.install_package(source, None, reference, dev)
+    }
+    /// [`Manager::install_channel`] of one package of the repository. A repository with a
+    /// `gitpm.json` listing several packages needs `package` (unless `reference` is an
+    /// `ID@VERSION` tag); for a single-package repository a given `package` must match.
+    pub fn install_package(
+        &self,
+        source: &str,
+        package: Option<&str>,
+        reference: Option<&str>,
+        dev: bool,
+    ) -> Result<InstallResult> {
         ensure!(
             !dev || reference.is_none(),
             InvalidArgument,
             "the dev channel conflicts with an explicit ref"
         );
-        self.install_ref(source, if dev { Some("HEAD") } else { reference }, None)
+        if let Some(package) = package {
+            valid_id(package)?;
+        }
+        self.install_checked(
+            Fetch {
+                source,
+                reference: if dev { Some("HEAD") } else { reference },
+                expected: None,
+                files: None,
+                package,
+                path: None,
+            },
+            None,
+        )
     }
     /// Install an exact catalog release; manifest and dist hashes are verified.
     /// Missing dependencies come from the configured catalog.
@@ -533,7 +421,8 @@ impl Manager {
                 source: &source,
                 ..fetch
             };
-            let (repo, m, skipped) = clone_revision(txn, &fetch, "incoming")?;
+            let cloned = clone_revision(txn, &fetch, "incoming")?;
+            let m = cloned.manifest.clone();
             check_new_id(txn.root(), state, &m)?;
             // Everything installed stays at its version; the new plugin is added on top.
             let mut next = state.clone();
@@ -550,7 +439,8 @@ impl Manager {
             }
             let missing = deps::solve(&fixed, &roots, self.options.catalog.as_deref())?;
             self.install_missing(txn, state, &missing)?;
-            let mut result = adopt(txn, state, &repo, &m, source.clone(), origin.clone())?;
+            let skipped = cloned.skipped.clone();
+            let mut result = adopt(txn, state, cloned, source.clone(), origin.clone())?;
             result.skipped = skipped;
             Ok(result)
         })
@@ -571,17 +461,16 @@ impl Manager {
         for (number, (id, version)) in missing.iter().enumerate() {
             let release = catalog::lookup(location, id, Some(&version.to_string()))?;
             catalog::validate_release(&release, id, &release.manifest.version)?;
-            let (repo, m, _) = clone_revision(
+            let cloned = clone_revision(
                 txn,
                 &Fetch::release(&release),
                 &format!("dependency-{number}"),
             )?;
-            check_new_id(txn.root(), state, &m)?;
+            check_new_id(txn.root(), state, &cloned.manifest)?;
             adopt(
                 txn,
                 state,
-                &repo,
-                &m,
+                cloned,
                 release.source.clone(),
                 Some(origin.clone()),
             )?;
@@ -658,37 +547,56 @@ impl Manager {
 
     fn prepare_update_all(&self, txn: &mut Txn, state: &mut State) -> Result<UpdateAllPlan> {
         let mut candidates = crate::upgrade::Candidates::new();
-        let mut repos = BTreeMap::new();
         let mut latest = BTreeMap::new();
-        for (number, (id, installed)) in state.plugins.iter().enumerate() {
-            let live = plugin_repo(txn.root(), id)?;
-            clean(&live, id)?;
-            lost_work::require_head(
+        // One scratch copy per clone: the packages of a multi-package source share it.
+        let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (id, installed) in &state.plugins {
+            groups
+                .entry(installed.clone_folder(id))
+                .or_default()
+                .push(id.clone());
+        }
+        let mut repos: BTreeMap<String, PathBuf> = BTreeMap::new();
+        for (number, (relative, ids)) in groups.iter().enumerate() {
+            let first = &ids[0];
+            let key = state.plugins[first].clone.as_deref();
+            let live = installed_repo(txn.root(), first, &state.plugins[first])?;
+            guard_clone(
                 &live,
-                id,
-                &installed.current.commit,
+                state,
+                first,
+                key,
                 "local commits detected; update would discard them",
-            )?;
-            lost_work::require_no_hidden_for_update(
-                &live,
-                id,
                 "unpublished local work blocks update all",
+                true,
             )?;
             // Scratch copies ensure even held-back repositories keep their original refs.
             let repo = txn.scratch(&format!("upgrade-{number}"));
             copy_tree(&live, &repo, true)?;
-            let known = releases::discover(&repo, Some(id))?;
-            git(
-                &repo,
-                &[
-                    "fetch",
-                    "origin",
-                    "--prune",
-                    "--prune-tags",
-                    "--force",
-                    "--tags",
-                ],
-            )?;
+            let mut known = Vec::new();
+            for id in ids {
+                known.extend(releases::discover(&repo, Some(id))?);
+            }
+            match key {
+                // The registered packages of the group are checked below.
+                Some(key) => {
+                    let except: Vec<&str> = ids.iter().map(String::as_str).collect();
+                    clones::fetch_tags(&repo, state, key, &except, true)?;
+                }
+                None => {
+                    git(
+                        &repo,
+                        &[
+                            "fetch",
+                            "origin",
+                            "--prune",
+                            "--prune-tags",
+                            "--force",
+                            "--tags",
+                        ],
+                    )?;
+                }
+            }
             for tag in known {
                 if git(&repo, &["tag", "--list", &tag.name])? == tag.name {
                     ensure!(
@@ -699,64 +607,74 @@ impl Manager {
                     );
                 }
             }
-            let current = deps::version(&installed.current.version)?;
-            let mut newest = current.clone();
-            let mut versions = BTreeMap::new();
-            versions.insert(
-                current.clone(),
-                catalog::Release {
-                    manifest: manifest(&repo)?,
-                    source: installed.source.clone(),
-                    commit: installed.current.commit.clone(),
-                    reference: installed.current.commit.clone(),
-                    files: BTreeMap::new(),
-                    build: None,
-                },
-            );
-            for tag in releases::discover(&repo, Some(id))? {
-                let version = deps::version(&tag.manifest.version)?;
-                if version < current {
-                    continue;
-                }
-                ensure!(
-                    version != current || tag.commit == installed.current.commit,
-                    VersionConflict,
-                    "release commit changed for installed version of {id}"
-                );
-                newest = newest.max(version.clone());
-                // An active replacement must continue providing the same original ID.
-                if state.replacements.iter().any(|(original, fork)| {
-                    fork == id
-                        && tag
-                            .manifest
-                            .replaces
-                            .as_ref()
-                            .is_none_or(|r| r.id != *original)
-                }) {
-                    continue;
-                }
-                deps::validate(&tag.manifest)?;
+            for id in ids {
+                let installed = &state.plugins[id];
+                let current = deps::version(&installed.current.version)?;
+                let mut newest = current.clone();
+                let mut versions = BTreeMap::new();
+                // Read at the installed commit, from the recorded package folder: a shared
+                // clone's HEAD may be another package's revision, and a root package may
+                // have moved into a package folder since.
+                let current_manifest =
+                    packages::find_at(&repo, &installed.current.commit, Some(id))?.manifest;
                 versions.insert(
-                    version,
+                    current.clone(),
                     catalog::Release {
-                        manifest: tag.manifest,
+                        manifest: current_manifest,
                         source: installed.source.clone(),
-                        commit: tag.commit,
-                        reference: tag.name,
+                        commit: installed.current.commit.clone(),
+                        reference: installed.current.commit.clone(),
                         files: BTreeMap::new(),
                         build: None,
+                        path: installed.path.clone(),
                     },
                 );
+                for tag in releases::discover(&repo, Some(id))? {
+                    let version = deps::version(&tag.manifest.version)?;
+                    if version < current {
+                        continue;
+                    }
+                    ensure!(
+                        version != current || tag.commit == installed.current.commit,
+                        VersionConflict,
+                        "release commit changed for installed version of {id}"
+                    );
+                    newest = newest.max(version.clone());
+                    // An active replacement must continue providing the same original ID.
+                    if state.replacements.iter().any(|(original, fork)| {
+                        fork == id
+                            && tag
+                                .manifest
+                                .replaces
+                                .as_ref()
+                                .is_none_or(|r| r.id != *original)
+                    }) {
+                        continue;
+                    }
+                    deps::validate(&tag.manifest)?;
+                    versions.insert(
+                        version,
+                        catalog::Release {
+                            manifest: tag.manifest,
+                            source: installed.source.clone(),
+                            commit: tag.commit,
+                            reference: tag.name,
+                            files: BTreeMap::new(),
+                            build: None,
+                            path: (!tag.path.is_empty()).then_some(tag.path),
+                        },
+                    );
+                }
+                latest.insert(id.clone(), newest.to_string());
+                candidates.insert(id.clone(), versions);
             }
-            latest.insert(id.clone(), newest.to_string());
-            candidates.insert(id.clone(), versions);
-            repos.insert(id.clone(), repo);
+            repos.insert(relative.clone(), repo);
         }
         let selected = crate::upgrade::solve(state, candidates, self.options.catalog.as_deref())?;
         let mut plan = UpdateAllPlan::default();
         for (number, (id, release)) in selected.iter().enumerate() {
             let m = &release.manifest;
-            if let Some(installed) = state.plugins.get_mut(id) {
+            if let Some(installed) = state.plugins.get(id) {
                 if latest[id] != m.version {
                     plan.kept_back.push(HeldBack {
                         id: id.clone(),
@@ -767,15 +685,20 @@ impl Manager {
                 if release.commit == installed.current.commit {
                     continue;
                 }
-                let repo = &repos[id];
-                git(repo, &["checkout", "--detach", &release.commit])?;
-                let actual = manifest(repo)?;
+                let relative = installed.clone_folder(id);
+                let repo = match txn.staged_repo(&relative) {
+                    Some(staged) => staged,
+                    None => repos[&relative].clone(),
+                };
+                git(&repo, &["checkout", "--detach", &release.commit])?;
+                let actual = package_manifest(&repo, release.path.as_deref())?;
                 ensure!(
                     serde_json::to_value(&actual)? == serde_json::to_value(m)?,
                     VersionConflict,
                     "release manifest changed for {id}"
                 );
-                let next = revision(repo, m)?;
+                let next = revision(&repo, m)?;
+                let installed = state.plugins.get_mut(id).unwrap();
                 plan.updates.push(RevisionChange {
                     id: id.clone(),
                     from: installed.current.clone(),
@@ -784,23 +707,26 @@ impl Manager {
                 });
                 installed.previous = Some(installed.current.clone());
                 installed.current = next;
+                installed.path = release.path.clone();
                 installed.adopt(m);
-                txn.add_repo(id, repo)?;
-                txn.deploy(id)?;
+                let path = installed.path.clone();
+                if txn.staged_repo(&relative).is_none() {
+                    txn.add_repo(&relative, &repo)?;
+                }
+                txn.deploy(id, &relative, path.as_deref())?;
             } else {
                 let origin = catalog::canonical_location(self.catalog_location()?)?;
                 ensure_single_catalog(state, &origin)?;
-                let (repo, actual, _) = clone_revision(
+                let cloned = clone_revision(
                     txn,
                     &Fetch::release(release),
                     &format!("upgrade-new-{number}"),
                 )?;
-                check_new_id(txn.root(), state, &actual)?;
+                check_new_id(txn.root(), state, &cloned.manifest)?;
                 plan.installs.push(adopt(
                     txn,
                     state,
-                    &repo,
-                    &actual,
+                    cloned,
                     release.source.clone(),
                     Some(origin),
                 )?);
@@ -835,20 +761,18 @@ impl Manager {
                 .get(id)
                 .cloned()
                 .ok_or_else(|| Error::NotInstalled { id: id.into() })?;
-            let live = plugin_repo(txn.root(), id)?;
-            clean(&live, id)?;
-            lost_work::require_head(
+            let relative = p.clone_folder(id);
+            let live = installed_repo(txn.root(), id, &p)?;
+            guard_clone(
                 &live,
+                state,
                 id,
-                &p.current.commit,
+                p.clone.as_deref(),
                 "local commits detected; update would discard them",
-            )?;
-            lost_work::require_no_hidden_for_update(
-                &live,
-                id,
                 "local branches, tags or stash hold unpublished work; keep or remove them before updating",
+                true,
             )?;
-            let repo = txn.repo(id, &live)?;
+            let repo = txn.repo(&relative, &live)?;
             let known_releases = match releases::discover(&repo, Some(id)) {
                 Ok(tags) => tags,
                 Err(Error::NoReleases(_)) => Vec::new(),
@@ -857,10 +781,15 @@ impl Manager {
             // Mirror upstream tags exactly: a deleted release disappears, a moved one is
             // seen at its new commit (and refused below as a version conflict). Local
             // tags holding unpublished commits were refused above, so nothing is lost.
-            git(
-                &repo,
-                &["fetch", "origin", "--prune", "--prune-tags", "--force", "--tags"],
-            )?;
+            match p.clone.as_deref() {
+                Some(key) => clones::fetch_tags(&repo, state, key, &[id], true)?,
+                None => {
+                    git(
+                        &repo,
+                        &["fetch", "origin", "--prune", "--prune-tags", "--force", "--tags"],
+                    )?;
+                }
+            }
             for known in known_releases {
                 let tag = format!("refs/tags/{}", known.name);
                 // Deleting a tag is allowed; moving an observed release is not.
@@ -918,8 +847,16 @@ impl Manager {
                     "upstream history diverged; automatic dev update refused",
                 )?;
             }
+            // The package can move to another folder (or into a multi-package layout).
+            let path = match packages::find_at(&repo, &target, Some(id)) {
+                Ok(found) => found.subdir().map(str::to_owned),
+                Err(Error::InvalidArgument(_)) => {
+                    fail!(InvalidManifest, "plugin id changed upstream")
+                }
+                Err(error) => return Err(error),
+            };
             git(&repo, &["checkout", "--detach", &target])?;
-            let m = manifest(&repo)?;
+            let m = package_manifest(&repo, path.as_deref())?;
             ensure!(m.id == id, InvalidManifest, "plugin id changed upstream");
             // Dev identity is the commit; release channels require a version bump.
             ensure!(
@@ -932,8 +869,9 @@ impl Manager {
             let entry = state.plugins.get_mut(id).unwrap();
             entry.previous = Some(p.current.clone());
             entry.current = next.clone();
+            entry.path = path.clone();
             entry.adopt(&m);
-            txn.deploy(id)?;
+            txn.deploy(id, &relative, path.as_deref())?;
             Ok(RevisionChange {
                 id: id.into(),
                 from: p.current,
@@ -955,17 +893,25 @@ impl Manager {
                 .previous
                 .clone()
                 .ok_or_else(|| Error::NoPreviousVersion { id: id.into() })?;
-            let live = plugin_repo(txn.root(), id)?;
-            clean(&live, id)?;
-            lost_work::require_head(&live, id, &p.current.commit, "local commits detected")?;
-            lost_work::require_no_hidden(
+            let relative = p.clone_folder(id);
+            let live = installed_repo(txn.root(), id, &p)?;
+            guard_clone(
                 &live,
+                state,
                 id,
+                p.clone.as_deref(),
+                "local commits detected",
                 "local branches, tags or stash hold unpublished work; keep or remove them before rolling back",
+                false,
             )?;
-            let repo = txn.repo(id, &live)?;
+            let repo = txn.repo(&relative, &live)?;
+            let path = match packages::find_at(&repo, &previous.commit, Some(id)) {
+                Ok(found) => found.subdir().map(str::to_owned),
+                Err(Error::InvalidArgument(_)) => fail!(InvalidManifest, "rollback manifest mismatch"),
+                Err(error) => return Err(error),
+            };
             git(&repo, &["checkout", "--detach", &previous.commit])?;
-            let m = manifest(&repo)?;
+            let m = package_manifest(&repo, path.as_deref())?;
             ensure!(
                 m.id == id && m.version == previous.version,
                 InvalidManifest,
@@ -975,8 +921,9 @@ impl Manager {
             let entry = state.plugins.get_mut(id).unwrap();
             entry.previous = Some(p.current.clone());
             entry.current = previous.clone();
+            entry.path = path.clone();
             entry.adopt(&m);
-            txn.deploy(id)?;
+            txn.deploy(id, &relative, path.as_deref())?;
             Ok(RevisionChange {
                 id: id.into(),
                 from: p.current,
@@ -1014,25 +961,38 @@ impl Manager {
         self.forget_with(id, false)
     }
     /// Like [`Manager::forget`]; dependents refuse unless `force`. Replacements this
-    /// plugin provides are dropped (their consumers go back to the original).
+    /// plugin provides are dropped (their consumers go back to the original). A package
+    /// of a shared clone is kept in `State::forgotten`, so its clone stays while it is
+    /// forgotten and `restore`/`uninstall` find it; the clone's HEAD moves to a
+    /// registered package's revision if it was this package's.
     pub fn forget_with(&self, id: &str, force: bool) -> Result<()> {
         valid_id(id)?;
-        self.transaction(|_, state| {
+        self.transaction(|txn, state| {
             if !state.plugins.contains_key(id) {
                 return Err(Error::NotInstalled { id: id.into() });
             }
             if !force {
                 refuse_dependents(state, id, "forget")?;
             }
-            state.plugins.remove(id);
+            let installed = state.plugins.remove(id).unwrap();
             state.replacements.retain(|_, fork| fork != id);
+            if let Some(key) = installed.clone.clone() {
+                let relative = installed.clone_folder(id);
+                state.forgotten.insert(id.to_owned(), installed);
+                settle_head(txn, state, &key, id, &relative)?;
+            }
             Ok(())
         })
     }
-    /// Re-register a retained (forgotten) clean repository; previous history is not restored.
+    /// Re-register a retained (forgotten) clean repository; previous history is not
+    /// restored. An own clone is registered at its HEAD; a forgotten package of a shared
+    /// clone at its recorded revision (the clone is checked out there if needed).
     pub fn restore(&self, id: &str) -> Result<InstallResult> {
         valid_id(id)?;
         self.transaction(|txn, state| {
+            if let Some(record) = state.forgotten.get(id).cloned() {
+                return restore_shared(txn, state, id, record);
+            }
             // A missing clone is the real problem even when the ID is still registered.
             let repo = plugin_repo(txn.root(), id)?;
             if state.plugins.contains_key(id) {
@@ -1042,13 +1002,22 @@ impl Manager {
                 });
             }
             clean(&repo, id)?;
-            let m = manifest(&repo)?;
+            // The package may have moved into a folder of a multi-package layout.
+            let head = git(&repo, &["rev-parse", "HEAD"])?;
+            let path = match packages::find_at(&repo, &head, Some(id)) {
+                Ok(found) => found.subdir().map(str::to_owned),
+                Err(Error::InvalidArgument(_)) => fail!(InvalidManifest, "plugin id mismatch"),
+                Err(error) => return Err(error),
+            };
+            let m = package_manifest(&repo, path.as_deref())?;
             ensure!(m.id == id, InvalidManifest, "plugin id mismatch");
             let mut installed = Installed {
-                source: git(&repo, &["remote", "get-url", "origin"])?,
+                source: configured_origin(&repo)
+                    .require(Error::Git, "the retained clone has no origin remote")?,
                 current: revision(&repo, &m)?,
                 previous: None,
                 enabled: true,
+                path: path.clone(),
                 ..Default::default()
             };
             installed.adopt(&m);
@@ -1060,7 +1029,7 @@ impl Manager {
                 skipped: Vec::new(),
             };
             state.plugins.insert(id.to_owned(), installed);
-            txn.deploy(id)?;
+            txn.deploy(id, &format!("plugins/{id}"), path.as_deref())?;
             Ok(result)
         })
     }
@@ -1071,10 +1040,11 @@ impl Manager {
         valid_id(id)?;
         let _busy = self.busy();
         let state = self.state()?;
-        let repo = plugin_repo(&self.root, id)?;
-        let recorded = state.plugins.get(id).map(|p| p.current.commit.as_str());
-        let lost_work = lost_work::detect(&repo, recorded)?;
-        let mut deletes = vec![repo.to_string_lossy().into_owned()];
+        let removal = removal(&self.root, &state, id)?;
+        let mut deletes = Vec::new();
+        if let Some(repo) = &removal.repo {
+            deletes.push(repo.to_string_lossy().into_owned());
+        }
         let dist = self.root.join("dist").join(id);
         if dist.exists() {
             deletes.push(dist.to_string_lossy().into_owned());
@@ -1083,11 +1053,14 @@ impl Manager {
             id: id.into(),
             registered: state.plugins.contains_key(id),
             deletes,
-            lost_work,
+            lost_work: removal.lost_work,
             dependents: deps::dependents(&state, id),
         })
     }
-    /// Remove state entry, repository and dist. With `confirm == false` any local work
+    /// Remove state entry, repository and dist; for a package of a shared clone the clone
+    /// stays while other packages (registered or forgotten) use it, and its HEAD moves to
+    /// one of theirs. A forgotten package is uninstalled the same way (its `dist/`, its
+    /// record and the clone if it was the last user). With `confirm == false` any local work
     /// (changes, untracked/ignored files, unpublished commits/branches/tags, stash)
     /// refuses with [`Error::LocalChanges`]; `confirm == true` deletes it anyway.
     /// Dependents refuse with [`Error::HasDependents`]; see [`Manager::uninstall_with`].
@@ -1099,20 +1072,23 @@ impl Manager {
     pub fn uninstall_with(&self, id: &str, confirm: bool, force: bool) -> Result<()> {
         valid_id(id)?;
         self.transaction(|txn, state| {
-            let repo = plugin_repo(txn.root(), id)?;
+            let removal = removal(txn.root(), state, id)?;
             if !force {
                 refuse_dependents(state, id, "uninstall")?;
             }
-            if !confirm {
-                let recorded = state.plugins.get(id).map(|p| p.current.commit.as_str());
-                let items = lost_work::detect(&repo, recorded)?;
-                if !items.is_empty() {
-                    return Err(lost_work::refusal(id, items));
-                }
+            if !confirm && !removal.lost_work.is_empty() {
+                return Err(lost_work::refusal(id, removal.lost_work));
             }
-            txn.delete(id)?;
             state.plugins.remove(id);
+            state.forgotten.remove(id);
             state.replacements.retain(|_, fork| fork != id);
+            match (&removal.repo, &removal.key) {
+                (Some(_), _) => txn.delete_repo(&removal.relative)?,
+                // Other packages keep the shared clone; its HEAD goes to one of theirs.
+                (None, Some(key)) => settle_head(txn, state, key, id, &removal.relative)?,
+                (None, None) => {}
+            }
+            txn.delete_dist(id)?;
             Ok(())
         })
     }
@@ -1162,6 +1138,66 @@ impl Manager {
     }
 }
 
+/// [`Manager::restore`] of a forgotten package of a shared clone: register it again at
+/// its recorded revision and deploy that revision's `dist/`.
+fn restore_shared(
+    txn: &mut Txn,
+    state: &mut State,
+    id: &str,
+    record: Installed,
+) -> Result<InstallResult> {
+    let key = record.clone.clone().unwrap_or_default();
+    let relative = record.clone_folder(id);
+    let live = match installed_repo(txn.root(), id, &record) {
+        Err(Error::RepositoryNotFound { .. }) => fail!(
+            Workspace,
+            "the shared clone {relative} of the forgotten {id} is gone; uninstall {id} to drop its record, then install it again"
+        ),
+        live => live?,
+    };
+    clean(&live, id)?;
+    let commit = record.current.commit.clone();
+    if git(&live, &["rev-parse", "HEAD"])? != commit {
+        if let Some(item) = shared_head_moved(&live, state, &key, id)? {
+            return Err(Error::LocalChanges {
+                id: id.into(),
+                message: format!("the shared clone {relative} has local commits"),
+                items: vec![item],
+            });
+        }
+        let staged = txn.repo(&relative, &live)?;
+        git(&staged, &["checkout", "-q", "--detach", &commit])?;
+    }
+    let repo = txn.staged_repo(&relative).unwrap_or(live);
+    let path = packages::find_at(&repo, &commit, Some(id))?
+        .subdir()
+        .map(str::to_owned);
+    let m = package_manifest(&repo, path.as_deref())?;
+    ensure!(
+        m.id == id && m.version == record.current.version,
+        InvalidManifest,
+        "the recorded revision of {id} has another manifest"
+    );
+    let mut installed = Installed {
+        previous: None,
+        enabled: true,
+        path: path.clone(),
+        ..record
+    };
+    installed.adopt(&m);
+    let result = InstallResult {
+        id: id.into(),
+        source: installed.source.clone(),
+        current: installed.current.clone(),
+        fork_of: installed.fork_of.clone(),
+        skipped: Vec::new(),
+    };
+    state.forgotten.remove(id);
+    state.plugins.insert(id.to_owned(), installed);
+    txn.deploy(id, &relative, path.as_deref())?;
+    Ok(result)
+}
+
 /// Where an install takes its revision from.
 #[derive(Clone, Copy)]
 struct Fetch<'a> {
@@ -1169,6 +1205,10 @@ struct Fetch<'a> {
     reference: Option<&'a str>,
     expected: Option<&'a Manifest>,
     files: Option<&'a BTreeMap<String, catalog::FileDigest>>,
+    /// Package ID to pick in a multi-package repository (checked against a root package).
+    package: Option<&'a str>,
+    /// Exact package folder the catalog recorded (`None`: the root); only with `expected`.
+    path: Option<&'a str>,
 }
 impl<'a> Fetch<'a> {
     fn release(release: &'a catalog::Release) -> Self {
@@ -1177,16 +1217,23 @@ impl<'a> Fetch<'a> {
             reference: Some(&release.commit),
             expected: Some(&release.manifest),
             files: (!release.files.is_empty()).then_some(&release.files),
+            package: Some(&release.manifest.id),
+            path: release.path.as_deref(),
         }
     }
 }
 
+/// A verified scratch clone checked out at the revision to install.
+struct Cloned {
+    repo: PathBuf,
+    manifest: Manifest,
+    /// Package folder (`None`: the repository root).
+    path: Option<String>,
+    skipped: Vec<releases::SkippedTag>,
+}
+
 /// Clone into the transaction's scratch area, check out and verify the revision.
-fn clone_revision(
-    txn: &Txn,
-    fetch: &Fetch,
-    name: &str,
-) -> Result<(PathBuf, Manifest, Vec<releases::SkippedTag>)> {
+fn clone_revision(txn: &Txn, fetch: &Fetch, name: &str) -> Result<Cloned> {
     let repo = txn.scratch(name);
     let parent = repo.parent().unwrap();
     fs::create_dir_all(parent)?;
@@ -1198,7 +1245,17 @@ fn clone_revision(
     let commit = match fetch.reference {
         Some(reference) => resolve_ref(&repo, reference)?,
         None => {
-            let mut found = releases::discover_all(&repo, None)?;
+            let mut found = match releases::discover_all(&repo, fetch.package) {
+                // An ID the repository does not have: say which packages it has.
+                Err(Error::NoReleases(message)) => {
+                    if let Some(id) = fetch.package {
+                        let head = git(&repo, &["rev-parse", "HEAD"])?;
+                        packages::find_at(&repo, &head, Some(id))?;
+                    }
+                    return Err(Error::NoReleases(message));
+                }
+                other => other?,
+            };
             found.ensure_latest_is_valid()?;
             skipped = std::mem::take(&mut found.skipped);
             found
@@ -1208,8 +1265,28 @@ fn clone_revision(
                 .commit
         }
     };
+    // An `ID@VERSION` tag names its package.
+    let package = fetch
+        .package
+        .or_else(|| fetch.reference.and_then(packages::tag_id));
+    let found = packages::find_at(&repo, &commit, package)?;
+    if fetch.expected.is_some() {
+        ensure!(
+            found.subdir() == fetch.path,
+            Catalog,
+            "catalog package folder {} does not match git revision ({})",
+            fetch.path.unwrap_or("(root)"),
+            found.subdir().unwrap_or("(root)")
+        );
+    }
     git(&repo, &["checkout", "--detach", &commit])?;
-    let m = manifest(&repo)?;
+    let path = found.subdir().map(str::to_owned);
+    let m = package_manifest(&repo, path.as_deref())?;
+    ensure!(
+        m.id == found.manifest.id,
+        InvalidManifest,
+        "package manifest changed during checkout"
+    );
     if let Some(expected) = fetch.expected {
         ensure!(
             serde_json::to_value(&m)? == serde_json::to_value(expected)?,
@@ -1218,13 +1295,22 @@ fn clone_revision(
         );
     }
     if let Some(expected_files) = fetch.files {
+        let dist = match &path {
+            Some(path) => repo.join(path).join("dist"),
+            None => repo.join("dist"),
+        };
         ensure!(
-            catalog::hash_files(&repo.join("dist"))? == *expected_files,
+            catalog::hash_files(&dist)? == *expected_files,
             Catalog,
             "catalog file hashes do not match git dist"
         );
     }
-    Ok((repo, m, skipped))
+    Ok(Cloned {
+        repo,
+        manifest: m,
+        path,
+        skipped,
+    })
 }
 
 /// The new plugin's ID must not collide with anything installed or retained.
@@ -1235,16 +1321,24 @@ fn check_new_id(root: &Path, state: &State, m: &Manifest) -> Result<()> {
             id: m.id.clone(),
         });
     }
+    if state.forgotten.contains_key(&m.id) {
+        return Err(Error::AlreadyInstalled {
+            message: format!(
+                "{} was forgotten and its files are kept; use restore, or uninstall it first",
+                m.id
+            ),
+            id: m.id.clone(),
+        });
+    }
+    let taken = || state.plugins.keys().chain(state.forgotten.keys());
     // A legacy ID can be a prefix of a scoped ID; never nest a repository in another.
     ensure!(
-        !state
-            .plugins
-            .keys()
+        !taken()
             .any(|id| id.starts_with(&format!("{}/", m.id)) || m.id.starts_with(&format!("{id}/"))),
         Workspace,
         "plugin ID conflicts with an installed namespace path"
     );
-    if let Some(other) = state.plugins.keys().find(|id| ids_collide(id, &m.id)) {
+    if let Some(other) = taken().find(|id| ids_collide(id, &m.id)) {
         return Err(Error::Workspace(format!(
             "plugin ID {} differs only in letter case from installed {other}",
             m.id
@@ -1272,20 +1366,22 @@ fn check_new_id(root: &Path, state: &State, m: &Manifest) -> Result<()> {
 fn adopt(
     txn: &mut Txn,
     state: &mut State,
-    repo: &Path,
-    m: &Manifest,
+    cloned: Cloned,
     source: String,
     catalog: Option<String>,
 ) -> Result<InstallResult> {
-    let current = revision(repo, m)?;
-    txn.add_repo(&m.id, repo)?;
-    txn.deploy(&m.id)?;
+    let (staged, relative, key) = place_clone(txn, state, &cloned, &source)?;
+    let m = &cloned.manifest;
+    let current = revision(&staged, m)?;
+    txn.deploy(&m.id, &relative, cloned.path.as_deref())?;
     let mut installed = Installed {
         source: source.clone(),
         current: current.clone(),
         previous: None,
         enabled: true,
         catalog,
+        clone: key,
+        path: cloned.path.clone(),
         ..Default::default()
     };
     installed.adopt(m);
@@ -1635,7 +1731,10 @@ mod tests {
         let m = Manager::open_with(&root, options).unwrap();
         assert_eq!(m.root(), root);
         assert_eq!(m.options().catalog.as_deref(), Some("catalog-local"));
-        assert_eq!(read(&root.join("state.json")), "{\n  \"plugins\": {}\n}");
+        assert_eq!(
+            read(&root.join("state.json")),
+            "{\n  \"format\": 2,\n  \"plugins\": {}\n}"
+        );
         assert!(root.join("plugins").is_dir() && root.join("dist").is_dir());
         assert!(dir.join("nested/.workspace.lock").exists());
         assert!(m.list().unwrap().is_empty());
@@ -2015,6 +2114,7 @@ mod tests {
             reference: "dan/other@0.1.0".into(),
             files,
             build: None,
+            path: None,
         };
         let error = ws.refuses("catalog", || m.install_release(&release));
         assert_eq!(
@@ -2443,6 +2543,7 @@ mod tests {
             reference: "dan/demo1@0.1.0".into(),
             files: BTreeMap::new(), // claims an empty dist; the commit has dist/index.js
             build: None,
+            path: None,
         };
         ws.refuses("catalog", || m.install_release(&release));
     }
@@ -2521,9 +2622,6 @@ mod tests {
         assert_eq!(r.id, "me/demo1");
         assert_eq!(r.fork_of.unwrap().id, "vendor/demo1");
         assert_eq!(m.list().unwrap().len(), 2);
-        // Default namespace.
-        let local = m.fork("vendor/demo1", &ws.dir.join("forks/local")).unwrap();
-        assert_eq!(crate::model::manifest(&local).unwrap().id, "local/demo1");
     }
 
     #[test]
@@ -2547,10 +2645,24 @@ mod tests {
         });
         fs::create_dir_all(&dest).unwrap();
         let error = ws.refuses("invalid_argument", || m.fork_in_namespace(id, &dest, "me"));
-        assert_eq!(error.to_string(), "destination already exists");
+        assert!(
+            error
+                .to_string()
+                .starts_with("destination already exists and is not a multi-package repository"),
+            "{error}"
+        );
         fs::remove_dir(&dest).unwrap();
         assert!(!dest.exists());
         assert!(!ws.root.join("inside").exists());
+        // Not inside the source's working tree either (new or existing folder).
+        let before = tree_hash(&ws.author.path);
+        for inside in ["forks/demo1", "."] {
+            let error = ws.refuses("invalid_argument", || {
+                m.fork_in_namespace(id, &ws.author.path.join(inside), "me")
+            });
+            assert!(error.to_string().contains("source repository"), "{error}");
+        }
+        assert_eq!(tree_hash(&ws.author.path), before);
     }
 
     // ---- concurrency and known limits -----------------------------------------------
@@ -2688,5 +2800,1026 @@ mod tests {
             .expect("same workspace, same lock");
         assert_eq!(error.kind(), "locked");
         drop(m);
+    }
+
+    // ---- multi-package repositories ------------------------------------------------
+
+    /// Author repository with `gitpm.json` and packages under `packages/`.
+    struct Mono {
+        dir: TempDir,
+        repo: PathBuf,
+        root: PathBuf,
+    }
+    impl Mono {
+        /// `tilr/store` and `tilr/theme` at 1.0.0, each tagged on the same commit.
+        fn new() -> Self {
+            let dir = TempDir::new("mono");
+            let repo = dir.join("mono");
+            fs::create_dir_all(&repo).unwrap();
+            fixture_git(&repo, &["init", "-q", "-b", "main"]);
+            fs::write(
+                repo.join(packages::CONFIG),
+                r#"{"packages":["packages/*"]}"#,
+            )
+            .unwrap();
+            let mono = Self {
+                root: dir.join("workspace"),
+                repo,
+                dir,
+            };
+            mono.write("store", "1.0.0", &[]);
+            mono.write("theme", "1.0.0", &[]);
+            mono.commit("first");
+            mono.tag("store", "1.0.0");
+            mono.tag("theme", "1.0.0");
+            mono
+        }
+        fn write(&self, name: &str, version: &str, deps: &[(&str, &str)]) {
+            let folder = self.repo.join("packages").join(name);
+            fs::create_dir_all(folder.join("dist")).unwrap();
+            let mut m = make_manifest(&format!("tilr/{name}"), version);
+            for (id, requirement) in deps {
+                m.dependencies.insert((*id).into(), (*requirement).into());
+            }
+            write_manifest(&folder, &m);
+            fs::write(folder.join("dist/index.js"), format!("{name} {version}")).unwrap();
+        }
+        fn commit(&self, message: &str) -> String {
+            fixture_git(&self.repo, &["add", "--all"]);
+            fixture_git(&self.repo, &["commit", "-q", "-m", message]);
+            fixture_git(&self.repo, &["rev-parse", "HEAD"])
+        }
+        fn tag(&self, name: &str, version: &str) {
+            fixture_git(&self.repo, &["tag", &format!("tilr/{name}@{version}")]);
+        }
+        fn release(&self, name: &str, version: &str) -> String {
+            self.write(name, version, &[]);
+            let commit = self.commit(&format!("{name} {version}"));
+            self.tag(name, version);
+            commit
+        }
+        fn source(&self) -> &str {
+            self.repo.to_str().unwrap()
+        }
+        fn open(&self) -> Manager {
+            reopen(&self.root).unwrap()
+        }
+        fn dist(&self, name: &str) -> String {
+            read(&self.root.join("dist/tilr").join(name).join("index.js"))
+        }
+        fn clones(&self) -> Vec<String> {
+            fs::read_dir(self.root.join("repos"))
+                .map(|entries| {
+                    entries
+                        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                        .collect()
+                })
+                .unwrap_or_default()
+        }
+        fn refuses<T: Debug>(&self, kind: &str, op: impl FnOnce() -> Result<T>) -> Error {
+            let before = tree_hash(&self.root);
+            let error = op().expect_err("operation must fail");
+            assert_eq!(error.kind(), kind, "{error}");
+            assert_eq!(tree_hash(&self.root), before, "workspace changed: {error}");
+            assert!(!self.root.join(txn::DIR).exists());
+            error
+        }
+    }
+
+    #[test]
+    fn packages_of_one_source_share_one_clone() {
+        let mono = Mono::new();
+        let m = mono.open();
+        let store = m
+            .install_package(mono.source(), Some("tilr/store"), None, false)
+            .unwrap();
+        assert_eq!(store.current.version, "1.0.0");
+        m.install_package(mono.source(), Some("tilr/theme"), None, false)
+            .unwrap();
+        assert_eq!(mono.dist("store"), "store 1.0.0");
+        assert_eq!(mono.dist("theme"), "theme 1.0.0");
+        let clones = mono.clones();
+        assert_eq!(clones.len(), 1, "{clones:?}");
+        assert!(clones[0].starts_with("mono-"), "{clones:?}");
+        assert!(!mono.root.join("plugins/tilr").exists());
+        let state = m.state().unwrap();
+        let p = &state.plugins["tilr/store"];
+        assert_eq!(p.clone.as_deref(), Some(clones[0].as_str()));
+        assert_eq!(p.path.as_deref(), Some("packages/store"));
+        // Only the package's own dist is deployed.
+        assert!(!mono.root.join("dist/tilr/store/plugin.json").exists());
+        let listed = m.list().unwrap();
+        assert_eq!(listed[1].path.as_deref(), Some("packages/theme"));
+    }
+
+    #[test]
+    fn a_monorepo_install_needs_a_package_id() {
+        let mono = Mono::new();
+        let m = mono.open();
+        let error = mono.refuses("invalid_argument", || m.install(mono.source()));
+        let text = error.to_string();
+        assert!(
+            text.contains("tilr/store (packages/store)")
+                && text.contains("tilr/theme (packages/theme)"),
+            "{text}"
+        );
+        mono.refuses("invalid_argument", || {
+            m.install_package(mono.source(), Some("tilr/missing"), None, false)
+        });
+        // An ID@VERSION ref names the package.
+        m.install_ref(mono.source(), Some("tilr/theme@1.0.0"), None)
+            .unwrap();
+        assert_eq!(mono.dist("theme"), "theme 1.0.0");
+        // A root repository checks a given ID.
+        let ws = Ws::new("dan/demo1");
+        let other = ws.open();
+        ws.refuses("invalid_argument", || {
+            other.install_package(ws.author.source(), Some("dan/other"), None, false)
+        });
+        other
+            .install_package(ws.author.source(), Some("dan/demo1"), None, false)
+            .unwrap();
+    }
+
+    #[test]
+    fn packages_release_and_update_independently() {
+        let mono = Mono::new();
+        let m = mono.open();
+        for id in ["tilr/store", "tilr/theme"] {
+            m.install_package(mono.source(), Some(id), None, false)
+                .unwrap();
+        }
+        mono.release("store", "1.1.0");
+        let change = m.update("tilr/store").unwrap();
+        assert_eq!(
+            (change.to.version.as_str(), change.changed),
+            ("1.1.0", true)
+        );
+        assert_eq!(mono.dist("store"), "store 1.1.0");
+        assert_eq!(mono.dist("theme"), "theme 1.0.0");
+        // The other package has no new release: nothing changes.
+        assert!(!m.update("tilr/theme").unwrap().changed);
+        let state = m.state().unwrap();
+        assert_eq!(state.plugins["tilr/theme"].current.version, "1.0.0");
+        m.rollback("tilr/store").unwrap();
+        assert_eq!(mono.dist("store"), "store 1.0.0");
+        m.update("tilr/store").unwrap();
+
+        // Joint upgrade moves both packages in one clone.
+        mono.release("store", "1.2.0");
+        mono.release("theme", "2.0.0");
+        let preview = m.update_all_plan().unwrap();
+        assert_eq!(preview.updates.len(), 2);
+        let plan = m.update_all().unwrap();
+        assert_eq!(plan.updates.len(), 2);
+        assert_eq!(mono.dist("store"), "store 1.2.0");
+        assert_eq!(mono.dist("theme"), "theme 2.0.0");
+        assert_eq!(mono.clones().len(), 1);
+
+        // The dev channel follows the default branch for one package.
+        mono.write("theme", "2.1.0", &[]);
+        let head = mono.commit("theme work");
+        let dev = m.update_channel("tilr/theme", None, true).unwrap();
+        assert_eq!(dev.to.commit, head);
+        assert_eq!(mono.dist("theme"), "theme 2.1.0");
+        assert_eq!(mono.dist("store"), "store 1.2.0");
+        // HEAD of the shared clone is now theme's untagged revision: store still updates.
+        mono.release("store", "1.3.0");
+        m.update("tilr/store").unwrap();
+        assert_eq!(mono.dist("store"), "store 1.3.0");
+    }
+
+    #[test]
+    fn uninstalling_one_package_keeps_the_shared_clone() {
+        let mono = Mono::new();
+        let m = mono.open();
+        for id in ["tilr/store", "tilr/theme"] {
+            m.install_package(mono.source(), Some(id), None, false)
+                .unwrap();
+        }
+        let plan = m.uninstall_plan("tilr/store").unwrap();
+        assert_eq!(plan.deletes.len(), 1, "{:?}", plan.deletes);
+        assert!(plan.deletes[0].ends_with("dist/tilr/store"));
+        m.uninstall("tilr/store", false).unwrap();
+        assert!(!mono.root.join("dist/tilr/store").exists());
+        assert_eq!(mono.clones().len(), 1);
+        mono.release("theme", "1.1.0");
+        m.update("tilr/theme").unwrap();
+        assert_eq!(mono.dist("theme"), "theme 1.1.0");
+        // Reinstall reuses the clone.
+        m.install_package(mono.source(), Some("tilr/store"), None, false)
+            .unwrap();
+        assert_eq!(mono.clones().len(), 1);
+        m.uninstall("tilr/store", false).unwrap();
+        // The last package takes the clone with it; local work there is guarded.
+        let clone = mono.root.join("repos").join(&mono.clones()[0]);
+        fs::write(clone.join("scratch.txt"), "mine").unwrap();
+        mono.refuses("local_changes", || m.update("tilr/theme"));
+        let plan = m.uninstall_plan("tilr/theme").unwrap();
+        assert_eq!(plan.deletes.len(), 2);
+        assert!(!plan.lost_work.is_empty());
+        mono.refuses("local_changes", || m.uninstall("tilr/theme", false));
+        m.uninstall("tilr/theme", true).unwrap();
+        assert!(mono.clones().is_empty());
+        assert!(m.state().unwrap().plugins.is_empty());
+    }
+
+    #[test]
+    fn a_tag_without_its_package_is_refused_clearly() {
+        let mono = Mono::new();
+        let m = mono.open();
+        // tilr/store@2.0.0 points at a commit where only theme exists.
+        fs::remove_dir_all(mono.repo.join("packages/store")).unwrap();
+        mono.commit("drop store");
+        mono.tag("store", "2.0.0");
+        let error = mono.refuses("version_conflict", || {
+            m.install_package(mono.source(), Some("tilr/store"), None, false)
+        });
+        assert!(
+            error.to_string().contains("without package tilr/store"),
+            "{error}"
+        );
+        let error = mono.refuses("invalid_argument", || {
+            m.install_ref(mono.source(), Some("tilr/store@2.0.0"), None)
+        });
+        assert!(
+            error.to_string().contains("not in this repository"),
+            "{error}"
+        );
+        // Legacy v-tags are ambiguous in a multi-package repository.
+        fixture_git(&mono.repo, &["tag", "v3.0.0"]);
+        let error = mono.refuses("version_conflict", || {
+            m.install_package(mono.source(), Some("tilr/theme"), None, false)
+        });
+        assert!(error.to_string().contains("ambiguous"), "{error}");
+    }
+
+    #[test]
+    fn a_fork_of_a_package_releases_only_that_package() {
+        let mono = Mono::new();
+        let m = mono.open();
+        m.install_package(mono.source(), Some("tilr/theme"), None, false)
+            .unwrap();
+        let destination = mono.dir.join("forks/me/theme");
+        let result = m
+            .fork_replace("tilr/theme", &destination, "me", None, false)
+            .unwrap();
+        assert!(result.failed.is_none(), "{:?}", result.error);
+        assert_eq!(result.tag.as_deref(), Some("me/theme@1.0.0"));
+        let config: packages::Config =
+            serde_json::from_slice(&fs::read(destination.join(packages::CONFIG)).unwrap()).unwrap();
+        assert_eq!(config.packages, ["packages/theme"]);
+        let state = m.state().unwrap();
+        assert_eq!(state.replacements["tilr/theme"], "me/theme");
+        let fork = &state.plugins["me/theme"];
+        assert_eq!(fork.path.as_deref(), Some("packages/theme"));
+        assert_eq!(fork.fork_of.as_ref().unwrap().id, "tilr/theme");
+        // A second fork_replace fails before anything is created.
+        let error = m
+            .fork_replace("tilr/theme", &destination, "me", None, false)
+            .unwrap_err();
+        assert_eq!(error.kind(), "invalid_argument");
+    }
+
+    #[test]
+    fn a_fork_of_several_packages_starts_each_from_its_installed_revision() {
+        let mono = Mono::new();
+        let m = mono.open();
+        m.install_package(mono.source(), Some("tilr/store"), None, false)
+            .unwrap();
+        let old = fixture_git(&mono.repo, &["rev-parse", "HEAD"]);
+        mono.write("theme", "1.1.0", &[("tilr/store", "^1.0")]);
+        mono.commit("theme 1.1.0");
+        mono.tag("theme", "1.1.0");
+        mono.release("store", "1.2.0");
+        m.install_package(mono.source(), Some("tilr/theme"), None, false)
+            .unwrap();
+        let destination = mono.dir.join("forks/me/mono");
+        let fork = m
+            .fork_packages(&["tilr/theme", "tilr/store"], &destination, "me")
+            .unwrap();
+        assert!(fork.created);
+        // theme 1.1.0 is the newest installed revision; store keeps its 1.0.0 files.
+        assert_eq!(
+            read(&destination.join("packages/store/dist/index.js")),
+            "store 1.0.0"
+        );
+        assert_eq!(
+            read(&destination.join("packages/theme/dist/index.js")),
+            "theme 1.1.0"
+        );
+        let store = package_manifest(&destination, Some("packages/store")).unwrap();
+        assert_eq!(store.version, "1.0.0");
+        assert_eq!(store.fork_of.unwrap().commit, old);
+        let theme = package_manifest(&destination, Some("packages/theme")).unwrap();
+        assert_eq!(theme.dependencies["me/store"], "^1.0");
+        assert_eq!(
+            fork.rewrites,
+            [DependencyRewrite {
+                package: "me/theme".into(),
+                from: "tilr/store".into(),
+                to: "me/store".into(),
+                requirement: "^1.0".into(),
+                new_requirement: None,
+            }]
+        );
+        assert!(fixture_git(&destination, &["status", "--porcelain"]).is_empty());
+
+        // Refusals create nothing and leave the existing fork alone.
+        let head = fixture_git(&destination, &["rev-parse", "HEAD"]);
+        let other = mono.dir.join("forks/other");
+        for (ids, namespace) in [
+            (&["tilr/theme", "tilr/theme"][..], "you"),
+            (&["tilr/theme", "tilr/missing"][..], "you"),
+            (&["tilr/theme"][..], "tilr"),
+            (&[][..], "you"),
+        ] {
+            assert!(m.fork_packages(ids, &other, namespace).is_err(), "{ids:?}");
+        }
+        assert!(!other.exists());
+        let error = m
+            .fork_packages(&["tilr/theme"], &destination, "me")
+            .unwrap_err();
+        assert!(error.to_string().contains("already exists"), "{error}");
+        assert_eq!(error.kind(), "invalid_argument");
+        // Adding needs the touched files of the target repository clean.
+        let single = mono.dir.join("forks/single");
+        m.fork_packages(&["tilr/store"], &single, "s").unwrap();
+        let before = fixture_git(&single, &["rev-parse", "HEAD"]);
+        fs::write(
+            single.join(packages::CONFIG),
+            "{\"packages\":[\"packages/*\"]}",
+        )
+        .unwrap();
+        let error = m.fork_packages(&["tilr/theme"], &single, "s").unwrap_err();
+        assert!(error.to_string().contains("commit or discard"), "{error}");
+        assert!(!single.join("packages/theme").exists());
+        assert_eq!(fixture_git(&single, &["rev-parse", "HEAD"]), before);
+        assert_eq!(fixture_git(&destination, &["rev-parse", "HEAD"]), head);
+    }
+
+    #[test]
+    fn a_failed_release_of_several_packages_keeps_the_fork_and_installs_nothing() {
+        let mono = Mono::new();
+        let m = mono.open();
+        for id in ["tilr/store", "tilr/theme"] {
+            m.install_package(mono.source(), Some(id), None, false)
+                .unwrap();
+        }
+        let result = m
+            .fork_packages_replace(
+                &["tilr/store", "tilr/theme"],
+                &mono.dir.join("forks/me/mono"),
+                "me",
+                Some("2.0.0"),
+                false,
+            )
+            .unwrap();
+        assert!(result.error().is_none(), "{:?}", result.error());
+        assert_eq!(
+            result
+                .packages
+                .iter()
+                .map(|p| p.tag.clone().unwrap())
+                .collect::<Vec<_>>(),
+            ["me/store@2.0.0", "me/theme@2.0.0"]
+        );
+        // A release whose tag exists fails for every package; the fork stays.
+        let third = mono.dir.join("forks/third");
+        let fork = m.fork_packages(&["tilr/store"], &third, "ns3").unwrap();
+        fixture_git(&fork.path, &["tag", "ns3/theme@1.0.0"]);
+        let result = m
+            .fork_packages_replace(&["tilr/theme"], &third, "ns3", None, false)
+            .unwrap();
+        assert!(result.fork.packages.iter().all(|p| p.id == "ns3/theme"));
+        let theme = &result.packages[0];
+        assert_eq!(theme.failed, Some(ForkStep::Release));
+        assert_eq!(result.error().unwrap().kind(), "version_conflict");
+        assert!(third.join("packages/theme/plugin.json").is_file());
+        assert!(!m.state().unwrap().plugins.contains_key("ns3/theme"));
+    }
+
+    // ---- regressions: forks, shared clones, layouts ------------------------------------
+
+    fn head_of(repo: &Path) -> String {
+        fixture_git(repo, &["rev-parse", "HEAD"])
+    }
+    impl Mono {
+        fn clone_dir(&self) -> PathBuf {
+            self.root.join("repos").join(&self.clones()[0])
+        }
+    }
+
+    #[test]
+    fn a_single_fork_of_a_shared_package_commits_on_the_fork_branch() {
+        // B1: the shared clone's HEAD is theme's newer revision, store is installed older.
+        let mono = Mono::new();
+        let m = mono.open();
+        m.install_package(mono.source(), Some("tilr/store"), None, false)
+            .unwrap();
+        let store_commit = head_of(&mono.repo);
+        mono.release("theme", "1.1.0");
+        m.install_package(mono.source(), Some("tilr/theme"), None, false)
+            .unwrap();
+        assert_ne!(head_of(&mono.clone_dir()), store_commit);
+        let destination = mono.dir.join("forks/store");
+        let path = m
+            .fork_in_namespace("tilr/store", &destination, "me")
+            .unwrap();
+        assert_eq!(fixture_git(&path, &["branch", "--show-current"]), "fork");
+        assert_eq!(
+            fixture_git(&path, &["rev-parse", "refs/heads/fork"]),
+            head_of(&path)
+        );
+        assert_eq!(fixture_git(&path, &["rev-parse", "HEAD^"]), store_commit);
+        // Same tree semantics as several packages: the sibling is gone.
+        assert!(!path.join("packages/theme").exists());
+        let config: packages::Config =
+            serde_json::from_slice(&fs::read(path.join(packages::CONFIG)).unwrap()).unwrap();
+        assert_eq!(config.packages, ["packages/store"]);
+        assert!(fixture_git(&path, &["status", "--porcelain"]).is_empty());
+    }
+
+    #[test]
+    fn a_root_package_moved_into_a_folder_keeps_updating_and_forks() {
+        // B2/B8: own clone (`plugins/<id>`) with a package folder.
+        let dir = TempDir::new("moved");
+        let repo = scaffold::init(&dir.join("x"), "acme", "x").unwrap().repo;
+        let m = reopen(&dir.join("workspace")).unwrap();
+        m.install(repo.to_str().unwrap()).unwrap();
+        fs::create_dir_all(repo.join("packages/x")).unwrap();
+        fs::rename(
+            repo.join("plugin.json"),
+            repo.join("packages/x/plugin.json"),
+        )
+        .unwrap();
+        fs::rename(repo.join("dist"), repo.join("packages/x/dist")).unwrap();
+        fs::write(
+            repo.join(packages::CONFIG),
+            r#"{"packages":["packages/*"]}"#,
+        )
+        .unwrap();
+        scaffold::commit_package(&repo, "0.2.0", Some("acme/x")).unwrap();
+        m.update("acme/x").unwrap();
+        let state = m.state().unwrap();
+        let p = &state.plugins["acme/x"];
+        assert_eq!(p.path.as_deref(), Some("packages/x"));
+        assert!(p.clone.is_none() && !p.is_root_package());
+        fs::write(repo.join("packages/x/dist/index.js"), "x 0.3.0").unwrap();
+        scaffold::commit_package(&repo, "0.3.0", Some("acme/x")).unwrap();
+        let plan = m.update_all().unwrap();
+        assert_eq!(plan.updates.len(), 1, "{plan:?}");
+        assert_eq!(read(&dir.join("workspace/dist/acme/x/index.js")), "x 0.3.0");
+        m.rollback("acme/x").unwrap();
+        m.update("acme/x").unwrap();
+        // Forked as a package folder, not refused as a root package.
+        let fork = m
+            .fork_packages(&["acme/x"], &dir.join("forks/x"), "me")
+            .unwrap();
+        assert_eq!(fork.packages[0].path, "packages/x");
+        assert!(fork.path.join(packages::CONFIG).is_file());
+        // forget/restore of the own clone finds the folder too.
+        m.forget("acme/x").unwrap();
+        let restored = m.restore("acme/x").unwrap();
+        assert_eq!(restored.current.version, "0.3.0");
+        assert_eq!(
+            m.state().unwrap().plugins["acme/x"].path.as_deref(),
+            Some("packages/x")
+        );
+    }
+
+    #[test]
+    fn a_forgotten_shared_package_keeps_its_clone_until_uninstalled() {
+        // B4
+        let mono = Mono::new();
+        let m = mono.open();
+        for id in ["tilr/store", "tilr/theme"] {
+            m.install_package(mono.source(), Some(id), None, false)
+                .unwrap();
+        }
+        m.forget("tilr/store").unwrap();
+        let state = m.state().unwrap();
+        assert!(!state.plugins.contains_key("tilr/store"));
+        assert_eq!(
+            state.forgotten["tilr/store"].path.as_deref(),
+            Some("packages/store")
+        );
+        assert_eq!(mono.dist("store"), "store 1.0.0");
+        let error = mono.refuses("already_installed", || {
+            m.install_package(mono.source(), Some("tilr/store"), None, false)
+        });
+        assert!(error.to_string().contains("use restore"), "{error}");
+        // The last registered user goes; the forgotten one still holds the clone.
+        let plan = m.uninstall_plan("tilr/theme").unwrap();
+        assert_eq!(plan.deletes.len(), 1, "{:?}", plan.deletes);
+        m.uninstall("tilr/theme", false).unwrap();
+        assert_eq!(mono.clones().len(), 1);
+        let restored = m.restore("tilr/store").unwrap();
+        assert_eq!(restored.current.version, "1.0.0");
+        let state = m.state().unwrap();
+        assert!(state.forgotten.is_empty());
+        assert_eq!(
+            state.plugins["tilr/store"].clone.as_deref(),
+            Some(mono.clones()[0].as_str())
+        );
+        mono.release("store", "1.1.0");
+        m.update("tilr/store").unwrap();
+        assert_eq!(mono.dist("store"), "store 1.1.0");
+        // Uninstalling a forgotten package removes its files and the clone it was last on.
+        m.forget("tilr/store").unwrap();
+        let plan = m.uninstall_plan("tilr/store").unwrap();
+        assert!(!plan.registered);
+        assert_eq!(plan.deletes.len(), 2, "{:?}", plan.deletes);
+        m.uninstall("tilr/store", false).unwrap();
+        assert!(mono.clones().is_empty());
+        assert!(!mono.root.join("dist/tilr/store").exists());
+        let state = m.state().unwrap();
+        assert!(state.plugins.is_empty() && state.forgotten.is_empty());
+        mono.refuses("repository_not_found", || m.uninstall("tilr/store", true));
+    }
+
+    #[test]
+    fn removing_a_package_moves_the_shared_head_to_a_remaining_one() {
+        // B5: theme follows the dev channel, so HEAD is an untagged commit.
+        let mono = Mono::new();
+        let m = mono.open();
+        for id in ["tilr/store", "tilr/theme"] {
+            m.install_package(mono.source(), Some(id), None, false)
+                .unwrap();
+        }
+        let store = m.state().unwrap().plugins["tilr/store"]
+            .current
+            .commit
+            .clone();
+        mono.write("theme", "1.1.0", &[]);
+        let dev = mono.commit("theme work");
+        m.update_channel("tilr/theme", None, true).unwrap();
+        assert_eq!(head_of(&mono.clone_dir()), dev);
+        // forget: HEAD goes to store's revision, store keeps updating.
+        m.forget("tilr/theme").unwrap();
+        assert_eq!(head_of(&mono.clone_dir()), store);
+        m.restore("tilr/theme").unwrap();
+        assert_eq!(head_of(&mono.clone_dir()), dev);
+        // uninstall with local work in the clone: HEAD moves, the file stays.
+        fs::write(mono.clone_dir().join("scratch.txt"), "mine").unwrap();
+        m.uninstall("tilr/theme", false).unwrap();
+        assert_eq!(head_of(&mono.clone_dir()), store);
+        assert_eq!(read(&mono.clone_dir().join("scratch.txt")), "mine");
+        fs::remove_file(mono.clone_dir().join("scratch.txt")).unwrap();
+        mono.release("store", "1.1.0");
+        m.update("tilr/store").unwrap();
+        assert_eq!(mono.dist("store"), "store 1.1.0");
+
+        // An edit that the move would overwrite refuses the removal; nothing changes.
+        mono.write("theme", "1.2.0", &[]);
+        mono.commit("more theme work");
+        m.install_package(mono.source(), Some("tilr/theme"), None, true)
+            .unwrap();
+        fs::write(
+            mono.clone_dir().join("packages/theme/dist/index.js"),
+            "edit",
+        )
+        .unwrap();
+        let error = mono.refuses("local_changes", || m.uninstall("tilr/theme", true));
+        assert!(
+            error
+                .to_string()
+                .contains("must move to the installed revision"),
+            "{error}"
+        );
+        assert_eq!(
+            read(&mono.clone_dir().join("packages/theme/dist/index.js")),
+            "edit"
+        );
+    }
+
+    #[test]
+    fn a_defective_sibling_does_not_block_a_package() {
+        // B6: theme has no dist/ at store's 1.1.0 tag.
+        let mono = Mono::new();
+        let m = mono.open();
+        fs::remove_dir_all(mono.repo.join("packages/theme/dist")).unwrap();
+        mono.release("store", "1.1.0");
+        let result = m
+            .install_package(mono.source(), Some("tilr/store"), None, false)
+            .unwrap();
+        assert_eq!(result.current.version, "1.1.0");
+        assert_eq!(mono.dist("store"), "store 1.1.0");
+        let head = head_of(&mono.repo);
+        let error = packages::find_at(&mono.repo, &head, Some("tilr/theme")).unwrap_err();
+        assert!(error.to_string().contains("ready dist/"), "{error}");
+        // Strict listing still reports the defect; the lenient one keeps store.
+        assert!(packages::packages_at(&mono.repo, &head).is_err());
+        let layout = packages::layout_at(&mono.repo, &head).unwrap().unwrap();
+        assert_eq!(layout.packages.len(), 1);
+        assert_eq!(layout.problems[0].id.as_deref(), Some("tilr/theme"));
+        // theme's own releases: the old tag stays valid, the new commit is not.
+        m.install_package(mono.source(), Some("tilr/theme"), None, false)
+            .unwrap();
+        assert_eq!(mono.dist("theme"), "theme 1.0.0");
+    }
+
+    #[test]
+    fn a_package_can_move_to_another_folder_between_releases() {
+        let mono = Mono::new();
+        let m = mono.open();
+        m.install_package(mono.source(), Some("tilr/store"), None, false)
+            .unwrap();
+        fs::create_dir_all(mono.repo.join("apps")).unwrap();
+        fs::rename(
+            mono.repo.join("packages/store"),
+            mono.repo.join("apps/store"),
+        )
+        .unwrap();
+        fs::write(
+            mono.repo.join(packages::CONFIG),
+            r#"{"packages":["packages/*","apps/*"]}"#,
+        )
+        .unwrap();
+        let mut moved = make_manifest("tilr/store", "1.1.0");
+        moved.dependencies.clear();
+        write_manifest(&mono.repo.join("apps/store"), &moved);
+        fs::write(mono.repo.join("apps/store/dist/index.js"), "store moved").unwrap();
+        mono.commit("move store");
+        mono.tag("store", "1.1.0");
+        m.update("tilr/store").unwrap();
+        assert_eq!(mono.dist("store"), "store moved");
+        assert_eq!(
+            m.state().unwrap().plugins["tilr/store"].path.as_deref(),
+            Some("apps/store")
+        );
+        m.rollback("tilr/store").unwrap();
+        assert_eq!(mono.dist("store"), "store 1.0.0");
+        assert_eq!(
+            m.state().unwrap().plugins["tilr/store"].path.as_deref(),
+            Some("packages/store")
+        );
+        m.update_all().unwrap();
+        assert_eq!(mono.dist("store"), "store moved");
+    }
+
+    #[test]
+    fn a_fork_never_drops_edits_of_a_package_installed_at_an_older_revision() {
+        // B10: store is installed at the first commit, its folder changed since.
+        let mono = Mono::new();
+        let m = mono.open();
+        m.install_package(mono.source(), Some("tilr/store"), None, false)
+            .unwrap();
+        mono.release("store", "1.1.0");
+        mono.release("theme", "1.1.0");
+        m.install_package(mono.source(), Some("tilr/theme"), None, false)
+            .unwrap();
+        let clone = mono.clone_dir();
+        fs::write(clone.join("packages/store/dist/index.js"), "store edit").unwrap();
+        let destination = mono.dir.join("forks/both");
+        let error = mono.refuses("local_changes", || {
+            m.fork_packages(&["tilr/store", "tilr/theme"], &destination, "me")
+        });
+        assert!(error.to_string().contains("older revision"), "{error}");
+        assert!(!destination.exists());
+        fixture_git(&clone, &["checkout", "-q", "--", "packages/store"]);
+        m.fork_packages(&["tilr/store", "tilr/theme"], &destination, "me")
+            .unwrap();
+        assert_eq!(
+            read(&destination.join("packages/store/dist/index.js")),
+            "store 1.0.0"
+        );
+        // A missing installed revision is reported as such, not as diverged history.
+        let mut state: serde_json::Value =
+            serde_json::from_slice(&fs::read(mono.root.join("state.json")).unwrap()).unwrap();
+        state["plugins"]["tilr/store"]["current"]["commit"] = "1".repeat(40).into();
+        fs::write(mono.root.join("state.json"), state.to_string()).unwrap();
+        let error = m
+            .fork_packages(
+                &["tilr/store"],
+                &mono.dir.join("new/parents/missing"),
+                "you",
+            )
+            .unwrap_err();
+        assert_eq!(error.kind(), "git", "{error}");
+        assert!(!error.to_string().contains("diverged"), "{error}");
+        assert!(
+            !mono.dir.join("new").exists(),
+            "created parents are removed"
+        );
+    }
+
+    #[test]
+    fn adding_to_a_fork_leaves_no_temporary_folder_in_the_repository() {
+        // B12: a symlink in theme's folder makes its export fail after the checks.
+        let mono = Mono::new();
+        mono.write("theme", "1.0.1", &[]);
+        std::os::unix::fs::symlink("plugin.json", mono.repo.join("packages/theme/link")).unwrap();
+        mono.commit("link");
+        mono.tag("theme", "1.0.1");
+        let m = mono.open();
+        for id in ["tilr/store", "tilr/theme"] {
+            m.install_package(mono.source(), Some(id), None, false)
+                .unwrap();
+        }
+        let destination = mono.dir.join("forks/me");
+        m.fork_packages(&["tilr/store"], &destination, "me")
+            .unwrap();
+        let head = head_of(&destination);
+        let before = tree_hash(&destination);
+        let error = m
+            .fork_packages(&["tilr/theme"], &destination, "me")
+            .unwrap_err();
+        assert_eq!(error.kind(), "unsupported", "{error}");
+        assert_eq!(head_of(&destination), head);
+        assert_eq!(
+            tree_hash(&destination),
+            before,
+            "repository changed by a failed add"
+        );
+        assert!(fs::read_dir(&destination).unwrap().all(|e| {
+            !e.unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".gitpm")
+        }),);
+    }
+
+    #[test]
+    fn a_dependency_cycle_between_forks_is_refused_before_anything_is_created() {
+        let mono = Mono::new();
+        let m = mono.open();
+        m.install_package(mono.source(), Some("tilr/store"), None, false)
+            .unwrap();
+        mono.write("theme", "1.1.0", &[("tilr/store", "^1.0")]);
+        mono.commit("theme needs store");
+        mono.tag("theme", "1.1.0");
+        m.install_package(mono.source(), Some("tilr/theme"), None, false)
+            .unwrap();
+        mono.write("store", "1.1.0", &[("tilr/theme", "^1.0")]);
+        mono.commit("store needs theme");
+        mono.tag("store", "1.1.0");
+        m.update("tilr/store").unwrap();
+        let destination = mono.dir.join("forks/cycle");
+        let error = mono.refuses("dependency_conflict", || {
+            m.fork_packages_replace(
+                &["tilr/store", "tilr/theme"],
+                &destination,
+                "me",
+                None,
+                false,
+            )
+        });
+        assert!(error.to_string().contains("dependency cycle"), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("tilr/store → tilr/theme → tilr/store"),
+            "{error}"
+        );
+        assert!(!destination.exists());
+        // Without the install step a cyclic pair can still be forked.
+        m.fork_packages(&["tilr/store", "tilr/theme"], &destination, "me")
+            .unwrap();
+    }
+
+    #[test]
+    fn a_workspace_of_gitpm_0_3_opens_and_is_written_as_format_2() {
+        let (ws, m) = Ws::installed("dan/demo1");
+        drop(m);
+        let path = ws.root.join("state.json");
+        let mut state: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        state.as_object_mut().unwrap().remove("format");
+        fs::write(&path, serde_json::to_vec_pretty(&state).unwrap()).unwrap();
+        let m = ws.open();
+        assert_eq!(m.state().unwrap().format, 1);
+        assert_eq!(m.list().unwrap().len(), 1);
+        m.disable("dan/demo1").unwrap();
+        assert_eq!(m.state().unwrap().format, 2);
+        assert!(read(&path).starts_with("{\n  \"format\": 2,"));
+        drop(m);
+        state["format"] = 3.into();
+        fs::write(&path, serde_json::to_vec_pretty(&state).unwrap()).unwrap();
+        let error = reopen(&ws.root).err().unwrap();
+        assert_eq!(error.kind(), "unsupported");
+        assert!(error.to_string().contains("newer gitpm"), "{error}");
+    }
+
+    // ---- revisions, tags and records of shared clones ----------------------------------
+
+    fn keep_refs(repo: &Path) -> Vec<String> {
+        fixture_git(
+            repo,
+            &["for-each-ref", "--format=%(refname)", "refs/gitpm/"],
+        )
+        .lines()
+        .map(str::to_owned)
+        .collect()
+    }
+    fn gc(repo: &Path) {
+        fixture_git(repo, &["reflog", "expire", "--expire=now", "--all"]);
+        fixture_git(repo, &["gc", "-q", "--prune=now"]);
+    }
+    /// Everything of a repository except its object store.
+    fn snapshot(repo: &Path) -> String {
+        crate::test_support::tree_hash_except(repo, &[".git/objects"])
+    }
+    fn failing_hook(repo: &Path) {
+        let hook = repo.join(".git/hooks/pre-commit");
+        fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        fs::write(&hook, "#!/bin/sh\necho refused by hook >&2\nexit 1\n").unwrap();
+        fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn installed_revisions_of_a_shared_clone_survive_upstream_rewrites_and_gc() {
+        let mono = Mono::new();
+        let first = fixture_git(&mono.repo, &["rev-parse", "HEAD"]);
+        let m = mono.open();
+        m.install_package(mono.source(), Some("tilr/store"), None, false)
+            .unwrap();
+        mono.release("theme", "1.1.0");
+        m.install_package(mono.source(), Some("tilr/theme"), None, false)
+            .unwrap();
+        // theme follows the dev channel to an untagged commit; 1.1.0 is its previous.
+        mono.write("theme", "1.2.0", &[]);
+        let dev = mono.commit("theme dev");
+        m.update_channel("tilr/theme", None, true).unwrap();
+        assert_eq!(m.state().unwrap().plugins["tilr/theme"].current.commit, dev);
+        let clone = mono.clone_dir();
+        assert_eq!(
+            keep_refs(&clone),
+            [
+                "refs/gitpm/tilr/store/current",
+                "refs/gitpm/tilr/theme/current",
+                "refs/gitpm/tilr/theme/previous"
+            ]
+        );
+        // Upstream drops theme's history and its tag; store releases on the rewrite.
+        fixture_git(&mono.repo, &["reset", "-q", "--hard", &first]);
+        fixture_git(&mono.repo, &["tag", "-d", "tilr/theme@1.1.0"]);
+        mono.release("store", "1.1.0");
+        // Updating store prunes and moves HEAD: only the keep refs hold theme's revisions.
+        m.update("tilr/store").unwrap();
+        gc(&clone);
+        for commit in [
+            &dev,
+            &m.state().unwrap().plugins["tilr/theme"]
+                .previous
+                .clone()
+                .unwrap()
+                .commit,
+        ] {
+            fixture_git(&clone, &["cat-file", "-e", &format!("{commit}^{{commit}}")]);
+        }
+        let plan = m.update_all().unwrap();
+        assert!(plan.updates.is_empty(), "{plan:?}");
+        m.rollback("tilr/theme").unwrap();
+        assert_eq!(mono.dist("theme"), "theme 1.1.0");
+        m.rollback("tilr/theme").unwrap();
+        assert_eq!(mono.dist("theme"), "theme 1.2.0");
+        let fork = m
+            .fork_packages(&["tilr/theme"], &mono.dir.join("theme-fork"), "me")
+            .unwrap();
+        assert_eq!(
+            read(&fork.path.join("packages/theme/dist/index.js")),
+            "theme 1.2.0"
+        );
+        assert!(
+            keep_refs(&fork.path).is_empty(),
+            "the fork has no workspace refs"
+        );
+        // Records that go take their refs with them.
+        m.forget("tilr/store").unwrap();
+        assert!(keep_refs(&clone).contains(&"refs/gitpm/tilr/store/current".to_owned()));
+        m.uninstall("tilr/store", false).unwrap();
+        assert_eq!(
+            keep_refs(&clone),
+            [
+                "refs/gitpm/tilr/theme/current",
+                "refs/gitpm/tilr/theme/previous"
+            ]
+        );
+        // Upstream dropped theme's revisions: they are local work now.
+        m.uninstall("tilr/theme", true).unwrap();
+        assert!(mono.clones().is_empty());
+    }
+
+    #[test]
+    fn a_moved_tag_of_a_package_that_is_not_installed_is_taken_from_upstream() {
+        let mono = Mono::new();
+        let m = mono.open();
+        m.install_package(mono.source(), Some("tilr/store"), None, false)
+            .unwrap();
+        // theme 1.0.0 is retagged upstream (it was never installed here).
+        fs::write(
+            mono.repo.join("packages/theme/dist/index.js"),
+            "theme retagged",
+        )
+        .unwrap();
+        let moved = mono.commit("retag theme");
+        fixture_git(&mono.repo, &["tag", "-f", "tilr/theme@1.0.0"]);
+        let installed = m
+            .install_package(mono.source(), Some("tilr/theme"), None, false)
+            .unwrap();
+        assert_eq!(installed.current.commit, moved);
+        assert_eq!(mono.dist("theme"), "theme retagged");
+        assert_eq!(mono.dist("store"), "store 1.0.0");
+    }
+
+    #[test]
+    fn a_moved_tag_of_an_installed_package_refuses_install_and_update_of_a_sibling() {
+        let mono = Mono::new();
+        let m = mono.open();
+        for id in ["tilr/store", "tilr/theme"] {
+            m.install_package(mono.source(), Some(id), None, false)
+                .unwrap();
+        }
+        mono.write("dock", "1.0.0", &[]);
+        mono.commit("dock");
+        mono.tag("dock", "1.0.0");
+        mono.release("theme", "1.1.0");
+        fs::write(
+            mono.repo.join("packages/store/dist/index.js"),
+            "store moved",
+        )
+        .unwrap();
+        mono.commit("move store");
+        fixture_git(&mono.repo, &["tag", "-f", "tilr/store@1.0.0"]);
+        for error in [
+            mono.refuses("version_conflict", || {
+                m.install_package(mono.source(), Some("tilr/dock"), None, false)
+            }),
+            mono.refuses("version_conflict", || m.update("tilr/theme")),
+        ] {
+            assert!(
+                error.to_string().contains(
+                    "release tag tilr/store@1.0.0 of the installed tilr/store changed commit"
+                ),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_forgotten_record_whose_clone_is_gone_can_be_uninstalled() {
+        let mono = Mono::new();
+        let m = mono.open();
+        for id in ["tilr/store", "tilr/theme"] {
+            m.install_package(mono.source(), Some(id), None, false)
+                .unwrap();
+        }
+        m.forget("tilr/store").unwrap();
+        m.uninstall("tilr/theme", false).unwrap();
+        fs::remove_dir_all(mono.clone_dir()).unwrap();
+        let error = mono.refuses("workspace", || m.restore("tilr/store"));
+        assert!(
+            error.to_string().contains("is gone; uninstall tilr/store"),
+            "{error}"
+        );
+        let plan = m.uninstall_plan("tilr/store").unwrap();
+        assert!(!plan.registered && plan.lost_work.is_empty());
+        assert_eq!(plan.deletes.len(), 1, "{:?}", plan.deletes);
+        m.uninstall("tilr/store", false).unwrap();
+        let state = m.state().unwrap();
+        assert!(state.forgotten.is_empty() && state.plugins.is_empty());
+        assert!(!mono.root.join("dist/tilr/store").exists());
+    }
+
+    #[test]
+    fn adding_to_a_fork_refuses_a_failing_commit_and_a_missing_identity_untouched() {
+        let mono = Mono::new();
+        let m = mono.open();
+        for id in ["tilr/store", "tilr/theme"] {
+            m.install_package(mono.source(), Some(id), None, false)
+                .unwrap();
+        }
+        let destination = mono.dir.join("forks/me");
+        // The new fork repository is gitpm's own: the user's hooks do not run there.
+        m.fork_packages(&["tilr/store"], &destination, "me")
+            .unwrap();
+        // In the author's repository a pre-commit hook that fails refuses the add.
+        failing_hook(&destination);
+        let before = snapshot(&destination);
+        let error = m
+            .fork_packages(&["tilr/theme"], &destination, "me")
+            .unwrap_err();
+        assert_eq!(error.kind(), "git", "{error}");
+        assert!(
+            error.to_string().contains("the repository was restored")
+                && error.to_string().contains("refused by hook"),
+            "{error}"
+        );
+        assert_eq!(snapshot(&destination), before, "repository changed");
+        fs::remove_file(destination.join(".git/hooks/pre-commit")).unwrap();
+        // Without a Git identity gitpm refuses instead of writing one.
+        fixture_git(&destination, &["config", "user.name", ""]);
+        let before = snapshot(&destination);
+        let error = m
+            .fork_packages(&["tilr/theme"], &destination, "me")
+            .unwrap_err();
+        assert_eq!(error.kind(), "git", "{error}");
+        assert!(error.to_string().contains("GIT_AUTHOR_IDENT"), "{error}");
+        assert_eq!(snapshot(&destination), before, "repository changed");
+        assert_eq!(
+            fixture_git(&destination, &["config", "--local", "user.name"]),
+            ""
+        );
     }
 }

@@ -215,6 +215,8 @@ pub struct InstalledPlugin {
     pub replaces: Option<Replaces>,
     /// Catalog it was installed from; `None` for Git installs.
     pub catalog: Option<String>,
+    /// Package folder in a multi-package repository; `None` for the repository root.
+    pub path: Option<String>,
     pub dependencies: Vec<DependencyStatus>,
     /// Original IDs this plugin currently provides for every consumer.
     pub replacing: Vec<String>,
@@ -232,6 +234,7 @@ impl From<pm::InstalledPlugin> for InstalledPlugin {
             fork_of: p.fork_of.map(Into::into),
             replaces: p.replaces.map(Into::into),
             catalog: p.catalog,
+            path: p.path,
             dependencies: p.dependencies.into_iter().map(Into::into).collect(),
             replacing: p.replacing,
             dependents: p.dependents,
@@ -569,6 +572,8 @@ pub struct CatalogRelease {
     pub dependencies: HashMap<String, String>,
     pub build_url: Option<String>,
     pub build_sha256: Option<String>,
+    /// Package folder in a multi-package repository; `None` for the repository root.
+    pub path: Option<String>,
 }
 impl From<pm::catalog::Release> for CatalogRelease {
     fn from(r: pm::catalog::Release) -> Self {
@@ -584,6 +589,7 @@ impl From<pm::catalog::Release> for CatalogRelease {
             dependencies: r.manifest.dependencies.into_iter().collect(),
             build_url: r.build.as_ref().map(|b| b.url.clone()),
             build_sha256: r.build.map(|b| b.sha256),
+            path: r.path,
         }
     }
 }
@@ -598,6 +604,134 @@ pub struct AuthCheck {
 pub struct ForkResult {
     pub id: String,
     pub path: String,
+}
+
+/// Step of a fork with replace that failed after the fork repository exists
+/// (`gitpm::ForkStep`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum ForkStep {
+    /// Committing/tagging the fork's first release.
+    Release,
+    /// Installing the released fork.
+    Install,
+    /// Making the installed fork the provider of the original.
+    Replace,
+}
+impl From<pm::ForkStep> for ForkStep {
+    fn from(step: pm::ForkStep) -> Self {
+        match step {
+            pm::ForkStep::Release => Self::Release,
+            pm::ForkStep::Install => Self::Install,
+            pm::ForkStep::Replace => Self::Replace,
+        }
+    }
+}
+/// What `forkAndReplace`/`forkPackagesAndReplace` did for one package
+/// (`gitpm::ForkReplacement`). The fork repository is kept; a failure after it exists is
+/// reported here (`failedStep`, `errorKind`, `errorMessage`) with what was done so far,
+/// instead of as an error.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ForkReplacement {
+    pub original: String,
+    pub id: String,
+    pub path: String,
+    pub tag: Option<String>,
+    pub installed: Option<InstallResult>,
+    pub replacement: Option<ReplacementPlan>,
+    pub failed_step: Option<ForkStep>,
+    /// Stable kind of the failure (as `PmError` kinds), with its message.
+    pub error_kind: Option<String>,
+    pub error_message: Option<String>,
+}
+/// A dependency rewritten by a multi-package fork (`from` became `to`); `newRequirement`
+/// is set when the old requirement does not accept the fork's version.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct DependencyRewrite {
+    pub package: String,
+    pub from: String,
+    pub to: String,
+    pub requirement: String,
+    pub new_requirement: Option<String>,
+}
+impl From<pm::DependencyRewrite> for DependencyRewrite {
+    fn from(r: pm::DependencyRewrite) -> Self {
+        Self {
+            package: r.package,
+            from: r.from,
+            to: r.to,
+            requirement: r.requirement,
+            new_requirement: r.new_requirement,
+        }
+    }
+}
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ForkedPackage {
+    pub original: String,
+    pub id: String,
+    /// Package folder inside the fork repository; empty for a root package.
+    pub path: String,
+    pub version: String,
+}
+/// Result of `PluginManager.forkPackages` (`gitpm::PackageFork`): `created` is false
+/// when the packages were added to an existing multi-package repository.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct PackageFork {
+    pub path: String,
+    pub created: bool,
+    pub commit: String,
+    pub packages: Vec<ForkedPackage>,
+    pub rewrites: Vec<DependencyRewrite>,
+}
+impl From<pm::PackageFork> for PackageFork {
+    fn from(f: pm::PackageFork) -> Self {
+        Self {
+            path: f.path.to_string_lossy().into_owned(),
+            created: f.created,
+            commit: f.commit,
+            packages: f
+                .packages
+                .into_iter()
+                .map(|p| ForkedPackage {
+                    original: p.original,
+                    id: p.id,
+                    path: p.path,
+                    version: p.version,
+                })
+                .collect(),
+            rewrites: f.rewrites.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+/// Result of `PluginManager.forkPackagesAndReplace` (`gitpm::PackageForkReplacement`):
+/// one entry per package (install order), each with its own
+/// `failedStep`/`errorKind`/`errorMessage`.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct PackageForkReplacement {
+    pub fork: PackageFork,
+    pub packages: Vec<ForkReplacement>,
+}
+impl From<pm::PackageForkReplacement> for PackageForkReplacement {
+    fn from(r: pm::PackageForkReplacement) -> Self {
+        Self {
+            fork: r.fork.into(),
+            packages: r.packages.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+impl From<pm::ForkReplacement> for ForkReplacement {
+    fn from(r: pm::ForkReplacement) -> Self {
+        Self {
+            original: r.original,
+            id: r.id,
+            path: r.path.to_string_lossy().into_owned(),
+            tag: r.tag,
+            installed: r.installed.map(Into::into),
+            replacement: r.replacement.map(Into::into),
+            failed_step: r.failed.map(Into::into),
+            error_kind: r.error.as_ref().map(|e| e.kind().to_owned()),
+            error_message: r.error.as_ref().map(ToString::to_string),
+        }
+    }
 }
 
 /// Stable: latest release tag (or an explicit ref). Dev: follow the branch HEAD.
@@ -653,17 +787,22 @@ impl PluginManager {
     pub fn catalog_release(&self, id: String, version: Option<String>) -> Result<CatalogRelease> {
         Ok(self.inner.catalog_release(&id, version.as_deref())?.into())
     }
-    /// Install from a Git source (URL or local path).
+    /// Install from a Git source (URL or local path). `package` picks a package of a
+    /// repository with `gitpm.json` (needed when it lists several, unless `reference` is
+    /// an `ID@VERSION` tag); for a single-package repository it must match.
+    #[uniffi::method(default(package = None))]
     pub fn install(
         &self,
         source: String,
         reference: Option<String>,
         channel: Channel,
+        package: Option<String>,
     ) -> Result<InstallResult> {
         Ok(self
             .inner
-            .install_channel(
+            .install_package(
                 &source,
+                package.as_deref(),
                 reference.as_deref(),
                 matches!(channel, Channel::Dev),
             )?
@@ -748,7 +887,9 @@ impl PluginManager {
     pub fn switch_back(&self, original: String, confirm: bool) -> Result<ReplacementPlan> {
         Ok(self.inner.switch_back(&original, confirm)?.into())
     }
-    /// Fork an installed plugin into `namespace` at `destination` (outside the workspace).
+    /// Fork an installed package as `namespace/<same name>` into the fork repository
+    /// `destination` (outside the workspace): a new folder, or an existing repository with
+    /// `gitpm.json` to add it to. The one-package case of `forkPackages`.
     pub fn fork(&self, id: String, destination: String, namespace: String) -> Result<ForkResult> {
         let path =
             self.inner
@@ -758,6 +899,68 @@ impl PluginManager {
             id: pm::identity::qualified(&namespace, name)?,
             path: path.to_string_lossy().into_owned(),
         })
+    }
+    /// Fork, release the fork (`version` defaults to the forked one), install it and
+    /// replace `id` with it for every consumer (`confirm` as in `replace`). Errors before
+    /// the fork folder exists are thrown; later failures are reported in the result.
+    #[uniffi::method(default(version = None, confirm = false))]
+    pub fn fork_and_replace(
+        &self,
+        id: String,
+        destination: String,
+        namespace: String,
+        version: Option<String>,
+        confirm: bool,
+    ) -> Result<ForkReplacement> {
+        Ok(self
+            .inner
+            .fork_replace(
+                &id,
+                std::path::Path::new(&destination),
+                &namespace,
+                version.as_deref(),
+                confirm,
+            )?
+            .into())
+    }
+    /// Fork installed packages of one repository into `namespace` as the fork repository
+    /// `destination`: a new folder (a copy of the source with the unforked siblings
+    /// removed), or an existing repository with `gitpm.json` to add them to; anything
+    /// else is refused. Dependencies between the forks are rewritten.
+    pub fn fork_packages(
+        &self,
+        ids: Vec<String>,
+        destination: String,
+        namespace: String,
+    ) -> Result<PackageFork> {
+        let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+        Ok(self
+            .inner
+            .fork_packages(&ids, std::path::Path::new(&destination), &namespace)?
+            .into())
+    }
+    /// `forkPackages`, then release, install and replace every package. Errors before the
+    /// fork exists are thrown; later failures are reported per package.
+    #[uniffi::method(default(version = None, confirm = false))]
+    pub fn fork_packages_and_replace(
+        &self,
+        ids: Vec<String>,
+        destination: String,
+        namespace: String,
+        version: Option<String>,
+        confirm: bool,
+    ) -> Result<PackageForkReplacement> {
+        let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+        Ok(self
+            .inner
+            .fork_packages_replace(
+                &ids,
+                std::path::Path::new(&destination),
+                &namespace,
+                version.as_deref(),
+                confirm,
+            )?
+            .into())
     }
 }
 
@@ -1049,6 +1252,30 @@ mod tests {
     }
 
     #[test]
+    fn fork_replace_result_reports_the_failed_step_with_kind_and_message() {
+        let result = ForkReplacement::from(pm::ForkReplacement {
+            original: "vendor/x".into(),
+            id: "me/x".into(),
+            path: "/forks/me/x".into(),
+            tag: Some("me/x@1.0.0".into()),
+            installed: None,
+            replacement: None,
+            failed: Some(pm::ForkStep::Install),
+            error: Some(pm::Error::Unsupported("symlinks are not supported".into())),
+        });
+        assert_eq!(result.failed_step, Some(ForkStep::Install));
+        assert_eq!(result.error_kind.as_deref(), Some("unsupported"));
+        assert_eq!(
+            result.error_message.as_deref(),
+            Some("symlinks are not supported")
+        );
+        assert_eq!(
+            (result.path.as_str(), result.tag.as_deref()),
+            ("/forks/me/x", Some("me/x@1.0.0"))
+        );
+    }
+
+    #[test]
     fn records_convert_field_by_field() {
         let plugin = InstalledPlugin::from(pm::InstalledPlugin {
             id: "me/x".into(),
@@ -1059,6 +1286,7 @@ mod tests {
             fork_of: Some(fork_of()),
             replaces: None,
             catalog: None,
+            path: Some("packages/x".into()),
             dependencies: vec![],
             replacing: vec![],
             dependents: vec![],
@@ -1067,6 +1295,7 @@ mod tests {
             (plugin.id.as_str(), plugin.source.as_str(), plugin.enabled),
             ("me/x", "src", false)
         );
+        assert_eq!(plugin.path.as_deref(), Some("packages/x"));
         assert_eq!(
             (
                 plugin.current.version.as_str(),
@@ -1237,6 +1466,7 @@ mod tests {
                 url: "https://pkg.example/x.tar.zst".into(),
                 sha256: "d".repeat(64),
             }),
+            path: Some("packages/x".into()),
         });
         assert_eq!(
             (
@@ -1247,6 +1477,7 @@ mod tests {
             ("me/x", "1.0.0", 2)
         );
         assert_eq!(release.reference, "me/x@1.0.0");
+        assert_eq!(release.path.as_deref(), Some("packages/x"));
         assert_eq!(release.fork_of.unwrap().id, "vendor/x");
         assert_eq!(
             release.build_url.as_deref(),
@@ -1264,7 +1495,9 @@ mod tests {
             reference: "v1.0.0".into(),
             files: Default::default(),
             build: None,
+            path: None,
         });
+        assert!(bare.path.is_none());
         assert!(bare.build_url.is_none() && bare.build_sha256.is_none() && bare.fork_of.is_none());
         assert_eq!(bare.file_count, 0);
     }
@@ -1340,7 +1573,7 @@ mod tests {
             matches!(manager.rollback("me/missing".into()), Err(PmError::NotInstalled { id, .. }) if id == "me/missing")
         );
         assert!(matches!(
-            manager.install("x".into(), Some("v1.0.0".into()), Channel::Dev),
+            manager.install("x".into(), Some("v1.0.0".into()), Channel::Dev, None),
             Err(PmError::InvalidArgument { .. })
         ));
         assert!(matches!(
@@ -1354,6 +1587,22 @@ mod tests {
                 "bad ns".into()
             ),
             Err(PmError::InvalidId { .. })
+        ));
+        assert!(matches!(
+            manager.fork_packages(
+                vec!["me/x".into(), "me/y".into()],
+                dir.join("fork").to_string_lossy().into(),
+                "you".into()
+            ),
+            Err(PmError::NotInstalled { .. })
+        ));
+        assert!(matches!(
+            manager.fork_packages(
+                vec![],
+                dir.join("fork").to_string_lossy().into(),
+                "you".into()
+            ),
+            Err(PmError::InvalidArgument { .. })
         ));
         drop(manager);
 
