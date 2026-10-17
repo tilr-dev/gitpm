@@ -142,6 +142,116 @@ fn print_replacement(manager: &Manager, plan: &gitpm::ReplacementPlan) -> Result
     );
     Ok(())
 }
+/// Library warnings (ignored metadata keys) on stderr.
+fn warn(warnings: &[String]) {
+    for warning in warnings {
+        eprintln!("Warning: {warning}");
+    }
+}
+/// `installed ID@VERSION from SOURCE`.
+fn print_installed(result: &gitpm::InstallResult) {
+    warn(&result.warnings);
+    println!(
+        "installed {}@{} from {}",
+        result.id, result.current.version, result.source
+    );
+}
+/// `replace ORIGINAL --back`: which replacement was dropped and who uses the original now.
+fn print_switch_back(manager: &Manager, plan: &gitpm::ReplacementPlan) -> Result<()> {
+    let installed = manager
+        .state()?
+        .plugins
+        .get(&plan.original)
+        .map(|p| p.current.version.clone())
+        .unwrap_or_else(|| plan.version.clone());
+    let consumers = if plan.consumers.is_empty() {
+        "no installed consumers".to_owned()
+    } else {
+        format!("for: {}", plan.consumers.join(", "))
+    };
+    // switch_back refuses when nothing is replaced, so `current` names the fork.
+    println!(
+        "{}: replacement {} removed, original restored ({} {installed} {consumers})",
+        plan.original,
+        plan.current.as_deref().unwrap_or_default(),
+        plan.original
+    );
+    Ok(())
+}
+/// `update all`: one line per installed package (updated, up to date or kept back),
+/// then the new dependencies and the totals.
+fn print_update_all(before: &gitpm::State, plan: &gitpm::UpdateAllPlan, dry_run: bool) {
+    for change in &plan.updates {
+        warn(&change.warnings);
+    }
+    for install in &plan.installs {
+        warn(&install.warnings);
+    }
+    for (id, installed) in &before.plugins {
+        let held = plan.kept_back.iter().find(|h| &h.id == id);
+        match plan.updates.iter().find(|c| &c.id == id) {
+            Some(change) => println!(
+                "{id} {} {} → {}{}",
+                if dry_run {
+                    "would be updated"
+                } else {
+                    "updated"
+                },
+                change.from.version,
+                change.to.version,
+                held.map(|h| format!(" (latest {} kept back by dependency constraints)", h.latest))
+                    .unwrap_or_default()
+            ),
+            None => match held {
+                Some(h) => println!(
+                    "{id} kept back at {} (latest {}: dependency constraints)",
+                    installed.current.version, h.latest
+                ),
+                None => println!("{id} up to date ({})", installed.current.version),
+            },
+        }
+    }
+    for install in &plan.installs {
+        println!(
+            "{} {} {} (new dependency)",
+            install.id,
+            if dry_run {
+                "would be installed"
+            } else {
+                "installed"
+            },
+            install.current.version
+        );
+    }
+    println!(
+        "{} updates, {} installs, {} kept back.{}",
+        plan.updates.len(),
+        plan.installs.len(),
+        plan.kept_back.len(),
+        if dry_run { " Nothing was changed." } else { "" }
+    );
+}
+/// `ID updated A → B` or `ID up to date (A)`.
+fn print_change(change: &gitpm::RevisionChange) {
+    warn(&change.warnings);
+    let short = |commit: &str| commit.chars().take(12).collect::<String>();
+    if !change.changed {
+        println!("{} up to date ({})", change.id, change.to.version);
+    } else if change.from.version == change.to.version {
+        println!(
+            "{} updated {} ({} → {})",
+            change.id,
+            change.to.version,
+            short(&change.from.commit),
+            short(&change.to.commit)
+        );
+    } else {
+        println!(
+            "{} updated {} → {}",
+            change.id, change.from.version, change.to.version
+        );
+    }
+}
 /// What a fork created or added, and the rewritten dependencies.
 fn print_package_fork(fork: &gitpm::PackageFork) {
     let root = fork.packages.iter().any(|p| p.path.is_empty());
@@ -301,7 +411,8 @@ Workspace (installed plugins):
                                    branch. ID (or --package ID) picks a package of a
                                    repository with gitpm.json (needed when it has several)
   install-catalog ID [--version V]  install an exact catalog release (latest if omitted)
-  list                             installed state (JSON)
+  list [--provides SERVICE]        installed state (JSON); --provides keeps only packages
+                                   whose plugin.json provides SERVICE
   check                            compare installed versions with the catalog
   update ID [--ref REF]             update to the latest Git release; --channel dev follows
                                    origin HEAD
@@ -331,6 +442,9 @@ Authoring:
   create NAMESPACE/NAME --into DIR  a new DIR becomes a single-package repository; a
                                    repository DIR with gitpm.json (or without one and no
                                    root package) gets the folder PREFIX/NAME
+    [--multi] [--no-release]       --multi: a new (or empty) DIR becomes a multi-package
+                                   repository (gitpm.json, packages/NAME); --no-release:
+                                   commit only, no tag (release later with commit)
   commit REPO VERSION              stage ALL changes, commit, create a release tag;
     [--package ID]                 --package picks the package of a multi-package repo
   remote REPO URL                  add or replace origin (fetch and push)
@@ -385,6 +499,9 @@ fn run() -> Result<()> {
     let package = option(&mut args, "--package")?;
     let into = option(&mut args, "--into")?;
     let ns = option(&mut args, "--ns")?;
+    let provides = option(&mut args, "--provides")?;
+    let multi = flag(&mut args, "--multi")?;
+    let no_release = flag(&mut args, "--no-release")?;
     let replace = flag(&mut args, "--replace")?;
     let back = flag(&mut args, "--back")?;
     let force = flag(&mut args, "--force")?;
@@ -442,6 +559,14 @@ fn run() -> Result<()> {
     ensure!(
         into.is_none() || matches!(command, "init" | "create" | "fork"),
         "--into requires init/create/fork"
+    );
+    ensure!(
+        provides.is_none() || command == "list",
+        "--provides requires list"
+    );
+    ensure!(
+        (!multi && !no_release) || matches!(command, "init" | "create"),
+        "--multi/--no-release require init/create"
     );
     ensure!(
         (!replace && ns.is_none()) || command == "fork",
@@ -590,21 +715,38 @@ fn run() -> Result<()> {
         "init" | "create" => {
             let (namespace, name) = split_id(id)?;
             let dir = into.as_deref().unwrap_or_default();
-            let created = scaffold::init(Path::new(dir), namespace, name)?;
+            let options = scaffold::InitOptions {
+                multi,
+                release: !no_release,
+            };
+            let created = scaffold::init_with(Path::new(dir), namespace, name, options)?;
             let plugin_id = identity::qualified(namespace, name)?;
-            let tag = identity::release_tag(&plugin_id, "0.1.0");
             let source = scaffold::shell_quote(&created.repo.to_string_lossy());
             let root = scaffold::shell_quote(&root);
+            let package = match &created.folder {
+                None => String::new(),
+                Some(_) => format!(" --package {plugin_id}"),
+            };
+            let version = match &created.tag {
+                Some(tag) => format!("Git commit and tag {tag}"),
+                None => "Git commit, no release tag yet".to_owned(),
+            };
+            let install = match &created.tag {
+                Some(_) => String::new(),
+                None => {
+                    format!("  gitpm commit {source} 0.1.0{package}   release the first version\n")
+                }
+            };
             match &created.folder {
                 None => println!(
-                    "\nCreated: {}\nID: {plugin_id}\nVersion 0.1.0: Git commit and tag {tag}.\nEdit: {}/dist/index.js\n\nInstall:\n  gitpm --root {root} install {source}\n\nNew release after editing:\n  gitpm commit {source} 0.1.1\n\nGit uses your configured identity; if there is none, the repository gets a local\nPlugin Demo <demo@example.invalid>.",
+                    "\nCreated: {}\nID: {plugin_id}\nVersion 0.1.0: {version}.\nEdit: {}/dist/index.js\n\nInstall:\n{install}  gitpm --root {root} install {source}\n\nNew release after editing:\n  gitpm commit {source} 0.1.1\n\nGit uses your configured identity; if there is none, the repository gets a local\nPlugin Demo <demo@example.invalid>.",
                     created.repo.display(),
                     created.repo.display()
                 ),
                 Some(folder) => {
                     let path = created.repo.join(folder);
                     println!(
-                        "\nCreated: {}\nID: {plugin_id}\nVersion 0.1.0: Git commit and tag {tag} (only gitpm.json and this folder are committed).\nEdit: {}/dist/index.js\n\nInstall:\n  gitpm --root {root} install {source} {plugin_id}\n\nNew release after editing (stages ALL changes of the repository):\n  gitpm commit {source} 0.1.1 --package {plugin_id}",
+                        "\nCreated: {}\nID: {plugin_id}\nVersion 0.1.0: {version} (only gitpm.json and this folder are committed).\nEdit: {}/dist/index.js\n\nInstall:\n{install}  gitpm --root {root} install {source} {plugin_id}\n\nNew release after editing (stages ALL changes of the repository):\n  gitpm commit {source} 0.1.1{package}",
                         path.display(),
                         path.display()
                     );
@@ -727,8 +869,17 @@ fn run() -> Result<()> {
         }
         "list" => {
             // Raw state plus the resolved view (providers, dependents, replacements).
-            let mut value = serde_json::to_value(manager.state()?)?;
-            value["resolved"] = serde_json::to_value(manager.list()?)?;
+            let mut state = manager.state()?;
+            let mut resolved = manager.list()?;
+            if let Some(service) = &provides {
+                // Only packages whose plugin.json provides the service.
+                resolved.retain(|p| p.provides.contains(service));
+                state
+                    .plugins
+                    .retain(|id, _| resolved.iter().any(|p| &p.id == id));
+            }
+            let mut value = serde_json::to_value(state)?;
+            value["resolved"] = serde_json::to_value(resolved)?;
             println!("{}", serde_json::to_string_pretty(&value)?);
         }
         "install" => {
@@ -740,41 +891,22 @@ fn run() -> Result<()> {
                     skipped.name, skipped.reason
                 );
             }
+            print_installed(&result);
         }
         "install-catalog" => {
-            manager.install_from_catalog(id, version.as_deref())?;
+            print_installed(&manager.install_from_catalog(id, version.as_deref())?);
         }
         "update" => {
             if update_all {
+                let before = manager.state()?;
                 let plan = if dry_run {
                     manager.update_all_plan()?
                 } else {
                     manager.update_all()?
                 };
-                for change in &plan.updates {
-                    println!(
-                        "Update {}: {} -> {}",
-                        change.id, change.from.version, change.to.version
-                    );
-                }
-                for install in &plan.installs {
-                    println!("Install {}: {}", install.id, install.current.version);
-                }
-                for held in &plan.kept_back {
-                    println!(
-                        "Kept back {}: selected {}, latest {} (dependency constraints)",
-                        held.id, held.selected, held.latest
-                    );
-                }
-                println!(
-                    "{} updates, {} installs, {} kept back.{}",
-                    plan.updates.len(),
-                    plan.installs.len(),
-                    plan.kept_back.len(),
-                    if dry_run { " Nothing was changed." } else { "" }
-                );
+                print_update_all(&before, &plan, dry_run);
             } else {
-                manager.update_channel(id, reference.as_deref(), dev)?;
+                print_change(&manager.update_channel(id, reference.as_deref(), dev)?);
             }
         }
         "rollback" => {
@@ -789,11 +921,10 @@ fn run() -> Result<()> {
                 None => manager.switch_back_plan(id)?,
             };
             let confirm = confirm_replacement(&plan, force)?;
-            let plan = match &with {
-                Some(fork) => manager.replace(id, fork, confirm)?,
-                None => manager.switch_back(id, confirm)?,
-            };
-            print_replacement(&manager, &plan)?;
+            match &with {
+                Some(fork) => print_replacement(&manager, &manager.replace(id, fork, confirm)?)?,
+                None => print_switch_back(&manager, &manager.switch_back(id, confirm)?)?,
+            }
         }
         "restore" => {
             manager.restore(id)?;
@@ -822,7 +953,8 @@ fn run() -> Result<()> {
         }
         _ => bail!("unknown command: {command}"),
     }
-    if command != "list" {
+    // These print what they did instead.
+    if !matches!(command, "list" | "install" | "install-catalog" | "update") {
         println!("OK: {command} {id}");
     }
     Ok(())

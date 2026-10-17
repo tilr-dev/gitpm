@@ -24,6 +24,93 @@ pub struct Manifest {
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
+impl Manifest {
+    /// The descriptive metadata of this manifest (`title`, `description`, `provides`,
+    /// `tags`), read from the kept top-level keys. These keys stay in [`Manifest::extra`]
+    /// so they are written back exactly as they were (order and the string form of
+    /// `provides`). Lenient: a key of the wrong type counts as absent (see
+    /// [`Manifest::metadata_problems`]), so packages published before 0.5 keep working.
+    pub fn metadata(&self) -> Metadata {
+        Metadata::read(&self.extra).0
+    }
+    /// The metadata keys of the wrong type, as messages (`tags must be an array of
+    /// strings`); empty when all are valid or absent.
+    pub fn metadata_problems(&self) -> Vec<String> {
+        Metadata::read(&self.extra).1
+    }
+    /// [`Manifest::metadata`] for authoring (`init`, `commit`): a key of the wrong type
+    /// is an `invalid_manifest` error.
+    pub fn metadata_strict(&self) -> Result<Metadata> {
+        let (metadata, problems) = Metadata::read(&self.extra);
+        match problems.into_iter().next() {
+            Some(problem) => Err(Error::InvalidManifest(format!(
+                "invalid plugin.json: {problem}"
+            ))),
+            None => Ok(metadata),
+        }
+    }
+}
+
+/// Descriptive metadata of a package from `plugin.json`. gitpm stores and reports it
+/// (state, `list`, catalog) but never interprets it: a host can, for example, group
+/// installed packages by what they `provide`. All fields are optional.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct Metadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Services the package provides; `"provides": "theme"` in `plugin.json` is read as
+    /// `["theme"]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provides: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+}
+impl Metadata {
+    /// Read the metadata keys of a manifest's top-level object (`null` counts as
+    /// absent); a key of the wrong type is left out and reported as a problem.
+    fn read(keys: &serde_json::Map<String, serde_json::Value>) -> (Self, Vec<String>) {
+        use serde_json::Value;
+        let mut problems = Vec::new();
+        let mut text = |key: &str| match keys.get(key) {
+            None | Some(Value::Null) => None,
+            Some(Value::String(text)) => Some(text.clone()),
+            Some(_) => {
+                problems.push(format!("{key} must be a string"));
+                None
+            }
+        };
+        let (title, description) = (text("title"), text("description"));
+        let mut list = |key: &str, single: bool| {
+            let valid = match keys.get(key) {
+                None | Some(Value::Null) => Some(Vec::new()),
+                Some(Value::String(text)) if single => Some(vec![text.clone()]),
+                Some(Value::Array(items)) => items
+                    .iter()
+                    .map(|item| item.as_str().map(str::to_owned))
+                    .collect(),
+                Some(_) => None,
+            };
+            valid.unwrap_or_else(|| {
+                problems.push(format!(
+                    "{key} must be {}an array of strings",
+                    if single { "a string or " } else { "" }
+                ));
+                Vec::new()
+            })
+        };
+        let (provides, tags) = (list("provides", true), list("tags", false));
+        let metadata = Self {
+            title,
+            description,
+            provides,
+            tags,
+        };
+        (metadata, problems)
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Replaces {
@@ -66,6 +153,11 @@ pub struct Installed {
     /// Package folder inside the repository (from `gitpm.json`); `None`: the root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    /// Descriptive metadata of the current revision's manifest (since 0.5). `None` in a
+    /// record written by an older gitpm: [`State::installed_in`] then reads it from the
+    /// clone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Metadata>,
 }
 impl Installed {
     /// Take the manifest-derived fields of a new current revision.
@@ -73,6 +165,7 @@ impl Installed {
         self.fork_of = m.fork_of.clone();
         self.dependencies = m.dependencies.clone();
         self.replaces = m.replaces.clone();
+        self.metadata = Some(m.metadata());
     }
     /// The root package of its repository (no `gitpm.json` at the installed revision):
     /// `path` is `None`. Independent of where the clone lives: a root package that moved
@@ -196,6 +289,16 @@ pub struct InstalledPlugin {
     /// Package folder inside the source repository; `None` for the repository root.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    /// Cache key of the shared clone `repos/<clone>` (as in state); `None`: the
+    /// plugin's own clone `plugins/<id>`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clone: Option<String>,
+    /// Descriptive metadata of the installed revision (`plugin.json`); always present
+    /// in JSON (`null` / `[]` when absent).
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub provides: Vec<String>,
+    pub tags: Vec<String>,
     /// Each dependency with the plugin that provides it and whether it is satisfied.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub dependencies: Vec<crate::deps::DependencyStatus>,
@@ -207,10 +310,28 @@ pub struct InstalledPlugin {
     pub dependents: Vec<String>,
 }
 impl State {
+    /// Flat view of the installed plugins (sorted by ID), with the metadata recorded in
+    /// state (empty for records of an older gitpm; see [`State::installed_in`]).
     pub fn installed(&self) -> Vec<InstalledPlugin> {
+        self.installed_with(|_, p| p.metadata.clone().unwrap_or_default())
+    }
+    /// [`State::installed`] for the workspace at `root`: a record without metadata
+    /// (written by gitpm 0.4 or earlier) gets it from the manifest of its installed
+    /// commit in the clone. Read-only; an unreadable manifest gives empty metadata.
+    pub fn installed_in(&self, root: &Path) -> Vec<InstalledPlugin> {
+        self.installed_with(|id, p| match &p.metadata {
+            Some(metadata) => metadata.clone(),
+            None => committed_metadata(root, id, p).unwrap_or_default(),
+        })
+    }
+    fn installed_with(
+        &self,
+        metadata: impl Fn(&str, &Installed) -> Metadata,
+    ) -> Vec<InstalledPlugin> {
         self.plugins
             .iter()
-            .map(|(id, p)| InstalledPlugin {
+            .map(|(id, p)| (id, p, metadata(id, p)))
+            .map(|(id, p, metadata)| InstalledPlugin {
                 id: id.clone(),
                 source: p.source.clone(),
                 current: p.current.clone(),
@@ -220,6 +341,11 @@ impl State {
                 replaces: p.replaces.clone(),
                 catalog: p.catalog.clone(),
                 path: p.path.clone(),
+                clone: p.clone.clone(),
+                title: metadata.title,
+                description: metadata.description,
+                provides: metadata.provides,
+                tags: metadata.tags,
                 dependencies: crate::deps::status(self, p),
                 replacing: self
                     .replacements
@@ -231,6 +357,22 @@ impl State {
             })
             .collect()
     }
+}
+
+/// Metadata of the manifest at the installed commit of `p` in its clone.
+fn committed_metadata(root: &Path, id: &str, p: &Installed) -> Option<Metadata> {
+    let commit = &p.current.commit;
+    if commit.is_empty() || !commit.bytes().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let repo = root.join(p.clone_folder(id));
+    let file = match &p.path {
+        Some(path) => format!("{path}/plugin.json"),
+        None => "plugin.json".to_owned(),
+    };
+    let text = git(&repo, &["show", &format!("{commit}:{file}")]).ok()?;
+    let m: Manifest = serde_json::from_str(&text).ok()?;
+    Some(m.metadata())
 }
 
 /// `namespace/name` or a legacy unscoped ID; every component is a safe path part.
@@ -519,6 +661,70 @@ mod tests {
             let repo = repo_with(&dir, json, true);
             let error = manifest(&repo).unwrap_err();
             assert_eq!(error.kind(), kind, "{json}: {error}");
+        }
+    }
+
+    #[test]
+    fn manifest_metadata_is_typed_normalized_and_written_back_as_it_was() {
+        let dir = TempDir::new("model");
+        let json = r#"{"id":"dan/demo1","version":"0.1.0","x":1,"provides":"theme","title":"Demo","tags":["a","b"],"description":null}"#;
+        let repo = repo_with(&dir, json, true);
+        let m = manifest(&repo).unwrap();
+        assert_eq!(
+            m.metadata_strict().unwrap(),
+            Metadata {
+                title: Some("Demo".into()),
+                description: None,
+                provides: vec!["theme".into()],
+                tags: vec!["a".into(), "b".into()],
+            }
+        );
+        // The keys stay where and as they were (string form of provides included).
+        let written: serde_json::Value = serde_json::from_str(&manifest_json(&m).unwrap()).unwrap();
+        assert_eq!(written["provides"], "theme");
+        assert_eq!(written["description"], serde_json::Value::Null);
+        let text = manifest_json(&m).unwrap();
+        assert!(text.find("\"x\"").unwrap() < text.find("\"provides\"").unwrap());
+        let m = Manifest {
+            extra: serde_json::from_str(r#"{"provides":["a","b"]}"#).unwrap(),
+            ..Default::default()
+        };
+        assert_eq!(m.metadata().provides, ["a", "b"]);
+        assert_eq!(Manifest::default().metadata(), Metadata::default());
+        // Wrong types: reading the manifest (install, update, fork) accepts them and the
+        // key counts as absent; authoring (`metadata_strict`) refuses them.
+        for (bad, problem) in [
+            (r#""title":1"#, "title must be a string"),
+            (r#""description":["x"]"#, "description must be a string"),
+            (
+                r#""provides":1"#,
+                "provides must be a string or an array of strings",
+            ),
+            (
+                r#""provides":["a",2]"#,
+                "provides must be a string or an array of strings",
+            ),
+            (r#""tags":"a""#, "tags must be an array of strings"),
+            (r#""tags":[null]"#, "tags must be an array of strings"),
+        ] {
+            let _ = fs::remove_dir_all(dir.join("repo"));
+            let repo = repo_with(
+                &dir,
+                &format!(
+                    r#"{{"id":"dan/demo1","version":"0.1.0","title":"T","provides":"p",{bad}}}"#
+                ),
+                true,
+            );
+            let m = manifest(&repo).unwrap();
+            assert_eq!(m.metadata_problems(), [problem], "{bad}");
+            let lenient = m.metadata();
+            assert!(lenient.tags.is_empty(), "{bad}");
+            if !bad.contains("title") {
+                assert_eq!(lenient.title.as_deref(), Some("T"), "{bad}");
+            }
+            let error = m.metadata_strict().unwrap_err();
+            assert_eq!(error.kind(), "invalid_manifest", "{bad}: {error}");
+            assert!(error.to_string().contains(problem), "{error}");
         }
     }
 

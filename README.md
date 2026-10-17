@@ -14,7 +14,8 @@ scripts/package-cli.sh           release archive of the `gitpm` binary (release.
 ```
 
 A package is a folder in a Git repository with a `plugin.json` manifest (`id`, `version`,
-`dependencies`, optional `forkOf` and `replaces`; other keys are kept as they are) and a
+`dependencies`, optional `forkOf` and `replaces`, descriptive
+[metadata](#plugin-metadata); other keys are kept as they are) and a
 ready `dist/` folder: the repository root, or one of several folders a root `gitpm.json`
 lists ([multi-package repositories](#multi-package-repositories)). Installing clones the
 repository into a workspace and copies the package's `dist/`; nothing is built or executed.
@@ -54,7 +55,7 @@ $ echo '{"id": "acme/greeter", "version": "0.1.0"}' > plugin.json
 $ echo 'export const greeting = "greeter v1";' > dist/index.js
 $ git add . && git commit -qm "greeter 0.1.0" && git tag acme/greeter@0.1.0 && cd ..
 $ gitpm install ./greeter
-OK: install ./greeter
+installed acme/greeter@0.1.0 from /…/greeter
 $ cat gitpm-workspace/dist/acme/greeter/index.js
 export const greeting = "greeter v1";
 $ gitpm list
@@ -75,7 +76,7 @@ $ echo 'export const greeting = "greeter v2";' > greeter/dist/index.js
 $ echo '{"id": "acme/greeter", "version": "0.2.0"}' > greeter/plugin.json
 $ git -C greeter commit -qam "greeter 0.2.0" && git -C greeter tag acme/greeter@0.2.0
 $ gitpm update acme/greeter
-OK: update acme/greeter
+acme/greeter updated 0.1.0 → 0.2.0
 $ cat gitpm-workspace/dist/acme/greeter/index.js
 export const greeting = "greeter v2";
 $ gitpm rollback acme/greeter
@@ -83,7 +84,9 @@ OK: rollback acme/greeter
 $ cat gitpm-workspace/dist/acme/greeter/index.js
 export const greeting = "greeter v1";
 $ gitpm update acme/greeter
-OK: update acme/greeter
+acme/greeter updated 0.1.0 → 0.2.0
+$ gitpm update acme/greeter
+acme/greeter up to date (0.2.0)
 ```
 
 A catalog is generated from the release tags of the repositories listed in a sources
@@ -126,7 +129,7 @@ Reading releases: /…/greeter
 Reading releases: /…/hello
 Catalog ready: 4 release(s) checked from sources.
 $ gitpm install-catalog acme/hello
-OK: install-catalog acme/hello
+installed acme/hello@0.1.1 from /…/hello
 $ cat gitpm-workspace/dist/acme/hello/index.js
 export const greeting = "hello v2";
 $ gitpm check
@@ -182,6 +185,29 @@ of the provider and, when it differs, the version it stands in as (`acme/hello �
 Changed in 0.4: the form `fork ID NAMESPACE/NAME [--into DIR]` (fork folder
 `DIR/NAMESPACE/NAME`, default `./NAMESPACE/NAME`) and `init NAMESPACE/NAME` without a
 folder are gone; `init --in REPO` is now `init --into DIR`.
+
+Changed in 0.5:
+
+- [Plugin metadata](#plugin-metadata): `title`, `description`, `provides`, `tags` in
+  `plugin.json`, reported by `list` (and `list --provides SERVICE`), `info` and the FFI;
+  `init` writes a `title`. `info`/`browse` now read each listed plugin's latest
+  `release.json` (one extra HTTP request per plugin on a remote catalog, at most 40).
+- `install` and `install-catalog` print `installed ID@VERSION from SOURCE`, `update ID`
+  prints `ID updated A → B` or `ID up to date (A)`, `update all` one such line per
+  installed package (`update all --dry-run` says `would be updated`). The lines
+  `OK: install …`, `OK: install-catalog …` and `OK: update …` are gone: scripts that
+  match them must match the new lines (other commands still print `OK: …`).
+- Metadata types: `commit` refuses a `plugin.json` whose metadata keys have the wrong
+  type (`invalid_manifest`); `install`, `update`, `rollback`, `fork`, `catalog-update`
+  and `list` accept such manifests (published before 0.5) and treat those keys as
+  absent, with a warning on stderr for install and update.
+- `replace ID --back` prints `ID: replacement FORK removed, original restored (ID VERSION
+  for: consumers)` instead of `ID → ID VERSION …`.
+- `init --multi` makes a new (or empty) folder a multi-package repository;
+  `init --no-release` commits without the release tag.
+- `list`: `resolved[]` entries carry `clone` (as `plugins.<id>.clone`).
+- Removing a package also removes the folders it leaves empty (`dist/<namespace>`,
+  `plugins/<namespace>`, `repos`).
 
 ## Multi-package repositories
 
@@ -253,7 +279,10 @@ packages/theme/dist/…
   to a repository with `gitpm.json`; an existing repository without `gitpm.json` gets that
   file (`{"packages": ["packages/*"]}`), unless its root already is a package (moving it
   into a folder is up to you); a folder that does not exist becomes a single-package
-  repository instead. The folder is `PREFIX/NAME` for the first `PREFIX/*` pattern, else
+  repository instead, or with `--multi` a multi-package one (`gitpm.json` and
+  `packages/NAME`; also for an empty folder that is not a repository yet), so later
+  `init --into DIR` calls add packages to it. `--no-release` makes only the commit, no
+  tag; `gitpm commit DIR 0.1.0 [--package ID]` releases it later. The folder is `PREFIX/NAME` for the first `PREFIX/*` pattern, else
   `packages/NAME` (added to `gitpm.json` when no pattern matches it): folders are named
   after the name part of the ID, so `a/ui` and `b/ui` cannot share a repository (the
   second `init` is refused naming the package that has the folder). Only `gitpm.json` and
@@ -349,6 +378,64 @@ Publishing a catalog is up to you: it is a folder of static files, so any static
 works (`catalog-update` and `register` write only to a local folder; HTTP(S) catalogs are
 read-only).
 
+## Plugin metadata
+
+`plugin.json` may describe the package with four optional keys:
+
+| Key | Type |
+| --- | --- |
+| `title` | string |
+| `description` | string |
+| `provides` | string or array of strings (services the package provides; a string is read as a one-element array) |
+| `tags` | array of strings |
+
+gitpm only stores and reports them; it never interprets them (no exclusivity, no
+"one theme at a time": that is up to the host, which can, for example, group installed
+packages into slots by what they `provide`, without cloning or running anything).
+Authoring is strict, everything else lenient: `commit` refuses a key of another type
+(`invalid_manifest`); installing, updating, rolling back, forking, publishing to a
+catalog and listing treat such a key (and `null`) as absent, so packages published
+before 0.5 keep working (`install`/`update` warn: `Warning: ID VERSION: plugin.json tags
+must be an array of strings; ignored`; the library reports it in
+`InstallResult.warnings`/`RevisionChange.warnings`, and
+`Manifest::metadata_problems()`/`metadata_strict()` give the check). The keys stay in the file as
+they were: `commit`, `fork` and `fork --replace` rewrite `version`, `id`, `forkOf`,
+`replaces` and dependencies but keep the metadata (also the string form of `provides`).
+`init` writes `"title": "NAME"`.
+
+- `gitpm list`: each `resolved[]` entry has `title` and `description` (`null` when
+  absent), `provides` and `tags` (`[]` when absent) of the installed revision; state
+  keeps them per plugin (`plugins.<id>.metadata`, since 0.5). For a plugin installed by
+  an older gitpm (no `metadata` in state) they are read from the manifest of the
+  installed commit in its clone.
+- `gitpm list --provides SERVICE`: only the packages whose `provides` contains `SERVICE`.
+  It filters `plugins` and `resolved` only; `replacements` and `forgotten` are printed
+  unfiltered (they describe the workspace, not single packages).
+- Catalog: a release (`release.json`, or a v1 `catalog.json` entry) has the whole
+  manifest, so `catalog-update` and `register` publish the metadata with it. `info` and
+  `browse` (`PluginSummary`) show the metadata of each plugin's latest release; a
+  missing or broken latest `release.json` only leaves that plugin without metadata. The
+  plugin index format is unchanged (0.4 reads it with `deny_unknown_fields`, so it cannot
+  carry the metadata), so older gitpm versions read the catalog as before. Cost: the
+  overview reads one `release.json` per listed plugin (at most 40), which on an HTTP(S)
+  catalog is one extra request each.
+- FFI: `InstalledPlugin`, `PluginSummary` and `CatalogRelease` have `title`,
+  `description` (`String?`), `provides` and `tags` (`[String]`).
+
+```console
+$ cat packages/theme/plugin.json
+{"id": "tilr/theme", "version": "1.0.0", "title": "Theme", "provides": "theme", "tags": ["ui"]}
+$ gitpm list --provides theme | jq '.resolved[] | {id, title, description, provides, tags, clone}'
+{
+  "id": "tilr/theme",
+  "title": "Theme",
+  "description": null,
+  "provides": ["theme"],
+  "tags": ["ui"],
+  "clone": "tilr-plugins-4b377fe1c0de1234"
+}
+```
+
 ## Rules of the library
 
 - Not interactive: no printing, prompts, stdin or environment variables. Every path and
@@ -364,7 +451,9 @@ read-only).
 - All subprocesses (system `git`, `curl`) go through one internal module (`exec`), the
   place to switch to gix/ureq later.
 - File formats (plugin.json, catalog v1/v2) are unchanged from the stand prototype apart
-  from optional additions (`path` in catalog releases, the new `gitpm.json`);
+  from optional additions (`path` in catalog releases, the new `gitpm.json`, the
+  [metadata](#plugin-metadata) keys of plugin.json and `metadata` per plugin in
+  `state.json`, which 0.4 ignores);
   `deny_unknown_fields` is kept where it was. `state.json` carries `"format": 2`
   (`gitpm::STATE_FORMAT`) since 0.4: written always, a file without it is format 1 (0.3
   and earlier) and still read, a newer format is refused (`unsupported`). Format 2 adds
@@ -411,7 +500,7 @@ Modules with free functions (no workspace lock needed):
 | `catalog` | `browse`, `list`, `lookup`, `selected`, `register`, `register_build`, `register_package`, `update_sources` (progress callback), `migrate`, `hash_files`, `version_key`, `ensure_publishable` |
 | `check` | `read_state` (does not create/lock), `compare`, `check`; `CheckStatus::message()` |
 | `auth` | `check(source, &AuthOptions)` — `git ls-remote` only, credentials never stored |
-| `scaffold` | `init(dir, namespace, name)` (the `init --into` rule; the only way to create a package besides `create_package`), `create_package` (into a multi-package repo), `commit`, `commit_package` (version tag), `release_current`, `set_remote`, `shell_quote` |
+| `scaffold` | `init(dir, namespace, name)` (the `init --into` rule; the only way to create a package besides `create_package`), `init_with` (`InitOptions { multi, release }`), `create_package` (into a multi-package repo), `commit`, `commit_package` (version tag), `release_current`, `set_remote`, `shell_quote` |
 | `packages` | `config_at`, `layout_at` (packages and defective folders of a commit), `packages_at` (strict), `find_at` (one package of a commit), `read_config`, `packages_in` (working tree), `matches`, `validate_pattern` |
 | `identity` | `valid_part`, `qualified`, `release_tag` (no default namespace, no namespace config) |
 | `releases` | `discover`, `latest` |
@@ -537,7 +626,8 @@ disable(force), forget(force), restore, uninstallPlan, uninstall(confirm, force)
 (`PackageFork`), forkPackagesAndReplace (`PackageForkReplacement`: the fork plus one
 `ForkReplacement` per package), replacePlan, replace, switchBackPlan, switchBack; `force`
 defaults to false; `InstalledPlugin.path` and `CatalogRelease.path` name the package
-folder; the fork records have the names of the library types `gitpm::ForkReplacement`,
+folder; `InstalledPlugin.clone` names the shared clone; `InstalledPlugin`,
+`PluginSummary` and `CatalogRelease` carry the [metadata](#plugin-metadata); the fork records have the names of the library types `gitpm::ForkReplacement`,
 `PackageFork`, `PackageForkReplacement`, `ForkedPackage`, `DependencyRewrite`,
 `ForkStep`), free functions `authCheck`, `browseCatalog`, `catalogRelease`,
 `readInstalled`, `describeLostWork`; errors are the `PmError` enum (one case per kind,

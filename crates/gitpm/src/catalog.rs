@@ -1047,6 +1047,18 @@ pub struct PluginSummary {
     /// Versions in ascending numeric order.
     pub versions: Vec<String>,
     pub latest: Option<String>,
+    /// Descriptive metadata of the latest release's manifest (`plugin.json`).
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub provides: Vec<String>,
+    pub tags: Vec<String>,
+}
+impl Release {
+    /// Descriptive metadata of the released manifest (lenient, see
+    /// [`Manifest::metadata`]).
+    pub fn metadata(&self) -> crate::Metadata {
+        self.manifest.metadata()
+    }
 }
 /// One row of a depth-first, bounded catalog walk.
 #[derive(Debug, Clone, Serialize)]
@@ -1074,6 +1086,7 @@ fn summary(
     id: &str,
     source: &str,
     versions: impl Iterator<Item = String>,
+    latest: impl FnOnce(&str) -> Result<Release>,
 ) -> Result<PluginSummary> {
     valid_id(id)?;
     let mut versions = versions
@@ -1081,11 +1094,22 @@ fn summary(
         .collect::<Result<Vec<_>>>()?;
     versions.sort();
     let versions: Vec<String> = versions.into_iter().map(|(_, v)| v).collect();
+    // Display only: a missing or broken latest release gives no metadata (install
+    // verifies releases); the overview never fails because of it.
+    let metadata = versions
+        .last()
+        .and_then(|version| latest(version).ok())
+        .map(|release| release.metadata())
+        .unwrap_or_default();
     Ok(PluginSummary {
         id: id.into(),
         source: source.into(),
         latest: versions.last().cloned(),
         versions,
+        title: metadata.title,
+        description: metadata.description,
+        provides: metadata.provides,
+        tags: metadata.tags,
     })
 }
 
@@ -1133,9 +1157,21 @@ pub fn browse(location: &str) -> Result<CatalogOverview> {
                         "invalid release link"
                     );
                 }
+                let entry = summary(
+                    &plugin.id,
+                    &plugin.source,
+                    plugin.versions.keys().cloned(),
+                    |version| {
+                        let link = &plugin.versions[version];
+                        let value = read_json(location, &format!("{child}{link}"))?
+                            .require(Error::Catalog, "release not found")?;
+                        serde_json::from_value(value)
+                            .context(Error::Catalog, "invalid catalog release")
+                    },
+                )?;
                 items.push(OverviewItem::Plugin {
                     depth,
-                    plugin: summary(&plugin.id, &plugin.source, plugin.versions.into_keys())?,
+                    plugin: entry,
                 });
             } else {
                 let value =
@@ -1156,7 +1192,9 @@ pub fn browse(location: &str) -> Result<CatalogOverview> {
         for (id, plugin) in catalog.plugins.iter().take(OVERVIEW_LIMIT) {
             items.push(OverviewItem::Plugin {
                 depth: 1,
-                plugin: summary(id, &plugin.source, plugin.versions.keys().cloned())?,
+                plugin: summary(id, &plugin.source, plugin.versions.keys().cloned(), |v| {
+                    Ok(plugin.versions[v].clone())
+                })?,
             });
         }
         if catalog.plugins.is_empty() {

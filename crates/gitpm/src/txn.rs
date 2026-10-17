@@ -230,6 +230,23 @@ pub(crate) fn recover(root: &Path) -> Result<()> {
     }
 }
 
+/// After a delete, remove the parents it left empty (`dist/<ns>`, `plugins/<ns>`,
+/// `repos`); `plugins` and `dist` themselves stay, as `Manager::open` creates them.
+/// Best effort: a folder that is not empty (or cannot be removed) is kept.
+fn remove_empty_parents(root: &Path, relative: &str) {
+    let parts: Vec<&str> = relative.split('/').collect();
+    let keep = if matches!(parts[0], "plugins" | "dist") {
+        1
+    } else {
+        0
+    };
+    for depth in (keep + 1..parts.len()).rev() {
+        if fs::remove_dir(root.join(parts[..depth].join("/"))).is_err() {
+            break;
+        }
+    }
+}
+
 /// Idempotent: every step checks whether it already happened.
 fn apply(root: &Path, dir: &Path) -> Result<()> {
     let journal: Journal = serde_json::from_slice(&fs::read(dir.join(JOURNAL))?)
@@ -254,6 +271,7 @@ fn apply(root: &Path, dir: &Path) -> Result<()> {
                 if present(&live) {
                     rename(&live, &old)?;
                 }
+                remove_empty_parents(root, relative);
             }
         }
     }
