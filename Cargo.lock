@@ -276,7 +276,7 @@ dependencies = [
 
 [[package]]
 name = "gitpm"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "libc",
  "pubgrub",
@@ -290,7 +290,7 @@ dependencies = [
 
 [[package]]
 name = "gitpm-cli"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "gitpm",
