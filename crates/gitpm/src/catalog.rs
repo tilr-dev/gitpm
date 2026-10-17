@@ -1,6 +1,9 @@
 //! Catalog client and author operations. The catalog stores metadata, never code.
 use crate::error::{Context, Error, Require, Result, ensure};
-use crate::{Manifest, exec, exec::git, identity, model::manifest, model::resolve_ref, valid_id};
+use crate::{
+    Manifest, exec, exec::git, identity, model::package_manifest, model::resolve_ref, packages,
+    valid_id,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -20,6 +23,9 @@ pub struct Release {
     pub files: BTreeMap<String, FileDigest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<Build>,
+    /// Package folder in a multi-package repository (`gitpm.json`); absent: the root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Plugin {
@@ -153,6 +159,10 @@ fn validate_release_payload(release: &Release, id: &str) -> Result<()> {
         Catalog,
         "catalog release has no file hashes"
     );
+    if let Some(path) = &release.path {
+        crate::packages::validate_path(path)
+            .map_err(|_| Error::Catalog(format!("invalid package path {path:?}")))?;
+    }
     for (name, file) in &release.files {
         ensure!(
             !name.is_empty()
@@ -730,6 +740,18 @@ pub fn register_build(
     reference: &str,
     build: Option<Build>,
 ) -> Result<Release> {
+    register_package(url, source, reference, None, build)
+}
+/// [`register_build`] of one package of a multi-package repository: `package` picks it
+/// (an `ID@VERSION` reference names it too); for a single-package repository a given
+/// `package` must match the root manifest.
+pub fn register_package(
+    url: &str,
+    source: &str,
+    reference: &str,
+    package: Option<&str>,
+    build: Option<Build>,
+) -> Result<Release> {
     let catalog_path = local_file(url)?.require(
         Error::InvalidArgument,
         "register writes only to a local catalog; prepare locally, then sync files to R2",
@@ -748,18 +770,61 @@ pub fn register_build(
     git(&temp.0, &["clone", "--no-hardlinks", "--", &source, "repo"])?;
     let repo = temp.0.join("repo");
     let commit = resolve_ref(&repo, reference)?;
+    let found = packages::find_at(
+        &repo,
+        &commit,
+        package.or_else(|| packages::tag_id(reference)),
+    )?;
+    let path = found.subdir().map(str::to_owned);
     git(&repo, &["checkout", "--detach", &commit])?;
-    let manifest = manifest(&repo)?;
+    let manifest = package_manifest(&repo, path.as_deref())?;
     version_key(&manifest.version)?;
     let release = Release {
         manifest,
         source,
         commit,
         reference: reference.to_owned(),
-        files: hash_files(&repo.join("dist"))?,
+        files: hash_files(&package_dir(&repo, path.as_deref()).join("dist"))?,
         build,
+        path,
     };
     save_release(&catalog_path, &release)
+}
+
+fn package_dir(repo: &Path, path: Option<&str>) -> PathBuf {
+    match path {
+        Some(path) => repo.join(path),
+        None => repo.to_path_buf(),
+    }
+}
+/// Packages whose releases a source publishes: `[None]` (the root package) for a
+/// single-package repository, every package listed at HEAD for a `gitpm.json` one. As
+/// for a root package, HEAD decides the identity: tags a fork keeps from its upstream
+/// are not releases of the fork. Folders at HEAD that are not valid packages are
+/// returned as warnings (the other packages are still published).
+fn source_packages(repo: &Path) -> Result<(Vec<Option<String>>, Vec<crate::releases::SkippedTag>)> {
+    if packages::config_at(repo, "HEAD")?.is_none() {
+        return Ok((vec![None], Vec::new()));
+    }
+    let head = git(repo, &["rev-parse", "HEAD"])?;
+    let layout = packages::layout_at(repo, &head)?.unwrap_or_default();
+    let warnings = layout
+        .problems
+        .iter()
+        .map(|problem| crate::releases::SkippedTag {
+            name: format!("HEAD:{}", problem.path),
+            version: String::new(),
+            reason: format!("{} is not a package: {}", problem.path, problem.error),
+        })
+        .collect();
+    Ok((
+        layout
+            .packages
+            .into_iter()
+            .map(|p| Some(p.manifest.id))
+            .collect(),
+        warnings,
+    ))
 }
 
 /// Progress events of long catalog operations (the library never prints).
@@ -851,13 +916,26 @@ pub fn update_sources(
                 repo.to_str().require(Error::Io, "invalid temporary path")?,
             ],
         )?;
-        let found = crate::releases::discover_all(&repo, None)?;
-        found.ensure_latest_is_valid()?;
-        skipped.extend(found.skipped.into_iter().map(|tag| SkippedSourceTag {
+        let mut tags = Vec::new();
+        let (ids, warnings) = source_packages(&repo)?;
+        skipped.extend(warnings.into_iter().map(|tag| SkippedSourceTag {
             source: source.clone(),
             tag,
         }));
-        for tag in found.tags {
+        for id in ids {
+            let found = match crate::releases::discover_all(&repo, id.as_deref()) {
+                // A package listed at HEAD without a release yet has nothing to publish.
+                Err(Error::NoReleases(_)) if id.is_some() => continue,
+                other => other?,
+            };
+            found.ensure_latest_is_valid()?;
+            skipped.extend(found.skipped.into_iter().map(|tag| SkippedSourceTag {
+                source: source.clone(),
+                tag,
+            }));
+            tags.extend(found.tags);
+        }
+        for tag in tags {
             let id = tag.manifest.id.clone();
             if let Some(owner) = owners.insert(id.clone(), source.clone()) {
                 ensure!(
@@ -867,13 +945,15 @@ pub fn update_sources(
                 );
             }
             git(&repo, &["checkout", "--detach", &tag.commit])?;
+            let path = (!tag.path.is_empty()).then_some(tag.path);
             let release = Release {
-                manifest: manifest(&repo)?,
+                manifest: package_manifest(&repo, path.as_deref())?,
                 source: source.clone(),
                 commit: tag.commit,
                 reference: tag.name,
-                files: hash_files(&repo.join("dist"))?,
+                files: hash_files(&package_dir(&repo, path.as_deref()).join("dist"))?,
                 build: None,
+                path,
             };
             validate_release(&release, &id, &release.manifest.version)?;
             pending.insert((id, release.manifest.version.clone()), release);
@@ -2230,6 +2310,38 @@ pub(crate) mod tests {
                 .version,
             "0.2.0"
         );
+    }
+
+    #[test]
+    fn update_sources_and_register_read_every_package_of_a_monorepo() {
+        let dir = TempDir::new("catalog");
+        let repo = dir.join("mono");
+        crate::scaffold::create_package(&repo, "tilr", "store").unwrap();
+        crate::scaffold::create_package(&repo, "tilr", "theme").unwrap();
+        fs::write(repo.join("packages/store/dist/index.js"), "store 2").unwrap();
+        crate::scaffold::commit_package(&repo, "0.2.0", Some("tilr/store")).unwrap();
+        let cat = dir.join("catalog");
+        let list = sources(dir.path(), "mono\n");
+        let report = update_sources(loc(&cat), &list, &mut |_| {}).unwrap();
+        assert_eq!(report.releases, 3);
+        let store = lookup(loc(&cat), "tilr/store", None).unwrap();
+        assert_eq!(store.manifest.version, "0.2.0");
+        assert_eq!(store.path.as_deref(), Some("packages/store"));
+        assert_eq!(store.files["index.js"].size, 7);
+        let theme = lookup(loc(&cat), "tilr/theme", None).unwrap();
+        assert_eq!(theme.path.as_deref(), Some("packages/theme"));
+        // Running again changes nothing (releases are immutable and equal).
+        update_sources(loc(&cat), &list, &mut |_| {}).unwrap();
+
+        let other = dir.join("other-catalog");
+        let source = repo.to_str().unwrap();
+        let error = register(loc(&other), source, "main").unwrap_err();
+        assert_eq!(error.kind(), "invalid_argument");
+        let release = register(loc(&other), source, "tilr/theme@0.1.0").unwrap();
+        assert_eq!(release.path.as_deref(), Some("packages/theme"));
+        let release =
+            register_package(loc(&other), source, "main", Some("tilr/store"), None).unwrap();
+        assert_eq!(release.manifest.version, "0.2.0");
     }
 
     fn sources(dir: &Path, lines: &str) -> PathBuf {

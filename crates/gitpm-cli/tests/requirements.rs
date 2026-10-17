@@ -74,8 +74,12 @@ fn git(dir: &Path, repo: &Path, args: &[&str]) {
 #[test]
 fn required_dependent_plugin_installation() {
     let dir = TempDir::new("required-dependencies");
-    let base = scaffold::create_namespaced(&dir.join("base"), "vendor").unwrap();
-    let consumer = scaffold::create_namespaced(&dir.join("consumer"), "app").unwrap();
+    let base = scaffold::init(&dir.join("base"), "vendor", "base")
+        .unwrap()
+        .repo;
+    let consumer = scaffold::init(&dir.join("consumer"), "app", "consumer")
+        .unwrap()
+        .repo;
     let m = Manager::open(dir.join("workspace")).unwrap();
     m.install(base.to_str().unwrap()).unwrap();
     fs::write(
@@ -246,7 +250,9 @@ fn required_global_fork_replacement_through_the_cli() {
 #[test]
 fn direct_install_without_catalog_names_the_missing_dependency() {
     let dir = TempDir::new("no-catalog");
-    let consumer = scaffold::create_namespaced(&dir.join("consumer"), "app").unwrap();
+    let consumer = scaffold::init(&dir.join("consumer"), "app", "consumer")
+        .unwrap()
+        .repo;
     release(
         &dir,
         &consumer,

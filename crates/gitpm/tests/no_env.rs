@@ -1,7 +1,7 @@
 //! The library takes all settings explicitly: GITPM_* (and legacy PM_*) variables must
 //! have no effect.
 //! Single test in its own binary, so changing the process environment is race-free.
-use gitpm::{Manager, Options, check, identity, scaffold};
+use gitpm::{Manager, Options, check, scaffold};
 use std::fs;
 
 #[test]
@@ -27,17 +27,9 @@ fn garbage_pm_environment_is_ignored() {
         std::env::set_var("PM_NAMESPACE", "garbage-namespace");
         std::env::set_var("GITPM_NAMESPACE", "garbage-namespace");
     }
-    let config = dir.join("pm.json");
-    assert_eq!(
-        identity::resolve_namespace(None, &config).unwrap(),
-        identity::DEFAULT_NAMESPACE
-    );
-    identity::write_namespace(&config, "explicit").unwrap();
-    assert_eq!(
-        identity::resolve_namespace(None, &config).unwrap(),
-        "explicit"
-    );
-    let author = scaffold::create_namespaced(&dir.join("demo"), "explicit").unwrap();
+    let author = scaffold::init(&dir.join("demo"), "explicit", "demo")
+        .unwrap()
+        .repo;
     let catalog_dir = dir.join("catalog");
     let catalog = catalog_dir.to_str().unwrap().to_owned();
     gitpm::catalog::register(&catalog, author.to_str().unwrap(), "HEAD").unwrap();
