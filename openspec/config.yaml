@@ -1,32 +1,85 @@
 schema: spec-driven
 
-# Project context (optional)
-# Add only constraints that should guide OpenSpec artifacts and workflows.
-# Include constraints an agent cannot infer by reading the code.
-# Keep general project documentation and discoverable codebase facts out.
-# Example:
-#   context: |
-#     Designs and tasks must cover Windows, macOS, and Linux
-#     Write all artifacts in Spanish
+# Project context: constraints an agent cannot infer from reading one file.
+# Each line was checked against the code, CI files or recorded decisions (2026-10-18).
+context: |
+  Language: every OpenSpec artifact (proposal, design, specs, tasks) is written in English,
+  as are library messages and CLI output. Discussions with the owner may be in Russian.
 
-# Per-artifact rules (optional)
-# Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always state what is out of scope
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
+  Product boundary: gitpm is a host-agnostic package manager where a package is a folder in
+  a Git repository (plugin.json + committed dist/). The library (crates/gitpm) knows nothing
+  about Tilr or any other host: no host names, no slot/theme/exclusivity semantics, no build
+  step, nothing is executed. Host concerns (which provider of a service is active, load
+  order, plugins.json generation, UI) stay in the host. Tilr is only the first consumer.
 
-# Per-operation guidance (optional)
-# Add advisory guidance for how apply and archive work should be conducted.
-# This is separate from artifact rules above.
-# Example:
-#   operations:
-#     apply:
-#       guidance:
-#         - Keep test summaries concise
-#     archive:
-#       guidance:
-#         - Summarize the archive outcome before finishing
+  Library contract: the library never prints, prompts, reads stdin or reads environment
+  variables; every path and setting is passed explicitly (Options, arguments). The only
+  implicit input is the OS temp dir. Results are data (serde::Serialize); failures are
+  gitpm::Error with a stable snake_case kind() that never changes for an existing variant.
+  The CLI (crates/gitpm-cli) and the UniFFI wrapper (crates/gitpm-ffi) only add presentation,
+  env defaults (GITPM_ROOT/GITPM_CATALOG/GITPM_SOURCES), prompts and bindings.
+
+  Subprocesses: every git and curl invocation lives in crates/gitpm/src/exec.rs (the planned
+  switch point to gix/ureq). Every git command on a repository (`git -C`) is noninteractive
+  and bounded: closed stdin, GIT_TERMINAL_PROMPT=0, BatchMode SSH with keepalives unless the
+  user configured their own, http.lowSpeed limits, a 10-minute wall-clock kill. Exceptions:
+  the `auth check` ls-remote uses its own SSH command (BatchMode, StrictHostKeyChecking=yes,
+  no keepalives) and has no wall-clock kill; the `git config --get core.sshCommand` probe has
+  no timeout. curl has --connect-timeout 5 and --max-time 20. IDs and refs are validated
+  before they reach git, and positional names go after `--`.
+
+  Catalog transport: remote catalogs are HTTPS only; plain http:// is accepted only for
+  loopback hosts (tests). curl is limited to http(s), no redirects, 16 MiB max-filesize.
+  Catalogs are written only to local folders; publishing/hosting is the user's job.
+
+  Compatibility: plugin.json, catalog v1/v2 and state.json formats only grow by optional
+  additions; deny_unknown_fields stays where it is; state.json "format" is bumped for layout
+  changes and newer formats are refused. 0.x allows breaking CLI/API changes, but each one is
+  marked BREAKING and documented in README "Changed in X.Y".
+
+  Git flow: work happens on `dev` (or feature branches off `dev`) and is tested locally.
+  Nothing goes to `main` (push, merge, PR, release-PR merge) without the owner's explicit
+  word "в main" at that moment. "Merge"/"commit" without a target means `dev`. No commit or
+  push without explicit permission. Never add "Generated with Claude Code" to commits.
+
+  Release: release-please (/.release-please-manifest.json, package `crates/gitpm`) keeps a
+  release PR on `main`, opened by the org GitHub App tilr-bot; PR titles are Conventional Commits, squash merges only;
+  pre-1.0 feat/BREAKING bump minor. gitpm and gitpm-cli are released in lockstep (extra-files);
+  gitpm-ffi is publish = false. Merging the release PR is the release: tag vX.Y.Z, GitHub
+  Release, crates.io via Trusted Publishing (OIDC, environment crates-io, no tokens), and
+  prebuilt gitpm binaries (macOS/Linux, arm64/x86_64). A release is a separate explicit step.
+
+  CI gates (required checks on main): fmt + clippy -D warnings, cargo test --workspace,
+  MSRV 1.92 (`cargo check -p gitpm -p gitpm-cli`; pubgrub 0.4 needs 1.92), cargo-deny
+  (advisories, license allowlist, sources), gitleaks. Tests are hermetic: no network; they do
+  not inherit the developer's GITPM_*/PM_*, HOME or Git config (CLI tests env_clear and set
+  their own; Git config pinned by .cargo/config.toml); test-only reads of
+  GITPM_KEEP_TEST_ARTIFACTS and GITPM_TEST_HOLD_LOCK. Run Python via `uv run`.
+
+rules:
+  proposal:
+    - State what is out of scope (a "Non-goals" or "Out of scope" bullet list).
+    - Mark every breaking change to the CLI, library API, FFI or file formats with **BREAKING** and name the migration.
+    - Keep host-specific (Tilr) work out of gitpm proposals; name it as out of scope instead.
+    - In Why, cite only recorded facts (commit, PR, note, session); write "Rationale not recorded" when unknown.
+  specs:
+    - Every requirement uses SHALL or MUST and has at least one #### Scenario with WHEN/THEN bullets.
+    - Specs describe observable behavior (CLI output, error kinds, files in the workspace, API results), not internal function names.
+    - When a requirement is backed by an existing test, name the test in the requirement text.
+    - Error cases name the stable error kind (for example `local_changes`, `has_dependents`).
+  design:
+    - Keep subprocess, printing and environment access out of the library design; route git/curl through the exec module.
+    - Describe the transaction and crash-recovery story for any change that writes the workspace or a catalog.
+  tasks:
+    - Each task names how it is verified (test name, command or observable output).
+    - Each task group lands its own tests and README updates; no trailing "write tests" group.
+    - Include `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace` before marking a change done.
+
+operations:
+  apply:
+    guidance:
+      - Work on the dev branch; do not commit, push or open PRs without explicit permission.
+      - Update README.md (the user-facing contract) in the same change as the behavior.
+  archive:
+    guidance:
+      - Record the commit or PR that implemented the change in its proposal before archiving.

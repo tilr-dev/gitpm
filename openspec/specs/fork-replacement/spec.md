@@ -1,0 +1,119 @@
+# fork-replacement Specification
+
+## Purpose
+
+Defines forking an installed package into an author repository under a new namespace, and the explicit, global replacement of an original by a fork for every consumer, including the version-based compatibility check and switching back.
+
+## Requirements
+
+### Requirement: Fork copies an installed package
+`fork ID [ID...] --ns NAMESPACE --into DIR` SHALL copy installed packages (with Git history and local edits of the installed clone) into the fork repository `DIR` under the IDs `NAMESPACE/<same name>`; the original installation SHALL be unchanged and the original repository SHALL become the `upstream` remote. Only installed IDs are accepted. Verified by `fork_preserves_history_edits_and_original_installation`.
+
+#### Scenario: Fork one package
+- **WHEN** the user runs `gitpm fork acme/hello --ns me --into hello-fork`
+- **THEN** `hello-fork` is a Git repository whose `plugin.json` has `id` `me/hello`, the output contains `me/hello forked from acme/hello (repository root)`, and `acme/hello` is still installed
+
+### Requirement: Fork requires explicit namespace and destination
+`fork` SHALL require `--ns NAMESPACE` and `--into DIR`; nothing SHALL be derived from an ID. `DIR` MUST be a new folder or an existing repository with `gitpm.json`; anything else, a `DIR` inside the workspace, a path with `..`, the source repository itself or a folder inside it SHALL be refused, and a failed new fork SHALL leave no folder behind. Verified by `fork_rejects_managed_destinations_and_unknown_plugins` and `workspace::fork_refusals_create_nothing`.
+
+#### Scenario: Same namespace
+- **WHEN** the user runs `gitpm fork acme/hello --ns acme --into x`
+- **THEN** it fails with `invalid_argument` ("fork needs a different namespace")
+
+#### Scenario: --version without --replace
+- **WHEN** the user runs `gitpm fork acme/hello --ns me --into x --version 2.0.0`
+- **THEN** it fails with `--version is not valid for fork` and creates nothing
+
+#### Scenario: Missing --ns
+- **WHEN** the user runs `gitpm fork acme/hello --into x`
+- **THEN** it fails with `fork needs --ns NAMESPACE: …` and creates nothing
+
+#### Scenario: Destination inside the workspace
+- **WHEN** `--into` points inside the workspace root
+- **THEN** the fork is refused and nothing is created
+
+### Requirement: Fork metadata
+The fork's manifest SHALL get `forkOf` `{id, version, commit}` of the forked revision and `replaces` `{id, version}` set to the forked version; metadata and unknown keys SHALL be kept (rule in plugin-metadata, "Metadata survives rewrites"). The fork SHALL be on a new branch `fork` (or `fork-2`, `fork-3`, … when that name is taken) with attached HEAD. Verified by `fork_records_local_head_preserves_index_and_immediate_parent` and `metadata::fork_and_commit_carry_the_metadata_unchanged`.
+
+#### Scenario: Fork manifest
+- **WHEN** `acme/hello` 1.0.0 is forked into namespace `me`
+- **THEN** the fork's `plugin.json` has `forkOf.id` `acme/hello`, `forkOf.version` `1.0.0` and `replaces` `{"id": "acme/hello", "version": "1.0.0"}`
+
+### Requirement: Fork output names the next steps
+Without `--replace`, the CLI SHALL print the fork lines and the next steps per package (the strings below are the common forms; `main.rs` has the exact variants): `gitpm commit DIR NEW_VERSION --package ID` (commit local edits, tag), `gitpm install DIR ID`, `gitpm replace ORIGINAL --with ID`, and for a new fork `gitpm remote DIR GIT_URL`.
+
+#### Scenario: Next steps after fork
+- **WHEN** a fork is created without `--replace`
+- **THEN** the output contains `Next steps (or all at once: add --replace):` followed by the commit, install and replace commands
+
+### Requirement: Fork and replace in one step
+`fork … --replace [--version V] [--force]` SHALL make one release commit of the forked folders (setting `version` when `--version` is given) and one tag `NAMESPACE/NAME@VERSION` per package, then install each fork (dependencies first) and replace its original. If the release fails nothing SHALL be installed; a failed install or replace of one package SHALL NOT stop the others. Verified by `fork_replace_releases_installs_and_replaces_in_one_step`.
+
+#### Scenario: One-step fork
+- **WHEN** the user runs `gitpm fork acme/hello --ns me --into f --replace`
+- **THEN** `me/hello@<forked version>` is tagged, installed and replaces `acme/hello`, so only `dist/me/hello/` is deployed
+
+### Requirement: Fork folder is never removed after a partial failure
+When a step of `fork --replace` fails, the fork folder SHALL be kept, the CLI SHALL print per package which step failed and how to finish or undo, and SHALL exit non-zero with the first error's kind. Verified by `fork_replace_keeps_the_fork_and_says_how_to_finish_when_a_step_fails`.
+
+#### Scenario: Install step fails
+- **WHEN** the release succeeds but installing the fork fails
+- **THEN** stderr says `ID is released but not installed. To finish:` with the install and replace commands, and the fork folder exists
+
+### Requirement: Replacement is explicit and global
+`replace ORIGINAL --with FORK` (`Manager::replace`) SHALL set the single binding `state.replacements[ORIGINAL] = FORK`, after which every consumer of ORIGINAL, existing and future, resolves to FORK, seen by the solver as ORIGINAL at the fork's declared `replaces.version`. Nothing SHALL be redirected without this explicit call. Verified by `fork_replacement_main_scenario` and `required_global_fork_replacement_through_the_cli`.
+
+#### Scenario: Fork not usable as a provider
+- **WHEN** FORK is not installed, is disabled, or does not declare `replaces.id` equal to ORIGINAL
+- **THEN** the replace fails with `not_installed`, or `invalid_argument` ("FORK is disabled; enable it first" / "FORK does not declare that it replaces ORIGINAL …")
+
+#### Scenario: Fork with unsatisfiable dependencies
+- **WHEN** FORK's own dependencies would not be satisfied in the resulting workspace
+- **THEN** the replace fails with `dependency_conflict` ("FORK has unsatisfied dependencies: …")
+
+#### Scenario: Output variants
+- **WHEN** the declared `replaces.version` differs from the installed version, or nothing depends on ORIGINAL
+- **THEN** the line is `ORIGINAL replaced by FORK V (as ORIGINAL V') for: …`, or ends `for: no consumers yet`
+
+#### Scenario: Replace for all consumers
+- **WHEN** `app1` and `app2` depend on `vendor/base` and the user replaces it with `mine/base`
+- **THEN** both resolve to `mine/base` and the CLI prints `vendor/base replaced by mine/base V for: app1, app2`
+
+### Requirement: Compatibility is checked by versions only
+Consumers whose requirement the fork's declared version does not satisfy SHALL be listed in `ReplacementPlan.incompatible`, and the replace SHALL fail with `incompatible_replacement` unless confirmed. The CLI SHALL ask `Replace anyway? [y/N]` on a TTY and otherwise require `--force` (the warning is still printed). Code SHALL never be run to check compatibility. Verified by `replacement_compatibility_needs_confirmation`.
+
+#### Scenario: Incompatible consumer without a TTY
+- **WHEN** `app` needs `vendor/base ^2` and `mine/base` declares `replaces.version` `1.4.0`, and stdin is not a terminal
+- **THEN** the CLI warns `app needs vendor/base ^2`, prints `No terminal to confirm; use --force to replace anyway.` and fails with `incompatible_replacement`
+
+### Requirement: Self-replacement and cycles are refused
+Replacing a package with itself, or creating a replacement cycle, SHALL always be refused with `invalid_argument`, even when confirmed or forced: "cannot replace X by itself", and "cyclic replacement: …" when FORK is itself replaced, when ORIGINAL already provides another package, or when FORK depends on ORIGINAL.
+
+#### Scenario: Cycle
+- **WHEN** `a` is replaced by `b` and the user tries to replace `b` with `a`
+- **THEN** the replace fails with `invalid_argument` ("cyclic replacement: …")
+
+### Requirement: Switching back
+`replace ORIGINAL --back` (`Manager::switch_back`) SHALL return all consumers to the installed original under the same confirmation rule and print `ORIGINAL switched back from FORK (ORIGINAL V for: consumers); FORK stays installed and enabled (disable or uninstall it if not wanted)`. It SHALL fail with `not_installed` when ORIGINAL is not installed. Replacing again with another fork SHALL switch the single binding. Verified by `fork_replace_of_two_packages_replaces_both_and_switches_back`.
+
+#### Scenario: Output variants
+- **WHEN** no package depends on ORIGINAL, or FORK is disabled or gone
+- **THEN** the line says `no installed consumers`, ends `; FORK stays installed (disabled)`, or has no FORK clause
+
+#### Scenario: Back without a replacement
+- **WHEN** nothing replaces `vendor/base` and the user runs `replace vendor/base --back`
+- **THEN** the command fails with `invalid_argument` ("vendor/base is not replaced")
+
+### Requirement: Active fork rules
+This requirement is the single source for what happens to a binding when a package leaves. The fork MUST be enabled to become a provider (see "Replacement is explicit and global"); disabling an active fork is guarded as in dependencies ("Dependents guard removal"). A fork update SHALL keep declaring `replaces`. Uninstalling or forgetting the fork SHALL drop its binding (the original's `dist/` is then deployed again, see dist); uninstalling or forgetting the original SHALL keep it.
+
+#### Scenario: Reinstalled original stays replaced
+- **WHEN** the original `vendor/base` is uninstalled while replaced and later installed again
+- **THEN** it is still replaced by the fork until `replace vendor/base --back`
+
+### Requirement: check shows fork upstream
+For a fork, `check` SHALL add `upstream {id, base, latest, newer}`: the original's latest catalog release against the version the fork started from. Verified by `check_shows_fork_upstream_and_other_catalogs`.
+
+#### Scenario: Original has a newer release
+- **WHEN** `me/hello` forked `acme/hello` 1.0.0 and the catalog has `acme/hello` 1.1.0
+- **THEN** `check` prints `me/hello: fork of acme/hello (base 1.0.0); original in catalog: 1.1.0 — newer than the fork base`
