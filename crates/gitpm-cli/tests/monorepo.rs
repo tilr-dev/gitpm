@@ -469,7 +469,12 @@ fn fork_replace_releases_installs_and_replaces_in_one_step() {
     );
     // Switching back restores the original for the consumer.
     let out = f.ok(&["replace", "tilr/theme", "--back"]);
-    assert!(out.contains("tilr/theme → tilr/theme 1.0.0"), "{out}");
+    assert!(
+        out.contains(
+            "tilr/theme: replacement me/theme removed, original restored (tilr/theme 1.0.0 for: app/consumer)"
+        ),
+        "{out}"
+    );
     let state = f.state();
     assert!(state.get("replacements").is_none(), "{state:#}");
     assert_eq!(provider(&state), "tilr/theme");

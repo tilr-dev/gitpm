@@ -14,13 +14,27 @@ pub mod catalog {
     }
 
     fn summary(plugin: &PluginSummary) -> String {
-        format!(
+        let mut text = format!(
             "{} — latest: {}, versions: {}\n    Git: {}",
             plugin.id,
             plugin.latest.as_deref().unwrap_or("no releases"),
             plugin.versions.len(),
             plugin.source
-        )
+        );
+        // Metadata of the latest release, when it has any.
+        if let Some(title) = &plugin.title {
+            let _ = write!(text, "\n    Title: {title}");
+        }
+        if let Some(description) = &plugin.description {
+            let _ = write!(text, "\n    Description: {description}");
+        }
+        if !plugin.provides.is_empty() {
+            let _ = write!(text, "\n    Provides: {}", plugin.provides.join(", "));
+        }
+        if !plugin.tags.is_empty() {
+            let _ = write!(text, "\n    Tags: {}", plugin.tags.join(", "));
+        }
+        text
     }
 
     pub fn render_overview(overview: &CatalogOverview) -> String {

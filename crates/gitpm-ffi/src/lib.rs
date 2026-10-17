@@ -217,6 +217,14 @@ pub struct InstalledPlugin {
     pub catalog: Option<String>,
     /// Package folder in a multi-package repository; `None` for the repository root.
     pub path: Option<String>,
+    /// Shared clone `repos/<clone>` of a multi-package repository; `None`: own clone.
+    pub clone: Option<String>,
+    /// Descriptive metadata from the installed `plugin.json` (stored, not interpreted).
+    pub title: Option<String>,
+    pub description: Option<String>,
+    /// Services the package provides (`"provides": "theme"` reads as `["theme"]`).
+    pub provides: Vec<String>,
+    pub tags: Vec<String>,
     pub dependencies: Vec<DependencyStatus>,
     /// Original IDs this plugin currently provides for every consumer.
     pub replacing: Vec<String>,
@@ -235,6 +243,11 @@ impl From<pm::InstalledPlugin> for InstalledPlugin {
             replaces: p.replaces.map(Into::into),
             catalog: p.catalog,
             path: p.path,
+            clone: p.clone,
+            title: p.title,
+            description: p.description,
+            provides: p.provides,
+            tags: p.tags,
             dependencies: p.dependencies.into_iter().map(Into::into).collect(),
             replacing: p.replacing,
             dependents: p.dependents,
@@ -509,6 +522,11 @@ pub struct PluginSummary {
     pub source: String,
     pub versions: Vec<String>,
     pub latest: Option<String>,
+    /// Descriptive metadata of the latest release.
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub provides: Vec<String>,
+    pub tags: Vec<String>,
 }
 #[derive(Debug, Clone, uniffi::Enum)]
 pub enum OverviewItem {
@@ -549,6 +567,10 @@ impl From<pm::catalog::CatalogOverview> for CatalogOverview {
                             source: plugin.source,
                             versions: plugin.versions,
                             latest: plugin.latest,
+                            title: plugin.title,
+                            description: plugin.description,
+                            provides: plugin.provides,
+                            tags: plugin.tags,
                         },
                     },
                 })
@@ -574,10 +596,20 @@ pub struct CatalogRelease {
     pub build_sha256: Option<String>,
     /// Package folder in a multi-package repository; `None` for the repository root.
     pub path: Option<String>,
+    /// Descriptive metadata of the released manifest.
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub provides: Vec<String>,
+    pub tags: Vec<String>,
 }
 impl From<pm::catalog::Release> for CatalogRelease {
     fn from(r: pm::catalog::Release) -> Self {
+        let metadata = r.metadata();
         Self {
+            title: metadata.title,
+            description: metadata.description,
+            provides: metadata.provides,
+            tags: metadata.tags,
             id: r.manifest.id,
             version: r.manifest.version,
             source: r.source,
@@ -997,8 +1029,9 @@ pub fn catalog_release(
 /// Read installed state without opening (locking or creating) the workspace.
 #[uniffi::export]
 pub fn read_installed(root: String) -> Result<Vec<InstalledPlugin>> {
-    Ok(pm::check::read_state(std::path::Path::new(&root))?
-        .installed()
+    let root = std::path::Path::new(&root);
+    Ok(pm::check::read_state(root)?
+        .installed_in(root)
         .into_iter()
         .map(Into::into)
         .collect())
@@ -1287,6 +1320,11 @@ mod tests {
             replaces: None,
             catalog: None,
             path: Some("packages/x".into()),
+            clone: Some("mono-0123456789abcdef".into()),
+            title: Some("X".into()),
+            description: None,
+            provides: vec!["theme".into()],
+            tags: vec!["ui".into(), "dark".into()],
             dependencies: vec![],
             replacing: vec![],
             dependents: vec![],
@@ -1296,6 +1334,13 @@ mod tests {
             ("me/x", "src", false)
         );
         assert_eq!(plugin.path.as_deref(), Some("packages/x"));
+        assert_eq!(plugin.clone.as_deref(), Some("mono-0123456789abcdef"));
+        assert_eq!(
+            (plugin.title.as_deref(), plugin.description.as_deref()),
+            (Some("X"), None)
+        );
+        assert_eq!(plugin.provides, ["theme"]);
+        assert_eq!(plugin.tags, ["ui", "dark"]);
         assert_eq!(
             (
                 plugin.current.version.as_str(),
@@ -1316,6 +1361,7 @@ mod tests {
             current: revision("1.0.0"),
             fork_of: None,
             skipped: Vec::new(),
+            warnings: Vec::new(),
         });
         assert!(result.fork_of.is_none());
         assert_eq!(result.current.commit, "1.0.0-commit");
@@ -1325,6 +1371,7 @@ mod tests {
             from: revision("1.0.0"),
             to: revision("1.1.0"),
             changed: true,
+            warnings: Vec::new(),
         });
         assert!(change.changed);
         assert_eq!(
@@ -1406,6 +1453,10 @@ mod tests {
                         source: "src".into(),
                         versions: vec!["1.9.0".into(), "1.10.0".into()],
                         latest: Some("1.10.0".into()),
+                        title: Some("X".into()),
+                        description: Some("An x".into()),
+                        provides: vec!["theme".into()],
+                        tags: vec![],
                     },
                 },
             ],
@@ -1432,6 +1483,12 @@ mod tests {
         };
         assert_eq!(plugin.versions, ["1.9.0", "1.10.0"]);
         assert_eq!(plugin.latest.as_deref(), Some("1.10.0"));
+        assert_eq!(
+            (plugin.title.as_deref(), plugin.description.as_deref()),
+            (Some("X"), Some("An x"))
+        );
+        assert_eq!(plugin.provides, ["theme"]);
+        assert!(plugin.tags.is_empty());
         let v1 = CatalogOverview::from(O {
             location: "l".into(),
             remote: false,
@@ -1451,11 +1508,16 @@ mod tests {
                 },
             );
         }
+        let mut extra = pm::Manifest::default().extra;
+        extra.insert("title".into(), "X".into());
+        extra.insert("provides".into(), "theme".into());
+        extra.insert("tags".into(), vec!["a"].into());
         let release = CatalogRelease::from(Release {
             manifest: pm::Manifest {
                 id: "me/x".into(),
                 version: "1.0.0".into(),
                 fork_of: Some(fork_of()),
+                extra,
                 ..Default::default()
             },
             source: "src".into(),
@@ -1484,6 +1546,12 @@ mod tests {
             Some("https://pkg.example/x.tar.zst")
         );
         assert_eq!(release.build_sha256, Some("d".repeat(64)));
+        assert_eq!(release.title.as_deref(), Some("X"));
+        assert!(release.description.is_none());
+        assert_eq!(
+            (release.provides, release.tags),
+            (vec!["theme".into()], vec!["a".into()])
+        );
         let bare = CatalogRelease::from(Release {
             manifest: pm::Manifest {
                 id: "x".into(),
@@ -1500,6 +1568,7 @@ mod tests {
         assert!(bare.path.is_none());
         assert!(bare.build_url.is_none() && bare.build_sha256.is_none() && bare.fork_of.is_none());
         assert_eq!(bare.file_count, 0);
+        assert!(bare.title.is_none() && bare.provides.is_empty() && bare.tags.is_empty());
     }
 
     #[test]

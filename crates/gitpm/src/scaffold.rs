@@ -12,9 +12,22 @@ pub fn validate_name(name: &str) -> Result<()> {
     identity::valid_part(name)
 }
 
-/// New single-package repository (the root is the package `id`) with release 0.1.0 at
-/// `directory`, which must not exist yet.
-fn create_repo(directory: &Path, id: &str) -> Result<PathBuf> {
+/// `plugin.json` of a new package: ID, version 0.1.0 and the name part of the ID as
+/// its `title` (so the metadata keys are visible in the scaffold).
+fn new_manifest(id: &str, name: &str) -> Manifest {
+    let mut extra = serde_json::Map::new();
+    extra.insert("title".into(), name.into());
+    Manifest {
+        id: id.to_owned(),
+        version: "0.1.0".into(),
+        extra,
+        ..Default::default()
+    }
+}
+
+/// New single-package repository (the root is the package `id`) with version 0.1.0 at
+/// `directory`, which must not exist yet; `release`: also tag it.
+fn create_repo(directory: &Path, id: &str, release: bool) -> Result<PathBuf> {
     crate::valid_id(id)?;
     let name = id.rsplit('/').next().unwrap_or(id);
     if let Some(parent) = directory.parent().filter(|p| !p.as_os_str().is_empty()) {
@@ -32,13 +45,16 @@ fn create_repo(directory: &Path, id: &str) -> Result<PathBuf> {
         let tag = identity::release_tag(id, "0.1.0");
         let next_tag = identity::release_tag(id, "0.1.1");
         let source = shell_quote(&fs::canonicalize(&directory)?.to_string_lossy());
-        let m = Manifest {
-            id: id.to_owned(),
-            version: "0.1.0".into(),
-            ..Default::default()
-        };
+        let m = new_manifest(id, name);
         fs::write(directory.join("plugin.json"), model::manifest_json(&m)?)?;
         fs::create_dir(directory.join("dist"))?;
+        let install = if release {
+            format!("gitpm install {source} --ref {tag}")
+        } else {
+            format!(
+                "gitpm commit {source} 0.1.0   # release the first version\ngitpm install {source}"
+            )
+        };
         fs::write(
             directory.join("dist/index.js"),
             format!(
@@ -49,7 +65,7 @@ fn create_repo(directory: &Path, id: &str) -> Result<PathBuf> {
         fs::write(
             directory.join("README.md"),
             format!(
-                "# {name}\n\nLocal gitpm demo package, version 0.1.0.\n\nEdit `dist/index.js` directly; there is no build step. `plugin.json` holds the\nplugin ID and version. This is a demo package fixture.\n\nWith the `gitpm` CLI (the workspace is `--root DIR`, `GITPM_ROOT` or `./gitpm-workspace`):\n\n```sh\ngitpm install {source} --ref {tag}\n# After editing this repository:\ngitpm commit {source} 0.1.1\ngitpm update {id} --ref {next_tag}\ngitpm rollback {id}\n```\n\nTo generate a static catalog: add the repository URL/path to sources.txt, then run\n(`GITPM_CATALOG` can replace `--catalog`):\n\n```sh\ngitpm --catalog ./catalog catalog-update\n```\n\nNo remote is configured. If Git identity was missing, the scaffold configured\nPlugin Demo <demo@example.invalid> locally in this repository only.\n"
+                "# {name}\n\nLocal gitpm demo package, version 0.1.0.\n\nEdit `dist/index.js` directly; there is no build step. `plugin.json` holds the\nplugin ID and version. This is a demo package fixture.\n\nWith the `gitpm` CLI (the workspace is `--root DIR`, `GITPM_ROOT` or `./gitpm-workspace`):\n\n```sh\n{install}\n# After editing this repository:\ngitpm commit {source} 0.1.1\ngitpm update {id} --ref {next_tag}\ngitpm rollback {id}\n```\n\nTo generate a static catalog: add the repository URL/path to sources.txt, then run\n(`GITPM_CATALOG` can replace `--catalog`):\n\n```sh\ngitpm --catalog ./catalog catalog-update\n```\n\nNo remote is configured. If Git identity was missing, the scaffold configured\nPlugin Demo <demo@example.invalid> locally in this repository only.\n"
             ),
         )?;
         git(&directory, &["init", "-b", "main"])?;
@@ -59,10 +75,9 @@ fn create_repo(directory: &Path, id: &str) -> Result<PathBuf> {
             &directory,
             &["commit", "-m", &format!("Create {name} 0.1.0")],
         )?;
-        git(
-            &directory,
-            &["tag", "--", &identity::release_tag(id, "0.1.0")],
-        )?;
+        if release {
+            git(&directory, &["tag", "--", &tag])?;
+        }
         Ok(fs::canonicalize(&directory)?)
     })();
     if result.is_err() {
@@ -173,6 +188,8 @@ pub fn commit(repo: &Path, version: &str) -> Result<String> {
 pub fn commit_package(repo: &Path, version: &str, package: Option<&str>) -> Result<String> {
     version_key(version)?;
     let (repo, manifest_path, mut m) = locate(repo, package)?;
+    // Authoring is strict about metadata types; installing is lenient.
+    m.metadata_strict()?;
     let tag = identity::release_tag(&m.id, version);
     ensure!(
         git(&repo, &["tag", "--list", "--", &tag])?.is_empty(),
@@ -189,8 +206,7 @@ pub fn commit_package(repo: &Path, version: &str, package: Option<&str>) -> Resu
         ensure!(
             head.version == version
                 && git(&repo, &["status", "--porcelain"])?.is_empty()
-                && git(&repo, &["log", "-1", "--format=%s"])?
-                    == format!("Release {} {version}", m.id),
+                && released_by_head(&repo, &m.id, version)?,
             VersionConflict,
             "choose a new version"
         );
@@ -232,6 +248,18 @@ pub fn commit_package(repo: &Path, version: &str, package: Option<&str>) -> Resu
     Ok(tag)
 }
 
+/// HEAD is the commit that set `version` of package `id` and only lacks its tag: a
+/// `Release ID VERSION` commit whose tag failed, or the initial commit of `init
+/// --no-release` (`Create NAME 0.1.0` / `Create ID 0.1.0`).
+fn released_by_head(repo: &Path, id: &str, version: &str) -> Result<bool> {
+    let subject = git(repo, &["log", "-1", "--format=%s"])?;
+    let name = id.rsplit('/').next().unwrap_or(id);
+    Ok(subject == format!("Release {id} {version}")
+        || (version == "0.1.0"
+            && (subject == format!("Create {name} 0.1.0")
+                || subject == format!("Create {id} 0.1.0"))))
+}
+
 /// Folder for a new package `name` in a repository with this config: under the first
 /// `PREFIX/*` pattern, else `packages/<name>`.
 fn package_folder(config: &packages::Config, name: &str) -> String {
@@ -253,6 +281,28 @@ pub struct Init {
     /// The package folder inside `repo`; `None`: a new single-package repository whose
     /// root is the package.
     pub folder: Option<String>,
+    /// The release tag `ID@0.1.0`; `None` with [`InitOptions::release`] off.
+    pub tag: Option<String>,
+}
+
+/// Options of [`init_with`].
+#[derive(Clone, Copy, Debug)]
+pub struct InitOptions {
+    /// A `dir` that does not exist (or an empty folder that is not a repository yet)
+    /// becomes a multi-package repository (`gitpm.json` with `["packages/*"]`, the
+    /// package in `packages/<name>`) instead of a single-package one.
+    pub multi: bool,
+    /// Tag the initial commit as release `ID@0.1.0` (default). Off: only the commit;
+    /// release it later with [`commit_package`] (version 0.1.0 or a new one).
+    pub release: bool,
+}
+impl Default for InitOptions {
+    fn default() -> Self {
+        Self {
+            multi: false,
+            release: true,
+        }
+    }
 }
 
 /// Create the package `namespace/name` with release 0.1.0 in the repository `dir`. The
@@ -265,20 +315,40 @@ pub struct Init {
 /// - `dir` is a single-package repository (root `plugin.json`): refused, as is a folder
 ///   that is not a Git repository.
 pub fn init(dir: &Path, namespace: &str, name: &str) -> Result<Init> {
+    init_with(dir, namespace, name, InitOptions::default())
+}
+
+/// [`init`] with options: `multi` makes a new (or empty, not yet a repository) `dir` a
+/// multi-package repository; `release: false` skips the tag.
+pub fn init_with(dir: &Path, namespace: &str, name: &str, options: InitOptions) -> Result<Init> {
     let id = identity::qualified(namespace, name)?;
-    if fs::symlink_metadata(dir).is_err() {
+    let tag = options.release.then(|| identity::release_tag(&id, "0.1.0"));
+    let missing = fs::symlink_metadata(dir).is_err();
+    if missing && !options.multi {
         return Ok(Init {
-            repo: create_repo(dir, &id)?,
+            repo: create_repo(dir, &id, options.release)?,
             folder: None,
+            tag,
         });
     }
-    ensure!(
-        dir.is_dir() && fs::symlink_metadata(dir.join(".git")).is_ok(),
-        InvalidArgument,
-        "{} exists but is not a Git repository; pass a new folder or a repository",
-        dir.display()
-    );
-    let folder = create_package(dir, namespace, name)?;
+    let empty = !missing
+        && dir.is_dir()
+        && fs::symlink_metadata(dir.join(".git")).is_err()
+        && fs::read_dir(dir)?.next().is_none();
+    if !(missing || (empty && options.multi)) {
+        ensure!(
+            dir.is_dir() && fs::symlink_metadata(dir.join(".git")).is_ok(),
+            InvalidArgument,
+            "{} exists but is not a Git repository; pass a new folder or a repository{}",
+            dir.display(),
+            if empty {
+                " (or make this empty folder a multi-package repository with `init --multi`)"
+            } else {
+                ""
+            }
+        );
+    }
+    let folder = add_package(dir, namespace, name, options.release, empty)?;
     let repo = fs::canonicalize(dir)?;
     let relative = folder
         .strip_prefix(&repo)
@@ -288,6 +358,7 @@ pub fn init(dir: &Path, namespace: &str, name: &str) -> Result<Init> {
     Ok(Init {
         repo,
         folder: relative,
+        tag,
     })
 }
 
@@ -303,8 +374,20 @@ pub fn init(dir: &Path, namespace: &str, name: &str) -> Result<Init> {
 /// repository; a failed tag keeps the commit and the error names the tag to create.
 /// Returns the package folder.
 pub fn create_package(repo: &Path, namespace: &str, name: &str) -> Result<PathBuf> {
+    add_package(repo, namespace, name, true, false)
+}
+
+/// [`create_package`]; `release: false` skips the tag; `adopt_empty`: `repo` is an
+/// existing empty folder (not a repository) that becomes the new repository.
+fn add_package(
+    repo: &Path,
+    namespace: &str,
+    name: &str,
+    release: bool,
+    adopt_empty: bool,
+) -> Result<PathBuf> {
     let id = identity::qualified(namespace, name)?;
-    let created = !repo.exists();
+    let created = adopt_empty || !repo.exists();
     if created {
         fs::create_dir_all(repo)?;
         git(repo, &["init", "-b", "main"])?;
@@ -335,7 +418,7 @@ pub fn create_package(repo: &Path, namespace: &str, name: &str) -> Result<PathBu
                 ensure!(
                     !repo.join("plugin.json").exists(),
                     InvalidArgument,
-                    "the repository root is a package (plugin.json); move it into a folder and list that folder in {} first",
+                    "the repository root is a package (plugin.json); move it into a folder and list that folder in {} first, or create the repository with `init --multi`",
                     packages::CONFIG
                 );
                 packages::Config {
@@ -408,11 +491,7 @@ pub fn create_package(repo: &Path, namespace: &str, name: &str) -> Result<PathBu
             .to_path_buf();
         let written = (|| {
             fs::create_dir_all(directory.join("dist"))?;
-            let m = Manifest {
-                id: id.clone(),
-                version: "0.1.0".into(),
-                ..Default::default()
-            };
+            let m = new_manifest(&id, name);
             fs::write(directory.join("plugin.json"), model::manifest_json(&m)?)?;
             fs::write(
                 directory.join("dist/index.js"),
@@ -465,6 +544,9 @@ pub fn create_package(repo: &Path, namespace: &str, name: &str) -> Result<PathBu
             return Err(error);
         }
         // The commit stays: the working tree is left as it is, only the tag is missing.
+        if !release {
+            return Ok(directory);
+        }
         if let Err(error) = git(&repo, &["tag", "--", &tag]) {
             if created {
                 return Err(error);
@@ -479,6 +561,10 @@ pub fn create_package(repo: &Path, namespace: &str, name: &str) -> Result<PathBu
     })();
     if result.is_err() && created {
         let _ = fs::remove_dir_all(&repo);
+        if adopt_empty {
+            // The folder was there (empty) before: leave it as it was.
+            let _ = fs::create_dir(&repo);
+        }
     }
     result
 }
@@ -649,10 +735,10 @@ mod tests {
         );
         let latest = crate::releases::latest(&repo, None).unwrap();
         assert_eq!(latest.manifest.version, "0.2.0");
-        // The manifest stays in canonical form.
+        // The manifest stays in canonical form; the scaffold's title is kept.
         assert_eq!(
             fs::read_to_string(repo.join("plugin.json")).unwrap(),
-            "{\n  \"id\": \"dan/demo1\",\n  \"version\": \"0.2.0\",\n  \"dependencies\": {}\n}\n"
+            "{\n  \"id\": \"dan/demo1\",\n  \"version\": \"0.2.0\",\n  \"dependencies\": {},\n  \"title\": \"demo1\"\n}\n"
         );
     }
 

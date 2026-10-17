@@ -1397,7 +1397,10 @@ fn update_all_previews_applies_and_rejects_unsupported_options() {
     f.release("2.0.0", "hello v2");
     let before = f.state();
     let preview = f.cli(&["update", "all", "--dry-run"], true);
-    assert!(preview.contains("Update hello: 1.0.0 -> 2.0.0"));
+    assert!(
+        preview.contains("hello would be updated 1.0.0 → 2.0.0"),
+        "{preview}"
+    );
     assert!(preview.contains("Nothing was changed."));
     assert_eq!(f.state(), before);
     assert_eq!(f.content(), "hello v1");
@@ -1409,13 +1412,11 @@ fn update_all_previews_applies_and_rejects_unsupported_options() {
         f.cli(&args, false);
         assert_eq!(f.state(), before);
     }
-    assert!(
-        f.cli(&["update", "all"], true)
-            .contains("1 updates, 0 installs")
-    );
+    let out = f.cli(&["update", "all"], true);
+    assert!(out.contains("1 updates, 0 installs"), "{out}");
+    assert!(out.contains("hello updated 1.0.0 → 2.0.0"), "{out}");
     assert_eq!(f.content(), "hello v2");
-    assert!(
-        f.cli(&["update", "all"], true)
-            .contains("0 updates, 0 installs")
-    );
+    let out = f.cli(&["update", "all"], true);
+    assert!(out.contains("0 updates, 0 installs"), "{out}");
+    assert!(out.contains("hello up to date (2.0.0)"), "{out}");
 }

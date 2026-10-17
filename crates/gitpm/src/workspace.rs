@@ -54,6 +54,10 @@ pub struct InstallResult {
     /// installs without an explicit ref); the caller should warn about them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub skipped: Vec<releases::SkippedTag>,
+    /// Metadata keys of the installed manifest with the wrong type, ignored (see
+    /// [`metadata_warnings`]); the caller should show them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 /// Result of update/rollback: `from` → `to`; `changed` is false for a no-op update.
 #[derive(Clone, Debug, Serialize)]
@@ -62,6 +66,17 @@ pub struct RevisionChange {
     pub from: Revision,
     pub to: Revision,
     pub changed: bool,
+    /// Metadata keys of the new manifest with the wrong type, ignored.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+/// `ID VERSION: plugin.json KEY must be …; ignored` for each wrong-typed metadata key.
+/// Installing is lenient about metadata (only authoring refuses it).
+pub(crate) fn metadata_warnings(m: &Manifest) -> Vec<String> {
+    m.metadata_problems()
+        .into_iter()
+        .map(|problem| format!("{} {}: plugin.json {problem}; ignored", m.id, m.version))
+        .collect()
 }
 /// Joint stable-release upgrade plan. No plugins are removed or downgraded.
 #[derive(Clone, Debug, Default, Serialize)]
@@ -266,7 +281,7 @@ impl Manager {
     }
     /// Installed plugins as a flat list (sorted by ID).
     pub fn list(&self) -> Result<Vec<InstalledPlugin>> {
-        Ok(self.state()?.installed())
+        Ok(self.state()?.installed_in(&self.root))
     }
     /// Run `action` on a transaction that stages only the paths it touches; nothing
     /// in the live workspace changes unless the action succeeds.
@@ -704,6 +719,7 @@ impl Manager {
                     from: installed.current.clone(),
                     to: next.clone(),
                     changed: true,
+                    warnings: metadata_warnings(m),
                 });
                 installed.previous = Some(installed.current.clone());
                 installed.current = next;
@@ -835,6 +851,7 @@ impl Manager {
                     from: p.current.clone(),
                     to: p.current.clone(),
                     changed: false,
+                    warnings: Vec::new(),
                 });
             }
             if dev {
@@ -877,6 +894,7 @@ impl Manager {
                 from: p.current,
                 to: next,
                 changed: true,
+                warnings: metadata_warnings(&m),
             })
         })
     }
@@ -929,6 +947,7 @@ impl Manager {
                 from: p.current,
                 to: previous,
                 changed: true,
+                warnings: Vec::new(),
             })
         })
     }
@@ -1027,6 +1046,7 @@ impl Manager {
                 current: installed.current.clone(),
                 fork_of: installed.fork_of.clone(),
                 skipped: Vec::new(),
+                warnings: Vec::new(),
             };
             state.plugins.insert(id.to_owned(), installed);
             txn.deploy(id, &format!("plugins/{id}"), path.as_deref())?;
@@ -1191,6 +1211,7 @@ fn restore_shared(
         current: installed.current.clone(),
         fork_of: installed.fork_of.clone(),
         skipped: Vec::new(),
+        warnings: Vec::new(),
     };
     state.forgotten.remove(id);
     state.plugins.insert(id.to_owned(), installed);
@@ -1392,6 +1413,7 @@ fn adopt(
         current,
         fork_of: m.fork_of.clone(),
         skipped: Vec::new(),
+        warnings: metadata_warnings(m),
     })
 }
 

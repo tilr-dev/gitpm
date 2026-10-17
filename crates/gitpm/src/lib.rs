@@ -35,7 +35,8 @@ mod workspace;
 pub use error::{Error, Result};
 pub use lost_work::LostWork;
 pub use model::{
-    ForkOf, Installed, InstalledPlugin, Manifest, Replaces, Revision, STATE_FORMAT, State, valid_id,
+    ForkOf, Installed, InstalledPlugin, Manifest, Metadata, Replaces, Revision, STATE_FORMAT,
+    State, valid_id,
 };
 pub use workspace::{
     DependencyRewrite, ForkReplacement, ForkStep, ForkedPackage, HeldBack, IncompatibleConsumer,
