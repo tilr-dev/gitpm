@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.4.0](https://github.com/tilr-dev/gitpm/compare/v0.3.0...v0.4.0) (2026-10-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* the fork ID NAMESPACE/NAME form and init --in are removed; --into DIR is required and names the repository itself. Library: Manager::fork with a default namespace, identity namespace config and scaffold::create/create_at/create_namespaced are removed. 0.4 is not downgrade-safe: 0.3 ignores clone/path/forgotten in state.json and cannot install catalog releases with path.
+
+### Features
+
+* multi-package repositories ([#9](https://github.com/tilr-dev/gitpm/issues/9)) ([744809d](https://github.com/tilr-dev/gitpm/commit/744809ddfb7657ec6b8ace7d63ba6f10560248fb))
+
 ## [0.3.0](https://github.com/tilr-dev/gitpm/compare/v0.2.0...v0.3.0) (2026-10-16)
 
 
