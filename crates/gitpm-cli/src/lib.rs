@@ -1,6 +1,32 @@
 //! Text rendering for the `gitpm` command-line client.
 //! All business logic lives in the `gitpm` library; this crate only adds presentation.
 
+/// The version `gitpm --version` prints: the package version, plus `-dev+<short hash>`
+/// when built from a Git checkout of this repository that is not at a release tag (see
+/// `build.rs`; packaged builds, such as from crates.io, print the plain version).
+pub fn version() -> String {
+    format!(
+        "{}{}",
+        env!("CARGO_PKG_VERSION"),
+        option_env!("GITPM_BUILD_SUFFIX").unwrap_or_default()
+    )
+}
+
+#[cfg(test)]
+mod version_tests {
+    #[test]
+    fn version_starts_with_the_package_version() {
+        let version = super::version();
+        let suffix = version
+            .strip_prefix(env!("CARGO_PKG_VERSION"))
+            .expect("starts with CARGO_PKG_VERSION");
+        assert!(
+            suffix.is_empty() || suffix.starts_with("-dev+") && suffix.len() > "-dev+".len(),
+            "{version}"
+        );
+    }
+}
+
 /// Text overview of a catalog, as printed by `gitpm info`.
 pub mod catalog {
     use gitpm::catalog::{

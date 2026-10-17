@@ -53,18 +53,19 @@ impl Manifest {
 
 /// Descriptive metadata of a package from `plugin.json`. gitpm stores and reports it
 /// (state, `list`, catalog) but never interprets it: a host can, for example, group
-/// installed packages by what they `provide`. All fields are optional.
+/// installed packages by what they `provide`. All fields are optional; serialized like
+/// everywhere else gitpm reports metadata: an absent string is `null`, an absent list `[]`.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Metadata {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub title: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub description: Option<String>,
     /// Services the package provides; `"provides": "theme"` in `plugin.json` is read as
     /// `["theme"]`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub provides: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub tags: Vec<String>,
 }
 impl Metadata {

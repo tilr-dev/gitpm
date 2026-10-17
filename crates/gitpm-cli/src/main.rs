@@ -116,8 +116,8 @@ fn confirm_lost_work(plan: &gitpm::UninstallPlan) -> Result<bool> {
     }
     Ok(matches!(answer.trim().to_lowercase().as_str(), "y" | "yes"))
 }
-/// `ORIGINAL → PROVIDER INSTALLED_VERSION for: consumers`; the version consumers see
-/// (a fork's declared `replaces.version`) is added when it differs.
+/// `ORIGINAL replaced by PROVIDER INSTALLED_VERSION for: consumers`; the version
+/// consumers see (a fork's declared `replaces.version`) is added when it differs.
 fn print_replacement(manager: &Manager, plan: &gitpm::ReplacementPlan) -> Result<()> {
     let installed = manager
         .state()?
@@ -126,7 +126,7 @@ fn print_replacement(manager: &Manager, plan: &gitpm::ReplacementPlan) -> Result
         .map(|p| p.current.version.clone())
         .unwrap_or_else(|| plan.version.clone());
     println!(
-        "{} → {} {installed}{} for: {}",
+        "{} replaced by {} {installed}{} for: {}",
         plan.original,
         plan.provider,
         if installed == plan.version {
@@ -148,13 +148,28 @@ fn warn(warnings: &[String]) {
         eprintln!("Warning: {warning}");
     }
 }
-/// `installed ID@VERSION from SOURCE`.
-fn print_installed(result: &gitpm::InstallResult) {
+/// `installed ID@VERSION from SOURCE`, or `ID already installed (VERSION)` (with `; run
+/// update` when the source has another revision, naming the requested ref or channel).
+fn print_installed(result: &gitpm::InstallResult, requested: Option<&str>) {
     warn(&result.warnings);
-    println!(
-        "installed {}@{} from {}",
-        result.id, result.current.version, result.source
-    );
+    if result.already_installed {
+        let hint = match (&result.available, requested) {
+            (None, _) => String::new(),
+            (Some(_), None) => "; run update".to_owned(),
+            (Some(_), Some(flags)) => {
+                format!("; requested {flags} — run update {} {flags}", result.id)
+            }
+        };
+        println!(
+            "{} already installed ({}){hint}",
+            result.id, result.current.version
+        );
+    } else {
+        println!(
+            "installed {}@{} from {}",
+            result.id, result.current.version, result.source
+        );
+    }
 }
 /// `replace ORIGINAL --back`: which replacement was dropped and who uses the original now.
 fn print_switch_back(manager: &Manager, plan: &gitpm::ReplacementPlan) -> Result<()> {
@@ -180,7 +195,7 @@ fn print_switch_back(manager: &Manager, plan: &gitpm::ReplacementPlan) -> Result
         None => String::new(),
     };
     println!(
-        "{}: replacement {fork} removed, original restored ({} {installed} {consumers}){remains}",
+        "{} switched back from {fork} ({} {installed} {consumers}){remains}",
         plan.original, plan.original
     );
     Ok(())
@@ -241,15 +256,15 @@ fn print_update_all(before: &gitpm::State, plan: &gitpm::UpdateAllPlan, dry_run:
 /// What sync-dist did (or would do); problems go to stderr.
 fn print_dist_sync(sync: &gitpm::DistSync, dry_run: bool) {
     let (deploy, remove) = if dry_run {
-        ("Would deploy", "Would remove")
+        ("would be deployed to", "would be removed from")
     } else {
-        ("Deployed", "Removed")
+        ("deployed to", "removed from")
     };
     for id in &sync.deployed {
-        println!("{deploy}: dist/{id}");
+        println!("{id} {deploy} dist/{id}");
     }
     for id in &sync.removed {
-        println!("{remove}: dist/{id}");
+        println!("{id} {remove} dist/{id}");
     }
     warn_dist(sync);
     if sync.is_empty() && sync.skipped.is_empty() {
@@ -270,15 +285,15 @@ fn warn_dist(sync: &gitpm::DistSync) {
         );
     }
 }
-/// `ID updated A → B` or `ID up to date (A)`.
-fn print_change(change: &gitpm::RevisionChange) {
+/// `ID updated A → B` or `ID up to date (A)` (`verb`: updated, rolled back).
+fn print_change(change: &gitpm::RevisionChange, verb: &str) {
     warn(&change.warnings);
     let short = |commit: &str| commit.chars().take(12).collect::<String>();
     if !change.changed {
         println!("{} up to date ({})", change.id, change.to.version);
     } else if change.from.version == change.to.version {
         println!(
-            "{} updated {} ({} → {})",
+            "{} {verb} {} ({} → {})",
             change.id,
             change.to.version,
             short(&change.from.commit),
@@ -286,7 +301,7 @@ fn print_change(change: &gitpm::RevisionChange) {
         );
     } else {
         println!(
-            "{} updated {} → {}",
+            "{} {verb} {} → {}",
             change.id, change.from.version, change.to.version
         );
     }
@@ -307,9 +322,9 @@ fn print_package_fork(fork: &gitpm::PackageFork) {
     }
     for package in &fork.packages {
         println!(
-            "Forked: {} → {} ({})",
-            package.original,
+            "{} forked from {} ({})",
             package.id,
+            package.original,
             if package.path.is_empty() {
                 "repository root"
             } else {
@@ -443,29 +458,71 @@ const COMMANDS: &[&str] = &[
 ];
 const DEFAULT_ROOT: &str = "gitpm-workspace";
 const DEFAULT_SOURCES: &str = "sources.txt";
-const USAGE: &str = "gitpm [--root DIR] [--catalog DIR_OR_JSON_OR_URL] COMMAND
+/// The usage text in parts: free text, or the block of the commands it documents.
+/// `gitpm --help` prints all parts; `gitpm COMMAND --help` only the blocks of COMMAND.
+struct Help {
+    commands: &'static [&'static str],
+    text: &'static str,
+}
+const HELP: &[Help] = &[
+    Help {
+        commands: &[],
+        text: "gitpm [--root DIR] [--catalog DIR_OR_JSON_OR_URL] COMMAND
 
-Workspace (installed plugins):
-  install GIT_SOURCE [ID] [--ref REF]  install the latest Git release (tag); --ref picks a
+Workspace (installed plugins):",
+    },
+    Help {
+        commands: &["install"],
+        text: "  install GIT_SOURCE [ID] [--ref REF]  install the latest Git release (tag); --ref picks a
                                    tag, branch or commit; --channel dev follows the default
                                    branch. ID (or --package ID) picks a package of a
-                                   repository with gitpm.json (needed when it has several)
-  install-catalog ID [--version V]  install an exact catalog release (latest if omitted)
-  list [--provides SERVICE]        installed state (JSON); --provides keeps only packages
-                                   whose plugin.json provides SERVICE
-  check                            compare installed versions with the catalog
-  update ID [--ref REF]             update to the latest Git release; --channel dev follows
-                                   origin HEAD
-  update all [--dry-run]           jointly upgrade compatible releases; preview with --dry-run
-  rollback ID                      swap current and previous version
-  enable ID | disable ID [--force]  deploy / remove dist/ID; disable refuses while other
-                                   installed plugins depend on ID unless --force
-  forget ID [--force] | restore ID  unregister (keeps the clone, removes dist/ID) /
-                                   re-register a retained clone
-  uninstall ID [--force]            remove state, repository and dist; asks on a TTY
+                                   repository with gitpm.json (needed when it has several)",
+    },
+    Help {
+        commands: &["install-catalog"],
+        text: "  install-catalog ID [--version V]  install an exact catalog release (latest if omitted)",
+    },
+    Help {
+        commands: &["list"],
+        text: "  list [--provides SERVICE]        installed state (JSON); --provides keeps only packages
+                                   whose plugin.json provides SERVICE",
+    },
+    Help {
+        commands: &["check"],
+        text: "  check                            compare installed versions with the catalog",
+    },
+    Help {
+        commands: &["update"],
+        text: "  update ID [--ref REF]             update to the latest Git release; --channel dev follows
+                                   origin HEAD",
+    },
+    Help {
+        commands: &["update"],
+        text: "  update all [--dry-run]           jointly upgrade compatible releases; preview with --dry-run",
+    },
+    Help {
+        commands: &["rollback"],
+        text: "  rollback ID                      swap current and previous version",
+    },
+    Help {
+        commands: &["enable", "disable"],
+        text: "  enable ID | disable ID [--force]  deploy / remove dist/ID; disable refuses while other
+                                   installed plugins depend on ID unless --force",
+    },
+    Help {
+        commands: &["forget", "restore"],
+        text: "  forget ID [--force] | restore ID  unregister (keeps the clone, removes dist/ID) /
+                                   re-register a retained clone",
+    },
+    Help {
+        commands: &["uninstall"],
+        text: "  uninstall ID [--force]            remove state, repository and dist; asks on a TTY
                                    before losing local work and refuses while others
-                                   depend on ID; --force skips both
-  fork ID [ID...] --ns NS --into DIR  fork installed packages of one repository as
+                                   depend on ID; --force skips both",
+    },
+    Help {
+        commands: &["fork"],
+        text: "  fork ID [ID...] --ns NS --into DIR  fork installed packages of one repository as
                                    NS/<same name> into the fork repository DIR: a new
                                    folder becomes a copy of the source (history, local
                                    edits; unforked sibling packages removed), a repository
@@ -473,40 +530,85 @@ Workspace (installed plugins):
                                    is refused. Dependencies between forks are rewritten
     [--replace [--version V] [--force]]  then release each fork (tag NS/NAME@V, V defaults
                                    to the forked version), install it and replace ID with
-                                   it for every consumer
-  replace ORIGINAL --with FORK [--force]  make FORK provide ORIGINAL for every consumer;
-                                   removes dist/ORIGINAL (FORK keeps its own dist/)
-  replace ORIGINAL --back [--force]  switch every consumer back to the installed ORIGINAL
+                                   it for every consumer",
+    },
+    Help {
+        commands: &["replace"],
+        text: "  replace ORIGINAL --with FORK [--force]  make FORK provide ORIGINAL for every consumer;
+                                   removes dist/ORIGINAL (FORK keeps its own dist/)",
+    },
+    Help {
+        commands: &["replace"],
+        text: "  replace ORIGINAL --back [--force]  switch every consumer back to the installed ORIGINAL
                                    and deploy dist/ORIGINAL again
-                                   (incompatible consumers: asks on a TTY, else --force)
-  sync-dist [--dry-run]            make dist/ hold exactly the active plugins (installed,
+                                   (incompatible consumers: asks on a TTY, else --force)",
+    },
+    Help {
+        commands: &["sync-dist"],
+        text: "  sync-dist [--dry-run]            make dist/ hold exactly the active plugins (installed,
                                    enabled, not replaced); run once after upgrading a
                                    workspace from gitpm 0.4 (mutating commands
-                                   reconcile dist/ automatically)
-
-Authoring:
-  init NAMESPACE/NAME --into DIR   create the package with release 0.1.0 (init = create):
+                                   reconcile dist/ automatically)",
+    },
+    Help {
+        commands: &[],
+        text: "
+Authoring:",
+    },
+    Help {
+        commands: &["init", "create"],
+        text: "  init NAMESPACE/NAME --into DIR   create the package with release 0.1.0 (init = create):
   create NAMESPACE/NAME --into DIR  a new DIR becomes a single-package repository; a
                                    repository DIR with gitpm.json (or without one and no
                                    root package) gets the folder PREFIX/NAME
     [--multi] [--no-release]       --multi: a new (or empty) DIR becomes a multi-package
                                    repository (gitpm.json, packages/NAME); --no-release:
-                                   commit only, no tag (release later with commit)
-  commit REPO VERSION              stage ALL changes, commit, create a release tag;
-    [--package ID]                 --package picks the package of a multi-package repo
-  remote REPO URL                  add or replace origin (fetch and push)
-  auth check GIT_URL               check repository read access without installing
-
-Catalog (a local folder of static JSON files, or an HTTP(S) URL for reading):
-  info                             show the catalog's directories and plugin versions
-  catalog                          show directory links at this catalog level (JSON)
-  catalog-update [--sources FILE]   generate/refresh a local catalog from the Git release
-                                   tags of the repositories listed in FILE
-  register GIT_SOURCE --ref REF     add one committed version to a local catalog
+                                   commit only, no tag (release later with commit)",
+    },
+    Help {
+        commands: &["commit"],
+        text: "  commit REPO VERSION              stage ALL changes, commit, create a release tag;
+    [--package ID]                 --package picks the package of a multi-package repo",
+    },
+    Help {
+        commands: &["remote"],
+        text: "  remote REPO URL                  add or replace origin (fetch and push)",
+    },
+    Help {
+        commands: &["auth"],
+        text: "  auth check GIT_URL               check repository read access without installing",
+    },
+    Help {
+        commands: &[],
+        text: "
+Catalog (a local folder of static JSON files, or an HTTP(S) URL for reading):",
+    },
+    Help {
+        commands: &["info"],
+        text: "  info                             show the catalog's directories and plugin versions",
+    },
+    Help {
+        commands: &["catalog"],
+        text: "  catalog                          show directory links at this catalog level (JSON)",
+    },
+    Help {
+        commands: &["catalog-update"],
+        text: "  catalog-update [--sources FILE]   generate/refresh a local catalog from the Git release
+                                   tags of the repositories listed in FILE",
+    },
+    Help {
+        commands: &["register"],
+        text: "  register GIT_SOURCE --ref REF     add one committed version to a local catalog
     [--package ID]                 package of a multi-package repository
-    [--build-url HTTPS_URL --build-sha256 SHA256]  optional build metadata
-  migrate-catalog                  split a local v1 catalog into plugin folders
-
+    [--build-url HTTPS_URL --build-sha256 SHA256]  optional build metadata",
+    },
+    Help {
+        commands: &["migrate-catalog"],
+        text: "  migrate-catalog                  split a local v1 catalog into plugin folders",
+    },
+    Help {
+        commands: &[],
+        text: "
 Settings (flag, then environment, then default; there is no config file):
   --root DIR      GITPM_ROOT       workspace directory; default ./gitpm-workspace
   --catalog LOC   GITPM_CATALOG    catalog folder, catalog.json or URL; no default
@@ -514,7 +616,25 @@ Settings (flag, then environment, then default; there is no config file):
   --sources FILE  GITPM_SOURCES    Git sources list for catalog-update; default ./sources.txt
 
 Nothing is built or executed and nothing is pushed or uploaded: gitpm clones Git
-repositories and copies their dist/ folder.";
+repositories and copies their dist/ folder.",
+    },
+];
+/// The whole usage text (`gitpm --help`).
+fn usage() -> String {
+    HELP.iter()
+        .map(|part| part.text)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+/// The usage blocks of one command (`gitpm COMMAND --help`); `None`: not a command.
+fn command_usage(command: &str) -> Option<String> {
+    let blocks: Vec<&str> = HELP
+        .iter()
+        .filter(|part| part.commands.contains(&command))
+        .map(|part| part.text)
+        .collect();
+    (!blocks.is_empty()).then(|| blocks.join("\n"))
+}
 fn run() -> Result<()> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let root = option(&mut args, "--root")?
@@ -524,11 +644,22 @@ fn run() -> Result<()> {
         .or_else(|| std::env::var("GITPM_CATALOG").ok())
         .filter(|location| !location.is_empty());
     if args.is_empty() || matches!(args[0].as_str(), "help" | "--help" | "-h") {
-        println!("{USAGE}");
+        println!("{}", usage());
         return Ok(());
     }
     if matches!(args[0].as_str(), "--version" | "-V") {
-        println!("gitpm {}", env!("CARGO_PKG_VERSION"));
+        println!("gitpm {}", gitpm_cli::version());
+        return Ok(());
+    }
+    // `gitpm COMMAND --help`: that command's usage only.
+    if args[1..].iter().any(|a| a == "--help" || a == "-h") {
+        let command = args[0].as_str();
+        let text = COMMANDS
+            .contains(&command)
+            .then(|| command_usage(command))
+            .flatten()
+            .ok_or_else(|| anyhow::anyhow!("unknown command: {command}; use --help"))?;
+        println!("{text}");
         return Ok(());
     }
     let reference = option(&mut args, "--ref")?;
@@ -760,7 +891,9 @@ fn run() -> Result<()> {
             return Ok(());
         }
         "migrate-catalog" => {
-            catalog::migrate(&require_catalog()?)?;
+            let location = require_catalog()?;
+            catalog::migrate(&location)?;
+            println!("Catalog migrated: {location} (format v2, one folder per plugin)");
             return Ok(());
         }
         "init" | "create" => {
@@ -864,8 +997,14 @@ fn run() -> Result<()> {
             return Ok(());
         }
         "commit" => {
-            let tag = scaffold::commit_package(Path::new(id), &args[2], package.as_deref())?;
-            println!("Created local commit and tag {tag}.");
+            let version = &args[2];
+            let tag = scaffold::commit_package(Path::new(id), version, package.as_deref())?;
+            // `ID@VERSION` names the package; a legacy `vVERSION` tag does not.
+            let package = tag.rsplit_once('@').map_or_else(
+                || scaffold::shell_quote(id),
+                |(package, _)| package.to_owned(),
+            );
+            println!("{package} committed {version} (local commit and tag {tag})");
             return Ok(());
         }
         "install-catalog" => {
@@ -942,10 +1081,25 @@ fn run() -> Result<()> {
                     skipped.name, skipped.reason
                 );
             }
-            print_installed(&result);
+            let requested = match (&reference, dev) {
+                (Some(reference), _) => Some(format!(
+                    "--ref {}",
+                    if reference
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || "@._/+-".contains(c))
+                    {
+                        reference.clone()
+                    } else {
+                        scaffold::shell_quote(reference)
+                    }
+                )),
+                (None, true) => Some("--channel dev".to_owned()),
+                (None, false) => None,
+            };
+            print_installed(&result, requested.as_deref());
         }
         "install-catalog" => {
-            print_installed(&manager.install_from_catalog(id, version.as_deref())?);
+            print_installed(&manager.install_from_catalog(id, version.as_deref())?, None);
         }
         "update" => {
             if update_all {
@@ -957,15 +1111,25 @@ fn run() -> Result<()> {
                 };
                 print_update_all(&before, &plan, dry_run);
             } else {
-                print_change(&manager.update_channel(id, reference.as_deref(), dev)?);
+                print_change(
+                    &manager.update_channel(id, reference.as_deref(), dev)?,
+                    "updated",
+                );
             }
         }
-        "rollback" => {
-            manager.rollback(id)?;
+        "rollback" => print_change(&manager.rollback(id)?, "rolled back"),
+        "enable" => {
+            manager.set_enabled(id, true)?;
+            println!("{id} enabled");
         }
-        "enable" => manager.set_enabled(id, true)?,
-        "disable" => manager.set_enabled_with(id, false, force)?,
-        "forget" => manager.forget_with(id, force)?,
+        "disable" => {
+            manager.set_enabled_with(id, false, force)?;
+            println!("{id} disabled");
+        }
+        "forget" => {
+            manager.forget_with(id, force)?;
+            println!("{id} forgotten (clone kept; restore re-registers it)");
+        }
         "replace" => {
             let plan = match &with {
                 Some(fork) => manager.replace_plan(id, fork)?,
@@ -978,7 +1142,9 @@ fn run() -> Result<()> {
             }
         }
         "restore" => {
-            manager.restore(id)?;
+            let restored = manager.restore(id)?;
+            warn(&restored.warnings);
+            println!("{id} restored {}", restored.current.version);
         }
         "sync-dist" => {
             let sync = if dry_run {
@@ -1017,6 +1183,7 @@ fn run() -> Result<()> {
                     bail!("uninstall cancelled; nothing was changed");
                 }
             }
+            println!("{id} uninstalled");
         }
         _ => bail!("unknown command: {command}"),
     }
@@ -1040,12 +1207,20 @@ fn run() -> Result<()> {
             Err(error) => eprintln!("Warning: cannot check dist/: {error}"),
         }
     }
-    // These print what they did instead.
-    if !matches!(
-        command,
-        "list" | "install" | "install-catalog" | "update" | "sync-dist"
-    ) {
-        println!("OK: {command} {id}");
-    }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_command_has_a_usage_block() {
+        for command in COMMANDS {
+            let text = command_usage(command).unwrap_or_else(|| panic!("{command}"));
+            assert!(usage().contains(&text), "{command}");
+            assert!(text.contains(&format!(" {command} ")), "{command}: {text}");
+        }
+        assert!(command_usage("nope").is_none());
+    }
 }

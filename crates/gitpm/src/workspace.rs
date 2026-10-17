@@ -63,6 +63,19 @@ pub struct InstallResult {
     /// [`metadata_warnings`]); the caller should show them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// The package was already installed from this source: nothing was changed and
+    /// `current` is the installed revision (since 0.5; installing it again used to be
+    /// refused with `already_installed`, which a different source still gets).
+    #[serde(
+        rename = "alreadyInstalled",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub already_installed: bool,
+    /// With `already_installed`: the revision the source resolved to (latest release, or
+    /// the requested ref or dev channel) when it differs from the installed one; `update`
+    /// with the same ref or channel moves to it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub available: Option<Revision>,
 }
 /// Result of update/rollback: `from` → `to`; `changed` is false for a no-op update.
 #[derive(Clone, Debug, Serialize)]
@@ -551,13 +564,29 @@ impl Manager {
         } else {
             fetch.source.to_owned()
         };
-        self.transaction(|txn, state| {
+        // Installed from this source already: report it; the transaction is dropped
+        // (by returning an error out of it) so nothing is written.
+        let mut already = None;
+        let installed = self.transaction(|txn, state| {
             let fetch = Fetch {
                 source: &source,
                 ..fetch
             };
             let cloned = clone_revision(txn, &fetch, "incoming")?;
             let m = cloned.manifest.clone();
+            if let Some(installed) = state.plugins.get(&m.id).filter(|p| p.source == source) {
+                let resolved = revision(&cloned.repo, &m)?;
+                already = Some(InstallResult {
+                    id: m.id.clone(),
+                    source: source.clone(),
+                    current: installed.current.clone(),
+                    fork_of: installed.fork_of.clone(),
+                    skipped: cloned.skipped.clone(),
+                    warnings: Vec::new(),
+                    already_installed: true,
+                    available: (resolved.commit != installed.current.commit).then_some(resolved),
+                });
+            }
             check_new_id(txn.root(), state, &m)?;
             // Everything installed stays at its version; the new plugin is added on top.
             let mut next = state.clone();
@@ -578,7 +607,11 @@ impl Manager {
             let mut result = adopt(txn, state, cloned, source.clone(), origin.clone())?;
             result.skipped = skipped;
             Ok(result)
-        })
+        });
+        match (installed, already) {
+            (Err(Error::AlreadyInstalled { .. }), Some(already)) => Ok(already),
+            (installed, _) => installed,
+        }
     }
     /// Install catalog releases chosen by the solver (inside the current transaction).
     fn install_missing(
@@ -1188,6 +1221,8 @@ impl Manager {
                 fork_of: installed.fork_of.clone(),
                 skipped: Vec::new(),
                 warnings: Vec::new(),
+                already_installed: false,
+                available: None,
             };
             state.plugins.insert(id.to_owned(), installed);
             txn.deploy(id, &format!("plugins/{id}"), path.as_deref(), &head)?;
@@ -1524,6 +1559,8 @@ fn restore_shared(
         fork_of: installed.fork_of.clone(),
         skipped: Vec::new(),
         warnings: Vec::new(),
+        already_installed: false,
+        available: None,
     };
     state.forgotten.remove(id);
     state.plugins.insert(id.to_owned(), installed);
@@ -1726,6 +1763,8 @@ fn adopt(
         fork_of: m.fork_of.clone(),
         skipped: Vec::new(),
         warnings: metadata_warnings(m),
+        already_installed: false,
+        available: None,
     })
 }
 
@@ -2462,8 +2501,19 @@ mod tests {
     #[test]
     fn install_refusals_leave_the_workspace_unchanged() {
         let (ws, m) = Ws::installed("dan/demo1");
-        let error = ws.refuses("already_installed", || m.install(ws.author.source()));
-        assert_eq!(error.to_string(), "already installed: dan/demo1");
+        // The same source again: reported, nothing changed.
+        let before = tree_hash(&ws.root);
+        let again = m.install(ws.author.source()).unwrap();
+        assert!(
+            again.already_installed && again.available.is_none(),
+            "{again:?}"
+        );
+        assert_eq!(
+            again.current,
+            m.state().unwrap().plugins["dan/demo1"].current
+        );
+        assert_eq!(tree_hash(&ws.root), before);
+        ws.no_leftovers();
         ws.refuses("invalid_argument", || m.install("-uevil"));
         ws.refuses("invalid_argument", || {
             m.install_ref(ws.author.source(), Some("-x"), None)
@@ -2948,9 +2998,12 @@ mod tests {
         m.update("dan/demo1").unwrap();
         assert_eq!(m.check().unwrap()[0].status, check::CheckStatus::UpToDate);
         ws.refuses("catalog", || m.install_from_catalog("dan/missing", None));
-        ws.refuses("already_installed", || {
+        // Installed from Git, offered by the catalog from the same source: already there.
+        assert!(
             m.install_from_catalog("dan/demo1", None)
-        });
+                .unwrap()
+                .already_installed
+        );
     }
 
     #[test]

@@ -80,14 +80,24 @@ acme/greeter updated 0.1.0 → 0.2.0
 $ cat gitpm-workspace/dist/acme/greeter/index.js
 export const greeting = "greeter v2";
 $ gitpm rollback acme/greeter
-OK: rollback acme/greeter
+acme/greeter rolled back 0.2.0 → 0.1.0
 $ cat gitpm-workspace/dist/acme/greeter/index.js
 export const greeting = "greeter v1";
 $ gitpm update acme/greeter
 acme/greeter updated 0.1.0 → 0.2.0
 $ gitpm update acme/greeter
 acme/greeter up to date (0.2.0)
+$ gitpm install ./greeter         # installed already: nothing changes, exit 0
+acme/greeter already installed (0.2.0)
 ```
+
+Installing an installed package again from the same source changes nothing and exits 0:
+`ID already installed (VERSION)`, with `; run update` when the source resolves to another
+revision (a newer release; `update` moves to it; with `--ref REF` or `--channel dev` it
+says `requested --ref REF — run update ID --ref REF`). The same ID from another source is
+still refused (`already_installed`). "Same source" means the same string as recorded at
+install, after a local path is canonicalized: a `file://` URL against a plain path, or a
+URL with and without `.git`, counts as another source.
 
 A catalog is generated from the release tags of the repositories listed in a sources
 file (paths are relative to that file). `gitpm init NAMESPACE/NAME --into DIR` (same as
@@ -122,7 +132,7 @@ Version 0.1.0: Git commit and tag acme/hello@0.1.0.
 …
 $ echo 'export const greeting = "hello v2";' > hello/dist/index.js
 $ gitpm commit hello 0.1.1
-Created local commit and tag acme/hello@0.1.1.
+acme/hello committed 0.1.1 (local commit and tag acme/hello@0.1.1)
 $ echo './hello' >> sources.txt
 $ gitpm catalog-update
 Reading releases: /…/greeter
@@ -154,7 +164,7 @@ tag, install, replace):
 $ gitpm fork acme/hello --ns me --into hello-fork
 Fork created: /…/hello-fork
 Git history and local edits are kept; the original repository is the upstream remote.
-Forked: acme/hello → me/hello (repository root)
+me/hello forked from acme/hello (repository root)
 forkOf records each origin; replaces says the fork can stand in for it (used only
 after an explicit replace). The original installations are unchanged.
 
@@ -163,12 +173,11 @@ Next steps (or all at once: add --replace):
   gitpm install '/…/hello-fork' me/hello
   gitpm replace acme/hello --with me/hello
 Set your own origin with: gitpm remote '/…/hello-fork' GIT_URL
-OK: fork acme/hello
 $ ls -d hello*
 hello
 hello-fork
 $ gitpm uninstall acme/hello
-OK: uninstall acme/hello
+acme/hello uninstalled
 ```
 
 `fork ID --ns NAMESPACE --into DIR --replace` does all of it at once: fork, release the
@@ -179,8 +188,8 @@ TTY, otherwise only with `--force`. The fork folder is never removed again: when
 release, install or replace step fails, the command says per package what is left and how
 to finish or undo (for example `gitpm install … me/hello` then `gitpm replace …`, or
 `gitpm uninstall me/hello` and delete the folder). `replace` prints the installed version
-of the provider and, when it differs, the version it stands in as (`acme/hello → me/hello
-1.5.0 (as acme/hello 1.0.0) for: …`).
+of the provider and, when it differs, the version it stands in as (`acme/hello replaced by
+me/hello 1.5.0 (as acme/hello 1.0.0) for: …`).
 
 Changed in 0.4: the form `fork ID NAMESPACE/NAME [--into DIR]` (fork folder
 `DIR/NAMESPACE/NAME`, default `./NAMESPACE/NAME`) and `init NAMESPACE/NAME` without a
@@ -192,18 +201,35 @@ Changed in 0.5:
   `plugin.json`, reported by `list` (and `list --provides SERVICE`), `info` and the FFI;
   `init` writes a `title`. `info`/`browse` now read each listed plugin's latest
   `release.json` (one extra HTTP request per plugin on a remote catalog, at most 40).
-- `install` and `install-catalog` print `installed ID@VERSION from SOURCE`, `update ID`
-  prints `ID updated A → B` or `ID up to date (A)`, `update all` one such line per
-  installed package (`update all --dry-run` says `would be updated`). The lines
-  `OK: install …`, `OK: install-catalog …` and `OK: update …` are gone: scripts that
-  match them must match the new lines (other commands still print `OK: …`).
+- Output: every mutating command prints one line per affected package, `ID <verb> …`
+  (detail lines such as `Fork created:` stay as they were); `OK:` lines are gone from
+  all commands (scripts that match them must match the new lines; `Warning:` lines on
+  stderr and JSON output are unchanged):
+
+  | Command | Line |
+  | --- | --- |
+  | `install`, `install-catalog` | `installed ID@VERSION from SOURCE`, or `ID already installed (VERSION)[; run update]` |
+  | `update ID`, `update all` | `ID updated A → B`, `ID up to date (A)` (`update all --dry-run`: `would be updated`) |
+  | `rollback` | `ID rolled back A → B` |
+  | `enable`, `disable` | `ID enabled`, `ID disabled` |
+  | `forget`, `restore` | `ID forgotten (clone kept; restore re-registers it)`, `ID restored VERSION` |
+  | `uninstall` | `ID uninstalled` |
+  | `replace --with` | `ORIGINAL replaced by FORK VERSION [(as ORIGINAL V)] for: consumers` (was `ORIGINAL → FORK …`) |
+  | `replace --back` | `ORIGINAL switched back from FORK (ORIGINAL VERSION for: consumers); FORK stays installed and enabled (disable or uninstall it if not wanted)` |
+  | `fork` | `FORK forked from ORIGINAL (FOLDER)` (was `Forked: ORIGINAL → FORK …`) |
+  | `commit` | `ID committed VERSION (local commit and tag TAG)` |
+  | `migrate-catalog` | `Catalog migrated: LOCATION (format v2, one folder per plugin)` (was silent) |
+  | `sync-dist` | `ID deployed to dist/ID`, `ID removed from dist/ID` (`--dry-run`: `would be …`) |
+- `install` of an installed package from the same source is no longer an error: it
+  prints `ID already installed (VERSION)` (`; run update` when the source has another
+  revision) and changes nothing; `InstallResult` has `already_installed` and `available`
+  (also in the FFI). Another source for the same ID is still `already_installed`.
+- `gitpm COMMAND --help` (or `-h`) prints that command's usage; builds from a Git
+  checkout that is not at a release tag report `gitpm --version` as `VERSION-dev+HASH`.
 - Metadata types: `commit` refuses a `plugin.json` whose metadata keys have the wrong
   type (`invalid_manifest`); `install`, `update`, `rollback`, `fork`, `catalog-update`
   and `list` accept such manifests (published before 0.5) and treat those keys as
   absent, with a warning on stderr for install and update.
-- `replace ID --back` prints `ID: replacement FORK removed, original restored (ID VERSION
-  for: consumers); FORK stays installed and enabled (disable or uninstall it if not
-  wanted)` instead of `ID → ID VERSION …`.
 - `init --multi` makes a new (or empty) folder a multi-package repository;
   `init --no-release` commits without the release tag.
 - `list`: `resolved[]` entries carry `clone` (as `plugins.<id>.clone`).
@@ -411,13 +437,13 @@ $ gitpm fork tilr/theme tilr/panel --ns me --into forks/me-plugins
 Fork created: /…/forks/me-plugins
 Git history and local edits are kept; the original repository is the upstream remote.
 Only the forked packages are left in the tree and in gitpm.json.
-Forked: tilr/theme → me/theme (packages/theme)
-Forked: tilr/panel → me/panel (packages/panel)
+me/theme forked from tilr/theme (packages/theme)
+me/panel forked from tilr/panel (packages/panel)
 Dependency: me/panel now depends on me/theme ^1.0 (was tilr/theme)
 …
 $ gitpm fork tilr/dock --ns me --into forks/me-plugins   # add one more later
 Packages added to: /…/forks/me-plugins
-Forked: tilr/dock → me/dock (packages/dock)
+me/dock forked from tilr/dock (packages/dock)
 Dependency: me/dock now depends on me/theme ^1.0 (was tilr/theme)
 ```
 
@@ -428,14 +454,17 @@ $ gitpm init tilr/theme --into ./tilr-plugins
 $ gitpm install ./tilr-plugins
 Error: repository has 2 packages at commit 4b377fe1c0de; choose one by ID: tilr/store (packages/store), tilr/theme (packages/theme)
 $ gitpm install ./tilr-plugins tilr/store && gitpm install ./tilr-plugins tilr/theme
+installed tilr/store@0.1.0 from /…/tilr-plugins
+installed tilr/theme@0.1.0 from /…/tilr-plugins
 $ echo 'export const v = 2;' > tilr-plugins/packages/store/dist/index.js
 $ gitpm commit ./tilr-plugins 0.2.0 --package tilr/store
-Created local commit and tag tilr/store@0.2.0.
+tilr/store committed 0.2.0 (local commit and tag tilr/store@0.2.0)
 $ gitpm update tilr/store       # tilr/theme stays at 0.1.0
+tilr/store updated 0.1.0 → 0.2.0
 ```
 
 Settings: each has a flag, an environment variable and a default (`gitpm --help` lists
-all commands). There is no config file; the old `PM_*` variables are ignored.
+all commands, `gitpm COMMAND --help` one). There is no config file; the old `PM_*` variables are ignored.
 
 | Flag | Variable | Default |
 | --- | --- | --- |
@@ -472,11 +501,17 @@ they were: `commit`, `fork` and `fork --replace` rewrite `version`, `id`, `forkO
 `replaces` and dependencies but keep the metadata (also the string form of `provides`).
 `init` writes `"title": "NAME"`.
 
-- `gitpm list`: each `resolved[]` entry has `title` and `description` (`null` when
-  absent), `provides` and `tags` (`[]` when absent) of the installed revision; state
-  keeps them per plugin (`plugins.<id>.metadata`, since 0.5). For a plugin installed by
-  an older gitpm (no `metadata` in state) they are read from the manifest of the
-  installed commit in its clone.
+Shape rule, everywhere gitpm reports metadata (`list` `resolved[]` and
+`plugins.<id>.metadata`, `info`/`browse` `PluginSummary`, `CatalogRelease`, the FFI
+records): all four keys are always present; an absent string (`title`, `description`) is
+`null` (`Option<String>`, Swift `String?`), an absent list (`provides`, `tags`) is `[]`
+(`Vec<String>`, `[String]`).
+
+- `gitpm list`: each `resolved[]` entry has `title`, `description`, `provides` and
+  `tags` of the installed revision; state keeps them per plugin
+  (`plugins.<id>.metadata`, since 0.5, same shape). For a plugin installed by an older
+  gitpm (no `metadata` in its state record, so `plugins.<id>` has none either) they are
+  read from the manifest of the installed commit in its clone.
 - `gitpm list --provides SERVICE`: only the packages whose `provides` contains `SERVICE`.
   It filters `plugins` and `resolved` only; `replacements` and `forgotten` are printed
   unfiltered (they describe the workspace, not single packages).

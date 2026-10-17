@@ -190,6 +190,19 @@ fn list_reports_metadata_present_or_absent_and_filters_by_provides() {
         list["plugins"]["tilr/theme"]["metadata"]["provides"],
         serde_json::json!(["theme"])
     );
+    // Same shape in both places: absent strings are null, absent lists [].
+    let stored = &list["plugins"]["tilr/store"]["metadata"];
+    for key in ["title", "description", "provides", "tags"] {
+        assert_eq!(stored[key], store[key], "{key}: {list:#}");
+        assert!(stored.get(key).is_some(), "{key} missing: {list:#}");
+    }
+    assert!(stored["title"].is_null() && stored["description"].is_null());
+    assert_eq!(stored["tags"], serde_json::json!([]));
+    assert_eq!(stored["provides"], serde_json::json!([]));
+    let stored = &list["plugins"]["tilr/theme"]["metadata"];
+    for key in ["title", "description", "provides", "tags"] {
+        assert_eq!(stored[key], theme[key], "{key}: {list:#}");
+    }
 
     let only = f.list(&["--provides", "theme"]);
     assert_eq!(ids(&only), ["tilr/theme"]);

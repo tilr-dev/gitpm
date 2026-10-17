@@ -67,7 +67,11 @@ jobs:
           cargo build -p gitpm-cli --locked
           version=$(cargo metadata --format-version 1 --no-deps --locked \
             | jq -r '.packages[] | select(.name == "gitpm-cli") | .version')
-          test "$(target/debug/gitpm --version)" = "gitpm $version"
+          # A commit that is not a release tag reports VERSION-dev+HASH (build.rs).
+          case "$(target/debug/gitpm --version)" in
+            "gitpm $version" | "gitpm $version-dev+"[0-9a-f]*) ;;
+            *) target/debug/gitpm --version; exit 1 ;;
+          esac
           target/debug/gitpm --help >/dev/null
 
   msrv:

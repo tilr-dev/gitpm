@@ -449,7 +449,7 @@ fn fork_replace_releases_installs_and_replaces_in_one_step() {
     assert!(out.contains("Released: me/theme@1.0.0"), "{out}");
     assert!(out.contains("Installed: me/theme 1.0.0"), "{out}");
     assert!(
-        out.contains("tilr/theme → me/theme 1.0.0 for: app/consumer"),
+        out.contains("tilr/theme replaced by me/theme 1.0.0 for: app/consumer"),
         "{out}"
     );
     let fork = f.dir.join("forks/me/theme");
@@ -466,14 +466,16 @@ fn fork_replace_releases_installs_and_replaces_in_one_step() {
     f.ok(&["update", "me/theme"]);
     let out = f.ok(&["replace", "tilr/theme", "--with", "me/theme"]);
     assert!(
-        out.contains("tilr/theme → me/theme 1.5.0 (as tilr/theme 1.0.0) for: app/consumer"),
+        out.contains(
+            "tilr/theme replaced by me/theme 1.5.0 (as tilr/theme 1.0.0) for: app/consumer"
+        ),
         "{out}"
     );
     // Switching back restores the original for the consumer.
     let out = f.ok(&["replace", "tilr/theme", "--back"]);
     assert!(
         out.contains(
-            "tilr/theme: replacement me/theme removed, original restored (tilr/theme 1.0.0 for: app/consumer); me/theme stays installed and enabled (disable or uninstall it if not wanted)"
+            "tilr/theme switched back from me/theme (tilr/theme 1.0.0 for: app/consumer); me/theme stays installed and enabled (disable or uninstall it if not wanted)"
         ),
         "{out}"
     );
@@ -631,7 +633,7 @@ fn fork_of_two_packages_keeps_exactly_those_and_rewrites_their_dependency() {
         "{out}"
     );
     assert!(
-        out.contains("Forked: tilr/panel → me/panel (packages/panel)"),
+        out.contains("me/panel forked from tilr/panel (packages/panel)"),
         "{out}"
     );
     assert!(
@@ -770,7 +772,7 @@ fn packages_forked_together_must_come_from_one_repository() {
     // A root package forks through the same command (no gitpm.json in the fork).
     let out = f.ok(&["fork", "acme/hello", "--ns", "me", "--into", "me/hello"]);
     assert!(
-        out.contains("Forked: acme/hello → me/hello (repository root)"),
+        out.contains("me/hello forked from acme/hello (repository root)"),
         "{out}"
     );
     assert!(f.dir.join("me/hello/plugin.json").is_file());
@@ -817,7 +819,9 @@ fn fork_replace_of_two_packages_replaces_both_and_switches_back() {
         "{out}"
     );
     assert!(
-        out.contains("tilr/theme → me/theme 2.0.0 (as tilr/theme 1.0.0) for: app/uses-theme"),
+        out.contains(
+            "tilr/theme replaced by me/theme 2.0.0 (as tilr/theme 1.0.0) for: app/uses-theme"
+        ),
         "{out}"
     );
     let state = f.state();
@@ -959,7 +963,10 @@ fn fork_replace_of_several_packages_reports_each_failure_and_keeps_the_fork() {
     );
     assert!(stdout.contains("Released: me/theme@1.0.0"), "{stdout}");
     assert!(stdout.contains("Released: me/panel@1.0.0"), "{stdout}");
-    assert!(stdout.contains("tilr/theme → me/theme 1.0.0"), "{stdout}");
+    assert!(
+        stdout.contains("tilr/theme replaced by me/theme 1.0.0"),
+        "{stdout}"
+    );
     assert!(
         stderr.contains("me/panel: the install step failed")
             && stderr.contains("kind: unsupported"),

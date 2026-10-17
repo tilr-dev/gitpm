@@ -304,6 +304,13 @@ pub struct InstallResult {
     pub source: String,
     pub current: Revision,
     pub fork_of: Option<ForkOf>,
+    /// Already installed from this source: nothing was changed, `current` is the
+    /// installed revision.
+    pub already_installed: bool,
+    /// With `already_installed`: the revision the source resolved to (latest release, or
+    /// the requested ref or dev channel) when it differs from `current`; `update` with
+    /// the same ref or channel moves to it.
+    pub available: Option<Revision>,
 }
 impl From<pm::InstallResult> for InstallResult {
     fn from(r: pm::InstallResult) -> Self {
@@ -312,6 +319,8 @@ impl From<pm::InstallResult> for InstallResult {
             source: r.source,
             current: r.current.into(),
             fork_of: r.fork_of.map(Into::into),
+            already_installed: r.already_installed,
+            available: r.available.map(Into::into),
         }
     }
 }
@@ -1421,8 +1430,12 @@ mod tests {
             fork_of: None,
             skipped: Vec::new(),
             warnings: Vec::new(),
+            already_installed: true,
+            available: Some(revision("1.1.0")),
         });
         assert!(result.fork_of.is_none());
+        assert!(result.already_installed);
+        assert_eq!(result.available.unwrap().version, "1.1.0");
         assert_eq!(result.current.commit, "1.0.0-commit");
 
         let change = RevisionChange::from(pm::RevisionChange {

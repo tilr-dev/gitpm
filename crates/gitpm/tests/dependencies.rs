@@ -529,8 +529,11 @@ fn one_catalog_per_workspace() {
     // Same catalog through another spelling is the same catalog.
     drop(m);
     let m = f.open(&format!("{a}/catalog.json"));
-    m.install_from_catalog("x/p", None)
-        .expect_err("already installed");
+    assert!(
+        m.install_from_catalog("x/p", None)
+            .unwrap()
+            .already_installed
+    );
 }
 
 #[test]
