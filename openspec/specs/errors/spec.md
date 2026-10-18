@@ -27,8 +27,8 @@ Every failure SHALL be a `gitpm::Error` whose `kind()` is one of: not_installed,
 - **AND** this is covered by `error::every_variant_has_its_stable_kind` and `workspace::every_operation_on_a_missing_id_fails_without_changes`
 
 #### Scenario: Removal of an unknown package
-- **WHEN** `uninstall`, `uninstall_plan` or `restore` names an ID that has no clone or record in the workspace
-- **THEN** the error kind is `repository_not_found` (they look for the clone, not the state entry)
+- **WHEN** `uninstall`, `uninstall_plan` or `restore` names an ID that has neither a record nor a clone in the workspace, or `restore` one whose clone is gone
+- **THEN** the error kind is `repository_not_found` (they look for the clone, not the state entry); `uninstall` of a recorded package whose clone is gone succeeds instead (install-uninstall, "Removing a package whose clone is gone")
 - **AND** this is covered by `workspace::every_operation_on_a_missing_id_fails_without_changes`
 
 ### Requirement: README lists exactly the kinds
@@ -39,14 +39,14 @@ README "Error kinds" SHALL list exactly the kinds the library defines. Verified 
 - **THEN** the unit test fails
 
 ### Requirement: Display is the complete message
-`Display` of an error SHALL be the complete human message in English. Library messages SHALL be neutral (no CLI command, flag or hosting service; the CLI adds hints, cli). Structured variants SHALL carry their data: `LocalChanges.items`, `HasDependents.dependents` and `.replacing`, `IncompatibleReplacement.consumers`, `NotDeployed.sync`. Verified by `error::display_is_the_complete_message` and `error::messages_name_no_cli_command`.
+`Display` of an error SHALL be the complete human message in English. Library messages SHALL be neutral (no CLI command, flag or hosting service; the CLI adds hints, cli). Structured variants SHALL carry their data: `LocalChanges.items`, `HasDependents.dependents` and `.lost_work` (the uninstall plan's; empty otherwise), `IncompatibleReplacement.consumers`, `NotDeployed.sync`. Verified by `error::display_is_the_complete_message` and `error::messages_name_no_cli_command`.
 
 #### Scenario: Has dependents
 - **WHEN** disabling `lib` is refused because `app` depends on it
 - **THEN** the error is `has_dependents`, its message names `app` and `dependents` is `["app"]`
 
 #### Scenario: Neutral advice
-- **WHEN** `init` is refused because the repository root is a package, or `disable` because the package is an active replacement
+- **WHEN** `init` is refused because the repository root is a package
 - **THEN** the library message states the problem only (for example "the repository root is a package; a multi-package repository needs gitpm.json") and the CLI prints the command as a `Hint:` line
 
 ### Requirement: Conversions choose documented kinds

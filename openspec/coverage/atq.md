@@ -274,10 +274,10 @@ Spec references read `capability › Requirement › Scenario`; several scenario
 | 055.2 | fork update keeps binding; rollback follows fork revision | fork-replacement › Active fork rules | covered |  |
 | 055.3 | incompatible fork release, unavailable origin, corrupt payload keep binding | dependencies › Updates keep dependents working; errors › Failing operations leave the workspace unchanged | covered |  |
 | 055.4 | reopen and recheck | workspace-layout › Replacements and forgotten records | covered |  |
-| 056.1 | disable/forget/uninstall of active provider refused naming consumers | dependencies › Dependents guard removal | covered | `removal-and-restore-rules` (D14/D16, TILR-55/56/58/60) changes disable/forget of an active fork |
+| 056.1 | disable/forget/uninstall of active provider refused naming consumers | dependencies › Dependents guard removal | covered | since `removal-and-restore-rules` only consumers the original does not serve guard the fork (case disables the original first) |
 | 056.2 | switch back to compatible original: all consumers return, fork work kept | fork-replacement › Switching back; dist › Switching back redeploys the original › Back to the original | covered |  |
 | 056.3 | switch back to incompatible original: warn and confirm | fork-replacement › Switching back; cli › Prompts only on a TTY | covered |  |
-| 056.4 | switch back to unavailable original fails, binding kept | fork-replacement › Switching back; fork-replacement › Active fork rules › Reinstalled original stays replaced | covered | `removal-and-restore-rules` (TILR-55/56/58/60) revises `--back` after the original was uninstalled |
+| 056.4 | switch back to unavailable original: refused with has_dependents, `--force` drops only the binding | fork-replacement › Switching back › Back with the original absent; fork-replacement › Active fork rules › Reinstalled original stays replaced | covered | revised by `removal-and-restore-rules` (TILR-56) |
 | 056.5 | remove unused fork; dirty fork follows uninstall contract | install-uninstall › Only manager-owned files are deleted › Uninstalling a fork; install-uninstall › Uninstall is planned and confirmed › Confirmed uninstall | covered |  |
 | 057.1 | originating catalog stored in state | catalog › One catalog per workspace | covered |  |
 | 057.2 | check against catalog B reports a different source | catalog › check compares installed with the catalog › Other catalog / Identity mismatch | covered |  |

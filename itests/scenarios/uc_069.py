@@ -107,9 +107,7 @@ def missing_clone_blocks_only_its_own_dist(t: T):
     t.ok(not t.dist(A).exists(), "dist/A not fabricated")
 
 
-# Anchored on the existing dist requirement until removal-and-restore-rules is archived
-# (its install-uninstall "Removing a package whose clone is gone" is new).
-@case(fixture="g2_demos_installed", spec=["dist/undeployable-packages-do-not-block-others#clone-deleted-by-hand"])
+@case(fixture="g2_demos_installed", spec=["install-uninstall/removing-a-package-whose-clone-is-gone#clone-deleted-by-hand"])
 def uninstall_of_a_package_whose_clone_is_gone(t: T):
     """A's clone deleted by hand: `uninstall A` (no --force, no TTY) drops the record and dist/A,
     and later commands warn no more."""
@@ -123,7 +121,7 @@ def uninstall_of_a_package_whose_clone_is_gone(t: T):
     t.lacks(r.err, "dist not deployed")
 
 
-@case(fixture="g2_demos_installed", spec=["dist/undeployable-packages-do-not-block-others#clone-deleted-by-hand"])
+@case(fixture="g2_demos_installed", spec=["install-uninstall/removing-a-package-whose-clone-is-gone#forget-without-a-clone"])
 def forget_of_a_package_whose_clone_is_gone(t: T):
     """A's clone deleted by hand: `forget A` drops the record and dist/A and keeps no forgotten
     record (nothing to restore)."""
@@ -207,9 +205,7 @@ def forced_disable_of_active_replacement(t: T):
         t.eq(row["satisfied"], False, f"{consumer} broken")
 
 
-# "Disable the fork" is a new scenario of removal-and-restore-rules: anchored on the
-# requirement until the change is archived.
-@case(fixture="g6_replaced", spec=["fork-replacement/active-fork-rules", "dependencies/dependents-guard-removal"])
+@case(fixture="g6_replaced", spec=["fork-replacement/active-fork-rules#disable-the-fork", "dependencies/dependents-guard-removal#installed-original-satisfies-the-consumers"])
 def disabling_the_fork_drops_the_binding_when_the_original_serves(t: T):
     """The installed vendor/base satisfies app/a and app/b: disable mine/base needs no --force,
     drops the binding and deploys dist/vendor/base; enabling the fork again keeps it unbound."""

@@ -179,12 +179,11 @@ def switch_back_incompatible_answer_yes(t: T):
     t.eq(resolution(t), {c: (ORIGINAL, False) for c in CONSUMERS}, "consumers on the original, unsatisfied")
 
 
-@case(fixture="g6_replaced", spec=["fork-replacement/switching-back", "fork-replacement/active-fork-rules#reinstalled-original-stays-replaced"])
+@case(fixture="g6_replaced", spec=["fork-replacement/switching-back#back-with-the-original-absent", "fork-replacement/active-fork-rules#reinstalled-original-stays-replaced"])
 def switch_back_to_unavailable_original(t: T):
     """Original uninstalled (no dependents while replaced) and its origin unreachable: --back
     refuses with has_dependents (app/a, app/b would break) and keeps the binding; --force drops
     only the binding, leaving the consumers broken, and installs nothing."""
-    # "Back with the original absent" is a new scenario of removal-and-restore-rules.
     t.gitpm_ok("uninstall", ORIGINAL)
     t.not_installed(ORIGINAL)
     t.repo(ORIGINAL).rename(t.root / "unreachable")

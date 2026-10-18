@@ -1,5 +1,7 @@
 # Proposal: One rule for removing replacements, a way out for missing clones, uninstall bound to its plan
 
+Implemented in commit df21d4a (feat!: one removal rule for active forks, planned uninstall, removal without a clone).
+
 ## Why
 
 Owner decisions of 2026-10-18 (D14, D16; TILR-58, 56, 60, 55) and review 2 findings: disabling an active fork is refused even when no consumer is affected while uninstalling or forgetting it succeeds (X3, G2#9), and `has_dependents` then names the replaced originals instead of consumers; `replace X --back` fails with `not_installed` once the original was uninstalled, and `replace --with` does not say whether ORIGINAL must be installed (G2#8); a recorded package whose clone was deleted can only be dropped with an undocumented `forget`, while the CLI keeps advising a `sync-dist` that fails forever (G1#1); the CLI confirmation of `uninstall` is not bound to the plan, so work created while the prompt waits is deleted unseen (G1#10), and the dependents refusal does not list the lost work (G3#23).

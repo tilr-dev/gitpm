@@ -93,7 +93,7 @@ Input SHALL be validated before anything is created: the CLI checks argv syntax 
 - **THEN** the command fails with `invalid_id` and `new-ws` is not created
 
 ### Requirement: Three removal levels
-gitpm SHALL offer three removal levels: `disable` (keep everything, set `enabled: false`, remove `dist/<id>`), `forget` (drop the package from `packages` in state, keep the clone and a `forgotten` record, remove `dist/<id>`) and `uninstall` (remove the state entry, the clone and `dist/<id>`). `restore ID` SHALL record a forgotten package in state again. All three removals are guarded as in dependencies ("Dependents guard removal"). Verified by `lifecycle_and_three_removal_levels`.
+gitpm SHALL offer three removal levels: `disable` (set `enabled: false`, remove `dist/<id>`), `forget` (drop the package from `packages` in state, keep the clone and a `forgotten` record, remove `dist/<id>`) and `uninstall` (remove the state entry, the clone and `dist/<id>`). `restore ID` SHALL record a forgotten package again; all three are guarded as in dependencies ("Dependents guard removal"). Verified by `lifecycle_and_three_removal_levels` and `forget_says_whether_the_clone_was_kept`.
 
 #### Scenario: Uninstall one package of a shared clone
 - **WHEN** another package still uses the shared clone of the package being uninstalled
@@ -106,6 +106,10 @@ gitpm SHALL offer three removal levels: `disable` (keep everything, set `enabled
 #### Scenario: Restore without a clone
 - **WHEN** the user restores an ID that has no `forgotten` record
 - **THEN** the command fails with `repository_not_found`, as does a forgotten package whose clone (own or shared) is gone (multi-package-repos, "Forgotten packages of shared clones")
+
+#### Scenario: Forget result
+- **WHEN** `forget` succeeds
+- **THEN** it returns `ForgetResult { clone_kept, dist }`; `clone_kept` is false when the clone was gone and no `forgotten` record was kept ("Removing a package whose clone is gone")
 
 ### Requirement: Restore preconditions
 `restore ID` SHALL record the package again from its `forgotten` record (own or shared clone) as it was; branch mode takes HEAD when it moved on along the origin's branch (dependencies checked). It SHALL refuse with `local_changes` on lost work and with `already_installed` when the ID is recorded, and print `ID restored V`. Verified by `workspace::restore_keeps_the_forgotten_record`, `restore_in_a_shared_clone_ignores_another_branch_s_revision` and `branch_mode_restore_checks_dependencies`.
@@ -127,11 +131,11 @@ gitpm SHALL offer three removal levels: `disable` (keep everything, set `enabled
 - **THEN** `restore` records that HEAD as `current` and keeps branch mode `main`
 
 ### Requirement: Uninstall is planned and confirmed
-`uninstall_plan(id)` SHALL be read-only and list `deletes` (paths), `registered`, `dependents` and `lost_work`. Single source for the lost-work items: `Modified`, `Untracked`, `Ignored`, `HeadMoved`, `UnpublishedCommit`, `UnpublishedBranch`, `UnpublishedTag`, `Stash`. `uninstall_with(id, confirm, force)` (FFI `uninstall(confirm, force)`) SHALL refuse with `local_changes` (listing the items) when work would be lost unless `confirm`. A clean clone SHALL be removed without confirmation.
+`uninstall_plan(id)` SHALL be read-only and list `deletes`, `registered`, `dependents`, `dependency_conflict` (a reactivated original's, dependencies) and `lost_work`; `UninstallPlan::refusal` SHALL return the error `uninstall` raises without force (`has_dependents` with `lost_work`, else `dependency_conflict`). Lost-work items: `Modified`, `Untracked`, `Ignored`, `HeadMoved`, `UnpublishedCommit`, `UnpublishedBranch`, `UnpublishedTag`, `Stash`. A clean clone needs no confirmation.
 
 #### Scenario: Dependents without force
 - **WHEN** the package has dependents and `force` is false
-- **THEN** `uninstall_with` fails with `has_dependents` (dependencies); `uninstall(id, confirm)` is `uninstall_with(id, confirm, false)`
+- **THEN** `uninstall` fails with `has_dependents` (dependencies), and the error carries both `dependents` and the plan's `lost_work`, so one refusal tells everything
 
 #### Scenario: Stash alone blocks
 - **WHEN** the clone is clean except for a `git stash` entry and uninstall is not confirmed
@@ -139,16 +143,29 @@ gitpm SHALL offer three removal levels: `disable` (keep everything, set `enabled
 - **AND** this is covered by `uninstall::plan_lists_each_lost_work_type_including_stash_without_changes`
 
 #### Scenario: Confirmed uninstall
-- **WHEN** the plan has lost work and the caller confirms
+- **WHEN** the plan has lost work and the caller passes exactly those items as `confirmed`
 - **THEN** the clone, `dist/<id>` and the state entry are deleted
 
+#### Scenario: Lost work grew after the plan
+- **WHEN** a file is added to the clone after the plan was shown and the caller confirms only the plan's items
+- **THEN** `uninstall` fails with `local_changes` listing the new item and nothing is deleted
+- **AND** this is covered by `uninstall::confirmation_is_bound_to_the_planned_lost_work`
+
+#### Scenario: Confirmed items and force
+- **WHEN** a caller runs `uninstall(id, confirmed, force)` (FFI `uninstall(confirmed, force)`)
+- **THEN** lost work not in `confirmed` refuses with `local_changes` listing it, and the plan's refusal applies unless `force`
+
 ### Requirement: CLI confirmation flow for uninstall
-Without `--force`, the CLI SHALL list what `uninstall_plan` reports and ask `Delete anyway? [y/N]` on stderr on a TTY; anything but `y`/`yes` (EOF included) SHALL change nothing and fail with `uninstall cancelled; nothing was changed`. Without a TTY it calls the library unconfirmed, which refuses. `--force` deletes without asking and ignores dependents. Verified by `uninstall_on_tty_asks_before_losing_work` and `uninstall_without_tty_refuses_and_lists_lost_work_including_stash`.
+Without `--force`, the CLI SHALL report the plan's refusal when it has one, before asking about lost work, and otherwise list what `uninstall_plan` reports and ask `Delete anyway? [y/N]` on stderr on a TTY; anything but `y`/`yes` SHALL change nothing and fail with `uninstall cancelled; nothing was changed`. Verified by `uninstall_on_tty_asks_before_losing_work`, `uninstall_without_tty_refuses_and_lists_lost_work_including_stash` and `uninstall_refusal_of_a_reactivation_comes_before_the_prompt`.
 
 #### Scenario: No TTY
 - **WHEN** a clone has modified files and `gitpm uninstall ID` runs with stdin not a terminal
 - **THEN** it prints `Error: …`, one `  - …` line per lost item and `Error kind: local_changes`, and the exit status is 1
-- **AND** a declined prompt is a CLI error without `Error kind` (exit status 1), and `--force` sets both `confirm` and `force`
+- **AND** a declined prompt is a CLI error without `Error kind` (exit status 1), and `--force` passes the plan's items as `confirmed` and sets `force`
+
+#### Scenario: Confirmation and force
+- **WHEN** the user answers `y`, runs without a TTY, or passes `--force`
+- **THEN** `y` passes the plan's items as `confirmed`, without a TTY nothing is confirmed (the library refuses), and `--force` confirms the plan's items without asking and ignores dependents
 
 ### Requirement: Only manager-owned files are deleted
 Uninstall SHALL delete only what the workspace owns (the clone inside the workspace, `dist/<id>`, the state entry); a fork repository or author repository outside the workspace MUST NOT be touched.
@@ -167,3 +184,14 @@ Uninstall SHALL delete only what the workspace owns (the clone inside the worksp
 #### Scenario: Enable after download
 - **WHEN** the user then runs `enable app`
 - **THEN** it fails with `dependency_conflict` naming `lib` as disabled (dependencies, "enable needs active dependencies"), while `enable lib` followed by `enable app` succeeds
+
+### Requirement: Removing a package whose clone is gone
+`uninstall ID` and `forget ID` of a package recorded in state whose clone (own or shared) no longer exists SHALL succeed without confirmation (there is no lost work): they drop the record and its deployed folder, keep no `forgotten` record, and are still guarded by dependents (dependencies, "Dependents guard removal"). Verified by `workspace::uninstall_and_forget_of_a_package_without_clone_drop_the_record`.
+
+#### Scenario: Clone deleted by hand
+- **WHEN** `packages/acme/greeter` was deleted by hand while `acme/greeter` is recorded and active, and the user runs `uninstall acme/greeter`
+- **THEN** it prints `acme/greeter uninstalled`, the record and `dist/acme/greeter/` are gone, and later commands warn no more
+
+#### Scenario: Forget without a clone
+- **WHEN** the same package is forgotten instead
+- **THEN** it prints `acme/greeter forgotten (no clone; record and dist removed)` (`clone_kept` false), the record is dropped and no `forgotten` record is kept, because there is nothing to restore; a later `restore acme/greeter` fails with `repository_not_found`

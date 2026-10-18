@@ -14,7 +14,7 @@ The FFI crate SHALL generate the Swift module `Gitpm` over the C module `GitpmFF
 - **THEN** it can `import Gitpm` and call `PackageManager.open(root:options:)`
 
 ### Requirement: Manager surface
-`PackageManager` SHALL be opened with `open(root, ManagerOptions)` and expose every workspace operation that takes the lock (catalog reads, install, download, updates, rollback, enable/disable, forget/restore, uninstall, fork, replace, switch back, sync-dist, with their plans); free functions SHALL be `list`, `check`, `readState`, `catalogLinks`, `authCheck`, `browseCatalog`, `catalogRelease`, `describeLostWork`. Author and catalog-writing commands are not exposed.
+`PackageManager` SHALL be opened with `open(root, ManagerOptions)` and expose every locked workspace operation (catalog reads, install, download, updates, rollback, enable/disable, forget/restore, uninstall, fork, replace, switch back, sync-dist, with their plans); free functions: `list`, `check`, `readState`, `catalogLinks`, `authCheck`, `browseCatalog`, `catalogRelease`, `describeLostWork`, `uninstallRefusal` (throws `UninstallPlan::refusal`); author and catalog writers are not exposed.
 
 #### Scenario: Which calls open the workspace
 - **WHEN** a host calls a `PackageManager` method, or one of the free functions `list`, `check`, `readState`
@@ -35,14 +35,14 @@ The FFI crate SHALL generate the Swift module `Gitpm` over the C module `GitpmFF
 
 #### Scenario: Method names
 - **WHEN** Swift bindings are generated
-- **THEN** `PackageManager` has `install` (optional `package`, `force`), `installFromCatalog(force)`, `download`, `downloadFromCatalog`, `update`, `updateAllPlan`, `updateAll`, `rollback`, `enable(force)`, `disable(force)`, `forget(force)`, `restore`, `uninstallPlan`, `uninstall(confirm, force)`, `fork`, `forkAndReplace`, `forkPackages`, `forkPackagesAndReplace`, `forkReplaceResume`, `replacePlan`, `replace`, `switchBackPlan`, `switchBack`, `syncDistPlan` and `syncDist`; `check` is a free function, not a method
+- **THEN** `PackageManager` has `install` (optional `package`, `force`), `installFromCatalog(force)`, `download`, `downloadFromCatalog`, `update`, `updateAllPlan`, `updateAll`, `rollback`, `enable(force)`, `disable(force)`, `forget(force)` (returning `ForgetResult`), `restore`, `uninstallPlan`, `uninstall(confirmed, force)` (`confirmed` the lost-work items the user saw), `fork`, `forkAndReplace`, `forkPackages`, `forkPackagesAndReplace`, `forkReplaceResume`, `replacePlan`, `replace`, `switchBackPlan`, `switchBack(confirm, force)`, `syncDistPlan` and `syncDist`; `check` is a free function, not a method
 
 #### Scenario: Catalog generation is not exposed
 - **WHEN** a host looks for `catalog-update`, `register`, `init` or `commit` in the bindings
 - **THEN** none exist; those stay library/CLI functions
 
 ### Requirement: Errors keep kind and message
-Library errors SHALL map to the `PmError` enum, one case per kind, each with the full `message` and the library's structured fields (`id`, `LocalChanges.items`, `HasDependents.dependents` and `.replacing`, `IncompatibleReplacement.consumers`, `NotDeployed.sync`); `Other { kind, message }` SHALL carry a kind added to the non-exhaustive library enum later. Verified by `every_library_error_maps_to_its_own_case_with_the_full_message` and `ids_and_lost_work_items_are_preserved`.
+Library errors SHALL map to the `PmError` enum, one case per kind, each with the full `message` and the library's structured fields (`id`, `LocalChanges.items`, `HasDependents.dependents` and `lostWork`, `IncompatibleReplacement.consumers`, `NotDeployed.sync`); `Other { kind, message }` SHALL carry a kind added to the non-exhaustive library enum later. Verified by `every_library_error_maps_to_its_own_case_with_the_full_message` and `ids_and_lost_work_items_are_preserved`.
 
 #### Scenario: Local changes from Swift
 - **WHEN** an unconfirmed uninstall would lose work
@@ -53,7 +53,7 @@ Library errors SHALL map to the `PmError` enum, one case per kind, each with the
 - **THEN** Swift receives `PmError.NotDeployed` with the message and the `sync` report (what was deployed and removed, and the skipped packages with their reasons), as the CLI prints it
 
 ### Requirement: Records mirror library results
-FFI records SHALL convert library results field by field, dropping none: `InstalledPackage` (`active`, `clone`, `path`, metadata), `InstallResult` (`alreadyInstalled`, `available`, `skipped`, `warnings`), `RevisionChange` (`warnings`, `skipped`), the dist report of every mutating result, `CatalogRelease`, `PackageSummary`, `DistSync`, `UpdateAllPlan` (`unchanged`, `skipped`), `ReplacementPlan` (`installedVersion`, `forkEnabled`), and fork results (scenario "Fork results").
+FFI records SHALL convert library results field by field, dropping none: `InstalledPackage` (`active`, `clone`, `path`, metadata), `InstallResult` (`alreadyInstalled`, `available`, `skipped`, `warnings`), `RevisionChange` (`warnings`, `skipped`), every dist report, `CatalogRelease`, `PackageSummary`, `DistSync` (`SkippedDist.cloneMissing`), `UpdateAllPlan` (`unchanged`, `skipped`), `ReplacementPlan` (`installedVersion`), `ForgetResult`, `UninstallPlan` (`dependencyConflict`) and fork results.
 
 #### Scenario: Fork results
 - **WHEN** a host reads the result of `forkAndReplace`, `forkPackagesAndReplace` or `forkReplaceResume`

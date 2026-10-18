@@ -1,18 +1,18 @@
 {
  "generated_from": {
   "specs": "openspec/specs",
-  "cases": 647,
+  "cases": 650,
   "last_run": {
-   "started": "2026-10-18T17:25:10.640014+00:00",
-   "commit": "c3d0a00+dirty",
+   "started": "2026-10-18T18:34:13.949633+00:00",
+   "commit": "befa26e+dirty",
    "counts": {
-    "PASS": 1056,
+    "PASS": 1070,
     "FAIL": 0,
     "BLOCKED": 1,
     "XFAIL": 1,
     "XPASS": 0
    },
-   "path": "itests/results/20261018T192503-38307"
+   "path": "itests/results/20261018T203407-97684"
   }
  },
  "capabilities": [
@@ -1682,6 +1682,7 @@
      ],
      "cargo_tests": [
       "mutating_commands_print_one_line_per_package_and_no_ok_lines",
+      "forget_says_whether_the_clone_was_kept",
       "update_all_reports_kept_back_packages_and_replace_back_without_a_replacement"
      ],
      "scenarios": [
@@ -1838,6 +1839,13 @@
        "slug": "command-hint",
        "title": "Command hint",
        "tag": "cli/errors-and-exit-codes#command-hint",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "one-refusal-tells-everything",
+       "title": "One refusal tells everything",
+       "tag": "cli/errors-and-exit-codes#one-refusal-tells-everything",
        "cases": [],
        "covered": false
       }
@@ -2253,10 +2261,12 @@
       "uc_059:disable_refused_naming_dependents",
       "uc_059:forget_refused_naming_dependents",
       "uc_059:uninstall_refused_naming_dependents",
-      "uc_059:unused_dependency_uninstalls_without_guard"
+      "uc_059:unused_dependency_uninstalls_without_guard",
+      "uc_069:disabling_the_fork_drops_the_binding_when_the_original_serves"
      ],
      "cargo_tests": [
       "dependents_guard_disable_forget_and_uninstall",
+      "removing_an_active_fork_guards_only_consumers_the_original_breaks",
       "disable_removes_and_enable_restores_also_around_a_replacement",
       "has_dependents"
      ],
@@ -2283,6 +2293,15 @@
        "covered": false
       },
       {
+       "slug": "installed-original-satisfies-the-consumers",
+       "title": "Installed original satisfies the consumers",
+       "tag": "dependencies/dependents-guard-removal#installed-original-satisfies-the-consumers",
+       "cases": [
+        "uc_069:disabling_the_fork_drops_the_binding_when_the_original_serves"
+       ],
+       "covered": true
+      },
+      {
        "slug": "uninstall-a-dependency",
        "title": "Uninstall a dependency",
        "tag": "dependencies/dependents-guard-removal#uninstall-a-dependency",
@@ -2290,6 +2309,13 @@
         "uc_059:uninstall_refused_naming_dependents"
        ],
        "covered": true
+      },
+      {
+       "slug": "forced-removal-and-switching-back",
+       "title": "Forced removal and switching back",
+       "tag": "dependencies/dependents-guard-removal#forced-removal-and-switching-back",
+       "cases": [],
+       "covered": false
       }
      ],
      "covered": true,
@@ -2301,7 +2327,8 @@
       "uc_059:disable_refused_naming_dependents": "PASS",
       "uc_059:forget_refused_naming_dependents": "PASS",
       "uc_059:uninstall_refused_naming_dependents": "PASS",
-      "uc_059:unused_dependency_uninstalls_without_guard": "PASS"
+      "uc_059:unused_dependency_uninstalls_without_guard": "PASS",
+      "uc_069:disabling_the_fork_drops_the_binding_when_the_original_serves": "PASS"
      }
     },
     {
@@ -2393,7 +2420,8 @@
       "uc_058:forced_enable_leaves_the_consumer_broken"
      ],
      "cargo_tests": [
-      "enable_refuses_inactive_dependencies_unless_forced"
+      "enable_refuses_inactive_dependencies_unless_forced",
+      "dropping_a_binding_checks_the_original_s_dependencies"
      ],
      "scenarios": [
       {
@@ -2411,6 +2439,20 @@
         "uc_058:forced_enable_leaves_the_consumer_broken"
        ],
        "covered": true
+      },
+      {
+       "slug": "original-with-an-inactive-dependency",
+       "title": "Original with an inactive dependency",
+       "tag": "dependencies/enable-needs-active-dependencies#original-with-an-inactive-dependency",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "reactivated-original",
+       "title": "Reactivated original",
+       "tag": "dependencies/enable-needs-active-dependencies#reactivated-original",
+       "cases": [],
+       "covered": false
       }
      ],
      "covered": true,
@@ -2933,7 +2975,8 @@
       "uc_069:missing_clone_blocks_only_its_own_dist"
      ],
      "cargo_tests": [
-      "a_missing_clone_is_reported_and_blocks_only_its_own_dist"
+      "a_missing_clone_is_reported_and_blocks_only_its_own_dist",
+      "skipped_dists_say_structurally_whether_the_clone_is_missing"
      ],
      "scenarios": [
       {
@@ -2944,6 +2987,13 @@
         "uc_069:missing_clone_blocks_only_its_own_dist"
        ],
        "covered": true
+      },
+      {
+       "slug": "advice-only-for-a-missing-clone",
+       "title": "Advice only for a missing clone",
+       "tag": "dist/undeployable-packages-do-not-block-others#advice-only-for-a-missing-clone",
+       "cases": [],
+       "covered": false
       }
      ],
      "covered": true,
@@ -4093,6 +4143,7 @@
      ],
      "cargo_tests": [
       "fork_replacement_main_scenario",
+      "replace_requires_the_original_and_back_drops_an_absent_one",
       "required_global_fork_replacement_through_the_cli",
       "not_installed",
       "invalid_argument",
@@ -4114,6 +4165,13 @@
         "uc_069:replace_with_disabled_fork_is_refused"
        ],
        "covered": true
+      },
+      {
+       "slug": "original-not-installed",
+       "title": "Original not installed",
+       "tag": "fork-replacement/replacement-is-explicit-and-global#original-not-installed",
+       "cases": [],
+       "covered": false
       },
       {
        "slug": "fork-with-unsatisfiable-dependencies",
@@ -4255,7 +4313,6 @@
       "uc_056:switch_back_incompatible_eof",
       "uc_056:switch_back_incompatible_without_tty",
       "uc_056:switch_back_to_compatible_original",
-      "uc_056:switch_back_to_unavailable_original",
       "uc_066:full_journey",
       "uc_066:s7_switch_back"
      ],
@@ -4272,7 +4329,11 @@
       "uc_066:s7_switch_back"
      ],
      "cargo_tests": [
-      "fork_replace_of_two_packages_replaces_both_and_switches_back"
+      "fork_replace_of_two_packages_replaces_both_and_switches_back",
+      "replace_requires_the_original_and_back_drops_an_absent_one",
+      "switch_back_to_a_disabled_original_is_guarded",
+      "invalid_argument",
+      "has_dependents"
      ],
      "scenarios": [
       {
@@ -4283,9 +4344,32 @@
        "covered": false
       },
       {
+       "slug": "back-with-the-original-absent",
+       "title": "Back with the original absent",
+       "tag": "fork-replacement/switching-back#back-with-the-original-absent",
+       "cases": [
+        "uc_056:switch_back_to_unavailable_original"
+       ],
+       "covered": true
+      },
+      {
+       "slug": "back-to-a-disabled-original",
+       "title": "Back to a disabled original",
+       "tag": "fork-replacement/switching-back#back-to-a-disabled-original",
+       "cases": [],
+       "covered": false
+      },
+      {
        "slug": "back-without-a-replacement",
        "title": "Back without a replacement",
        "tag": "fork-replacement/switching-back#back-without-a-replacement",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "consumers-the-original-does-not-serve",
+       "title": "Consumers the original does not serve",
+       "tag": "fork-replacement/switching-back#consumers-the-original-does-not-serve",
        "cases": [],
        "covered": false
       }
@@ -4328,12 +4412,21 @@
       "uc_056:forced_provider_removal_drops_binding",
       "uc_056:switch_back_to_unavailable_original",
       "uc_066:s6_fork_update_followed",
+      "uc_069:disabling_the_fork_drops_the_binding_when_the_original_serves",
       "uc_069:uninstalling_the_fork_redeploys_the_original"
      ],
      "cargo_tests": [
+      "a_binding_to_a_disabled_fork_is_invalid_state",
       "uninstalling_or_forgetting_the_replacement_deploys_the_original_again"
      ],
      "scenarios": [
+      {
+       "slug": "binding-to-a-disabled-package",
+       "title": "Binding to a disabled package",
+       "tag": "fork-replacement/active-fork-rules#binding-to-a-disabled-package",
+       "cases": [],
+       "covered": false
+      },
       {
        "slug": "fork-release-without-replaces",
        "title": "Fork release without replaces",
@@ -4348,6 +4441,15 @@
        "cases": [
         "uc_056:forced_provider_removal_drops_binding",
         "uc_069:uninstalling_the_fork_redeploys_the_original"
+       ],
+       "covered": true
+      },
+      {
+       "slug": "disable-the-fork",
+       "title": "Disable the fork",
+       "tag": "fork-replacement/active-fork-rules#disable-the-fork",
+       "cases": [
+        "uc_069:disabling_the_fork_drops_the_binding_when_the_original_serves"
        ],
        "covered": true
       },
@@ -4372,6 +4474,7 @@
       "uc_056:forced_provider_removal_drops_binding": "PASS",
       "uc_056:switch_back_to_unavailable_original": "PASS",
       "uc_066:s6_fork_update_followed": "PASS",
+      "uc_069:disabling_the_fork_drops_the_binding_when_the_original_serves": "PASS",
       "uc_069:uninstalling_the_fork_redeploys_the_original": "PASS"
      }
     },
@@ -4459,13 +4562,27 @@
      "cases": [],
      "all_cases": [],
      "cargo_tests": [
-      "replacement_plan_carries_installed_version_and_fork_enabled"
+      "replacement_plan_carries_installed_version"
      ],
      "scenarios": [
+      {
+       "slug": "switch-back",
+       "title": "Switch back",
+       "tag": "fork-replacement/replacement-plans-carry-what-the-output-needs#switch-back",
+       "cases": [],
+       "covered": false
+      },
       {
        "slug": "switch-back-to-a-disabled-fork",
        "title": "Switch back to a disabled fork",
        "tag": "fork-replacement/replacement-plans-carry-what-the-output-needs#switch-back-to-a-disabled-fork",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "plan-for-a-missing-original",
+       "title": "Plan for a missing original",
+       "tag": "fork-replacement/replacement-plans-carry-what-the-output-needs#plan-for-a-missing-original",
        "cases": [],
        "covered": false
       },
@@ -5355,7 +5472,8 @@
       "uc_068:whole_journey"
      ],
      "cargo_tests": [
-      "lifecycle_and_three_removal_levels"
+      "lifecycle_and_three_removal_levels",
+      "forget_says_whether_the_clone_was_kept"
      ],
      "scenarios": [
       {
@@ -5389,6 +5507,13 @@
         "uc_021:missing_retained_clone"
        ],
        "covered": true
+      },
+      {
+       "slug": "forget-result",
+       "title": "Forget result",
+       "tag": "install-uninstall/three-removal-levels#forget-result",
+       "cases": [],
+       "covered": false
       }
      ],
      "covered": true,
@@ -5529,7 +5654,9 @@
       "uc_063:uninstall_flag_order_is_irrelevant"
      ],
      "cargo_tests": [
-      "uninstall::plan_lists_each_lost_work_type_including_stash_without_changes"
+      "uninstall::plan_lists_each_lost_work_type_including_stash_without_changes",
+      "local_changes",
+      "uninstall::confirmation_is_bound_to_the_planned_lost_work"
      ],
      "scenarios": [
       {
@@ -5568,6 +5695,20 @@
         "uc_056:remove_dirty_fork_tty_confirmation"
        ],
        "covered": true
+      },
+      {
+       "slug": "lost-work-grew-after-the-plan",
+       "title": "Lost work grew after the plan",
+       "tag": "install-uninstall/uninstall-is-planned-and-confirmed#lost-work-grew-after-the-plan",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "confirmed-items-and-force",
+       "title": "Confirmed items and force",
+       "tag": "install-uninstall/uninstall-is-planned-and-confirmed#confirmed-items-and-force",
+       "cases": [],
+       "covered": false
       }
      ],
      "covered": true,
@@ -5645,7 +5786,8 @@
      ],
      "cargo_tests": [
       "uninstall_on_tty_asks_before_losing_work",
-      "uninstall_without_tty_refuses_and_lists_lost_work_including_stash"
+      "uninstall_without_tty_refuses_and_lists_lost_work_including_stash",
+      "uninstall_refusal_of_a_reactivation_comes_before_the_prompt"
      ],
      "scenarios": [
       {
@@ -5662,6 +5804,13 @@
         "uc_056:remove_dirty_fork_without_tty_refused"
        ],
        "covered": true
+      },
+      {
+       "slug": "confirmation-and-force",
+       "title": "Confirmation and force",
+       "tag": "install-uninstall/cli-confirmation-flow-for-uninstall#confirmation-and-force",
+       "cases": [],
+       "covered": false
       }
      ],
      "covered": true,
@@ -5772,6 +5921,44 @@
      "last_run": {
       "uc_058:direct_download_deploys_nothing": "PASS",
       "uc_058:download_then_enable_in_dependency_order": "PASS"
+     }
+    },
+    {
+     "slug": "removing-a-package-whose-clone-is-gone",
+     "title": "Removing a package whose clone is gone",
+     "tag": "install-uninstall/removing-a-package-whose-clone-is-gone",
+     "cases": [],
+     "all_cases": [
+      "uc_069:forget_of_a_package_whose_clone_is_gone",
+      "uc_069:uninstall_of_a_package_whose_clone_is_gone"
+     ],
+     "cargo_tests": [
+      "workspace::uninstall_and_forget_of_a_package_without_clone_drop_the_record"
+     ],
+     "scenarios": [
+      {
+       "slug": "clone-deleted-by-hand",
+       "title": "Clone deleted by hand",
+       "tag": "install-uninstall/removing-a-package-whose-clone-is-gone#clone-deleted-by-hand",
+       "cases": [
+        "uc_069:uninstall_of_a_package_whose_clone_is_gone"
+       ],
+       "covered": true
+      },
+      {
+       "slug": "forget-without-a-clone",
+       "title": "Forget without a clone",
+       "tag": "install-uninstall/removing-a-package-whose-clone-is-gone#forget-without-a-clone",
+       "cases": [
+        "uc_069:forget_of_a_package_whose_clone_is_gone"
+       ],
+       "covered": true
+      }
+     ],
+     "covered": true,
+     "last_run": {
+      "uc_069:forget_of_a_package_whose_clone_is_gone": "PASS",
+      "uc_069:uninstall_of_a_package_whose_clone_is_gone": "PASS"
      }
     }
    ]
@@ -12330,7 +12517,7 @@
   {
    "id": "uc_056:switch_back_to_unavailable_original",
    "spec": [
-    "fork-replacement/switching-back",
+    "fork-replacement/switching-back#back-with-the-original-absent",
     "fork-replacement/active-fork-rules#reinstalled-original-stays-replaced"
    ],
    "xfail": null,
@@ -13661,6 +13848,22 @@
    "last_run": "PASS"
   },
   {
+   "id": "uc_069:uninstall_of_a_package_whose_clone_is_gone",
+   "spec": [
+    "install-uninstall/removing-a-package-whose-clone-is-gone#clone-deleted-by-hand"
+   ],
+   "xfail": null,
+   "last_run": "PASS"
+  },
+  {
+   "id": "uc_069:forget_of_a_package_whose_clone_is_gone",
+   "spec": [
+    "install-uninstall/removing-a-package-whose-clone-is-gone#forget-without-a-clone"
+   ],
+   "xfail": null,
+   "last_run": "PASS"
+  },
+  {
    "id": "uc_069:replace_removes_original_back_redeploys",
    "spec": [
     "dist/dist-holds-exactly-the-active-packages#enabled-but-replaced",
@@ -13697,6 +13900,15 @@
    "id": "uc_069:forced_disable_of_active_replacement",
    "spec": [
     "dist/enable-and-disable-deploy-and-remove#forced-disable-of-an-active-replacement"
+   ],
+   "xfail": null,
+   "last_run": "PASS"
+  },
+  {
+   "id": "uc_069:disabling_the_fork_drops_the_binding_when_the_original_serves",
+   "spec": [
+    "fork-replacement/active-fork-rules#disable-the-fork",
+    "dependencies/dependents-guard-removal#installed-original-satisfies-the-consumers"
    ],
    "xfail": null,
    "last_run": "PASS"
