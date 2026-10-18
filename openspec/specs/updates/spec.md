@@ -32,26 +32,35 @@ Defines how installed packages move between revisions: single-package `update` (
 - **WHEN** the same workspace has no catalog and the user runs `gitpm check`
 - **THEN** the row of `acme/greeter` says `update available` with `0.2.0` from the origin, and nothing in the workspace changes
 
-### Requirement: Stable update never downgrades or accepts mutated releases
-An update that follows releases SHALL refuse with `version_conflict` when the newest release is older than the installed one ("downgrading requires an explicit ref"), when the installed version's release commit changed, when an observed release tag moved (package-ids, "Moved release tags are refused"), or when the origin changed without a version bump. Verified by `stable_update_never_downgrades` and `stable_update_refuses_a_release_whose_commit_changed`.
+### Requirement: Stable update never downgrades
+An update that follows releases SHALL compare versions only and SHALL never downgrade; installed revisions are kept by commit (package-ids). A retracted, moved or broken installed release tag SHALL leave the package up to date with a warning, in `update ID` and `update all` alike. Verified by `stable_update_never_downgrades`, `update_all_does_not_downgrade_and_warns_about_moved_and_retracted_releases` and the tests the scenarios name.
 
 #### Scenario: Release commit of the installed version moved
-- **WHEN** the tag of the installed version is moved to another commit on the origin
-- **THEN** update fails with `version_conflict` ("release commit changed for installed version") and the workspace is unchanged
+- **WHEN** the tag of the installed version is moved to another commit on the origin and the user runs `update ID`
+- **THEN** it prints `ID up to date (V)` and `Warning: release tag ID@V now points to COMMIT; the installed commit is kept`, and the workspace is unchanged
+
+#### Scenario: Retracted release in update all
+- **WHEN** the origin deleted the tag of the installed release and the user runs `update all`
+- **THEN** the package is listed in `unchanged` with the retraction warning, as for `update ID`
+
+#### Scenario: Warnings
+- **WHEN** the installed release was retracted (its tag deleted, only older releases or none left), its tag moved, or its tag now points at a commit it is no release of (a broken tag, package-ids)
+- **THEN** the warning is `installed release ID@V no longer exists on the origin`, `release tag ID@V now points to COMMIT; the installed commit is kept` or `release tag ID@V now points to COMMIT (skipped: REASON); the installed commit is kept`
+- **AND** this is covered by `a_deleted_tag_in_a_shared_clone_is_reported_not_fatal` and `a_broken_installed_release_tag_is_named_as_skipped`
 
 ### Requirement: Update mirrors the origin's tags
-A single-package update of a package with its own clone SHALL mirror the origin's tags (pruned and force-fetched): a release deleted on the origin disappears from the clone and a moved one is seen at its new commit and refused as in package-ids ("Moved release tags are refused"). When the deleted tag is the installed (newest) release, a single update fails as below while `update all` reports the package up to date. Verified by `stable_update_follows_deleted_and_moved_upstream_tags`.
+A single-package update of a package with its own clone SHALL mirror the origin's tags (pruned and force-fetched): a deleted release disappears from the clone, a moved one is seen at its new commit (package-ids). When the deleted tag is the installed (newest) release, `update ID` and `update all` report the package up to date with a warning ("Stable update never downgrades"). Verified by `stable_update_follows_deleted_and_moved_upstream_tags`.
 
 #### Scenario: Deleted installed release tag
 - **WHEN** the origin deletes the release tag of the installed (newest) version
-- **THEN** the tag disappears from the clone and `update ID` fails with `version_conflict` ("… downgrading requires an explicit ref")
+- **THEN** the tag disappears from the clone and `update ID` prints `ID up to date (V)` with `Warning: installed release ID@V no longer exists on the origin`, changing nothing
 
 ### Requirement: Explicit ref resolves against the origin
-`update ID --ref REF` (and install) SHALL resolve REF by exact name: tag, fetched origin branch, commit ID (7 to 64 lowercase hex digits); `HEAD` SHALL mean the origin's default branch, recorded by name. Revision expressions and local branches (`refs/heads/*`, stale) SHALL be refused with `invalid_argument`. A tag or commit MAY go to an older version but MUST change it (unless leaving branch mode). Verified by `update_to_a_branch_uses_the_fetched_upstream_branch`.
+`update ID --ref REF` (and install) SHALL resolve REF by exact name: tag, fetched origin branch, commit ID (7 to 64 lowercase hex digits); `HEAD` SHALL mean the origin's default branch, recorded by name. Revision expressions and stale local branches SHALL be refused with `invalid_argument`. A tag or commit MAY go to an older version or keep the installed one elsewhere. Verified by `explicit_ref_to_the_moved_installed_tag_is_accepted` and `update_to_a_branch_uses_the_fetched_upstream_branch`.
 
 #### Scenario: Same version on another commit
 - **WHEN** `update ID --ref COMMIT` names a commit whose manifest has the installed version
-- **THEN** it fails with `version_conflict` ("… changed without a version bump"), unless the package was in branch mode
+- **THEN** the package moves to that commit, pinned to it, and the workspace records the same version at the new commit
 
 #### Scenario: Revision expression
 - **WHEN** the user runs `install SOURCE --ref HEAD~1` or `update ID --ref main~1`
@@ -61,6 +70,10 @@ A single-package update of a package with its own clone SHALL mirror the origin'
 - **WHEN** the origin's branch `feature` moved after install and the user runs `update ID --ref feature`
 - **THEN** the package moves to the fetched `origin/feature` commit, not the clone's stale local branch, and is recorded in branch mode `feature`
 
+#### Scenario: Moved release tag by ref
+- **WHEN** the release tag of the installed version moved and the user runs `update ID --ref ID@V`
+- **THEN** the package is pinned to the tag's new commit and the CLI warns `release tag ID@V now points to COMMIT`
+
 ### Requirement: Branch mode follows the branch HEAD by commit
 `update ID` in branch mode SHALL move to the HEAD of the recorded origin branch, by commit (no version bump needed), and refuse with `version_conflict` when its history diverged ("history of BRANCH diverged; automatic update refused") or the branch is gone. An explicit `--ref BRANCH` SHALL skip the ancestor check (the way back after a force-push). Verified by `branch_mode_follows_origin_head_and_refuses_diverged_history` and `a_branch_gone_from_the_origin_is_reported_not_fatal`.
 
@@ -69,22 +82,30 @@ A single-package update of a package with its own clone SHALL mirror the origin'
 - **THEN** `update ID` (and `update ID --dev`) fails with `version_conflict` and the workspace is unchanged, while `update ID --ref BRANCH` moves to the new HEAD
 
 ### Requirement: Local work blocks update and rollback
-Update and rollback SHALL refuse with `local_changes` when the clone has any lost-work item (list in install-uninstall, "Uninstall is planned and confirmed"), staged files included. Only `update`, which fetches anyway, SHALL treat a tag that exists on the origin with the same object as published. Verified by `local_work_blocks_update_and_rollback` and `update_and_rollback_refuse_hidden_local_work`.
+Update and rollback SHALL refuse with `local_changes` when the clone has any lost-work item (install-uninstall), staged files included. Both SHALL count a tag the origin had with the same object at the last fetch as published, not `UnpublishedTag`; rollback stays offline, while `update` also accepts a tag the origin has now. Verified by `local_work_blocks_update_and_rollback`, `update_and_rollback_refuse_hidden_local_work` and `rollback_of_a_fork_treats_fetched_upstream_tags_as_published`.
 
 #### Scenario: Moved HEAD blocks rollback
 - **WHEN** the clone's HEAD was moved away from the installed commit and the user runs `rollback ID`
 - **THEN** rollback fails with `local_changes` listing `HeadMoved`
 
+#### Scenario: Fork, update, rollback
+- **WHEN** `me/hello`, a fork whose repository also holds its upstream's tags (for example `acme/hello@1.0.0`), is installed at 1.0.0, updated to 1.1.0, and the user runs `rollback me/hello`
+- **THEN** the upstream tags fetched from the fork's origin count as published, as they did for the update, and rollback prints `me/hello rolled back 1.1.0 → 1.0.0` without a network access
+
 #### Scenario: Retained upstream tag on rollback
-- **WHEN** the clone of a fork keeps a tag of its upstream that no remote branch contains and the user runs `rollback`
-- **THEN** rollback works offline and counts the tag as `UnpublishedTag`, so it fails with `local_changes`, while `update` accepts it because the origin has it
+- **WHEN** the clone of a fork keeps a tag of its upstream that no remote branch contains, and the fork's origin had that tag with the same object at the last fetch, and the user runs `rollback`
+- **THEN** rollback works offline and counts the tag as published, as `update` does, so it does not fail with `local_changes` because of it
+
+#### Scenario: Tag created locally
+- **WHEN** a tag was created in the clone by hand and no fetch from the origin brought it
+- **THEN** update and rollback alike fail with `local_changes` listing `UnpublishedTag`
 
 #### Scenario: Stash blocks update
 - **WHEN** the clone has a stash entry and the user runs `update ID`
 - **THEN** update fails with `local_changes` and nothing changes
 
 ### Requirement: Rollback swaps current and previous
-`rollback ID` SHALL swap `current` and `previous` offline (no fetch) and redeploy; without a previous revision it SHALL fail with `no_previous_version`. It SHALL print `ID rolled back A → B`. Like update, it is refused with `dependency_conflict` when the target version breaks an installed dependent (see dependencies, "Updates keep dependents working").
+`rollback ID` SHALL swap `current` and `previous` offline (no fetch) and redeploy; without a previous revision, or when its commit is no longer in the clone, it SHALL fail with `no_previous_version`. It SHALL print `ID rolled back A → B`. Like update, it is refused with `dependency_conflict` when the target version breaks an installed dependent (see dependencies, "Updates keep dependents working"). Verified by `rollback_to_a_pruned_commit_names_it`.
 
 #### Scenario: Previous revision needs a missing dependency
 - **WHEN** the previous revision depends on a package that is not installed
@@ -94,6 +115,10 @@ Update and rollback SHALL refuse with `local_changes` when the clone has any los
 - **WHEN** a package was updated 0.1.0 → 0.2.0 and the user runs `rollback`
 - **THEN** it prints `acme/greeter rolled back 0.2.0 → 0.1.0` and `previous` becomes 0.2.0
 
+#### Scenario: Previous commit gone
+- **WHEN** the previous revision's commit is no longer in the clone (pruned after the origin deleted its tag)
+- **THEN** rollback fails with `no_previous_version` ("previous revision COMMIT of ID is no longer available") and the workspace is unchanged
+
 ### Requirement: Joint upgrade of all packages
 `update all` (`Manager::update_all`) SHALL resolve all installed packages together with PubGrub over the candidates of each package's mode, the installed revision as fallback and missing dependencies from the configured catalog (installed and recorded as in dependencies); it SHALL prefer newer versions with installed packages prioritized in lexical ID order, and apply the whole result as one recoverable transaction. Verified by `update_all_coordinates_versions_and_adds_dependencies_atomically`.
 
@@ -102,7 +127,7 @@ Update and rollback SHALL refuse with `local_changes` when the clone has any los
 - **THEN** `update all` moves both in one transaction
 
 ### Requirement: update all never removes or downgrades
-`update all` SHALL NOT remove or downgrade packages, SHALL preserve replacement bindings and disabled flags, SHALL solve only healthy packages and SHALL report each kept-back package with its latest version and `HeldBack.reason`; a broken state SHALL NOT fail the run. Verified by `update_all_does_not_downgrade_or_accept_mutated_releases`, `update_all_skips_broken_consumers_and_never_reinstalls` and the tests the scenarios name.
+`update all` SHALL NOT remove or downgrade packages, SHALL preserve replacement bindings and disabled flags, SHALL solve only healthy packages and SHALL report each kept-back package with its latest version and `HeldBack.reason`; a broken state SHALL NOT fail the run. Verified by `update_all_does_not_downgrade_and_warns_about_moved_and_retracted_releases`, `update_all_skips_broken_consumers_and_never_reinstalls` and the tests the scenarios name.
 
 #### Scenario: Kept back
 - **WHEN** the newest release of a package does not fit a dependent's requirement
@@ -126,7 +151,7 @@ Update and rollback SHALL refuse with `local_changes` when the clone has any los
 - **THEN** the dependency is installed from the catalog recorded disabled and not deployed, and it takes disabled providers as given; a new dependency an active package pulls is enabled and needs active providers as `update ID` does (`update_all_pulls_disabled_dependencies_for_a_disabled_consumer`, `update_all_enables_dependencies_of_active_consumers_only`)
 
 ### Requirement: update all honors each package's mode and refuses local work
-`update all` SHALL take no target: it SHALL solve release-mode packages over their release tags, offer each branch-mode package its branch HEAD as only candidate, list the others in `unchanged` with a reason (`pinned`, `diverged`, `branch_gone`), and refuse lost work (`local_changes`) and moved release tags (package-ids) in any clone without partially deploying. Verified by `update_all_preserves_local_work_and_never_partially_deploys` and `update_all_follows_each_mode`.
+`update all` SHALL take no target: it SHALL solve release-mode packages over their release tags, offer each branch-mode package its branch HEAD as only candidate, list the others in `unchanged` with a reason (`pinned`, `diverged`, `branch_gone`), and refuse lost work (`local_changes`) in any clone without partially deploying; moved release tags never fail it (package-ids). Verified by `update_all_preserves_local_work_and_never_partially_deploys` and `update_all_follows_each_mode`.
 
 #### Scenario: update all with --ref
 - **WHEN** the user runs `gitpm update all --ref x`
@@ -171,7 +196,11 @@ Update and rollback SHALL refuse with `local_changes` when the clone has any los
 
 #### Scenario: Back to releases from above
 - **WHEN** a package follows `main` at 0.4.0, the newest release is 0.3.0 and the user runs `update ID --release`
-- **THEN** it moves down to 0.3.0 in release mode; a plain `update` of a release-mode package whose newest release is below the installed version fails with `version_conflict` ("latest release is older …")
+- **THEN** it moves down to 0.3.0 in release mode; a plain `update` of a release-mode package whose newest release is below the installed version (its release was retracted) stays up to date with the retraction warning ("Stable update never downgrades")
+
+#### Scenario: Back to releases at the installed version
+- **WHEN** a package is pinned to a commit with version 0.1.0, the release tag of 0.1.0 is another commit, and the user runs `update ID --release`
+- **THEN** the installed commit is kept, the mode becomes release (a change), and the CLI warns `release tag ID@0.1.0 now points to COMMIT; the installed commit is kept`; this is covered by `return_to_releases_at_the_installed_version_keeps_the_commit`
 
 ### Requirement: A change of mode alone is a change
 An update whose target resolves to the installed commit but records another mode SHALL write the new mode and report a change (`RevisionChange.changed`, `from` and `to` at the same commit; CLI `ID pinned at V (REF)`, `ID follows branch B at V`, `ID follows releases at V`). Verified by `workspace::update_follows_and_switches_the_recorded_mode`.

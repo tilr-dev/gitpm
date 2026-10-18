@@ -93,10 +93,7 @@ def malformed_manifest_tag_newer_than_valid(t: T):
                       "version_conflict", "latest release tag is broken")
 
 
-# Change no-tag-immutability adds the scenario "Manifest or files differ from the published
-# record" to "Published versions are immutable"; the anchors keep the current main slug
-# (#regenerate) until that change is archived.
-@case(fixture="g4_sources_catalog", spec=["catalog/published-versions-are-immutable#regenerate"])
+@case(fixture="g4_sources_catalog", spec=["catalog/published-versions-are-immutable#regenerate", "package-ids/tags-are-not-policed-integrity-via-protected-catalog#moved-tag-on-regenerate"])
 def moved_old_release(t: T):
     """An already published release tag (dan/spaced@1.0.0) moved to another commit: the
     published record is kept with a warning, and hello 0.3.0 is published (change
@@ -115,7 +112,7 @@ def moved_old_release(t: T):
     t.eq(json.loads(t.catalog_release(HELLO, "0.3.0").read_text())["commit"], commit, "0.3.0 published")
 
 
-@case(fixture="g4_sources_catalog", spec=["catalog/published-versions-are-immutable#regenerate"])
+@case(fixture="g4_sources_catalog", spec=["catalog/published-versions-are-immutable#manifest-or-files-differ-from-the-published-record"])
 def edited_published_record_is_kept(t: T):
     """A published record whose file hashes differ from the regenerated release (a manual
     edit of release.json) is kept with a warning; catalog-update exits 0."""

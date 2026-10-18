@@ -47,7 +47,7 @@ Single source for the release record: a release SHALL record the whole `manifest
 #### Scenario: Two releases
 - **WHEN** `sources.txt` lists `./greeter` with tags 0.1.0 and 0.2.0
 - **THEN** `catalog-update` prints `Catalog ready: 2 release(s) checked from sources.`
-- **AND** this is covered by `catalog_update_generates_all_tags_and_rejects_moved_releases_without_partial_write` and `catalog_update_validates_every_source_before_writing_and_retains_removed_sources`
+- **AND** this is covered by `catalog_update_keeps_published_records_when_tags_move` and `catalog_update_validates_every_source_before_writing_and_retains_removed_sources`
 
 #### Scenario: Package removed from gitpm.json at HEAD
 - **WHEN** a multi-package repository tagged `tilr/old@0.1.0` but no longer lists `packages/old` in `gitpm.json` at HEAD, and the catalog has no `tilr/old` yet
@@ -58,7 +58,7 @@ Single source for the release record: a release SHALL record the whole `manifest
 - **THEN** `catalog-update` reads it once and indexes each release once
 
 ### Requirement: Published versions are immutable
-A published version SHALL NOT change; every version is checked before any write, so a rejected update writes nothing. `register` SHALL compare the whole release JSON except `reference` and fail with `version_conflict` ("version ID@V already exists and is immutable"). A package ID SHALL stay bound to the source that first registered it ("registered from a different source" → `catalog`). Verified by `catalog::published_versions_are_immutable`.
+A published version SHALL NOT change; a rejected `register` or `catalog-update` writes nothing. `register` SHALL fail with `version_conflict` when the release JSON (except `reference`) differs. `catalog-update` SHALL keep a differing published record and warn. A package ID SHALL stay bound to the source that first registered it. Verified by `catalog::published_versions_are_immutable` and `catalog_update_keeps_published_records_when_tags_move`.
 
 #### Scenario: Register with another build
 - **WHEN** a published version is registered again with different `--build-url`
@@ -66,8 +66,16 @@ A published version SHALL NOT change; every version is checked before any write,
 
 #### Scenario: Regenerate
 - **WHEN** `catalog-update` regenerates a published version
-- **THEN** it copies `reference` and `build` from the published record, compares manifest, source, commit, files and path, and on a difference fails with `version_conflict` ("release ID@V changed; refusing to replace published version")
-- **AND** a moved tag of a published version is refused as in package-ids ("Moved release tags are refused")
+- **THEN** it keeps the published record unchanged (`reference` and `build` included) and never replaces it, whatever differs (manifest, source, commit, files or path)
+- **AND** when the tag of a published version now points at another commit, it keeps the record, prints `Warning: release ID@V: tag now points to COMMIT; the published record is kept` and does not fail (package-ids, "Tags are not policed; integrity via protected catalog")
+
+#### Scenario: Manifest or files differ from the published record
+- **WHEN** the release commit of a published version is unchanged but its regenerated manifest or file hashes differ from the published record (for example after a manual edit of `release.json`)
+- **THEN** `catalog-update` keeps the published record, prints `Warning: release ID@V differs from the published record; the published record is kept`, exits 0 and publishes the other versions
+
+#### Scenario: Another source for a registered ID
+- **WHEN** a package ID registered from one source is registered or regenerated from another
+- **THEN** it fails with `catalog` ("registered from a different source")
 
 ### Requirement: Register one version
 `register SOURCE --ref REF [--package ID] [--build-url HTTPS_URL --build-sha256 SHA256]` SHALL add one committed version to a local catalog and print the release as JSON; build options MUST be given together (a CLI usage error otherwise) and the build URL MUST be HTTPS with a valid SHA-256 (`catalog` otherwise). Verified by `local_catalog_register_read_install_and_immutable_versions` and `invalid_build_metadata_does_not_publish_release`.

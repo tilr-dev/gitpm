@@ -79,28 +79,6 @@ Single source for broken release tags: a broken historical release tag (invalid 
 - **WHEN** `acme/greeter` 0.1.0 is installed, the origin adds a tag `acme/greeter@0.1.5` whose manifest is invalid and a valid `acme/greeter@0.2.0`, and the user runs `update acme/greeter` or `update all`
 - **THEN** the package moves to 0.2.0, the result's `skipped` names `acme/greeter@0.1.5` with its reason, and the CLI prints `Warning: skipped release tag acme/greeter@0.1.5: reason`, as install does
 
-### Requirement: Moved release tags are refused
-Single source for moved release tags: a single-package update of a package with its own clone SHALL refuse with `version_conflict` when a release tag it observed before now points at another commit. Fetching into a shared clone SHALL take the origin's tags as they are but SHALL refuse with `version_conflict`, naming the tag, when the release tag of an installed revision of any package of that clone would move. `catalog-update` SHALL refuse a moved tag of a published version.
-
-#### Scenario: Other moved tag in a shared clone
-- **WHEN** a tag of a release that no package of the shared clone has installed moved on the origin
-- **THEN** fetching into that clone accepts the moved tag
-
-#### Scenario: Retagged release
-- **WHEN** the tag of an already seen release `acme/greeter@0.2.0` is moved to another commit on the origin
-- **THEN** `update acme/greeter` fails with `version_conflict` ("release tag acme/greeter@0.2.0 changed commit") and the workspace is unchanged
-- **AND** `update all` refuses a moved release tag in any clone the same way (updates); the separate check of the installed version's release commit is in updates ("Stable update never downgrades or accepts mutated releases"); this is covered by `release_manifest_must_match_tag_and_update_rejects_retagging`
-
-#### Scenario: Moved tag of a sibling
-- **WHEN** the tag of installed `tilr/theme@0.1.0` moved on the origin and the user updates `tilr/store` from the same shared clone
-- **THEN** the update fails with `version_conflict` naming `tilr/theme@0.1.0`
-- **AND** this is covered by `a_moved_tag_of_an_installed_package_refuses_install_and_update_of_a_sibling`
-
-#### Scenario: Moved tag on regenerate
-- **WHEN** a published tag was moved to another commit and the user runs `catalog-update`
-- **THEN** it fails with `version_conflict` and no catalog file changes
-- **AND** this is covered by `catalog_update_generates_all_tags_and_rejects_moved_releases_without_partial_write`
-
 ### Requirement: Version format
 Every package version (manifest `version`, `forkOf.version`, `replaces.version`, `--version` arguments, catalog versions) MUST be `MAJOR.MINOR.PATCH` of decimal numbers without leading zeros; anything else, including pre-release and build suffixes, SHALL be refused with `invalid_version`, except that an empty `version` or `forkOf.version` inside a manifest is refused with `invalid_manifest`. Versions SHALL be ordered numerically. Verified by `catalog::version_key_rejects_everything_else`.
 
@@ -134,3 +112,23 @@ Single source for IDs that differ only in letter case, refused independent of th
 #### Scenario: ID differing only in case
 - **WHEN** the repository has `a/ui` and the user runs `init A/ui --into REPO`
 - **THEN** init fails with `invalid_argument` (`package a/ui already exists in this repository`) and the repository is unchanged
+
+### Requirement: Tags are not policed; integrity via protected catalog
+Single source for moved and deleted tags: fetching into any clone (own or shared) SHALL take the origin's release tags as they are: no install, update, `update all` or `catalog-update` SHALL fail because a tag moved or was deleted. Installed revisions are kept by commit; the only tag refusal left is a broken newest tag (scenario below). Integrity of published versions is the job of a verified catalog. Verified by `workspace::moved_and_deleted_tags_are_taken_as_they_are`.
+
+#### Scenario: Retagged release
+- **WHEN** the tag of an already seen release `acme/greeter@0.2.0` is moved to another commit on the origin
+- **THEN** `update acme/greeter` and `update all` do not fail because of it; what they report is specified in updates ("Stable update never downgrades")
+
+#### Scenario: Moved tag of a sibling
+- **WHEN** the tag of installed `tilr/theme@0.1.0` moved on the origin and the user updates `tilr/store` from the same shared clone
+- **THEN** the update of `tilr/store` succeeds and `tilr/theme` keeps its installed commit
+- **AND** this is covered by `a_moved_tag_of_an_installed_package_does_not_block_a_sibling`
+
+#### Scenario: Moved onto a commit of another version
+- **WHEN** the installed release tag `acme/greeter@0.2.0` is moved onto a commit whose manifest says 0.3.0
+- **THEN** it is a broken tag: `update all` keeps the package with the warning `release tag acme/greeter@0.2.0 now points to COMMIT (skipped: REASON); the installed commit is kept`, while `update acme/greeter` fails with `version_conflict` ("latest release tag is broken: …") because it is the newest tag
+
+#### Scenario: Moved tag on regenerate
+- **WHEN** a published tag was moved to another commit and the user runs `catalog-update`
+- **THEN** the published record is kept and a warning names the moved tag (catalog, "Published versions are immutable")

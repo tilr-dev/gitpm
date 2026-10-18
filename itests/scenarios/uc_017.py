@@ -79,7 +79,7 @@ def corrupt_previous(t: T, change):
     return r
 
 
-@case(fixture="g2_hello_history", spec=["errors/failing-operations-leave-the-workspace-unchanged"])
+@case(fixture="g2_hello_history", spec=["errors/failing-operations-leave-the-workspace-unchanged", "updates/rollback-swaps-current-and-previous#previous-commit-gone"])
 def missing_previous_snapshot_fails_safely(t: T):
     """previous.commit names a commit that does not exist in the clone: rollback fails with
     no_previous_version naming the commit, nothing changes."""
@@ -88,7 +88,7 @@ def missing_previous_snapshot_fails_safely(t: T):
     t.has(r.err, "Error kind: no_previous_version", f"previous revision {gone} of {ID} is no longer available")
 
 
-@case(fixture="hello", spec=["updates/local-work-blocks-update-and-rollback#retained-upstream-tag-on-rollback"])
+@case(fixture="hello", spec=["updates/local-work-blocks-update-and-rollback#fork-update-rollback", "updates/local-work-blocks-update-and-rollback#retained-upstream-tag-on-rollback"])
 def rollback_of_a_fork_with_upstream_tags(t: T):
     """A fork whose repository also holds a tag of its upstream on a commit no branch of the
     fork contains: install, update, rollback all succeed (the fetched tag is published)."""

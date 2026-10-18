@@ -63,9 +63,6 @@ def explicit_older_revision_is_allowed(t: T):
     t.eq(t.package(ID)["previous"]["commit"], newer, "previous commit")
 
 
-# Change no-tag-immutability changes the "Same version on another commit" scenario of "Explicit ref resolves
-# against the origin" and "Update mirrors the origin's tags"; the anchors keep the current
-# main slugs until that change is archived.
 @case(fixture="hello_installed", spec=["updates/explicit-ref-resolves-against-the-origin#same-version-on-another-commit"])
 def same_version_other_commit_is_accepted(t: T):
     """A new commit still saying 0.1.0: --ref SHA pins it (tags are not policed, change
@@ -86,7 +83,7 @@ def id_change_by_ref_is_rejected(t: T):
     at(t, "0.1.0", t.rev(ID, f"{ID}@0.1.0"), None)
 
 
-@case(fixture="hello_installed", spec=["updates/stable-update-never-downgrades-or-accepts-mutated-releases"])
+@case(fixture="hello_installed", spec=["updates/stable-update-never-downgrades", "package-ids/broken-historical-tags-are-skipped#bad-newest-tag"])
 def id_change_in_release_tag_is_rejected(t: T):
     """Release tag dan/hello@0.1.1 on a commit whose manifest says dan/renamed: stable update rejects."""
     t.release(ID, "0.1.1", extra={"id": "dan/renamed"})
@@ -107,7 +104,7 @@ def moved_installed_release_tag_by_ref_is_accepted(t: T):
     t.eq(t.package(ID)["mode"], {"pinned": f"{ID}@0.1.0"}, "mode")
 
 
-@case(fixture="hello_installed", spec=["updates/update-mirrors-the-origin-s-tags"])
+@case(fixture="hello_installed", spec=["updates/update-mirrors-the-origin-s-tags", "package-ids/tags-are-not-policed-integrity-via-protected-catalog#retagged-release"])
 def moved_fetched_release_tag_is_taken(t: T):
     """0.1.2 fetched by an earlier update, then re-tagged upstream on another commit: taken
     where it points now (tags are not policed, change no-tag-immutability)."""

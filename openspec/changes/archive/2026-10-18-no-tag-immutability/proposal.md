@@ -32,3 +32,5 @@ Depends on: `no-backward-compat`, `thin-cli-boundary`, `check-via-origin`, `sing
 ## Impact
 
 `workspace/clones.rs` (no moved-tag checks, one fetch helper), `workspace.rs` update selection, warnings and rollback error, `lost_work.rs` (origin tags of the last fetch under `refs/origin-tags/`), `catalog.rs` regenerate path, `error.rs` (`NoPreviousVersion.commit`), FFI records, README "Changed in 0.6", tests that asserted `version_conflict` on retagging (renamed and inverted), Dagger moved-tag cases and a fork → update → rollback case. Tracker: TILR-39, TILR-25.
+
+Implemented in commit 661dd01 (feat!: moved release tags never block updates; rollback sees origin tags).

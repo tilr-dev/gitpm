@@ -108,13 +108,13 @@ Spec references read `capability › Requirement › Scenario`; several scenario
 | 015.1 | update with no catalog configured; catalog never read | updates › Updates need no catalog › Catalog-less update | covered |  |
 | 015.2 | repeat update is a no-op | updates › Stable update moves to the newest release › Update and repeat | covered |  |
 | 015.3 | stable ignores untagged HEAD | updates › Stable update moves to the newest release | covered |  |
-| 015.4 | latest release older than installed → version_conflict | updates › Stable update never downgrades or accepts mutated releases; updates › Update mirrors the origin's tags › Deleted installed release tag | covered | tag policing removal decided: `no-tag-immutability` (D5, TILR-39): retracted release → up to date + warning |
-| 015.5 | installed version retagged → version_conflict | updates › Stable update never downgrades or accepts mutated releases › Release commit of the installed version moved | covered | tag policing removal decided: `no-tag-immutability` (D5, TILR-39) |
+| 015.4 | latest release older than installed → now up to date + warning | updates › Stable update never downgrades › Retracted release in update all; updates › Update mirrors the origin's tags › Deleted installed release tag | covered | tag policing removed by `no-tag-immutability` (D5, TILR-39) |
+| 015.5 | installed version retagged → now up to date + warning | updates › Stable update never downgrades › Release commit of the installed version moved | covered | tag policing removed by `no-tag-immutability` (D5, TILR-39) |
 | 016.1 | update by tag / SHA to 0.1.1 | updates › Explicit ref resolves against the origin | covered |  |
 | 016.2 | explicit older revision allowed | updates › Explicit ref resolves against the origin | covered |  |
-| 016.3 | same version, different commit rejected | updates › Explicit ref resolves against the origin › Same version on another commit | covered |  |
+| 016.3 | same version, different commit → now accepted (pinned) | updates › Explicit ref resolves against the origin › Same version on another commit | covered | `no-tag-immutability` |
 | 016.4 | plugin ID change rejected without replacing state/dist | errors › Failing operations leave the workspace unchanged; package-ids › Broken historical tags are skipped › Bad newest tag | covered | `--ref`: "plugin id changed upstream"; newest tag with a foreign ID: `version_conflict` "latest release tag is broken" |
-| 016.5 | moved already-fetched release tag rejected | package-ids › Moved release tags are refused › Retagged release | covered | tag policing removal decided: `no-tag-immutability` (D5, TILR-39) |
+| 016.5 | moved already-fetched release tag → now taken at its new commit | package-ids › Tags are not policed; integrity via protected catalog › Retagged release | covered | tag policing removed by `no-tag-immutability` (D5, TILR-39) |
 | 016.6 | late red: tag with a foreign package ID silently skipped | package-ids › Release tag names; package-ids › Broken historical tags are skipped › One bad old tag | covered | install warns, newest is refused; `update` prints no warning — Defect D1 |
 | 017.1 | rollback without history fails safely | updates › Rollback swaps current and previous | covered | `no_previous_version` |
 | 017.2 | one previous version; rollback swaps current/previous | workspace-layout › Installed package record › Update keeps one previous revision; updates › Rollback swaps current and previous › Rollback after update | covered |  |
@@ -176,7 +176,7 @@ Spec references read `capability › Requirement › Scenario`; several scenario
 | 031.4 | repeat is safe, no build/push | catalog › Published versions are immutable › Regenerate | covered |  |
 | 032.1 | source validation precedes writes; no partial publish | catalog › Catalog generated from Git release tags; catalog › Writers are serialized and crash-safe | covered |  |
 | 032.2 | malformed / mismatched newest tag in a second source | package-ids › Broken historical tags are skipped › Bad newest tag | covered |  |
-| 032.3 | moved old release refused | package-ids › Moved release tags are refused › Moved tag on regenerate | covered | tag policing removal decided: `no-tag-immutability` (D5, TILR-39): keep record + warn |
+| 032.3 | moved old release → record kept + warning | package-ids › Tags are not policed; integrity via protected catalog › Moved tag on regenerate; catalog › Published versions are immutable › Regenerate | covered | `no-tag-immutability` (D5, TILR-39) |
 | 032.4 | retry succeeds; removed sources and build metadata retained | catalog › Published versions are immutable › Regenerate; catalog › Catalog generated from Git release tags | covered |  |
 | 033.1 | latest = 1.10.0 (numeric) | package-ids › Version format › Numeric ordering | covered |  |
 | 033.2 | old mismatched tag skipped with a warning naming it | package-ids › Broken historical tags are skipped › One bad old tag | covered | install and catalog-update warn; update does not — Defect D1 |

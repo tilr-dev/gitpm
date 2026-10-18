@@ -37,13 +37,10 @@ def stable_ignores_untagged_head(t: T):
     t.same(before, "workspace")
 
 
-# Change no-tag-immutability renames "Stable update never downgrades or accepts mutated
-# releases" to "Stable update never downgrades"; the anchors keep the current main slug
-# until that change is archived.
 RETRACTED = "Warning: installed release dan/hello@{} no longer exists on the origin"
 
 
-@case(fixture="hello_releases", spec=["updates/stable-update-never-downgrades-or-accepts-mutated-releases"])
+@case(fixture="hello_releases", spec=["updates/stable-update-never-downgrades#retracted-release-in-update-all", "updates/update-mirrors-the-origin-s-tags#deleted-installed-release-tag"])
 def latest_release_older_than_installed(t: T):
     """4. installed 0.2.0, upstream tags above 0.1.0 deleted: update and update all stay up
     to date with a warning (never a downgrade)."""
@@ -65,7 +62,7 @@ def latest_release_older_than_installed(t: T):
     t.eq(t.package(ID)["current"]["version"], "0.1.0", "update --release goes down")
 
 
-@case(fixture="hello_installed", spec=["updates/stable-update-never-downgrades-or-accepts-mutated-releases#release-commit-of-the-installed-version-moved"])
+@case(fixture="hello_installed", spec=["updates/stable-update-never-downgrades#release-commit-of-the-installed-version-moved"])
 def installed_release_retagged(t: T):
     """5. the installed version re-tagged on another commit upstream: update and update all
     stay up to date with a warning; the installed commit is kept."""
