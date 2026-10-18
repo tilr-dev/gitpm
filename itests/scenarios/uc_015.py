@@ -30,7 +30,7 @@ def repeated_update_is_noop(t: T):
 
 @case(fixture="hello_installed", spec=["updates/stable-update-moves-to-the-newest-release"])
 def stable_ignores_untagged_head(t: T):
-    """3. an untagged newer commit on main is ignored by the stable channel."""
+    """3. an untagged newer commit on main is ignored in release mode."""
     t.commit(ID, "unreleased", {"dist/index.js": "dev\n"})
     before = t.snap(t.ws)
     t.gitpm_ok("update", ID)
@@ -40,12 +40,16 @@ def stable_ignores_untagged_head(t: T):
 @case(fixture="hello_releases", spec=["updates/stable-update-never-downgrades-or-accepts-mutated-releases"])
 def latest_release_older_than_installed(t: T):
     """4. installed 0.2.0, upstream tags above 0.1.0 deleted: update refuses."""
-    t.gitpm_ok("install", t.repo(ID), "--ref", f"{ID}@0.2.0")
+    t.gitpm_ok("install", t.repo(ID))
+    t.eq(t.package(ID)["current"]["version"], "0.2.0", "installed the newest release")
     for v in ["0.1.1", "0.2.0"]:
         t.git(ID, "tag", "-d", f"{ID}@{v}")
     before = t.snap(t.ws)
     t.gitpm_err("update", ID, kind="version_conflict", contains="latest release is older")
     t.same(before, "workspace")
+    # An explicit return to releases may go down to the newest one.
+    t.gitpm_ok("update", ID, "--release")
+    t.eq(t.package(ID)["current"]["version"], "0.1.0", "update --release goes down")
 
 
 @case(fixture="hello_installed", spec=["updates/stable-update-never-downgrades-or-accepts-mutated-releases#release-commit-of-the-installed-version-moved"])

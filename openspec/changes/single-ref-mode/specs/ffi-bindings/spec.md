@@ -1,7 +1,11 @@
 ## ADDED Requirements
 
 ### Requirement: Records carry the recorded mode
-FFI records SHALL carry what the recorded modes add to library results: `InstalledPackage.mode` (release, pinned with its ref, or branch with its name), `RevisionChange.unchangedReason` (for example `pinned`) and the `reason` of each `UpdateAllPlan.unchanged` entry. This adds to "Records mirror library results". Verified by `records_convert_field_by_field`.
+FFI records SHALL carry every field the recorded modes add to library results, as the `Mode` and `UnchangedReason` enums. This adds to "Records mirror library results". Verified by `records_convert_field_by_field`.
+
+#### Scenario: Mode fields
+- **WHEN** Swift bindings are generated
+- **THEN** `InstalledPackage`, `PackageRecord`, `CheckRow`, `RevisionChange` and `InstallResult` have `mode` (`release`, `pinned(reference)`, `branch(name)`), `Revision.mode` is the mode of a `previous` revision, `InstallResult` has `requestedMode`, and `RevisionChange.unchangedReason` and `Unchanged.reason` are `pinned(reference)`, `diverged(branch)` or `branchGone(branch)`
 
 #### Scenario: Pinned package from Swift
 - **WHEN** a host lists a workspace where `acme/greeter` was installed with `--ref acme/greeter@0.1.0` and then calls `update(id, .recorded)`
@@ -21,8 +25,8 @@ FFI records SHALL carry what the recorded modes add to library results: `Install
 - **THEN** `PackageManager.browseCatalog`/`catalogRelease` read the catalog of `ManagerOptions.catalog`, and the free functions `browseCatalog`, `catalogRelease` and `catalogLinks` take an explicit location without opening a workspace
 
 #### Scenario: Update channel
-- **WHEN** a host calls `install(source, package, target)` or `update(id, target)`
-- **THEN** `target` is the `Target` enum `Release`, `Ref(reference)` or `Dev` (for `update` also `Recorded`, following the recorded mode); the former `Channel` enum is gone
+- **WHEN** a host calls `install(source, target, package)` or `update(id, target)`
+- **THEN** `install` takes the `InstallTarget` enum `Release`, `Ref(reference)` or `Dev`, and `update` the `Target` enum with the same cases plus `Recorded` (following the recorded mode); the former `Channel` enum is gone
 
 #### Scenario: Round trip
 - **WHEN** a host opens an empty workspace through the FFI and lists it

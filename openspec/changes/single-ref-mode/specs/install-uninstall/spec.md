@@ -25,7 +25,7 @@
 - **THEN** the HEAD of `origin/main` is installed and the record says branch mode `main`
 
 ### Requirement: Install is idempotent for the same source
-Installing an installed package again from the same source SHALL change nothing and succeed, reporting `ID already installed (VERSION)`, with `; run update` when the source resolves to another revision (with `--ref`/`--dev`: `; requested --ref REF — run update ID --ref REF`). "Same source" SHALL mean the same string as recorded after canonicalizing a local path. `InstallResult` SHALL carry `already_installed` and `available`.
+Installing an installed package again from the same source SHALL change nothing and succeed, reporting `ID already installed (VERSION)` (with the recorded mode: `(VERSION, pinned at REF)`, `(VERSION, following branch B)`), with `; run update` when the source resolves to another revision or `--ref`/`--dev` asks for another mode (then `; requested --ref REF — run update ID --ref REF`). "Same source" SHALL mean the same string as recorded after canonicalizing a local path. `InstallResult` SHALL carry `already_installed`, `available`, the recorded `mode` and `requested_mode`.
 
 #### Scenario: Repeat install
 - **WHEN** `acme/greeter` 0.2.0 is installed from `./greeter` and the user runs `gitpm install ./greeter`
@@ -37,7 +37,7 @@ Installing an installed package again from the same source SHALL change nothing 
 - **THEN** it prints `acme/greeter already installed (0.2.0); run update` and changes nothing
 
 ### Requirement: Restore preconditions
-`restore ID` SHALL record the package again from its `forgotten` record (own or shared clone), keeping revisions, `catalog`, `enabled` and mode; release and pinned mode check out the recorded commit, branch mode takes HEAD as found. It SHALL refuse with `local_changes` on lost work (unpublished commits included) and with `already_installed` when the ID is recorded. It SHALL print `ID restored V`. Verified by `workspace::restore_keeps_the_forgotten_record`.
+`restore ID` SHALL record the package again from its `forgotten` record (own or shared clone), keeping revisions, `catalog`, `enabled` and mode; release and pinned mode check out the recorded commit, branch mode takes HEAD as found when it descends from the recorded commit and the origin's branch contains it (then the restored revision passes the dependency check, `dependency_conflict` otherwise; a shared clone at another package's revision is checked out at the recorded commit). It SHALL refuse with `local_changes` on lost work (unpublished commits included) and with `already_installed` when the ID is recorded. It SHALL print `ID restored V`. Verified by `workspace::restore_keeps_the_forgotten_record`, `restore_in_a_shared_clone_ignores_another_branch_s_revision` and `branch_mode_restore_checks_dependencies`.
 
 #### Scenario: Restored record
 - **WHEN** a clean retained own clone of `acme/greeter`, forgotten while disabled and bound to a catalog, is restored
@@ -68,4 +68,4 @@ gitpm SHALL offer three removal levels: `disable` (keep everything, set `enabled
 
 #### Scenario: Restore without a clone
 - **WHEN** the user restores an ID that has no `forgotten` record
-- **THEN** the command fails with `repository_not_found`; a forgotten package whose clone (own or shared) is gone fails with `workspace` (multi-package-repos, "Forgotten packages of shared clones")
+- **THEN** the command fails with `repository_not_found`, as does a forgotten package whose clone (own or shared) is gone (multi-package-repos, "Forgotten packages of shared clones")

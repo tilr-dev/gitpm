@@ -236,21 +236,24 @@ fn warn_skipped(skipped: &[gitpm::releases::SkippedTag]) {
     }
 }
 /// `installed ID@VERSION from SOURCE`, or `ID already installed (VERSION)` (with `; run
-/// update` when the source has another revision, naming the requested ref or channel).
+/// update` when the source has another revision, naming the requested `--ref`/`--dev`).
 fn print_installed(result: &gitpm::InstallResult, requested: Option<&str>) {
     warn_skipped(&result.skipped);
     warn(&result.warnings);
     if result.already_installed {
-        let hint = match (&result.available, requested) {
-            (None, _) => String::new(),
-            (Some(_), None) => "; run update".to_owned(),
-            (Some(_), Some(flags)) => {
+        let moves = result.available.is_some() || result.requested_mode.is_some();
+        let hint = match (moves, requested) {
+            (false, _) => String::new(),
+            (true, None) => "; run update".to_owned(),
+            (true, Some(flags)) => {
                 format!("; requested {flags} — run update {} {flags}", result.id)
             }
         };
         println!(
-            "{} already installed ({}){hint}",
-            result.id, result.current.version
+            "{} already installed ({}{}){hint}",
+            result.id,
+            result.current.version,
+            mode_note(&result.mode)
         );
     } else {
         println!(
@@ -297,15 +300,15 @@ fn print_update_all(plan: &gitpm::UpdateAllPlan, dry_run: bool) {
         lines.push((
             &change.id,
             format!(
-                "{} {} {} → {}{}",
-                change.id,
-                if dry_run {
-                    "would be updated"
-                } else {
-                    "updated"
-                },
-                change.from.version,
-                change.to.version,
+                "{}{}",
+                change_line(
+                    change,
+                    if dry_run {
+                        "would be updated"
+                    } else {
+                        "updated"
+                    }
+                ),
                 held.map(|h| format!(" (latest {} kept back by dependency constraints)", h.latest))
                     .unwrap_or_default()
             ),
@@ -325,7 +328,7 @@ fn print_update_all(plan: &gitpm::UpdateAllPlan, dry_run: bool) {
     for unchanged in &plan.unchanged {
         lines.push((
             &unchanged.id,
-            format!("{} up to date ({})", unchanged.id, unchanged.version),
+            unchanged_line(&unchanged.id, &unchanged.version, unchanged.reason.as_ref()),
         ));
     }
     lines.sort();
@@ -386,25 +389,77 @@ fn warn_dist(sync: &DistSync) {
         );
     }
 }
-/// `ID updated A → B` or `ID up to date (A)` (`verb`: updated, rolled back).
-fn print_change(change: &gitpm::RevisionChange, verb: &str) {
-    warn_skipped(&change.skipped);
-    warn(&change.warnings);
+/// `ID VERB A → B` (or `ID VERB V (COMMIT → COMMIT)` when the version stays).
+fn change_line(change: &gitpm::RevisionChange, verb: &str) -> String {
     let short = |commit: &str| commit.chars().take(12).collect::<String>();
-    if !change.changed {
-        println!("{} up to date ({})", change.id, change.to.version);
-    } else if change.from.version == change.to.version {
-        println!(
+    if change.from.version == change.to.version {
+        format!(
             "{} {verb} {} ({} → {})",
             change.id,
             change.to.version,
             short(&change.from.commit),
             short(&change.to.commit)
-        );
+        )
     } else {
-        println!(
+        format!(
             "{} {verb} {} → {}",
             change.id, change.from.version, change.to.version
+        )
+    }
+}
+/// `ID up to date (V)`, or why the package stayed: `ID pinned at V (REF)`, `ID kept at V
+/// (history of BRANCH diverged)`.
+fn unchanged_line(id: &str, version: &str, reason: Option<&gitpm::UnchangedReason>) -> String {
+    match reason {
+        None => format!("{id} up to date ({version})"),
+        Some(gitpm::UnchangedReason::Pinned { reference }) => {
+            format!("{id} pinned at {version} ({reference})")
+        }
+        Some(gitpm::UnchangedReason::Diverged { branch }) => {
+            format!("{id} kept at {version} (history of {branch} diverged)")
+        }
+        Some(gitpm::UnchangedReason::BranchGone { branch }) => {
+            format!("{id} kept at {version} (branch {branch} is gone)")
+        }
+    }
+}
+/// The line of a change of mode alone (the revision stays): `ID pinned at V (REF)`,
+/// `ID follows branch B at V`, `ID follows releases at V`.
+fn mode_line(id: &str, version: &str, mode: &gitpm::Mode) -> String {
+    match mode {
+        gitpm::Mode::Pinned(reference) => format!("{id} pinned at {version} ({reference})"),
+        gitpm::Mode::Branch(branch) => format!("{id} follows branch {branch} at {version}"),
+        gitpm::Mode::Release => format!("{id} follows releases at {version}"),
+    }
+}
+/// `, pinned at REF` / `, following branch B` for the already-installed line.
+fn mode_note(mode: &gitpm::Mode) -> String {
+    match mode {
+        gitpm::Mode::Release => String::new(),
+        gitpm::Mode::Pinned(reference) => format!(", pinned at {reference}"),
+        gitpm::Mode::Branch(branch) => format!(", following branch {branch}"),
+    }
+}
+/// `ID updated A → B`, `ID up to date (A)` or `ID pinned at A (REF)` (`verb`: updated,
+/// rolled back).
+fn print_change(change: &gitpm::RevisionChange, verb: &str) {
+    warn_skipped(&change.skipped);
+    warn(&change.warnings);
+    if change.changed && change.from.commit == change.to.commit {
+        println!(
+            "{}",
+            mode_line(&change.id, &change.to.version, &change.mode)
+        );
+    } else if change.changed {
+        println!("{}", change_line(change, verb));
+    } else {
+        println!(
+            "{}",
+            unchanged_line(
+                &change.id,
+                &change.to.version,
+                change.unchanged_reason.as_ref()
+            )
         );
     }
     warn_dist(&change.dist);
@@ -607,10 +662,12 @@ Workspace (installed packages):",
     },
     Help {
         commands: &["install"],
-        text: "  install GIT_SOURCE [ID] [--ref REF]  install the latest Git release (tag); --ref picks a
-                                   tag, branch or commit; --channel dev follows the default
-                                   branch. ID (or --package ID) picks a package of a
-                                   repository with gitpm.json (needed when it has several)",
+        text: "  install GIT_SOURCE [ID] [--ref REF | --dev]  install the latest Git release (tag);
+                                   --ref TAG|COMMIT pins it, --ref BRANCH follows that
+                                   branch of the origin, --dev follows its default branch
+                                   (the mode is recorded and update follows it). ID (or
+                                   --package ID) picks a package of a repository with
+                                   gitpm.json (needed when it has several)",
     },
     Help {
         commands: &["install-catalog"],
@@ -627,12 +684,14 @@ Workspace (installed packages):",
     },
     Help {
         commands: &["update"],
-        text: "  update ID [--ref REF]             update to the latest Git release; --channel dev follows
-                                   origin HEAD",
+        text: "  update ID [--ref REF | --dev | --release]  follow the recorded mode (latest release,
+                                   branch HEAD; a pinned package stays); --ref/--dev switch
+                                   as in install, --release returns to releases",
     },
     Help {
         commands: &["update"],
-        text: "  update all [--dry-run]           jointly upgrade compatible releases; preview with --dry-run",
+        text: "  update all [--dry-run]           jointly upgrade each package by its recorded mode;
+                                   preview with --dry-run",
     },
     Help {
         commands: &["rollback"],
@@ -645,8 +704,8 @@ Workspace (installed packages):",
     },
     Help {
         commands: &["forget", "restore"],
-        text: "  forget ID [--force] | restore ID  unregister (keeps the clone, removes dist/ID) /
-                                   re-register a retained clone",
+        text: "  forget ID [--force] | restore ID  unregister (keeps the clone and the record, removes
+                                   dist/ID) / record it again as it was",
     },
     Help {
         commands: &["uninstall"],
@@ -794,7 +853,6 @@ fn run(invocation: &mut Invocation) -> Result<()> {
     let reference = option(&mut args, "--ref")?;
     let version = option(&mut args, "--version")?;
     let sources = option(&mut args, "--sources")?;
-    let channel = option(&mut args, "--channel")?;
     let build_url = option(&mut args, "--build-url")?;
     let build_sha256 = option(&mut args, "--build-sha256")?;
     let build = match (build_url, build_sha256) {
@@ -813,6 +871,8 @@ fn run(invocation: &mut Invocation) -> Result<()> {
     let back = flag(&mut args, "--back")?;
     let force = flag(&mut args, "--force")?;
     let dry_run = flag(&mut args, "--dry-run")?;
+    let dev = flag(&mut args, "--dev")?;
+    let release = flag(&mut args, "--release")?;
     ensure!(!args.is_empty(), "command required; use --help");
     if let Some(unknown) = args.iter().find(|a| a.len() > 1 && a.starts_with('-')) {
         bail!("unknown option: {unknown}; use --help");
@@ -827,17 +887,16 @@ fn run(invocation: &mut Invocation) -> Result<()> {
         "--sources requires catalog-update"
     );
     ensure!(
-        channel.is_none() || matches!(command, "install" | "update"),
-        "--channel requires install/update"
+        !dev || matches!(command, "install" | "update"),
+        "--dev requires install/update"
     );
+    ensure!(!release || command == "update", "--release requires update");
+    ensure!(!dev || reference.is_none(), "--dev conflicts with --ref");
     ensure!(
-        channel
-            .as_deref()
-            .is_none_or(|c| c == "dev" || c == "stable"),
-        "channel must be stable or dev"
+        !release || reference.is_none(),
+        "--release conflicts with --ref"
     );
-    // `--channel dev --ref REF` is passed on: the library refuses the combination.
-    let dev = channel.as_deref() == Some("dev");
+    ensure!(!release || !dev, "--release conflicts with --dev");
     ensure!(
         build.is_none() || command == "register",
         "build options require register"
@@ -924,10 +983,10 @@ fn run(invocation: &mut Invocation) -> Result<()> {
         !dry_run || update_all || command == "sync-dist",
         "--dry-run requires update all or sync-dist"
     );
-    // `update all` has no ref or channel parameter: these options do not apply to it.
+    // `update all` takes no target: these options do not apply to it.
     ensure!(
-        !update_all || (reference.is_none() && !dev),
-        "update all supports stable releases only; --ref and --channel dev are not supported"
+        !update_all || (reference.is_none() && !dev && !release),
+        "update all takes no --ref, --dev or --release; it follows each package's recorded mode"
     );
     // Parse IDs and versions with the library's parsers before opening the workspace: a
     // rejected command creates nothing.
@@ -1188,8 +1247,12 @@ fn run(invocation: &mut Invocation) -> Result<()> {
             }
         }
         "install" => {
-            let result =
-                manager.install_package(id, package.as_deref(), reference.as_deref(), dev)?;
+            let target = match (&reference, dev) {
+                (Some(reference), _) => gitpm::InstallTarget::Ref(reference.clone()),
+                (None, true) => gitpm::InstallTarget::Dev,
+                (None, false) => gitpm::InstallTarget::Release,
+            };
+            let result = manager.install_package(id, package.as_deref(), target)?;
             let requested = match (&reference, dev) {
                 (Some(reference), _) => Some(format!(
                     "--ref {}",
@@ -1202,7 +1265,7 @@ fn run(invocation: &mut Invocation) -> Result<()> {
                         scaffold::shell_quote(reference)
                     }
                 )),
-                (None, true) => Some("--channel dev".to_owned()),
+                (None, true) => Some("--dev".to_owned()),
                 (None, false) => None,
             };
             print_installed(&result, requested.as_deref());
@@ -1219,10 +1282,13 @@ fn run(invocation: &mut Invocation) -> Result<()> {
                 };
                 print_update_all(&plan, dry_run);
             } else {
-                print_change(
-                    &manager.update_channel(id, reference.as_deref(), dev)?,
-                    "updated",
-                );
+                let target = match (reference, dev, release) {
+                    (Some(reference), _, _) => gitpm::Target::Ref(reference),
+                    (None, true, _) => gitpm::Target::Dev,
+                    (None, false, true) => gitpm::Target::Release,
+                    (None, false, false) => gitpm::Target::Recorded,
+                };
+                print_change(&manager.update_to(id, target)?, "updated");
             }
         }
         "rollback" => print_change(&manager.rollback(id)?, "rolled back"),

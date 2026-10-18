@@ -180,10 +180,10 @@ fn two_packages_of_one_repository_share_one_clone_and_update_independently() {
     assert_eq!(f.dist("tilr/store"), "store 1.1.0");
     assert_eq!(f.dist("tilr/theme"), "theme 1.2.0");
 
-    // The dev channel works per package (HEAD of the default branch).
+    // --dev works per package (HEAD of the default branch, then followed).
     f.write("theme", "1.3.0", "");
     f.git(&f.mono, &["commit", "-q", "-am", "theme work"]);
-    f.ok(&["update", "tilr/theme", "--channel", "dev"]);
+    f.ok(&["update", "tilr/theme", "--dev"]);
     assert_eq!(f.dist("tilr/theme"), "theme 1.3.0");
     // An explicit ref names a release tag of the package.
     f.ok(&["update", "tilr/store", "--ref", "tilr/store@1.0.0"]);
@@ -210,10 +210,10 @@ fn installing_a_monorepo_without_a_package_id_lists_the_packages() {
         "--package",
         "tilr/store",
     ]);
-    // --ref with an ID@VERSION tag names the package; the dev channel needs an ID.
+    // --ref with an ID@VERSION tag names the package; --dev needs an ID.
     f.ok(&["install", f.source(), "--ref", "tilr/theme@1.0.0"]);
-    f.fails(&["install", f.source(), "--channel", "dev"]);
-    f.ok(&["install", f.source(), "tilr/store", "--channel", "dev"]);
+    f.fails(&["install", f.source(), "--dev"]);
+    f.ok(&["install", f.source(), "tilr/store", "--dev"]);
     assert_eq!(f.dist("tilr/store"), "store 1.0.0");
 }
 
@@ -728,27 +728,15 @@ fn fork_of_two_packages_keeps_exactly_those_and_rewrites_their_dependency() {
         String::from_utf8_lossy(&out.stdout)
     );
     // The fork lists only its two packages.
-    let error = f.fails(&["install", fork.to_str().unwrap(), "--channel", "dev"]);
+    let error = f.fails(&["install", fork.to_str().unwrap(), "--dev"]);
     assert!(
         error.contains("me/panel (packages/panel)")
             && error.contains("me/theme (packages/theme)")
             && !error.contains("store"),
         "{error}"
     );
-    f.ok(&[
-        "install",
-        fork.to_str().unwrap(),
-        "me/theme",
-        "--channel",
-        "dev",
-    ]);
-    f.ok(&[
-        "install",
-        fork.to_str().unwrap(),
-        "me/panel",
-        "--channel",
-        "dev",
-    ]);
+    f.ok(&["install", fork.to_str().unwrap(), "me/theme", "--dev"]);
+    f.ok(&["install", fork.to_str().unwrap(), "me/panel", "--dev"]);
     assert_eq!(f.dist("me/panel"), "panel 1.0.0");
 
     // Forking only the dependent package keeps its dependency on the original.
@@ -1096,7 +1084,7 @@ fn a_v_version_tag_in_a_multi_package_repository_is_ignored_without_a_warning() 
     ]);
     quiet(&["install", f.source(), "tilr/theme"]);
     assert_eq!(f.dist("tilr/theme"), "theme 1.0.0");
-    let out = quiet(&["update", "tilr/store"]);
+    let out = quiet(&["update", "tilr/store", "--release"]);
     assert!(out.contains("tilr/store updated 1.0.0 → 1.1.0"), "{out}");
     quiet(&["update", "all"]);
     fs::write(f.dir.join("sources.txt"), "mono\n").unwrap();

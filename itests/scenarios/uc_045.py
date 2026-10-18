@@ -87,7 +87,9 @@ def missing_clone_case(name: str, argv: list):
         shutil.rmtree(t.clone(A))
         b_before = t.snap(t.clone(B), t.dist(B), git=True)
         state = t.state()
-        t.gitpm_err(*argv, kind="repository_not_found", contains=A)
+        # restore works on forgotten records only: a recorded package is already_installed.
+        kind = "already_installed" if name == "restore" else "repository_not_found"
+        t.gitpm_err(*argv, kind=kind, contains=A)
         t.eq(t.state(), state, "state unchanged")
         t.same(b_before, "B untouched")
         t.gitpm_ok("update", B)
@@ -96,7 +98,7 @@ def missing_clone_case(name: str, argv: list):
         t.eq(t.package(A), state["packages"][A], "A state entry kept")
 
     fn.__name__ = f"missing_clone_{name}"
-    fn.__doc__ = f"3. packages/dan/a removed: `{' '.join(argv)}` fails with repository_not_found; B untouched and updatable."
+    fn.__doc__ = f"3. packages/dan/a removed: `{' '.join(argv)}` fails ({'already_installed' if name == 'restore' else 'repository_not_found'}); B untouched and updatable."
     return case(fixture="g3_trio_installed", spec=["dist/undeployable-packages-do-not-block-others",
                                                    "errors/failing-operations-leave-the-workspace-unchanged"])(fn)
 

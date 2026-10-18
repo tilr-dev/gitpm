@@ -28,7 +28,7 @@ Before calling the library the CLI SHALL refuse only syntax: unknown or repeated
 
 #### Scenario: Channel and ref
 - **WHEN** the user runs `gitpm install SOURCE --ref x --dev`, `gitpm update ID --dev --release`, or passes `--channel`
-- **THEN** it fails with `--dev conflicts with --ref` (or `--release conflicts with --dev`), or `unknown option --channel; use --help`, exit status 1, and creates nothing
+- **THEN** it fails with `--dev conflicts with --ref` (or `--release conflicts with --dev`), or `unknown option: --channel; use --help`, exit status 1, and creates nothing
 - **AND** `--version` outside `install-catalog`/`fork --replace` is refused by the CLI as a misplaced option
 
 #### Scenario: Misplaced flag

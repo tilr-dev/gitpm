@@ -18,7 +18,7 @@ Depends on: `no-backward-compat`, `thin-cli-boundary`, `check-via-origin`. `cli-
 ## Capabilities
 
 ### Modified Capabilities
-- `install-uninstall`, `updates`, `workspace-layout`, `cli`, `ffi-bindings` ("Manager surface"; new "Records carry the recorded mode"), `multi-package-repos`, `catalog` (check rows), `dist` ("Read-only commands never change dist").
+- `install-uninstall`, `updates`, `workspace-layout`, `cli`, `ffi-bindings` ("Manager surface"; new "Records carry the recorded mode"), `multi-package-repos`, `catalog` (check rows), `dist` ("Read-only commands never change dist"), `git-safety` ("Origin tag lookup is bounded and restricted": the `check` ls-remote also lists branches, `--heads`).
 
 ## Out of scope
 

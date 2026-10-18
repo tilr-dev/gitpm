@@ -1,9 +1,10 @@
 //! Read-only comparison of installed packages with the selected catalog, or, for a
 //! package the catalog does not list (or without a catalog), with the release tags of
-//! its recorded origin.
+//! its recorded origin. A pinned package is reported as pinned; a branch-mode package
+//! is compared with the HEAD of its branch on the origin.
 use crate::error::{Error, Result};
 use crate::{
-    ForkOf, Installed, State,
+    ForkOf, Installed, Mode, State,
     catalog::{Catalog, version_key},
     exec,
 };
@@ -30,6 +31,8 @@ pub enum CheckStatus {
     NoReleases,
     /// Origin row: the origin could not be read; see [`CheckRow::problem`].
     OriginUnreachable,
+    /// Pinned to a tag or commit ([`CheckRow::mode`]): not compared, nothing queried.
+    Pinned,
 }
 impl CheckStatus {
     /// Human-readable status.
@@ -47,6 +50,7 @@ impl CheckStatus {
             CheckStatus::NewerThanOrigin => "newer than origin",
             CheckStatus::NoReleases => "no releases on origin",
             CheckStatus::OriginUnreachable => "origin unreachable",
+            CheckStatus::Pinned => "pinned",
         }
     }
 }
@@ -80,6 +84,10 @@ pub struct CheckRow {
     pub status: CheckStatus,
     /// Whether the row comes from the catalog or from the package's origin.
     pub source: CheckSource,
+    /// The recorded mode (omitted in release mode): a pinned row names its ref, a
+    /// branch row compares the installed commit with that branch's HEAD on the origin.
+    #[serde(skip_serializing_if = "Mode::is_release")]
+    pub mode: Mode,
     /// Why the origin could not be read ([`CheckStatus::OriginUnreachable`]); a
     /// classified hint, never git's raw stderr.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -145,7 +153,7 @@ fn latest_version(catalog: &Catalog, id: &str) -> Option<String> {
 /// [`CheckStatus::OtherCatalog`] and never offered an update, unless this catalog has a
 /// different source ([`CheckStatus::DifferentSource`]) or exactly the installed release
 /// ([`CheckStatus::UpToDate`]). Every other package gets an origin row from the release
-/// tags of its recorded source: this runs `git ls-remote --tags` (bounded, once per
+/// tags of its recorded source: this runs `git ls-remote --tags --heads` (bounded, once per
 /// source, nothing fetched); a source that is not a URL or an absolute path, or uses a
 /// remote helper, is not queried and its row is [`CheckStatus::OriginUnreachable`].
 pub fn compare_in(state: &State, catalog: &Catalog, location: Option<&str>) -> Vec<CheckRow> {
@@ -159,9 +167,17 @@ fn rows(state: &State, catalog: Option<(&Catalog, Option<&str>)>) -> Vec<CheckRo
         .packages
         .iter()
         .map(|(id, installed)| {
-            let mut row = catalog
-                .and_then(|(catalog, location)| catalog_row(id, installed, catalog, location))
-                .unwrap_or_else(|| origin_row(id, installed, &mut origins));
+            let mut row = match &installed.mode {
+                Mode::Release => catalog
+                    .and_then(|(catalog, location)| catalog_row(id, installed, catalog, location))
+                    .unwrap_or_else(|| origin_row(id, installed, &mut origins)),
+                Mode::Pinned(_) => {
+                    let mut row = new_row(id, installed, CheckSource::Origin);
+                    row.status = CheckStatus::Pinned;
+                    row
+                }
+                Mode::Branch(branch) => branch_row(id, installed, branch, &mut origins),
+            };
             row.upstream = installed
                 .fork_of
                 .as_ref()
@@ -180,6 +196,7 @@ fn new_row(id: &str, installed: &Installed, source: CheckSource) -> CheckRow {
         update_available: false,
         status: CheckStatus::UpToDate,
         source,
+        mode: installed.mode.clone(),
         problem: None,
         upstream: None,
     }
@@ -232,15 +249,14 @@ fn upstream(base: &ForkOf, catalog: Option<&Catalog>, origins: &mut Origins) -> 
     }
 }
 
-/// Release tags per origin, read once per distinct source with `git ls-remote`.
+/// Tags and branches per origin, read once per distinct source with `git ls-remote`.
 #[derive(Default)]
-struct Origins(BTreeMap<String, std::result::Result<BTreeMap<String, String>, String>>);
+struct Origins(BTreeMap<String, std::result::Result<exec::RemoteRefs, String>>);
 impl Origins {
-    /// Newest `ID@VERSION` tag version on `source` by name (its manifest is verified
-    /// only when updating); `Err` is the classified reason the origin was unreadable.
-    fn latest(&mut self, source: &str, id: &str) -> std::result::Result<Option<String>, String> {
-        let tags = self
-            .0
+    /// Tags and branches of `source`; `Err` is the classified reason the origin was
+    /// unreadable.
+    fn refs(&mut self, source: &str) -> std::result::Result<&exec::RemoteRefs, String> {
+        self.0
             .entry(source.to_owned())
             .or_insert_with(|| {
                 // Never hand git a source it would run a helper for, or resolve
@@ -248,7 +264,7 @@ impl Origins {
                 if let Err(e) = crate::auth::validate_recorded(source) {
                     return Err(format!("source not queried: {e}"));
                 }
-                exec::ls_remote_tags(source).map_err(|e| {
+                exec::ls_remote_refs(source).map_err(|e| {
                     // Classify git's message only, not the command line with the source.
                     let text = e.to_string();
                     let stderr = text.split_once(": ").map_or(text.as_str(), |(_, s)| s);
@@ -256,7 +272,12 @@ impl Origins {
                 })
             })
             .as_ref()
-            .map_err(Clone::clone)?;
+            .map_err(Clone::clone)
+    }
+    /// Newest `ID@VERSION` tag version on `source` by name (its manifest is verified
+    /// only when updating); `Err` is the classified reason the origin was unreadable.
+    fn latest(&mut self, source: &str, id: &str) -> std::result::Result<Option<String>, String> {
+        let tags = &self.refs(source)?.tags;
         let prefix = format!("{id}@");
         Ok(tags
             .keys()
@@ -281,6 +302,30 @@ fn origin_row(id: &str, installed: &Installed, origins: &mut Origins) -> CheckRo
             versus(&mut row, &latest, CheckStatus::NewerThanOrigin);
             row.latest = Some(latest);
         }
+    }
+    row
+}
+
+/// A branch-mode package: the installed commit against the branch HEAD on the origin
+/// (a new commit is an update, with or without a version bump).
+fn branch_row(id: &str, installed: &Installed, branch: &str, origins: &mut Origins) -> CheckRow {
+    let mut row = new_row(id, installed, CheckSource::Origin);
+    match origins.refs(&installed.source) {
+        Err(problem) => {
+            row.status = CheckStatus::OriginUnreachable;
+            row.problem = Some(problem);
+        }
+        Ok(refs) => match refs.heads.get(branch) {
+            None => {
+                row.status = CheckStatus::OriginUnreachable;
+                row.problem = Some(format!("branch {branch} not found on the origin"));
+            }
+            Some(head) if *head == installed.current.commit => {}
+            Some(_) => {
+                row.status = CheckStatus::UpdateAvailable;
+                row.update_available = true;
+            }
+        },
     }
     row
 }
@@ -442,6 +487,7 @@ mod tests {
             current: Revision {
                 version: "1.9.0".into(),
                 commit: "a".repeat(40),
+                ..Default::default()
             },
             previous: None,
             enabled: false,
@@ -690,6 +736,7 @@ mod tests {
             (CheckStatus::NewerThanOrigin, "newer_than_origin"),
             (CheckStatus::NoReleases, "no_releases"),
             (CheckStatus::OriginUnreachable, "origin_unreachable"),
+            (CheckStatus::Pinned, "pinned"),
         ];
         for (status, name) in all {
             assert_eq!(serde_json::to_value(status).unwrap(), name);
@@ -838,6 +885,98 @@ mod tests {
             .packages
             .remove("x/y")
             .unwrap()
+    }
+
+    #[test]
+    fn check_reports_each_recorded_mode() {
+        use crate::test_support::{Author, TempDir};
+        use crate::{InstallTarget, Manager, Options};
+        let dir = TempDir::new("check-modes");
+        let root = dir.join("workspace");
+        let released = Author::new(dir.join("released"), "acme/released");
+        let pinned = Author::new(dir.join("pinned"), "acme/pinned");
+        let branch = Author::new(dir.join("branch"), "acme/branch");
+        let m = Manager::open_with(&root, Options::default()).unwrap();
+        m.install(released.source()).unwrap();
+        m.install_package(
+            pinned.source(),
+            None,
+            InstallTarget::Ref("acme/pinned@0.1.0".into()),
+        )
+        .unwrap();
+        m.install_package(branch.source(), None, InstallTarget::Dev)
+            .unwrap();
+        drop(m);
+        let summary = |root: &Path| -> Vec<(String, CheckStatus, Mode)> {
+            check(root, None)
+                .unwrap()
+                .rows
+                .into_iter()
+                .map(|r| (r.id, r.status, r.mode))
+                .collect()
+        };
+        let pinned_mode = Mode::Pinned("acme/pinned@0.1.0".into());
+        let branch_mode = Mode::Branch("main".into());
+        assert_eq!(
+            summary(&root),
+            [
+                (
+                    "acme/branch".into(),
+                    CheckStatus::UpToDate,
+                    branch_mode.clone()
+                ),
+                (
+                    "acme/pinned".into(),
+                    CheckStatus::Pinned,
+                    pinned_mode.clone()
+                ),
+                ("acme/released".into(), CheckStatus::UpToDate, Mode::Release),
+            ]
+        );
+        // A newer release does not concern the pinned package; a moved branch is an update
+        // even without a version bump.
+        pinned.release("0.2.0");
+        released.release("0.2.0");
+        fs::write(branch.path.join("dist/extra.js"), "extra").unwrap();
+        crate::test_support::git(&branch.path, &["add", "--all"]);
+        crate::test_support::git(&branch.path, &["commit", "-q", "-m", "same version"]);
+        assert_eq!(
+            summary(&root),
+            [
+                (
+                    "acme/branch".into(),
+                    CheckStatus::UpdateAvailable,
+                    branch_mode
+                ),
+                (
+                    "acme/pinned".into(),
+                    CheckStatus::Pinned,
+                    pinned_mode.clone()
+                ),
+                (
+                    "acme/released".into(),
+                    CheckStatus::UpdateAvailable,
+                    Mode::Release
+                ),
+            ]
+        );
+        // A pinned package is never queried: even an unreachable origin is not read.
+        let mut state = read_state(&root).unwrap();
+        state.packages.get_mut("acme/pinned").unwrap().source = "ext::sh -c id".into();
+        let row = rows(&state, None).remove(1);
+        assert_eq!(
+            (row.status, row.problem, row.mode),
+            (CheckStatus::Pinned, None, pinned_mode)
+        );
+        // A branch the origin no longer has is reported, not hidden.
+        let entry = state.packages.get_mut("acme/branch").unwrap();
+        entry.mode = Mode::Branch("gone".into());
+        let row = rows(&state, None).remove(0);
+        assert_eq!(row.status, CheckStatus::OriginUnreachable);
+        assert_eq!(
+            row.problem.as_deref(),
+            Some("branch gone not found on the origin")
+        );
     }
 
     #[test]

@@ -12,7 +12,7 @@ A workspace root SHALL contain `state.json` (installed packages, replacement bin
 - **THEN** the workspace root is created with `packages/`, `dist/` and a `state.json` of `{"format": 3, "packages": {}}`, and the workspace lock file (transactions-locking, "Workspace lock") is created beside it
 
 ### Requirement: Installed package record
-Single source for the record format: each `state.json` `packages.<id>` record SHALL hold `source`, `current` and `previous` revisions (`version`, `commit`), `enabled`, `mode` (omitted in release mode, else `{"pinned": REF}` or `{"branch": NAME}`), and when present `forkOf`, `dependencies`, `replaces`, `catalog` (canonical location), `clone` (shared-clone key), `path` (package folder) and `metadata`. At most one previous revision SHALL be kept. Verified by `model::state_round_trips_byte_for_byte`.
+Single source for the record format: each `state.json` `packages.<id>` record SHALL hold `source`, `current` and `previous` revisions (`version`, `commit`; `previous` also the `mode` it had, omitted in release mode), `enabled`, `mode` (omitted in release mode, else `{"pinned": REF}` or `{"branch": NAME}`), and when present `forkOf`, `dependencies`, `replaces`, `catalog` (canonical location), `clone` (shared-clone key), `path` (package folder) and `metadata`. At most one previous revision SHALL be kept. Verified by `model::state_round_trips_byte_for_byte`.
 
 #### Scenario: Fresh install has no previous revision
 - **WHEN** a package was just installed
@@ -25,6 +25,10 @@ Single source for the record format: each `state.json` `packages.<id>` record SH
 #### Scenario: Recorded modes
 - **WHEN** packages were installed without a ref, with `--ref acme/a@1.0.0`, and with `--ref feature`
 - **THEN** the first record has no `mode`, the second `"mode": {"pinned": "acme/a@1.0.0"}`, the third `"mode": {"branch": "feature"}`
+
+#### Scenario: Previous revision keeps its mode
+- **WHEN** a package in branch mode `main` is updated with `--release`
+- **THEN** `previous` is `{"version": …, "commit": …, "mode": {"branch": "main"}}` (a `previous` in release mode has no `mode`), so `rollback` restores both
 
 ### Requirement: Replacements and forgotten records
 `state.json` SHALL keep `replacements` (the replacement bindings ORIGINAL → FORK, global for the workspace; rules in fork-replacement) and `forgotten` (records of every forgotten package, same format as `packages.<id>`, own clone or shared clone alike; lifecycle in install-uninstall and multi-package-repos).

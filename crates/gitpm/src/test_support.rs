@@ -238,6 +238,7 @@ pub(crate) fn state_with(id: &str, source: &str, version: &str, commit: &str) ->
                 current: crate::Revision {
                     version: version.into(),
                     commit: commit.into(),
+                    ..Default::default()
                 },
                 previous: None,
                 enabled: true,

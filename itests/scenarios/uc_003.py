@@ -73,7 +73,7 @@ def release_and_update_keep_the_id(t: T):
     """A package keeps its ID through install, a new release and update; nothing is renamed."""
     t.gitpm_ok("init", "first/keep", "--into", "a/keep")
     repo = t.root / "a/keep"
-    t.gitpm_ok("install", repo, "--ref", "first/keep@0.1.0")
+    t.gitpm_ok("install", repo)
     t.gitpm_ok("init", "second/new", "--into", "a/new")
     t.eq(created_id(t, "a/new"), "second/new", "new ID")
     t.gitpm_ok("commit", repo, "0.1.1")

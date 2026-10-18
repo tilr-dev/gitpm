@@ -65,11 +65,14 @@ def explicit_older_revision_is_allowed(t: T):
 
 @case(fixture="hello_installed", spec=["updates/explicit-ref-resolves-against-the-origin#same-version-on-another-commit"])
 def same_version_other_commit_is_rejected(t: T):
-    """A new commit still saying 0.1.0: --ref SHA and --ref branch are refused (version_conflict)."""
+    """A new commit still saying 0.1.0: --ref SHA is refused (version_conflict); --ref main
+    follows the branch, which moves by commit."""
     sha = t.commit(ID, "code change without bump", {"dist/index.js": "export const greeting = 'changed';\n"})
     refused(t, "update", ID, "--ref", sha, kind="version_conflict", contains="without a version bump")
-    refused(t, "update", ID, "--ref", "main", kind="version_conflict", contains="without a version bump")
     at(t, "0.1.0", t.rev(ID, f"{ID}@0.1.0"), None)
+    t.gitpm_ok("update", ID, "--ref", "main")
+    t.eq(t.package(ID)["current"], {"version": "0.1.0", "commit": sha}, "branch mode moves by commit")
+    t.eq(t.package(ID)["mode"], {"branch": "main"}, "mode")
 
 
 @case(fixture="hello_installed", spec=["errors/failing-operations-leave-the-workspace-unchanged"])
@@ -112,6 +115,7 @@ def moved_fetched_release_tag_is_rejected(t: T):
     t.tag(ID, f"{ID}@0.1.2", force=True)
     print(f"  0.1.2 moved upstream: {original} -> {moved}")
     t.git(ID, "checkout", "-q", "main")
-    for args in [("update", ID), ("update", ID, "--ref", f"{ID}@0.1.2")]:
+    # The ref pinned 0.1.1: back to releases, or to the moved tag.
+    for args in [("update", ID, "--release"), ("update", ID, "--ref", f"{ID}@0.1.2")]:
         refused(t, *args, kind=None)
         at(t, "0.1.1", first, "0.1.0")

@@ -158,12 +158,16 @@ type Result<T> = std::result::Result<T, PmError>;
 pub struct Revision {
     pub version: String,
     pub commit: String,
+    /// Only in `previous`: the mode the package had at that revision (rollback restores
+    /// it); `release` everywhere else.
+    pub mode: Mode,
 }
 impl From<pm::Revision> for Revision {
     fn from(r: pm::Revision) -> Self {
         Self {
             version: r.version,
             commit: r.commit,
+            mode: r.mode.into(),
         }
     }
 }
@@ -233,6 +237,8 @@ pub struct InstalledPackage {
     pub current: Revision,
     pub previous: Option<Revision>,
     pub enabled: bool,
+    /// What `update(id, .recorded)` follows: releases, a pinned ref or a branch.
+    pub mode: Mode,
     /// Enabled and not replaced: exactly the packages with `dist/<id>` (what a host
     /// loads). A replaced package is `enabled` but not `active`.
     pub active: bool,
@@ -264,6 +270,7 @@ impl From<pm::InstalledPackage> for InstalledPackage {
             current: p.current.into(),
             previous: p.previous.map(Into::into),
             enabled: p.enabled,
+            mode: p.mode.into(),
             active: p.active,
             fork_of: p.fork_of.map(Into::into),
             replaces: p.replaces.map(Into::into),
@@ -277,6 +284,47 @@ impl From<pm::InstalledPackage> for InstalledPackage {
             dependencies: p.dependencies.into_iter().map(Into::into).collect(),
             replacing: p.replacing,
             dependents: p.dependents,
+        }
+    }
+}
+
+/// The recorded mode of an installed package (`mode` in `state.json`).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum Mode {
+    /// Follows the newest release.
+    Release,
+    /// Fixed at a tag or commit, as the user gave it.
+    Pinned { reference: String },
+    /// Follows the HEAD of this branch of the origin.
+    Branch { name: String },
+}
+impl From<pm::Mode> for Mode {
+    fn from(mode: pm::Mode) -> Self {
+        match mode {
+            pm::Mode::Release => Mode::Release,
+            pm::Mode::Pinned(reference) => Mode::Pinned { reference },
+            pm::Mode::Branch(name) => Mode::Branch { name },
+        }
+    }
+}
+
+/// Why an update left a package where it was.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum UnchangedReason {
+    /// Pinned to `reference`: only an explicit target moves it.
+    Pinned { reference: String },
+    /// Branch mode (`updateAll`): the branch history no longer contains the installed
+    /// commit.
+    Diverged { branch: String },
+    /// Branch mode (`updateAll`): the origin no longer has the branch.
+    BranchGone { branch: String },
+}
+impl From<pm::UnchangedReason> for UnchangedReason {
+    fn from(reason: pm::UnchangedReason) -> Self {
+        match reason {
+            pm::UnchangedReason::Pinned { reference } => UnchangedReason::Pinned { reference },
+            pm::UnchangedReason::Diverged { branch } => UnchangedReason::Diverged { branch },
+            pm::UnchangedReason::BranchGone { branch } => UnchangedReason::BranchGone { branch },
         }
     }
 }
@@ -431,9 +479,13 @@ pub struct InstallResult {
     /// installed revision.
     pub already_installed: bool,
     /// With `already_installed`: the revision the source resolved to (latest release, or
-    /// the requested ref or dev channel) when it differs from `current`; `update` with
-    /// the same ref or channel moves to it.
+    /// the requested ref or default branch) when it differs from `current`; `update`
+    /// with the same target moves to it.
     pub available: Option<Revision>,
+    /// The recorded mode (with `already_installed`: the mode it keeps).
+    pub mode: Mode,
+    /// With `already_installed`: the requested mode when it differs from the recorded one.
+    pub requested_mode: Option<Mode>,
     /// Broken release tags passed over while choosing the latest release; warn about them.
     pub skipped: Vec<SkippedTag>,
     /// Ignored wrong-typed metadata keys of the installed manifest; show them.
@@ -450,6 +502,8 @@ impl From<pm::InstallResult> for InstallResult {
             fork_of: r.fork_of.map(Into::into),
             already_installed: r.already_installed,
             available: r.available.map(Into::into),
+            mode: r.mode.into(),
+            requested_mode: r.requested_mode.map(Into::into),
             skipped: r.skipped.into_iter().map(Into::into).collect(),
             warnings: r.warnings,
             dist: r.dist.into(),
@@ -468,6 +522,11 @@ pub struct RevisionChange {
     pub warnings: Vec<String>,
     /// Broken release tags passed over while choosing the latest release.
     pub skipped: Vec<SkippedTag>,
+    /// Why an unchanged package stayed (for example pinned).
+    pub unchanged_reason: Option<UnchangedReason>,
+    /// The recorded mode afterwards; a change of mode alone is `changed` with `from` and
+    /// `to` at the same commit.
+    pub mode: Mode,
     /// Reconciliation report (empty inside an `UpdateAllPlan`, which carries its own).
     pub dist: DistSync,
 }
@@ -480,6 +539,8 @@ impl From<pm::RevisionChange> for RevisionChange {
             changed: c.changed,
             warnings: c.warnings,
             skipped: c.skipped.into_iter().map(Into::into).collect(),
+            unchanged_reason: c.unchanged_reason.map(Into::into),
+            mode: c.mode.into(),
             dist: c.dist.into(),
         }
     }
@@ -491,7 +552,7 @@ pub struct UpdateAllPlan {
     pub updates: Vec<RevisionChange>,
     pub installs: Vec<InstallResult>,
     pub kept_back: Vec<HeldBack>,
-    /// Installed packages that stay as they are (no newer release).
+    /// Installed packages that stay as they are (nothing newer, or a `reason`).
     pub unchanged: Vec<Unchanged>,
     /// Broken release tags passed over for any installed package.
     pub skipped: Vec<SkippedTag>,
@@ -502,6 +563,8 @@ pub struct UpdateAllPlan {
 pub struct Unchanged {
     pub id: String,
     pub version: String,
+    /// Why it stays although it could move (pinned, diverged branch history).
+    pub reason: Option<UnchangedReason>,
 }
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct HeldBack {
@@ -529,6 +592,7 @@ impl From<pm::UpdateAllPlan> for UpdateAllPlan {
                 .map(|u| Unchanged {
                     id: u.id,
                     version: u.version,
+                    reason: u.reason.map(Into::into),
                 })
                 .collect(),
             skipped: plan.skipped.into_iter().map(Into::into).collect(),
@@ -684,6 +748,7 @@ pub enum CheckStatus {
     NewerThanOrigin,
     NoReleases,
     OriginUnreachable,
+    Pinned,
 }
 impl From<pm::check::CheckStatus> for CheckStatus {
     fn from(s: pm::check::CheckStatus) -> Self {
@@ -701,6 +766,7 @@ impl From<pm::check::CheckStatus> for CheckStatus {
             S::NewerThanOrigin => CheckStatus::NewerThanOrigin,
             S::NoReleases => CheckStatus::NoReleases,
             S::OriginUnreachable => CheckStatus::OriginUnreachable,
+            S::Pinned => CheckStatus::Pinned,
         }
     }
 }
@@ -732,6 +798,9 @@ pub struct CheckRow {
     pub status_message: String,
     /// Whether the row comes from the catalog or from the package's origin.
     pub source: CheckSource,
+    /// The recorded mode: a pinned row names its ref, a branch row compares with the
+    /// branch HEAD.
+    pub mode: Mode,
     /// Why the origin could not be read (`OriginUnreachable`).
     pub problem: Option<String>,
     /// For a fork: where its original stands in the catalog or at its origin.
@@ -761,6 +830,7 @@ impl From<pm::check::CheckRow> for CheckRow {
             update_available: r.update_available,
             status: r.status.into(),
             source: r.source.into(),
+            mode: r.mode.into(),
             problem: r.problem,
             upstream: r.upstream.map(|u| Upstream {
                 id: u.id,
@@ -815,6 +885,7 @@ pub struct PackageRecord {
     pub current: Revision,
     pub previous: Option<Revision>,
     pub enabled: bool,
+    pub mode: Mode,
     pub fork_of: Option<ForkOf>,
     /// Dependency ID → version requirement of the current revision.
     pub dependencies: HashMap<String, String>,
@@ -834,6 +905,7 @@ impl From<pm::Installed> for PackageRecord {
             current: p.current.into(),
             previous: p.previous.map(Into::into),
             enabled: p.enabled,
+            mode: p.mode.into(),
             fork_of: p.fork_of.map(Into::into),
             dependencies: p.dependencies.into_iter().collect(),
             replaces: p.replaces.map(Into::into),
@@ -854,7 +926,7 @@ pub struct ListView {
     pub packages: HashMap<String, PackageRecord>,
     /// Original → fork, for every consumer.
     pub replacements: HashMap<String, String>,
-    /// Forgotten packages of shared clones (restorable).
+    /// Forgotten packages, own or shared clone (restorable as recorded).
     pub forgotten: HashMap<String, PackageRecord>,
     pub resolved: Vec<InstalledPackage>,
 }
@@ -1134,11 +1206,43 @@ impl From<pm::ForkReplacement> for ForkReplacement {
     }
 }
 
-/// Stable: latest release tag (or an explicit ref). Dev: follow the branch HEAD.
-#[derive(Debug, Clone, Copy, uniffi::Enum)]
-pub enum Channel {
-    Stable,
+/// What `update` moves a package to.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum Target {
+    /// Back to release mode at the newest release.
+    Release,
+    /// A tag or commit (pinned) or an origin branch (followed); the mode is recorded.
+    Ref { reference: String },
+    /// Follow the origin's default branch.
     Dev,
+    /// Follow the recorded mode (a pinned package stays, reason `pinned`).
+    Recorded,
+}
+impl From<Target> for pm::Target {
+    fn from(target: Target) -> Self {
+        match target {
+            Target::Release => pm::Target::Release,
+            Target::Ref { reference } => pm::Target::Ref(reference),
+            Target::Dev => pm::Target::Dev,
+            Target::Recorded => pm::Target::Recorded,
+        }
+    }
+}
+/// What `install` installs: `Target` without `Recorded` (nothing is recorded yet).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum InstallTarget {
+    Release,
+    Ref { reference: String },
+    Dev,
+}
+impl From<InstallTarget> for pm::InstallTarget {
+    fn from(target: InstallTarget) -> Self {
+        match target {
+            InstallTarget::Release => pm::InstallTarget::Release,
+            InstallTarget::Ref { reference } => pm::InstallTarget::Ref(reference),
+            InstallTarget::Dev => pm::InstallTarget::Dev,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, uniffi::Record)]
@@ -1183,25 +1287,20 @@ impl PackageManager {
     pub fn catalog_release(&self, id: String, version: Option<String>) -> Result<CatalogRelease> {
         Ok(self.inner.catalog_release(&id, version.as_deref())?.into())
     }
-    /// Install from a Git source (URL or local path). `package` picks a package of a
-    /// repository with `gitpm.json` (needed when it lists several, unless `reference` is
-    /// an `ID@VERSION` tag); for a single-package repository it must match.
+    /// Install `target` from a Git source (URL or local path) and record its mode.
+    /// `package` picks a package of a repository with `gitpm.json` (needed when it lists
+    /// several, unless the ref is an `ID@VERSION` tag); for a single-package repository
+    /// it must match.
     #[uniffi::method(default(package = None))]
     pub fn install(
         &self,
         source: String,
-        reference: Option<String>,
-        channel: Channel,
+        target: InstallTarget,
         package: Option<String>,
     ) -> Result<InstallResult> {
         Ok(self
             .inner
-            .install_package(
-                &source,
-                package.as_deref(),
-                reference.as_deref(),
-                matches!(channel, Channel::Dev),
-            )?
+            .install_package(&source, package.as_deref(), target.into())?
             .into())
     }
     /// Install an exact catalog release (latest if `version` is `None`), verifying hashes.
@@ -1215,16 +1314,9 @@ impl PackageManager {
             .install_from_catalog(&id, version.as_deref())?
             .into())
     }
-    pub fn update(
-        &self,
-        id: String,
-        reference: Option<String>,
-        channel: Channel,
-    ) -> Result<RevisionChange> {
-        Ok(self
-            .inner
-            .update_channel(&id, reference.as_deref(), matches!(channel, Channel::Dev))?
-            .into())
+    /// Move `id` by `target`; `Recorded` follows the recorded mode.
+    pub fn update(&self, id: String, target: Target) -> Result<RevisionChange> {
+        Ok(self.inner.update_to(&id, target.into())?.into())
     }
     pub fn update_all_plan(&self) -> Result<UpdateAllPlan> {
         Ok(self.inner.update_all_plan()?.into())
@@ -1251,7 +1343,8 @@ impl PackageManager {
     pub fn forget(&self, id: String, force: bool) -> Result<DistSync> {
         Ok(self.inner.forget_with(&id, force)?.into())
     }
-    /// Re-register a forgotten repository.
+    /// Record a forgotten package again as it was recorded (revisions, catalog, enabled
+    /// flag, mode).
     pub fn restore(&self, id: String) -> Result<InstallResult> {
         Ok(self.inner.restore(&id)?.into())
     }
@@ -1705,6 +1798,7 @@ mod tests {
         pm::Revision {
             version: v.into(),
             commit: format!("{v}-commit"),
+            mode: pm::Mode::Release,
         }
     }
     fn fork_of() -> pm::ForkOf {
@@ -1749,6 +1843,7 @@ mod tests {
             current: revision("1.0.0"),
             previous: Some(revision("0.9.0")),
             enabled: false,
+            mode: pm::Mode::Branch("main".into()),
             active: false,
             fork_of: Some(fork_of()),
             replaces: None,
@@ -1770,6 +1865,12 @@ mod tests {
                 package.enabled
             ),
             ("me/x", "src", false)
+        );
+        assert_eq!(
+            package.mode,
+            Mode::Branch {
+                name: "main".into()
+            }
         );
         assert_eq!(package.path.as_deref(), Some("packages/x"));
         assert_eq!(package.clone.as_deref(), Some("mono-0123456789abcdef"));
@@ -1806,6 +1907,7 @@ mod tests {
                 update_available: false,
                 status: pm::check::CheckStatus::OriginUnreachable,
                 source: pm::check::CheckSource::Origin,
+                mode: pm::Mode::Pinned("me/x@1.0.0".into()),
                 problem: Some("unreachable".into()),
                 upstream: Some(pm::check::Upstream {
                     id: "vendor/x".into(),
@@ -1837,6 +1939,12 @@ mod tests {
         );
         assert!(matches!(row.status, CheckStatus::OriginUnreachable));
         assert_eq!(row.status_message, "origin unreachable");
+        assert_eq!(
+            row.mode,
+            Mode::Pinned {
+                reference: "me/x@1.0.0".into()
+            }
+        );
         assert_eq!(
             (row.source, row.problem.as_deref()),
             (CheckSource::Origin, Some("unreachable"))
@@ -1909,9 +2017,20 @@ mod tests {
             warnings: vec!["me/x 1.0.0: plugin.json title must be a string; ignored".into()],
             already_installed: true,
             available: Some(revision("1.1.0")),
+            mode: pm::Mode::Branch("main".into()),
+            requested_mode: Some(pm::Mode::Release),
             dist: report(),
         });
         assert!(result.fork_of.is_none());
+        assert_eq!(
+            (result.mode.clone(), result.requested_mode.clone()),
+            (
+                Mode::Branch {
+                    name: "main".into()
+                },
+                Some(Mode::Release)
+            )
+        );
         assert!(result.already_installed);
         assert_eq!(result.available.unwrap().version, "1.1.0");
         assert_eq!(result.current.commit, "1.0.0-commit");
@@ -1936,9 +2055,25 @@ mod tests {
             changed: true,
             warnings: vec!["w".into()],
             skipped: skipped(),
+            unchanged_reason: Some(pm::UnchangedReason::Pinned {
+                reference: "me/x@1.0.0".into(),
+            }),
+            mode: pm::Mode::Pinned("me/x@1.0.0".into()),
             dist: report(),
         });
         assert!(change.changed);
+        assert_eq!(
+            change.mode,
+            Mode::Pinned {
+                reference: "me/x@1.0.0".into()
+            }
+        );
+        assert_eq!(
+            change.unchanged_reason,
+            Some(UnchangedReason::Pinned {
+                reference: "me/x@1.0.0".into()
+            })
+        );
         assert_eq!(
             (change.from.version.as_str(), change.to.version.as_str()),
             ("1.0.0", "1.1.0")
@@ -1954,6 +2089,9 @@ mod tests {
             unchanged: vec![pm::Unchanged {
                 id: "app/b".into(),
                 version: "2.0.0".into(),
+                reason: Some(pm::UnchangedReason::Diverged {
+                    branch: "main".into(),
+                }),
             }],
             skipped: skipped(),
             dist: report(),
@@ -1964,6 +2102,12 @@ mod tests {
                 plan.unchanged[0].version.as_str()
             ),
             ("app/b", "2.0.0")
+        );
+        assert_eq!(
+            plan.unchanged[0].reason,
+            Some(UnchangedReason::Diverged {
+                branch: "main".into()
+            })
         );
         check_report(&plan.dist);
         assert_eq!(plan.skipped[0].name, "me/x@0.5.0");
@@ -2205,6 +2349,7 @@ mod tests {
             (S::NewerThanOrigin, "NewerThanOrigin"),
             (S::NoReleases, "NoReleases"),
             (S::OriginUnreachable, "OriginUnreachable"),
+            (S::Pinned, "Pinned"),
         ];
         for (status, name) in statuses {
             let row = CheckRow::from(pm::check::CheckRow {
@@ -2215,6 +2360,7 @@ mod tests {
                 update_available: status == S::UpdateAvailable,
                 status,
                 source: pm::check::CheckSource::Catalog,
+                mode: pm::Mode::Release,
                 problem: None,
                 upstream: None,
             });
@@ -2426,6 +2572,40 @@ mod tests {
     }
 
     #[test]
+    fn a_pinned_package_stays_with_its_reason() {
+        let dir = std::env::temp_dir().join(format!("pm-ffi-pinned-{}", std::process::id()));
+        let root = dir.join("workspace");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("state.json"),
+            r#"{"format":3,"packages":{"acme/greeter":{"source":"s","current":{"version":"0.1.0","commit":"c"},"previous":null,"enabled":false,"mode":{"pinned":"acme/greeter@0.1.0"},"metadata":{}}}}"#,
+        )
+        .unwrap();
+        let manager =
+            PackageManager::open(root.to_string_lossy().into(), ManagerOptions::default()).unwrap();
+        let pinned = Mode::Pinned {
+            reference: "acme/greeter@0.1.0".into(),
+        };
+        assert_eq!(manager.list().unwrap()[0].mode, pinned);
+        let view = read_state(root.to_string_lossy().into()).unwrap();
+        assert_eq!(view.packages["acme/greeter"].mode, pinned);
+        let change = manager
+            .update("acme/greeter".into(), Target::Recorded)
+            .unwrap();
+        assert!(!change.changed);
+        assert_eq!(
+            change.unchanged_reason,
+            Some(UnchangedReason::Pinned {
+                reference: "acme/greeter@0.1.0".into()
+            })
+        );
+        let report = check(root.to_string_lossy().into(), None).unwrap();
+        assert!(matches!(report.rows[0].status, CheckStatus::Pinned));
+        drop(manager);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn read_state_and_manager_report_state_errors() {
         let dir = std::env::temp_dir().join(format!("pm-ffi-state-{}", std::process::id()));
         let root = dir.join("workspace");
@@ -2481,12 +2661,17 @@ mod tests {
             matches!(manager.rollback("me/missing".into()), Err(PmError::NotInstalled { id, .. }) if id == "me/missing")
         );
         assert!(matches!(
-            manager.install("x".into(), Some("v1.0.0".into()), Channel::Dev, None),
+            manager.install("-x".into(), InstallTarget::Dev, None),
             Err(PmError::InvalidArgument { .. })
         ));
         assert!(matches!(
-            manager.update("me/x".into(), Some("main".into()), Channel::Dev),
-            Err(PmError::InvalidArgument { .. })
+            manager.update(
+                "me/missing".into(),
+                Target::Ref {
+                    reference: "main".into()
+                }
+            ),
+            Err(PmError::NotInstalled { .. })
         ));
         assert!(matches!(
             manager.fork(

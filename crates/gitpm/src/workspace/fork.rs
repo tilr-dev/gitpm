@@ -355,7 +355,7 @@ impl Manager {
                     .unwrap_or_default()
             });
             result.tag = Some(identity::release_tag(&result.id, &version));
-            match self.install_package(&source, Some(&result.id), None, false) {
+            match self.install_package(&source, Some(&result.id), InstallTarget::Release) {
                 Ok(installed) => result.installed = Some(installed),
                 Err(error) => {
                     result.failed = Some(ForkStep::Install);

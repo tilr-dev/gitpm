@@ -115,7 +115,7 @@ def rollback_offline(t: T):
 
 @case(fixture="g5_offline", spec=["install-uninstall/three-removal-levels#forget-then-restore"])
 def forget_restore_offline(t: T):
-    """Offline forget keeps the clone (dist removed); restore re-registers it from the clone's origin URL."""
+    """Offline forget keeps the clone and the record (dist removed); restore records it again as it was."""
     catalog = offline(t)
     files = paths(t, ID)
     clone = t.snap(t.clone(ID))
@@ -126,10 +126,9 @@ def forget_restore_offline(t: T):
     t.ok(not t.dist(ID).exists(), "dist removed by forget")
     t.gitpm_ok("restore", ID)
     p = entry(t, ID)
-    t.eq(p["current"], old["current"], "restored at the clone's revision")
-    t.eq(p["previous"], None, "no rollback history after restore")
-    t.eq(p["enabled"], True, "enabled")
-    t.eq(p["source"], str(ORIGIN), "source from the clone's origin URL (no network)")
+    t.eq(p, old, "restored as recorded (no network)")
+    t.eq(p["previous"], old["previous"], "rollback history kept")
+    t.eq(p["source"], str(ORIGIN), "source as recorded")
     t.same(files, "files after restore")
     no_catalog_access(t, catalog)
 

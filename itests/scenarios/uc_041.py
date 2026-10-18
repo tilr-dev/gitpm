@@ -145,7 +145,7 @@ def manifest_with_a_path_id_is_refused(t: T):
         t.git(repo, "init", "-q", "-b", "main")
         t.git(repo, "add", "--all")
         t.git(repo, "commit", "-q", "-m", "bad id")
-        t.gitpm_err("install", repo, "--channel", "dev", kind="invalid_id")
+        t.gitpm_err("install", repo, "--dev", kind="invalid_id")
     t.same(before, "workspace")
     t.same(outside, "outside sentinels")
     t.eq(list((t.ws / ".pm-txn").glob("*")) if (t.ws / ".pm-txn").exists() else [], [], "no leftover transaction")

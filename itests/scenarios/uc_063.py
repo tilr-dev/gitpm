@@ -77,7 +77,7 @@ for _name, _doc, _argv, _needle, _spec in [
      "unknown command: sync; use --help", "cli/command-set#removed-command"),
     ("unknown_auth_subcommand", "2. an unknown auth subcommand", ["auth", "login", REPO],
      "use: gitpm auth check GIT_URL", "cli/command-set"),
-    # 5. --channel with --ref is no usage error any more: the library refuses dev + ref (uc_012).
+    # 5. --ref, --dev and --release exclude each other as usage errors; --channel is gone (uc_012).
     ("replace_needs_one_mode", "3. replace without --with/--back", ["replace", ID], "replace needs exactly one of", OPT),
     ("fork_needs_ns", "3. fork without --ns", ["fork", ID, "/fx/forked"], "fork needs --ns NAMESPACE", OPT),
 ]:

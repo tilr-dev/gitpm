@@ -498,7 +498,7 @@ mod tests {
             })
         };
         assert!(flagged("kept; use restore, or uninstall it first"));
-        assert!(!flagged("use the dev channel") && !flagged("use restored files"));
+        assert!(!flagged("use the default branch") && !flagged("use restored files"));
     }
 
     #[test]

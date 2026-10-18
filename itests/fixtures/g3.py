@@ -31,8 +31,9 @@ def _(t: T):
 def g3_trio_installed(t: T):
     """dan/a installed at 0.1.0 and updated to 0.1.1 (previous 0.1.0); dan/b 0.1.0 and
     other/c 0.1.0 installed directly from Git. No catalog."""
+    # The ref pins dan/a; --release returns it to release mode at 0.1.1.
     t.gitpm_ok("install", t.repo("dan/a"), "--ref", "dan/a@0.1.0")
-    t.gitpm_ok("update", "dan/a")
+    t.gitpm_ok("update", "dan/a", "--release")
     t.gitpm_ok("install", t.repo("dan/b"))
     t.gitpm_ok("install", t.repo("other/c"))
 
@@ -41,7 +42,8 @@ def g3_trio_installed(t: T):
 def _(t: T):
     a = t.package("dan/a")
     t.eq(a["current"], {"version": "0.1.1", "commit": t.rev("dan/a", "dan/a@0.1.1")}, "dan/a current")
-    t.eq(a["previous"], {"version": "0.1.0", "commit": t.rev("dan/a", "dan/a@0.1.0")}, "dan/a previous")
+    t.eq(a["previous"], {"version": "0.1.0", "commit": t.rev("dan/a", "dan/a@0.1.0"),
+                         "mode": {"pinned": "dan/a@0.1.0"}}, "dan/a previous (with the mode it had)")
     for id in ["dan/b", "other/c"]:
         p = t.package(id)
         t.eq(p["current"]["version"], "0.1.0", f"{id} version")
@@ -70,7 +72,7 @@ def _(t: T):
 @fixture(requires=["g3_vendor"], gitpm=True)
 def g3_vendor_installed(t: T):
     """vendor/demo 0.1.0 installed directly from Git; no catalog."""
-    t.gitpm_ok("install", t.repo("vendor/demo"), "--ref", "vendor/demo@0.1.0")
+    t.gitpm_ok("install", t.repo("vendor/demo"))
 
 
 @g3_vendor_installed.check
@@ -121,7 +123,7 @@ def g3_fork_catalog(t: T):
     t.gitpm_ok("install-catalog", "vendor/p", "--version", "1.0.0")
     t.gitpm_ok("fork", "vendor/p", "--ns", "mine", "--into", t.repo("mine/p"))
     t.gitpm_ok("commit", t.repo("mine/p"), "1.0.1")
-    t.gitpm_ok("install", t.repo("mine/p"), "--ref", "mine/p@1.0.1")
+    t.gitpm_ok("install", t.repo("mine/p"))
 
 
 @g3_fork_catalog.check

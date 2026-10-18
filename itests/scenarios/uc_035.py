@@ -104,11 +104,14 @@ def newer_than_catalog(t: T):
 
 @case(fixture="catalog", spec=["catalog/check-compares-installed-packages-with-their-catalog-or-origin#identity-mismatch"])
 def same_version_different_commit(t: T):
-    """A direct install of another commit that still says 0.1.1."""
+    """A direct install (release mode) of another commit that still says 0.1.1: the Git
+    tag 0.1.1 moved after the catalog registered it, and 0.2.0 is gone from Git."""
     srv = t.serve(t.catalog)
     t.git(HELLO, "checkout", "-q", "-b", "side", f"{HELLO}@0.1.1")
-    sha = t.commit(HELLO, "same version, other code", {"dist/index.js": "side\n"})
-    t.gitpm_ok("install", t.repo(HELLO), "--ref", sha)
+    t.commit(HELLO, "same version, other code", {"dist/index.js": "side\n"})
+    t.tag(HELLO, f"{HELLO}@0.1.1", force=True)
+    t.git(HELLO, "tag", "-d", f"{HELLO}@0.2.0")
+    t.gitpm_ok("install", t.repo(HELLO))
     check(t, srv.url, HELLO, "same version, different commit")
 
 
@@ -117,7 +120,7 @@ def different_source(t: T):
     """A direct install from a mirror path: the catalog source differs literally."""
     srv = t.serve(t.catalog)
     t.run("git", "clone", "-q", t.repo(HELLO), t.root / "mirror/hello", check=True)
-    t.gitpm_ok("install", t.root / "mirror/hello", "--ref", f"{HELLO}@0.2.0")
+    t.gitpm_ok("install", t.root / "mirror/hello")
     check(t, srv.url, HELLO, "different source in catalog")
 
 

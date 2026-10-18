@@ -2,7 +2,7 @@
 
 Installing an installed package again from the same source prints `ID already installed
 (VERSION)` and exits 0 without touching the workspace; `; run update` (or the requested
-ref/channel) is appended when the source resolves to another revision. Another source for
+ref or --dev) is appended when the source resolves to another revision. Another source for
 the same ID is still refused with `already_installed`.
 
 Fixtures: hello_installed (dan/hello 0.1.0 from /fx/repos/dan/hello), g1_ws_catalog
@@ -26,7 +26,9 @@ def noop(t: T, *args, out: str):
 def repeat_install_is_a_noop(t: T):
     """Same source, no newer release: `dan/hello already installed (0.1.0)`, exit 0, nothing changes."""
     noop(t, "install", t.repo(ID), out=f"{ID} already installed (0.1.0)\n")
-    noop(t, "install", t.repo(ID), "--ref", f"{ID}@0.1.0", out=f"{ID} already installed (0.1.0)\n")
+    # The same revision by tag asks for another mode (pinned): the hint names it.
+    noop(t, "install", t.repo(ID), "--ref", f"{ID}@0.1.0",
+         out=f"{ID} already installed (0.1.0); requested --ref {ID}@0.1.0 — run update {ID} --ref {ID}@0.1.0\n")
 
 
 @case(fixture="hello_installed", spec=["install-uninstall/install-is-idempotent-for-the-same-source#newer-release-available"])
@@ -38,14 +40,14 @@ def newer_release_hints_update(t: T):
 
 
 @case(fixture="hello_installed", spec=["install-uninstall/install-is-idempotent-for-the-same-source"])
-def requested_ref_or_channel_is_named(t: T):
-    """--ref / --channel dev naming another revision: the hint repeats them for update."""
+def requested_ref_or_dev_is_named(t: T):
+    """--ref / --dev naming another revision: the hint repeats them for update."""
     t.release(ID, "0.1.1")
     noop(t, "install", t.repo(ID), "--ref", f"{ID}@0.1.1",
          out=f"{ID} already installed (0.1.0); requested --ref {ID}@0.1.1 — run update {ID} --ref {ID}@0.1.1\n")
     t.commit(ID, "unreleased", {"dist/index.js": "dev\n"})
-    noop(t, "install", t.repo(ID), "--channel", "dev",
-         out=f"{ID} already installed (0.1.0); requested --channel dev — run update {ID} --channel dev\n")
+    noop(t, "install", t.repo(ID), "--dev",
+         out=f"{ID} already installed (0.1.0); requested --dev — run update {ID} --dev\n")
 
 
 @case(fixture="hello_installed", spec=["install-uninstall/same-id-from-another-source-is-refused#other-source"])

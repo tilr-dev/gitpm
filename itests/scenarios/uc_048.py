@@ -64,27 +64,28 @@ def dirty_forget_restore(t: T):
 
 @case(fixture="g3_trio_installed", spec=["dist/forget-restore-and-uninstall-settle-dist", "install-uninstall/three-removal-levels#forget-then-restore"])
 def forgotten_clean_restore_uninstall(t: T):
-    """disabled dan/a with previous → forget → restore (enabled=true, previous=None, current =
-    clone HEAD, clone bytes retained, dist deployed again) → uninstall removes it."""
+    """disabled dan/a with previous → forget → restore (as recorded: disabled, previous kept,
+    clone bytes retained, no dist) → enable deploys → uninstall removes it."""
     t.gitpm_ok("disable", A)
-    current = t.package(A)["current"]
+    current, previous = t.package(A)["current"], t.package(A)["previous"]
     t.gitpm_ok("forget", A)
     t.ok(not t.dist(A).exists(), "no dist while forgotten")
     kept = t.snap(t.clone(A), git=True)
     t.gitpm_ok("restore", A)
     p = t.package(A)
-    t.eq((p["current"], p["previous"], p["enabled"]), (current, None, True), "after restore")
-    t.eq(p["source"], str(t.repo(A)), "source from origin")
+    t.eq((p["current"], p["previous"], p["enabled"]), (current, previous, False), "after restore")
+    t.eq(p["source"], str(t.repo(A)), "source as recorded")
     t.same(kept, "clone retained through forget/restore")
+    t.ok(not t.dist(A).exists(), "still disabled: no dist")
+    t.gitpm_ok("enable", A)
     t.has((t.dist(A) / "index.js").read_text(), "dan/a 0.1.1")
-    t.gitpm_err("rollback", A, kind="no_previous_version", contains=A)
     t.gitpm_ok("uninstall", A)
     t.not_installed(A)
 
 
 def fork_installed(t: T):
     t.gitpm_ok("fork", "vendor/demo", "--ns", "mine", "--into", t.root / "authors/mine-demo")
-    t.gitpm_ok("install", t.root / "authors/mine-demo", "--channel", "dev")
+    t.gitpm_ok("install", t.root / "authors/mine-demo", "--dev")
 
 
 @case(fixture="g3_vendor_installed", spec=["dist/enable-and-disable-deploy-and-remove", "package-manifest/forkof-is-provenance-replaces-is-an-offer"])

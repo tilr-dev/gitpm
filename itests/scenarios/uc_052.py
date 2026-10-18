@@ -19,7 +19,11 @@ def resolved(t: T) -> dict:
 def normalized(t: T, id: str) -> dict:
     """Installed entry without paths/timestamps: what must match the library's Installed."""
     p = t.package(id)
-    return {k: p.get(k) for k in ("current", "previous", "enabled", "forkOf", "replaces", "dependencies")}
+    out = {k: p.get(k) for k in ("current", "previous", "enabled", "forkOf", "replaces", "dependencies")}
+    if out["previous"]:
+        # The mode a previous revision had is checked separately.
+        out["previous"] = {k: v for k, v in out["previous"].items() if k != "mode"}
+    return out
 
 
 def rev(t: T, version: str) -> dict:
@@ -33,6 +37,7 @@ def lifecycle_matches_library_contract(t: T):
     t.eq(normalized(t, HELLO), {"current": rev(t, "0.1.0"), "previous": None, "enabled": True,
                                 "forkOf": None, "replaces": None, "dependencies": None}, "install")
     t.gitpm_ok("update", HELLO, "--ref", f"{HELLO}@0.1.1")
+    t.eq(t.package(HELLO)["previous"].get("mode"), {"pinned": f"{HELLO}@0.1.0"}, "previous keeps its mode")
     t.eq((normalized(t, HELLO)["current"], normalized(t, HELLO)["previous"]), (rev(t, "0.1.1"), rev(t, "0.1.0")),
          "update: current/previous")
     t.has((t.dist(HELLO) / "index.js").read_text(), "dan/hello 0.1.1")
@@ -48,8 +53,8 @@ def lifecycle_matches_library_contract(t: T):
     t.ok(HELLO not in t.state()["packages"] and t.clone(HELLO).is_dir(), "forget keeps the clone")
     t.ok(not t.dist(HELLO).exists(), "forget removes dist/ (only active packages are deployed)")
     t.gitpm_ok("restore", HELLO)
-    t.eq((normalized(t, HELLO)["current"], normalized(t, HELLO)["previous"]), (rev(t, "0.1.0"), None),
-         "restore: no history")
+    t.eq((normalized(t, HELLO)["current"], normalized(t, HELLO)["previous"]), (rev(t, "0.1.0"), rev(t, "0.1.1")),
+         "restore: the record as it was")
     t.has((t.dist(HELLO) / "index.js").read_text(), "dan/hello 0.1.0")
     fork = t.root / "forks/hello"
     r = t.gitpm_ok("fork", HELLO, "--ns", "mine", "--into", fork)

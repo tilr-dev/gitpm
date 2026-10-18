@@ -66,7 +66,7 @@ def g5_offline(t: T):
     release mine/hello@0.1.2) installed beside it from its author folder."""
     bare = t.root / "origin/hello.git"
     t.run("git", "clone", "-q", "--bare", t.repo("dan/hello"), bare, check=True)
-    t.gitpm_ok("install", bare, "--ref", "dan/hello@0.1.0")
+    t.gitpm_ok("install", bare)
     t.release("dan/hello", "0.1.1")
     t.git("dan/hello", "push", "-q", str(bare), "main", "--tags")
     t.gitpm_ok("update", "dan/hello")
@@ -74,7 +74,7 @@ def g5_offline(t: T):
     t.gitpm_ok("fork", "dan/hello", "--ns", "mine", "--into", fork)
     t.write(fork, {"dist/index.js": "export const greeting = 'mine fork';\n"})
     t.gitpm_ok("commit", fork, "0.1.2")
-    t.gitpm_ok("install", fork, "--ref", "mine/hello@0.1.2")
+    t.gitpm_ok("install", fork)
 
 
 @g5_offline.check

@@ -116,19 +116,18 @@ def disable_enable_toggle_only_the_flag(t: T):
 
 
 @case(fixture="g6_journey", spec=["install-uninstall/three-removal-levels#forget-then-restore", "dist/forget-restore-and-uninstall-settle-dist"])
-def forget_restore_without_history(t: T):
-    """forget keeps the clone, removes dist and drops the entry; restore re-registers without
-    previous and deploys the same dist bytes."""
+def forget_restore_keeps_the_record(t: T):
+    """forget keeps the clone and the record, removes dist and drops the entry; restore records it
+    again as it was (previous and catalog origin kept) and deploys the same dist bytes."""
     journey(t, "forget")
     files = t.snap(t.clone(ID), t.dist(ID), git=True)
     t.gitpm_ok("forget", ID)
     t.ok(ID not in t.state()["packages"], "entry forgotten")
     t.ok(not t.dist(ID).exists(), "dist removed while forgotten")
+    record = t.state()["forgotten"][ID]
     t.gitpm_ok("restore", ID)
-    # Restore re-registers retained files from the clone; the library records no catalog origin
-    # for it (Installed { ..Default }), which the README does not promise either way.
-    at(t, "0.1.0", None, catalog=False)
-    print(f"  note: catalog after restore = {t.package(ID).get('catalog')!r}")
+    t.eq(t.package(ID), record, "the forgotten record")
+    at(t, "0.1.0", "0.1.1")
     print(f"  note: check after restore: {check_row(t)}")
     t.same(files, "clone and dist after restore")
 
@@ -149,7 +148,7 @@ def whole_journey(t: T):
     t.gitpm_ok("enable", ID)
     t.gitpm_ok("forget", ID)
     t.gitpm_ok("restore", ID)
-    at(t, "0.1.0", None, catalog=False)
+    at(t, "0.1.0", "0.1.1")
     t.gitpm_ok("uninstall", ID)
     t.not_installed(ID)
     t.same(author, "author repository")

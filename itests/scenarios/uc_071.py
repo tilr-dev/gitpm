@@ -78,13 +78,13 @@ def app_and_dependency_cross_a_major_boundary_together(t: T):
 
 @case(fixture="g6_core_deps_installed",
       spec=["updates/update-all-is-stable-only-and-refuses-local-work#update-all-with-ref"])
-def ref_and_dev_channel_are_refused(t: T):
-    """update all --ref / --channel dev: refused naming stable releases; nothing changes."""
+def ref_dev_and_release_are_refused(t: T):
+    """update all --ref / --dev / --release: refused, it follows each recorded mode; nothing changes."""
     before = t.snap(t.ws, git=True)
-    for extra in [("--ref", "x"), ("--channel", "dev")]:
+    for extra in [("--ref", "x"), ("--dev",), ("--release",)]:
         r = t.gitpm("update", "all", *extra)
         t.ok(r.code != 0, f"update all {' '.join(extra)} refused")
-        t.has(r.err, "update all supports stable releases only; --ref and --channel dev are not supported")
+        t.has(r.err, "update all takes no --ref, --dev or --release; it follows each package's recorded mode")
         t.same(before, "workspace")
 
 

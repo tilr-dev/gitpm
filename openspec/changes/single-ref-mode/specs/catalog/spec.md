@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: check compares installed packages with their catalog or origin
-`check(root, catalog)` (CLI `check`, FFI `check`) SHALL be read-only (opens, locks and creates nothing) and report one row per installed package: from the catalog when one is given and lists the package, otherwise from the package's recorded origin. Each row SHALL carry a snake_case `CheckStatus`, a message, its `source` (`catalog`/`origin`) and a `problem` for `origin_unreachable`. The report SHALL also list replacements and unsatisfied dependencies. Verified by `check::check_without_catalog_reads_each_origin`.
+`check(root, catalog)` (CLI `check`, FFI `check`) SHALL be read-only (opens, locks and creates nothing) and report one row per installed package. The recorded mode comes first: a pinned package's row is `pinned` and a branch-mode package's row compares with its branch HEAD on the origin, catalog or not; a release-mode package's row comes from the catalog when one is given and lists the package, otherwise from the package's recorded origin. Each row SHALL carry a snake_case `CheckStatus`, a message, its `source` (`catalog`/`origin`) and a `problem` for `origin_unreachable`. The report SHALL also list replacements and unsatisfied dependencies. Verified by `check::check_without_catalog_reads_each_origin`.
 
 #### Scenario: Statuses
 - **WHEN** `check` reports a package

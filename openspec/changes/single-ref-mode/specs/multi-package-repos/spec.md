@@ -5,7 +5,7 @@ Forgetting a package of a shared clone SHALL keep a `forgotten` record (format i
 
 #### Scenario: Shared clone gone
 - **WHEN** the shared clone of a forgotten package was deleted
-- **THEN** `uninstall` drops the record, and `restore` fails with `workspace` ("the shared clone … of the forgotten ID is gone"); the CLI adds a `Hint:` line naming `gitpm uninstall ID` and a new install
+- **THEN** `uninstall` drops the record, and `restore` fails with `repository_not_found` (the clone is what restore needs, as for any restore without a clone); the CLI adds a `Hint:` line naming `gitpm uninstall ID` and a new install
 - **AND** this is covered by `a_forgotten_record_whose_clone_is_gone_can_be_uninstalled`
 
 #### Scenario: Restore from shared clone

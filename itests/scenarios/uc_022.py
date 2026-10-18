@@ -96,7 +96,7 @@ def fork_author_repo_outside_workspace_survives(t: T):
     (outside the workspace) survives uninstall of the fork and of its original."""
     fork = t.root / "authors/my-a"
     t.gitpm_ok("fork", A, "--ns", "mine", "--into", fork)
-    t.gitpm_ok("install", fork, "--channel", "dev")
+    t.gitpm_ok("install", fork, "--dev")
     t.package("mine/a")
     keep = t.snap(fork, t.root / "repos", t.clone(B), t.dist(B), t.clone(C), t.dist(C), git=True)
     t.gitpm_ok("uninstall", "mine/a")

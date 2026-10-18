@@ -25,17 +25,21 @@ def install_without_ref_picks_numeric_max(t: T):
 
 
 @case(fixture="g2_reverse_tags", spec=["install-uninstall/install-the-latest-release-of-a-git-source#newest-numeric-tag-wins"])
-def channel_stable_picks_numeric_max(t: T):
-    """--channel stable: lightweight 1.10.0 beats the later annotated 1.9.0 and the untagged HEAD."""
-    t.gitpm_ok("install", t.repo("dan/rev2"), "--channel", "stable")
+def install_picks_numeric_max_with_lightweight_tags(t: T):
+    """No --ref: lightweight 1.10.0 beats the later annotated 1.9.0 and the untagged HEAD."""
+    t.gitpm_ok("install", t.repo("dan/rev2"))
     check_numeric_max(t, "dan/rev2")
 
 
 @case(fixture="g2_reverse_tags", spec=["install-uninstall/install-the-latest-release-of-a-git-source#newest-numeric-tag-wins"])
 def both_forms_in_one_workspace(t: T):
-    """Default and explicit stable select the same release for each tag-form mix."""
-    t.gitpm_ok("install", t.repo("dan/rev"), "--channel", "stable")
+    """Install and update --release select the same release for each tag-form mix."""
+    t.gitpm_ok("install", t.repo("dan/rev"))
     t.gitpm_ok("install", t.repo("dan/rev2"))
+    for id in ["dan/rev", "dan/rev2"]:
+        r = t.gitpm_ok("update", id, "--release")
+        t.has(r.out, f"{id} up to date (1.10.0)")
+        t.ok("mode" not in t.package(id), f"{id}: release mode records no mode")
     check_numeric_max(t, "dan/rev")
     check_numeric_max(t, "dan/rev2")
 
@@ -48,6 +52,5 @@ def repository_without_release_tags_fails(t: T):
     t.release(id, "0.2.0", tag=False)
     t.tag(id, "wip")
     t.tag(id, "other/package@1.0.0")
-    for extra in [(), ("--channel", "stable")]:
-        t.gitpm_err("install", t.repo(id), *extra, kind="no_releases", contains=("no release tags", id))
-        t.not_installed(id)
+    t.gitpm_err("install", t.repo(id), kind="no_releases", contains=("no release tags", id))
+    t.not_installed(id)

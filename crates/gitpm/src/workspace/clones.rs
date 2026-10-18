@@ -360,8 +360,9 @@ pub(super) fn removal(root: &Path, state: &State, id: &str) -> Result<Removal> {
         // Own clone, registered or forgotten (retained) under `packages/<id>`.
         let repo = match package_repo(root, id) {
             Ok(repo) => repo,
-            // A recorded package whose clone is gone: only the record (and dist) remain.
-            Err(Error::RepositoryNotFound { .. }) if state.packages.contains_key(id) => {
+            // A record (forgotten or not) whose clone is gone: only the record (and dist)
+            // remain.
+            Err(Error::RepositoryNotFound { .. }) if entry.is_some() => {
                 return Ok(Removal {
                     relative: format!("packages/{id}"),
                     repo: None,

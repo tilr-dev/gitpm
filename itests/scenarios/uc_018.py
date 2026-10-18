@@ -122,7 +122,7 @@ def update_and_rollback_refused(t: T, make):
     """update (stable, --ref, dev) and rollback refuse with local_changes; nothing changes."""
     make(t)
     g = Guard(t)
-    for args in [("update", ID), ("update", ID, "--ref", f"{ID}@0.1.3"), ("update", ID, "--channel", "dev"),
+    for args in [("update", ID), ("update", ID, "--ref", f"{ID}@0.1.3"), ("update", ID, "--dev"),
                  ("rollback", ID)]:
         t.gitpm_err(*args, kind="local_changes")
         g.unchanged(" ".join(args))

@@ -49,7 +49,7 @@ def _(t: T):
 @fixture(requires=["hello"], gitpm=True)
 def hello_installed(t: T):
     """dan/hello 0.1.0 installed directly from Git into /fx/ws; no catalog."""
-    t.gitpm_ok("install", t.repo("dan/hello"), "--ref", "dan/hello@0.1.0")
+    t.gitpm_ok("install", t.repo("dan/hello"))
 
 
 @hello_installed.check

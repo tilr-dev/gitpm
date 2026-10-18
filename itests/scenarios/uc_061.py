@@ -304,13 +304,13 @@ def invalid_version_case(name: str, version: str, tag: str):
         sha = t.release("dan/iv", version, tag=False)
         t.gitpm_err("install", t.repo("dan/iv"), "--ref", sha, kind="invalid_version")
         nothing_installed(t)
-        t.gitpm_err("install", t.repo("dan/iv"), "--channel", "dev", kind="invalid_version")
+        t.gitpm_err("install", t.repo("dan/iv"), "--dev", kind="invalid_version")
         nothing_installed(t)
         if t.ws.exists():
             hits = [str(p) for p in t.ws.rglob("*") if p.is_file() and version.encode() in p.read_bytes()]
             t.eq(hits, [], f"files mentioning {version}")
     fn.__name__ = f"invalid_manifest_version_{name}"
-    fn.__doc__ = f"8. manifest version {version!r} via --ref SHA and --channel dev: invalid_version, nothing installed."
+    fn.__doc__ = f"8. manifest version {version!r} via --ref SHA and --dev: invalid_version, nothing installed."
     fn.__module__ = __name__
     case(spec=[tag, "install-uninstall/refused-input-creates-nothing"])(fn)
 

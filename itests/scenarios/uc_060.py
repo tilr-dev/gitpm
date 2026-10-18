@@ -56,7 +56,7 @@ def fork_of_fork_points_to_immediate_parent(t: T):
     mine = t.package(M)["current"]
     dest = t.root / "authors/other-p"
     t.gitpm_ok("fork", M, "--ns", "other", "--into", dest)
-    t.gitpm_ok("install", dest, "--channel", "dev")
+    t.gitpm_ok("install", dest, "--dev")
     out = t.gitpm_ok("list").json()
     t.eq(out["packages"][O]["forkOf"],
          {"id": M, "version": mine["version"], "commit": mine["commit"], "source": t.package(M)["source"]}, "forkOf")

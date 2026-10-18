@@ -232,7 +232,8 @@ fn cycles_resolve_and_updates_keep_dependents_working() {
     assert_eq!(plugin(&m, "lib/core").current.version, "1.1.0");
     // A compatible release is fine.
     f.release(&core, "lib/core", "1.2.0", &[]);
-    m.update_ref("lib/core", Some("lib/core@1.2.0")).unwrap();
+    m.update_to("lib/core", gitpm::Target::Ref("lib/core@1.2.0".into()))
+        .unwrap();
     // An update that adds a dependency pulls it from the catalog.
     f.publish(&cat, "lib/extra", "1.0.0", &[]);
     let app = f.path("authors/app/a");
@@ -868,8 +869,12 @@ fn fork_replace_pending_replacement_is_resumed_after_confirmation() {
     m.install(app.to_str().unwrap()).unwrap();
     // acme/hello goes back to 1.0.0, so app's requirement ^2 is not met by a fork of it.
     m.uninstall_with("acme/hello", true, true).unwrap();
-    m.install_ref(hello.to_str().unwrap(), Some("acme/hello@1.0.0"), None)
-        .unwrap();
+    m.install_package(
+        hello.to_str().unwrap(),
+        None,
+        gitpm::InstallTarget::Ref("acme/hello@1.0.0".into()),
+    )
+    .unwrap();
     let done = m
         .fork_packages_replace(&["acme/hello"], &f.path("forks/hello"), "me", None, false)
         .unwrap();
@@ -948,7 +953,8 @@ fn update_all_plan_lists_unchanged_packages() {
         plan.unchanged,
         [gitpm::Unchanged {
             id: "app/b".into(),
-            version: "2.0.0".into()
+            version: "2.0.0".into(),
+            reason: None,
         }]
     );
     let applied = m.update_all().unwrap();

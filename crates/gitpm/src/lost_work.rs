@@ -269,6 +269,32 @@ pub(crate) fn detect(repo: &Path, recorded: Option<&str>) -> Result<Vec<LostWork
     Ok(items)
 }
 
+/// Commits reachable from HEAD that no remote-tracking branch and no tag contains:
+/// work only this clone has (a restore would record it as if it were published).
+pub(crate) fn unpublished_head_commits(repo: &Path) -> Result<Vec<LostWork>> {
+    Ok(git(
+        repo,
+        &[
+            "log",
+            MAX_COMMITS,
+            "--format=%H%x09%s",
+            "HEAD",
+            "--not",
+            "--remotes",
+            "--tags",
+        ],
+    )?
+    .lines()
+    .map(|line| {
+        let (commit, summary) = line.split_once('\t').unwrap_or((line, ""));
+        LostWork::UnpublishedCommit {
+            commit: commit.into(),
+            summary: summary.into(),
+        }
+    })
+    .collect())
+}
+
 /// Commits that moving HEAD away would leave unreachable: reachable from HEAD but from
 /// no branch, tag, remote-tracking ref or `keep` commit.
 pub(crate) fn unreferenced_head_commits(repo: &Path, keep: &[&str]) -> Result<Vec<LostWork>> {

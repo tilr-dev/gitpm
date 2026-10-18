@@ -133,13 +133,54 @@ pub struct ForkOf {
 pub struct Revision {
     pub version: String,
     pub commit: String,
+    /// Only in `previous`: the mode the package had at that revision (omitted in
+    /// release mode), so `rollback` restores revision and mode together. Everywhere
+    /// else (`current`, results) it is release; the current mode is the record's `mode`.
+    #[serde(default, skip_serializing_if = "Mode::is_release")]
+    pub mode: Mode,
 }
+impl Revision {
+    /// This revision as the `previous` of a record in `mode`.
+    pub(crate) fn with_mode(&self, mode: &Mode) -> Self {
+        Self {
+            mode: mode.clone(),
+            ..self.clone()
+        }
+    }
+    /// This revision without a mode (as `current` and in results).
+    pub(crate) fn without_mode(&self) -> Self {
+        self.with_mode(&Mode::Release)
+    }
+}
+/// What `update` follows for an installed package, recorded in state as `mode`
+/// (omitted in release mode, else `{"pinned": REF}` or `{"branch": NAME}`).
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Mode {
+    /// The newest release (`ID@VERSION` tag); the default.
+    #[default]
+    Release,
+    /// Fixed at a tag or commit: the ref as the user gave it (a commit in full).
+    /// `current.commit` is the installed truth; the ref is for display and `check`.
+    Pinned(String),
+    /// Follows the HEAD of this branch of the origin.
+    Branch(String),
+}
+impl Mode {
+    pub fn is_release(&self) -> bool {
+        matches!(self, Mode::Release)
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Installed {
     pub source: String,
     pub current: Revision,
     pub previous: Option<Revision>,
     pub enabled: bool,
+    /// What `update` follows; omitted in release mode.
+    #[serde(default, skip_serializing_if = "Mode::is_release")]
+    pub mode: Mode,
     #[serde(default, rename = "forkOf", skip_serializing_if = "Option::is_none")]
     pub fork_of: Option<ForkOf>,
     /// Dependency edges of the current revision (copied from its manifest).
@@ -200,9 +241,9 @@ pub struct State {
     /// consumer in this workspace.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub replacements: BTreeMap<String, String>,
-    /// Forgotten packages of shared clones (`clone` set): their clone is kept (their
-    /// `dist/` is not: they are not installed) and they still count as users of the clone, so `restore` and `uninstall` find
-    /// them. A forgotten package with its own clone needs no record (`packages/<id>`).
+    /// Forgotten packages (own or shared clone), with their whole record: the clone is
+    /// kept (their `dist/` is not: they are not installed), a shared clone still counts
+    /// them as users, and `restore` records them again as they were.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub forgotten: BTreeMap<String, Installed>,
 }
@@ -257,17 +298,19 @@ impl State {
             if let Some(path) = &p.path {
                 crate::packages::validate_path(path)?;
             }
+            if let Mode::Pinned(name) | Mode::Branch(name) = &p.mode {
+                ensure!(
+                    !name.is_empty() && !name.starts_with('-'),
+                    InvalidData,
+                    "invalid mode of {id} in state.json: {name:?}"
+                );
+            }
         }
         for id in state.forgotten.keys() {
             ensure!(
                 !state.packages.contains_key(id),
                 InvalidData,
                 "state.json lists {id} as installed and as forgotten"
-            );
-            ensure!(
-                state.forgotten[id].clone.is_some(),
-                InvalidData,
-                "state.json lists {id} as forgotten without a shared clone"
             );
         }
         Ok(state)
@@ -300,6 +343,9 @@ pub struct InstalledPackage {
     pub current: Revision,
     pub previous: Option<Revision>,
     pub enabled: bool,
+    /// What `update` follows (omitted in release mode).
+    #[serde(skip_serializing_if = "Mode::is_release")]
+    pub mode: Mode,
     /// Installed, enabled and not replaced ([`State::is_active`]): exactly the packages
     /// with `dist/<id>`. `enabled` alone is not enough (a replaced package is enabled).
     pub active: bool,
@@ -345,6 +391,7 @@ impl State {
                 current: p.current.clone(),
                 previous: p.previous.clone(),
                 enabled: p.enabled,
+                mode: p.mode.clone(),
                 active: self.is_active(id),
                 fork_of: p.fork_of.clone(),
                 replaces: p.replaces.clone(),
@@ -478,6 +525,7 @@ pub(crate) fn revision(repo: &Path, m: &Manifest) -> Result<Revision> {
     Ok(Revision {
         version: m.version.clone(),
         commit: git(repo, &["rev-parse", "HEAD"])?,
+        mode: Mode::Release,
     })
 }
 
@@ -498,37 +546,82 @@ pub(crate) fn resolve_ref(repo: &Path, reference: &str) -> Result<String> {
     )
 }
 
-/// Resolve a user ref in an installed clone after `fetch`: a tag, then the fetched
-/// upstream branch (`refs/remotes/origin/X`), then a commit ID. Local branches of the
-/// installed clone are never used: they are stale copies of upstream.
-pub(crate) fn resolve_upstream_ref(repo: &Path, reference: &str) -> Result<String> {
+/// The name of the origin's default branch (`refs/remotes/origin/HEAD`, set by a clone
+/// or by `git remote set-head origin --auto`).
+pub(crate) fn default_branch(repo: &Path) -> Result<String> {
+    let name = git(
+        repo,
+        &["symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD"],
+    )
+    .map_err(|_| Error::Git("the origin has no default branch (HEAD)".into()))?;
+    let branch = name.strip_prefix("origin/").unwrap_or(&name).to_owned();
+    ensure!(
+        !branch.is_empty() && !branch.starts_with('-'),
+        Git,
+        "the origin has no default branch (HEAD)"
+    );
+    Ok(branch)
+}
+
+/// Resolve a user ref against the origin, in a fresh clone or in an installed clone
+/// after `fetch`. Only exact names count: a tag (`refs/tags/X`), then an origin branch
+/// (`refs/remotes/origin/X`), then a commit ID of 7 to 64 hex digits; `HEAD` (and
+/// `refs/remotes/origin/HEAD`) is the origin's default branch, by its name. Revision
+/// expressions (`HEAD~1`, `TAG^`) and local branches of a clone (stale copies of the
+/// origin) are refused with `invalid_argument`. Returns the commit and the mode that
+/// records it: a tag or commit pins, a branch is followed.
+pub(crate) fn resolve_upstream_ref(repo: &Path, reference: &str) -> Result<(String, Mode)> {
     ensure!(
         !reference.is_empty() && !reference.starts_with('-'),
         InvalidArgument,
         "invalid git ref"
     );
+    let exists = |full: &str| git(repo, &["show-ref", "--verify", "--quiet", full]).is_ok();
+    let branch = |name: &str| -> Result<(String, Mode)> {
+        let commit = resolve_ref(repo, &format!("refs/remotes/origin/{name}"))?;
+        Ok((commit, Mode::Branch(name.to_owned())))
+    };
+    if reference == "HEAD" || reference == "refs/remotes/origin/HEAD" {
+        return branch(&default_branch(repo)?);
+    }
+    let unknown = || {
+        Error::InvalidArgument(format!(
+            "unknown ref {reference}: not a tag, origin branch or commit"
+        ))
+    };
     if let Some(rest) = reference.strip_prefix("refs/") {
         ensure!(
             !rest.starts_with("heads/"),
             InvalidArgument,
             "local branches of an installed clone are stale; use the branch name"
         );
-        return resolve_ref(repo, reference);
-    }
-    for candidate in [
-        format!("refs/tags/{reference}"),
-        format!("refs/remotes/origin/{reference}"),
-    ] {
-        if let Ok(commit) = resolve_ref(repo, &candidate) {
-            return Ok(commit);
+        if let Some(name) = rest.strip_prefix("remotes/origin/")
+            && exists(reference)
+        {
+            return branch(name);
         }
+        if rest.starts_with("tags/") && exists(reference) {
+            let commit = resolve_ref(repo, reference)?;
+            return Ok((commit, Mode::Pinned(reference.to_owned())));
+        }
+        return Err(unknown());
     }
-    ensure!(
-        (4..=64).contains(&reference.len()) && reference.bytes().all(|c| c.is_ascii_hexdigit()),
-        InvalidArgument,
-        "unknown ref {reference}: not a tag, upstream branch or commit"
-    );
-    resolve_ref(repo, reference)
+    let tag = format!("refs/tags/{reference}");
+    if exists(&tag) {
+        return Ok((resolve_ref(repo, &tag)?, Mode::Pinned(reference.to_owned())));
+    }
+    if exists(&format!("refs/remotes/origin/{reference}")) {
+        return branch(reference);
+    }
+    if (7..=64).contains(&reference.len())
+        && reference
+            .bytes()
+            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+        && let Ok(commit) = resolve_ref(repo, reference)
+    {
+        return Ok((commit.clone(), Mode::Pinned(commit)));
+    }
+    Err(unknown())
 }
 
 pub(crate) fn manifest_json(m: &Manifest) -> Result<String> {
@@ -962,10 +1055,31 @@ mod tests {
       },
       "previous": null,
       "enabled": true,
+      "mode": {
+        "pinned": "vendor/demo1@1.0.0"
+      },
       "forkOf": {
         "id": "vendor/demo1",
         "version": "0.9.0",
         "commit": "0123456789abcdef0123456789abcdef01234567"
+      },
+      "metadata": {
+        "title": null,
+        "description": null,
+        "provides": [],
+        "tags": []
+      }
+    },
+    "me/demo2": {
+      "source": "/tmp/demo2",
+      "current": {
+        "version": "0.3.0",
+        "commit": "b6e1cb27e482634979ffcfb4f9cdd02ff99005db"
+      },
+      "previous": null,
+      "enabled": true,
+      "mode": {
+        "branch": "main"
       },
       "metadata": {
         "title": null,
@@ -991,6 +1105,26 @@ mod tests {
             state.packages["me/demo1"].fork_of.as_ref().unwrap().id,
             "vendor/demo1"
         );
+        // The recorded modes: omitted for release mode, else pinned or branch.
+        assert_eq!(p.mode, Mode::Release);
+        assert_eq!(
+            state.packages["me/demo1"].mode,
+            Mode::Pinned("vendor/demo1@1.0.0".into())
+        );
+        assert_eq!(state.packages["me/demo2"].mode, Mode::Branch("main".into()));
+        for bad in [r#"{"pinned": ""}"#, r#"{"branch": "-x"}"#] {
+            let text = STATE.replace(
+                r#"{
+        "branch": "main"
+      }"#,
+                bad,
+            );
+            assert_eq!(
+                State::parse(text.as_bytes()).unwrap_err().kind(),
+                "invalid_data",
+                "{bad}"
+            );
+        }
         // Default state is the file a new workspace starts with.
         assert_eq!(
             serde_json::to_string_pretty(&State::default()).unwrap(),
@@ -1100,7 +1234,18 @@ mod tests {
         let list = state.installed();
         assert_eq!(
             list.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
-            ["dan/demo1", "me/demo1"]
+            ["dan/demo1", "me/demo1", "me/demo2"]
+        );
+        assert_eq!(list[2].mode, Mode::Branch("main".into()));
+        assert_eq!(
+            serde_json::to_value(&list[2]).unwrap()["mode"]["branch"],
+            "main"
+        );
+        assert!(
+            serde_json::to_value(&list[0])
+                .unwrap()
+                .get("mode")
+                .is_none()
         );
         assert_eq!(list[0].source, "git@github.com:dan/demo1.git");
         assert_eq!(list[0].current.version, "0.1.1");
@@ -1150,7 +1295,8 @@ mod tests {
             revision(&author.path, &m).unwrap(),
             Revision {
                 version: "0.2.0".into(),
-                commit: second
+                commit: second,
+                ..Default::default()
             }
         );
     }

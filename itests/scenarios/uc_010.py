@@ -93,7 +93,7 @@ def repeated_install_from_the_same_source_is_a_noop(t: T):
                        (("--ref", f"{ID}@0.2.0"), f"; requested --ref {ID}@0.2.0 — run update {ID} --ref {ID}@0.2.0"),
                        ((), "; run update")]:
         r = t.gitpm_ok("install", t.repo(ID), *args)
-        t.eq(r.out, f"{ID} already installed (0.1.0){hint}\n", "output")
+        t.eq(r.out, f"{ID} already installed (0.1.0, pinned at {ID}@0.1.0){hint}\n", "output")
         t.same(before, "workspace")
     t.eq(t.package(ID)["current"]["version"], "0.1.0", "installed version kept")
 

@@ -1,7 +1,10 @@
 """UC-021: Forget and restore (P0).
 
+forget keeps the whole record under `forgotten`; restore records it again as it was
+(revisions, catalog, enabled flag, mode).
+
 Fixture g2_hello_history: dan/hello installed at 0.1.0 and updated to 0.1.1 and 0.1.2
-(current 0.1.2, previous 0.1.1).
+(current 0.1.2, previous 0.1.1). g1_ws_catalog: dan/hello 0.1.1 installed from the catalog.
 """
 
 import shutil
@@ -27,8 +30,10 @@ def no_entry(t: T):
 def forget_removes_state_only(t: T):
     """forget: the state entry is gone; the clone (with .git) stays byte-identical, dist/ID is removed."""
     files = t.snap(t.clone(ID), git=True)
+    record = t.package(ID)
     t.gitpm_ok("forget", ID)
     no_entry(t)
+    t.eq(t.state()["forgotten"][ID], record, "forgotten record (the whole record)")
     t.eq(t.gitpm_ok("list").json()["packages"], {}, "list")
     t.same(files, "retained clone")
     t.ok(not t.dist(ID).exists(), "dist/ID removed (forgotten packages are inactive)")
@@ -36,30 +41,55 @@ def forget_removes_state_only(t: T):
 
 
 @case(fixture="g2_hello_history", spec=["install-uninstall/three-removal-levels#forget-then-restore"])
-def restore_recreates_state_without_history(t: T):
-    """restore after forget: current 0.1.2 at the retained commit, previous null, enabled; files unchanged."""
-    source = t.package(ID)["source"]
+def restore_keeps_the_forgotten_record(t: T):
+    """restore after forget: the record as it was (current 0.1.2, previous 0.1.1, enabled); files unchanged."""
+    record = t.package(ID)
     files = retained(t)
     t.gitpm_ok("forget", ID)
-    t.gitpm_ok("restore", ID)
+    t.eq(t.gitpm_ok("restore", ID).out, f"{ID} restored 0.1.2\n", "output")
     p = t.package(ID)
+    t.eq(p, record, "record")
     t.eq(p["current"], {"version": "0.1.2", "commit": tagged(t, "0.1.2")}, "current")
-    t.eq(p["previous"], None, "no rollback history")
-    t.eq(p["enabled"], True, "enabled")
-    t.eq(p["source"], source, "source")
+    t.eq(p["previous"], {"version": "0.1.1", "commit": tagged(t, "0.1.1")}, "rollback history kept")
+    t.ok("forgotten" not in t.state() or ID not in t.state()["forgotten"], "forgotten record moved back")
     t.same(files, "clone and dist (dist redeployed with the same bytes)")
-    before = t.snap(t.ws, git=True)
-    t.gitpm_err("rollback", ID, kind="no_previous_version", contains=ID)
-    t.same(before, "workspace after rollback without history")
+    t.gitpm_ok("rollback", ID)
+    t.eq(t.package(ID)["current"]["version"], "0.1.1", "rollback after restore")
 
 
 @case(fixture="g2_hello_history", spec=["install-uninstall/three-removal-levels#forget-then-restore"])
-def restore_of_disabled_plugin_is_enabled(t: T):
-    """A forgotten disabled package is restored as a fresh registration (enabled)."""
+def restore_of_a_disabled_package_keeps_it_disabled(t: T):
+    """A forgotten disabled package is restored disabled: nothing is deployed."""
     t.gitpm_ok("disable", ID)
     t.gitpm_ok("forget", ID)
     t.gitpm_ok("restore", ID)
-    t.eq(t.package(ID)["enabled"], True, "enabled after restore")
+    t.eq(t.package(ID)["enabled"], False, "still disabled after restore")
+    t.ok(not t.dist(ID).exists(), "dist/ID not deployed")
+
+
+@case(fixture="g1_ws_catalog", spec=["install-uninstall/three-removal-levels#forget-then-restore"])
+def restore_keeps_the_catalog(t: T):
+    """A package installed from the catalog keeps its catalog binding through forget and restore."""
+    record = t.package(ID)
+    t.ok(record.get("catalog"), "installed from the catalog")
+    t.gitpm_ok("forget", ID)
+    t.gitpm_ok("restore", ID)
+    t.eq(t.package(ID), record, "record with catalog")
+    t.has((t.dist(ID) / "index.js").read_text(), "dan/hello 0.1.1")
+
+
+@case(fixture="g2_hello_history", spec=["install-uninstall/restore-preconditions"])
+def restore_refuses_a_moved_head(t: T):
+    """The retained clone checked out at another (published) release: restore refuses, HEAD moved."""
+    t.gitpm_ok("forget", ID)
+    t.git(t.clone(ID), "checkout", "-q", "--detach", f"{ID}@0.1.1")
+    before = t.snap(t.ws, git=True)
+    t.gitpm_err("restore", ID, kind="local_changes", contains="HEAD moved")
+    t.same(before, "workspace")
+    no_entry(t)
+    t.git(t.clone(ID), "checkout", "-q", "--detach", f"{ID}@0.1.2")
+    t.gitpm_ok("restore", ID)
+    t.eq(t.package(ID)["current"]["version"], "0.1.2", "restored at the recorded commit")
 
 
 @case(fixture="g2_hello_history", spec=["errors/stable-error-kinds#removal-of-an-unknown-package"])
@@ -101,7 +131,7 @@ def missing_retained_clone(t: T):
 
 @case(fixture="g2_hello_history", spec=["install-uninstall/restore-preconditions"])
 def malformed_retained_manifest(t: T):
-    """Retained clone whose HEAD manifest is malformed (committed) or edited (uncommitted): restore refuses."""
+    """Retained clone whose manifest is edited (uncommitted) or committed broken (unpublished): restore refuses."""
     t.gitpm_ok("forget", ID)
     clone = t.clone(ID)
     (clone / "plugin.json").write_text("{ broken")
@@ -112,20 +142,20 @@ def malformed_retained_manifest(t: T):
     no_entry(t)
     t.git(clone, "commit", "-q", "-am", "broken manifest")
     before = t.snap(t.ws, git=True)
-    t.gitpm_err("restore", ID, kind="invalid_manifest", contains="plugin.json")
+    t.gitpm_err("restore", ID, kind="local_changes", contains="unpublished commit")
     t.same(before, "workspace (committed broken manifest)")
     no_entry(t)
 
 
 @case(fixture="g2_hello_history", spec=["install-uninstall/restore-preconditions"])
 def retained_manifest_with_other_id(t: T):
-    """Retained clone whose manifest names another package: restore refuses, nothing fabricated."""
+    """Retained clone with a commit renaming the package: unpublished work, restore refuses, nothing fabricated."""
     t.gitpm_ok("forget", ID)
     clone = t.clone(ID)
     (clone / "plugin.json").write_text('{"id": "dan/renamed", "version": "0.1.2"}\n')
     t.git(clone, "commit", "-q", "-am", "rename")
     before = t.snap(t.ws, git=True)
-    t.gitpm_err("restore", ID, kind="invalid_manifest", contains="id")
+    t.gitpm_err("restore", ID, kind="local_changes", contains="unpublished commit")
     t.same(before, "workspace")
     no_entry(t)
     t.ok("dan/renamed" not in t.state()["packages"], "no entry for the other ID")

@@ -387,7 +387,7 @@ def fork_into_stage_or_backup_folder_works(t: T):
     t.gitpm_ok("fork", ID, "--ns", "other", "--into", stage)
     for path, id in [(backup / "myfork", "mine/hello"), (stage, "other/hello")]:
         t.eq(json.loads((path / "plugin.json").read_text())["id"], id, f"fork at {path.name}")
-        t.gitpm_ok("install", path, "--channel", "dev")
+        t.gitpm_ok("install", path, "--dev")
         t.eq(t.package(id)["source"], str(path), f"{id} installed from {path}")
     after = t.snap(backup, git=True)
     t.eq({k: v for k, v in after.items() if "/myfork" not in k and not k.endswith("/myfork")}, dict(kept),

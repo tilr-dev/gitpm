@@ -271,10 +271,7 @@ fn rejects_duplicate_path_escape_and_missing_payload() {
     fs::remove_dir_all(f.repo.join("dist")).unwrap();
     f.git(&["add", "."]);
     f.git(&["commit", "-m", "missing dist"]);
-    f.cli(
-        &["install", f.repo.to_str().unwrap(), "--channel", "dev"],
-        false,
-    );
+    f.cli(&["install", f.repo.to_str().unwrap(), "--dev"], false);
     assert!(f.state()["packages"].as_object().unwrap().is_empty());
 }
 #[test]
@@ -306,11 +303,24 @@ fn direct_git_refs_and_local_author_commit() {
     f.git(&["tag", "-f", "dan/hello@1.0.0"]);
     let repo = f.repo.to_str().unwrap();
     f.cli(&["install", repo, "--ref", "dan/hello@1.0.0"], true);
-    assert!(f.state()["packages"]["dan/hello"].get("pinned").is_none());
+    assert_eq!(
+        f.state()["packages"]["dan/hello"]["mode"],
+        serde_json::json!({"pinned": "dan/hello@1.0.0"})
+    );
     fs::write(f.repo.join("dist/index.js"), "author release").unwrap();
     f.cli(&["commit", repo, "1.0.1"], true);
     f.cli(&["commit", repo, "1.0.1"], false);
-    f.cli(&["update", "dan/hello"], true);
+    // Pinned: update says so and changes nothing; --release returns to releases.
+    assert_eq!(
+        f.cli(&["update", "dan/hello"], true),
+        "dan/hello pinned at 1.0.0 (dan/hello@1.0.0)\n"
+    );
+    assert_eq!(f.content(), "hello v1");
+    assert_eq!(
+        f.cli(&["update", "dan/hello", "--release"], true),
+        "dan/hello updated 1.0.0 → 1.0.1\n"
+    );
+    assert!(f.state()["packages"]["dan/hello"].get("mode").is_none());
     assert_eq!(f.content(), "author release");
     f.cli(&["update", "dan/hello", "--ref", "dan/hello@1.0.1"], true);
     assert_eq!(f.content(), "author release");
@@ -330,20 +340,31 @@ fn catalog_manifest_is_verified_before_install() {
     let f = Fixture::new();
     f.git(&["tag", "-f", "dan/hello@1.0.0"]);
     let manager = gitpm::Manager::open(&f.root).unwrap();
-    let wrong = gitpm::Manifest {
-        id: "dan/hello".into(),
-        version: "99.0.0".into(),
-        ..Default::default()
+    let wrong = gitpm::catalog::Release {
+        manifest: gitpm::Manifest {
+            id: "dan/hello".into(),
+            version: "99.0.0".into(),
+            ..Default::default()
+        },
+        source: f.repo.to_str().unwrap().into(),
+        commit: String::from_utf8(
+            f.command("git")
+                .arg("-C")
+                .arg(&f.repo)
+                .args(["rev-parse", "dan/hello@1.0.0"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_owned(),
+        reference: "dan/hello@99.0.0".into(),
+        files: Default::default(),
+        build: None,
+        path: None,
     };
-    assert!(
-        manager
-            .install_ref(
-                f.repo.to_str().unwrap(),
-                Some("dan/hello@1.0.0"),
-                Some(&wrong)
-            )
-            .is_err()
-    );
+    assert!(manager.install_release(&wrong).is_err());
     assert!(manager.state().unwrap().packages.is_empty());
     assert!(!f.root.join("dist/dan/hello").exists());
 }
@@ -674,10 +695,7 @@ fn namespaced_fork_and_original_coexist_and_release_independently() {
         m["forkOf"]["commit"],
         f.state()["packages"]["vendor/demo"]["current"]["commit"]
     );
-    f.cli(
-        &["install", fork.to_str().unwrap(), "--channel", "dev"],
-        true,
-    );
+    f.cli(&["install", fork.to_str().unwrap(), "--dev"], true);
     assert!(f.root.join("dist/dan/demo/index.js").exists());
     assert_eq!(f.state()["packages"]["dan/demo"]["forkOf"], m["forkOf"]);
     fs::write(fork.join("dist/index.js"), "fork release").unwrap();
@@ -950,15 +968,16 @@ fn stable_install_and_update_ignore_untagged_head_and_sort_versions() {
     assert_eq!(f.content(), "ten");
     f.cli(&["update", "dan/hello"], true);
     assert_eq!(f.content(), "ten");
-    f.cli(&["update", "dan/hello", "--channel", "dev"], true);
+    f.cli(&["update", "dan/hello", "--dev"], true);
     assert_eq!(f.content(), "unreleased");
     let before = f.state();
-    f.cli(&["update", "dan/hello"], false); // no automatic downgrade
+    // The default branch is followed now.
+    f.cli(&["update", "dan/hello"], true);
     assert_eq!(before, f.state());
-    f.cli(
-        &["update", "dan/hello", "--channel", "dev", "--ref", "HEAD"],
-        false,
-    );
+    // An explicit return to releases may go down to the newest one.
+    f.cli(&["update", "dan/hello", "--release"], true);
+    assert_eq!(f.content(), "ten");
+    f.cli(&["update", "dan/hello", "--dev", "--ref", "HEAD"], false);
 }
 
 #[test]
@@ -1042,10 +1061,7 @@ fn catalog_update_validates_every_source_before_writing_and_retains_removed_sour
     assert!(!directory.exists());
     // Stable installs have no implicit fallback to the development branch.
     f.cli(&["install", no_tags.to_str().unwrap()], false);
-    f.cli(
-        &["install", no_tags.to_str().unwrap(), "--channel", "dev"],
-        true,
-    );
+    f.cli(&["install", no_tags.to_str().unwrap(), "--dev"], true);
     fs::write(&sources, "./upstream\n").unwrap();
     f.cli(&["--catalog", location, "catalog-update"], true);
     f.cli(&["init", "dan/second", "--into", "dan/second"], true);
@@ -1276,6 +1292,27 @@ fn usage_errors_name_the_problem_and_create_nothing() {
             &["list", "--namespace", "me"][..],
             "unknown option: --namespace",
         ),
+        // One target per command; `--channel` is gone without an alias.
+        (
+            &["install", "./x", "--channel", "dev"][..],
+            "unknown option: --channel; use --help",
+        ),
+        (
+            &["install", "./x", "--ref", "a", "--dev"][..],
+            "--dev conflicts with --ref",
+        ),
+        (
+            &["update", "qa/demo", "--dev", "--release"][..],
+            "--release conflicts with --dev",
+        ),
+        (
+            &["rollback", "qa/demo", "--dev"][..],
+            "--dev requires install/update",
+        ),
+        (
+            &["update", "all", "--dev"][..],
+            "update all takes no --ref, --dev or --release; it follows each package's recorded mode",
+        ),
     ] {
         let out = f
             .pm()
@@ -1458,7 +1495,7 @@ fn init_install_and_fork_into_explicit_folders() {
     let m: serde_json::Value =
         serde_json::from_slice(&fs::read(f.dir.join("me/hello/plugin.json")).unwrap()).unwrap();
     assert_eq!(m["forkOf"]["id"], "dan/hello");
-    f.cli(&["install", "./me/hello", "--channel", "dev"], true);
+    f.cli(&["install", "./me/hello", "--dev"], true);
     assert!(f.root.join("dist/dan/hello/index.js").exists());
     assert!(f.root.join("dist/me/hello/index.js").exists());
     assert!(config_files(&f.dir).is_empty());
@@ -1556,7 +1593,7 @@ fn update_all_previews_applies_and_rejects_unsupported_options() {
     assert_eq!(f.content(), "hello v1");
     for args in [
         vec!["update", "all", "--ref", "main"],
-        vec!["update", "all", "--channel", "dev"],
+        vec!["update", "all", "--dev"],
         vec!["update", "dan/hello", "--dry-run"],
     ] {
         f.cli(&args, false);
@@ -1594,18 +1631,19 @@ fn install_again_reports_already_installed_and_changes_nothing() {
     );
     assert_eq!(state(), before);
     assert!(f.state()["packages"]["dan/hello"]["previous"].is_null());
-    // An explicit ref or the dev channel is named in the hint, never silently ignored.
+    // An explicit --ref or --dev is named in the hint, never silently ignored.
     assert_eq!(
         f.cli(&["install", source, "--ref", "dan/hello@1.1.0"], true),
         "dan/hello already installed (1.0.0); requested --ref dan/hello@1.1.0 — run update dan/hello --ref dan/hello@1.1.0\n"
     );
+    // Same revision, another mode (the tag would pin it): named too.
     assert_eq!(
         f.cli(&["install", source, "--ref", "dan/hello@1.0.0"], true),
-        "dan/hello already installed (1.0.0)\n"
+        "dan/hello already installed (1.0.0); requested --ref dan/hello@1.0.0 — run update dan/hello --ref dan/hello@1.0.0\n"
     );
     assert_eq!(
-        f.cli(&["install", source, "--channel", "dev"], true),
-        "dan/hello already installed (1.0.0); requested --channel dev — run update dan/hello --channel dev\n"
+        f.cli(&["install", source, "--dev"], true),
+        "dan/hello already installed (1.0.0); requested --dev — run update dan/hello --dev\n"
     );
     assert_eq!(state(), before);
     assert_eq!(f.content(), "hello v1");
@@ -1645,6 +1683,22 @@ fn mutating_commands_print_one_line_per_package_and_no_ok_lines() {
     f.release("1.1.0", "hello v2");
     f.cli(&["update", "dan/hello"], true);
     for (args, expected) in [
+        (
+            &["rollback", "dan/hello"][..],
+            "dan/hello rolled back 1.1.0 → 1.0.0\n",
+        ),
+        (
+            &["update", "dan/hello", "--ref", "dan/hello@1.0.0"][..],
+            "dan/hello pinned at 1.0.0 (dan/hello@1.0.0)\n",
+        ),
+        (
+            &["update", "dan/hello"][..],
+            "dan/hello pinned at 1.0.0 (dan/hello@1.0.0)\n",
+        ),
+        (
+            &["update", "dan/hello", "--release"][..],
+            "dan/hello updated 1.0.0 → 1.1.0\n",
+        ),
         (
             &["rollback", "dan/hello"][..],
             "dan/hello rolled back 1.1.0 → 1.0.0\n",
@@ -1719,10 +1773,11 @@ impl Fixture {
     }
 }
 
-/// The CLI passes the catalog location and option combinations to the library unchanged:
-/// a missing local catalog and `--channel dev --ref` are library errors with a kind.
+/// The CLI passes the catalog location to the library unchanged: a missing local catalog
+/// is a library error with a kind; `--ref`, `--dev` and `--release` exclude each other
+/// as usage errors, and `--channel` is gone.
 #[test]
-fn a_missing_catalog_and_dev_with_ref_are_library_errors() {
+fn a_missing_catalog_is_a_library_error_and_targets_are_exclusive() {
     let f = Fixture::new();
     let source = f.repo.to_str().unwrap();
     let (ok, _, stderr) = f.output(&["--catalog", "./missing", "install", source]);
@@ -1736,22 +1791,40 @@ fn a_missing_catalog_and_dev_with_ref_are_library_errors() {
         !f.root.exists(),
         "a refused catalog location created the workspace"
     );
-    let (ok, _, stderr) = f.output(&["install", source, "--ref", "x", "--channel", "dev"]);
-    assert!(!ok);
-    assert!(
-        stderr.contains("the dev channel conflicts with an explicit ref"),
-        "{stderr}"
-    );
-    assert!(stderr.contains("Error kind: invalid_argument"), "{stderr}");
-    // stable is the default channel: with a ref it installs that ref.
-    let (ok, stdout, stderr) = f.output(&[
-        "install",
-        source,
-        "--ref",
-        "dan/hello@1.0.0",
-        "--channel",
-        "stable",
-    ]);
+    for (args, message) in [
+        (
+            vec!["install", source, "--ref", "x", "--dev"],
+            "Error: --dev conflicts with --ref",
+        ),
+        (
+            vec!["update", "dan/hello", "--dev", "--release"],
+            "Error: --release conflicts with --dev",
+        ),
+        (
+            vec!["update", "dan/hello", "--ref", "x", "--release"],
+            "Error: --release conflicts with --ref",
+        ),
+        (
+            vec!["install", source, "--release"],
+            "Error: --release requires update",
+        ),
+        (
+            vec!["install", source, "--channel", "dev"],
+            "Error: unknown option: --channel; use --help",
+        ),
+        (
+            vec!["update", "all", "--release"],
+            "Error: update all takes no --ref, --dev or --release; it follows each package's recorded mode",
+        ),
+    ] {
+        let (ok, _, stderr) = f.output(&args);
+        assert!(!ok, "{args:?}");
+        assert!(stderr.contains(message), "{args:?}: {stderr}");
+        assert!(!stderr.contains("Error kind"), "a usage error: {stderr}");
+        assert!(!f.root.exists(), "{args:?} created the workspace");
+    }
+    // A tag pins the package.
+    let (ok, stdout, stderr) = f.output(&["install", source, "--ref", "dan/hello@1.0.0"]);
     assert!(ok, "{stderr}");
     assert!(
         stdout.starts_with("installed dan/hello@1.0.0 from "),
@@ -1830,5 +1903,33 @@ fn update_past_a_broken_historical_tag_warns_about_it() {
     assert!(
         stderr.contains("Warning: skipped release tag dan/hello@1.5.0: invalid manifest"),
         "{stderr}"
+    );
+}
+
+/// `--ref` names exact refs only; the already-installed line says the recorded mode.
+#[test]
+fn refs_are_exact_and_the_mode_is_named() {
+    let f = Fixture::new();
+    let source = f.repo.to_str().unwrap();
+    for bad in ["HEAD~1", "main~1", "dan/hello@1.0.0~1"] {
+        let (ok, _, stderr) = f.output(&["install", source, "--ref", bad]);
+        assert!(!ok, "{bad}");
+        assert!(
+            stderr.contains("Error kind: invalid_argument"),
+            "{bad}: {stderr}"
+        );
+    }
+    f.cli(&["install", source, "--ref", "dan/hello@1.0.0"], true);
+    assert_eq!(
+        f.cli(&["install", source, "--ref", "dan/hello@1.0.0"], true),
+        "dan/hello already installed (1.0.0, pinned at dan/hello@1.0.0)\n"
+    );
+    assert_eq!(
+        f.cli(&["install", source, "--ref", "HEAD"], true),
+        "dan/hello already installed (1.0.0, pinned at dan/hello@1.0.0); requested --ref HEAD — run update dan/hello --ref HEAD\n"
+    );
+    assert_eq!(
+        f.cli(&["update", "dan/hello", "--ref", "HEAD"], true),
+        "dan/hello follows branch main at 1.0.0\n"
     );
 }

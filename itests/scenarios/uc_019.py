@@ -97,7 +97,7 @@ def origin_unavailable(t: T):
     away.parent.mkdir()
     shutil.move(t.repo(ID), away)
     failed_update(t, kind="git")
-    failed_update(t, "--channel", "dev", kind="git")
+    failed_update(t, "--dev", kind="git")
     rollback_still_works(t)
     shutil.move(away, t.repo(ID))
     t.gitpm_ok("update", ID)

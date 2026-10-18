@@ -100,6 +100,7 @@ pub mod catalog {
 
 /// The table printed by `gitpm check`.
 pub mod check {
+    use gitpm::Mode;
     use gitpm::check::{CheckRow, CheckSource};
 
     pub fn display(rows: &[CheckRow]) -> String {
@@ -114,16 +115,26 @@ pub mod check {
                 text
             }
         };
-        let latest = |row: &CheckRow| row.latest.clone().unwrap_or_else(|| "—".into());
+        // A branch row compares commits: its latest is the branch HEAD.
+        let latest = |row: &CheckRow| match (&row.latest, &row.mode) {
+            (Some(latest), _) => latest.clone(),
+            (None, Mode::Branch(branch)) => format!("{branch} HEAD"),
+            (None, _) => "—".into(),
+        };
         let mut output = format!(
             "{:<24} {:<14} {:<14} {:<8} {:<8} STATUS\n",
             "PACKAGE", "INSTALLED", "LATEST", "ENABLED", "SOURCE"
         );
         for row in rows {
-            let status = match &row.problem {
+            let mut status = match &row.problem {
                 Some(problem) => format!("{}: {problem}", row.status.message()),
                 None => row.status.message().to_owned(),
             };
+            match &row.mode {
+                Mode::Release => {}
+                Mode::Pinned(reference) => status.push_str(&format!(" ({reference})")),
+                Mode::Branch(branch) => status.push_str(&format!(" (branch {branch})")),
+            }
             output.push_str(&format!(
                 "{:<24} {:<14} {} {:<8} {:<8} {}\n",
                 row.id,
@@ -207,6 +218,7 @@ pub mod check {
                 enabled: false,
                 upstream: None,
                 source: CheckSource::Catalog,
+                mode: Mode::Release,
                 problem: None,
                 update_available,
                 status: if update_available {
@@ -227,6 +239,20 @@ pub mod check {
             let text = display(&[row(false)]);
             assert!(text.contains("Updates: 0."));
             assert!(!text.contains("Available updates"));
+        }
+        #[test]
+        fn table_shows_the_recorded_mode() {
+            let mut pinned = row(false);
+            pinned.status = CheckStatus::Pinned;
+            pinned.latest = None;
+            pinned.mode = Mode::Pinned("demo@1.9.0".into());
+            let mut branch = row(true);
+            branch.latest = None;
+            branch.mode = Mode::Branch("main".into());
+            let text = display(&[pinned, branch]);
+            assert!(text.contains("pinned (demo@1.9.0)"), "{text}");
+            assert!(text.contains("update available (branch main)"), "{text}");
+            assert!(text.contains("demo: 1.9.0 → main HEAD"), "{text}");
         }
         #[test]
         fn table_names_the_source_and_fork_upstream_place() {

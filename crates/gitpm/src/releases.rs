@@ -155,7 +155,7 @@ pub fn discover_all(repo: &Path, expected_id: Option<&str>) -> Result<Discovery>
     ensure!(
         !releases.is_empty(),
         NoReleases,
-        "no release tags for {id}; create {id}@VERSION, or use the dev channel{}",
+        "no release tags for {id}; create {id}@VERSION, or install a branch or commit by ref{}",
         skipped
             .iter()
             .map(|s| format!("; skipped {}", s.reason))
@@ -203,6 +203,7 @@ pub fn latest(repo: &Path, expected_id: Option<&str>) -> Result<Tag> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::InstallTarget;
     use crate::test_support::{Author, TempDir, git, manifest, write_manifest};
     use std::fs;
 
@@ -369,15 +370,34 @@ mod tests {
             skipped.iter().map(|s| s.name.clone()).collect()
         };
         let m = crate::Manager::open(dir.join("ws-update")).unwrap();
-        m.install_ref(author.source(), Some("dan/demo1@0.1.0"), None)
-            .unwrap();
-        let change = m.update("dan/demo1").unwrap();
+        m.install_package(
+            author.source(),
+            None,
+            InstallTarget::Ref("dan/demo1@0.1.0".into()),
+        )
+        .unwrap();
+        // The ref pinned it; back to releases.
+        let change = m.update_to("dan/demo1", crate::Target::Release).unwrap();
         assert_eq!(change.to.commit, good);
         assert_eq!(skipped_names(&change.skipped), ["dan/demo1@0.0.1"]);
         assert!(change.skipped[0].reason.contains("invalid manifest"));
         let m = crate::Manager::open(dir.join("ws-update-all")).unwrap();
-        m.install_ref(author.source(), Some("dan/demo1@0.1.0"), None)
-            .unwrap();
+        m.install_package(
+            author.source(),
+            None,
+            InstallTarget::Ref("dan/demo1@0.1.0".into()),
+        )
+        .unwrap();
+        // Release mode at 0.1.0 (no user path leads there once a newer release exists:
+        // the ref pinned it): drop the mode from the record.
+        let state_file = dir.join("ws-update-all/state.json");
+        let mut state: serde_json::Value =
+            serde_json::from_slice(&fs::read(&state_file).unwrap()).unwrap();
+        state["packages"]["dan/demo1"]
+            .as_object_mut()
+            .unwrap()
+            .remove("mode");
+        fs::write(&state_file, serde_json::to_vec(&state).unwrap()).unwrap();
         let plan = m.update_all().unwrap();
         assert_eq!(plan.updates.len(), 1);
         assert_eq!(plan.updates[0].to.commit, good);

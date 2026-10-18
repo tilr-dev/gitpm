@@ -105,15 +105,24 @@ pub(crate) fn git_raw(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
     Ok(output.stdout)
 }
 
-/// Release-looking tags of a remote: `git ls-remote --tags -- SOURCE` with the bounds of
-/// every repository command (no prompts, batch SSH, low-speed limit, wall-clock kill).
-/// Nothing is fetched or written. Returns tag names (without `refs/tags/`, peeled
-/// `^{}` entries folded into their tag) mapped to the commit they point to. Failure is
-/// [`Error::Git`] with git's stderr (`LC_ALL=C`, so it can be classified). Runs in the
-/// OS temp dir with only the file, git, http(s) and ssh transports; callers validate the source first
+/// Tags and branches of a remote, as `git ls-remote` lists them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RemoteRefs {
+    /// Tag name (without `refs/tags/`, peeled `^{}` entries folded into their tag) →
+    /// the commit it points to.
+    pub(crate) tags: BTreeMap<String, String>,
+    /// Branch name (without `refs/heads/`) → its HEAD commit.
+    pub(crate) heads: BTreeMap<String, String>,
+}
+
+/// Tags and branches of a remote: `git ls-remote --tags --heads -- SOURCE` with the
+/// bounds of every repository command (no prompts, batch SSH, low-speed limit,
+/// wall-clock kill). Nothing is fetched or written. Failure is [`Error::Git`] with git's
+/// stderr (`LC_ALL=C`, so it can be classified). Runs in the OS temp dir with only the
+/// file, git, http(s) and ssh transports; callers validate the source first
 /// (`auth::validate_recorded`): a URL or an absolute path, no remote helper.
-pub(crate) fn ls_remote_tags(source: &str) -> Result<BTreeMap<String, String>> {
-    let what = format!("git ls-remote --tags -- {source}");
+pub(crate) fn ls_remote_refs(source: &str) -> Result<RemoteRefs> {
+    let what = format!("git ls-remote --tags --heads -- {source}");
     let mut command = git_base();
     // Outside any repository: a bare word is a path, never a remote name of the cwd.
     // An explicit transport allowlist: a source from a foreign manifest never reaches
@@ -126,7 +135,7 @@ pub(crate) fn ls_remote_tags(source: &str) -> Result<BTreeMap<String, String>> {
             .arg(format!("protocol.{transport}.allow=always"));
     }
     command
-        .args(["ls-remote", "--tags", "--", source])
+        .args(["ls-remote", "--tags", "--heads", "--", source])
         .env("LC_ALL", "C")
         .current_dir(std::env::temp_dir());
     let output = output_within(command, GIT_TIMEOUT, &what)?;
@@ -136,26 +145,31 @@ pub(crate) fn ls_remote_tags(source: &str) -> Result<BTreeMap<String, String>> {
         "{what}: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let mut tags = BTreeMap::new();
+    let mut refs = RemoteRefs::default();
     for line in String::from_utf8_lossy(&output.stdout).lines() {
         let Some((commit, name)) = line.split_once('\t') else {
             continue;
         };
+        if let Some(branch) = name.strip_prefix("refs/heads/") {
+            refs.heads.insert(branch.to_owned(), commit.to_owned());
+            continue;
+        }
         let Some(name) = name.strip_prefix("refs/tags/") else {
             continue;
         };
         match name.strip_suffix("^{}") {
             // The peeled commit of an annotated tag wins over the tag object.
             Some(name) => {
-                tags.insert(name.to_owned(), commit.to_owned());
+                refs.tags.insert(name.to_owned(), commit.to_owned());
             }
             None => {
-                tags.entry(name.to_owned())
+                refs.tags
+                    .entry(name.to_owned())
                     .or_insert_with(|| commit.to_owned());
             }
         }
     }
-    Ok(tags)
+    Ok(refs)
 }
 
 /// Whether the user's Git configuration (outside any repository) defines `key`.
@@ -334,7 +348,7 @@ mod tests {
     }
 
     #[test]
-    fn ls_remote_tags_lists_tags_with_peeled_commits_and_fails_as_git() {
+    fn ls_remote_refs_lists_tags_with_peeled_commits_and_branches_and_fails_as_git() {
         let dir = TempDir::new("exec");
         let author = Author::new(dir.join("repo"), "dan/demo1");
         let first = author.head();
@@ -343,9 +357,13 @@ mod tests {
             &author.path,
             &["tag", "-a", "-m", "release", "dan/demo1@0.2.0"],
         );
-        let tags = ls_remote_tags(author.source()).unwrap();
+        let refs = ls_remote_refs(author.source()).unwrap();
         assert_eq!(
-            tags,
+            refs.heads,
+            BTreeMap::from([("main".to_owned(), second.clone())])
+        );
+        assert_eq!(
+            refs.tags,
             BTreeMap::from([
                 ("dan/demo1@0.1.0".to_owned(), first),
                 ("dan/demo1@0.2.0".to_owned(), second),
@@ -353,13 +371,15 @@ mod tests {
         );
         // Remote helpers are refused by git itself, even if a caller forgot to validate.
         let marker = dir.join("pwned");
-        let error = ls_remote_tags(&format!("ext::sh -c touch% {}", marker.display())).unwrap_err();
+        let error = ls_remote_refs(&format!("ext::sh -c touch% {}", marker.display())).unwrap_err();
         assert!(error.to_string().contains("not allowed"), "{error}");
         assert!(!marker.exists());
-        let error = ls_remote_tags(dir.join("missing").to_str().unwrap()).unwrap_err();
+        let error = ls_remote_refs(dir.join("missing").to_str().unwrap()).unwrap_err();
         assert_eq!(error.kind(), "git");
         assert!(
-            error.to_string().starts_with("git ls-remote --tags -- "),
+            error
+                .to_string()
+                .starts_with("git ls-remote --tags --heads -- "),
             "{error}"
         );
     }

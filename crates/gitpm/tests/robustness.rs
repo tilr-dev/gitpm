@@ -138,8 +138,12 @@ fn fork_records_local_head_preserves_index_and_immediate_parent() {
     );
     assert_eq!(git(&repo, &["rev-parse", "HEAD"]), head);
     assert_eq!(git(&repo, &["status", "--porcelain"]), status);
-    m.install_ref(fork.to_str().unwrap(), Some("HEAD"), None)
-        .unwrap();
+    m.install_package(
+        fork.to_str().unwrap(),
+        None,
+        gitpm::InstallTarget::Ref("HEAD".into()),
+    )
+    .unwrap();
     let second = m
         .fork_in_namespace("mine/module", &f.dir.join("second"), "third")
         .unwrap();
@@ -169,9 +173,18 @@ fn disabled_update_rollback_and_offline_restore() {
     );
     m.forget("vendor/module").unwrap();
     m.restore("vendor/module").unwrap();
+    // Restored as recorded (offline): still disabled, with its previous revision.
     let s = m.state().unwrap();
-    assert!(s.packages["vendor/module"].enabled);
-    assert!(s.packages["vendor/module"].previous.is_none());
+    assert!(!s.packages["vendor/module"].enabled);
+    assert_eq!(
+        s.packages["vendor/module"]
+            .previous
+            .as_ref()
+            .unwrap()
+            .version,
+        "0.1.1"
+    );
+    assert!(!f.root.join("dist/vendor/module").exists());
     m.uninstall("vendor/module", false).unwrap();
     assert!(m.state().unwrap().packages.is_empty());
 }
@@ -211,8 +224,12 @@ fn explicit_fork_toggle_update_rollback_does_not_replace_original_identity() {
     let fork = m
         .fork_in_namespace("vendor/module", &f.dir.join("fork"), "mine")
         .unwrap();
-    m.install_ref(fork.to_str().unwrap(), Some("HEAD"), None)
-        .unwrap();
+    m.install_package(
+        fork.to_str().unwrap(),
+        None,
+        gitpm::InstallTarget::Ref("HEAD".into()),
+    )
+    .unwrap();
     m.set_enabled("vendor/module", false).unwrap();
     let mut manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(fork.join("plugin.json")).unwrap()).unwrap();

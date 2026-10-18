@@ -8,7 +8,8 @@
 //! its own (an explicit repair, for example after a folder was copied into `dist/` by hand).
 use crate::error::{Context, Error, Require, Result, ensure, fail};
 use crate::{
-    ForkOf, Installed, InstalledPackage, LostWork, Manifest, Replaces, Revision, State, catalog,
+    ForkOf, Installed, InstalledPackage, LostWork, Manifest, Mode, Replaces, Revision, State,
+    catalog,
     check::{self, CheckRow},
     deps,
     exec::git,
@@ -32,8 +33,7 @@ use std::{
 mod clones;
 mod fork;
 use clones::{
-    configured_origin, guard_clone, installed_repo, package_repo, place_clone, removal,
-    settle_head, shared_head_moved,
+    guard_clone, installed_repo, package_repo, place_clone, removal, settle_head, shared_head_moved,
 };
 pub use fork::{
     DependencyRewrite, ForkReplacement, ForkResume, ForkStep, ForkedPackage, PackageFork,
@@ -45,6 +45,55 @@ pub use fork::{
 pub struct Options {
     /// Catalog location (local folder, JSON file or HTTP(S) URL) for catalog-based operations.
     pub catalog: Option<String>,
+}
+
+/// What an install installs and the mode it records (see [`Mode`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum InstallTarget {
+    /// The newest release; release mode.
+    #[default]
+    Release,
+    /// A tag or commit (pinned) or a branch of the origin (followed); `HEAD` is the
+    /// origin's default branch.
+    Ref(String),
+    /// The origin's default branch, followed; its name is recorded.
+    Dev,
+}
+/// Where an update moves a package.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Target {
+    /// Follow the recorded mode: release mode moves to the newest release, branch mode to
+    /// the branch HEAD, a pinned package stays (reason [`UnchangedReason::Pinned`]).
+    #[default]
+    Recorded,
+    /// Back to release mode at the newest release.
+    Release,
+    /// Move to a ref and record its mode as an install does.
+    Ref(String),
+    /// Follow the origin's default branch.
+    Dev,
+}
+impl From<InstallTarget> for Target {
+    fn from(target: InstallTarget) -> Self {
+        match target {
+            InstallTarget::Release => Target::Release,
+            InstallTarget::Ref(reference) => Target::Ref(reference),
+            InstallTarget::Dev => Target::Dev,
+        }
+    }
+}
+/// Why an update left a package where it is although it was asked to move it.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum UnchangedReason {
+    /// Pinned to `reference` (a tag or commit): only an explicit target moves it.
+    Pinned { reference: String },
+    /// Branch mode: the history of `branch` on the origin no longer contains the
+    /// installed commit (`update all` only; `update ID` refuses with `version_conflict`).
+    Diverged { branch: String },
+    /// Branch mode: the origin no longer has `branch` (`update all` only; `update ID`
+    /// refuses with `version_conflict`).
+    BranchGone { branch: String },
 }
 
 /// Result of an install.
@@ -72,10 +121,18 @@ pub struct InstallResult {
     )]
     pub already_installed: bool,
     /// With `already_installed`: the revision the source resolved to (latest release, or
-    /// the requested ref or dev channel) when it differs from the installed one; `update`
-    /// with the same ref or channel moves to it.
+    /// the requested ref or default branch) when it differs from the installed one;
+    /// `update` with the same target moves to it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub available: Option<Revision>,
+    /// The recorded mode of the package (with `already_installed`: the mode it keeps;
+    /// omitted in release mode).
+    #[serde(skip_serializing_if = "Mode::is_release")]
+    pub mode: Mode,
+    /// With `already_installed`: the mode the install asked for when it differs from the
+    /// recorded one (`update` with the same target records it).
+    #[serde(rename = "requestedMode", skip_serializing_if = "Option::is_none")]
+    pub requested_mode: Option<Mode>,
     /// Reconciliation report of the transaction (empty when nothing was written, for
     /// example `already_installed`, or inside an `update all` plan).
     pub dist: DistSync,
@@ -95,6 +152,14 @@ pub struct RevisionChange {
     /// the caller should warn about them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub skipped: Vec<releases::SkippedTag>,
+    /// Why an unchanged package stayed (for example pinned); `None` when it moved or was
+    /// already at its target.
+    #[serde(rename = "unchangedReason", skip_serializing_if = "Option::is_none")]
+    pub unchanged_reason: Option<UnchangedReason>,
+    /// The recorded mode after the operation (omitted in release mode). A change of
+    /// mode alone is a change: `changed` with `from` and `to` at the same commit.
+    #[serde(skip_serializing_if = "Mode::is_release")]
+    pub mode: Mode,
     /// Reconciliation report of the transaction (empty inside an [`UpdateAllPlan`], which
     /// carries the report of its one transaction).
     pub dist: DistSync,
@@ -107,7 +172,8 @@ pub(crate) fn metadata_warnings(m: &Manifest) -> Vec<String> {
         .map(|problem| format!("{} {}: plugin.json {problem}; ignored", m.id, m.version))
         .collect()
 }
-/// Joint stable-release upgrade plan. No packages are removed or downgraded.
+/// Joint upgrade plan over each package's recorded mode. No packages are removed or
+/// downgraded.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct UpdateAllPlan {
     pub updates: Vec<RevisionChange>,
@@ -115,7 +181,8 @@ pub struct UpdateAllPlan {
     /// Packages for which a newer release exists than the one selected: either updated
     /// to an older one (then also in `updates`) or kept at their installed version.
     pub kept_back: Vec<HeldBack>,
-    /// Installed packages that stay at their installed revision with no newer release.
+    /// Installed packages that stay at their installed revision: no newer release or
+    /// branch commit, or a `reason` (pinned, diverged branch history).
     /// Every installed package is in `updates`, `kept_back` or `unchanged`.
     pub unchanged: Vec<Unchanged>,
     /// Broken release tags passed over while reading the releases of every installed
@@ -125,11 +192,13 @@ pub struct UpdateAllPlan {
     /// Reconciliation report of the transaction (`update_all`; empty for the plan).
     pub dist: DistSync,
 }
-/// An installed package `update all` leaves as it is: no newer release exists.
+/// An installed package `update all` leaves as it is: nothing newer exists, or `reason`.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct Unchanged {
     pub id: String,
     pub version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<UnchangedReason>,
 }
 /// A newer release exists, but the chosen compatible solution uses an older one.
 #[derive(Clone, Debug, Serialize)]
@@ -526,60 +595,34 @@ impl Manager {
         catalog::lookup(self.catalog_location()?, id, version)
     }
 
-    /// Install the latest release tag of a Git source.
+    /// Install the latest release tag of a Git source (release mode).
     pub fn install(&self, source: &str) -> Result<InstallResult> {
-        self.install_ref(source, None, None)
+        self.install_package(source, None, InstallTarget::Release)
     }
-    /// Install a Git ref (tag, branch, commit). `expected` must match the manifest exactly.
-    pub fn install_ref(
-        &self,
-        source: &str,
-        reference: Option<&str>,
-        expected: Option<&Manifest>,
-    ) -> Result<InstallResult> {
-        self.install_checked(
-            Fetch {
-                source,
-                reference,
-                expected,
-                files: None,
-                package: expected.map(|m| m.id.as_str()),
-                path: None,
-            },
-            None,
-        )
-    }
-    /// Stable channel installs the latest release tag (or `reference`); dev follows HEAD.
-    pub fn install_channel(
-        &self,
-        source: &str,
-        reference: Option<&str>,
-        dev: bool,
-    ) -> Result<InstallResult> {
-        self.install_package(source, None, reference, dev)
-    }
-    /// [`Manager::install_channel`] of one package of the repository. A repository with a
-    /// `gitpm.json` listing several packages needs `package` (unless `reference` is an
-    /// `ID@VERSION` tag); for a single-package repository a given `package` must match.
+    /// Install `target` of a Git source and record its mode: the newest release, a ref
+    /// resolved against the origin (a tag or commit pins, an origin branch is
+    /// followed) or the origin's default branch (its name is recorded). A repository
+    /// with a `gitpm.json` listing several packages needs `package` (unless the ref is
+    /// an `ID@VERSION` tag); for a single-package repository a given `package` must
+    /// match.
     pub fn install_package(
         &self,
         source: &str,
         package: Option<&str>,
-        reference: Option<&str>,
-        dev: bool,
+        target: InstallTarget,
     ) -> Result<InstallResult> {
-        ensure!(
-            !dev || reference.is_none(),
-            InvalidArgument,
-            "the dev channel conflicts with an explicit ref"
-        );
         if let Some(package) = package {
             valid_id(package)?;
         }
+        let target = match &target {
+            InstallTarget::Release => FetchTarget::Latest,
+            InstallTarget::Ref(reference) => FetchTarget::Ref(reference),
+            InstallTarget::Dev => FetchTarget::Dev,
+        };
         self.install_checked(
             Fetch {
                 source,
-                reference: if dev { Some("HEAD") } else { reference },
+                target,
                 expected: None,
                 files: None,
                 package,
@@ -644,6 +687,13 @@ impl Manager {
                     warnings: Vec::new(),
                     already_installed: true,
                     available: (resolved.commit != installed.current.commit).then_some(resolved),
+                    mode: installed.mode.clone(),
+                    // Only an explicit ref or the default branch asks for a mode.
+                    requested_mode: (matches!(
+                        fetch.target,
+                        FetchTarget::Ref(_) | FetchTarget::Dev
+                    ) && cloned.mode != installed.mode)
+                        .then(|| cloned.mode.clone()),
                     dist: DistSync::default(),
                 });
             }
@@ -786,6 +836,8 @@ impl Manager {
                 .push(id.clone());
         }
         let mut repos: BTreeMap<String, PathBuf> = BTreeMap::new();
+        // Packages that stay by their mode: pinned, or a diverged branch history.
+        let mut reasons: BTreeMap<String, UnchangedReason> = BTreeMap::new();
         // Broken release tags passed over, for every installed package.
         let mut skipped: Vec<releases::SkippedTag> = Vec::new();
         let installed_versions: Vec<(String, String)> = state
@@ -865,6 +917,94 @@ impl Manager {
                         path: installed.path.clone(),
                     },
                 );
+                // Only release mode reads release tags: a pinned package keeps its
+                // revision, a branch-mode package gets its branch HEAD as only candidate.
+                match &installed.mode {
+                    Mode::Release => {}
+                    Mode::Pinned(reference) => {
+                        reasons.insert(
+                            id.clone(),
+                            UnchangedReason::Pinned {
+                                reference: reference.clone(),
+                            },
+                        );
+                        latest.insert(id.clone(), newest.to_string());
+                        candidates.insert(id.clone(), versions);
+                        continue;
+                    }
+                    Mode::Branch(branch) => {
+                        let Ok(head) = resolve_ref(&repo, &format!("refs/remotes/origin/{branch}"))
+                        else {
+                            reasons.insert(
+                                id.clone(),
+                                UnchangedReason::BranchGone {
+                                    branch: branch.clone(),
+                                },
+                            );
+                            latest.insert(id.clone(), newest.to_string());
+                            candidates.insert(id.clone(), versions);
+                            continue;
+                        };
+                        if head != installed.current.commit {
+                            let ancestor = git(
+                                &repo,
+                                &[
+                                    "merge-base",
+                                    "--is-ancestor",
+                                    &installed.current.commit,
+                                    &head,
+                                ],
+                            );
+                            if ancestor.is_err() {
+                                reasons.insert(
+                                    id.clone(),
+                                    UnchangedReason::Diverged {
+                                        branch: branch.clone(),
+                                    },
+                                );
+                            } else {
+                                let found = match packages::find_at(&repo, &head, Some(id)) {
+                                    Ok(found) => found,
+                                    Err(Error::InvalidArgument(_)) => {
+                                        fail!(InvalidManifest, "package id changed upstream")
+                                    }
+                                    Err(error) => return Err(error),
+                                };
+                                let version = deps::version(&found.manifest.version)?;
+                                let still_replaces =
+                                    state.replacements.iter().all(|(original, fork)| {
+                                        fork != id
+                                            || found
+                                                .manifest
+                                                .replaces
+                                                .as_ref()
+                                                .is_some_and(|r| r.id == *original)
+                                    });
+                                // The branch commit is the identity: at the installed
+                                // version it takes the installed revision's place.
+                                if version >= current && still_replaces {
+                                    deps::validate(&found.manifest)?;
+                                    newest = newest.max(version.clone());
+                                    versions.insert(
+                                        version,
+                                        catalog::Release {
+                                            path: found.subdir().map(str::to_owned),
+                                            manifest: found.manifest,
+                                            source: installed.source.clone(),
+                                            commit: head,
+                                            reference: branch.clone(),
+                                            files: BTreeMap::new(),
+                                            build: None,
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                        latest.insert(id.clone(), newest.to_string());
+                        candidates.insert(id.clone(), versions);
+                        continue;
+                    }
+                }
                 let found = releases::discover_all(&repo, Some(id))?;
                 skipped.extend(found.skipped);
                 for tag in found.tags {
@@ -944,9 +1084,11 @@ impl Manager {
                     changed: true,
                     warnings: metadata_warnings(m),
                     skipped: Vec::new(),
+                    unchanged_reason: None,
+                    mode: installed.mode.clone(),
                     dist: DistSync::default(),
                 });
-                installed.previous = Some(installed.current.clone());
+                installed.previous = Some(installed.current.with_mode(&installed.mode));
                 installed.current = next;
                 installed.path = release.path.clone();
                 installed.adopt(m);
@@ -979,31 +1121,29 @@ impl Manager {
             if !plan.updates.iter().any(|c| c.id == id)
                 && !plan.kept_back.iter().any(|h| h.id == id)
             {
-                plan.unchanged.push(Unchanged { id, version });
+                let reason = reasons.remove(&id);
+                plan.unchanged.push(Unchanged {
+                    id,
+                    version,
+                    reason,
+                });
             }
         }
         Ok(plan)
     }
 
+    /// [`Manager::update_to`] following the recorded mode ([`Target::Recorded`]).
     pub fn update(&self, id: &str) -> Result<RevisionChange> {
-        self.update_ref(id, None)
+        self.update_to(id, Target::Recorded)
     }
-    pub fn update_ref(&self, id: &str, reference: Option<&str>) -> Result<RevisionChange> {
-        self.update_channel(id, reference, false)
-    }
-    /// Update to `reference`, the latest release tag (stable) or origin HEAD (dev).
-    /// Refused if the new version breaks a dependent; new dependencies are installed.
-    pub fn update_channel(
-        &self,
-        id: &str,
-        reference: Option<&str>,
-        dev: bool,
-    ) -> Result<RevisionChange> {
-        ensure!(
-            !dev || reference.is_none(),
-            InvalidArgument,
-            "the dev channel conflicts with an explicit ref"
-        );
+    /// Move `id` by `target` (see [`Target`]): the recorded mode, back to releases, a ref
+    /// (a tag or commit pins, an origin branch is followed) or the origin's default
+    /// branch; the new mode is recorded with the revision. A pinned package without an
+    /// explicit target stays unchanged with [`UnchangedReason::Pinned`]. Branch mode
+    /// moves by commit and refuses a diverged history; a tag or commit must change the
+    /// version. Refused if the new version breaks a dependent; new dependencies are
+    /// installed.
+    pub fn update_to(&self, id: &str, target: Target) -> Result<RevisionChange> {
         valid_id(id)?;
         let (change, dist) = self.transaction(|txn, state| {
             let p = state
@@ -1011,6 +1151,25 @@ impl Manager {
                 .get(id)
                 .cloned()
                 .ok_or_else(|| Error::NotInstalled { id: id.into() })?;
+            let unchanged = |reason: Option<UnchangedReason>, skipped| RevisionChange {
+                id: id.into(),
+                from: p.current.clone(),
+                to: p.current.clone(),
+                changed: false,
+                warnings: Vec::new(),
+                skipped,
+                unchanged_reason: reason,
+                mode: p.mode.clone(),
+                dist: DistSync::default(),
+            };
+            if let (Target::Recorded, Mode::Pinned(reference)) = (&target, &p.mode) {
+                return Ok(unchanged(
+                    Some(UnchangedReason::Pinned {
+                        reference: reference.clone(),
+                    }),
+                    Vec::new(),
+                ));
+            }
             let relative = p.clone_folder(id);
             let live = installed_repo(txn.root(), id, &p)?;
             guard_clone(
@@ -1056,86 +1215,116 @@ impl Manager {
                     );
                 }
             }
-            if dev || reference == Some("HEAD") {
+            if matches!(&target, Target::Dev) || target == Target::Ref("HEAD".into()) {
                 git(&repo, &["remote", "set-head", "origin", "--auto"])?;
             }
             let mut skipped = Vec::new();
-            let target = if let Some(reference) = reference {
-                resolve_upstream_ref(&repo, reference)?
-            } else if dev {
-                resolve_ref(&repo, "refs/remotes/origin/HEAD")?
-            } else {
-                let mut found = releases::discover_all(&repo, Some(id))?;
-                found.ensure_latest_is_valid()?;
-                skipped = std::mem::take(&mut found.skipped);
-                let latest = found.tags.pop().require(Error::NoReleases, "no releases")?;
-                let latest_version = catalog::version_key(&latest.manifest.version)?;
-                let current_version = catalog::version_key(&p.current.version)?;
-                ensure!(
-                    latest_version >= current_version,
-                    VersionConflict,
-                    "latest release is older than installed version; downgrading requires an explicit ref"
-                );
-                ensure!(
-                    latest_version != current_version || latest.commit == p.current.commit,
-                    VersionConflict,
-                    "release commit changed for installed version"
-                );
-                latest.commit
+            let (next_commit, mode) = match (&target, &p.mode) {
+                (Target::Ref(reference), _) => resolve_upstream_ref(&repo, reference)?,
+                (Target::Dev, _) => resolve_upstream_ref(&repo, "HEAD")?,
+                (Target::Recorded, Mode::Branch(branch)) => {
+                    let commit = resolve_ref(&repo, &format!("refs/remotes/origin/{branch}"))
+                        .map_err(|_| {
+                            Error::VersionConflict(format!(
+                                "the origin no longer has the branch {branch} that {id} follows; automatic update refused"
+                            ))
+                        })?;
+                    (commit, p.mode.clone())
+                }
+                _ => {
+                    let mut found = releases::discover_all(&repo, Some(id))?;
+                    found.ensure_latest_is_valid()?;
+                    skipped = std::mem::take(&mut found.skipped);
+                    let latest = found.tags.pop().require(Error::NoReleases, "no releases")?;
+                    let latest_version = catalog::version_key(&latest.manifest.version)?;
+                    let current_version = catalog::version_key(&p.current.version)?;
+                    // Following releases never downgrades; an explicit return to
+                    // releases may go down to the newest one.
+                    ensure!(
+                        target == Target::Release || latest_version >= current_version,
+                        VersionConflict,
+                        "latest release is older than installed version; downgrading requires an explicit ref"
+                    );
+                    // At the version of its release, the tag must not have moved (a
+                    // branch commit may carry the version of the release before it).
+                    ensure!(
+                        matches!(p.mode, Mode::Branch(_))
+                            || latest_version != current_version
+                            || latest.commit == p.current.commit,
+                        VersionConflict,
+                        "release commit changed for installed version"
+                    );
+                    (latest.commit, Mode::Release)
+                }
             };
-            if target == p.current.commit {
+            // Following the recorded branch (no explicit ref): its history must contain
+            // the installed commit.
+            let following = matches!(&mode, Mode::Branch(_))
+                && mode == p.mode
+                && !matches!(target, Target::Ref(_));
+            if next_commit == p.current.commit {
+                // A new mode is recorded even when the revision stays: that is a change.
+                if mode == p.mode {
+                    return Ok(unchanged(None, skipped));
+                }
+                state.packages.get_mut(id).unwrap().mode = mode.clone();
                 return Ok(RevisionChange {
-                    id: id.into(),
-                    from: p.current.clone(),
-                    to: p.current.clone(),
-                    changed: false,
-                    warnings: Vec::new(),
-                    skipped,
-                    dist: DistSync::default(),
+                    changed: true,
+                    mode,
+                    ..unchanged(None, skipped)
                 });
             }
-            if dev {
+            if following {
+                let Mode::Branch(branch) = &mode else {
+                    unreachable!()
+                };
                 git(
                     &repo,
-                    &["merge-base", "--is-ancestor", &p.current.commit, &target],
+                    &["merge-base", "--is-ancestor", &p.current.commit, &next_commit],
                 )
                 .context(
                     Error::VersionConflict,
-                    "upstream history diverged; automatic dev update refused",
+                    format!("history of {branch} diverged; automatic update refused"),
                 )?;
             }
             // The package can move to another folder (or into a multi-package layout).
-            let path = match packages::find_at(&repo, &target, Some(id)) {
+            let path = match packages::find_at(&repo, &next_commit, Some(id)) {
                 Ok(found) => found.subdir().map(str::to_owned),
                 Err(Error::InvalidArgument(_)) => {
                     fail!(InvalidManifest, "package id changed upstream")
                 }
                 Err(error) => return Err(error),
             };
-            git(&repo, &["checkout", "--detach", &target])?;
+            git(&repo, &["checkout", "--detach", &next_commit])?;
             let m = package_manifest(&repo, path.as_deref())?;
             ensure!(m.id == id, InvalidManifest, "package id changed upstream");
-            // Dev identity is the commit; release channels require a version bump.
+            // Branch mode moves by commit; a release, tag or commit needs a version bump
+            // (leaving branch mode may keep the version of the branch commit).
             ensure!(
-                dev || m.version != p.current.version,
+                matches!(mode, Mode::Branch(_))
+                    || matches!(p.mode, Mode::Branch(_))
+                    || m.version != p.current.version,
                 VersionConflict,
                 "upstream changed without a version bump"
             );
             self.check_change(txn, state, id, &m, true)?;
             let next = revision(&repo, &m)?;
             let entry = state.packages.get_mut(id).unwrap();
-            entry.previous = Some(p.current.clone());
+            entry.previous = Some(p.current.with_mode(&p.mode));
             entry.current = next.clone();
             entry.path = path.clone();
+            entry.mode = mode.clone();
             entry.adopt(&m);
             txn.deploy(id, &relative, path.as_deref(), &next.commit)?;
             Ok(RevisionChange {
                 id: id.into(),
-                from: p.current,
+                from: p.current.clone(),
                 to: next,
                 changed: true,
                 warnings: metadata_warnings(&m),
                 skipped,
+                unchanged_reason: None,
+                mode,
                 dist: DistSync::default(),
             })
         })?;
@@ -1179,19 +1368,23 @@ impl Manager {
                 "rollback manifest mismatch"
             );
             self.check_change(txn, state, id, &m, false)?;
+            // Revision and mode swap together.
             let entry = state.packages.get_mut(id).unwrap();
-            entry.previous = Some(p.current.clone());
-            entry.current = previous.clone();
+            entry.previous = Some(p.current.with_mode(&p.mode));
+            entry.current = previous.without_mode();
+            entry.mode = previous.mode.clone();
             entry.path = path.clone();
             entry.adopt(&m);
             txn.deploy(id, &relative, path.as_deref(), &previous.commit)?;
             Ok(RevisionChange {
                 id: id.into(),
                 from: p.current,
-                to: previous,
+                to: previous.without_mode(),
                 changed: true,
                 warnings: Vec::new(),
                 skipped: Vec::new(),
+                unchanged_reason: None,
+                mode: previous.mode.clone(),
                 dist: DistSync::default(),
             })
         })?;
@@ -1248,10 +1441,10 @@ impl Manager {
     }
     /// Like [`Manager::forget`]; dependents refuse unless `force`. Replacements this
     /// package provides are dropped (their consumers go back to the original, whose
-    /// `dist/` is deployed again). A package
-    /// of a shared clone is kept in `State::forgotten`, so its clone stays while it is
-    /// forgotten and `restore`/`uninstall` find it; the clone's HEAD moves to a
-    /// registered package's revision if it was this package's.
+    /// `dist/` is deployed again). The whole record is kept in `State::forgotten` (own
+    /// or shared clone), so `restore` records it again as it was and `uninstall` finds
+    /// it; a shared clone's HEAD moves to a registered package's revision if it was
+    /// this package's.
     pub fn forget_with(&self, id: &str, force: bool) -> Result<DistSync> {
         valid_id(id)?;
         self.transaction(|txn, state| {
@@ -1263,68 +1456,151 @@ impl Manager {
             }
             let installed = state.packages.remove(id).unwrap();
             state.replacements.retain(|_, fork| fork != id);
-            if let Some(key) = installed.clone.clone() {
-                let relative = installed.clone_folder(id);
-                state.forgotten.insert(id.to_owned(), installed);
+            let shared = installed.clone.clone();
+            let relative = installed.clone_folder(id);
+            state.forgotten.insert(id.to_owned(), installed);
+            if let Some(key) = shared {
                 settle_head(txn, state, &key, id, &relative)?;
             }
             Ok(())
         })
         .map(|((), dist)| dist)
     }
-    /// Re-register a retained (forgotten) clean repository; previous history is not
-    /// restored. An own clone is registered at its HEAD; a forgotten package of a shared
-    /// clone at its recorded revision (the clone is checked out there if needed).
+    /// Record a forgotten package again from its `forgotten` record (own or shared
+    /// clone): revisions, `catalog`, `enabled` and mode are kept. Release and pinned mode
+    /// take the recorded commit (a shared clone is checked out there when its HEAD is
+    /// another user's revision); branch mode takes HEAD as found when it is the recorded
+    /// commit or a published descendant of it. Lost work (file changes, unpublished
+    /// commits, a moved HEAD) refuses with `local_changes`. Deployed when active.
     pub fn restore(&self, id: &str) -> Result<InstallResult> {
         valid_id(id)?;
         let (result, dist) = self.transaction(|txn, state| {
-            if let Some(record) = state.forgotten.get(id).cloned() {
-                return restore_shared(txn, state, id, record);
-            }
-            // A missing clone is the real problem even when the ID is still registered.
-            let repo = package_repo(txn.root(), id)?;
             if state.packages.contains_key(id) {
                 return Err(Error::AlreadyInstalled {
                     id: id.into(),
                     message: format!("package {id} is already registered"),
                 });
             }
-            clean(&repo, id)?;
-            // The package may have moved into a folder of a multi-package layout.
-            let head = git(&repo, &["rev-parse", "HEAD"])?;
-            let path = match packages::find_at(&repo, &head, Some(id)) {
-                Ok(found) => found.subdir().map(str::to_owned),
-                Err(Error::InvalidArgument(_)) => fail!(InvalidManifest, "package id mismatch"),
-                Err(error) => return Err(error),
-            };
-            let m = package_manifest(&repo, path.as_deref())?;
-            ensure!(m.id == id, InvalidManifest, "package id mismatch");
-            let mut installed = Installed {
-                source: configured_origin(&repo)
-                    .require(Error::Git, "the retained clone has no origin remote")?,
-                current: revision(&repo, &m)?,
-                previous: None,
-                enabled: true,
-                path: path.clone(),
-                ..Default::default()
-            };
-            installed.adopt(&m);
-            let result = InstallResult {
-                id: id.into(),
-                source: installed.source.clone(),
-                current: installed.current.clone(),
-                fork_of: installed.fork_of.clone(),
-                skipped: Vec::new(),
-                warnings: Vec::new(),
-                already_installed: false,
-                available: None,
-                dist: DistSync::default(),
-            };
-            state.packages.insert(id.to_owned(), installed);
-            txn.deploy(id, &format!("packages/{id}"), path.as_deref(), &head)?;
-            Ok(result)
+            let record = state
+                .forgotten
+                .get(id)
+                .cloned()
+                .ok_or_else(|| Error::RepositoryNotFound { id: id.into() })?;
+            self.restore_record(txn, state, id, record)
         })?;
         Ok(InstallResult { dist, ..result })
+    }
+    /// [`Manager::restore`]: record the forgotten package `id` again from `record` and
+    /// deploy it when active.
+    fn restore_record(
+        &self,
+        txn: &mut Txn,
+        state: &mut State,
+        id: &str,
+        record: Installed,
+    ) -> Result<InstallResult> {
+        let relative = record.clone_folder(id);
+        // The clone is gone: `repository_not_found`, like a restore without a record.
+        let live = installed_repo(txn.root(), id, &record)?;
+        clean(&live, id)?;
+        let recorded = record.current.commit.clone();
+        let head = git(&live, &["rev-parse", "HEAD"])?;
+        // Commits only this clone has are lost work in every mode.
+        let unpublished = lost_work::unpublished_head_commits(&live)?;
+        if !unpublished.is_empty() {
+            return Err(Error::LocalChanges {
+                id: id.into(),
+                message: format!("the clone {relative} has unpublished commits"),
+                items: unpublished,
+            });
+        }
+        // Branch mode takes HEAD as found when it moved forward on its own branch: a
+        // descendant of the recorded commit that the origin's branch contains.
+        let on_branch = |branch: &str| {
+            git(&live, &["merge-base", "--is-ancestor", &recorded, &head]).is_ok()
+                && git(
+                    &live,
+                    &[
+                        "merge-base",
+                        "--is-ancestor",
+                        &head,
+                        &format!("refs/remotes/origin/{branch}"),
+                    ],
+                )
+                .is_ok()
+        };
+        let follows = matches!(&record.mode, Mode::Branch(branch) if on_branch(branch));
+        let commit = if head == recorded || follows {
+            head.clone()
+        } else {
+            // A shared clone's HEAD may be another user's revision; anything else moved.
+            let moved = match record.clone.as_deref() {
+                Some(key) => shared_head_moved(&live, state, key, id)?,
+                None => Some(LostWork::HeadMoved {
+                    head: head.clone(),
+                    recorded: recorded.clone(),
+                }),
+            };
+            if let Some(item) = moved {
+                return Err(Error::LocalChanges {
+                    id: id.into(),
+                    message: format!(
+                        "HEAD of the clone {relative} moved away from the recorded revision"
+                    ),
+                    items: vec![item],
+                });
+            }
+            recorded.clone()
+        };
+        if commit != head {
+            let staged = txn.repo(&relative, &live)?;
+            git(&staged, &["checkout", "-q", "--detach", &commit])?;
+        }
+        let repo = txn.staged_repo(&relative).unwrap_or(live);
+        let path = match packages::find_at(&repo, &commit, Some(id)) {
+            Ok(found) => found.subdir().map(str::to_owned),
+            Err(Error::InvalidArgument(_)) => fail!(InvalidManifest, "package id mismatch"),
+            Err(error) => return Err(error),
+        };
+        let m = package_manifest(&repo, path.as_deref())?;
+        ensure!(
+            m.id == id && (commit != recorded || m.version == record.current.version),
+            InvalidManifest,
+            "the recorded revision of {id} has another manifest"
+        );
+        let mut installed = Installed {
+            path: path.clone(),
+            ..record
+        };
+        if commit != recorded {
+            installed.previous = Some(installed.current.with_mode(&installed.mode));
+            installed.current = revision(&repo, &m)?;
+        }
+        let result = InstallResult {
+            id: id.into(),
+            source: installed.source.clone(),
+            current: installed.current.clone(),
+            fork_of: m.fork_of.clone(),
+            skipped: Vec::new(),
+            warnings: metadata_warnings(&m),
+            already_installed: false,
+            available: None,
+            mode: installed.mode.clone(),
+            requested_mode: None,
+            dist: DistSync::default(),
+        };
+        let moved = commit != recorded;
+        state.forgotten.remove(id);
+        state.packages.insert(id.to_owned(), installed);
+        if moved {
+            // A newer branch commit must keep the workspace's dependencies working.
+            self.check_change(txn, state, id, &m, false)?;
+        }
+        state.packages.get_mut(id).unwrap().adopt(&m);
+        if state.is_active(id) {
+            txn.deploy(id, &relative, path.as_deref(), &commit)?;
+        }
+        Ok(result)
     }
     /// Read-only: what `uninstall` would delete, which local work would be lost and
     /// which installed packages depend on it.
@@ -1613,70 +1889,23 @@ fn dist_drift(root: &Path, state: &State) -> Result<DistSync> {
     Ok(plan)
 }
 
-/// [`Manager::restore`] of a forgotten package of a shared clone: register it again at
-/// its recorded revision and deploy that revision's `dist/`.
-fn restore_shared(
-    txn: &mut Txn,
-    state: &mut State,
-    id: &str,
-    record: Installed,
-) -> Result<InstallResult> {
-    let key = record.clone.clone().unwrap_or_default();
-    let relative = record.clone_folder(id);
-    // The shared clone is gone: `repository_not_found`, like a restore without a clone.
-    let live = installed_repo(txn.root(), id, &record)?;
-    clean(&live, id)?;
-    let commit = record.current.commit.clone();
-    if git(&live, &["rev-parse", "HEAD"])? != commit {
-        if let Some(item) = shared_head_moved(&live, state, &key, id)? {
-            return Err(Error::LocalChanges {
-                id: id.into(),
-                message: format!("the shared clone {relative} has local commits"),
-                items: vec![item],
-            });
-        }
-        let staged = txn.repo(&relative, &live)?;
-        git(&staged, &["checkout", "-q", "--detach", &commit])?;
-    }
-    let repo = txn.staged_repo(&relative).unwrap_or(live);
-    let path = packages::find_at(&repo, &commit, Some(id))?
-        .subdir()
-        .map(str::to_owned);
-    let m = package_manifest(&repo, path.as_deref())?;
-    ensure!(
-        m.id == id && m.version == record.current.version,
-        InvalidManifest,
-        "the recorded revision of {id} has another manifest"
-    );
-    let mut installed = Installed {
-        previous: None,
-        enabled: true,
-        path: path.clone(),
-        ..record
-    };
-    installed.adopt(&m);
-    let result = InstallResult {
-        id: id.into(),
-        source: installed.source.clone(),
-        current: installed.current.clone(),
-        fork_of: installed.fork_of.clone(),
-        skipped: Vec::new(),
-        warnings: Vec::new(),
-        already_installed: false,
-        available: None,
-        dist: DistSync::default(),
-    };
-    state.forgotten.remove(id);
-    state.packages.insert(id.to_owned(), installed);
-    txn.deploy(id, &relative, path.as_deref(), &commit)?;
-    Ok(result)
+/// Which revision of the source an install takes.
+#[derive(Clone, Copy)]
+enum FetchTarget<'a> {
+    /// The newest release tag (release mode).
+    Latest,
+    /// Exactly this commit of a catalog release (release mode).
+    Exact(&'a str),
+    /// A user ref resolved against the origin (pinned or branch mode).
+    Ref(&'a str),
+    /// The origin's default branch (branch mode).
+    Dev,
 }
-
 /// Where an install takes its revision from.
 #[derive(Clone, Copy)]
 struct Fetch<'a> {
     source: &'a str,
-    reference: Option<&'a str>,
+    target: FetchTarget<'a>,
     expected: Option<&'a Manifest>,
     files: Option<&'a BTreeMap<String, catalog::FileDigest>>,
     /// Package ID to pick in a multi-package repository (checked against a root package).
@@ -1688,7 +1917,7 @@ impl<'a> Fetch<'a> {
     fn release(release: &'a catalog::Release) -> Self {
         Fetch {
             source: &release.source,
-            reference: Some(&release.commit),
+            target: FetchTarget::Exact(&release.commit),
             expected: Some(&release.manifest),
             files: (!release.files.is_empty()).then_some(&release.files),
             package: Some(&release.manifest.id),
@@ -1704,6 +1933,8 @@ struct Cloned {
     /// Package folder (`None`: the repository root).
     path: Option<String>,
     skipped: Vec<releases::SkippedTag>,
+    /// The mode the install records.
+    mode: Mode,
 }
 
 /// Clone into the transaction's scratch area, check out and verify the revision.
@@ -1716,9 +1947,13 @@ fn clone_revision(txn: &Txn, fetch: &Fetch, name: &str) -> Result<Cloned> {
         &["clone", "--no-hardlinks", "--", fetch.source, name],
     )?;
     let mut skipped = Vec::new();
-    let commit = match fetch.reference {
-        Some(reference) => resolve_ref(&repo, reference)?,
-        None => {
+    let (commit, mode) = match fetch.target {
+        FetchTarget::Exact(commit) => (resolve_ref(&repo, commit)?, Mode::Release),
+        // The fresh clone has the origin's branches as `refs/remotes/origin/*` only (and
+        // a local branch for the default one, which is never used).
+        FetchTarget::Ref(reference) => resolve_upstream_ref(&repo, reference)?,
+        FetchTarget::Dev => resolve_upstream_ref(&repo, "HEAD")?,
+        FetchTarget::Latest => {
             let mut found = match releases::discover_all(&repo, fetch.package) {
                 // An ID the repository does not have: say which packages it has.
                 Err(Error::NoReleases(message)) => {
@@ -1732,17 +1967,15 @@ fn clone_revision(txn: &Txn, fetch: &Fetch, name: &str) -> Result<Cloned> {
             };
             found.ensure_latest_is_valid()?;
             skipped = std::mem::take(&mut found.skipped);
-            found
-                .tags
-                .pop()
-                .require(Error::NoReleases, "no releases")?
-                .commit
+            let latest = found.tags.pop().require(Error::NoReleases, "no releases")?;
+            (latest.commit, Mode::Release)
         }
     };
     // An `ID@VERSION` tag names its package.
-    let package = fetch
-        .package
-        .or_else(|| fetch.reference.and_then(packages::tag_id));
+    let package = fetch.package.or(match fetch.target {
+        FetchTarget::Ref(reference) => packages::tag_id(reference),
+        _ => None,
+    });
     let found = packages::find_at(&repo, &commit, package)?;
     if fetch.expected.is_some() {
         ensure!(
@@ -1784,6 +2017,7 @@ fn clone_revision(txn: &Txn, fetch: &Fetch, name: &str) -> Result<Cloned> {
         manifest: m,
         path,
         skipped,
+        mode,
     })
 }
 
@@ -1841,6 +2075,7 @@ fn adopt(
         current: current.clone(),
         previous: None,
         enabled: true,
+        mode: cloned.mode.clone(),
         catalog,
         clone: key,
         path: cloned.path.clone(),
@@ -1857,6 +2092,8 @@ fn adopt(
         warnings: metadata_warnings(m),
         already_installed: false,
         available: None,
+        mode: cloned.mode.clone(),
+        requested_mode: None,
         dist: DistSync::default(),
     })
 }
@@ -2132,6 +2369,17 @@ mod tests {
                 !self.root.join(txn::DIR).exists(),
                 "transaction directory left behind"
             );
+        }
+        /// Run a succeeding operation and prove it left the workspace byte-identical.
+        fn refuses_nothing<T: Debug>(&self, op: impl FnOnce() -> Result<T>) -> T {
+            let before = tree_hash(&self.root);
+            let value = op().expect("operation must succeed");
+            assert_eq!(
+                tree_hash(&self.root),
+                before,
+                "workspace changed: {value:?}"
+            );
+            value
         }
         /// Run a failing operation and prove the workspace is byte-identical afterwards.
         fn refuses<T: Debug>(&self, kind: &str, op: impl FnOnce() -> Result<T>) -> Error {
@@ -2516,7 +2764,7 @@ mod tests {
         let dest = ws.dir.join("fork");
         for id in ["", "../evil", "a/b/c", "dan/demo 1", "dan\\demo1"] {
             ws.refuses("invalid_id", || m.update(id));
-            ws.refuses("invalid_id", || m.update_channel(id, None, true));
+            ws.refuses("invalid_id", || m.update_to(id, Target::Dev));
             ws.refuses("invalid_id", || m.rollback(id));
             ws.refuses("invalid_id", || m.enable(id));
             ws.refuses("invalid_id", || m.disable(id));
@@ -2535,8 +2783,10 @@ mod tests {
         let id = "dan/missing";
         for error in [
             ws.refuses("not_installed", || m.update(id)),
-            ws.refuses("not_installed", || m.update_ref(id, Some("HEAD"))),
-            ws.refuses("not_installed", || m.update_channel(id, None, true)),
+            ws.refuses("not_installed", || {
+                m.update_to(id, Target::Ref("HEAD".into()))
+            }),
+            ws.refuses("not_installed", || m.update_to(id, Target::Dev)),
             ws.refuses("not_installed", || m.rollback(id)),
             ws.refuses("not_installed", || m.enable(id)),
             ws.refuses("not_installed", || m.disable(id)),
@@ -2615,7 +2865,8 @@ mod tests {
             result.current,
             Revision {
                 version: "1.10.0".into(),
-                commit: c110.clone()
+                commit: c110.clone(),
+                ..Default::default()
             }
         );
         assert!(result.fork_of.is_none());
@@ -2642,17 +2893,18 @@ mod tests {
     }
 
     #[test]
-    fn install_channels_and_explicit_refs() {
+    fn install_by_ref_and_default_branch() {
         let ws = Ws::new("dan/demo1");
         let first = ws.author.head();
         ws.author.release("0.2.0");
         let head = ws.author.commit("0.3.0");
         let m = ws.open();
-        ws.refuses("invalid_argument", || {
-            m.install_channel(ws.author.source(), Some("dan/demo1@0.1.0"), true)
-        });
         let r = m
-            .install_channel(ws.author.source(), Some("dan/demo1@0.1.0"), false)
+            .install_package(
+                ws.author.source(),
+                None,
+                InstallTarget::Ref("dan/demo1@0.1.0".into()),
+            )
             .unwrap();
         assert_eq!(
             (r.id.as_str(), r.current.commit.as_str()),
@@ -2661,7 +2913,9 @@ mod tests {
         assert!(ws.root.join("packages/dan/demo1/.git").is_dir());
         assert!(ws.root.join("dist/dan/demo1/index.js").is_file());
         m.uninstall("dan/demo1", false).unwrap();
-        let r = m.install_channel(ws.author.source(), None, true).unwrap();
+        let r = m
+            .install_package(ws.author.source(), None, InstallTarget::Dev)
+            .unwrap();
         assert_eq!(
             (r.current.version.as_str(), r.current.commit),
             ("0.3.0", head)
@@ -2686,13 +2940,17 @@ mod tests {
         ws.no_leftovers();
         ws.refuses("invalid_argument", || m.install("-uevil"));
         ws.refuses("invalid_argument", || {
-            m.install_ref(ws.author.source(), Some("-x"), None)
+            m.install_package(ws.author.source(), None, InstallTarget::Ref("-x".into()))
         });
         ws.refuses("git", || {
             m.install(ws.dir.join("missing").to_str().unwrap())
         });
-        ws.refuses("git", || {
-            m.install_ref(ws.author.source(), Some("no-such-ref"), None)
+        ws.refuses("invalid_argument", || {
+            m.install_package(
+                ws.author.source(),
+                None,
+                InstallTarget::Ref("no-such-ref".into()),
+            )
         });
 
         let untagged = Author::untagged(ws.dir.join("untagged"), "dan/untagged", "0.1.0");
@@ -2706,7 +2964,7 @@ mod tests {
         write_manifest(&deps.path, &with_deps);
         fixture_git(&deps.path, &["commit", "-q", "-am", "deps"]);
         let error = ws.refuses("dependency_conflict", || {
-            m.install_ref(deps.source(), Some("HEAD"), None)
+            m.install_package(deps.source(), None, InstallTarget::Ref("HEAD".into()))
         });
         assert!(error.to_string().contains("dan/missing"), "{error}");
 
@@ -2715,7 +2973,7 @@ mod tests {
         write_manifest(&no_dist.path, &make_manifest("dan/nodist", "0.2.0"));
         fixture_git(&no_dist.path, &["commit", "-q", "-am", "no dist"]);
         ws.refuses("invalid_manifest", || {
-            m.install_ref(no_dist.source(), Some("HEAD"), None)
+            m.install_package(no_dist.source(), None, InstallTarget::Ref("HEAD".into()))
         });
 
         // An unscoped ID is refused, also when it equals an installed namespace.
@@ -2726,10 +2984,16 @@ mod tests {
 
         // The expected manifest must match the Git revision exactly.
         let other = ws.other_author("other", "dan/other");
-        let wrong = make_manifest("dan/other", "9.9.9");
-        let error = ws.refuses("catalog", || {
-            m.install_ref(other.source(), None, Some(&wrong))
-        });
+        let wrong = catalog::Release {
+            manifest: make_manifest("dan/other", "9.9.9"),
+            source: other.source().into(),
+            commit: other.head(),
+            reference: "dan/other@9.9.9".into(),
+            files: catalog::hash_files(&other.path.join("dist")).unwrap(),
+            build: None,
+            path: None,
+        };
+        let error = ws.refuses("catalog", || m.install_release(&wrong));
         assert_eq!(
             error.to_string(),
             "catalog manifest does not match git revision"
@@ -2783,25 +3047,139 @@ mod tests {
     }
 
     #[test]
-    fn restore_of_registered_plugin_without_clone_reports_the_missing_repository() {
+    fn restore_of_a_recorded_package_is_already_installed() {
         let (ws, m) = Ws::installed("dan/demo1");
+        // Restore works on forgotten records only, even when the clone is gone.
         fs::remove_dir_all(ws.repo()).unwrap();
-        let error = ws.refuses("repository_not_found", || m.restore("dan/demo1"));
-        assert!(error.to_string().contains("dan/demo1"), "{error}");
+        let error = ws.refuses("already_installed", || m.restore("dan/demo1"));
+        assert_eq!(error.to_string(), "package dan/demo1 is already registered");
     }
 
     #[test]
-    fn restore_refuses_dirty_or_mismatched_repositories() {
+    fn restore_refuses_dirty_clones_and_needs_a_forgotten_record() {
         let (ws, m) = Ws::installed("dan/demo1");
         m.forget("dan/demo1").unwrap();
         fs::write(ws.repo().join("dist/index.js"), "local edit").unwrap();
         let error = ws.refuses("local_changes", || m.restore("dan/demo1"));
         assert!(matches!(error, Error::LocalChanges { items, .. } if items.len() == 1));
         fixture_git(&ws.repo(), &["checkout", "-q", "--", "dist/index.js"]);
-        // The repository's manifest names another package.
+        // A clone without a forgotten record is not restorable.
         copy_tree(&ws.repo(), &ws.root.join("packages/dan/alias2"), true).unwrap();
-        let error = ws.refuses("invalid_manifest", || m.restore("dan/alias2"));
-        assert_eq!(error.to_string(), "package id mismatch");
+        ws.refuses("repository_not_found", || m.restore("dan/alias2"));
+        // A forgotten own clone that is gone: the record is all that is left.
+        fs::remove_dir_all(ws.repo()).unwrap();
+        ws.refuses("repository_not_found", || m.restore("dan/demo1"));
+        m.uninstall("dan/demo1", false).unwrap();
+        assert!(m.state().unwrap().forgotten.is_empty());
+    }
+
+    #[test]
+    fn restore_keeps_the_forgotten_record() {
+        let id = "dan/demo1";
+        let ws = Ws::new(id);
+        let catalog_dir = ws.dir.join("catalog");
+        let location = catalog_dir.to_str().unwrap().to_owned();
+        catalog::register(&location, ws.author.source(), "dan/demo1@0.1.0").unwrap();
+        ws.author.release("0.2.0");
+        catalog::register(&location, ws.author.source(), "dan/demo1@0.2.0").unwrap();
+        let m = Manager::open_with(
+            &ws.root,
+            Options {
+                catalog: Some(location),
+            },
+        )
+        .unwrap();
+        // Own clone from a catalog, with a previous revision, disabled, then forgotten.
+        m.install_from_catalog(id, Some("0.1.0")).unwrap();
+        m.update(id).unwrap();
+        m.disable(id).unwrap();
+        let before = serde_json::to_value(&m.state().unwrap().packages[id]).unwrap();
+        assert!(before["catalog"].is_string() && before["previous"].is_object());
+        m.forget(id).unwrap();
+        let state = m.state().unwrap();
+        assert!(state.packages.is_empty());
+        assert_eq!(serde_json::to_value(&state.forgotten[id]).unwrap(), before);
+        let restored = m.restore(id).unwrap();
+        assert_eq!(restored.current.version, "0.2.0");
+        let state = m.state().unwrap();
+        assert!(state.forgotten.is_empty());
+        assert_eq!(serde_json::to_value(&state.packages[id]).unwrap(), before);
+        // Disabled: nothing is deployed.
+        assert!(restored.dist.deployed.is_empty() && !ws.dist().exists());
+
+        // Pinned mode is kept too; a HEAD moved to another (published) commit is local work.
+        m.enable(id).unwrap();
+        m.update_to(id, Target::Ref("dan/demo1@0.1.0".into()))
+            .unwrap();
+        m.forget(id).unwrap();
+        fixture_git(
+            &ws.repo(),
+            &["checkout", "-q", "--detach", "dan/demo1@0.2.0"],
+        );
+        let error = ws.refuses("local_changes", || m.restore(id));
+        assert!(
+            matches!(&error, Error::LocalChanges { items, .. }
+                if matches!(items.as_slice(), [LostWork::HeadMoved { .. }])),
+            "{error:?}"
+        );
+        fixture_git(
+            &ws.repo(),
+            &["checkout", "-q", "--detach", "dan/demo1@0.1.0"],
+        );
+        let restored = m.restore(id).unwrap();
+        assert_eq!(restored.dist.deployed, [id]);
+        let p = &m.state().unwrap().packages[id];
+        assert_eq!(p.mode, Mode::Pinned("dan/demo1@0.1.0".into()));
+        assert_eq!(p.current.version, "0.1.0");
+        assert!(p.enabled && p.catalog.is_some());
+        assert!(ws.dist().join("index.js").is_file());
+    }
+
+    #[test]
+    fn restore_refuses_an_unpublished_commit_in_every_mode() {
+        let id = "dan/demo1";
+        for target in [InstallTarget::Release, InstallTarget::Dev] {
+            let ws = Ws::new(id);
+            let m = ws.open();
+            m.install_package(ws.author.source(), None, target.clone())
+                .unwrap();
+            m.forget(id).unwrap();
+            fs::write(ws.repo().join("dist/index.js"), "local").unwrap();
+            fixture_git(&ws.repo(), &["commit", "-q", "-am", "local"]);
+            let error = ws.refuses("local_changes", || m.restore(id));
+            assert!(
+                matches!(&error, Error::LocalChanges { items, .. }
+                    if items.iter().any(|i| matches!(i, LostWork::UnpublishedCommit { .. }))),
+                "{target:?}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn branch_mode_restore_takes_a_published_head() {
+        let id = "dan/demo1";
+        let ws = Ws::new(id);
+        let m = ws.open();
+        let recorded = m
+            .install_package(ws.author.source(), None, InstallTarget::Dev)
+            .unwrap()
+            .current;
+        m.forget(id).unwrap();
+        let next = ws.author.commit("0.2.0");
+        fixture_git(&ws.repo(), &["fetch", "-q", "origin"]);
+        fixture_git(&ws.repo(), &["checkout", "-q", "--detach", "origin/main"]);
+        let restored = m.restore(id).unwrap();
+        assert_eq!(
+            (restored.current.version.as_str(), restored.current.commit),
+            ("0.2.0", next)
+        );
+        let p = &m.state().unwrap().packages[id];
+        assert_eq!(p.mode, Mode::Branch("main".into()));
+        assert_eq!(
+            p.previous.as_ref(),
+            Some(&recorded.with_mode(&Mode::Branch("main".into())))
+        );
+        assert!(read(&ws.dist().join("index.js")).contains("0.2.0"));
     }
 
     // ---- update / rollback ----------------------------------------------------------
@@ -2857,18 +3235,21 @@ mod tests {
         let (ws, m) = Ws::installed(id);
         ws.refuses("no_previous_version", || m.rollback(id));
         ws.refuses("invalid_argument", || {
-            m.update_channel(id, Some("main"), true)
+            m.update_to(id, Target::Ref("-x".into()))
         });
-        ws.refuses("invalid_argument", || m.update_ref(id, Some("-x")));
 
         // Upstream: same version on a new commit, then a commit with another ID.
         let same = same_version_commit(&ws.author);
-        let error = ws.refuses("version_conflict", || m.update_ref(id, Some(&same)));
+        let error = ws.refuses("version_conflict", || {
+            m.update_to(id, Target::Ref(String::from(&same)))
+        });
         assert_eq!(error.to_string(), "upstream changed without a version bump");
         write_manifest(&ws.author.path, &make_manifest("dan/renamed", "0.2.0"));
         fixture_git(&ws.author.path, &["commit", "-q", "-am", "rename"]);
         let renamed = ws.author.head();
-        let error = ws.refuses("invalid_manifest", || m.update_ref(id, Some(&renamed)));
+        let error = ws.refuses("invalid_manifest", || {
+            m.update_to(id, Target::Ref(String::from(&renamed)))
+        });
         assert_eq!(error.to_string(), "package id changed upstream");
     }
 
@@ -2885,9 +3266,16 @@ mod tests {
         let ws = Ws::new("dan/demo1");
         same_version_commit(&ws.author);
         let m = ws.open();
-        // Installed 0.1.0 from HEAD, but the 0.1.0 release tag is another commit.
-        m.install_channel(ws.author.source(), None, true).unwrap();
-        let error = ws.refuses("version_conflict", || m.update("dan/demo1"));
+        // Pinned to 0.1.0 at HEAD, but the 0.1.0 release tag is another commit.
+        m.install_package(
+            ws.author.source(),
+            None,
+            InstallTarget::Ref(ws.author.head()),
+        )
+        .unwrap();
+        let error = ws.refuses("version_conflict", || {
+            m.update_to("dan/demo1", Target::Release)
+        });
         assert_eq!(
             error.to_string(),
             "release commit changed for installed version"
@@ -2899,15 +3287,19 @@ mod tests {
         let (ws, m) = Ws::installed("dan/demo1");
         ws.author.release("0.1.1");
         let original = ws.author.release("0.1.2");
-        m.update_ref("dan/demo1", Some("dan/demo1@0.1.1")).unwrap();
+        m.update_to("dan/demo1", Target::Ref("dan/demo1@0.1.1".into()))
+            .unwrap();
         assert_eq!(
             resolve_ref(&ws.repo(), "dan/demo1@0.1.2").unwrap(),
             original
         );
         same_version_commit(&ws.author);
         fixture_git(&ws.author.path, &["tag", "-f", "dan/demo1@0.1.2"]);
-        for reference in [None, Some("dan/demo1@0.1.2")] {
-            ws.refuses("version_conflict", || m.update_ref("dan/demo1", reference));
+        // The explicit ref pinned it: back to releases, or to the moved tag.
+        for target in [Target::Release, Target::Ref("dan/demo1@0.1.2".into())] {
+            ws.refuses("version_conflict", || {
+                m.update_to("dan/demo1", target.clone())
+            });
             assert_eq!(
                 resolve_ref(&ws.repo(), "dan/demo1@0.1.2").unwrap(),
                 original
@@ -2961,13 +3353,26 @@ mod tests {
     #[test]
     fn stable_update_never_downgrades() {
         let ws = Ws::new("dan/demo1");
-        ws.author.commit("0.5.0");
+        ws.author.release("0.5.0");
         let m = ws.open();
-        m.install_channel(ws.author.source(), None, true).unwrap();
+        m.install(ws.author.source()).unwrap();
+        // The installed release disappears upstream: following releases never goes down.
+        fixture_git(&ws.author.path, &["tag", "-d", "dan/demo1@0.5.0"]);
         let error = ws.refuses("version_conflict", || m.update("dan/demo1"));
         assert!(error.to_string().starts_with("latest release is older"));
+        // An explicit return to releases may go down to the newest one (here from branch
+        // mode above every release).
+        m.update_to("dan/demo1", Target::Dev).unwrap();
+        let change = m.update_to("dan/demo1", Target::Release).unwrap();
+        assert_eq!(
+            (change.from.version.as_str(), change.to.version.as_str()),
+            ("0.5.0", "0.1.0")
+        );
+        m.rollback("dan/demo1").unwrap();
         // An explicit ref may downgrade.
-        let change = m.update_ref("dan/demo1", Some("dan/demo1@0.1.0")).unwrap();
+        let change = m
+            .update_to("dan/demo1", Target::Ref("dan/demo1@0.1.0".into()))
+            .unwrap();
         assert_eq!(change.to.version, "0.1.0");
     }
 
@@ -3015,35 +3420,45 @@ mod tests {
     }
 
     #[test]
-    fn dev_channel_follows_origin_head_and_refuses_diverged_history() {
+    fn branch_mode_follows_origin_head_and_refuses_diverged_history() {
         let id = "dan/demo1";
         let ws = Ws::new(id);
         let m = ws.open();
-        m.install_channel(ws.author.source(), None, true).unwrap();
+        m.install_package(ws.author.source(), None, InstallTarget::Dev)
+            .unwrap();
         let next = ws.author.commit("0.2.0");
-        let change = m.update_channel(id, None, true).unwrap();
+        // The recorded mode is followed: no target needed.
+        let change = m.update(id).unwrap();
         assert_eq!(
             (change.to.commit.as_str(), change.to.version.as_str()),
             (next.as_str(), "0.2.0")
         );
-        // On dev a new commit is an update even without a version bump.
+        // In branch mode a new commit is an update even without a version bump.
         let same = same_version_commit(&ws.author);
-        let change = m.update_channel(id, None, true).unwrap();
+        let change = m.update(id).unwrap();
         assert!(change.changed);
         assert_eq!(
             (change.to.commit.as_str(), change.to.version.as_str()),
             (same.as_str(), "0.2.0")
         );
         m.rollback(id).unwrap();
-        m.update_channel(id, None, true).unwrap();
+        m.update(id).unwrap();
         // Rewrite upstream history: the installed commit is no longer an ancestor.
         fixture_git(&ws.author.path, &["reset", "-q", "--hard", "HEAD~1"]);
         ws.author.commit("0.3.0");
-        let error = ws.refuses("version_conflict", || m.update_channel(id, None, true));
-        assert!(
-            error.to_string().starts_with("upstream history diverged"),
-            "{error}"
-        );
+        for target in [Target::Recorded, Target::Dev] {
+            let error = ws.refuses("version_conflict", || m.update_to(id, target.clone()));
+            assert!(
+                error
+                    .to_string()
+                    .starts_with("history of main diverged; automatic update refused"),
+                "{error}"
+            );
+        }
+        // An explicit ref is the user's choice: no ancestry needed.
+        let head = ws.author.head();
+        let change = m.update_to(id, Target::Ref("main".into())).unwrap();
+        assert_eq!(change.to.commit, head);
     }
 
     #[test]
@@ -3051,16 +3466,24 @@ mod tests {
         let id = "dan/demo1";
         let (ws, m) = Ws::installed(id);
         let next = ws.author.commit("0.2.0");
-        let change = m.update_ref(id, Some("main")).unwrap();
+        let change = m.update_to(id, Target::Ref("main".into())).unwrap();
         assert!(change.changed, "branch moved upstream");
         assert_eq!(change.to.commit, next);
         // HEAD means upstream HEAD, not the detached checkout.
         let head = ws.author.commit("0.3.0");
-        assert_eq!(m.update_ref(id, Some("HEAD")).unwrap().to.commit, head);
+        assert_eq!(
+            m.update_to(id, Target::Ref("HEAD".into()))
+                .unwrap()
+                .to
+                .commit,
+            head
+        );
         ws.refuses("invalid_argument", || {
-            m.update_ref(id, Some("refs/heads/main"))
+            m.update_to(id, Target::Ref("refs/heads/main".into()))
         });
-        ws.refuses("invalid_argument", || m.update_ref(id, Some("no-such-ref")));
+        ws.refuses("invalid_argument", || {
+            m.update_to(id, Target::Ref("no-such-ref".into()))
+        });
     }
 
     // ---- enable / forget / uninstall ------------------------------------------------
@@ -3349,7 +3772,11 @@ mod tests {
         );
         // Installing the fork is independent of the original.
         let r = m
-            .install_ref(path.to_str().unwrap(), Some("HEAD"), None)
+            .install_package(
+                path.to_str().unwrap(),
+                None,
+                InstallTarget::Ref("HEAD".into()),
+            )
             .unwrap();
         assert_eq!(r.id, "me/demo1");
         assert_eq!(r.fork_of.unwrap().id, "vendor/demo1");
@@ -3623,10 +4050,10 @@ mod tests {
         let mono = Mono::new();
         let m = mono.open();
         let store = m
-            .install_package(mono.source(), Some("tilr/store"), None, false)
+            .install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
             .unwrap();
         assert_eq!(store.current.version, "1.0.0");
-        m.install_package(mono.source(), Some("tilr/theme"), None, false)
+        m.install_package(mono.source(), Some("tilr/theme"), InstallTarget::Release)
             .unwrap();
         assert_eq!(mono.dist("store"), "store 1.0.0");
         assert_eq!(mono.dist("theme"), "theme 1.0.0");
@@ -3656,20 +4083,32 @@ mod tests {
             "{text}"
         );
         mono.refuses("invalid_argument", || {
-            m.install_package(mono.source(), Some("tilr/missing"), None, false)
+            m.install_package(mono.source(), Some("tilr/missing"), InstallTarget::Release)
         });
         // An ID@VERSION ref names the package.
-        m.install_ref(mono.source(), Some("tilr/theme@1.0.0"), None)
-            .unwrap();
+        m.install_package(
+            mono.source(),
+            None,
+            InstallTarget::Ref("tilr/theme@1.0.0".into()),
+        )
+        .unwrap();
         assert_eq!(mono.dist("theme"), "theme 1.0.0");
         // A root repository checks a given ID.
         let ws = Ws::new("dan/demo1");
         let other = ws.open();
         ws.refuses("invalid_argument", || {
-            other.install_package(ws.author.source(), Some("dan/other"), None, false)
+            other.install_package(
+                ws.author.source(),
+                Some("dan/other"),
+                InstallTarget::Release,
+            )
         });
         other
-            .install_package(ws.author.source(), Some("dan/demo1"), None, false)
+            .install_package(
+                ws.author.source(),
+                Some("dan/demo1"),
+                InstallTarget::Release,
+            )
             .unwrap();
     }
 
@@ -3678,7 +4117,7 @@ mod tests {
         let mono = Mono::new();
         let m = mono.open();
         for id in ["tilr/store", "tilr/theme"] {
-            m.install_package(mono.source(), Some(id), None, false)
+            m.install_package(mono.source(), Some(id), InstallTarget::Release)
                 .unwrap();
         }
         mono.release("store", "1.1.0");
@@ -3708,10 +4147,10 @@ mod tests {
         assert_eq!(mono.dist("theme"), "theme 2.0.0");
         assert_eq!(mono.clones().len(), 1);
 
-        // The dev channel follows the default branch for one package.
+        // --dev follows the default branch for one package.
         mono.write("theme", "2.1.0", &[]);
         let head = mono.commit("theme work");
-        let dev = m.update_channel("tilr/theme", None, true).unwrap();
+        let dev = m.update_to("tilr/theme", Target::Dev).unwrap();
         assert_eq!(dev.to.commit, head);
         assert_eq!(mono.dist("theme"), "theme 2.1.0");
         assert_eq!(mono.dist("store"), "store 1.2.0");
@@ -3726,7 +4165,7 @@ mod tests {
         let mono = Mono::new();
         let m = mono.open();
         for id in ["tilr/store", "tilr/theme"] {
-            m.install_package(mono.source(), Some(id), None, false)
+            m.install_package(mono.source(), Some(id), InstallTarget::Release)
                 .unwrap();
         }
         let plan = m.uninstall_plan("tilr/store").unwrap();
@@ -3739,7 +4178,7 @@ mod tests {
         m.update("tilr/theme").unwrap();
         assert_eq!(mono.dist("theme"), "theme 1.1.0");
         // Reinstall reuses the clone.
-        m.install_package(mono.source(), Some("tilr/store"), None, false)
+        m.install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
             .unwrap();
         assert_eq!(mono.clones().len(), 1);
         m.uninstall("tilr/store", false).unwrap();
@@ -3765,14 +4204,18 @@ mod tests {
         mono.commit("drop store");
         mono.tag("store", "2.0.0");
         let error = mono.refuses("version_conflict", || {
-            m.install_package(mono.source(), Some("tilr/store"), None, false)
+            m.install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
         });
         assert!(
             error.to_string().contains("without package tilr/store"),
             "{error}"
         );
         let error = mono.refuses("invalid_argument", || {
-            m.install_ref(mono.source(), Some("tilr/store@2.0.0"), None)
+            m.install_package(
+                mono.source(),
+                None,
+                InstallTarget::Ref("tilr/store@2.0.0".into()),
+            )
         });
         assert!(
             error.to_string().contains("not in this repository"),
@@ -3781,7 +4224,7 @@ mod tests {
         // A `vVERSION` tag is no release of any package: ignored without a warning.
         fixture_git(&mono.repo, &["tag", "v3.0.0"]);
         let installed = m
-            .install_package(mono.source(), Some("tilr/theme"), None, false)
+            .install_package(mono.source(), Some("tilr/theme"), InstallTarget::Release)
             .unwrap();
         assert_eq!(installed.current.version, "1.0.0");
     }
@@ -3790,7 +4233,7 @@ mod tests {
     fn a_fork_of_a_package_releases_only_that_package() {
         let mono = Mono::new();
         let m = mono.open();
-        m.install_package(mono.source(), Some("tilr/theme"), None, false)
+        m.install_package(mono.source(), Some("tilr/theme"), InstallTarget::Release)
             .unwrap();
         let destination = mono.dir.join("forks/me/theme");
         let result = m
@@ -3817,14 +4260,14 @@ mod tests {
     fn a_fork_of_several_packages_starts_each_from_its_installed_revision() {
         let mono = Mono::new();
         let m = mono.open();
-        m.install_package(mono.source(), Some("tilr/store"), None, false)
+        m.install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
             .unwrap();
         let old = fixture_git(&mono.repo, &["rev-parse", "HEAD"]);
         mono.write("theme", "1.1.0", &[("tilr/store", "^1.0")]);
         mono.commit("theme 1.1.0");
         mono.tag("theme", "1.1.0");
         mono.release("store", "1.2.0");
-        m.install_package(mono.source(), Some("tilr/theme"), None, false)
+        m.install_package(mono.source(), Some("tilr/theme"), InstallTarget::Release)
             .unwrap();
         let destination = mono.dir.join("forks/me/mono");
         let fork = m
@@ -3895,7 +4338,7 @@ mod tests {
         let mono = Mono::new();
         let m = mono.open();
         for id in ["tilr/store", "tilr/theme"] {
-            m.install_package(mono.source(), Some(id), None, false)
+            m.install_package(mono.source(), Some(id), InstallTarget::Release)
                 .unwrap();
         }
         let result = m
@@ -3931,6 +4374,396 @@ mod tests {
         assert!(!m.state().unwrap().packages.contains_key("ns3/theme"));
     }
 
+    #[test]
+    fn install_records_the_ref_mode() {
+        let id = "dan/demo1";
+        let ws = Ws::new(id);
+        let first = ws.author.head();
+        let release = ws.author.release("0.2.0");
+        // A branch only the origin has: the fresh clone knows it as origin/feature.
+        fixture_git(&ws.author.path, &["checkout", "-q", "-b", "feature"]);
+        let feature = ws.author.commit("0.3.0");
+        fixture_git(&ws.author.path, &["checkout", "-q", "main"]);
+        let main = ws.author.commit("0.4.0");
+        let m = ws.open();
+        let cases = [
+            (InstallTarget::Release, &release, Mode::Release, None),
+            (
+                InstallTarget::Ref("dan/demo1@0.1.0".into()),
+                &first,
+                Mode::Pinned("dan/demo1@0.1.0".into()),
+                Some(serde_json::json!({"pinned": "dan/demo1@0.1.0"})),
+            ),
+            (
+                InstallTarget::Ref(first[..12].into()),
+                &first,
+                Mode::Pinned(first.clone()),
+                Some(serde_json::json!({"pinned": first})),
+            ),
+            (
+                InstallTarget::Ref("feature".into()),
+                &feature,
+                Mode::Branch("feature".into()),
+                Some(serde_json::json!({"branch": "feature"})),
+            ),
+            (
+                InstallTarget::Dev,
+                &main,
+                Mode::Branch("main".into()),
+                Some(serde_json::json!({"branch": "main"})),
+            ),
+        ];
+        for (target, commit, mode, json) in cases {
+            let installed = m
+                .install_package(ws.author.source(), None, target.clone())
+                .unwrap();
+            assert_eq!(&installed.current.commit, commit, "{target:?}");
+            assert_eq!(m.state().unwrap().packages[id].mode, mode, "{target:?}");
+            assert_eq!(m.list().unwrap()[0].mode, mode, "{target:?}");
+            let state: serde_json::Value =
+                serde_json::from_str(&read(&ws.root.join("state.json"))).unwrap();
+            assert_eq!(
+                state["packages"][id].get("mode").cloned(),
+                json,
+                "{target:?}"
+            );
+            m.uninstall(id, false).unwrap();
+        }
+        // HEAD is the origin's default branch, by its name.
+        for head in ["HEAD", "refs/remotes/origin/HEAD"] {
+            m.install_package(ws.author.source(), None, InstallTarget::Ref(head.into()))
+                .unwrap();
+            assert_eq!(
+                m.state().unwrap().packages[id].mode,
+                Mode::Branch("main".into()),
+                "{head}"
+            );
+            m.uninstall(id, false).unwrap();
+        }
+        // Only exact refs: no stale local branch, no revision expressions, no short hex.
+        for bad in [
+            "refs/heads/main",
+            "HEAD~1",
+            "main~1",
+            "dan/demo1@0.2.0~1",
+            "dan/demo1@0.2.0^",
+            "refs/tags/dan/demo1@0.2.0~1",
+            "refs/remotes/origin/main~1",
+            &first[..6],
+            &first.to_uppercase(),
+        ] {
+            let error = ws.refuses("invalid_argument", || {
+                m.install_package(ws.author.source(), None, InstallTarget::Ref(bad.into()))
+            });
+            assert!(!error.to_string().is_empty(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn update_follows_and_switches_the_recorded_mode() {
+        let id = "dan/demo1";
+        let ws = Ws::new(id);
+        let m = ws.open();
+        m.install_package(
+            ws.author.source(),
+            None,
+            InstallTarget::Ref("dan/demo1@0.1.0".into()),
+        )
+        .unwrap();
+        ws.author.release("0.2.0");
+        // Pinned: unchanged with its reason, nothing written.
+        let change = ws.refuses_nothing(|| m.update(id));
+        assert!(!change.changed && change.to.version == "0.1.0");
+        assert_eq!(
+            change.unchanged_reason,
+            Some(UnchangedReason::Pinned {
+                reference: "dan/demo1@0.1.0".into()
+            })
+        );
+        // Back to releases: the record has no mode.
+        let change = m.update_to(id, Target::Release).unwrap();
+        assert_eq!(
+            (change.from.version.as_str(), change.to.version.as_str()),
+            ("0.1.0", "0.2.0")
+        );
+        let state: serde_json::Value =
+            serde_json::from_str(&read(&ws.root.join("state.json"))).unwrap();
+        assert!(state["packages"][id].get("mode").is_none(), "{state}");
+        // Follow the default branch, then by the recorded mode.
+        let head = ws.author.commit("0.3.0");
+        let change = m.update_to(id, Target::Dev).unwrap();
+        assert_eq!(change.to.commit, head);
+        assert_eq!(
+            m.state().unwrap().packages[id].mode,
+            Mode::Branch("main".into())
+        );
+        let change = m.update(id).unwrap();
+        assert!(!change.changed && change.unchanged_reason.is_none());
+        // A tag pins again (an explicit ref may go back to an older version).
+        let change = m
+            .update_to(id, Target::Ref("dan/demo1@0.2.0".into()))
+            .unwrap();
+        assert_eq!(change.to.version, "0.2.0");
+        assert_eq!(
+            m.state().unwrap().packages[id].mode,
+            Mode::Pinned("dan/demo1@0.2.0".into())
+        );
+        // At the newest release already: --release records the mode without moving,
+        // and a change of mode alone is a change.
+        let change = m.update_to(id, Target::Release).unwrap();
+        assert!(change.changed && change.from == change.to);
+        assert_eq!(change.mode, Mode::Release);
+        assert_eq!(m.state().unwrap().packages[id].mode, Mode::Release);
+        // Rollback swaps revision and mode together.
+        m.update_to(id, Target::Dev).unwrap();
+        let state = m.state().unwrap();
+        assert_eq!(
+            state.packages[id].previous.as_ref().unwrap().mode,
+            Mode::Release
+        );
+        let change = m.rollback(id).unwrap();
+        assert_eq!(
+            (change.to.version.as_str(), &change.mode),
+            ("0.2.0", &Mode::Release)
+        );
+        let p = &m.state().unwrap().packages[id];
+        assert_eq!(p.mode, Mode::Release);
+        assert_eq!(
+            p.previous.as_ref().unwrap().mode,
+            Mode::Branch("main".into())
+        );
+        m.rollback(id).unwrap();
+        assert_eq!(
+            m.state().unwrap().packages[id].mode,
+            Mode::Branch("main".into())
+        );
+        // Branch → --release (down to the newest release, 0.2.0) → rollback: back on main.
+        let change = m.update_to(id, Target::Release).unwrap();
+        assert_eq!(
+            (change.from.version.as_str(), change.to.version.as_str()),
+            ("0.3.0", "0.2.0")
+        );
+        assert_eq!(m.state().unwrap().packages[id].mode, Mode::Release);
+        m.rollback(id).unwrap();
+        let p = &m.state().unwrap().packages[id];
+        assert_eq!(
+            (p.current.version.as_str(), &p.mode),
+            ("0.3.0", &Mode::Branch("main".into()))
+        );
+        // A tag at the installed commit pins: a change of mode alone.
+        m.update_to(id, Target::Release).unwrap();
+        let change = m
+            .update_to(id, Target::Ref("dan/demo1@0.2.0".into()))
+            .unwrap();
+        assert!(change.changed && change.from.commit == change.to.commit);
+        assert_eq!(change.mode, Mode::Pinned("dan/demo1@0.2.0".into()));
+    }
+
+    #[test]
+    fn a_branch_gone_from_the_origin_is_reported_not_fatal() {
+        let ws = Ws::new("dan/a");
+        let other = ws.other_author("other", "dan/other");
+        let m = ws.open();
+        fixture_git(&ws.author.path, &["checkout", "-q", "-b", "feature"]);
+        ws.author.commit("0.2.0");
+        fixture_git(&ws.author.path, &["checkout", "-q", "main"]);
+        m.install_package(
+            ws.author.source(),
+            None,
+            InstallTarget::Ref("feature".into()),
+        )
+        .unwrap();
+        m.install(other.source()).unwrap();
+        fixture_git(&ws.author.path, &["branch", "-q", "-D", "feature"]);
+        other.release("0.2.0");
+        let error = ws.refuses("version_conflict", || m.update("dan/a"));
+        assert_eq!(
+            error.to_string(),
+            "the origin no longer has the branch feature that dan/a follows; automatic update refused"
+        );
+        let plan = m.update_all().unwrap();
+        assert_eq!(plan.updates.len(), 1, "{plan:?}");
+        assert_eq!(plan.updates[0].id, "dan/other");
+        assert_eq!(
+            plan.unchanged,
+            [Unchanged {
+                id: "dan/a".into(),
+                version: "0.2.0".into(),
+                reason: Some(UnchangedReason::BranchGone {
+                    branch: "feature".into()
+                }),
+            }]
+        );
+    }
+
+    #[test]
+    fn restore_in_a_shared_clone_ignores_another_branch_s_revision() {
+        let mono = Mono::new();
+        let m = mono.open();
+        // store follows the branch side, theme the default branch main.
+        fixture_git(&mono.repo, &["checkout", "-q", "-b", "side"]);
+        mono.write("store", "1.1.0", &[]);
+        mono.commit("store on side");
+        fixture_git(&mono.repo, &["checkout", "-q", "main"]);
+        let theme = m
+            .install_package(mono.source(), Some("tilr/theme"), InstallTarget::Dev)
+            .unwrap()
+            .current;
+        m.install_package(
+            mono.source(),
+            Some("tilr/store"),
+            InstallTarget::Ref("side".into()),
+        )
+        .unwrap();
+        m.forget("tilr/theme").unwrap();
+        // The shared clone's HEAD is store's revision on side: a published descendant of
+        // theme's commit, but not on main. Theme comes back at its recorded commit.
+        let store_head = head_of(&mono.clone_dir());
+        assert_ne!(store_head, theme.commit);
+        let restored = m.restore("tilr/theme").unwrap();
+        assert_eq!(restored.current, theme);
+        assert_eq!(
+            m.state().unwrap().packages["tilr/theme"].mode,
+            Mode::Branch("main".into())
+        );
+    }
+
+    #[test]
+    fn branch_mode_restore_checks_dependencies() {
+        let id = "dan/demo1";
+        let ws = Ws::new(id);
+        let m = ws.open();
+        m.install_package(ws.author.source(), None, InstallTarget::Dev)
+            .unwrap();
+        m.forget(id).unwrap();
+        // The branch moves on to a revision that needs a package nobody installed.
+        let mut next = make_manifest(id, "0.2.0");
+        next.dependencies
+            .insert("dan/missing".into(), "^1.0".into());
+        write_manifest(&ws.author.path, &next);
+        fixture_git(
+            &ws.author.path,
+            &["commit", "-q", "-am", "needs dan/missing"],
+        );
+        fixture_git(&ws.repo(), &["fetch", "-q", "origin"]);
+        fixture_git(&ws.repo(), &["checkout", "-q", "--detach", "origin/main"]);
+        let error = ws.refuses("dependency_conflict", || m.restore(id));
+        assert!(error.to_string().contains("dan/missing"), "{error}");
+        assert!(m.state().unwrap().forgotten.contains_key(id));
+    }
+
+    #[test]
+    fn update_all_follows_each_mode() {
+        let ws = Ws::new("dan/a");
+        let b = ws.other_author("b", "dan/b");
+        let c = ws.other_author("c", "dan/c");
+        let m = ws.open();
+        m.install(ws.author.source()).unwrap();
+        m.install_package(b.source(), None, InstallTarget::Ref("dan/b@0.1.0".into()))
+            .unwrap();
+        m.install_package(c.source(), None, InstallTarget::Dev)
+            .unwrap();
+        ws.author.release("0.2.0");
+        b.release("0.2.0");
+        // The branch moves without a release (and without a version bump).
+        fs::write(c.path.join("dist/extra.js"), "extra").unwrap();
+        fixture_git(&c.path, &["add", "--all"]);
+        fixture_git(&c.path, &["commit", "-q", "-m", "same version"]);
+        let c_head = c.head();
+        let plan = m.update_all_plan().unwrap();
+        let updated: Vec<_> = plan.updates.iter().map(|u| u.id.as_str()).collect();
+        assert_eq!(updated, ["dan/a", "dan/c"]);
+        assert_eq!(
+            plan.unchanged,
+            [Unchanged {
+                id: "dan/b".into(),
+                version: "0.1.0".into(),
+                reason: Some(UnchangedReason::Pinned {
+                    reference: "dan/b@0.1.0".into()
+                }),
+            }]
+        );
+        assert!(plan.kept_back.is_empty());
+        m.update_all().unwrap();
+        let state = m.state().unwrap();
+        assert_eq!(state.packages["dan/a"].current.version, "0.2.0");
+        assert_eq!(state.packages["dan/b"].current.version, "0.1.0");
+        assert_eq!(state.packages["dan/c"].current.commit, c_head);
+        assert_eq!(state.packages["dan/c"].mode, Mode::Branch("main".into()));
+        // A rewritten branch keeps the package with a reason; the others stay up to date.
+        fixture_git(&c.path, &["reset", "-q", "--hard", "HEAD~1"]);
+        c.commit("0.3.0");
+        let plan = m.update_all_plan().unwrap();
+        assert!(plan.updates.is_empty(), "{:?}", plan.updates);
+        let reasons: Vec<_> = plan
+            .unchanged
+            .iter()
+            .map(|u| (u.id.as_str(), u.reason.clone()))
+            .collect();
+        assert_eq!(
+            reasons,
+            [
+                ("dan/a", None),
+                (
+                    "dan/b",
+                    Some(UnchangedReason::Pinned {
+                        reference: "dan/b@0.1.0".into()
+                    })
+                ),
+                (
+                    "dan/c",
+                    Some(UnchangedReason::Diverged {
+                        branch: "main".into()
+                    })
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn restore_works_alike_for_shared_clones_in_each_mode() {
+        let mono = Mono::new();
+        let m = mono.open();
+        let store = m
+            .install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
+            .unwrap()
+            .current;
+        m.install_package(mono.source(), Some("tilr/theme"), InstallTarget::Dev)
+            .unwrap();
+        // Release mode, disabled: restored at its recorded commit although the shared
+        // clone's HEAD has moved on to theme's newer revision meanwhile.
+        m.disable("tilr/store").unwrap();
+        m.forget("tilr/store").unwrap();
+        mono.write("theme", "1.1.0", &[]);
+        let next = mono.commit("theme 1.1.0");
+        m.update("tilr/theme").unwrap();
+        assert_eq!(head_of(&mono.clone_dir()), next);
+        let restored = m.restore("tilr/store").unwrap();
+        assert_eq!(restored.current, store);
+        assert!(restored.dist.deployed.is_empty());
+        let state = m.state().unwrap();
+        let p = &state.packages["tilr/store"];
+        assert!(!p.enabled && p.mode == Mode::Release && p.current == store);
+        // Branch mode: a published HEAD the user checked out is taken as found.
+        m.forget("tilr/theme").unwrap();
+        mono.write("theme", "1.2.0", &[]);
+        let newer = mono.commit("theme 1.2.0");
+        fixture_git(&mono.clone_dir(), &["fetch", "-q", "origin"]);
+        fixture_git(
+            &mono.clone_dir(),
+            &["checkout", "-q", "--detach", "origin/main"],
+        );
+        let restored = m.restore("tilr/theme").unwrap();
+        assert_eq!(
+            (restored.current.version.as_str(), restored.current.commit),
+            ("1.2.0", newer)
+        );
+        let p = &m.state().unwrap().packages["tilr/theme"];
+        assert_eq!(p.mode, Mode::Branch("main".into()));
+        assert_eq!(p.previous.as_ref().unwrap().commit, next);
+        assert!(mono.root.join("dist/tilr/theme/index.js").is_file());
+    }
+
     // ---- regressions: forks, shared clones, layouts ------------------------------------
 
     fn head_of(repo: &Path) -> String {
@@ -3947,11 +4780,11 @@ mod tests {
         // B1: the shared clone's HEAD is theme's newer revision, store is installed older.
         let mono = Mono::new();
         let m = mono.open();
-        m.install_package(mono.source(), Some("tilr/store"), None, false)
+        m.install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
             .unwrap();
         let store_commit = head_of(&mono.repo);
         mono.release("theme", "1.1.0");
-        m.install_package(mono.source(), Some("tilr/theme"), None, false)
+        m.install_package(mono.source(), Some("tilr/theme"), InstallTarget::Release)
             .unwrap();
         assert_ne!(head_of(&mono.clone_dir()), store_commit);
         let destination = mono.dir.join("forks/store");
@@ -4026,7 +4859,7 @@ mod tests {
         let mono = Mono::new();
         let m = mono.open();
         for id in ["tilr/store", "tilr/theme"] {
-            m.install_package(mono.source(), Some(id), None, false)
+            m.install_package(mono.source(), Some(id), InstallTarget::Release)
                 .unwrap();
         }
         m.forget("tilr/store").unwrap();
@@ -4038,7 +4871,7 @@ mod tests {
         );
         assert!(!mono.root.join("dist/tilr/store").exists());
         let error = mono.refuses("already_installed", || {
-            m.install_package(mono.source(), Some("tilr/store"), None, false)
+            m.install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
         });
         assert!(
             error
@@ -4079,11 +4912,11 @@ mod tests {
 
     #[test]
     fn removing_a_package_moves_the_shared_head_to_a_remaining_one() {
-        // B5: theme follows the dev channel, so HEAD is an untagged commit.
+        // B5: theme follows the default branch, so HEAD is an untagged commit.
         let mono = Mono::new();
         let m = mono.open();
         for id in ["tilr/store", "tilr/theme"] {
-            m.install_package(mono.source(), Some(id), None, false)
+            m.install_package(mono.source(), Some(id), InstallTarget::Release)
                 .unwrap();
         }
         let store = m.state().unwrap().packages["tilr/store"]
@@ -4092,7 +4925,7 @@ mod tests {
             .clone();
         mono.write("theme", "1.1.0", &[]);
         let dev = mono.commit("theme work");
-        m.update_channel("tilr/theme", None, true).unwrap();
+        m.update_to("tilr/theme", Target::Dev).unwrap();
         assert_eq!(head_of(&mono.clone_dir()), dev);
         // forget: HEAD goes to store's revision, store keeps updating.
         m.forget("tilr/theme").unwrap();
@@ -4112,7 +4945,7 @@ mod tests {
         // An edit that the move would overwrite refuses the removal; nothing changes.
         mono.write("theme", "1.2.0", &[]);
         mono.commit("more theme work");
-        m.install_package(mono.source(), Some("tilr/theme"), None, true)
+        m.install_package(mono.source(), Some("tilr/theme"), InstallTarget::Dev)
             .unwrap();
         fs::write(
             mono.clone_dir().join("packages/theme/dist/index.js"),
@@ -4140,7 +4973,7 @@ mod tests {
         fs::remove_dir_all(mono.repo.join("packages/theme/dist")).unwrap();
         mono.release("store", "1.1.0");
         let result = m
-            .install_package(mono.source(), Some("tilr/store"), None, false)
+            .install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
             .unwrap();
         assert_eq!(result.current.version, "1.1.0");
         assert_eq!(mono.dist("store"), "store 1.1.0");
@@ -4153,7 +4986,7 @@ mod tests {
         assert_eq!(layout.packages.len(), 1);
         assert_eq!(layout.problems[0].id.as_deref(), Some("tilr/theme"));
         // theme's own releases: the old tag stays valid, the new commit is not.
-        m.install_package(mono.source(), Some("tilr/theme"), None, false)
+        m.install_package(mono.source(), Some("tilr/theme"), InstallTarget::Release)
             .unwrap();
         assert_eq!(mono.dist("theme"), "theme 1.0.0");
     }
@@ -4162,7 +4995,7 @@ mod tests {
     fn a_package_can_move_to_another_folder_between_releases() {
         let mono = Mono::new();
         let m = mono.open();
-        m.install_package(mono.source(), Some("tilr/store"), None, false)
+        m.install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
             .unwrap();
         fs::create_dir_all(mono.repo.join("apps")).unwrap();
         fs::rename(
@@ -4202,11 +5035,11 @@ mod tests {
         // B10: store is installed at the first commit, its folder changed since.
         let mono = Mono::new();
         let m = mono.open();
-        m.install_package(mono.source(), Some("tilr/store"), None, false)
+        m.install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
             .unwrap();
         mono.release("store", "1.1.0");
         mono.release("theme", "1.1.0");
-        m.install_package(mono.source(), Some("tilr/theme"), None, false)
+        m.install_package(mono.source(), Some("tilr/theme"), InstallTarget::Release)
             .unwrap();
         let clone = mono.clone_dir();
         fs::write(clone.join("packages/store/dist/index.js"), "store edit").unwrap();
@@ -4253,7 +5086,7 @@ mod tests {
         mono.tag("theme", "1.0.1");
         let m = mono.open();
         for id in ["tilr/store", "tilr/theme"] {
-            m.install_package(mono.source(), Some(id), None, false)
+            m.install_package(mono.source(), Some(id), InstallTarget::Release)
                 .unwrap();
         }
         let destination = mono.dir.join("forks/me");
@@ -4283,12 +5116,12 @@ mod tests {
     fn a_dependency_cycle_between_forks_is_refused_before_anything_is_created() {
         let mono = Mono::new();
         let m = mono.open();
-        m.install_package(mono.source(), Some("tilr/store"), None, false)
+        m.install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
             .unwrap();
         mono.write("theme", "1.1.0", &[("tilr/store", "^1.0")]);
         mono.commit("theme needs store");
         mono.tag("theme", "1.1.0");
-        m.install_package(mono.source(), Some("tilr/theme"), None, false)
+        m.install_package(mono.source(), Some("tilr/theme"), InstallTarget::Release)
             .unwrap();
         mono.write("store", "1.1.0", &[("tilr/theme", "^1.0")]);
         mono.commit("store needs theme");
@@ -4376,15 +5209,15 @@ mod tests {
         let mono = Mono::new();
         let first = fixture_git(&mono.repo, &["rev-parse", "HEAD"]);
         let m = mono.open();
-        m.install_package(mono.source(), Some("tilr/store"), None, false)
+        m.install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
             .unwrap();
         mono.release("theme", "1.1.0");
-        m.install_package(mono.source(), Some("tilr/theme"), None, false)
+        m.install_package(mono.source(), Some("tilr/theme"), InstallTarget::Release)
             .unwrap();
-        // theme follows the dev channel to an untagged commit; 1.1.0 is its previous.
+        // theme follows the default branch to an untagged commit; 1.1.0 is its previous.
         mono.write("theme", "1.2.0", &[]);
         let dev = mono.commit("theme dev");
-        m.update_channel("tilr/theme", None, true).unwrap();
+        m.update_to("tilr/theme", Target::Dev).unwrap();
         assert_eq!(
             m.state().unwrap().packages["tilr/theme"].current.commit,
             dev
@@ -4452,7 +5285,7 @@ mod tests {
     fn a_moved_tag_of_a_package_that_is_not_installed_is_taken_from_upstream() {
         let mono = Mono::new();
         let m = mono.open();
-        m.install_package(mono.source(), Some("tilr/store"), None, false)
+        m.install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
             .unwrap();
         // theme 1.0.0 is retagged upstream (it was never installed here).
         fs::write(
@@ -4463,7 +5296,7 @@ mod tests {
         let moved = mono.commit("retag theme");
         fixture_git(&mono.repo, &["tag", "-f", "tilr/theme@1.0.0"]);
         let installed = m
-            .install_package(mono.source(), Some("tilr/theme"), None, false)
+            .install_package(mono.source(), Some("tilr/theme"), InstallTarget::Release)
             .unwrap();
         assert_eq!(installed.current.commit, moved);
         assert_eq!(mono.dist("theme"), "theme retagged");
@@ -4475,7 +5308,7 @@ mod tests {
         let mono = Mono::new();
         let m = mono.open();
         for id in ["tilr/store", "tilr/theme"] {
-            m.install_package(mono.source(), Some(id), None, false)
+            m.install_package(mono.source(), Some(id), InstallTarget::Release)
                 .unwrap();
         }
         mono.write("dock", "1.0.0", &[]);
@@ -4491,7 +5324,7 @@ mod tests {
         fixture_git(&mono.repo, &["tag", "-f", "tilr/store@1.0.0"]);
         for error in [
             mono.refuses("version_conflict", || {
-                m.install_package(mono.source(), Some("tilr/dock"), None, false)
+                m.install_package(mono.source(), Some("tilr/dock"), InstallTarget::Release)
             }),
             mono.refuses("version_conflict", || m.update("tilr/theme")),
         ] {
@@ -4509,7 +5342,7 @@ mod tests {
         let mono = Mono::new();
         let m = mono.open();
         for id in ["tilr/store", "tilr/theme"] {
-            m.install_package(mono.source(), Some(id), None, false)
+            m.install_package(mono.source(), Some(id), InstallTarget::Release)
                 .unwrap();
         }
         m.forget("tilr/store").unwrap();
@@ -4532,7 +5365,7 @@ mod tests {
         let mono = Mono::new();
         let m = mono.open();
         for id in ["tilr/store", "tilr/theme"] {
-            m.install_package(mono.source(), Some(id), None, false)
+            m.install_package(mono.source(), Some(id), InstallTarget::Release)
                 .unwrap();
         }
         let destination = mono.dir.join("forks/me");

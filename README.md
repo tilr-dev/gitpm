@@ -95,11 +95,62 @@ acme/greeter already installed (0.2.0)
 
 Installing an installed package again from the same source changes nothing and exits 0:
 `ID already installed (VERSION)`, with `; run update` when the source resolves to another
-revision (a newer release; `update` moves to it; with `--ref REF` or `--channel dev` it
-says `requested --ref REF — run update ID --ref REF`). The same ID from another source is
+revision (a newer release; `update` moves to it; with `--ref REF` or `--dev` it says
+`requested --ref REF — run update ID --ref REF`). The same ID from another source is
 still refused (`already_installed`). "Same source" means the same string as recorded at
 install, after a local path is canonicalized: a `file://` URL against a plain path, or a
 URL with and without `.git`, counts as another source.
+
+### Releases, pinned refs and branches
+
+Every installed package has a mode, recorded in `state.json` as `mode` (omitted in
+release mode), and `update ID` follows it:
+
+| Install | Mode (`state.json`) | `update ID` |
+| --- | --- | --- |
+| `install SRC` | release (no `mode`) | newest release |
+| `install SRC --ref acme/greeter@0.1.0` or `--ref COMMIT` | `{"pinned": "acme/greeter@0.1.0"}` (a commit in full) | stays: `acme/greeter pinned at 0.1.0 (acme/greeter@0.1.0)` |
+| `install SRC --ref feature` | `{"branch": "feature"}` | HEAD of `origin/feature`, by commit (no version bump needed) |
+| `install SRC --dev` | `{"branch": "main"}` (the origin's default branch, by name) | HEAD of `origin/main` |
+
+A ref is resolved against the origin by exact name: a tag, then an origin branch, then a
+commit ID (7 to 64 lowercase hex digits); `HEAD` is the origin's default branch, recorded
+by its name. A fresh clone finds a branch the origin has as `origin/BRANCH`; local
+branches of a clone and revision expressions (`HEAD~1`, `TAG^`) are refused
+(`invalid_argument`). `update ID --ref REF` and `update ID --dev` move the package and
+record the new mode the same way (a new mode at the installed commit is a change too:
+`ID pinned at V (REF)`); `update ID --release` returns it to release mode at the newest
+release, even when that is below the installed version (a plain `update` never goes
+down). A tag or commit must change the version (it may go back to an older one); a
+branch whose history no longer contains the installed commit, or that the origin no
+longer has, is refused (`version_conflict`, "history of main diverged; automatic update
+refused"); `update ID --ref BRANCH` follows it again after a force-push. `previous`
+records the mode it had, so `rollback` restores revision and mode together. `update all`
+takes no `--ref`, `--dev` or `--release`: it follows each package's mode (pinned ones
+print `ID pinned at V (REF)`, a diverged branch `ID kept at V (history of BRANCH
+diverged)`, a deleted one `ID kept at V (branch BRANCH is gone)`). Installing an installed
+package again names its mode: `ID already installed (V, pinned at REF)`. `check` shows a pinned package as `pinned (REF)` without
+asking its origin and compares a branch-mode package with the branch HEAD on the origin.
+`install-catalog --version V` installs in release mode.
+
+```console
+$ gitpm install ./greeter --ref acme/greeter@0.1.0
+installed acme/greeter@0.1.0 from /…/greeter
+$ gitpm update acme/greeter
+acme/greeter pinned at 0.1.0 (acme/greeter@0.1.0)
+$ gitpm update acme/greeter --release
+acme/greeter updated 0.1.0 → 0.2.0
+```
+
+`forget ID` keeps the whole record in `state.json` under `forgotten` (own clone or shared
+clone) and `restore ID` records it again as it was: revisions, `catalog`, the `enabled`
+flag and the mode. A release-mode or pinned package comes back at its recorded commit; a
+branch-mode package takes the clone's HEAD as found when it is the recorded commit or a
+commit after it that the origin's branch contains (and its dependencies are satisfied;
+`dependency_conflict` otherwise). A dirty clone, commits no remote branch or tag contains, or a
+HEAD moved elsewhere refuse with `local_changes`.
+
+### Catalogs
 
 A catalog is generated from the release tags of the repositories listed in a sources
 file (paths are relative to that file). `gitpm init NAMESPACE/NAME --into DIR`
@@ -337,9 +388,8 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
 - Library messages name no CLI command or hosting service; the CLI adds a `Hint:` line
   per error kind (for example after `already_installed`: `gitpm restore ID` /
   `gitpm uninstall ID`). `init NAME` without a namespace is the library's `invalid_id`
-  ("package ID needs a namespace: …", now with `Error kind`). The CLI no longer checks
-  `--channel dev --ref` itself (the library refuses it; `--channel stable --ref X`
-  installs `X`). Prompts (`[y/N]` and what they list) go to stderr.
+  ("package ID needs a namespace: …", now with `Error kind`). Prompts (`[y/N]` and what
+  they list) go to stderr.
 - `update ID` returns the broken release tags it passed over in `RevisionChange.skipped`,
   `update all` in `UpdateAllPlan.skipped` (for every installed package, updated or not),
   and the CLI warns `Warning: skipped release tag NAME: reason` as install does.
@@ -395,6 +445,65 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   `fork` leaves it out when the original's source is not a URL or an absolute path). FFI
   `ForkOf` gains `source`. A gitpm before this
   change refuses such a manifest or state record (unknown key in `forkOf`).
+- `--channel stable|dev` is removed, without an alias (`unknown option: --channel; use
+  --help`); one `--ref` decides the mode, recorded per package (see [Releases, pinned refs
+  and branches](#releases-pinned-refs-and-branches)): `--ref TAG|COMMIT` pins (`update`
+  then prints `ID pinned at V (REF)` and changes nothing), `--ref BRANCH` follows that
+  origin branch, the new `--dev` follows the origin's default branch, and the new `update
+  ID --release` returns to releases. A tag given to `install`/`update --ref` used to be a
+  one-off move; it now pins. `update` without options follows the recorded mode (a
+  `--dev` install no longer fails `update ID` with `version_conflict`); `update all`
+  follows every package's mode and refuses `--ref`/`--dev`/`--release` ("update all takes
+  no --ref, --dev or --release; it follows each package's recorded mode"). `--ref`,
+  `--dev` and `--release` exclude each other (usage errors `--dev conflicts with --ref`,
+  `--release conflicts with --dev`, `--release conflicts with --ref`). Migration: replace
+  `--channel dev` with `--dev`, drop `--channel stable`, run `update ID --release` where a
+  ref should not stay pinned.
+- `install --ref BRANCH` resolves against the origin like `update --ref`, by exact name: a
+  tag, an origin branch (`origin/BRANCH` of the fresh clone, so a branch other than the
+  default one installs), then a commit ID of 7 to 64 lowercase hex digits; revision
+  expressions (`HEAD~1`, `TAG^`), shorter IDs and `refs/heads/*` are refused with
+  `invalid_argument` (an unknown ref too, was `git`).
+- `update ID --release` may go down to the newest release (from a branch commit or a pin
+  above it); `rollback` swaps the mode with the revision (`previous` records its `mode`);
+  a change of mode alone is a change (`RevisionChange.changed` at the same commit, CLI
+  `ID pinned at V (REF)`, `ID follows branch B at V`, `ID follows releases at V`); a
+  branch the origin no longer has is `version_conflict` for `update ID` and reason
+  `branch_gone` in `update all`; `ID already installed (V, pinned at REF)` names the
+  recorded mode, and `--ref`/`--dev` asking for another mode adds the update hint.
+- `state.json` records gain `mode` (omitted in release mode, else `{"pinned": REF}` or
+  `{"branch": NAME}`); the format stays 3 (no released gitpm wrote format 3 without it).
+  `forgotten` now keeps the record of every forgotten package, own clones included.
+- `restore` records the forgotten package as it was: revisions (`previous` kept),
+  `catalog`, `enabled` and mode, for own and shared clones alike (an own clone used to be
+  registered at its HEAD, enabled, without `catalog` or `previous`). Release and pinned
+  mode take the recorded commit, branch mode a published HEAD after it. Lost work refuses
+  with `local_changes`: file changes, unpublished commits (`UnpublishedCommit`, in every
+  mode) and a moved HEAD (`HeadMoved`). A clone without a `forgotten` record is not
+  restorable (`repository_not_found`); `restore` of a recorded package is
+  `already_installed`, even when its clone is gone (was `repository_not_found`).
+- `check`: a pinned package's row is the new status `pinned` ("pinned"; nothing is
+  queried); a branch-mode row compares the installed commit with the branch HEAD on the
+  origin (`up_to_date`/`update_available`; `origin_unreachable` "branch NAME not found on
+  the origin"). The origin is read with `git ls-remote --tags --heads`. `CheckRow` gains
+  `mode`; the CLI table adds `(REF)`/`(branch NAME)` to the status.
+- Library API: `Manager::install_ref`, `install_channel`, `update_ref` and
+  `update_channel` are removed; `install_package(source, package, InstallTarget)`
+  (`InstallTarget::{Release, Ref(String), Dev}`) and `update_to(id, Target)`
+  (`Target::{Recorded, Release, Ref(String), Dev}`) replace them (`install(source)` and
+  `update(id)` stay). New `Mode::{Release, Pinned(String), Branch(String)}` in
+  `Installed.mode`, `InstalledPackage.mode`, `RevisionChange.mode`, `InstallResult.mode`
+  and `Revision.mode` (only in `previous`); `InstallResult.requested_mode`;
+  `RevisionChange.unchanged_reason` and `Unchanged.reason` (`UnchangedReason::{Pinned {
+  reference }, Diverged { branch }, BranchGone { branch }}`).
+- FFI: enum `Channel` is removed; `PackageManager.install(source, target: InstallTarget,
+  package)` (`release`, `ref(reference)`, `dev`) and `update(id, target: Target)`
+  (`release`, `ref(reference)`, `dev`, `recorded`). `InstalledPackage`, `PackageRecord`,
+  `CheckRow`, `RevisionChange`, `InstallResult` and `Revision` gain `mode` (`Mode`:
+  `release`, `pinned(reference)`, `branch(name)`), `InstallResult` gains `requestedMode`,
+  `RevisionChange` gains `unchangedReason` and `Unchanged` gains `reason`
+  (`UnchangedReason`: `pinned(reference)`, `diverged(branch)`, `branchGone(branch)`), `CheckStatus` gains
+  `pinned`. Migration: pass a target instead of `reference` and `channel`.
 
 ## Working without a catalog
 
@@ -409,7 +518,7 @@ catalog configured").
 
 `check` needs no catalog either. Every installed package gets one row: from the catalog
 when one is given and lists the package (column `SOURCE` `catalog`), otherwise from its
-recorded origin (`origin`): `git ls-remote --tags` of `packages.<id>.source`, read once per
+recorded origin (`origin`): `git ls-remote --tags --heads` of `packages.<id>.source`, read once per
 source, without fetching or changing the clone. The newest `ID@VERSION` tag counts by name
 (its manifest is verified only when updating). Origin rows say `up to date`, `update
 available`, `newer than origin`, `no releases on origin` or `origin unreachable` (with a
@@ -419,7 +528,9 @@ marks its own row; `check` still exits 0. Tags are compared by name: an origin t
 installed version that now points to another commit still counts as `up to date`. Only a
 Git URL (`https`, `http`, `ssh`, `git`, `file`, `host:path`) or an absolute path is queried,
 with remote helpers (`ext::`, `fd::`, any `::`) never allowed; any other recorded source
-gives `origin unreachable: source not queried: …` without starting git.
+gives `origin unreachable: source not queried: …` without starting git. A pinned package
+is `pinned (REF)` and not queried; a branch-mode package is compared by commit with the
+HEAD of its branch on the origin.
 
 ```console
 $ gitpm check
@@ -479,7 +590,8 @@ not derive it. `enabled` is not `active`: a replaced package stays `enabled: tru
 - `install`, `update` and `rollback` of a replaced or disabled package change state and
   clone only; its `dist/` appears on `replace --back` / `enable`. `fork … --replace` ends
   with the fork deployed and the original's `dist/` removed.
-- `forget X` removes `dist/X/` (the clone stays); `restore X` deploys it. Forgetting or
+- `forget X` removes `dist/X/` (the clone stays); `restore X` deploys it when it is
+  active (a package forgotten while disabled stays disabled). Forgetting or
   uninstalling a replacement drops its bindings, so each original it replaced is
   deployed again. Uninstalling or forgetting the original `X` keeps the binding `X → Y`:
   installing `X` again leaves it replaced (no `dist/X/`) until `replace X --back`.
@@ -542,8 +654,8 @@ packages/theme/dist/…
   repository with several packages is refused with the list of its packages (`tilr/store
   (packages/store), tilr/theme (packages/theme)`); one with a single listed package
   needs none; an `--ref ID@VERSION` tag names the package itself. For a single-package
-  repository a given ID must match its manifest. `--ref` and `--channel dev` (HEAD of the
-  default branch) work per package.
+  repository a given ID must match its manifest. `--ref` and `--dev` (the origin's default
+  branch) work per package, and each package records its own mode.
 - Workspace: the packages of one source share one clone, `repos/<name>-<hash of the
   source>`; state records `clone` (the cache key of that clone) and `path` (the package
   folder) per package, and only `<path>/dist` is deployed to `dist/<namespace>/<name>`.
@@ -562,9 +674,11 @@ packages/theme/dist/…
   as they are (moved ones overwritten; `update` also drops deleted ones), but is refused
   (`version_conflict`, naming the tag) when the release tag of an installed revision of
   any package of the clone would move.
-- Forgetting a package of a shared clone keeps a record in `state.json` (`forgotten`): it
-  still holds the clone (its `dist/` is removed by `forget`), `restore` registers it
-  again at its recorded revision and deploys it, and `uninstall` of the forgotten package
+- Forgetting a package of a shared clone keeps its record in `state.json` (`forgotten`,
+  as for every forgotten package): it still holds the clone (its `dist/` is removed by
+  `forget`), `restore` records it again as it was (revision, `enabled`, mode; the clone is
+  checked out at the recorded commit when its HEAD is another package's revision) and
+  deploys it when active, and `uninstall` of the forgotten package
   removes the record and, if it was the last user, the clone. Installing a forgotten ID
   again is refused until it is restored or uninstalled (as for a forgotten root package).
   If the clone is gone, `uninstall` drops the record, and `restore` says so.
@@ -784,10 +898,13 @@ use gitpm::{Manager, Options};
 
 let pm = Manager::open_with("/path/to/workspace", Options { catalog: Some(url) })?;
 pm.install("git@github.com:acme/demo1.git")?;          // latest release tag
-pm.install_channel(src, Some("acme/demo1@0.2.0"), false)?; // explicit ref; dev=true follows HEAD
-pm.install_package(src, Some("tilr/store"), None, false)?;  // one package of a gitpm.json repo
+use gitpm::{InstallTarget, Target};
+pm.install_package(src, None, InstallTarget::Ref("acme/demo1@0.2.0".into()))?; // pinned
+pm.install_package(src, None, InstallTarget::Dev)?;    // follows the origin's default branch
+pm.install_package(src, Some("tilr/store"), InstallTarget::Release)?; // one package of a gitpm.json repo
 pm.install_from_catalog("acme/demo1", None)?;          // exact catalog release, hashes verified
-pm.update("acme/demo1")?;  pm.update_channel(id, None, true)?;
+pm.update("acme/demo1")?;                              // by the recorded mode (pinned: unchanged_reason)
+pm.update_to(id, Target::Release)?;  pm.update_to(id, Target::Ref("feature".into()))?;
 pm.rollback(id)?;  pm.enable(id)?;  pm.disable(id)?;  pm.forget(id)?;  pm.restore(id)?;
 let plan = pm.uninstall_plan(id)?;                    // deletes + lost_work
 let dist = pm.uninstall(id, /* confirm */ !plan.lost_work.is_empty() && user_said_yes)?;
@@ -847,7 +964,8 @@ gitpm update all                  # apply the compatible set atomically
 The library exposes `Manager::update_all_plan()` and `Manager::update_all()`;
 Swift/Kotlin bindings expose the same operations. Both return `UpdateAllPlan`
 with `updates`, new dependency `installs`, `kept_back` entries (selected and
-latest versions) and `unchanged` packages (`{id, version}`), so every installed package
+latest versions) and `unchanged` packages (`{id, version, reason}`; `reason` is
+`pinned`, `diverged` or `branch_gone` when the mode keeps a package), so every installed package
 is listed; `update_all` adds the `dist` report. Apply resolves again under the workspace lock; a preview is
 not a saved plan and upstream changes can change the result.
 
@@ -865,7 +983,12 @@ using each candidate's declared `replaces.version`; disabled flags are preserved
 and disabled packages cannot satisfy dependencies. If the existing state is broken
 and no compatible solution repairs it, resolution fails with an explanation.
 Local changes, unpublished work and moved release tags block the operation.
-Dev branches and explicit refs are supported by single-package update only.
+Each package follows its recorded mode: release-mode packages are solved over their
+release tags, a branch-mode package gets its branch HEAD as its only new candidate (its
+manifest version takes part in the solve, so dependents stay protected; a diverged
+history keeps it with reason `diverged`, a branch gone from the origin with reason
+`branch_gone`), and a pinned package stays (reason `pinned`).
+Explicit refs are for single-package update only.
 
 All selected repositories and payloads are prepared and validated before the
 transaction commits. A preparation failure leaves the workspace unchanged;
@@ -955,8 +1078,9 @@ if plan.lostWork.isEmpty || userConfirmed(plan.lostWork.map(describeLostWork)) {
 ```
 
 FFI surface: `PackageManager` (open, root, list, browseCatalog, catalogRelease,
-install(package; defaults to nil), installFromCatalog, update, updateAllPlan, updateAll
-(`UpdateAllPlan` with `unchanged` and `dist`), rollback, enable, disable(force),
+install(source, target: `InstallTarget`, package; defaults to nil), installFromCatalog,
+update(id, target: `Target`, `.recorded` follows the recorded mode), updateAllPlan,
+updateAll (`UpdateAllPlan` with `unchanged`, each with its `reason`, and `dist`), rollback, enable, disable(force),
 forget(force), restore, uninstallPlan, uninstall(confirm, force), fork
 (one package; `ForkResult`), forkAndReplace(version, confirm; returns a
 `ForkReplacement`: a failure after the fork exists is reported in `failedStep` (the
@@ -970,7 +1094,9 @@ removed, unmanaged, skipped)); every mutating call returns its `DistSync` report
 (`enable`/`disable`/`forget`/`uninstall` return it, `InstallResult`, `RevisionChange`,
 `ReplacementPlan` and `UpdateAllPlan` carry it as `dist`); `InstallResult` and
 `RevisionChange` carry `skipped` (broken release tags) and `warnings`, as the CLI prints
-them; `force` defaults to false; `InstalledPackage.path` and `CatalogRelease.path` name
+them; `RevisionChange.unchangedReason` says why an update left a package (`pinned`);
+`InstalledPackage.mode`, `PackageRecord.mode` and `CheckRow.mode` carry the recorded
+`Mode`; `force` defaults to false; `InstalledPackage.path` and `CatalogRelease.path` name
 the package folder; `InstalledPackage.clone` names the shared clone; `InstalledPackage`,
 `PackageSummary` and `CatalogRelease` carry the [metadata](#package-metadata); the fork
 records have the names of the library types `gitpm::ForkReplacement`, `PackageFork`,
