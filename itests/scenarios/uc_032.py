@@ -66,7 +66,7 @@ def broken_latest_tag_in_second_source(t: T):
     refused (version_conflict), neither dan/bad 1.0.0 nor hello 0.3.0 written; retry after
     deleting the broken tag publishes both."""
     def bad():
-        t.new_plugin("dan/bad", "1.0.0")
+        t.new_package("dan/bad", "1.0.0")
         t.release("dan/bad", "1.0.1", tag=False)
         t.tag("dan/bad", "dan/bad@2.0.0")
         add_source(t, "../repos/dan/bad")
@@ -83,7 +83,7 @@ def malformed_manifest_tag_newer_than_valid(t: T):
     """A newer release tag with unparsable plugin.json in the second source: refused;
     retry after moving that tag away succeeds."""
     def bad():
-        t.new_plugin("dan/bad", "1.0.0")
+        t.new_package("dan/bad", "1.0.0")
         t.commit("dan/bad", "broken", {"plugin.json": "{ not json"})
         t.tag("dan/bad", "dan/bad@1.1.0")
         t.commit("dan/bad", "repair", {"plugin.json": json.dumps({"id": "dan/bad", "version": "1.0.0"})})

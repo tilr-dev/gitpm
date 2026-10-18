@@ -20,7 +20,7 @@ def tty(t: T, args: list, answer: str = "") -> "object":
 
 
 def survivors(t: T, *ids: str):
-    """Snapshot of the given plugins' clones and dist folders plus all author repos."""
+    """Snapshot of the given packages' clones and dist folders plus all author repos."""
     paths = [t.clone(i) for i in ids] + [t.dist(i) for i in ids] + [t.root / "repos"]
     return t.snap(*paths, git=True)
 
@@ -35,24 +35,23 @@ def uninstall_clean_removes_only_selected(t: T):
     t.lacks(r.out, "Delete anyway", "Local work")
     t.not_installed(B)
     after = t.state()
-    del state["plugins"][B]
+    del state["packages"][B]
     t.eq(after, state, "state minus dan/b")
     t.same(keep, "siblings and author repositories")
-    t.ok((t.ws / "plugins/dan").is_dir(), "namespace directory of the sibling kept")
+    t.ok((t.ws / "packages/dan").is_dir(), "namespace directory of the sibling kept")
 
 
 @case(fixture="g3_trio_installed", spec=["package-ids/package-id-syntax", "errors/failing-operations-leave-the-workspace-unchanged"])
 def namespace_directory_is_refused(t: T):
-    """2. uninstall of the namespace directory `dan`, without and with --force, is rejected;
-    siblings, author repositories and the catalog survive."""
+    """2. uninstall of the namespace `dan`, without and with --force, is rejected as an
+    invalid ID; siblings, author repositories and the catalog survive."""
     t.gitpm_ok("register", t.repo(A), "--ref", "dan/a@0.1.1")
     before = t.snap(t.ws, t.root / "repos", t.catalog, git=True)
     for extra in [[], ["--force"]]:
-        r = t.gitpm_err("uninstall", "dan", *extra, kind="repository_not_found", contains="dan")
-        t.has(r.err, "namespace directory is not a plugin")
+        t.gitpm_err("uninstall", "dan", *extra, kind="invalid_id", contains="namespace/name")
         t.same(before, f"workspace, author repos, catalog after uninstall dan {' '.join(extra)}")
     for id in [A, B]:
-        t.plugin(id)
+        t.package(id)
 
 
 @case(fixture="g3_trio_installed", spec=["cli/errors-and-exit-codes#unknown-id", "errors/stable-error-kinds#removal-of-an-unknown-package"])
@@ -71,12 +70,12 @@ def case_variant_is_an_unknown_id(t: T):
     """4. `DAN/A` when only dan/a is installed: unknown ID with and without --force; dan/a
     clone, dist and state entry byte-identical (exact state ID only)."""
     before = t.snap(t.ws, git=True)
-    entry = t.plugin(A)
+    entry = t.package(A)
     for extra in [[], ["--force"]]:
         r = t.gitpm_err("uninstall", "DAN/A", *extra, contains="DAN/A")
         t.has(r.err, "Error kind:")
         t.same(before, f"workspace after uninstall DAN/A {' '.join(extra)}")
-    t.eq(t.plugin(A), entry, "dan/a state entry")
+    t.eq(t.package(A), entry, "dan/a state entry")
 
 
 @case(fixture="g3_trio_installed", spec=["package-ids/ids-are-matched-exactly#case-variant-on-apfs"])
@@ -93,19 +92,19 @@ def case_variant_on_case_insensitive_fs(t: T):
 
 @case(fixture="g3_trio_installed", spec=["install-uninstall/only-manager-owned-files-are-deleted#uninstalling-a-fork"])
 def fork_author_repo_outside_workspace_survives(t: T):
-    """5. uninstall touches only plugins/<id> and dist/<id>: the fork author repository
+    """5. uninstall touches only packages/<id> and dist/<id>: the fork author repository
     (outside the workspace) survives uninstall of the fork and of its original."""
     fork = t.root / "authors/my-a"
     t.gitpm_ok("fork", A, "--ns", "mine", "--into", fork)
     t.gitpm_ok("install", fork, "--channel", "dev")
-    t.plugin("mine/a")
+    t.package("mine/a")
     keep = t.snap(fork, t.root / "repos", t.clone(B), t.dist(B), t.clone(C), t.dist(C), git=True)
     t.gitpm_ok("uninstall", "mine/a")
     t.not_installed("mine/a")
-    t.ok(not (t.ws / "plugins/mine").exists() or not any((t.ws / "plugins/mine").iterdir()),
-         "nothing left of mine/a in plugins/")
+    t.ok(not (t.ws / "packages/mine").exists() or not any((t.ws / "packages/mine").iterdir()),
+         "nothing left of mine/a in packages/")
     t.gitpm_ok("uninstall", A)
     t.not_installed(A)
-    t.same(keep, "fork author repo, author repos and unrelated plugins")
-    t.eq(sorted(t.state()["plugins"]), [B, C], "remaining plugins")
+    t.same(keep, "fork author repo, author repos and unrelated packages")
+    t.eq(sorted(t.state()["packages"]), [B, C], "remaining packages")
     t.ok(Path(fork, "plugin.json").is_file(), "fork checkout intact")

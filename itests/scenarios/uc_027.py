@@ -1,6 +1,6 @@
 """UC-027: Register and immutable catalog releases (P0).
 
-Error messages name the plugin ID and version.
+Error messages name the package ID and version.
 """
 
 import hashlib
@@ -40,7 +40,7 @@ def register_into_new_catalog(t: T):
     t.ok("build" not in stored, "no build metadata")
     index = json.loads(t.catalog_index(ID).read_text())
     t.eq(index, {"schema": 2, "id": ID, "source": str(t.repo(ID)),
-                 "versions": {"0.1.0": "versions/0.1.0/release.json"}}, "plugin index")
+                 "versions": {"0.1.0": "versions/0.1.0/release.json"}}, "package index")
     t.ok(not t.ws.exists(), "register installs nothing")
 
 
@@ -68,7 +68,7 @@ def different_commit_same_version_conflicts(t: T):
     t.same(before, "catalog")
     t.eq(release(t, "0.1.1"), old, "stored release")
     t.ok(not t.ws.exists(), "nothing installed")
-    t.has(r.err, ID)  # error messages name the plugin ID (product decision)
+    t.has(r.err, ID)  # error messages name the package ID (product decision)
 
 
 @case(fixture="catalog", spec=["catalog/published-versions-are-immutable", "errors/errors-name-the-package"])
@@ -84,7 +84,7 @@ def other_source_same_id_conflicts(t: T):
         errors.append(t.gitpm_err("register", mirror, "--ref", ref, kind="catalog", contains="different source").err)
         t.same(before, f"catalog after refused {ref}")
     t.ok(not t.ws.exists(), "nothing installed")
-    t.has(errors[0], ID)  # error messages name the plugin ID (product decision)
+    t.has(errors[0], ID)  # error messages name the package ID (product decision)
 
 
 @case(fixture="catalog", spec=["catalog/release-record"])

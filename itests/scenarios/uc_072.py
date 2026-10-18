@@ -20,7 +20,7 @@ def suite(t: T):
 
 
 def shared_clone(t: T):
-    return t.ws / "repos" / t.plugin(STORE)["clone"]
+    return t.ws / "repos" / t.package(STORE)["clone"]
 
 
 @case(fixture=None, spec=["authoring/init-options#start-a-multi-package-repository-from-nothing",
@@ -49,7 +49,7 @@ def install_without_package_id_lists_packages(t: T):
                     contains=("repository has 3 packages at commit", "choose one by ID:",
                               f"{PANEL} (packages/panel)", f"{STORE} (packages/store)", f"{THEME} (packages/theme)"))
     t.lacks(r.out, "installed")
-    t.ok(not (t.ws / "state.json").exists() or not t.state().get("plugins"), "nothing installed")
+    t.ok(not (t.ws / "state.json").exists() or not t.state().get("packages"), "nothing installed")
     t.ok(not (t.ws / "repos").exists() or not any((t.ws / "repos").iterdir()), "no clone left")
 
 
@@ -57,7 +57,7 @@ def install_without_package_id_lists_packages(t: T):
                                   "multi-package-repos/choosing-a-package-at-install"])
 def two_packages_share_one_clone(t: T):
     """`install SRC ID` twice: one clone repos/suite-<hash>, state records clone and path, only
-    <path>/dist is deployed for each, no plugins/<id> clone."""
+    <path>/dist is deployed for each, no packages/<id> clone."""
     for id in (STORE, THEME):
         r = t.gitpm_ok("install", suite(t), id)
         t.has(r.out, f"installed {id}@0.1.0 from {suite(t)}")
@@ -65,9 +65,9 @@ def two_packages_share_one_clone(t: T):
     t.eq(len(clones), 1, "one shared clone")
     t.ok(re.fullmatch(r"suite-[0-9a-f]{8,}", clones[0]) is not None, f"clone name {clones[0]} is <name>-<hash>")
     for id, folder in ((STORE, "packages/store"), (THEME, "packages/theme")):
-        p = t.plugin(id)
+        p = t.package(id)
         t.eq((p["clone"], p["path"]), (clones[0], folder), f"{id} clone and path")
-        t.ok(not t.clone(id).exists(), f"no plugins/{id} clone")
+        t.ok(not t.clone(id).exists(), f"no packages/{id} clone")
         t.eq(sorted(f.name for f in t.dist(id).iterdir()), ["index.js"], f"{id}: only its dist/ deployed")
         t.has((t.dist(id) / "index.js").read_text(), f"{id.split('/')[1]} 0.1.0")
     t.ok(not t.dist(PANEL).exists(), "panel not installed")
@@ -84,12 +84,12 @@ def per_package_release_and_update(t: T):
     t.eq(sorted(t.git(suite(t), "tag", "--list").split()),
          sorted([f"{STORE}@0.1.0", f"{STORE}@0.2.0", f"{THEME}@0.1.0", f"{PANEL}@0.1.0"]), "tags")
     theme_before = t.snap(t.dist(THEME))
-    theme_entry = t.plugin(THEME)
+    theme_entry = t.package(THEME)
     t.has(t.gitpm_ok("update", STORE).out, f"{STORE} updated 0.1.0 → 0.2.0")
     t.has(t.gitpm_ok("update", THEME).out, f"{THEME} up to date (0.1.0)")
-    t.eq(t.plugin(STORE)["current"]["version"], "0.2.0", "store updated")
+    t.eq(t.package(STORE)["current"]["version"], "0.2.0", "store updated")
     t.eq((t.dist(STORE) / "index.js").read_text(), "export const greeting = 'store 0.2.0';\n", "store dist")
-    t.eq(t.plugin(THEME), theme_entry, "theme state")
+    t.eq(t.package(THEME), theme_entry, "theme state")
     t.same(theme_before, "theme dist")
 
 
@@ -100,14 +100,14 @@ def uninstall_one_of_two_keeps_shared_clone(t: T):
     last package removes the clone."""
     clone = shared_clone(t)
     t.gitpm_ok("uninstall", STORE)
-    t.ok(STORE not in t.state()["plugins"] and not t.dist(STORE).exists(), "store removed")
+    t.ok(STORE not in t.state()["packages"] and not t.dist(STORE).exists(), "store removed")
     t.ok(clone.is_dir(), "shared clone kept")
     t.has((t.dist(THEME) / "index.js").read_text(), "theme 0.1.0")
-    t.eq(t.rev(clone), t.plugin(THEME)["current"]["commit"], "clone HEAD at theme's installed revision")
+    t.eq(t.rev(clone), t.package(THEME)["current"]["commit"], "clone HEAD at theme's installed revision")
     t.write(suite(t), {"packages/theme/dist/index.js": "export const greeting = 'theme 0.1.1';\n"})
     t.gitpm_ok("commit", suite(t), "0.1.1", "--package", THEME)
     t.gitpm_ok("update", THEME)
-    t.eq(t.plugin(THEME)["current"]["version"], "0.1.1", "theme still updatable")
+    t.eq(t.package(THEME)["current"]["version"], "0.1.1", "theme still updatable")
     t.gitpm_ok("uninstall", THEME)
     t.ok(not clone.exists(), "clone removed with its last package")
 
@@ -131,8 +131,8 @@ def register_package_and_catalog_update(t: T):
         t.eq(release["manifest"]["id"], id, f"{id} release manifest")
     t.gitpm_ok("install-catalog", STORE)
     t.gitpm_ok("install-catalog", THEME)
-    t.eq(t.plugin(STORE)["clone"], t.plugin(THEME)["clone"], "catalog installs share one clone")
-    t.eq((t.plugin(STORE)["path"], t.plugin(THEME)["path"]), ("packages/store", "packages/theme"), "paths")
+    t.eq(t.package(STORE)["clone"], t.package(THEME)["clone"], "catalog installs share one clone")
+    t.eq((t.package(STORE)["path"], t.package(THEME)["path"]), ("packages/store", "packages/theme"), "paths")
 
 
 @case(fixture="fork_suite_installed", spec=["multi-package-repos/forking-packages-of-one-repository#partial-fork",
@@ -149,12 +149,12 @@ def fork_one_package_of_the_repository(t: T):
     t.eq(json.loads((dest / "gitpm.json").read_text()), {"packages": ["packages/theme"]}, "fork gitpm.json")
     t.eq(sorted(p.name for p in (dest / "packages").iterdir()), ["theme"], "only the forked folder")
     m = json.loads((dest / "packages/theme/plugin.json").read_text())
-    theme = t.plugin(THEME)["current"]
+    theme = t.package(THEME)["current"]
     t.eq((m["id"], m["forkOf"], m["replaces"]),
          ("me/theme", {"id": THEME, "version": "0.1.0", "commit": theme["commit"]}, {"id": THEME, "version": "0.1.0"}),
          "fork manifest")
     t.same(before, "workspace")
     t.gitpm_ok("commit", dest, "0.1.1", "--package", "me/theme")
     t.gitpm_ok("install", dest, "me/theme")
-    t.eq(t.plugin("me/theme")["forkOf"]["id"], THEME, "installed fork provenance")
+    t.eq(t.package("me/theme")["forkOf"]["id"], THEME, "installed fork provenance")
     t.has((t.dist("me/theme") / "index.js").read_text(), "theme")

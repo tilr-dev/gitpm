@@ -1,10 +1,10 @@
-"""UC-073: Plugin metadata: title, description, provides, tags (P1).
+"""UC-073: Package metadata: title, description, provides, tags (P1).
 
 gitpm stores and reports the optional keys of plugin.json without interpreting them:
-`list` shows them in `resolved[]` and in `plugins.<id>.metadata` with all four keys
+`list` shows them in `resolved[]` and in `packages.<id>.metadata` with all four keys
 (absent string = null, absent list = []), `list --provides SERVICE` filters, wrong-typed
 keys are ignored with a warning when installing and refused by `commit`, and `info`
-prints the metadata of each plugin's latest catalog release. Plugins are created by the
+prints the metadata of each package's latest catalog release. Packages are created by the
 case (no fixture).
 """
 
@@ -28,8 +28,8 @@ def ids(value: dict) -> list[str]:
 
 
 def two_plugins(t: T):
-    t.new_plugin(THEME, "1.0.0", extra=THEME_META)
-    t.new_plugin(STORE, "1.0.0")
+    t.new_package(THEME, "1.0.0", extra=THEME_META)
+    t.new_package(STORE, "1.0.0")
     for id in (THEME, STORE):
         t.gitpm_ok("install", t.repo(id))
 
@@ -37,7 +37,7 @@ def two_plugins(t: T):
 @case(spec=["plugin-metadata/reported-shape", "plugin-metadata/metadata-keys#string-provides",
             "plugin-metadata/metadata-in-state"])
 def list_reports_all_four_keys(t: T):
-    """list: metadata in resolved[] and in plugins.<id>.metadata; a string provides is an
+    """list: metadata in resolved[] and in packages.<id>.metadata; a string provides is an
     array; absent keys are null / []; the author's plugin.json keeps the string form."""
     two_plugins(t)
     value = t.gitpm_ok("list").json()
@@ -49,7 +49,7 @@ def list_reports_all_four_keys(t: T):
     t.eq({k: store[k] for k in ("title", "description", "provides", "tags")},
          {"title": None, "description": None, "provides": [], "tags": []}, "absent metadata shape")
     for id, entry in [(THEME, theme), (STORE, store)]:
-        stored = value["plugins"][id]["metadata"]
+        stored = value["packages"][id]["metadata"]
         t.eq(sorted(stored), ["description", "provides", "tags", "title"], f"{id} state metadata keys")
         t.eq({k: stored[k] for k in stored}, {k: entry[k] for k in stored}, f"{id} same shape in state")
     t.eq(json.loads((t.clone(THEME) / "plugin.json").read_text())["provides"], "theme",
@@ -59,7 +59,7 @@ def list_reports_all_four_keys(t: T):
 @case(spec=["plugin-metadata/reported-shape#only-a-title"])
 def only_a_title(t: T):
     """A package with only `title`: description null, provides and tags []."""
-    t.new_plugin("dan/titled", "1.0.0", extra={"title": "Titled"})
+    t.new_package("dan/titled", "1.0.0", extra={"title": "Titled"})
     t.gitpm_ok("install", t.repo("dan/titled"))
     entry = resolved(t, t.gitpm_ok("list").json(), "dan/titled")
     t.eq((entry["title"], entry["description"], entry["provides"], entry["tags"]), ("Titled", None, [], []), "shape")
@@ -67,14 +67,14 @@ def only_a_title(t: T):
 
 @case(spec=["plugin-metadata/filter-by-provided-service"])
 def list_provides_filters_plugins_and_resolved(t: T):
-    """list --provides theme keeps only tilr/theme in plugins and resolved; a service nobody
+    """list --provides theme keeps only tilr/theme in packages and resolved; a service nobody
     provides gives empty lists; --provides on another command is a usage error."""
     two_plugins(t)
     only = t.gitpm_ok("list", "--provides", "theme").json()
     t.eq(ids(only), [THEME], "resolved filtered")
-    t.eq(sorted(only["plugins"]), [THEME], "plugins filtered")
+    t.eq(sorted(only["packages"]), [THEME], "packages filtered")
     none = t.gitpm_ok("list", "--provides", "store").json()
-    t.eq((ids(none), sorted(none["plugins"])), ([], []), "nothing provides store")
+    t.eq((ids(none), sorted(none["packages"])), ([], []), "nothing provides store")
     before = t.snap(t.ws)
     t.gitpm_err("check", "--provides", "theme", contains="--provides requires list")
     t.same(before, "workspace after a usage error")
@@ -84,9 +84,9 @@ def list_provides_filters_plugins_and_resolved(t: T):
 def replaced_original_still_listed(t: T):
     """me/dark replaces tilr/theme, both provide `theme`: list --provides theme lists both,
     with the original inactive."""
-    t.new_plugin(THEME, "1.0.0", extra=THEME_META)
+    t.new_package(THEME, "1.0.0", extra=THEME_META)
     t.gitpm_ok("install", t.repo(THEME))
-    t.new_plugin(DARK, "1.0.0", extra={"provides": ["theme"], "replaces": {"id": THEME, "version": "1.0.0"}})
+    t.new_package(DARK, "1.0.0", extra={"provides": ["theme"], "replaces": {"id": THEME, "version": "1.0.0"}})
     t.gitpm_ok("install", t.repo(DARK))
     t.gitpm_ok("replace", THEME, "--with", DARK)
     value = t.gitpm_ok("list", "--provides", "theme").json()
@@ -99,7 +99,7 @@ def replaced_original_still_listed(t: T):
 @case(spec=["plugin-metadata/lenient-reading-strict-authoring#old-release-with-bad-tags"])
 def wrong_typed_tags_ignored_on_install(t: T):
     """A release with "tags": "ui" installs; tags is [] and stderr warns."""
-    t.new_plugin("dan/bad", "1.0.0", extra={"tags": "ui"})
+    t.new_package("dan/bad", "1.0.0", extra={"tags": "ui"})
     r = t.gitpm_ok("install", t.repo("dan/bad"))
     t.has(r.err, "Warning: dan/bad 1.0.0: plugin.json tags must be an array of strings; ignored")
     t.eq(resolved(t, t.gitpm_ok("list").json(), "dan/bad")["tags"], [], "tags ignored")
@@ -108,7 +108,7 @@ def wrong_typed_tags_ignored_on_install(t: T):
 @case(spec=["plugin-metadata/lenient-reading-strict-authoring#authoring-with-bad-tags"])
 def wrong_typed_tags_refused_by_commit(t: T):
     """commit with "tags": "ui" fails with invalid_manifest; nothing is committed or tagged."""
-    t.new_plugin("dan/bad", "1.0.0")
+    t.new_package("dan/bad", "1.0.0")
     repo = t.repo("dan/bad")
     manifest = json.loads((repo / "plugin.json").read_text())
     manifest["tags"] = "ui"
@@ -123,7 +123,7 @@ def wrong_typed_tags_refused_by_commit(t: T):
 def fork_and_commit_keep_metadata(t: T):
     """fork tilr/theme as me/theme, then commit 1.0.1: title, description, provides (string
     form) and tags are unchanged while id/version/forkOf are rewritten."""
-    t.new_plugin(THEME, "1.0.0", extra=THEME_META)
+    t.new_package(THEME, "1.0.0", extra=THEME_META)
     t.gitpm_ok("install", t.repo(THEME))
     fork = t.root / "forks/theme"
     t.gitpm_ok("fork", THEME, "--ns", "me", "--into", fork)
@@ -136,10 +136,10 @@ def fork_and_commit_keep_metadata(t: T):
 @case(spec=["plugin-metadata/metadata-in-the-catalog#info-shows-metadata"])
 def info_shows_latest_release_metadata(t: T):
     """register two releases; info prints Title/Description/Provides/Tags of the latest
-    (1.1.0) under the plugin; a plugin without metadata prints no such lines."""
-    t.new_plugin(THEME, "1.0.0", extra={"title": "Old"})
+    (1.1.0) under the package; a package without metadata prints no such lines."""
+    t.new_package(THEME, "1.0.0", extra={"title": "Old"})
     t.release(THEME, "1.1.0", extra=THEME_META)
-    t.new_plugin(STORE, "1.0.0")
+    t.new_package(STORE, "1.0.0")
     for ref in (f"{THEME}@1.0.0", f"{THEME}@1.1.0"):
         t.gitpm_ok("register", t.repo(THEME), "--ref", ref)
     t.gitpm_ok("register", t.repo(STORE), "--ref", f"{STORE}@1.0.0")
@@ -158,8 +158,8 @@ def info_shows_latest_release_metadata(t: T):
 
 @case(spec=["plugin-metadata/metadata-in-the-catalog"])
 def broken_latest_release_only_drops_metadata(t: T):
-    """A broken latest release.json leaves only that plugin without metadata in info."""
-    t.new_plugin(THEME, "1.0.0", extra=THEME_META)
+    """A broken latest release.json leaves only that package without metadata in info."""
+    t.new_package(THEME, "1.0.0", extra=THEME_META)
     t.gitpm_ok("register", t.repo(THEME), "--ref", f"{THEME}@1.0.0")
     t.catalog_release(THEME, "1.0.0").write_text("{broken")
     out = t.gitpm_ok("info").out

@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Git identity is never invented in existing repositories
-gitpm SHALL NOT write a Git identity into an existing repository; without a configured identity there (`user.useConfigOnly`), `commit`, `init` into an existing repository and adding packages to an existing fork SHALL be refused with `invalid_argument`. Only a repository gitpm creates itself (new `init` folder, new fork) MAY get the local identity `Plugin Demo <demo@example.invalid>` when the user has none. Verified by `scaffold::create_package_refuses_uncommitted_config_and_a_missing_identity`.
+gitpm SHALL NOT write a Git identity into an existing repository; without a configured identity there (`user.useConfigOnly`), `commit`, `init` into an existing repository and adding packages to an existing fork SHALL be refused with `invalid_argument`. Only a repository gitpm creates itself (new `init` folder, new fork) MAY get the local identity `Package Demo <demo@example.invalid>` when the user has none. Verified by `scaffold::create_package_refuses_uncommitted_config_and_a_missing_identity`.
 
 #### Scenario: Tag-only retry without identity
 - **WHEN** an existing repository has no identity and `commit` is retried after a failed tag

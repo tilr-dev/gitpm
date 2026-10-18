@@ -79,11 +79,11 @@ def g5_offline(t: T):
 
 @g5_offline.check
 def _(t: T):
-    p = t.plugin("dan/hello")
+    p = t.package("dan/hello")
     t.eq(p["current"]["version"], "0.1.1", "dan/hello current")
     t.eq(p["previous"]["version"], "0.1.0", "dan/hello previous")
     t.eq(p["source"], str(t.root / "origin/hello.git"), "dan/hello source is the bare origin")
-    f = t.plugin("mine/hello")
+    f = t.package("mine/hello")
     t.eq(f["current"]["version"], "0.1.2", "fork current")
     t.eq(f["forkOf"]["id"], "dan/hello", "fork provenance")
     t.has((t.dist("mine/hello") / "index.js").read_text(), "mine fork")

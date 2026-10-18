@@ -1,4 +1,4 @@
-"""Single-plugin author repositories, a direct install and a local catalog."""
+"""Single-package author repositories, a direct install and a local catalog."""
 
 from gitpmtest import T, fixture
 
@@ -6,7 +6,7 @@ from gitpmtest import T, fixture
 @fixture()
 def hello(t: T):
     """dan/hello: one release 0.1.0 on main."""
-    t.new_plugin("dan/hello", "0.1.0")
+    t.new_package("dan/hello", "0.1.0")
 
 
 @hello.check
@@ -37,7 +37,7 @@ def _(t: T):
 @fixture()
 def numeric(t: T):
     """dan/num: releases 1.9.0 and 1.10.0 (numeric, not lexical, ordering)."""
-    t.new_plugin("dan/num", "1.9.0")
+    t.new_package("dan/num", "1.9.0")
     t.release("dan/num", "1.10.0")
 
 
@@ -54,7 +54,7 @@ def hello_installed(t: T):
 
 @hello_installed.check
 def _(t: T):
-    p = t.plugin("dan/hello")
+    p = t.package("dan/hello")
     t.eq(p["current"]["version"], "0.1.0", "current version")
     t.eq(p["current"]["commit"], t.rev("dan/hello", "dan/hello@0.1.0"), "current commit")
     t.eq(p["previous"], None, "previous")

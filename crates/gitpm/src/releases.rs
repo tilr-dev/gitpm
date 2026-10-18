@@ -59,10 +59,10 @@ pub fn discover_all(repo: &Path, expected_id: Option<&str>) -> Result<Discovery>
     let mut releases = BTreeMap::new();
     let mut skipped = Vec::new();
     for name in git(repo, &["tag", "--list"])?.lines() {
-        let version = name
-            .strip_prefix(&format!("{id}@"))
-            .or_else(|| name.strip_prefix('v'));
-        let Some(version) = version else { continue };
+        // Only `ID@VERSION` is a release tag; `vVERSION` and others are ignored.
+        let Some(version) = name.strip_prefix(&format!("{id}@")) else {
+            continue;
+        };
         let Ok(key) = version_key(version) else {
             continue;
         };
@@ -92,18 +92,6 @@ pub fn discover_all(repo: &Path, expected_id: Option<&str>) -> Result<Discovery>
                 }
             }
             Ok(Some(layout)) => {
-                let scoped = name.starts_with(&format!("{id}@"));
-                let claimed = layout.packages.iter().any(|p| p.manifest.id == id)
-                    || layout.problems.iter().any(|p| p.id.as_deref() == Some(id));
-                if !scoped {
-                    // `vVERSION` cannot say which package of the repository it releases.
-                    if claimed {
-                        skip(format!(
-                            "legacy tag {name} is ambiguous in a repository with several packages; tag {id}@{version} instead"
-                        ));
-                    }
-                    continue;
-                }
                 // Only this package's own folder matters; defective siblings do not.
                 if let Some(problem) = layout.problems.iter().find(|p| {
                     p.id.as_deref()
@@ -131,14 +119,11 @@ pub fn discover_all(repo: &Path, expected_id: Option<&str>) -> Result<Discovery>
                 continue;
             }
         };
-        // Forks retain upstream tags. They are not releases of the fork.
         if manifest.id != id {
-            if name.starts_with(&format!("{id}@")) {
-                skip(format!(
-                    "tag {name} disagrees with manifest ID {}",
-                    manifest.id
-                ));
-            }
+            skip(format!(
+                "tag {name} disagrees with manifest ID {}",
+                manifest.id
+            ));
             continue;
         }
         if manifest.version != version {
@@ -170,7 +155,7 @@ pub fn discover_all(repo: &Path, expected_id: Option<&str>) -> Result<Discovery>
     ensure!(
         !releases.is_empty(),
         NoReleases,
-        "no release tags for {id}; create vVERSION or {id}@VERSION, or use the dev channel{}",
+        "no release tags for {id}; create {id}@VERSION, or use the dev channel{}",
         skipped
             .iter()
             .map(|s| format!("; skipped {}", s.reason))
@@ -252,16 +237,22 @@ mod tests {
     }
 
     #[test]
-    fn legacy_v_tags_and_scoped_tags_of_the_same_release_are_merged() {
+    fn v_version_tags_are_not_releases() {
         let dir = TempDir::new("releases");
-        let author = Author::new(dir.join("repo"), "demo1");
-        assert_eq!(names(&discover(&author.path, None).unwrap()), ["v0.1.0"]);
-        // A scoped plugin may carry both spellings for one commit.
+        // A repository with only `v0.1.0` has no releases.
+        let author = Author::untagged(dir.join("repo"), "dan/demo1", "0.1.0");
+        git(&author.path, &["tag", "v0.1.0"]);
+        let error = discover_all(&author.path, None).unwrap_err();
+        assert_eq!(error.kind(), "no_releases");
+        assert!(!error.to_string().contains("v0.1.0"), "{error}");
+        // Next to `ID@VERSION` on another commit it is neither a release nor a conflict.
         let scoped = Author::new(dir.join("scoped"), "dan/demo1");
+        fs::write(scoped.path.join("dist/index.js"), "changed").unwrap();
+        git(&scoped.path, &["commit", "-q", "-am", "same version"]);
         git(&scoped.path, &["tag", "v0.1.0"]);
-        let tags = discover(&scoped.path, None).unwrap();
-        assert_eq!(tags.len(), 1);
-        assert_eq!(tags[0].commit, scoped.head());
+        let found = discover_all(&scoped.path, None).unwrap();
+        assert_eq!(names(&found.tags), ["dan/demo1@0.1.0"]);
+        assert!(found.skipped.is_empty(), "{:?}", found.skipped);
     }
 
     #[test]
@@ -270,6 +261,8 @@ mod tests {
         let author = Author::new(dir.join("repo"), "me/demo1");
         for tag in [
             "v1.0",
+            "v0.1.0",
+            "v9.0.0",
             "v1.0.0-beta",
             "v1.0.0+build",
             "v01.0.0",
@@ -292,8 +285,6 @@ mod tests {
         let dir = TempDir::new("releases");
         let author = Author::new(dir.join("repo"), "vendor/demo1");
         author.release("0.2.0");
-        // The fork changes the ID; the upstream `v`-style tag on the same history must be skipped.
-        git(&author.path, &["tag", "v0.2.0"]);
         write_manifest(&author.path, &manifest("me/demo1", "0.3.0"));
         git(&author.path, &["commit", "-q", "-am", "fork"]);
         git(&author.path, &["tag", "me/demo1@0.3.0"]);
@@ -301,7 +292,10 @@ mod tests {
         assert_eq!(names(&tags), ["me/demo1@0.3.0"]);
         // The upstream ID can still be asked for explicitly.
         let upstream = discover(&author.path, Some("vendor/demo1")).unwrap();
-        assert_eq!(names(&upstream), ["vendor/demo1@0.1.0", "v0.2.0"]);
+        assert_eq!(
+            names(&upstream),
+            ["vendor/demo1@0.1.0", "vendor/demo1@0.2.0"]
+        );
     }
 
     #[test]
@@ -323,19 +317,6 @@ mod tests {
         let error = latest(&author.path, None).unwrap_err();
         assert_eq!(error.kind(), "version_conflict");
         assert!(error.to_string().contains("dan/demo1@0.2.0"));
-    }
-
-    #[test]
-    fn same_version_on_two_commits_is_a_conflict() {
-        let dir = TempDir::new("releases");
-        let author = Author::new(dir.join("repo"), "dan/demo1");
-        // Second commit with the same manifest version, tagged with the legacy spelling.
-        fs::write(author.path.join("dist/index.js"), "changed").unwrap();
-        git(&author.path, &["commit", "-q", "-am", "same version"]);
-        git(&author.path, &["tag", "v0.1.0"]);
-        let error = discover(&author.path, None).unwrap_err();
-        assert_eq!(error.kind(), "version_conflict");
-        assert!(error.to_string().contains("conflicting release tags"));
     }
 
     #[test]
@@ -374,13 +355,13 @@ mod tests {
         // An old commit with a broken manifest got a release-looking tag.
         fs::write(author.path.join("plugin.json"), "{broken").unwrap();
         git(&author.path, &["commit", "-q", "-am", "broken"]);
-        git(&author.path, &["tag", "v0.0.1"]);
+        git(&author.path, &["tag", "dan/demo1@0.0.1"]);
         let good = author.release("0.2.0");
         let tags = discover(&author.path, None).expect("valid releases stay discoverable");
         assert_eq!(names(&tags), ["dan/demo1@0.1.0", "dan/demo1@0.2.0"]);
         assert_eq!(latest(&author.path, None).unwrap().commit, good);
         let found = discover_all(&author.path, None).unwrap();
         assert_eq!(found.skipped.len(), 1);
-        assert_eq!(found.skipped[0].name, "v0.0.1");
+        assert_eq!(found.skipped[0].name, "dan/demo1@0.0.1");
     }
 }

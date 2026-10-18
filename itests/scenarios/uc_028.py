@@ -1,6 +1,6 @@
 """UC-028: Catalog v2 tree and hashes (P0).
 
-Fixture g4_tree_catalog: namespaces dan and acme plus legacy oldie, two versions each,
+Fixture g4_tree_catalog: namespaces dan, acme and old, two versions each,
 nested and binary dist files. Hashes are recomputed independently from Git blobs.
 """
 
@@ -11,15 +11,15 @@ from pathlib import Path
 
 from gitpmtest import T, case
 
-PLUGINS = {
+PACKAGES = {
     "dan/hello": (["0.1.0", "0.1.1"], "dan/hello@{}"),
     "acme/widget": (["1.0.0", "1.1.0"], "acme/widget@{}"),
-    "oldie": (["0.1.0", "0.2.0"], "v{}"),
+    "old/oldie": (["0.1.0", "0.2.0"], "old/oldie@{}"),
 }
 
 
 def folder(t: T, id: str) -> Path:
-    return t.catalog / ("namespaces/" + id if "/" in id else "legacy/" + id)
+    return t.catalog / "namespaces" / id
 
 
 def load(path: Path) -> dict:
@@ -40,15 +40,15 @@ def committed_files(repo: Path, rev: str) -> dict:
 @case(fixture="g4_tree_catalog", spec=["catalog/catalog-v2-is-a-tree-of-static-files"])
 def schema2_directories_and_links_resolve(t: T):
     """Every directory catalog.json is schema 2 with only `name/` links that resolve to a
-    child catalog.json or plugin.json; plugin indexes link every version to its release."""
+    child catalog.json or plugin.json; package indexes link every version to its release."""
     t.eq(load(t.catalog / "catalog.json"),
-         {"schema": 2, "directories": {"legacy": "legacy/", "namespaces": "namespaces/"}}, "root")
+         {"schema": 2, "directories": {"namespaces": "namespaces/"}}, "root")
     t.eq(load(t.catalog / "namespaces/catalog.json"),
-         {"schema": 2, "directories": {"acme": "acme/", "dan": "dan/"}}, "namespaces/")
+         {"schema": 2, "directories": {"acme": "acme/", "dan": "dan/", "old": "old/"}}, "namespaces/")
     t.eq(load(t.catalog / "namespaces/dan/catalog.json"), {"schema": 2, "directories": {"hello": "hello/"}}, "dan/")
     t.eq(load(t.catalog / "namespaces/acme/catalog.json"), {"schema": 2, "directories": {"widget": "widget/"}},
          "acme/")
-    t.eq(load(t.catalog / "legacy/catalog.json"), {"schema": 2, "directories": {"oldie": "oldie/"}}, "legacy/")
+    t.eq(load(t.catalog / "namespaces/old/catalog.json"), {"schema": 2, "directories": {"oldie": "oldie/"}}, "old/")
 
     seen = set()
 
@@ -74,7 +74,7 @@ def schema2_directories_and_links_resolve(t: T):
     walk(t.catalog)
     on_disk = {p for p in t.catalog.rglob("*") if p.is_file()}
     t.eq(sorted(str(p) for p in on_disk - seen), [], "files not reachable from the root")
-    for id, (versions, _) in PLUGINS.items():
+    for id, (versions, _) in PACKAGES.items():
         index = load(folder(t, id) / "plugin.json")
         t.eq(index, {"schema": 2, "id": id, "source": str(t.repo(id)),
                      "versions": {v: f"versions/{v}/release.json" for v in versions}}, f"{id} index")
@@ -83,7 +83,7 @@ def schema2_directories_and_links_resolve(t: T):
 @case(fixture="g4_tree_catalog", spec=["catalog/release-record"])
 def releases_match_git(t: T):
     """manifest/source/commit/reference and every file digest and size equal Git content."""
-    for id, (versions, tag) in PLUGINS.items():
+    for id, (versions, tag) in PACKAGES.items():
         repo = t.repo(id)
         for v in versions:
             release = load(folder(t, id) / f"versions/{v}/release.json")
@@ -104,7 +104,7 @@ def releases_match_git(t: T):
 @case(fixture="g4_tree_catalog", spec=["catalog/published-versions-are-immutable", "catalog/register-one-version"])
 def adding_release_preserves_previous_records(t: T):
     """Registering dan/hello 0.2.0 adds only its release.json and plugin.json entry; previous
-    releases, other plugins and directory catalogs keep their bytes."""
+    releases, other packages and directory catalogs keep their bytes."""
     before = t.snap(t.catalog)
     t.gitpm_ok("register", t.repo("dan/hello"), "--ref", "dan/hello@0.2.0")
     after = t.snap(t.catalog)

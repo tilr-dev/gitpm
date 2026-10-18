@@ -34,7 +34,7 @@ def newer_release_hints_update(t: T):
     """A newer release upstream: the line ends with `; run update`; install does not move to it."""
     t.release(ID, "0.1.1")
     noop(t, "install", t.repo(ID), out=f"{ID} already installed (0.1.0); run update\n")
-    t.eq(t.plugin(ID)["current"]["version"], "0.1.0", "still 0.1.0")
+    t.eq(t.package(ID)["current"]["version"], "0.1.0", "still 0.1.0")
 
 
 @case(fixture="hello_installed", spec=["install-uninstall/install-is-idempotent-for-the-same-source"])

@@ -38,7 +38,7 @@ def fork_suite_installed(t: T):
 
 @fork_suite_installed.check
 def _(t: T):
-    state = t.state()["plugins"]
+    state = t.state()["packages"]
     t.eq(sorted(state), ["tilr/store", "tilr/theme"], "installed")
     t.eq(len({state[id]["clone"] for id in state}), 1, "one shared clone")
     t.ok((t.ws / "repos" / state["tilr/store"]["clone"] / ".git").exists(), "shared clone exists")

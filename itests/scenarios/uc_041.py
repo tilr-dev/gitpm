@@ -17,7 +17,7 @@ OUTSIDE = Path("/fx/outside")
 
 def sentinels(t: T):
     """Outside files a broken path check could follow, overwrite or delete; also a Git
-    repository that looks like an installed plugin."""
+    repository that looks like an installed package."""
     t.write(OUTSIDE, {"sentinel.txt": "do not touch\n", "evil/plugin.json": '{"id": "evil", "version": "0.1.0"}\n',
                       "evil/dist/index.js": "evil\n", "x/plugin.json": '{"id": "evil/x", "version": "0.1.0"}\n',
                       "x/dist/index.js": "x\n"})
@@ -29,7 +29,7 @@ def sentinels(t: T):
 
 
 def symlinked_plugin(t: T, id: str, links: dict[str, str], version: str = "0.1.0") -> str:
-    """A plugin release whose commit tracks the given symlinks (path -> target)."""
+    """A package release whose commit tracks the given symlinks (path -> target)."""
     repo = t.repo(id)
     if not repo.exists():
         (repo / "dist").mkdir(parents=True)
@@ -50,7 +50,7 @@ def symlinked_plugin(t: T, id: str, links: dict[str, str], version: str = "0.1.0
 @case(fixture="hello_installed", spec=["transactions-locking/managed-paths-are-never-followed-through-symlinks", "package-manifest/package-folder-contents"])
 def dist_symlink_refused_at_install(t: T):
     """dist/ with a relative and an absolute symlink: install refused (unsupported), no
-    partial installation, the unrelated plugin and the outside target untouched."""
+    partial installation, the unrelated package and the outside target untouched."""
     outside = sentinels(t)
     for id, target in [("dan/rel", "index.js"), ("dan/abs", str(OUTSIDE / "sentinel.txt"))]:
         symlinked_plugin(t, id, {"dist/link.js": target})
@@ -106,7 +106,7 @@ def fifo_in_clone_is_refused_without_hanging(t: T):
     t.gitpm_err("fork", ID, "--ns", "mine", "--into", fork, kind="unsupported", contains="unsupported file", timeout=30)
     t.ok(not fork.exists(), "no partial fork destination")
     t.release(ID, "0.1.1")
-    t.gitpm_err("update", ID, kind="unsupported", contains="unsupported file: /fx/ws/plugins/dan/hello/pipe", timeout=30)
+    t.gitpm_err("update", ID, kind="unsupported", contains="unsupported file: /fx/ws/packages/dan/hello/pipe", timeout=30)
     t.same(before, "workspace")
     t.gitpm_ok("uninstall", ID, "--force", timeout=30)
     t.not_installed(ID)
@@ -153,31 +153,31 @@ def manifest_with_a_path_id_is_refused(t: T):
 
 @case(fixture="hello_installed", spec=["install-uninstall/only-manager-owned-files-are-deleted"])
 def namespace_folder_cannot_be_removed(t: T):
-    t.new_plugin("dan/other", "0.1.0")
+    t.new_package("dan/other", "0.1.0")
     t.gitpm_ok("install", t.repo("dan/other"))
     before = t.snap(t.ws)
-    t.gitpm_err("uninstall", "dan", "--force", kind="repository_not_found", contains="a namespace directory is not a plugin")
-    t.gitpm_err("uninstall", "dan", kind="repository_not_found")
-    t.gitpm_err("restore", "dan", kind="repository_not_found")
+    t.gitpm_err("uninstall", "dan", "--force", kind="invalid_id", contains="namespace/name")
+    t.gitpm_err("uninstall", "dan", kind="invalid_id")
+    t.gitpm_err("restore", "dan", kind="invalid_id")
     for args in [("forget", "dan", "--force"), ("disable", "dan", "--force"), ("update", "dan")]:
-        t.gitpm_err(*args, kind="not_installed", contains="plugin dan is not installed")
+        t.gitpm_err(*args, kind="invalid_id", contains="namespace/name")
     t.gitpm_err("uninstall", "Dan/Hello", "--force")
     t.same(before, "workspace")
-    t.eq(sorted(t.state()["plugins"]), ["dan/hello", "dan/other"], "both plugins kept")
+    t.eq(sorted(t.state()["packages"]), ["dan/hello", "dan/other"], "both packages kept")
 
 
 @case(fixture="hello_installed", spec=["transactions-locking/managed-paths-are-never-followed-through-symlinks"])
 def symlinked_namespace_folder_is_never_followed(t: T):
-    """plugins/evil is a symlink to /fx/outside: uninstall/forget of evil/x and an
+    """packages/evil is a symlink to /fx/outside: uninstall/forget of evil/x and an
     install into the evil namespace are refused; the outside repository survives."""
     outside = sentinels(t)
-    os.symlink(OUTSIDE, t.ws / "plugins/evil")
+    os.symlink(OUTSIDE, t.ws / "packages/evil")
     os.symlink(OUTSIDE, t.ws / "dist/evil")
     before = t.snap(t.ws)
     r = t.gitpm("uninstall", "evil/x", "--force")
     t.ok(r.code != 0, "uninstall through a symlinked namespace refused")
     t.has(r.err, "managed path is a symlink")
-    t.new_plugin("evil/y", "0.1.0")
+    t.new_package("evil/y", "0.1.0")
     t.gitpm_err("install", t.repo("evil/y"), kind="workspace", contains="managed path is a symlink")
     t.same(before, "workspace")
     t.same(outside, "outside sentinels")

@@ -10,7 +10,7 @@ def update_to_new_release(t: T):
     """1. update without a catalog picks the new release tag; previous keeps 0.1.0."""
     commit = t.release(ID, "0.1.1")
     t.gitpm_ok("update", ID)
-    p = t.plugin(ID)
+    p = t.package(ID)
     t.eq(p["current"], {"version": "0.1.1", "commit": commit}, "current")
     t.eq(p["previous"]["version"], "0.1.0", "previous version")
     t.eq(t.rev(t.clone(ID)), commit, "clone HEAD")

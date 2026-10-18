@@ -36,12 +36,13 @@ context: |
   Catalogs are written only to local folders; publishing/hosting is the user's job.
 
   Compatibility: no backward compatibility before 1.0 (owner decision 2026-10-18, TILR-38):
-  legacy unscoped IDs, `vX.Y.Z` tags, old state.json formats with `migrate-catalog`, CLI
-  aliases and FFI stability are not promised and are being removed. Until TILR-38 lands the
-  code still reads them, and the specs describe that current behavior. state.json "format"
-  is bumped on any change an older reader would misread (no migration); newer formats are
-  refused. Every breaking CLI/API/FFI/file-format change is marked BREAKING and documented
-  in README "Changed in X.Y".
+  package IDs are always namespace/name, release tags always ID@VERSION, catalogs always the
+  v2 tree; there are no CLI aliases, migrations or compatibility readers, and the FFI
+  promises no stability (gitpm-ffi carries the library version). state.json carries
+  "format": 3; a gitpm reads and writes only its own format, any other one (or none) is
+  refused with `unsupported` and never rewritten. The format is bumped on any change an
+  older reader would misread (no migration). Every breaking CLI/API/FFI/file-format change
+  is marked BREAKING and documented in README "Changed in X.Y".
 
   Git flow: work happens on `dev` (or feature branches off `dev`) and is tested locally.
   Nothing goes to `main` (push, merge, PR, release-PR merge) without the owner's explicit
@@ -50,7 +51,7 @@ context: |
 
   Release: release-please (/.release-please-manifest.json, package `crates/gitpm`) keeps a
   release PR on `main`, opened by the org GitHub App tilr-bot; PR titles are Conventional Commits, squash merges only;
-  pre-1.0 feat/BREAKING bump minor. gitpm and gitpm-cli are released in lockstep (extra-files);
+  pre-1.0 feat/BREAKING bump minor. gitpm, gitpm-cli and gitpm-ffi share one version (extra-files);
   gitpm-ffi is publish = false. Merging the release PR is the release: tag vX.Y.Z, GitHub
   Release, crates.io via Trusted Publishing (OIDC, environment crates-io, no tokens), and
   prebuilt gitpm binaries (macOS/Linux, arm64/x86_64). A release is a separate explicit step.
@@ -65,11 +66,11 @@ context: |
 
   Glossary (canonical terms for every spec, proposal and design):
   - package: the unit gitpm manages (a folder with a manifest and a committed dist/). Prose
-    says "package"; literal names keep "plugin" until the rename (TILR-43): the file
-    `plugin.json`, the state key `plugins`, the workspace folder `plugins/`, the API names
-    `PluginManager`, `InstalledPlugin`, `PluginSummary`, and quoted messages.
-  - manifest: a package's `plugin.json`. catalog plugin index: the per-package file
-    `namespaces/<ns>/<name>/plugin.json` of a v2 catalog. Never call either one "plugin.json"
+    and literal names say "package": the state key `packages`, the workspace folder
+    `packages/`, the API names `PackageManager`, `InstalledPackage`, `PackageSummary`, and
+    messages. "plugin" remains only in the file name `plugin.json`.
+  - manifest: a package's `plugin.json`. catalog package index: the per-package file
+    `namespaces/<ns>/<name>/plugin.json` of the catalog. Never call either one "plugin.json"
     without saying which.
   - package dist: the committed `dist/` folder inside a package. deployed folder: the
     workspace folder `dist/<id>` gitpm copies it to.
@@ -83,9 +84,9 @@ context: |
     while bound. Placeholders are ORIGINAL and FORK (not X/Y).
   - upstream: only the original repository of a fork (its `upstream` remote). origin: the
     Git remote `origin` of a package's clone. source: the string recorded as
-    `plugins.<id>.source` (a local path canonicalized).
+    `packages.<id>.source` (a local path canonicalized).
   - register: only the catalog command. A workspace package is "recorded in state".
-  - forgotten: removed from `plugins` in state (a package of a shared clone keeps a
+  - forgotten: removed from `packages` in state (a package of a shared clone keeps a
     `forgotten` record). retained: its clone still exists in the workspace.
   - root: always qualified (workspace root, repository root, root package).
   - multi-package repository (not "monorepo").
@@ -99,11 +100,14 @@ context: |
 rules:
   proposal:
     - State what is out of scope (a "Non-goals" or "Out of scope" bullet list).
+    - No backward compatibility before 1.0 (TILR-38): no aliases, legacy formats, migrations or compatibility shims; breaking changes are marked BREAKING.
     - Mark every breaking change to the CLI, library API, FFI or file formats with **BREAKING** and name the migration.
     - Keep host-specific (Tilr) work out of gitpm proposals; name it as out of scope instead.
     - In Why, cite only recorded facts (commit, PR, note, session); write "Rationale not recorded" when unknown.
   specs:
     - Every requirement uses SHALL or MUST and has at least one #### Scenario with WHEN/THEN bullets.
+    - No backward compatibility before 1.0 (TILR-38): no aliases, legacy formats, migrations or compatibility shims; breaking changes are marked BREAKING.
+    - In spec prose say package; plugin appears only inside literal file or field names (`plugin.json`).
     - Specs describe observable behavior (CLI output, error kinds, files in the workspace, API results), not internal function names.
     - No internal names in specs (private types, functions, constants, source files such as `main.rs`); public API names and test names are fine.
     - Specs describe current code. Not-yet-implemented behavior goes into a change, not into specs/; a known defect keeps the requirement as the contract, without tracker references.

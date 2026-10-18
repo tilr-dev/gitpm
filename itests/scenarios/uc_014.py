@@ -35,7 +35,7 @@ def refused(t: T, repo, *extra, kind=None, contains=()):
     before = t.snap(t.ws, git=True)
     r = t.gitpm_err("install", repo, *extra, kind=kind, contains=contains)
     t.same(before, "workspace with the sentinel")
-    t.eq(t.plugin(SENTINEL)["current"]["version"], "0.1.0", "sentinel still installed")
+    t.eq(t.package(SENTINEL)["current"]["version"], "0.1.0", "sentinel still installed")
     return r
 
 
@@ -67,18 +67,18 @@ def unknown_manifest_fields_and_missing_version(t: T):
         t.not_installed(f"bad/{name}")
     repo, sha = bad_repo(t, "extra", {"plugin.json": manifest(id="bad/extra", version="0.1.0", pinned=True), **DIST})
     t.gitpm_ok("install", repo, "--ref", sha)
-    t.eq(t.plugin("bad/extra")["current"]["version"], "0.1.0", "installed version")
+    t.eq(t.package("bad/extra")["current"]["version"], "0.1.0", "installed version")
     t.eq(json.loads((t.clone("bad/extra") / "plugin.json").read_text())["pinned"], True, "unknown field kept")
 
 
 @case(fixture="hello_installed", spec=["package-ids/package-id-syntax#unsafe-components-are-refused", "package-ids/package-id-syntax#empty-namespace"])
 def invalid_id(t: T):
-    """Traversal, three components and empty IDs: invalid_id; nothing created outside plugins/."""
+    """Traversal, three components and empty IDs: invalid_id; nothing created outside packages/."""
     for name, id in [("dotdot", "../evil"), ("deep", "a/b/c"), ("empty", ""), ("space", "bad/demo 1"),
                      ("abs", "/etc")]:
         repo, sha = bad_repo(t, name, {"plugin.json": manifest(id=id, version="0.1.0"), **DIST})
         refused(t, repo, "--ref", sha, kind="invalid_id")
-    for escaped in [t.ws / "evil", t.root / "evil", t.ws / "plugins/a", t.ws / "dist/a"]:
+    for escaped in [t.ws / "evil", t.root / "evil", t.ws / "packages/a", t.ws / "dist/a"]:
         t.ok(not escaped.exists(), f"{escaped} not created")
 
 
@@ -122,7 +122,7 @@ def dist_with_only_placeholder_recorded(t: T):
     if r.code == 0:
         print("  RECORDED: a dist/ with only an empty placeholder file installs")
         t.eq(sorted(p.name for p in t.dist(id).rglob("*")), [".gitkeep"], "deployed exactly the committed files")
-        t.eq(t.plugin(id)["current"], {"version": "0.1.0", "commit": sha}, "current")
+        t.eq(t.package(id)["current"], {"version": "0.1.0", "commit": sha}, "current")
     else:
         print("  RECORDED: a dist/ with only an empty placeholder file is refused")
         t.not_installed(id)
@@ -131,13 +131,13 @@ def dist_with_only_placeholder_recorded(t: T):
 
 @case(fixture="hello_installed", spec=["install-uninstall/same-id-from-another-source-is-refused", "package-ids/case-colliding-ids-are-refused"])
 def conflicting_ids(t: T):
-    """Another source claiming the sentinel's ID, a case variant, or a legacy ID equal to its namespace."""
+    """Another source claiming the sentinel's ID, a case variant, or an unscoped ID equal to its namespace."""
     repo, sha = bad_repo(t, "sameid", {"plugin.json": manifest(id=SENTINEL, version="0.2.0"), **DIST})
     refused(t, repo, "--ref", sha, kind="already_installed", contains=SENTINEL)
     repo, sha = bad_repo(t, "case", {"plugin.json": manifest(id="Dan/hello", version="0.1.0"), **DIST})
     refused(t, repo, "--ref", sha, kind="workspace", contains="letter case")
     repo, sha = bad_repo(t, "nsclash", {"plugin.json": manifest(id="dan", version="0.1.0"), **DIST})
-    refused(t, repo, "--ref", sha, kind="workspace", contains="namespace path")
+    refused(t, repo, "--ref", sha, kind="invalid_id", contains="namespace/name")
     t.not_installed("Dan/hello")
 
 
@@ -188,7 +188,7 @@ def catalog_release_pointing_to_broken_manifest(t: T):
     broken = t.commit("dan/hello", "broken manifest", {"plugin.json": "{ broken"})
     t.edit_json(t.catalog_release("dan/hello", "0.2.0"), lambda r: r.update(commit=broken))
     catalog_refused(t, "dan/hello", None, contains="Error kind:")
-    t.eq(t.plugin("dan/num")["current"]["version"], "1.9.0", "sentinel")
+    t.eq(t.package("dan/num")["current"]["version"], "1.9.0", "sentinel")
 
 
 @case(fixture="catalog", spec=["install-uninstall/install-from-the-catalog#tampered-dist"])

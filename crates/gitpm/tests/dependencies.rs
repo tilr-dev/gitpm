@@ -1,6 +1,6 @@
-//! Dependencies between plugins, dependent guards, global fork replacement and the
+//! Dependencies between packages, dependent guards, global fork replacement and the
 //! single-catalog rule, through the public API (ATQ UC-053..059, UC-066).
-use gitpm::{Error, InstalledPlugin, Manager, Options, catalog, scaffold};
+use gitpm::{Error, InstalledPackage, Manager, Options, catalog, scaffold};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -135,7 +135,7 @@ impl Drop for Fixture {
     }
 }
 
-fn plugin(m: &Manager, id: &str) -> InstalledPlugin {
+fn plugin(m: &Manager, id: &str) -> InstalledPackage {
     m.list()
         .unwrap()
         .into_iter()
@@ -177,10 +177,10 @@ fn catalog_install_resolves_dependencies_and_records_edges() {
     );
     assert_eq!(core.dependents, ["app/a"]);
     let state = m.state().unwrap();
-    assert_eq!(state.plugins["app/a"].dependencies["lib/core"], "^1.0");
+    assert_eq!(state.packages["app/a"].dependencies["lib/core"], "^1.0");
     let origin = catalog::canonical_location(&cat).unwrap();
     assert_eq!(
-        state.plugins["lib/core"].catalog.as_deref(),
+        state.packages["lib/core"].catalog.as_deref(),
         Some(origin.as_str())
     );
     assert_eq!(
@@ -268,7 +268,7 @@ fn direct_git_install_uses_installed_plugins_or_the_catalog() {
         provider(&m, "app/a", "lib/core"),
         (Some("lib/core".into()), true)
     );
-    assert_eq!(m.state().unwrap().plugins["app/a"].catalog, None);
+    assert_eq!(m.state().unwrap().packages["app/a"].catalog, None);
 }
 
 #[test]
@@ -373,7 +373,7 @@ fn fork_replacement_main_scenario() {
         fs::read_to_string(f.path("workspace/dist/mine/base/index.js")).unwrap(),
         "fork payload"
     );
-    // The original stays installed and addressable; the unrelated plugin is untouched.
+    // The original stays installed and addressable; the unrelated package is untouched.
     assert!(ids(&m).contains(&"vendor/base".to_string()));
     assert!(plugin(&m, "other/x").dependencies.is_empty());
     // A new consumer resolves to the fork too, without fetching anything new.
@@ -572,7 +572,7 @@ fn check_shows_fork_upstream_and_other_catalogs() {
     assert_eq!(row(&m, "vendor/p").status, CheckStatus::UpdateAvailable);
     assert!(f.snapshot() == before);
 
-    // Another catalog selected: plugins from catalog A are not compared against it.
+    // Another catalog selected: packages from catalog A are not compared against it.
     let b = f.catalog("catalog-b");
     let other = f.author("y/q");
     let tag = f.release(&other, "y/q", "1.0.0", &[]);
@@ -618,7 +618,7 @@ fn update_all_coordinates_versions_and_adds_dependencies_atomically() {
     for id in ["app/a", "lib/core"] {
         assert_eq!(plugin(&m, id).current.version, "2.0.0");
         assert_eq!(
-            m.state().unwrap().plugins[id]
+            m.state().unwrap().packages[id]
                 .previous
                 .as_ref()
                 .unwrap()
@@ -695,7 +695,7 @@ fn update_all_preserves_local_work_and_never_partially_deploys() {
         m.install_from_catalog(id, None).unwrap();
         f.publish(&cat, id, "2.0.0", &[]);
     }
-    let local = f.path("workspace/plugins/x/b/dist/local.js");
+    let local = f.path("workspace/packages/x/b/dist/local.js");
     fs::write(&local, "local work").unwrap();
     f.refuses("local_changes", || m.update_all());
     f.refuses("local_changes", || m.update_all_plan());

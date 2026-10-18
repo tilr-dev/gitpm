@@ -12,7 +12,7 @@ def g1_ws_catalog(t: T):
 
 @g1_ws_catalog.check
 def _(t: T):
-    p = t.plugin("dan/hello")
+    p = t.package("dan/hello")
     t.eq(p["current"]["version"], "0.1.1", "installed version")
     t.eq(t.rev(t.clone("dan/hello")), p["current"]["commit"], "clone HEAD")
     t.has((t.dist("dan/hello") / "index.js").read_text(), "dan/hello 0.1.1")

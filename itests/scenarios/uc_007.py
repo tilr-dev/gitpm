@@ -43,7 +43,7 @@ def set_then_replace_origin(t: T):
     for b in (one, two, push, backup):
         t.eq(t.git(b, "for-each-ref"), "", f"nothing pushed to {b.name}")
     t.same(ws_before, "workspace (installed source, clone, dist)")
-    t.eq(t.plugin(ID)["source"], str(repo), "installed source unchanged")
+    t.eq(t.package(ID)["source"], str(repo), "installed source unchanged")
     t.ok(not t.catalog.exists(), "no catalog written")
 
 
@@ -87,7 +87,7 @@ refused_case("missing_path_refused", "A path that does not exist fails clearly."
              lambda t: t.root / "missing", "io")
 refused_case("repository_without_manifest_refused", "A repository without plugin.json fails clearly.",
              _repo_without_manifest, "invalid_manifest", "plugin.json not found")
-refused_case("subdirectory_refused", "A subdirectory of a plugin repository is not its root.",
+refused_case("subdirectory_refused", "A subdirectory of a package repository is not its root.",
              lambda t: t.repo(ID) / "dist", "invalid_argument", "repository root")
 
 

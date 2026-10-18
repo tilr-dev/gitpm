@@ -43,6 +43,57 @@ A published version SHALL NOT change; every version is checked before any write,
 - **THEN** it copies `reference` and `build` from the published record, compares manifest, source, commit, files and path, and on a difference fails with `version_conflict` ("release ID@V changed; refusing to replace published version")
 - **AND** a moved tag of a published version is refused as in package-ids ("Moved release tags are refused")
 
+### Requirement: One catalog per workspace
+`install_from_catalog`, and installing a missing dependency from the catalog (dependencies), SHALL record the canonical catalog location per package (`packages.<id>.catalog`) and SHALL refuse with `catalog` ("this workspace uses catalog … mixing catalogs is not supported") to install from a different catalog while packages from another one are installed. There SHALL be no catalog merging, priorities or pinning, and no built-in default catalog. Verified by `one_catalog_per_workspace`.
+
+#### Scenario: Direct install
+- **WHEN** a package is installed with `install GIT_SOURCE`
+- **THEN** its record has no `catalog`, and its updates never read a catalog (updates, "Updates need no catalog")
+
+#### Scenario: Second catalog
+- **WHEN** `a` was installed from catalog A and the user installs `b` from catalog B
+- **THEN** the install is refused
+
+### Requirement: check compares installed with the catalog
+`check` SHALL be read-only (the CLI `check` and the library function `check::check` create and lock no workspace; FFI `PackageManager.check` opens one, see transactions-locking), read only the catalog entries of installed packages (latest and installed version) and of fork originals (latest), and report per package one status: a stable snake_case `CheckStatus` with a human message.
+
+#### Scenario: Statuses
+- **WHEN** `check` reports a package
+- **THEN** its status is one of `up_to_date` ("up to date"), `update_available` ("update available"), `newer_than_catalog` ("newer than catalog"), `not_in_catalog` ("not in catalog"), `different_source` ("different source in catalog"), `invalid_catalog_data` ("invalid catalog data"), `no_versions` ("no versions in catalog"), `uncomparable_version` ("version cannot be compared"), `same_version_different_commit` ("same version, different commit") or `other_catalog` ("installed from another catalog")
+
+#### Scenario: Identity mismatch
+- **WHEN** one package's catalog entry has the wrong ID or version for its location
+- **THEN** its row is `invalid catalog data` and the other packages are reported normally
+
+#### Scenario: Broken payload
+- **WHEN** a release record has an invalid commit or hash or invalid JSON, or the catalog cannot be fetched
+- **THEN** the whole `check` fails, with `catalog` for invalid data and `http` for a failed request
+
+#### Scenario: CLI table
+- **WHEN** the user runs `gitpm check` with installed packages
+- **THEN** the table is coloured only when stdout is a terminal, `NO_COLOR` is unset and `TERM` is not `dumb`, followed by `Replacement: ORIGINAL → FORK (for every consumer)` and `Unsatisfied dependency: ID → DEP REQ: problem` lines
+
+#### Scenario: Other catalog
+- **WHEN** a package was installed from another catalog than the selected one
+- **THEN** its row says `installed from another catalog` and offers no update, unless this catalog has a different source for it or exactly its installed release
+- **AND** this is covered by `check_shows_fork_upstream_and_other_catalogs`; the read-only and partial-failure rules by `check::read_state_never_creates_or_locks_a_workspace` and `check::check_reports_invalid_release_without_hiding_healthy_plugins`
+
+#### Scenario: Exit status
+- **WHEN** `gitpm check` finds an update available, or finds none
+- **THEN** the exit status is 0 in both cases; only a failed `check` exits 1
+
+### Requirement: Bounded overview
+`info` and `browse` SHALL walk the catalog depth-first, follow only valid links and stop at 40 entries, printing `Overview limit: 40 entries. To browse one branch: gitpm --catalog <branch location> info`. Verified by `catalog::browse_follows_only_valid_links_and_is_bounded`.
+
+#### Scenario: Large catalog
+- **WHEN** the catalog has more than 40 packages
+- **THEN** `info` shows 40 and the limit line
+
+#### Scenario: Overview lines
+- **WHEN** the user runs `gitpm --catalog ./catalog info` on a local catalog
+- **THEN** it prints `Catalog: LOCATION`, `Type: local folder/JSON`, `Directories and packages:`, the directory tree and for each package `ID — latest: V, versions: N` followed by its `Git: SOURCE` line
+- **AND** it changes no file of the catalog or the workspace
+
 ## REMOVED Requirements
 
 ### Requirement: v1 catalogs stay readable

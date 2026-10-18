@@ -1,4 +1,4 @@
-//! Author operations: create an independent plugin repository, commit releases, set remotes.
+//! Author operations: create an independent package repository, commit releases, set remotes.
 //! Never pushes and never touches a workspace.
 use crate::catalog::version_key;
 use crate::error::{Context, Error, Result, ensure, fail};
@@ -65,7 +65,7 @@ fn create_repo(directory: &Path, id: &str, release: bool) -> Result<PathBuf> {
         fs::write(
             directory.join("README.md"),
             format!(
-                "# {name}\n\nLocal gitpm demo package, version 0.1.0.\n\nEdit `dist/index.js` directly; there is no build step. `plugin.json` holds the\nplugin ID and version. This is a demo package fixture.\n\nWith the `gitpm` CLI (the workspace is `--root DIR`, `GITPM_ROOT` or `./gitpm-workspace`):\n\n```sh\n{install}\n# After editing this repository:\ngitpm commit {source} 0.1.1\ngitpm update {id} --ref {next_tag}\ngitpm rollback {id}\n```\n\nTo generate a static catalog: add the repository URL/path to sources.txt, then run\n(`GITPM_CATALOG` can replace `--catalog`):\n\n```sh\ngitpm --catalog ./catalog catalog-update\n```\n\nNo remote is configured. If Git identity was missing, the scaffold configured\nPlugin Demo <demo@example.invalid> locally in this repository only.\n"
+                "# {name}\n\nLocal gitpm demo package, version 0.1.0.\n\nEdit `dist/index.js` directly; there is no build step. `plugin.json` holds the\npackage ID and version. This is a demo package fixture.\n\nWith the `gitpm` CLI (the workspace is `--root DIR`, `GITPM_ROOT` or `./gitpm-workspace`):\n\n```sh\n{install}\n# After editing this repository:\ngitpm commit {source} 0.1.1\ngitpm update {id} --ref {next_tag}\ngitpm rollback {id}\n```\n\nTo generate a static catalog: add the repository URL/path to sources.txt, then run\n(`GITPM_CATALOG` can replace `--catalog`):\n\n```sh\ngitpm --catalog ./catalog catalog-update\n```\n\nNo remote is configured. If Git identity was missing, the scaffold configured\nPackage Demo <demo@example.invalid> locally in this repository only.\n"
             ),
         )?;
         git(&directory, &["init", "-b", "main"])?;
@@ -98,7 +98,7 @@ pub(crate) fn ensure_identity(directory: &Path) -> Result<()> {
     if git(directory, &["config", "user.name"]).is_err() {
         git(
             directory,
-            &["config", "--local", "user.name", "Plugin Demo"],
+            &["config", "--local", "user.name", "Package Demo"],
         )?;
     }
     if git(directory, &["config", "user.email"]).is_err() {
@@ -146,11 +146,6 @@ fn locate(repo: &Path, package: Option<&str>) -> Result<(PathBuf, String, Manife
             m.id
         );
     }
-    ensure!(
-        folder.is_none() || m.id.contains('/'),
-        InvalidId,
-        "packages of a multi-package repository need namespace/name IDs"
-    );
     Ok((repo, manifest_path, m))
 }
 
@@ -176,7 +171,7 @@ pub fn release_current(repo: &Path, package: Option<&str>) -> Result<String> {
     Ok(tag)
 }
 
-/// Commit plugin changes locally and create an immutable version tag. Never pushes.
+/// Commit package changes locally and create an immutable version tag. Never pushes.
 pub fn commit(repo: &Path, version: &str) -> Result<String> {
     commit_package(repo, version, None)
 }
@@ -581,7 +576,7 @@ pub fn set_remote(repo: &Path, url: &str) -> Result<()> {
     ensure!(
         top == repo,
         InvalidArgument,
-        "pass the plugin repository root"
+        "pass the package repository root"
     );
     ensure!(
         repo.join("plugin.json").is_file() || repo.join(packages::CONFIG).is_file(),
@@ -1053,8 +1048,8 @@ mod tests {
         };
         assert_eq!(package_folder(&config(&["apps/*"]), "x"), "apps/x");
         assert_eq!(
-            package_folder(&config(&["special", "plugins/*"]), "x"),
-            "plugins/x"
+            package_folder(&config(&["special", "packages/*"]), "x"),
+            "packages/x"
         );
         assert_eq!(package_folder(&config(&["a*/*"]), "x"), "packages/x");
         assert_eq!(package_folder(&config(&[]), "x"), "packages/x");

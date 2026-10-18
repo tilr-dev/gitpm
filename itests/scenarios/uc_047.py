@@ -54,7 +54,7 @@ def no_catalog_access(t: T, catalog: Unavailable):
 
 
 def entry(t: T, id: str) -> dict:
-    return t.plugin(id)
+    return t.package(id)
 
 
 def paths(t: T, id: str):
@@ -71,24 +71,24 @@ def list_disable_enable_offline(t: T):
     """Offline: list, disable and enable work from the clones alone; disable removes only the
     dist folder, enable redeploys the same bytes and restores the exact state."""
     catalog = offline(t)
-    files = t.snap(t.ws / "plugins", t.ws / "dist")
-    clones = t.snap(t.ws / "plugins")
+    files = t.snap(t.ws / "packages", t.ws / "dist")
+    clones = t.snap(t.ws / "packages")
     state = t.state()
     listed = t.gitpm_ok("list").json()
-    t.eq(sorted(listed["plugins"]), [ID, FORK], "list works offline")
+    t.eq(sorted(listed["packages"]), [ID, FORK], "list works offline")
     t.gitpm_ok("disable", ID)
     changed = t.state()
-    t.eq(changed["plugins"][ID]["enabled"], False, "disabled")
-    changed["plugins"][ID]["enabled"] = True
+    t.eq(changed["packages"][ID]["enabled"], False, "disabled")
+    changed["packages"][ID]["enabled"] = True
     t.eq(changed, state, "disable changed only the flag")
     t.same(clones, "clones")
-    t.ok(not t.dist(ID).exists(), "dist of the disabled plugin removed")
+    t.ok(not t.dist(ID).exists(), "dist of the disabled package removed")
     t.gitpm_ok("disable", FORK)
     t.eq((entry(t, ID)["enabled"], entry(t, FORK)["enabled"]), (False, False), "flags are independent")
     t.gitpm_ok("enable", ID)
     t.gitpm_ok("enable", FORK)
     t.eq(t.state(), state, "enable restores the exact state")
-    t.same(files, "plugin files")
+    t.same(files, "package files")
     no_catalog_access(t, catalog)
 
 
@@ -121,7 +121,7 @@ def forget_restore_offline(t: T):
     clone = t.snap(t.clone(ID))
     old = entry(t, ID)
     t.gitpm_ok("forget", ID)
-    t.ok(ID not in t.state()["plugins"], "forgotten")
+    t.ok(ID not in t.state()["packages"], "forgotten")
     t.same(clone, "clone retained by forget")
     t.ok(not t.dist(ID).exists(), "dist removed by forget")
     t.gitpm_ok("restore", ID)

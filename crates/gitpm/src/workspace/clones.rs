@@ -1,4 +1,4 @@
-//! Clones in the workspace: the own clone `plugins/<id>` of a plugin, or the clone
+//! Clones in the workspace: the own clone `packages/<id>` of a package, or the clone
 //! `repos/<key>` shared by every package installed from one multi-package source. A
 //! shared clone is used by its registered packages and by forgotten ones
 //! (`State::forgotten`); it is removed with the last of them.
@@ -101,9 +101,9 @@ pub(super) fn fetch_tags(
     Ok(())
 }
 
-/// The own clone `plugins/<id>` (exact spelling, must be a Git repository).
-pub(super) fn plugin_repo(root: &Path, id: &str) -> Result<PathBuf> {
-    let plugins = root.join("plugins");
+/// The own clone `packages/<id>` (exact spelling, must be a Git repository).
+pub(super) fn package_repo(root: &Path, id: &str) -> Result<PathBuf> {
+    let plugins = root.join("packages");
     let repo = plugins.join(id);
     if !exact_path(&plugins, id)? || !repo.join(".git").is_dir() {
         return Err(Error::RepositoryNotFound { id: id.into() });
@@ -136,10 +136,10 @@ pub(crate) fn repo_key(source: &str) -> String {
     }
 }
 
-/// The live clone of a plugin (registered or forgotten).
+/// The live clone of a package (registered or forgotten).
 pub(super) fn installed_repo(root: &Path, id: &str, p: &Installed) -> Result<PathBuf> {
     let Some(key) = &p.clone else {
-        return plugin_repo(root, id);
+        return package_repo(root, id);
     };
     let repo = root.join("repos").join(key);
     if !exact_path(&root.join("repos"), key)? || !repo.join(".git").is_dir() {
@@ -148,7 +148,7 @@ pub(super) fn installed_repo(root: &Path, id: &str, p: &Installed) -> Result<Pat
     Ok(repo)
 }
 
-/// Users of the shared clone `key` other than `except`: registered plugins, then
+/// Users of the shared clone `key` other than `except`: registered packages, then
 /// forgotten ones (each in ID order).
 pub(super) fn clone_users<'a>(
     state: &'a State,
@@ -156,7 +156,7 @@ pub(super) fn clone_users<'a>(
     except: &str,
 ) -> Vec<(&'a str, &'a Installed)> {
     state
-        .plugins
+        .packages
         .iter()
         .chain(&state.forgotten)
         .filter(|(id, p)| *id != except && p.clone.as_deref() == Some(key))
@@ -184,7 +184,7 @@ pub(super) fn shared_head_moved(
     Ok(Some(LostWork::HeadMoved {
         head,
         recorded: state
-            .plugins
+            .packages
             .get(id)
             .or_else(|| state.forgotten.get(id))
             .map(|p| p.current.commit.clone())
@@ -207,7 +207,7 @@ pub(super) fn guard_clone(
     clean(live, id)?;
     match key {
         None => {
-            let recorded = &state.plugins[id].current.commit;
+            let recorded = &state.packages[id].current.commit;
             lost_work::require_head(live, id, recorded, head_message)?;
         }
         Some(key) => {
@@ -233,7 +233,7 @@ pub(super) fn configured_origin(repo: &Path) -> Option<String> {
     git(repo, &["config", "--get", "remote.origin.url"]).ok()
 }
 
-/// Stage the verified clone where the plugin lives: its own `plugins/<id>`, or for a
+/// Stage the verified clone where the package lives: its own `packages/<id>`, or for a
 /// package of a multi-package repository the clone `repos/<key>` shared by every package
 /// of that source. An existing shared clone is reused (guarded like an update, fetched,
 /// checked out at the verified commit); the fresh clone is then discarded.
@@ -246,7 +246,7 @@ pub(super) fn place_clone(
 ) -> Result<(PathBuf, String, Option<String>)> {
     let id = &cloned.manifest.id;
     if cloned.path.is_none() {
-        let relative = format!("plugins/{id}");
+        let relative = format!("packages/{id}");
         let staged = txn.add_repo(&relative, &cloned.repo)?;
         return Ok((staged, relative, None));
     }
@@ -292,7 +292,7 @@ pub(super) fn place_clone(
 }
 
 /// After `id` stopped using the shared clone `key` (`rest` is the state without it as
-/// a registered plugin), make HEAD the installed commit of a remaining user: registered
+/// a registered package), make HEAD the installed commit of a remaining user: registered
 /// ones first, else forgotten ones. A HEAD left at the removed package's revision (an
 /// untagged dev commit, say) would block every other package as moved HEAD. The
 /// checkout keeps working-tree changes; when they conflict, the operation is refused.
@@ -306,7 +306,7 @@ pub(super) fn settle_head(
     let users = clone_users(rest, key, except);
     let registered: Vec<_> = users
         .iter()
-        .filter(|(id, _)| rest.plugins.contains_key(*id))
+        .filter(|(id, _)| rest.packages.contains_key(*id))
         .collect();
     let candidates = if registered.is_empty() {
         users.iter().collect()
@@ -355,13 +355,13 @@ pub(super) struct Removal {
     pub(super) lost_work: Vec<LostWork>,
 }
 pub(super) fn removal(root: &Path, state: &State, id: &str) -> Result<Removal> {
-    let entry = state.plugins.get(id).or_else(|| state.forgotten.get(id));
+    let entry = state.packages.get(id).or_else(|| state.forgotten.get(id));
     let Some((p, key)) = entry.and_then(|p| Some((p, p.clone.clone()?))) else {
-        // Own clone, registered or forgotten (retained) under `plugins/<id>`.
-        let repo = plugin_repo(root, id)?;
-        let recorded = state.plugins.get(id).map(|p| p.current.commit.as_str());
+        // Own clone, registered or forgotten (retained) under `packages/<id>`.
+        let repo = package_repo(root, id)?;
+        let recorded = state.packages.get(id).map(|p| p.current.commit.as_str());
         return Ok(Removal {
-            relative: format!("plugins/{id}"),
+            relative: format!("packages/{id}"),
             lost_work: lost_work::detect(&repo, recorded)?,
             repo: Some(repo),
             key: None,
@@ -371,7 +371,7 @@ pub(super) fn removal(root: &Path, state: &State, id: &str) -> Result<Removal> {
     let live = match installed_repo(root, id, p) {
         Ok(live) => live,
         // A forgotten record whose clone is gone: only the record (and dist) remain.
-        Err(Error::RepositoryNotFound { .. }) if !state.plugins.contains_key(id) => {
+        Err(Error::RepositoryNotFound { .. }) if !state.packages.contains_key(id) => {
             return Ok(Removal {
                 relative,
                 repo: None,

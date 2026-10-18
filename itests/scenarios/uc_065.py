@@ -61,7 +61,7 @@ def timed(t: T, *args, limit: float, env=None) -> R:
 @case(fixture="hello_installed", spec=["transactions-locking/managed-paths-are-never-followed-through-symlinks"])
 def outside_dist_symlink_does_not_break_any_operation(t: T):
     """1. `link -> README.md` at the repo root: install keeps it; disable, enable,
-    update and uninstall --force work for this plugin and for an unrelated one."""
+    update and uninstall --force work for this package and for an unrelated one."""
     symlinked_plugin(t, "dan/linky", {"link": "README.md"})
     t.gitpm_ok("install", t.repo("dan/linky"))
     link = t.clone("dan/linky") / "link"
@@ -73,7 +73,7 @@ def outside_dist_symlink_does_not_break_any_operation(t: T):
         t.gitpm_ok("disable", id)
         t.gitpm_ok("enable", id)
         t.gitpm_ok("update", id)
-    t.eq((t.plugin("dan/linky")["current"]["version"], t.plugin(ID)["current"]["version"]), ("0.2.0", "0.1.1"), "both updated")
+    t.eq((t.package("dan/linky")["current"]["version"], t.package(ID)["current"]["version"]), ("0.2.0", "0.1.1"), "both updated")
     t.ok(link.is_symlink() and os.readlink(link) == "README.md", "symlink kept through update")
     for id in ["dan/linky", ID]:
         t.gitpm_ok("uninstall", id, "--force")
@@ -98,11 +98,11 @@ def update_to_a_branch_follows_the_moved_upstream(t: T):
     t.git(ID, "checkout", "-q", "-b", "feature")
     first = t.release(ID, "0.1.1", tag=False)
     t.gitpm_ok("update", ID, "--ref", "feature")
-    t.eq(t.plugin(ID)["current"], {"version": "0.1.1", "commit": first}, "on feature")
+    t.eq(t.package(ID)["current"], {"version": "0.1.1", "commit": first}, "on feature")
     t.git(t.clone(ID), "branch", "feature", first)  # a local branch that will go stale
     second = t.release(ID, "0.1.2", tag=False)
     t.gitpm_ok("update", ID, "--ref", "feature")
-    t.eq(t.plugin(ID)["current"], {"version": "0.1.2", "commit": second}, "followed the moved branch")
+    t.eq(t.package(ID)["current"], {"version": "0.1.2", "commit": second}, "followed the moved branch")
     t.eq(t.rev(t.clone(ID)), second, "clone HEAD")
     t.eq(t.rev(t.clone(ID), "refs/remotes/origin/feature"), second, "HEAD == origin/feature")
     t.has((t.dist(ID) / "index.js").read_text(), "0.1.2")
@@ -112,7 +112,7 @@ def update_to_a_branch_follows_the_moved_upstream(t: T):
 def update_to_head_is_origin_head(t: T):
     head = t.release(ID, "0.2.0", tag=False)
     t.gitpm_ok("update", ID, "--ref", "HEAD")
-    t.eq(t.plugin(ID)["current"], {"version": "0.2.0", "commit": head}, "origin HEAD")
+    t.eq(t.package(ID)["current"], {"version": "0.2.0", "commit": head}, "origin HEAD")
     t.eq(t.rev(t.clone(ID)), t.rev(ID), "clone HEAD == origin HEAD")
     moved = t.release(ID, "0.2.1", tag=False)
     t.gitpm_ok("update", ID, "--ref", "HEAD")
@@ -244,7 +244,7 @@ def redirect_is_not_followed(t: T):
 
 @case(fixture="catalog", spec=["catalog/catalog-locations-and-transport"])
 def oversized_catalog_response_is_refused(t: T):
-    """50 MB announced by Content-Length for the plugin index: refused before download."""
+    """50 MB announced by Content-Length for the package index: refused before download."""
     huge = Huge(t.catalog, "/namespaces/dan/hello/plugin.json", announce=True)
     r = timed(t, "--catalog", huge.url, "install-catalog", ID, limit=30)
     t.ok(r.code != 0, "refused")
@@ -267,8 +267,8 @@ def oversized_streamed_catalog_response_is_refused(t: T):
 
 def no_hashes(t: T, change):
     t.edit_json(t.catalog_release(ID, "0.2.0"), change)
-    t.gitpm_err("install-catalog", ID, "--version", "0.2.0", kind="catalog", contains="catalog release has no file hashes")
-    t.gitpm_err("install-catalog", ID, kind="catalog", contains="catalog release has no file hashes")
+    t.gitpm_err("install-catalog", ID, "--version", "0.2.0", kind="catalog", contains="has no file hashes")
+    t.gitpm_err("install-catalog", ID, kind="catalog", contains="has no file hashes")
     t.not_installed(ID)
 
 
@@ -280,18 +280,6 @@ def namespaced_release_with_empty_files_is_refused(t: T):
 @case(fixture="catalog", spec=["catalog/release-record#namespaced-release-without-hashes"])
 def namespaced_release_without_files_is_refused(t: T):
     no_hashes(t, lambda r: r.pop("files"))
-
-
-@case(fixture="catalog", spec=["catalog/release-record#legacy-release-without-hashes"])
-def legacy_release_may_lack_hashes(t: T):
-    (t.repo("oldp") / "dist").mkdir(parents=True)
-    t.git("oldp", "init", "-q", "-b", "main")
-    commit = t.release("oldp", "1.0.0", tag=False)
-    t.tag("oldp", "v1.0.0")
-    t.gitpm_ok("register", t.repo("oldp"), "--ref", "v1.0.0")
-    t.edit_json(t.catalog / "legacy/oldp/versions/1.0.0/release.json", lambda r: r.pop("files"))
-    t.gitpm_ok("install-catalog", "oldp")
-    t.eq(t.plugin("oldp")["current"], {"version": "1.0.0", "commit": commit}, "legacy release installed")
 
 
 # ----------------------------------------------------------- 5. hanging transports
@@ -327,7 +315,7 @@ def silent_git_server_fails_in_bounded_time(t: T):
     t.ok(len(silent.conns) >= 2, "the server really accepted the connections")
     t.same(before, "workspace")
     t.gitpm_ok("disable", ID)  # lock released right after
-    t.eq(t.plugin(ID)["enabled"], False, "next command works")
+    t.eq(t.package(ID)["enabled"], False, "next command works")
 
 
 SSH_STUB = """#!/bin/sh
@@ -373,7 +361,7 @@ def ssh_passphrase_without_agent_never_prompts(t: T):
 def neighbours(t: T) -> tuple[Path, Path]:
     stage, backup = t.root / ".ws.stage", t.root / ".ws.backup"
     t.write(stage, {"user.txt": "my notes\n", "sub/data.bin": bytes(range(256))})
-    t.write(backup, {"notes.txt": "keep\n", "plugins/dan/hello/fake.txt": "not a plugin\n", "state.json": "{}\n"})
+    t.write(backup, {"notes.txt": "keep\n", "packages/dan/hello/fake.txt": "not a package\n", "state.json": "{}\n"})
     return stage, backup
 
 
@@ -382,7 +370,7 @@ def stage_and_backup_neighbours_are_never_touched(t: T):
     stage, backup = neighbours(t)
     before = t.snap(stage, backup, git=True)
     t.release(ID, "0.1.1")
-    t.new_plugin("dan/other", "0.1.0")
+    t.new_package("dan/other", "0.1.0")
     for args in [("install", t.repo("dan/other")), ("update", ID), ("rollback", ID), ("disable", ID), ("enable", ID),
                  ("forget", ID), ("restore", ID), ("uninstall", "dan/other", "--force"), ("list",)]:
         t.gitpm_ok(*args)
@@ -400,7 +388,7 @@ def fork_into_stage_or_backup_folder_works(t: T):
     for path, id in [(backup / "myfork", "mine/hello"), (stage, "other/hello")]:
         t.eq(json.loads((path / "plugin.json").read_text())["id"], id, f"fork at {path.name}")
         t.gitpm_ok("install", path, "--channel", "dev")
-        t.eq(t.plugin(id)["source"], str(path), f"{id} installed from {path}")
+        t.eq(t.package(id)["source"], str(path), f"{id} installed from {path}")
     after = t.snap(backup, git=True)
     t.eq({k: v for k, v in after.items() if "/myfork" not in k and not k.endswith("/myfork")}, dict(kept),
          "user data in .ws.backup untouched")
@@ -423,7 +411,7 @@ def slow_env(t: T) -> dict:
 
 
 def through_two_spellings(t: T, first: Path, second: Path):
-    t.new_plugin("dan/slow", "0.1.0")
+    t.new_package("dan/slow", "0.1.0")
     a = subprocess.Popen(["gitpm", "--root", str(first), "install", str(t.repo("dan/slow"))], cwd=t.root,
                          env=slow_env(t), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     deadline = time.monotonic() + 10
@@ -435,7 +423,7 @@ def through_two_spellings(t: T, first: Path, second: Path):
     print(f"  first process: exit {a.returncode}\n{out}{err}")
     t.eq(a.returncode, 0, "first process finished")
     t.gitpm_ok("--root", second, "disable", ID)
-    s = t.state()["plugins"]
+    s = t.state()["packages"]
     t.ok("dan/slow" in s and s[ID]["enabled"] is False, "both mutations kept (no lost update)")
 
 
@@ -492,7 +480,7 @@ def check_and_list_never_see_partial_state(t: T):
         if p.returncode == 0:
             reads["list"] += 1
             try:
-                if ID not in json.loads(p.stdout)["plugins"]:
+                if ID not in json.loads(p.stdout)["packages"]:
                     bad.append(f"list without {ID}: {p.stdout}")
             except ValueError as e:
                 bad.append(f"list: invalid JSON ({e}): {p.stdout[:200]}")
@@ -503,7 +491,7 @@ def check_and_list_never_see_partial_state(t: T):
         try:
             state = json.loads((t.ws / "state.json").read_text())
             reads["raw"] += 1
-            if state["plugins"][ID]["current"]["version"] not in ("0.1.0", "0.2.0"):
+            if state["packages"][ID]["current"]["version"] not in ("0.1.0", "0.2.0"):
                 bad.append(f"raw state: {state}")
         except (ValueError, KeyError) as e:
             bad.append(f"raw state.json unreadable: {e}")

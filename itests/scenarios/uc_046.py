@@ -71,7 +71,7 @@ def journal(t: T) -> dict | None:
 
 
 def updated(t: T):
-    p = t.plugin(ID)
+    p = t.package(ID)
     t.eq(p["current"]["version"], "0.1.1", "current after recovery")
     t.eq(p["previous"]["version"], "0.1.0", "previous after recovery")
     t.has((t.dist(ID) / "index.js").read_text(), "dan/hello 0.1.1")
@@ -101,9 +101,9 @@ def state_write_failure_changes_nothing(t: T):
     t.ok(r.code == 1, "disable failed cleanly")
     t.has(r.err, "File too large", "Error kind: io")
     t.same(before, "workspace")
-    t.eq(t.plugin(ID)["enabled"], True, "still enabled")
+    t.eq(t.package(ID)["enabled"], True, "still enabled")
     t.gitpm_ok("disable", ID)
-    t.eq(t.plugin(ID)["enabled"], False, "retry applies")
+    t.eq(t.package(ID)["enabled"], False, "retry applies")
 
 
 def activation_failure(t: T, readonly: str):
@@ -114,7 +114,7 @@ def activation_failure(t: T, readonly: str):
     r = gitpm_nobody(t, "update", ID)
     t.ok(r.code == 1, "update failed")
     t.has(r.err, "Permission denied", "Error kind: io")
-    t.eq(journal(t), {"paths": {f"dist/{ID}": "replace", f"plugins/{ID}": "replace"}}, "committed journal kept")
+    t.eq(journal(t), {"paths": {f"dist/{ID}": "replace", f"packages/{ID}": "replace"}}, "committed journal kept")
     t.eq(json.loads((t.ws / "state.json").read_text()), json.loads(before["state"]), "state.json still the previous one")
     t.ok((t.ws / "state.json").read_bytes() == before["state"], "state.json complete and unchanged")
     (t.ws / readonly).chmod(0o755)
@@ -134,14 +134,14 @@ def activation_failure_at_first_move_rolls_forward(t: T):
 
 @case(fixture="hello_installed", spec=["transactions-locking/crash-recovery#crash-during-commit"])
 def activation_failure_midway_rolls_forward(t: T):
-    """plugins/dan is read-only: dist moved, the clone did not. The next open rolls the
+    """packages/dan is read-only: dist moved, the clone did not. The next open rolls the
     commit forward instead of leaving a mixed installation."""
-    before = activation_failure(t, "plugins/dan")
+    before = activation_failure(t, "packages/dan")
     t.has((t.dist(ID) / "index.js").read_text(), "0.1.1")
     t.eq(t.rev(t.clone(ID)), before["head"], "clone not moved yet")
     r = gitpm_nobody(t, "disable", ID)
     t.eq(r.code, 0, "next mutation succeeds")
-    t.eq(t.plugin(ID)["enabled"], False, "the new mutation applied after recovery")
+    t.eq(t.package(ID)["enabled"], False, "the new mutation applied after recovery")
     t.ok(not t.dist(ID).exists(), "disabled: no dist/ID")
     t.eq(gitpm_nobody(t, "enable", ID).code, 0, "enable succeeds")
     updated(t)
@@ -174,10 +174,10 @@ def update_killed_after_staging_is_discarded(t: T):
     before = t.snap(t.ws)
     r = t.gitpm("update", ID, env=killer(t))
     t.eq(r.code, -9, "gitpm was killed")
-    staged = t.ws / ".pm-txn/new/plugins" / ID
+    staged = t.ws / ".pm-txn/new/packages" / ID
     t.ok(staged.is_dir(), "the staged copy was left by the killed process")
     t.eq(journal(t), None, "no journal: the commit was never decided")
-    t.eq(t.plugin(ID)["current"]["version"], "0.1.0", "previous version still installed")
+    t.eq(t.package(ID)["current"]["version"], "0.1.0", "previous version still installed")
     t.has((t.dist(ID) / "index.js").read_text(), "dan/hello 0.1.0")
     t.gitpm_ok("list")
     t.same(before, "workspace after the next open")
@@ -193,12 +193,12 @@ def install_killed_after_clone_is_discarded(t: T):
     t.eq(r.code, -9, "gitpm was killed")
     t.ok((t.ws / ".pm-txn/scratch/incoming/.git").is_dir(), "the scratch clone was left behind")
     t.eq(journal(t), None, "no journal")
-    t.eq(t.state().get("plugins"), {}, "nothing registered")
+    t.eq(t.state().get("packages"), {}, "nothing registered")
     t.gitpm_ok("list")
     t.same(before, "workspace after the next open")
     t.not_installed(ID)
     t.gitpm_ok("install", t.repo(ID))
-    t.eq(t.plugin(ID)["current"]["version"], "0.1.0", "retry installs")
+    t.eq(t.package(ID)["current"]["version"], "0.1.0", "retry installs")
 
 
 def catalog_write_failure(t: T, *command):
@@ -218,7 +218,7 @@ def catalog_write_failure(t: T, *command):
     t.ok(set(added) <= {str(t.catalog_release("dan/num", "1.11.0"))}, "at most the new release file was written")
     # A consumer still sees a consistent catalog: the index does not link 1.11.0.
     t.gitpm_ok("--root", t.root / "consumer", "install-catalog", "dan/num")
-    t.eq(json.loads((t.root / "consumer/state.json").read_text())["plugins"]["dan/num"]["current"]["version"],
+    t.eq(json.loads((t.root / "consumer/state.json").read_text())["packages"]["dan/num"]["current"]["version"],
          "1.10.0", "consumer gets the last complete release")
     folder.chmod(0o755)
     r = gitpm_nobody(t, *command)

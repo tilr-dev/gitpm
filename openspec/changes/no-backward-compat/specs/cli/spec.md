@@ -57,3 +57,25 @@ Every workspace-mutating command (`install`, `install-catalog`, `update`, `updat
 #### Scenario: Command help
 - **WHEN** the user runs `gitpm init --help`
 - **THEN** only the init usage block is printed and the exit status is 0
+
+### Requirement: JSON output for state and catalog
+`list` SHALL print the raw state plus `resolved` as pretty JSON. Each `resolved[]` entry SHALL always have `id`, `source`, `current`, `previous`, `enabled`, `active`, `title`, `description`, `provides`, `tags` (shape in plugin-metadata, "Reported shape") and SHALL omit `forkOf`, `replaces`, `catalog`, `path`, `clone`, `dependencies`, `replacing`, `dependents` when empty. `catalog` and `register` print JSON. Verified by `list_reports_metadata_present_or_absent_and_filters_by_provides`.
+
+#### Scenario: Filter by service
+- **WHEN** the user runs `gitpm list --provides theme`
+- **THEN** `packages` and `resolved` are filtered as specified in plugin-metadata ("Filter by provided service")
+
+#### Scenario: Absent optional fields
+- **WHEN** a package has no fork, replacement, catalog, folder, shared clone or dependencies
+- **THEN** its `resolved[]` entry has none of those keys and `previous` is `null` before the first update
+
+#### Scenario: list
+- **WHEN** one package is installed
+- **THEN** `gitpm list` prints a JSON object with `packages` and a `resolved` array of one entry
+
+### Requirement: Errors and exit codes
+On failure the CLI SHALL print `Error: MESSAGE` to stderr, for a library error also `Error kind: KIND` (usage errors detected by the CLI itself, such as unknown options or `sync-dist` leaving packages undeployed, print no kind) (and for `local_changes` one `  - item` line per lost item), and exit with status 1; on success it SHALL exit with status 0. Verified by `uninstall_without_tty_refuses_and_lists_lost_work_including_stash`.
+
+#### Scenario: Unknown ID
+- **WHEN** the user runs `gitpm update acme/none`
+- **THEN** stderr has `Error: package acme/none is not installed` and `Error kind: not_installed`, and the exit status is 1

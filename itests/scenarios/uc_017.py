@@ -14,7 +14,7 @@ def tagged(t: T, version: str) -> str:
 
 
 def at(t: T, current: str, previous: str | None):
-    p = t.plugin(ID)
+    p = t.package(ID)
     t.eq(p["current"], {"version": current, "commit": tagged(t, current)}, "current")
     t.eq(p["previous"], previous and {"version": previous, "commit": tagged(t, previous)}, "previous")
     t.eq(t.rev(t.clone(ID)), tagged(t, current), "clone HEAD")
@@ -39,7 +39,7 @@ def only_one_previous_version_is_kept(t: T):
     at(t, "0.1.2", "0.1.1")
     text = (t.ws / "state.json").read_text()
     t.lacks(text, "0.1.0", tagged(t, "0.1.0"))
-    t.eq(sorted(t.plugin(ID)), sorted(["source", "current", "previous", "enabled", "metadata"]),
+    t.eq(sorted(t.package(ID)), sorted(["source", "current", "previous", "enabled", "metadata"]),
          "entry fields (no history list)")
 
 
@@ -54,24 +54,24 @@ def rollback_twice_swaps_current_and_previous(t: T):
 
 @case(fixture="g2_hello_history", spec=["updates/rollback-swaps-current-and-previous", "dist/inactive-packages-change-state-and-clone-only"])
 def rollback_keeps_enabled_flag(t: T):
-    """A disabled plugin stays disabled across rollbacks; an enabled one stays enabled."""
+    """A disabled package stays disabled across rollbacks; an enabled one stays enabled."""
     t.gitpm_ok("rollback", ID)
-    t.eq(t.plugin(ID)["enabled"], True, "enabled kept")
+    t.eq(t.package(ID)["enabled"], True, "enabled kept")
     t.gitpm_ok("disable", ID)
     t.gitpm_ok("rollback", ID)
     at(t, "0.1.2", "0.1.1")
-    t.eq(t.plugin(ID)["enabled"], False, "disabled kept")
+    t.eq(t.package(ID)["enabled"], False, "disabled kept")
     t.gitpm_ok("enable", ID)
     at(t, "0.1.2", "0.1.1")
 
 
 def corrupt_previous(t: T, change):
-    t.edit_json(t.ws / "state.json", lambda s: change(s["plugins"][ID]["previous"]))
+    t.edit_json(t.ws / "state.json", lambda s: change(s["packages"][ID]["previous"]))
     before = t.snap(t.ws, git=True)
     r = t.gitpm_err("rollback", ID)
     t.has(r.err, "Error kind:")
     t.same(before, "workspace (active installation intact)")
-    p = t.plugin(ID)
+    p = t.package(ID)
     t.eq(p["current"], {"version": "0.1.2", "commit": tagged(t, "0.1.2")}, "current")
     t.eq(t.rev(t.clone(ID)), tagged(t, "0.1.2"), "clone HEAD")
     t.has((t.dist(ID) / "index.js").read_text(), f"{ID} 0.1.2")

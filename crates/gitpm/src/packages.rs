@@ -236,15 +236,6 @@ fn read_folder(
         .map_err(|e| (None, e))?;
     let id = Some(manifest.id.clone());
     valid_id(&manifest.id).map_err(|e| (id.clone(), e))?;
-    if !manifest.id.contains('/') {
-        return Err((
-            id,
-            Error::InvalidId(format!(
-                "package {} in {folder} needs a namespace/name ID: a repository with several packages releases them with ID@VERSION tags",
-                manifest.id
-            )),
-        ));
-    }
     match entries.get(&format!("{folder}/dist")) {
         Some((_, kind)) if kind == "tree" => {}
         Some(_) => {
@@ -497,8 +488,7 @@ pub fn packages_in(repo: &Path) -> Result<Option<Vec<Package>>> {
 /// The package ID a release tag names (`namespace/name@VERSION`), if it looks like one.
 pub(crate) fn tag_id(tag: &str) -> Option<&str> {
     let (id, version) = tag.rsplit_once('@')?;
-    (id.contains('/') && valid_id(id).is_ok() && crate::catalog::version_key(version).is_ok())
-        .then_some(id)
+    (valid_id(id).is_ok() && crate::catalog::version_key(version).is_ok()).then_some(id)
 }
 
 #[cfg(test)]
@@ -513,8 +503,8 @@ mod tests {
         assert!(!matches("packages/*", "other/store"));
         assert!(!matches("packages/*", "packages/.hidden"));
         assert!(matches("apps/theme", "apps/theme"));
-        assert!(matches("plugins/gitpm-*", "plugins/gitpm-store"));
-        assert!(!matches("plugins/gitpm-*", "plugins/store"));
+        assert!(matches("packages/gitpm-*", "packages/gitpm-store"));
+        assert!(!matches("packages/gitpm-*", "packages/store"));
         assert!(matches("a*b*c", "aXbYc"));
         assert!(!matches("a*b*c", "aXc"));
         assert!(matches("*/*", "x/y"));

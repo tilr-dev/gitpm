@@ -18,7 +18,7 @@ def resolved(t: T) -> dict:
 
 def normalized(t: T, id: str) -> dict:
     """Installed entry without paths/timestamps: what must match the library's Installed."""
-    p = t.plugin(id)
+    p = t.package(id)
     return {k: p.get(k) for k in ("current", "previous", "enabled", "forkOf", "replaces", "dependencies")}
 
 
@@ -41,11 +41,11 @@ def lifecycle_matches_library_contract(t: T):
          "rollback swaps")
     t.has((t.dist(HELLO) / "index.js").read_text(), "dan/hello 0.1.0")
     t.gitpm_ok("disable", HELLO)
-    t.eq(t.plugin(HELLO)["enabled"], False, "disable")
+    t.eq(t.package(HELLO)["enabled"], False, "disable")
     t.gitpm_ok("enable", HELLO)
-    t.eq(t.plugin(HELLO)["enabled"], True, "enable")
+    t.eq(t.package(HELLO)["enabled"], True, "enable")
     t.gitpm_ok("forget", HELLO)
-    t.ok(HELLO not in t.state()["plugins"] and t.clone(HELLO).is_dir(), "forget keeps the clone")
+    t.ok(HELLO not in t.state()["packages"] and t.clone(HELLO).is_dir(), "forget keeps the clone")
     t.ok(not t.dist(HELLO).exists(), "forget removes dist/ (only active packages are deployed)")
     t.gitpm_ok("restore", HELLO)
     t.eq((normalized(t, HELLO)["current"], normalized(t, HELLO)["previous"]), (rev(t, "0.1.0"), None),
@@ -68,10 +68,10 @@ def catalog_install_with_dependency(t: T):
     """install-catalog app/a: the library's catalog_install_resolves_dependencies_and_records_edges outcome."""
     t.gitpm_ok("install-catalog", "app/a")
     state = t.state()
-    t.eq(sorted(state["plugins"]), ["app/a", "lib/core"], "ids")
-    t.eq(state["plugins"]["lib/core"]["current"]["version"], "1.1.0", "highest version matching ^1.0")
-    t.eq(state["plugins"]["app/a"]["dependencies"], {"lib/core": "^1.0"}, "edge")
-    t.eq(state["plugins"]["lib/core"]["catalog"], str(t.catalog / "catalog.json"), "canonical catalog origin")
+    t.eq(sorted(state["packages"]), ["app/a", "lib/core"], "ids")
+    t.eq(state["packages"]["lib/core"]["current"]["version"], "1.1.0", "highest version matching ^1.0")
+    t.eq(state["packages"]["app/a"]["dependencies"], {"lib/core": "^1.0"}, "edge")
+    t.eq(state["packages"]["lib/core"]["catalog"], str(t.catalog / "catalog.json"), "canonical catalog origin")
     view = resolved(t)
     t.eq(view["lib/core"]["dependents"], ["app/a"], "dependents")
     row = view["app/a"]["dependencies"][0]
@@ -159,7 +159,7 @@ def list_is_library_state_plus_resolved(t: T):
     out = t.gitpm_ok("list").json()
     resolved_view = out.pop("resolved")
     t.eq(out, t.state(), "list without resolved == state.json")
-    t.eq([p["id"] for p in resolved_view], sorted(t.state()["plugins"]), "resolved is the sorted flat view")
+    t.eq([p["id"] for p in resolved_view], sorted(t.state()["packages"]), "resolved is the sorted flat view")
 
 
 @case(fixture="hello_releases", spec=["cli/json-output-for-state-and-catalog#list", "dist/dist-holds-exactly-the-active-packages"])

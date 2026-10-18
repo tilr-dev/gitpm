@@ -29,7 +29,7 @@ def providers(t: T) -> dict:
 
 
 def provider_payload(t: T) -> str:
-    """Hash of the payload of the plugin that provides vendor/base to the consumers."""
+    """Hash of the payload of the package that provides vendor/base to the consumers."""
     (provider,) = set(providers(t).values())
     return sha(t.dist(provider) / "index.js")
 
@@ -45,10 +45,10 @@ def step1_publish(t: T):
 def step2_install(t: T):
     for id in CONSUMERS:
         t.gitpm_ok("install-catalog", id)
-    t.eq(sorted(t.state()["plugins"]), ["app/a", "app/b", ORIGINAL], "vendor/base pulled in as a dependency")
+    t.eq(sorted(t.state()["packages"]), ["app/a", "app/b", ORIGINAL], "vendor/base pulled in as a dependency")
     view = resolved(t)
     for c in CONSUMERS:
-        t.eq(t.state()["plugins"][c]["dependencies"], {ORIGINAL: "^1.0"}, f"{c} edge")
+        t.eq(t.state()["packages"][c]["dependencies"], {ORIGINAL: "^1.0"}, f"{c} edge")
     t.eq(view[ORIGINAL].get("dependents"), CONSUMERS, "vendor/base dependents")
     t.eq(providers(t), {c: ORIGINAL for c in CONSUMERS}, "providers")
 
@@ -61,7 +61,7 @@ def step3_fork(t: T, fork):
     t.eq(manifest["replaces"], {"id": ORIGINAL, "version": "1.0.0"}, "fork declares replaces 1.0.0")
     t.eq(manifest["version"], "1.0.1", "fork version")
     t.gitpm_ok("install", fork)
-    t.eq(t.plugin(FORK)["current"]["version"], "1.0.1", "fork installed")
+    t.eq(t.package(FORK)["current"]["version"], "1.0.1", "fork installed")
     t.eq(providers(t), {c: ORIGINAL for c in CONSUMERS}, "installing the fork redirects nothing")
 
 
@@ -88,7 +88,7 @@ def step6_fork_update(t: T, fork):
     t.write(fork, {"dist/index.js": "fork payload 1.0.2\n"})
     t.gitpm_ok("commit", fork, "1.0.2")
     t.gitpm_ok("update", FORK)
-    t.eq(t.plugin(FORK)["current"]["version"], "1.0.2", "fork version")
+    t.eq(t.package(FORK)["current"]["version"], "1.0.2", "fork version")
     t.eq(t.rev(t.clone(FORK)), t.rev(fork, f"{FORK}@1.0.2"), "fork clone HEAD")
     t.eq(providers(t), {c: FORK for c in CONSUMERS}, "providers")
     t.eq(provider_payload(t), hashlib.sha256(b"fork payload 1.0.2\n").hexdigest(), "consumers follow the fork")
@@ -102,7 +102,7 @@ def step7_switch_back(t: T, fork):
     t.eq(providers(t), {c: ORIGINAL for c in CONSUMERS}, "providers")
     t.eq(provider_payload(t), sha(t.dist(ORIGINAL) / "index.js"), "original payload")
     t.has((t.dist(ORIGINAL) / "index.js").read_text(), "vendor/base 1.0.0")  # redeployed by --back
-    t.eq(t.plugin(FORK)["current"]["version"], "1.0.2", "fork still installed")
+    t.eq(t.package(FORK)["current"]["version"], "1.0.2", "fork still installed")
     t.eq(t.rev(t.clone(FORK)), fork_head, "fork history kept")
     t.eq((t.dist(FORK) / "index.js").read_text(), "fork payload 1.0.2\n", "fork edits kept")
     t.same(fork_author, "fork author repository")

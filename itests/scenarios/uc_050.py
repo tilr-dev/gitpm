@@ -4,7 +4,7 @@ Independent `gitpm` processes are released at the same instant by a FIFO gate (e
 in `read < gate`, then execs gitpm) and compete for the same workspace or catalog. The
 contract: each mutation either succeeds or is refused with `Error kind: locked`
 (workspace is already in use / catalog locked); refused ones succeed on retry; no
-success is lost and unrelated plugin bytes never change.
+success is lost and unrelated package bytes never change.
 """
 
 import json
@@ -63,18 +63,18 @@ def clean_txn(t: T, root: Path):
 @case(fixture="hello_installed", spec=["transactions-locking/workspace-lock#two-cli-processes"])
 def same_workspace_concurrent_installs(t: T):
     ids = [f"dan/p{i}" for i in range(1, 7)]
-    commits = {id: t.new_plugin(id, "0.1.0") for id in ids}
+    commits = {id: t.new_package(id, "0.1.0") for id in ids}
     hello = t.snap(t.clone(ID), t.dist(ID))
-    hello_entry = t.plugin(ID)
+    hello_entry = t.package(ID)
     jobs = [["install", t.repo(id)] for id in ids]
     settle(t, jobs, race(t, jobs), "workspace is already in use")
-    t.eq(sorted(t.state()["plugins"]), sorted(ids + [ID]), "every install landed")
+    t.eq(sorted(t.state()["packages"]), sorted(ids + [ID]), "every install landed")
     for id in ids:
-        t.eq(t.plugin(id)["current"], {"version": "0.1.0", "commit": commits[id]}, f"{id} state")
+        t.eq(t.package(id)["current"], {"version": "0.1.0", "commit": commits[id]}, f"{id} state")
         t.eq(t.rev(t.clone(id)), commits[id], f"{id} clone HEAD")
         t.has((t.dist(id) / "index.js").read_text(), f"{id} 0.1.0")
-    t.same(hello, "unrelated plugin bytes")
-    t.eq(t.plugin(ID), hello_entry, "unrelated plugin entry")
+    t.same(hello, "unrelated package bytes")
+    t.eq(t.package(ID), hello_entry, "unrelated package entry")
     clean_txn(t, t.ws)
 
 
@@ -82,7 +82,7 @@ def same_workspace_concurrent_installs(t: T):
 def same_plugin_installed_concurrently_once(t: T):
     """Four processes install the same ID: at most one installs it, the rest are locked or
     report it already installed (idempotent install, exit 0)."""
-    t.new_plugin("dan/solo", "0.1.0")
+    t.new_package("dan/solo", "0.1.0")
     jobs = [["install", t.repo("dan/solo")] for _ in range(4)]
     results = race(t, jobs)
     installed = [r for r in results if r.code == 0 and r.out.startswith("installed dan/solo@0.1.0")]
@@ -90,38 +90,38 @@ def same_plugin_installed_concurrently_once(t: T):
     for args, r in zip(jobs, results):
         if r not in installed:
             t.ok("Error kind: locked" in r.err or (r.code == 0 and r.out == "dan/solo already installed (0.1.0)\n"),
-                 "loser is locked or sees the plugin installed")
+                 "loser is locked or sees the package installed")
     if not installed and not any(r.code == 0 for r in results):
         t.gitpm_ok("install", t.repo("dan/solo"))
     before = t.snap(t.ws, git=True)
     t.eq(t.gitpm_ok("install", t.repo("dan/solo")).out, "dan/solo already installed (0.1.0)\n", "repeat install")
     t.same(before, "workspace after the repeat install")
-    t.eq(t.plugin("dan/solo")["current"]["version"], "0.1.0", "installed once")
-    t.eq(len([p for p in t.state()["plugins"] if p == "dan/solo"]), 1, "one entry")
+    t.eq(t.package("dan/solo")["current"]["version"], "0.1.0", "installed once")
+    t.eq(len([p for p in t.state()["packages"] if p == "dan/solo"]), 1, "one entry")
     clean_txn(t, t.ws)
 
 
 @case(fixture="hello_installed", spec=["transactions-locking/workspace-lock#two-cli-processes"])
 def same_workspace_mixed_mutations_lose_nothing(t: T):
     for id in ["dan/a", "dan/b", "dan/c"]:
-        t.new_plugin(id, "0.1.0")
+        t.new_package(id, "0.1.0")
     for id in ["dan/a", "dan/b"]:
         t.gitpm_ok("install", t.repo(id))
     new = t.release(ID, "0.1.1")
     jobs = [["update", ID], ["disable", "dan/a"], ["install", t.repo("dan/c")], ["uninstall", "dan/b", "--force"]]
     settle(t, jobs, race(t, jobs), "workspace is already in use")
-    s = t.state()["plugins"]
+    s = t.state()["packages"]
     t.eq(s[ID]["current"], {"version": "0.1.1", "commit": new}, "update kept")
     t.eq(s["dan/a"]["enabled"], False, "disable kept")
     t.ok("dan/c" in s and t.clone("dan/c").is_dir(), "install kept")
     t.ok("dan/b" not in s and not t.clone("dan/b").exists(), "uninstall kept")
     t.has((t.dist(ID) / "index.js").read_text(), "0.1.1")
-    # Rounds of concurrent toggles over every plugin.
+    # Rounds of concurrent toggles over every package.
     ids = sorted(s)
     for enabled in [False, True, False]:
         jobs = [["enable" if enabled else "disable", id] for id in ids]
         settle(t, jobs, race(t, jobs), "workspace is already in use")
-        t.eq({id: p["enabled"] for id, p in t.state()["plugins"].items()}, {id: enabled for id in ids},
+        t.eq({id: p["enabled"] for id, p in t.state()["packages"].items()}, {id: enabled for id in ids},
              f"all {'enabled' if enabled else 'disabled'}")
     clean_txn(t, t.ws)
 
@@ -136,12 +136,12 @@ def same_catalog_concurrent_registrations(t: T):
         jobs.append(["register", t.repo(ID), "--ref", f"{ID}@{v}"])
     for n in range(1, 4):
         id = f"dan/n{n}"
-        expected[(id, "0.1.0")] = t.new_plugin(id, "0.1.0")
+        expected[(id, "0.1.0")] = t.new_package(id, "0.1.0")
         jobs.append(["register", t.repo(id), "--ref", f"{id}@0.1.0"])
     settle(t, jobs, race(t, jobs), "catalog locked")
     index = json.loads(t.catalog_index(ID).read_text())
     t.eq(sorted(index["versions"]), sorted(["0.1.0", "0.1.1", "0.2.0"] + [f"0.3.{p}" for p in range(5)]),
-         "no lost version in the shared plugin index")
+         "no lost version in the shared package index")
     for (id, v), commit in expected.items():
         t.eq(json.loads(t.catalog_release(id, v).read_text())["commit"], commit, f"{id}@{v} recorded")
     t.eq(sorted(json.loads((t.catalog / "namespaces/dan/catalog.json").read_text())["directories"]),
@@ -160,7 +160,7 @@ def independent_workspaces_and_catalogs_run_in_parallel(t: T):
     t.eq([r.code for r in results], [0] * len(jobs), "no refusal across different workspaces")
     for root in roots:
         state = json.loads((root / "state.json").read_text())
-        t.eq(state["plugins"][ID]["current"]["version"], "0.1.1", f"{root.name} state")
+        t.eq(state["packages"][ID]["current"]["version"], "0.1.1", f"{root.name} state")
         t.has((root / "dist" / ID / "index.js").read_text(), "dan/hello 0.1.1")
         clean_txn(t, root)
     catalogs = [t.root / f"cat{i}" for i in range(1, 5)]

@@ -5,7 +5,7 @@ from the catalog with lib/core 1.1.0 pulled in, plus the unrelated other/x. app/
 the role of the spec's second dependent "app/b" (in the shared g6_core catalog app/b is
 the ^2.0 conflict consumer of UC-058).
 
-Owner decision: `disable --force` of a plugin with dependents is valid (disables it).
+Owner decision: `disable --force` of a package with dependents is valid (disables it).
 """
 
 import os
@@ -78,7 +78,7 @@ def disable_refused_naming_dependents(t: T):
 def disable_force_reports_broken_dependents(t: T):
     """2c. disable --force disables lib/core (dist removed); dependents are reported, never silently broken."""
     t.gitpm_ok("disable", CORE, "--force")
-    t.eq(t.plugin(CORE)["enabled"], False, "lib/core disabled")
+    t.eq(t.package(CORE)["enabled"], False, "lib/core disabled")
     t.ok(not t.dist(CORE).exists(), "dist/lib/core removed")
     for consumer in ["app/a", "app/c"]:
         row = core_status(t, consumer)
@@ -117,7 +117,7 @@ def unused_dependency_uninstalls_without_guard(t: T):
     r = t.gitpm_ok("uninstall", CORE)
     t.lacks(r.err, "required by")
     t.not_installed(CORE)
-    t.eq(sorted(t.state()["plugins"]), ["other/x"], "only the unrelated plugin is left")
+    t.eq(sorted(t.state()["packages"]), ["other/x"], "only the unrelated package is left")
 
 
 @case(fixture="g6_core_deps_installed", spec=["dependencies/dependents-guard-removal", "install-uninstall/uninstall-is-planned-and-confirmed"])

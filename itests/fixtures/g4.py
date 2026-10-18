@@ -28,31 +28,30 @@ def committed_files(repo, rev: str) -> dict:
     return out
 
 
-# ------------------------------------------------------------------ legacy plugin
+# ------------------------------------------------------------------ old/oldie
 
 
 @fixture()
-def g4_legacy(t: T):
-    """Legacy (unscoped) plugin `oldie` at /fx/repos/oldie: tags v0.1.0, v0.2.0 (nested dist)."""
-    init_repo(t, "oldie")
+def g4_oldie(t: T):
+    """old/oldie at /fx/repos/old/oldie: tags old/oldie@0.1.0, old/oldie@0.2.0 (nested dist)."""
+    init_repo(t, "old/oldie")
     for v in ["0.1.0", "0.2.0"]:
-        t.release("oldie", v, files={"dist/lib/util.js": f"// util {v}\n"}, tag=False)
-        t.tag("oldie", f"v{v}")
+        t.release("old/oldie", v, files={"dist/lib/util.js": f"// util {v}\n"})
 
 
-@g4_legacy.check
+@g4_oldie.check
 def _(t: T):
-    t.eq(sorted(t.git("oldie", "tag", "--list").split()), ["v0.1.0", "v0.2.0"], "oldie tags")
-    t.has(t.git("oldie", "show", "v0.1.0:plugin.json"), '"id": "oldie"', '"version": "0.1.0"')
+    t.eq(sorted(t.git("old/oldie", "tag", "--list").split()), ["old/oldie@0.1.0", "old/oldie@0.2.0"], "oldie tags")
+    t.has(t.git("old/oldie", "show", "old/oldie@0.1.0:plugin.json"), '"id": "old/oldie"', '"version": "0.1.0"')
 
 
 # ------------------------------------------------------------------ v2 tree
 
 
-@fixture(requires=["hello_releases", "g4_legacy"])
+@fixture(requires=["hello_releases", "g4_oldie"])
 def g4_tree(t: T):
     """Adds acme/widget 1.0.0, 1.1.0 with nested text and binary dist files (next to
-    dan/hello 0.1.0/0.1.1/0.2.0 and legacy oldie v0.1.0/v0.2.0)."""
+    dan/hello 0.1.0/0.1.1/0.2.0 and old/oldie 0.1.0/0.2.0)."""
     init_repo(t, "acme/widget")
     for v in ["1.0.0", "1.1.0"]:
         t.release("acme/widget", v, files={
@@ -74,13 +73,13 @@ def _(t: T):
 G4_TREE_RELEASES = [
     ("dan/hello", "dan/hello", ["0.1.0", "0.1.1"], "dan/hello@{}"),
     ("acme/widget", "acme/widget", ["1.0.0", "1.1.0"], "acme/widget@{}"),
-    ("oldie", "oldie", ["0.1.0", "0.2.0"], "v{}"),
+    ("old/oldie", "old/oldie", ["0.1.0", "0.2.0"], "old/oldie@{}"),
 ]
 
 
 @fixture(requires=["g4_tree"], gitpm=True)
 def g4_tree_catalog(t: T):
-    """/fx/catalog (v2): dan/hello 0.1.0, 0.1.1; acme/widget 1.0.0, 1.1.0; legacy oldie
+    """/fx/catalog (v2): dan/hello 0.1.0, 0.1.1; acme/widget 1.0.0, 1.1.0; old/oldie
     0.1.0, 0.2.0. dan/hello 0.2.0 is tagged but not registered. Empty workspace."""
     for _, repo, versions, tag in G4_TREE_RELEASES:
         for v in versions:
@@ -90,10 +89,9 @@ def g4_tree_catalog(t: T):
 @g4_tree_catalog.check
 def _(t: T):
     root = json.loads((t.catalog / "catalog.json").read_text())
-    t.eq(root, {"schema": 2, "directories": {"legacy": "legacy/", "namespaces": "namespaces/"}}, "root catalog")
+    t.eq(root, {"schema": 2, "directories": {"namespaces": "namespaces/"}}, "root catalog")
     for id, _, versions, _ in G4_TREE_RELEASES:
-        folder = t.catalog / ("namespaces/" + id if "/" in id else "legacy/" + id)
-        index = json.loads((folder / "plugin.json").read_text())
+        index = json.loads(t.catalog_index(id).read_text())
         t.eq(sorted(index["versions"]), sorted(versions), f"{id} versions")
     t.ok(not t.ws.exists(), "workspace untouched")
 
@@ -114,31 +112,32 @@ def v1_release(t: T, id: str, repo: str, version: str, tag: str, with_files: boo
     return release
 
 
-V1_PLUGINS = [
-    ("oldie", ["0.1.0", "0.2.0"], "v{}", False),
+V1_PACKAGES = [
+    ("old/oldie", ["0.1.0", "0.2.0"], "old/oldie@{}", False),
     ("dan/hello", ["0.1.0", "0.1.1"], "dan/hello@{}", True),
 ]
 
 
-@fixture(requires=["hello_releases", "g4_legacy"])
+@fixture(requires=["hello_releases", "g4_oldie"])
 def g4_v1(t: T):
-    """Monolithic v1 catalog /fx/v1/catalog.json (lifecycle fixture format): legacy oldie
-    0.1.0, 0.2.0 without files/build; dan/hello 0.1.0, 0.1.1 with files, without build."""
-    plugins = {}
-    for id, versions, tag, with_files in V1_PLUGINS:
-        plugins[id] = {"source": str(t.repo(id)),
-                       "versions": {v: v1_release(t, id, id, v, tag.format(v), with_files) for v in versions}}
+    """Monolithic v1 catalog /fx/v1/catalog.json (the format gitpm 0.5 still read; now
+    refused): old/oldie 0.1.0, 0.2.0 without files/build; dan/hello 0.1.0, 0.1.1 with files."""
+    packages = {}
+    for id, versions, tag, with_files in V1_PACKAGES:
+        packages[id] = {"source": str(t.repo(id)),
+                        "versions": {v: v1_release(t, id, id, v, tag.format(v), with_files) for v in versions}}
     (t.root / "v1").mkdir()
-    (t.root / "v1/catalog.json").write_text(json.dumps({"plugins": plugins}, indent=2) + "\n")
+    # The v1 layout keeps its literal top-level key `packages`.
+    (t.root / "v1/catalog.json").write_text(json.dumps({"plugins": packages}, indent=2) + "\n")
 
 
 @g4_v1.check
 def _(t: T):
     value = json.loads((t.root / "v1/catalog.json").read_text())
     t.eq(sorted(value), ["plugins"], "v1 top level")
-    t.eq(sorted(value["plugins"]), ["dan/hello", "oldie"], "v1 plugins")
-    for v in value["plugins"]["oldie"]["versions"].values():
-        t.ok("files" not in v and "build" not in v, "legacy release has no files/build")
+    t.eq(sorted(value["plugins"]), ["dan/hello", "old/oldie"], "v1 packages")
+    for v in value["plugins"]["old/oldie"]["versions"].values():
+        t.ok("files" not in v and "build" not in v, "old release has no files/build")
     for v in value["plugins"]["dan/hello"]["versions"].values():
         t.ok(v["files"] and "build" not in v, "scoped release has files, no build")
 
@@ -161,7 +160,7 @@ def g4_sources(t: T):
     t.commit(repo, "unreleased", {"dist/index.js": "dev\n"})
     (t.root / "lists").mkdir()
     (t.root / "lists/sources.txt").write_text(
-        "# plugin sources\n"
+        "# package sources\n"
         "\n"
         "../repos/dan/hello\n"
         "   \n"
@@ -178,7 +177,7 @@ def _(t: T):
     t.eq(t.git(repo, "cat-file", "-t", "dan/spaced@1.1.0"), "tag", "1.1.0 is annotated")
     t.eq(t.git(repo, "cat-file", "-t", "dan/spaced@1.0.0"), "commit", "1.0.0 is lightweight")
     t.ok(t.rev(repo) != t.rev(repo, "dan/spaced@1.1.0"), "HEAD past the last release")
-    t.has((t.root / "lists/sources.txt").read_text(), "# plugin sources", SPACED)
+    t.has((t.root / "lists/sources.txt").read_text(), "# package sources", SPACED)
 
 
 @fixture(requires=["g4_sources"], gitpm=True)
@@ -202,10 +201,10 @@ def _(t: T):
 @fixture()
 def g4_xp(t: T):
     """x/p 1.0.0, 1.1.0; y/q 1.0.0; z/r 1.0.0 at /fx/repos; /fx/mirror/x/p is a clone of x/p."""
-    t.new_plugin("x/p", "1.0.0")
+    t.new_package("x/p", "1.0.0")
     t.release("x/p", "1.1.0")
-    t.new_plugin("y/q", "1.0.0")
-    t.new_plugin("z/r", "1.0.0")
+    t.new_package("y/q", "1.0.0")
+    t.new_package("z/r", "1.0.0")
     t.run("git", "clone", "-q", t.repo("x/p"), t.root / "mirror/x/p", check=True)
 
 

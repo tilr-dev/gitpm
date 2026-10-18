@@ -1,7 +1,7 @@
 """UC-063: CLI usage errors, help and output modes (P1).
 
 gitpm usage errors: non-zero exit, a message on stderr naming the problem, and no change to
-the fixture (workspace with an installed plugin, catalog, author repositories — the
+the fixture (workspace with an installed package, catalog, author repositories — the
 whole /fx tree incl. Git internals). Also flag order, `info` truncation at 40 entries,
 `check` colouring on a TTY vs a pipe, NO_COLOR and TERM=dumb, and help coverage.
 `disable --force` is valid (owner decision) and is not tested as an error here.
@@ -16,12 +16,12 @@ REPO = "/fx/repos/dan/hello"
 OPT = "cli/option-validation"
 # Every command of `gitpm --help` (main.rs COMMANDS).
 COMMANDS = ["install", "install-catalog", "list", "check", "update", "rollback", "enable", "disable", "forget",
-            "restore", "uninstall", "fork", "replace", "sync-dist", "init", "create", "commit", "remote", "auth",
-            "info", "catalog", "catalog-update", "register", "migrate-catalog"]
+            "restore", "uninstall", "fork", "replace", "sync-dist", "init", "commit", "remote", "auth",
+            "info", "catalog", "catalog-update", "register"]
 # Positional arguments each command takes (main.rs `expected` - 1). install takes SOURCE [ID]
 # (the message still says 1); fork takes ID [ID...] (no upper bound).
 ARITY = {"list": 0, "check": 0, "sync-dist": 0, "info": 0, "catalog": 0, "catalog-update": 0,
-         "migrate-catalog": 0, "commit": 2, "remote": 2, "auth": 2}
+         "commit": 2, "remote": 2, "auth": 2}
 ESC = "\x1b["
 
 
@@ -59,7 +59,7 @@ for _name, _doc, _argv, _needle, _spec in [
     ("with_without_replace", "1. --with outside replace", ["update", ID, "--with", "dan/other"],
      "--with/--back require replace", f"{OPT}#misplaced-flag"),
     ("multi_with_install", "1. --multi outside init", ["install", REPO, "--multi"],
-     "--multi/--no-release require init/create", f"{OPT}#misplaced-flag"),
+     "--multi/--no-release require init", f"{OPT}#misplaced-flag"),
     ("package_with_init", "1. --package with init", ["init", "dan/x", "--into", "/fx/x", "--package", "dan/x"],
      "--package requires install/commit/register", f"{OPT}#misplaced-flag"),
     # 2. repeated / missing / unknown
@@ -133,48 +133,44 @@ def uninstall_flag_order_is_irrelevant(t: T):
     t.eq(results[0], results[1], "same outcome for both orders")
 
 
-def v1_catalog(t: T, n: int):
-    path = t.root / f"v1-{n}"
-    path.mkdir()
-    plugins = {f"dan/p{i:02}": {"source": f"https://example.invalid/p{i:02}.git", "versions": {}} for i in range(n)}
-    (path / "catalog.json").write_text(json.dumps({"plugins": plugins}))
-    return path
-
-
-@case(spec=["catalog/bounded-overview"])
-def info_v1_exactly_40_has_no_hint(t: T):
-    """6. A v1 catalog with exactly 40 plugins lists all of them, without the truncation hint."""
-    out = t.gitpm_ok("--catalog", v1_catalog(t, 40), "info").out
-    t.has(out, "Format: v1", "dan/p00", "dan/p39")
-    t.lacks(out, "Overview limit")
-
-
-@case(spec=["catalog/bounded-overview"])
-def info_v1_41_shows_hint(t: T):
-    """6. A v1 catalog with 41 plugins shows the truncation hint."""
-    out = t.gitpm_ok("--catalog", v1_catalog(t, 41), "info").out
-    t.has(out, "Format: v1", "dan/p00", "Overview limit: 40 entries")
-    t.eq(sum(1 for l in out.splitlines() if l.strip().startswith("dan/p")), 40, "plugins listed")
-
-
-@case(spec=["catalog/bounded-overview"])
-def info_v2_more_than_40_entries(t: T):
-    """6. A v2 tree with 45 plugin folders is truncated with the hint."""
-    root = t.root / "v2"
+def v2_catalog(t: T, name: str, n: int):
+    """A v2 tree namespaces/dan/pNN with n package folders: n + 2 overview entries."""
+    root = t.root / name
     ns = root / "namespaces/dan"
     ns.mkdir(parents=True)
     (root / "catalog.json").write_text(json.dumps({"schema": 2, "directories": {"namespaces": "namespaces/"}}))
     (root / "namespaces/catalog.json").write_text(json.dumps({"schema": 2, "directories": {"dan": "dan/"}}))
     dirs = {}
-    for i in range(45):
+    for i in range(n):
         name = f"p{i:02}"
         dirs[name] = f"{name}/"
         (ns / name).mkdir()
         (ns / name / "plugin.json").write_text(json.dumps(
             {"schema": 2, "id": f"dan/{name}", "source": f"https://example.invalid/{name}.git", "versions": {}}))
     (ns / "catalog.json").write_text(json.dumps({"schema": 2, "directories": dirs}))
-    out = t.gitpm_ok("--catalog", root, "info").out
-    t.has(out, "Format: v2", "dan/p00", "Overview limit: 40 entries")
+    return root
+
+
+@case(spec=["catalog/bounded-overview"])
+def info_below_the_limit_has_no_hint(t: T):
+    """6. A catalog with 39 entries (2 directories, 37 packages) lists all, without the hint."""
+    out = t.gitpm_ok("--catalog", v2_catalog(t, "v2-39", 37), "info").out
+    t.has(out, "dan/p00", "dan/p36")
+    t.lacks(out, "Overview limit")
+
+
+@case(spec=["catalog/bounded-overview"])
+def info_at_the_limit_shows_hint(t: T):
+    """6. 40 entries (38 packages) reach the limit: all 40 shown plus the truncation hint."""
+    out = t.gitpm_ok("--catalog", v2_catalog(t, "v2-40", 38), "info").out
+    t.has(out, "dan/p00", "dan/p37", "Overview limit: 40 entries")
+
+
+@case(spec=["catalog/bounded-overview"])
+def info_v2_more_than_40_entries(t: T):
+    """6. A v2 tree with 45 package folders is truncated with the hint."""
+    out = t.gitpm_ok("--catalog", v2_catalog(t, "v2", 45), "info").out
+    t.has(out, "dan/p00", "Overview limit: 40 entries")
     t.lacks(out, "dan/p44")
 
 

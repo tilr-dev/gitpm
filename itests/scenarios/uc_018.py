@@ -102,7 +102,7 @@ class Guard:
         self.ws = t.snap(t.ws, git=True)
         self.author = t.snap(t.repo(ID), git=True)
         self.other = t.snap(t.clone(OTHER), t.dist(OTHER), git=True)
-        self.other_entry = t.plugin(OTHER)
+        self.other_entry = t.package(OTHER)
 
     def unchanged(self, what: str):
         self.t.same(self.ws, f"workspace after {what}")
@@ -113,7 +113,7 @@ class Guard:
         t.not_installed(ID)
         t.same(self.author, "author repository")
         t.same(self.other, f"{OTHER} clone and dist")
-        t.eq(t.plugin(OTHER), self.other_entry, f"{OTHER} state entry")
+        t.eq(t.package(OTHER), self.other_entry, f"{OTHER} state entry")
 
 
 # ----------------------------------------------------------------------------- cases
@@ -145,13 +145,13 @@ def prompt_declined(t: T, make):
         r, prompted = tty_gitpm(t, "uninstall", ID, answer=answer)
         t.ok(prompted, "confirmation prompt shown")
         t.has(r.out, *expected)
-        t.has(r.out, f"plugins/{ID}", f"dist/{ID}", f"state.json entry {ID}", "Delete anyway? [y/N]")
+        t.has(r.out, f"packages/{ID}", f"dist/{ID}", f"state.json entry {ID}", "Delete anyway? [y/N]")
         t.ok(r.code != 0, f"answer {answer!r}: non-zero exit")
         g.unchanged(f"answer {answer!r}")
 
 
 def prompt_confirmed(t: T, make):
-    """TTY prompt answered y removes clone, dist and state entry of the selected plugin only."""
+    """TTY prompt answered y removes clone, dist and state entry of the selected package only."""
     expected = make(t)
     g = Guard(t)
     r, prompted = tty_gitpm(t, "uninstall", ID, answer="y")

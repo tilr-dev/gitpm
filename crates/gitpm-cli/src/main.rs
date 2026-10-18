@@ -85,11 +85,11 @@ fn option(args: &mut Vec<String>, key: &str) -> Result<Option<String>> {
         Ok(None)
     }
 }
-/// Split the init/create argument `NAMESPACE/NAME` (a plugin ID, not a path). The
+/// Split the init argument `NAMESPACE/NAME` (a package ID, not a path). The
 /// namespace is mandatory: there is no default and no config file.
 fn split_id(value: &str) -> Result<(&str, &str)> {
     let Some((namespace, name)) = value.split_once('/') else {
-        bail!("plugin id needs a namespace: use NAMESPACE/NAME, for example acme/{value}");
+        bail!("package id needs a namespace: use NAMESPACE/NAME, for example acme/{value}");
     };
     identity::qualified(namespace, name)?;
     Ok((namespace, name))
@@ -121,7 +121,7 @@ fn confirm_lost_work(plan: &gitpm::UninstallPlan) -> Result<bool> {
 fn print_replacement(manager: &Manager, plan: &gitpm::ReplacementPlan) -> Result<()> {
     let installed = manager
         .state()?
-        .plugins
+        .packages
         .get(&plan.provider)
         .map(|p| p.current.version.clone())
         .unwrap_or_else(|| plan.version.clone());
@@ -175,7 +175,7 @@ fn print_installed(result: &gitpm::InstallResult, requested: Option<&str>) {
 fn print_switch_back(manager: &Manager, plan: &gitpm::ReplacementPlan) -> Result<()> {
     let installed = manager
         .state()?
-        .plugins
+        .packages
         .get(&plan.original)
         .map(|p| p.current.version.clone())
         .unwrap_or_else(|| plan.version.clone());
@@ -187,7 +187,7 @@ fn print_switch_back(manager: &Manager, plan: &gitpm::ReplacementPlan) -> Result
     // switch_back refuses when nothing is replaced, so `current` names the fork.
     let fork = plan.current.as_deref().unwrap_or_default();
     // The fork is not touched: say what is left of it.
-    let remains = match manager.state()?.plugins.get(fork) {
+    let remains = match manager.state()?.packages.get(fork) {
         Some(p) if p.enabled => {
             format!("; {fork} stays installed and enabled (disable or uninstall it if not wanted)")
         }
@@ -209,7 +209,7 @@ fn print_update_all(before: &gitpm::State, plan: &gitpm::UpdateAllPlan, dry_run:
     for install in &plan.installs {
         warn(&install.warnings);
     }
-    for (id, installed) in &before.plugins {
+    for (id, installed) in &before.packages {
         let held = plan.kept_back.iter().find(|h| &h.id == id);
         match plan.updates.iter().find(|c| &c.id == id) {
             Some(change) => println!(
@@ -268,15 +268,15 @@ fn print_dist_sync(sync: &gitpm::DistSync, dry_run: bool) {
     }
     warn_dist(sync);
     if sync.is_empty() && sync.skipped.is_empty() {
-        println!("dist/ already holds exactly the active plugins.");
+        println!("dist/ already holds exactly the active packages.");
     } else if dry_run {
         println!("Nothing was changed (--dry-run).");
     }
 }
-/// Folders under dist/ gitpm leaves alone, and active plugins left without dist/.
+/// Folders under dist/ gitpm leaves alone, and active packages left without dist/.
 fn warn_dist(sync: &gitpm::DistSync) {
     for path in &sync.unmanaged {
-        eprintln!("Warning: {path} belongs to no known plugin or is not a folder; left as it is");
+        eprintln!("Warning: {path} belongs to no known package or is not a folder; left as it is");
     }
     for skipped in &sync.skipped {
         eprintln!(
@@ -432,14 +432,12 @@ fn fork_packages_replace(
 }
 const COMMANDS: &[&str] = &[
     "init",
-    "create",
     "fork",
     "remote",
     "auth",
     "info",
     "catalog",
     "catalog-update",
-    "migrate-catalog",
     "register",
     "commit",
     "install-catalog",
@@ -469,7 +467,7 @@ const HELP: &[Help] = &[
         commands: &[],
         text: "gitpm [--root DIR] [--catalog DIR_OR_JSON_OR_URL] COMMAND
 
-Workspace (installed plugins):",
+Workspace (installed packages):",
     },
     Help {
         commands: &["install"],
@@ -507,7 +505,7 @@ Workspace (installed plugins):",
     Help {
         commands: &["enable", "disable"],
         text: "  enable ID | disable ID [--force]  deploy / remove dist/ID; disable refuses while other
-                                   installed plugins depend on ID unless --force",
+                                   installed packages depend on ID unless --force",
     },
     Help {
         commands: &["forget", "restore"],
@@ -545,10 +543,9 @@ Workspace (installed plugins):",
     },
     Help {
         commands: &["sync-dist"],
-        text: "  sync-dist [--dry-run]            make dist/ hold exactly the active plugins (installed,
-                                   enabled, not replaced); run once after upgrading a
-                                   workspace from gitpm 0.4 (mutating commands
-                                   reconcile dist/ automatically)",
+        text: "  sync-dist [--dry-run]            make dist/ hold exactly the active packages (installed,
+                                   enabled, not replaced); mutating commands
+                                   reconcile dist/ automatically",
     },
     Help {
         commands: &[],
@@ -556,9 +553,9 @@ Workspace (installed plugins):",
 Authoring:",
     },
     Help {
-        commands: &["init", "create"],
-        text: "  init NAMESPACE/NAME --into DIR   create the package with release 0.1.0 (init = create):
-  create NAMESPACE/NAME --into DIR  a new DIR becomes a single-package repository; a
+        commands: &["init"],
+        text: "  init NAMESPACE/NAME --into DIR   create the package with release 0.1.0:
+                                   a new DIR becomes a single-package repository; a
                                    repository DIR with gitpm.json (or without one and no
                                    root package) gets the folder PREFIX/NAME
     [--multi] [--no-release]       --multi: a new (or empty) DIR becomes a multi-package
@@ -585,7 +582,7 @@ Catalog (a local folder of static JSON files, or an HTTP(S) URL for reading):",
     },
     Help {
         commands: &["info"],
-        text: "  info                             show the catalog's directories and plugin versions",
+        text: "  info                             show the catalog's directories and package versions",
     },
     Help {
         commands: &["catalog"],
@@ -601,10 +598,6 @@ Catalog (a local folder of static JSON files, or an HTTP(S) URL for reading):",
         text: "  register GIT_SOURCE --ref REF     add one committed version to a local catalog
     [--package ID]                 package of a multi-package repository
     [--build-url HTTPS_URL --build-sha256 SHA256]  optional build metadata",
-    },
-    Help {
-        commands: &["migrate-catalog"],
-        text: "  migrate-catalog                  split a local v1 catalog into plugin folders",
     },
     Help {
         commands: &[],
@@ -735,16 +728,16 @@ fn run() -> Result<()> {
         "--package requires install/commit/register"
     );
     ensure!(
-        into.is_none() || matches!(command, "init" | "create" | "fork"),
-        "--into requires init/create/fork"
+        into.is_none() || matches!(command, "init" | "fork"),
+        "--into requires init/fork"
     );
     ensure!(
         provides.is_none() || command == "list",
         "--provides requires list"
     );
     ensure!(
-        (!multi && !no_release) || matches!(command, "init" | "create"),
-        "--multi/--no-release require init/create"
+        (!multi && !no_release) || command == "init",
+        "--multi/--no-release require init"
     );
     ensure!(
         (!replace && ns.is_none()) || command == "fork",
@@ -759,8 +752,7 @@ fn run() -> Result<()> {
         "replace needs exactly one of --with FORK or --back"
     );
     let expected = match command {
-        "info" | "catalog-update" | "migrate-catalog" | "list" | "check" | "catalog"
-        | "sync-dist" => 1,
+        "info" | "catalog-update" | "list" | "check" | "catalog" | "sync-dist" => 1,
         // fork ID [ID...]: one or more installed IDs.
         "fork" => args.len().max(2),
         "auth" | "commit" | "remote" => 3,
@@ -775,7 +767,7 @@ fn run() -> Result<()> {
         args.len() - 1
     );
     let id = args.get(1).map(String::as_str).unwrap_or("");
-    if matches!(command, "init" | "create") {
+    if command == "init" {
         split_id(id)?;
         ensure!(
             into.is_some(),
@@ -890,13 +882,7 @@ fn run() -> Result<()> {
             );
             return Ok(());
         }
-        "migrate-catalog" => {
-            let location = require_catalog()?;
-            catalog::migrate(&location)?;
-            println!("Catalog migrated: {location} (format v2, one folder per plugin)");
-            return Ok(());
-        }
-        "init" | "create" => {
+        "init" => {
             let (namespace, name) = split_id(id)?;
             let dir = into.as_deref().unwrap_or_default();
             let options = scaffold::InitOptions {
@@ -904,12 +890,12 @@ fn run() -> Result<()> {
                 release: !no_release,
             };
             let created = scaffold::init_with(Path::new(dir), namespace, name, options)?;
-            let plugin_id = identity::qualified(namespace, name)?;
+            let package_id = identity::qualified(namespace, name)?;
             let source = scaffold::shell_quote(&created.repo.to_string_lossy());
             let root = scaffold::shell_quote(&root);
             let package = match &created.folder {
                 None => String::new(),
-                Some(_) => format!(" --package {plugin_id}"),
+                Some(_) => format!(" --package {package_id}"),
             };
             let version = match &created.tag {
                 Some(tag) => format!("Git commit and tag {tag}"),
@@ -923,14 +909,14 @@ fn run() -> Result<()> {
             };
             match &created.folder {
                 None => println!(
-                    "\nCreated: {}\nID: {plugin_id}\nVersion 0.1.0: {version}.\nEdit: {}/dist/index.js\n\nInstall:\n{install}  gitpm --root {root} install {source}\n\nNew release after editing:\n  gitpm commit {source} 0.1.1\n\nGit uses your configured identity; if there is none, the repository gets a local\nPlugin Demo <demo@example.invalid>.",
+                    "\nCreated: {}\nID: {package_id}\nVersion 0.1.0: {version}.\nEdit: {}/dist/index.js\n\nInstall:\n{install}  gitpm --root {root} install {source}\n\nNew release after editing:\n  gitpm commit {source} 0.1.1\n\nGit uses your configured identity; if there is none, the repository gets a local\nPackage Demo <demo@example.invalid>.",
                     created.repo.display(),
                     created.repo.display()
                 ),
                 Some(folder) => {
                     let path = created.repo.join(folder);
                     println!(
-                        "\nCreated: {}\nID: {plugin_id}\nVersion 0.1.0: {version} (only gitpm.json and this folder are committed).\nEdit: {}/dist/index.js\n\nInstall:\n{install}  gitpm --root {root} install {source} {plugin_id}\n\nNew release after editing (stages ALL changes of the repository):\n  gitpm commit {source} 0.1.1{package}",
+                        "\nCreated: {}\nID: {package_id}\nVersion 0.1.0: {version} (only gitpm.json and this folder are committed).\nEdit: {}/dist/index.js\n\nInstall:\n{install}  gitpm --root {root} install {source} {package_id}\n\nNew release after editing (stages ALL changes of the repository):\n  gitpm commit {source} 0.1.1{package}",
                         path.display(),
                         path.display()
                     );
@@ -940,8 +926,8 @@ fn run() -> Result<()> {
         }
         "check" => {
             let state = check::read_state(Path::new(&root))?;
-            if state.plugins.is_empty() {
-                println!("No plugins installed in workspace {root}.");
+            if state.packages.is_empty() {
+                println!("No packages installed in workspace {root}.");
             } else {
                 let url = require_catalog()?;
                 let rows = check::check(Path::new(&root), &url)?;
@@ -953,11 +939,11 @@ fn run() -> Result<()> {
                 for (original, fork) in &state.replacements {
                     println!("Replacement: {original} → {fork} (for every consumer)");
                 }
-                for plugin in state.installed() {
-                    for dep in plugin.dependencies.iter().filter(|d| !d.satisfied) {
+                for package in state.installed() {
+                    for dep in package.dependencies.iter().filter(|d| !d.satisfied) {
                         println!(
                             "Unsatisfied dependency: {} → {} {}: {}",
-                            plugin.id,
+                            package.id,
                             dep.id,
                             dep.requirement,
                             dep.problem.as_deref().unwrap_or("")
@@ -999,11 +985,8 @@ fn run() -> Result<()> {
         "commit" => {
             let version = &args[2];
             let tag = scaffold::commit_package(Path::new(id), version, package.as_deref())?;
-            // `ID@VERSION` names the package; a legacy `vVERSION` tag does not.
-            let package = tag.rsplit_once('@').map_or_else(
-                || scaffold::shell_quote(id),
-                |(package, _)| package.to_owned(),
-            );
+            // A release tag is always `ID@VERSION`: it names the package.
+            let (package, _) = tag.rsplit_once('@').expect("release tags are ID@VERSION");
             println!("{package} committed {version} (local commit and tag {tag})");
             return Ok(());
         }
@@ -1065,7 +1048,7 @@ fn run() -> Result<()> {
                 // Only packages whose plugin.json provides the service.
                 resolved.retain(|p| p.provides.contains(service));
                 state
-                    .plugins
+                    .packages
                     .retain(|id, _| resolved.iter().any(|p| &p.id == id));
             }
             let mut value = serde_json::to_value(state)?;

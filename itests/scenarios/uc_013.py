@@ -12,12 +12,12 @@ V, A = "vendor/demo", "author/demo"
 
 
 def entry(t: T, root, id: str):
-    return json.loads((root / "state.json").read_text())["plugins"].get(id)
+    return json.loads((root / "state.json").read_text())["packages"].get(id)
 
 
 def files_of(t: T, root, id: str):
     """Clone (with full .git) and dist of one installation."""
-    return t.snap(root / "plugins" / id, root / "dist" / id, git=True)
+    return t.snap(root / "packages" / id, root / "dist" / id, git=True)
 
 
 def authors(t: T):
@@ -28,14 +28,14 @@ def authors(t: T):
 def same_basename_coexists(t: T):
     """Both IDs are installed side by side with their own clone, dist and state entry."""
     state = t.gitpm_ok("list").json()
-    t.eq(sorted(state["plugins"]), [A, V], "state keys are full IDs")
+    t.eq(sorted(state["packages"]), [A, V], "state keys are full IDs")
     t.eq(sorted(p["id"] for p in state["resolved"]), [A, V], "resolved list")
     for id in [V, A]:
-        t.eq(t.plugin(id)["source"], str(t.repo(id).resolve()), f"{id} source")
+        t.eq(t.package(id)["source"], str(t.repo(id).resolve()), f"{id} source")
         t.eq(t.rev(t.clone(id)), t.rev(id), f"{id} clone HEAD")
         t.eq((t.dist(id) / "index.js").read_text(), f'export const greeting = "{id} 0.1.0";\n', f"{id} dist")
     t.ok(t.rev(t.clone(V)) != t.rev(t.clone(A)), "distinct clones")
-    t.ok(not (t.ws / "plugins/demo").exists() and not (t.ws / "dist/demo").exists(), "no basename-only paths")
+    t.ok(not (t.ws / "packages/demo").exists() and not (t.ws / "dist/demo").exists(), "no basename-only paths")
 
 
 @case(fixture="g2_demos_installed", spec=["transactions-locking/neighbouring-folders-are-never-touched"])
@@ -44,12 +44,12 @@ def second_workspace_is_independent(t: T):
     first, sources = t.snap(t.ws, git=True), authors(t)
     other = t.root / "ws2"
     t.gitpm_ok("--root", other, "install", t.repo(V))
-    t.eq(sorted(json.loads((other / "state.json").read_text())["plugins"]), [V], "other root holds only vendor/demo")
+    t.eq(sorted(json.loads((other / "state.json").read_text())["packages"]), [V], "other root holds only vendor/demo")
     t.eq((other / "dist" / V / "index.js").read_text(), (t.dist(V) / "index.js").read_text(), "same payload")
     t.same(first, "first workspace")
     t.gitpm_ok("--root", other, "uninstall", V)
-    t.eq(json.loads((other / "state.json").read_text())["plugins"], {}, "other root empty again")
-    t.ok(not (other / "plugins" / V).exists() and not (other / "dist" / V).exists(), "other root files removed")
+    t.eq(json.loads((other / "state.json").read_text())["packages"], {}, "other root empty again")
+    t.ok(not (other / "packages" / V).exists() and not (other / "dist" / V).exists(), "other root files removed")
     t.same(first, "first workspace")
     t.same(sources, "author repositories")
 
@@ -64,7 +64,7 @@ def update_one_leaves_others(t: T):
     commit = t.release(V, "0.2.0")
     a_source = t.snap(t.repo(A), git=True)
     t.gitpm_ok("update", V)
-    t.eq(t.plugin(V)["current"], {"version": "0.2.0", "commit": commit}, "vendor/demo updated")
+    t.eq(t.package(V)["current"], {"version": "0.2.0", "commit": commit}, "vendor/demo updated")
     t.has((t.dist(V) / "index.js").read_text(), "vendor/demo 0.2.0")
     t.eq(entry(t, t.ws, A), a_entry, "author/demo state entry")
     t.same(a_files, "author/demo clone and dist")
@@ -86,7 +86,7 @@ def disable_one_leaves_others(t: T):
     t.eq(entry(t, t.ws, V), v_entry, "vendor/demo state entry")
     t.same(v_files, "vendor/demo files")
     t.same(a_clone, "author/demo clone")
-    t.ok(not t.dist(A).exists(), "dist/author/demo removed (dist holds only active plugins)")
+    t.ok(not t.dist(A).exists(), "dist/author/demo removed (dist holds only active packages)")
     t.same(ws2, "second workspace (author/demo there still enabled)")
     t.eq(entry(t, other, A)["enabled"], True, "author/demo in ws2 enabled")
     t.same(sources, "author repositories")

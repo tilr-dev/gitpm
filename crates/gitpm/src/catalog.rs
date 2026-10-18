@@ -1,5 +1,5 @@
 //! Catalog client and author operations. The catalog stores metadata, never code.
-use crate::error::{Context, Error, Require, Result, ensure};
+use crate::error::{Context, Error, Require, Result, ensure, fail};
 use crate::{
     Manifest, exec, exec::git, identity, model::package_manifest, model::resolve_ref, packages,
     valid_id,
@@ -28,13 +28,13 @@ pub struct Release {
     pub path: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Plugin {
+pub struct Package {
     pub source: String,
     pub versions: BTreeMap<String, Release>,
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Catalog {
-    pub plugins: BTreeMap<String, Plugin>,
+    pub packages: BTreeMap<String, Package>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -57,7 +57,7 @@ struct Directory {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PluginIndex {
+struct PackageIndex {
     schema: u32,
     id: String,
     source: String,
@@ -65,12 +65,24 @@ struct PluginIndex {
 }
 fn folder(id: &str) -> Result<String> {
     valid_id(id)?;
-    // Separate legacy IDs so a plugin cannot collide with a namespace.
-    Ok(if id.contains('/') {
-        format!("namespaces/{id}")
-    } else {
-        format!("legacy/{id}")
-    })
+    Ok(format!("namespaces/{id}"))
+}
+/// The root `catalog.json` at `location` as a v2 directory file; anything else (a v1
+/// monolithic catalog included) is refused with `catalog`.
+fn root_directory(location: &str) -> Result<Directory> {
+    directory_of(list(location)?)
+}
+/// A directory file `{"schema": 2, "directories": {…}}`.
+fn directory_of(value: serde_json::Value) -> Result<Directory> {
+    ensure!(
+        value.get("plugins").is_none(),
+        Catalog,
+        "unsupported catalog schema: v1 catalogs are no longer read; regenerate the catalog from the release tags"
+    );
+    let directory: Directory =
+        serde_json::from_value(value).context(Error::Catalog, "invalid directory catalog")?;
+    ensure!(directory.schema == 2, Catalog, "unsupported catalog schema");
+    Ok(directory)
 }
 /// Lowercase hex of a digest (sha2 0.11 output no longer implements `LowerHex`).
 pub(crate) fn hex(bytes: &[u8]) -> String {
@@ -152,12 +164,11 @@ fn validate_release_payload(release: &Release, id: &str) -> Result<()> {
         Catalog,
         "invalid catalog commit"
     );
-    // Releases of v1 catalogs (legacy unscoped IDs) may lack file hashes; every
-    // namespaced release must carry them, or dist could not be verified on install.
+    // Every release carries file hashes, or dist could not be verified on install.
     ensure!(
-        !id.contains('/') || !release.files.is_empty(),
+        !release.files.is_empty(),
         Catalog,
-        "catalog release has no file hashes"
+        "catalog release of {id} has no file hashes"
     );
     if let Some(path) = &release.path {
         crate::packages::validate_path(path)
@@ -286,15 +297,15 @@ fn read_json(location: &str, relative: &str) -> Result<Option<serde_json::Value>
 pub fn list(location: &str) -> Result<serde_json::Value> {
     read_json(location, "catalog.json")?.require(Error::Catalog, "catalog not found")
 }
-fn plugin_index(location: &str, id: &str) -> Result<Option<PluginIndex>> {
+fn package_index(location: &str, id: &str) -> Result<Option<PackageIndex>> {
     let Some(value) = read_json(location, &format!("{}/plugin.json", folder(id)?))? else {
         return Ok(None);
     };
-    let index: PluginIndex = serde_json::from_value(value)?;
+    let index: PackageIndex = serde_json::from_value(value)?;
     ensure!(
         index.schema == 2 && index.id == id,
         Catalog,
-        "invalid plugin index"
+        "invalid package index"
     );
     for (version, link) in &index.versions {
         version_key(version)?;
@@ -306,12 +317,12 @@ fn plugin_index(location: &str, id: &str) -> Result<Option<PluginIndex>> {
     }
     Ok(Some(index))
 }
-/// Catalog entries relevant to the installed plugins: latest and currently installed versions.
+/// Catalog entries relevant to the installed packages: latest and currently installed versions.
 pub fn selected(location: &str, state: &crate::State) -> Result<Catalog> {
     selected_impl(location, state, false)
 }
 
-/// Read-only diagnostics retain identity mismatches for per-plugin status reporting.
+/// Read-only diagnostics retain identity mismatches for per-package status reporting.
 /// Transport, syntax and unsafe payload errors still fail the operation.
 pub(crate) fn selected_for_check(location: &str, state: &crate::State) -> Result<Catalog> {
     selected_impl(location, state, true)
@@ -319,19 +330,19 @@ pub(crate) fn selected_for_check(location: &str, state: &crate::State) -> Result
 
 fn selected_impl(location: &str, state: &crate::State, diagnostic: bool) -> Result<Catalog> {
     let mut result = Catalog::default();
-    // Installed plugins with their current and latest release; originals of forks
+    // Installed packages with their current and latest release; originals of forks
     // with their latest release only.
     let mut wanted: BTreeMap<&str, Option<&str>> = BTreeMap::new();
-    for installed in state.plugins.values() {
+    for installed in state.packages.values() {
         if let Some(base) = &installed.fork_of {
             wanted.entry(base.id.as_str()).or_insert(None);
         }
     }
-    for (id, installed) in &state.plugins {
+    for (id, installed) in &state.packages {
         wanted.insert(id, Some(installed.current.version.as_str()));
     }
     for (id, current) in wanted {
-        if let Some(index) = plugin_index(location, id)? {
+        if let Some(index) = package_index(location, id)? {
             let mut versions = BTreeMap::new();
             let latest = index
                 .versions
@@ -348,26 +359,20 @@ fn selected_impl(location: &str, state: &crate::State, diagnostic: bool) -> Resu
                     );
                 }
             }
-            result.plugins.insert(
+            result.packages.insert(
                 id.to_owned(),
-                Plugin {
+                Package {
                     source: index.source,
                     versions,
                 },
             );
         } else {
-            let value = list(location)?;
-            if value.get("plugins").is_some() {
-                let old: Catalog = serde_json::from_value(value)?;
-                if let Some(plugin) = old.plugins.get(id) {
-                    result.plugins.insert(id.to_owned(), plugin.clone());
-                }
-            }
+            root_directory(location)?;
         }
     }
     Ok(result)
 }
-fn read_release(location: &str, id: &str, version: &str, index: &PluginIndex) -> Result<Release> {
+fn read_release(location: &str, id: &str, version: &str, index: &PackageIndex) -> Result<Release> {
     read_release_impl(location, id, version, index, false)
 }
 
@@ -375,7 +380,7 @@ fn read_release_impl(
     location: &str,
     id: &str,
     version: &str,
-    index: &PluginIndex,
+    index: &PackageIndex,
     diagnostic: bool,
 ) -> Result<Release> {
     let link = index.versions.get(version).require(
@@ -496,10 +501,10 @@ fn write_release(root: &Path, release: &Release) -> Result<()> {
     validate_release(release, id, version)?;
     let folder = folder(id)?;
     let path = root.join(&folder).join("plugin.json");
-    let mut index: PluginIndex = if path.exists() {
+    let mut index: PackageIndex = if path.exists() {
         serde_json::from_slice(&fs::read(&path)?)?
     } else {
-        PluginIndex {
+        PackageIndex {
             schema: 2,
             id: id.clone(),
             source: release.source.clone(),
@@ -509,19 +514,15 @@ fn write_release(root: &Path, release: &Release) -> Result<()> {
     ensure!(
         index.schema == 2 && index.id == *id && index.source == release.source,
         Catalog,
-        "plugin {id} is registered from a different source or identity"
+        "package {id} is registered from a different source or identity"
     );
     let link = format!("versions/{version}/release.json");
     let release_path = root.join(&folder).join(&link);
     if release_path.exists() {
         let old: Release = serde_json::from_slice(&fs::read(&release_path)?)?;
         let mut candidate = release.clone();
-        // Alternate Git refs can resolve to the same immutable commit. Legacy
-        // releases without file digests remain byte-for-byte unchanged on retry.
+        // Alternate Git refs can resolve to the same immutable commit.
         candidate.reference = old.reference.clone();
-        if old.files.is_empty() {
-            candidate.files.clear();
-        }
         ensure!(
             serde_json::to_value(&old)? == serde_json::to_value(&candidate)?,
             VersionConflict,
@@ -556,52 +557,8 @@ fn prepare_root(path: &Path) -> Result<()> {
         Error::Catalog,
         "invalid existing catalog; refusing overwrite",
     )?;
-    if value.get("plugins").is_some() {
-        let old: Catalog = serde_json::from_value(value)?;
-        let root = path.parent().unwrap();
-        for (id, plugin) in &old.plugins {
-            for (version, release) in &plugin.versions {
-                validate_release(release, id, version)?;
-                ensure!(
-                    release.source == plugin.source,
-                    Catalog,
-                    "legacy source mismatch"
-                );
-            }
-        }
-        for plugin in old.plugins.values() {
-            for release in plugin.versions.values() {
-                write_release(root, release)?;
-            }
-        }
-        let mut directory = Directory {
-            schema: 2,
-            ..Default::default()
-        };
-        for id in old.plugins.keys() {
-            let folder = folder(id)?;
-            let first = folder.split('/').next().unwrap();
-            directory
-                .directories
-                .insert(first.into(), format!("{first}/"));
-        }
-        let backup = root.join(".catalog-v1.json");
-        if !backup.exists() {
-            fs::copy(path, backup)?;
-        }
-        atomic_json(path, &directory)?;
-    } else {
-        let directory: Directory = serde_json::from_value(value)?;
-        ensure!(directory.schema == 2, Catalog, "unsupported catalog schema");
-    }
+    directory_of(value)?;
     Ok(())
-}
-/// Split a local v1 catalog into plugin folders (keeps a `.catalog-v1.json` backup).
-pub fn migrate(location: &str) -> Result<()> {
-    let path = local_file(location)?
-        .require(Error::InvalidArgument, "migration requires local catalog")?;
-    let _lock = lock(&path)?;
-    prepare_root(&path)
 }
 fn save_release(path: &Path, release: &Release) -> Result<Release> {
     let _lock = lock(path)?;
@@ -616,27 +573,17 @@ fn save_release(path: &Path, release: &Release) -> Result<Release> {
     ));
     Ok(serde_json::from_slice(&fs::read(stored)?)?)
 }
-/// Exact release of `id` (the latest one if `version` is `None`).
-/// Published versions of `id` (unordered); empty if the catalog does not know the plugin.
+/// Published versions of `id` (unordered); empty if the catalog does not know the package.
 pub fn versions(location: &str, id: &str) -> Result<Vec<String>> {
     valid_id(id)?;
-    if let Some(index) = plugin_index(location, id)? {
+    if let Some(index) = package_index(location, id)? {
         return Ok(index.versions.into_keys().collect());
     }
-    let root = list(location)?;
-    if root.get("plugins").is_none() {
-        return Ok(Vec::new());
-    }
-    let catalog: Catalog =
-        serde_json::from_value(root).context(Error::Catalog, "invalid catalog")?;
-    Ok(catalog
-        .plugins
-        .get(id)
-        .map(|plugin| plugin.versions.keys().cloned().collect())
-        .unwrap_or_default())
+    root_directory(location)?;
+    Ok(Vec::new())
 }
 
-/// One spelling per catalog, for remembering where a plugin came from: the real path
+/// One spelling per catalog, for remembering where a package came from: the real path
 /// of a local `catalog.json`, or an HTTP(S) base URL without `/catalog.json`.
 pub fn canonical_location(location: &str) -> Result<String> {
     Ok(match local_file(location)? {
@@ -655,60 +602,25 @@ pub fn canonical_location(location: &str) -> Result<String> {
     })
 }
 
+/// Exact release of `id` (the latest one if `version` is `None`).
 pub fn lookup(location: &str, id: &str, version: Option<&str>) -> Result<Release> {
     valid_id(id)?;
     if let Some(version) = version {
         version_key(version)?;
     }
-    if let Some(index) = plugin_index(location, id)? {
+    if let Some(index) = package_index(location, id)? {
         let version = match version {
             Some(v) => v,
             None => index
                 .versions
                 .keys()
                 .max_by_key(|v| version_key(v).unwrap())
-                .require(Error::Catalog, "plugin has no versions")?,
+                .require(Error::Catalog, "package has no versions")?,
         };
         return read_release(location, id, version, &index);
     }
-    let value = list(location)?;
-    ensure!(
-        value.get("schema").and_then(|v| v.as_u64()) != Some(2),
-        Catalog,
-        "plugin not found in catalog: {id}"
-    );
-    let catalog: Catalog = serde_json::from_value(value).context(
-        Error::Catalog,
-        format!("invalid catalog while looking up {id}"),
-    )?;
-    let plugin = catalog
-        .plugins
-        .get(id)
-        .require(Error::Catalog, format!("plugin not found in catalog: {id}"))?;
-    let version = match version {
-        Some(v) => v.to_owned(),
-        None => {
-            plugin
-                .versions
-                .keys()
-                .map(|v| Ok((version_key(v)?, v.clone())))
-                .collect::<Result<Vec<_>>>()?
-                .into_iter()
-                .max()
-                .require(Error::Catalog, "plugin has no versions")?
-                .1
-        }
-    };
-    let release = plugin
-        .versions
-        .get(&version)
-        .require(
-            Error::Catalog,
-            format!("version not found in catalog: {id}@{version}"),
-        )?
-        .clone();
-    validate_release(&release, id, &version)?;
-    Ok(release)
+    root_directory(location)?;
+    fail!(Catalog, "package not found in catalog: {id}")
 }
 struct Scratch(PathBuf);
 impl Scratch {
@@ -941,7 +853,7 @@ pub fn update_sources(
                 ensure!(
                     owner == *source,
                     Catalog,
-                    "multiple sources claim plugin {id}"
+                    "multiple sources claim package {id}"
                 );
             }
             git(&repo, &["checkout", "--detach", &tag.commit])?;
@@ -960,56 +872,31 @@ pub fn update_sources(
         }
     }
     let _lock = lock(&path)?;
-    let root_value = read_json(location, "catalog.json")?;
-    let legacy = if let Some(value) = &root_value {
-        if value.get("plugins").is_some() {
-            Some(serde_json::from_value::<Catalog>(value.clone())?)
-        } else {
-            let directory: Directory = serde_json::from_value(value.clone())?;
-            ensure!(directory.schema == 2, Catalog, "unsupported catalog schema");
-            None
-        }
-    } else {
-        None
-    };
+    if let Some(value) = read_json(location, "catalog.json")? {
+        directory_of(value)?;
+    }
     // Check every source and immutable version before writing any release.
     for ((id, version), release) in &mut pending {
-        let old = if let Some(legacy) = &legacy {
-            if let Some(plugin) = legacy.plugins.get(id) {
-                ensure!(
-                    plugin.source == release.source,
-                    Catalog,
-                    "plugin {id} is registered from a different source"
-                );
-                plugin.versions.get(version).cloned()
-            } else {
-                None
+        if let Some(index) = package_index(location, id)? {
+            ensure!(
+                index.source == release.source,
+                Catalog,
+                "package {id} is registered from a different source"
+            );
+            if index.versions.contains_key(version) {
+                read_release(location, id, version, &index)?;
             }
-        } else {
-            if let Some(index) = plugin_index(location, id)? {
-                ensure!(
-                    index.source == release.source,
-                    Catalog,
-                    "plugin {id} is registered from a different source"
-                );
-                if index.versions.contains_key(version) {
-                    read_release(location, id, version, &index)?;
-                }
-            }
-            read_json(
-                location,
-                &format!("{}/versions/{version}/release.json", folder(id)?),
-            )?
-            .map(serde_json::from_value::<Release>)
-            .transpose()?
-        };
+        }
+        let old = read_json(
+            location,
+            &format!("{}/versions/{version}/release.json", folder(id)?),
+        )?
+        .map(serde_json::from_value::<Release>)
+        .transpose()?;
         if let Some(old) = old {
             validate_release(&old, id, version)?;
             release.reference = old.reference.clone();
             release.build = old.build.clone();
-            if old.files.is_empty() {
-                release.files.clear();
-            }
             ensure!(
                 serde_json::to_value(&old)? == serde_json::to_value(&release)?,
                 VersionConflict,
@@ -1031,17 +918,9 @@ pub fn update_sources(
     })
 }
 
-/// Catalog layout version.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub enum CatalogFormat {
-    /// One monolithic JSON with all plugins.
-    V1,
-    /// Directory tree of static JSON files.
-    V2,
-}
-/// Plugin entry of the overview.
+/// Package entry of the overview.
 #[derive(Debug, Clone, Serialize)]
-pub struct PluginSummary {
+pub struct PackageSummary {
     pub id: String,
     pub source: String,
     /// Versions in ascending numeric order.
@@ -1067,15 +946,14 @@ pub enum OverviewItem {
     Directory { depth: u32, name: String },
     /// The directory listing at `depth` has no children.
     Empty { depth: u32 },
-    /// A plugin index directly below the directory at `depth` (v1: depth 1).
-    Plugin { depth: u32, plugin: PluginSummary },
+    /// A package index directly below the directory at `depth`.
+    Package { depth: u32, package: PackageSummary },
 }
 /// Bounded, read-only catalog overview.
 #[derive(Debug, Clone, Serialize)]
 pub struct CatalogOverview {
     pub location: String,
     pub remote: bool,
-    pub format: CatalogFormat,
     pub items: Vec<OverviewItem>,
     /// The entry limit was reached; browse a subdirectory for more.
     pub truncated: bool,
@@ -1087,7 +965,7 @@ fn summary(
     source: &str,
     versions: impl Iterator<Item = String>,
     latest: impl FnOnce(&str) -> Result<Release>,
-) -> Result<PluginSummary> {
+) -> Result<PackageSummary> {
     valid_id(id)?;
     let mut versions = versions
         .map(|v| Ok((version_key(&v)?, v)))
@@ -1101,7 +979,7 @@ fn summary(
         .and_then(|version| latest(version).ok())
         .map(|release| release.metadata())
         .unwrap_or_default();
-    Ok(PluginSummary {
+    Ok(PackageSummary {
         id: id.into(),
         source: source.into(),
         latest: versions.last().cloned(),
@@ -1124,9 +1002,7 @@ pub fn browse(location: &str) -> Result<CatalogOverview> {
         items: &mut Vec<OverviewItem>,
     ) -> Result<()> {
         ensure!(depth <= 8, Catalog, "catalog nesting is too deep");
-        let directory: Directory =
-            serde_json::from_value(value).context(Error::Catalog, "invalid directory catalog")?;
-        ensure!(directory.schema == 2, Catalog, "unsupported catalog schema");
+        let directory = directory_of(value)?;
         if directory.directories.is_empty() {
             items.push(OverviewItem::Empty { depth });
         }
@@ -1147,8 +1023,8 @@ pub fn browse(location: &str) -> Result<CatalogOverview> {
                 name: name.clone(),
             });
             if let Some(value) = read_json(location, &format!("{child}plugin.json"))? {
-                let plugin: PluginIndex = serde_json::from_value(value)?;
-                ensure!(plugin.schema == 2, Catalog, "unsupported plugin schema");
+                let plugin: PackageIndex = serde_json::from_value(value)?;
+                ensure!(plugin.schema == 2, Catalog, "unsupported package schema");
                 for (version, link) in &plugin.versions {
                     version_key(version)?;
                     ensure!(
@@ -1169,14 +1045,14 @@ pub fn browse(location: &str) -> Result<CatalogOverview> {
                             .context(Error::Catalog, "invalid catalog release")
                     },
                 )?;
-                items.push(OverviewItem::Plugin {
+                items.push(OverviewItem::Package {
                     depth,
-                    plugin: entry,
+                    package: entry,
                 });
             } else {
                 let value =
                     read_json(location, &format!("{child}catalog.json"))?.ok_or_else(|| {
-                        Error::Catalog(format!("missing catalog/plugin index in {child}"))
+                        Error::Catalog(format!("missing catalog/package index in {child}"))
                     })?;
                 walk(location, &child, value, depth + 1, remaining, items)?;
             }
@@ -1187,31 +1063,10 @@ pub fn browse(location: &str) -> Result<CatalogOverview> {
     let value = list(location)?;
     let mut remaining = OVERVIEW_LIMIT;
     let mut items = Vec::new();
-    let format = if value.get("plugins").is_some() {
-        let catalog: Catalog = serde_json::from_value(value)?;
-        for (id, plugin) in catalog.plugins.iter().take(OVERVIEW_LIMIT) {
-            items.push(OverviewItem::Plugin {
-                depth: 1,
-                plugin: summary(id, &plugin.source, plugin.versions.keys().cloned(), |v| {
-                    Ok(plugin.versions[v].clone())
-                })?,
-            });
-        }
-        if catalog.plugins.is_empty() {
-            items.push(OverviewItem::Empty { depth: 1 });
-        }
-        if catalog.plugins.len() > OVERVIEW_LIMIT {
-            remaining = 0;
-        }
-        CatalogFormat::V1
-    } else {
-        walk(location, "", value, 1, &mut remaining, &mut items)?;
-        CatalogFormat::V2
-    };
+    walk(location, "", value, 1, &mut remaining, &mut items)?;
     Ok(CatalogOverview {
         location: location.into(),
         remote,
-        format,
         items,
         truncated: remaining == 0,
     })
@@ -1304,9 +1159,9 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn folders_separate_legacy_and_namespaced_ids() {
-        assert_eq!(folder("demo1").unwrap(), "legacy/demo1");
+    fn folders_are_namespaced_ids() {
         assert_eq!(folder("dan/demo1").unwrap(), "namespaces/dan/demo1");
+        assert_eq!(folder("demo1").unwrap_err().kind(), "invalid_id");
         assert_eq!(folder("../x").unwrap_err().kind(), "invalid_id");
         assert_eq!(folder("a/b/c").unwrap_err().kind(), "invalid_id");
     }
@@ -1383,11 +1238,8 @@ pub(crate) mod tests {
             validate_release(&no_files, "dan/demo1", "1.0.0")
                 .unwrap_err()
                 .to_string(),
-            "catalog release has no file hashes"
+            "catalog release of dan/demo1 has no file hashes"
         );
-        let mut legacy = release("demo1", "1.0.0", SOURCE, 'a');
-        legacy.files.clear();
-        assert!(validate_release(&legacy, "demo1", "1.0.0").is_ok());
 
         assert_eq!(
             validate_release(&good, "dan/other", "1.0.0")
@@ -1470,17 +1322,17 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn release_json_omits_empty_files_and_missing_build_and_reads_old_releases() {
-        let mut r = release("demo1", "0.1.2", "git@github.com:x/demo1.git", '3');
+    fn release_json_omits_empty_files_and_missing_build() {
+        let mut r = release("dan/demo1", "0.1.2", "git@github.com:x/demo1.git", '3');
         r.files.clear();
         let value = serde_json::to_value(&r).unwrap();
         assert_eq!(
             value,
             json!({
-                "manifest": {"id": "demo1", "version": "0.1.2", "dependencies": {}},
+                "manifest": {"id": "dan/demo1", "version": "0.1.2", "dependencies": {}},
                 "source": "git@github.com:x/demo1.git",
                 "commit": "3".repeat(40),
-                "reference": "v0.1.2"
+                "reference": "dan/demo1@0.1.2"
             })
         );
         let back: Release = serde_json::from_value(value).unwrap();
@@ -1591,15 +1443,15 @@ pub(crate) mod tests {
         save(&cat, &release("dan/demo1", "0.2.0", SOURCE, 'b'));
         save(
             &cat,
-            &release("demo2", "1.0.0", "https://example.com/demo2.git", 'c'),
+            &release("dan/demo2", "1.0.0", "https://example.com/demo2.git", 'c'),
         );
         assert_eq!(
             dirs("catalog.json"),
-            json!({"schema": 2, "directories": {"legacy": "legacy/", "namespaces": "namespaces/"}})
+            json!({"schema": 2, "directories": {"namespaces": "namespaces/"}})
         );
         assert_eq!(
-            dirs("legacy/catalog.json"),
-            json!({"schema": 2, "directories": {"demo2": "demo2/"}})
+            dirs("namespaces/dan/catalog.json"),
+            json!({"schema": 2, "directories": {"demo1": "demo1/", "demo2": "demo2/"}})
         );
         assert_eq!(
             dirs("namespaces/dan/demo1/plugin.json")["versions"],
@@ -1660,17 +1512,23 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn legacy_release_without_files_stays_without_files_on_retry() {
+    fn release_without_hashes_is_refused() {
         let dir = TempDir::new("catalog");
         let cat = dir.join("catalog");
-        let mut legacy = release("demo1", "0.1.0", SOURCE, 'a');
-        legacy.files.clear();
-        save(&cat, &legacy);
-        let before = tree_hash(&cat);
-        // A new registration computes hashes; they are not added to the old release.
-        let stored = save(&cat, &release("demo1", "0.1.0", SOURCE, 'a'));
-        assert!(stored.files.is_empty());
-        assert_eq!(tree_hash(&cat), before);
+        let mut bare = release("dan/demo1", "0.1.0", SOURCE, 'a');
+        bare.files.clear();
+        let error = save_release(&cat.join("catalog.json"), &bare).unwrap_err();
+        assert_eq!(error.kind(), "catalog", "{error}");
+        assert!(!cat.join("namespaces").exists(), "nothing written");
+        // A published record without `files` is refused when it is read.
+        save(&cat, &release("dan/demo1", "0.1.0", SOURCE, 'a'));
+        let stored = cat.join("namespaces/dan/demo1/versions/0.1.0/release.json");
+        let mut value = read(&stored);
+        value.as_object_mut().unwrap().remove("files");
+        write_json(&stored, &value);
+        let error = lookup(loc(&cat), "dan/demo1", Some("0.1.0")).unwrap_err();
+        assert_eq!(error.kind(), "catalog");
+        assert!(error.to_string().contains("no file hashes"), "{error}");
     }
 
     #[test]
@@ -1683,7 +1541,6 @@ pub(crate) mod tests {
         let held = lock(&path).unwrap();
         let error = save_release(&path, &release("dan/demo1", "0.1.0", SOURCE, 'a')).unwrap_err();
         assert_eq!(error.kind(), "locked");
-        assert_eq!(migrate(loc(&cat)).unwrap_err().kind(), "locked");
         assert!(files(&cat).is_empty(), "nothing written while locked");
         drop(held);
         save(&cat, &release("dan/demo1", "0.1.0", SOURCE, 'a'));
@@ -1765,7 +1622,10 @@ pub(crate) mod tests {
         );
         let error = lookup(loc(&cat), "dan/missing", None).unwrap_err();
         assert_eq!(
-            (error.kind(), error.to_string().contains("plugin not found")),
+            (
+                error.kind(),
+                error.to_string().contains("package not found")
+            ),
             ("catalog", true)
         );
         assert_eq!(
@@ -1854,7 +1714,7 @@ pub(crate) mod tests {
             save(&cat, &release("dan/demo1", v, SOURCE, c));
         }
         save(&cat, &release("dan/other", "1.0.0", SOURCE, 'd'));
-        // Another plugin's broken index is never read.
+        // Another package's broken index is never read.
         fs::write(cat.join("namespaces/dan/other/plugin.json"), "{broken").unwrap();
         // So is a version that is neither latest nor installed.
         fs::write(
@@ -1865,7 +1725,7 @@ pub(crate) mod tests {
 
         let state = state_with("dan/demo1", SOURCE, "1.2.0", &"c".repeat(40));
         let selected = selected(loc(&cat), &state).unwrap();
-        let plugin = &selected.plugins["dan/demo1"];
+        let plugin = &selected.packages["dan/demo1"];
         assert_eq!(plugin.source, SOURCE);
         assert_eq!(
             plugin.versions.keys().collect::<Vec<_>>(),
@@ -1874,202 +1734,79 @@ pub(crate) mod tests {
 
         // Installed version unknown to the catalog: only the latest.
         let state = state_with("dan/demo1", SOURCE, "1.5.0", &"e".repeat(40));
-        let selected_versions = super::selected(loc(&cat), &state).unwrap().plugins["dan/demo1"]
+        let selected_versions = super::selected(loc(&cat), &state).unwrap().packages["dan/demo1"]
             .versions
             .keys()
             .cloned()
             .collect::<Vec<_>>();
         assert_eq!(selected_versions, ["1.10.0"]);
 
-        // A plugin absent from a v2 catalog is simply missing.
+        // A package absent from a v2 catalog is simply missing.
         let state = state_with("dan/absent", SOURCE, "1.0.0", &"e".repeat(40));
         assert!(
             super::selected(loc(&cat), &state)
                 .unwrap()
-                .plugins
+                .packages
                 .is_empty()
         );
     }
 
-    fn v1(dir: &Path) -> serde_json::Value {
-        let mut legacy =
-            serde_json::to_value(release("demo1", "0.1.2", "git@github.com:x/demo1.git", '3'))
-                .unwrap();
-        legacy.as_object_mut().unwrap().remove("files");
-        let value = json!({
+    #[test]
+    fn v1_catalog_is_refused() {
+        let dir = TempDir::new("catalog");
+        let cat = dir.join("catalog");
+        let v1 = json!({
             "plugins": {
-                "demo1": {
-                    "source": "git@github.com:x/demo1.git",
-                    "versions": {"0.1.2": legacy}
-                },
                 "dan/demo2": {
                     "source": SOURCE,
-                    "versions": {
-                        "1.9.0": release("dan/demo2", "1.9.0", SOURCE, 'a'),
-                        "1.10.0": release("dan/demo2", "1.10.0", SOURCE, 'b')
-                    }
+                    "versions": {"1.9.0": release("dan/demo2", "1.9.0", SOURCE, 'a')}
                 }
             }
         });
-        write_json(&dir.join("catalog.json"), &value);
-        value
-    }
-
-    #[test]
-    fn v1_monolith_is_still_readable() {
-        let dir = TempDir::new("catalog");
-        let cat = dir.join("catalog");
-        v1(&cat);
-        let latest = lookup(loc(&cat), "dan/demo2", None).unwrap();
-        assert_eq!(latest.manifest.version, "1.10.0");
-        assert!(
-            lookup(loc(&cat), "demo1", Some("0.1.2"))
-                .unwrap()
-                .files
-                .is_empty()
-        );
-        assert_eq!(
-            lookup(loc(&cat), "demo1", Some("0.1.3"))
-                .unwrap_err()
-                .kind(),
-            "catalog"
-        );
-        assert_eq!(
-            lookup(loc(&cat), "dan/none", None).unwrap_err().kind(),
-            "catalog"
-        );
-
+        write_json(&cat.join("catalog.json"), &v1);
+        let before = tree_hash(&cat);
+        let refused = |error: Error| {
+            assert_eq!(error.kind(), "catalog", "{error}");
+            assert!(error.to_string().contains("v1 catalogs"), "{error}");
+        };
+        refused(lookup(loc(&cat), "dan/demo2", None).unwrap_err());
+        refused(versions(loc(&cat), "dan/demo2").unwrap_err());
+        refused(browse(loc(&cat)).unwrap_err());
         let state = state_with("dan/demo2", SOURCE, "1.9.0", &"a".repeat(40));
-        let selected = selected(loc(&cat), &state).unwrap();
-        assert_eq!(selected.plugins["dan/demo2"].versions.len(), 2);
-
-        let overview = browse(loc(&cat)).unwrap();
-        assert_eq!(overview.format, CatalogFormat::V1);
-        assert!(!overview.remote && !overview.truncated);
-        let plugins: Vec<_> = overview
-            .items
-            .iter()
-            .map(|item| match item {
-                OverviewItem::Plugin { depth: 1, plugin } => (
-                    plugin.id.clone(),
-                    plugin.versions.clone(),
-                    plugin.latest.clone(),
-                ),
-                other => panic!("{other:?}"),
-            })
-            .collect();
-        assert_eq!(
-            plugins,
-            [
-                (
-                    "dan/demo2".into(),
-                    vec!["1.9.0".to_owned(), "1.10.0".into()],
-                    Some("1.10.0".into())
-                ),
-                (
-                    "demo1".into(),
-                    vec!["0.1.2".to_owned()],
-                    Some("0.1.2".into())
-                ),
-            ]
+        refused(selected(loc(&cat), &state).unwrap_err());
+        refused(
+            save_release(
+                &cat.join("catalog.json"),
+                &release("dan/demo2", "2.0.0", SOURCE, 'f'),
+            )
+            .unwrap_err(),
         );
+        assert_eq!(tree_hash(&cat), before, "nothing is written");
+        assert!(!cat.join(".catalog-v1.json").exists());
     }
 
     #[test]
-    fn migrate_splits_v1_without_inventing_hashes() {
+    fn existing_root_must_be_a_v2_directory() {
         let dir = TempDir::new("catalog");
         let cat = dir.join("catalog");
-        let original = v1(&cat);
-        let original_bytes = fs::read(cat.join("catalog.json")).unwrap();
-        let before_demo1 = lookup(loc(&cat), "demo1", None).unwrap();
-        migrate(loc(&cat)).unwrap();
-        assert_eq!(
-            fs::read(cat.join(".catalog-v1.json")).unwrap(),
-            original_bytes
-        );
-        assert_eq!(
-            read(&cat.join("catalog.json")),
-            json!({"schema": 2, "directories": {"legacy": "legacy/", "namespaces": "namespaces/"}})
-        );
-        let stored = read(&cat.join("legacy/demo1/versions/0.1.2/release.json"));
-        assert_eq!(stored, original["plugins"]["demo1"]["versions"]["0.1.2"]);
-        assert!(stored.get("files").is_none());
-        let after = lookup(loc(&cat), "demo1", None).unwrap();
-        assert_eq!(
-            serde_json::to_value(after).unwrap(),
-            serde_json::to_value(before_demo1).unwrap()
-        );
-        assert_eq!(
-            lookup(loc(&cat), "dan/demo2", None)
-                .unwrap()
-                .manifest
-                .version,
-            "1.10.0"
-        );
-        assert_eq!(browse(loc(&cat)).unwrap().format, CatalogFormat::V2);
-
-        // Migrating again is a no-op.
-        let before = tree_hash(&cat);
-        migrate(loc(&cat)).unwrap();
-        assert_eq!(tree_hash(&cat), before);
-        // Registering into a v1 catalog migrates it first.
-        let other = dir.join("other");
-        v1(&other);
-        save(&other, &release("dan/demo2", "2.0.0", SOURCE, 'f'));
-        assert!(other.join(".catalog-v1.json").exists());
-        assert_eq!(
-            lookup(loc(&other), "dan/demo2", None)
-                .unwrap()
-                .manifest
-                .version,
-            "2.0.0"
-        );
-    }
-
-    #[test]
-    fn migrate_refuses_invalid_catalogs_without_writing() {
-        let dir = TempDir::new("catalog");
-        assert_eq!(
-            migrate("https://pkg.example").unwrap_err().kind(),
-            "invalid_argument"
-        );
-        let cat = dir.join("catalog");
-        let mut value = v1(&cat);
-        value["plugins"]["dan/demo2"]["versions"]["1.9.0"]["commit"] = json!("bad");
-        write_json(&cat.join("catalog.json"), &value);
-        let before = tree_hash(&cat);
-        assert_eq!(migrate(loc(&cat)).unwrap_err().kind(), "catalog");
-        assert_eq!(tree_hash(&cat), before);
-
-        value["plugins"]["dan/demo2"]["versions"]["1.9.0"]["commit"] = json!("a".repeat(40));
-        value["plugins"]["dan/demo2"]["versions"]["1.9.0"]["source"] = json!("https://elsewhere");
-        write_json(&cat.join("catalog.json"), &value);
-        let before = tree_hash(&cat);
-        let error = migrate(loc(&cat)).unwrap_err();
-        assert_eq!(
-            (error.kind(), error.to_string()),
-            ("catalog", "legacy source mismatch".into())
-        );
-        assert_eq!(tree_hash(&cat), before);
-
-        fs::write(cat.join("catalog.json"), "{garbage").unwrap();
-        let error = migrate(loc(&cat)).unwrap_err();
+        let path = cat.join("catalog.json");
+        fs::create_dir_all(&cat).unwrap();
+        fs::write(&path, "{garbage").unwrap();
+        let error = save_release(&path, &release("dan/demo1", "0.1.0", SOURCE, 'a')).unwrap_err();
         assert!(
             error.to_string().starts_with("invalid existing catalog"),
             "{error}"
         );
-        assert_eq!(fs::read(cat.join("catalog.json")).unwrap(), b"{garbage");
-        write_json(
-            &cat.join("catalog.json"),
-            &json!({"schema": 1, "directories": {}}),
-        );
-        assert_eq!(migrate(loc(&cat)).unwrap_err().kind(), "catalog");
+        assert_eq!(fs::read(&path).unwrap(), b"{garbage");
+        write_json(&path, &json!({"schema": 1, "directories": {}}));
+        let error = save_release(&path, &release("dan/demo1", "0.1.0", SOURCE, 'a')).unwrap_err();
+        assert_eq!(error.kind(), "catalog");
         // An empty folder gets a fresh v2 root.
         let fresh = dir.join("fresh");
-        migrate(loc(&fresh)).unwrap();
+        save(&fresh, &release("dan/demo1", "0.1.0", SOURCE, 'a'));
         assert_eq!(
             read(&fresh.join("catalog.json")),
-            json!({"schema": 2, "directories": {}})
+            json!({"schema": 2, "directories": {"namespaces": "namespaces/"}})
         );
     }
 
@@ -2080,16 +1817,18 @@ pub(crate) mod tests {
         let dir = TempDir::new("catalog");
         let cat = dir.join("catalog");
         let items = |cat: &Path| browse(loc(cat)).unwrap().items;
-        migrate(loc(&cat)).unwrap();
+        write_json(
+            &cat.join("catalog.json"),
+            &json!({"schema": 2, "directories": {}}),
+        );
         assert!(matches!(
             items(&cat)[..],
             [OverviewItem::Empty { depth: 1 }]
         ));
         save(&cat, &release("dan/demo1", "1.10.0", SOURCE, 'a'));
         save(&cat, &release("dan/demo1", "1.9.0", SOURCE, 'b'));
-        save(&cat, &release("demo2", "0.1.0", SOURCE, 'c'));
+        save(&cat, &release("acme/demo2", "0.1.0", SOURCE, 'c'));
         let overview = browse(loc(&cat)).unwrap();
-        assert_eq!(overview.format, CatalogFormat::V2);
         assert_eq!(overview.location, loc(&cat));
         assert!(!overview.remote && !overview.truncated);
         let rows: Vec<String> = overview
@@ -2098,22 +1837,22 @@ pub(crate) mod tests {
             .map(|item| match item {
                 OverviewItem::Directory { depth, name } => format!("{depth} dir {name}"),
                 OverviewItem::Empty { depth } => format!("{depth} empty"),
-                OverviewItem::Plugin { depth, plugin } => format!(
-                    "{depth} plugin {} {:?} {:?}",
-                    plugin.id, plugin.versions, plugin.latest
+                OverviewItem::Package { depth, package } => format!(
+                    "{depth} package {} {:?} {:?}",
+                    package.id, package.versions, package.latest
                 ),
             })
             .collect();
         assert_eq!(
             rows,
             [
-                "1 dir legacy",
-                "2 dir demo2",
-                r#"2 plugin demo2 ["0.1.0"] Some("0.1.0")"#,
                 "1 dir namespaces",
+                "2 dir acme",
+                "3 dir demo2",
+                r#"3 package acme/demo2 ["0.1.0"] Some("0.1.0")"#,
                 "2 dir dan",
                 "3 dir demo1",
-                r#"3 plugin dan/demo1 ["1.9.0", "1.10.0"] Some("1.10.0")"#,
+                r#"3 package dan/demo1 ["1.9.0", "1.10.0"] Some("1.10.0")"#,
             ]
         );
     }
@@ -2145,7 +1884,7 @@ pub(crate) mod tests {
         assert!(
             error
                 .to_string()
-                .contains("missing catalog/plugin index in gone/")
+                .contains("missing catalog/package index in gone/")
         );
         fs::remove_file(&root).unwrap();
         assert_eq!(
@@ -2173,16 +1912,20 @@ pub(crate) mod tests {
             let name = format!("p{n:02}");
             directories.insert(name.clone(), json!(format!("{name}/")));
             write_json(
-                &wide.join(format!("legacy/{name}/plugin.json")),
-                &json!({"schema": 2, "id": name, "source": SOURCE, "versions": {}}),
+                &wide.join(format!("namespaces/dan/{name}/plugin.json")),
+                &json!({"schema": 2, "id": format!("dan/{name}"), "source": SOURCE, "versions": {}}),
             );
         }
         write_json(
             &wide.join("catalog.json"),
-            &json!({"schema": 2, "directories": {"legacy": "legacy/"}}),
+            &json!({"schema": 2, "directories": {"namespaces": "namespaces/"}}),
         );
         write_json(
-            &wide.join("legacy/catalog.json"),
+            &wide.join("namespaces/catalog.json"),
+            &json!({"schema": 2, "directories": {"dan": "dan/"}}),
+        );
+        write_json(
+            &wide.join("namespaces/dan/catalog.json"),
             &json!({"schema": 2, "directories": directories}),
         );
         let overview = browse(loc(&wide)).unwrap();
@@ -2193,35 +1936,15 @@ pub(crate) mod tests {
             .filter(|i| matches!(i, OverviewItem::Directory { .. }))
             .count();
         assert_eq!(directories, OVERVIEW_LIMIT);
-        let plugin = overview.items.iter().find_map(|i| match i {
-            OverviewItem::Plugin { plugin, .. } => Some(plugin),
+        let package = overview.items.iter().find_map(|i| match i {
+            OverviewItem::Package { package, .. } => Some(package),
             _ => None,
         });
         assert_eq!(
-            plugin.unwrap().latest,
+            package.unwrap().latest,
             None,
-            "a plugin without versions has no latest"
+            "a package without versions has no latest"
         );
-
-        // v1 with more plugins than the limit.
-        let big = dir.join("big");
-        let plugins: serde_json::Map<_, _> = (0..OVERVIEW_LIMIT + 1)
-            .map(|n| {
-                (
-                    format!("p{n:02}"),
-                    json!({"source": SOURCE, "versions": {}}),
-                )
-            })
-            .collect();
-        write_json(&big.join("catalog.json"), &json!({"plugins": plugins}));
-        let overview = browse(loc(&big)).unwrap();
-        assert!(overview.truncated);
-        assert_eq!(overview.items.len(), OVERVIEW_LIMIT);
-        write_json(&big.join("catalog.json"), &json!({"plugins": {}}));
-        assert!(matches!(
-            browse(loc(&big)).unwrap().items[..],
-            [OverviewItem::Empty { depth: 1 }]
-        ));
     }
 
     #[test]
@@ -2332,7 +2055,7 @@ pub(crate) mod tests {
         let dir = TempDir::new("catalog");
         let author = Author::new(dir.join("repo"), "dan/demo1");
         // Old tag pointing at a commit whose manifest says another version.
-        fixture_git(&author.path, &["tag", "v0.0.9"]);
+        fixture_git(&author.path, &["tag", "dan/demo1@0.0.9"]);
         author.release("0.2.0");
         let cat = dir.join("catalog");
         let list = sources(dir.path(), "repo\n");
@@ -2340,7 +2063,7 @@ pub(crate) mod tests {
         assert_eq!(report.releases, 2);
         assert_eq!(report.skipped.len(), 1);
         assert_eq!(report.skipped[0].source, author.source());
-        assert_eq!(report.skipped[0].tag.name, "v0.0.9");
+        assert_eq!(report.skipped[0].tag.name, "dan/demo1@0.0.9");
         assert_eq!(
             lookup(loc(&cat), "dan/demo1", None)
                 .unwrap()
@@ -2393,9 +2116,9 @@ pub(crate) mod tests {
         let dir = TempDir::new("catalog");
         let scoped = Author::new(dir.join("scoped"), "dan/demo1");
         scoped.release("1.10.0");
-        let legacy = Author::new(dir.join("legacy"), "demo2");
+        let other = Author::new(dir.join("other"), "acme/demo2");
         let cat = dir.join("catalog");
-        let list = sources(dir.path(), "# comment\n\n  scoped  \nlegacy\nscoped\n");
+        let list = sources(dir.path(), "# comment\n\n  scoped  \nother\nscoped\n");
         let mut seen = Vec::new();
         let report = update_sources(loc(&cat), &list, &mut |p| match p {
             Progress::ReadingReleases { source } => seen.push(source),
@@ -2403,15 +2126,15 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(report.releases, 3);
         assert!(report.skipped.is_empty());
-        assert_eq!(report.sources, [legacy.source(), scoped.source()]);
+        assert_eq!(report.sources, [other.source(), scoped.source()]);
         assert_eq!(seen, report.sources);
         let latest = lookup(loc(&cat), "dan/demo1", None).unwrap();
         assert_eq!(latest.manifest.version, "1.10.0");
         assert_eq!(latest.reference, "dan/demo1@1.10.0");
         assert_eq!(latest.files.len(), 1);
         assert_eq!(
-            lookup(loc(&cat), "demo2", None).unwrap().reference,
-            "v0.1.0"
+            lookup(loc(&cat), "acme/demo2", None).unwrap().reference,
+            "acme/demo2@0.1.0"
         );
         // A second run changes nothing.
         let before = tree_hash(&cat);
@@ -2469,7 +2192,7 @@ pub(crate) mod tests {
         let error = run("one\ntwo\n");
         assert_eq!(
             (error.kind(), error.to_string()),
-            ("catalog", "multiple sources claim plugin dan/demo1".into())
+            ("catalog", "multiple sources claim package dan/demo1".into())
         );
         assert!(
             !cat.exists(),

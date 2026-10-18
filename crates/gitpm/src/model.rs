@@ -1,4 +1,4 @@
-//! Persistent formats: plugin manifest and workspace state. Byte-compatible with the stand.
+//! Persistent formats: package manifest and workspace state. Byte-compatible with the stand.
 use crate::error::{Error, Result, ensure};
 use crate::{exec::git, identity};
 use serde::{Deserialize, Serialize};
@@ -10,13 +10,13 @@ use std::{collections::BTreeMap, fs, path::Path};
 pub struct Manifest {
     pub id: String,
     pub version: String,
-    /// Other plugins by ID with a Cargo-style version requirement.
+    /// Other packages by ID with a Cargo-style version requirement.
     #[serde(default)]
     pub dependencies: BTreeMap<String, String>,
     #[serde(default, rename = "forkOf", skip_serializing_if = "Option::is_none")]
     pub fork_of: Option<ForkOf>,
-    /// This plugin can stand in for another one at the declared version. Used only when
-    /// the user explicitly replaces that plugin; never applied automatically.
+    /// This package can stand in for another one at the declared version. Used only when
+    /// the user explicitly replaces that package; never applied automatically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replaces: Option<Replaces>,
     /// Top-level keys this library does not know, kept for round-trips. Written after the
@@ -143,22 +143,20 @@ pub struct Installed {
     pub dependencies: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replaces: Option<Replaces>,
-    /// Catalog the plugin was installed from (canonical location); `None` for Git installs.
+    /// Catalog the package was installed from (canonical location); `None` for Git installs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catalog: Option<String>,
     /// Cache key of the shared clone `repos/<clone>` of a multi-package repository (one
-    /// per source, used by every package installed from it); `None`: the plugin's own
-    /// clone `plugins/<id>`.
+    /// per source, used by every package installed from it); `None`: the package's own
+    /// clone `packages/<id>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clone: Option<String>,
     /// Package folder inside the repository (from `gitpm.json`); `None`: the root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
-    /// Descriptive metadata of the current revision's manifest (since 0.5). `None` in a
-    /// record written by an older gitpm: [`State::installed_in`] then reads it from the
-    /// clone.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<Metadata>,
+    /// Descriptive metadata of the current revision's manifest. Required in format 3: a
+    /// record without it is `invalid_data`.
+    pub metadata: Metadata,
 }
 impl Installed {
     /// Take the manifest-derived fields of a new current revision.
@@ -166,45 +164,41 @@ impl Installed {
         self.fork_of = m.fork_of.clone();
         self.dependencies = m.dependencies.clone();
         self.replaces = m.replaces.clone();
-        self.metadata = Some(m.metadata());
+        self.metadata = m.metadata();
     }
     /// The root package of its repository (no `gitpm.json` at the installed revision):
     /// `path` is `None`. Independent of where the clone lives: a root package that moved
-    /// into a package folder keeps its own clone `plugins/<id>` but is no longer a root
+    /// into a package folder keeps its own clone `packages/<id>` but is no longer a root
     /// package.
     pub fn is_root_package(&self) -> bool {
         self.path.is_none()
     }
-    /// Workspace-relative folder of the clone: `repos/<clone>` (shared) or `plugins/<id>`.
+    /// Workspace-relative folder of the clone: `repos/<clone>` (shared) or `packages/<id>`.
     pub fn clone_folder(&self, id: &str) -> String {
         match &self.clone {
             Some(key) => format!("repos/{key}"),
-            None => format!("plugins/{id}"),
+            None => format!("packages/{id}"),
         }
     }
 }
 
-/// Version of the `state.json` layout this library writes. 1 (no `format` key) is the
-/// layout of gitpm 0.3 and earlier; 2 adds shared clones (`clone`, `path`) and
-/// `forgotten`. Older formats are read, newer ones refused.
-pub const STATE_FORMAT: u32 = 2;
-fn legacy_format() -> u32 {
-    1
-}
+/// Version of the `state.json` layout this library reads and writes. It is bumped with
+/// every change an older gitpm would misread; any other format is refused and never
+/// rewritten (no migration). 3 (gitpm 0.6): installed packages under `packages`.
+pub const STATE_FORMAT: u32 = 3;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct State {
-    /// Layout version ([`STATE_FORMAT`] when written; missing in old files: 1).
-    #[serde(default = "legacy_format")]
+    /// Layout version: always [`STATE_FORMAT`].
     pub format: u32,
-    pub plugins: BTreeMap<String, Installed>,
-    /// Global replacements: original ID → installed plugin that provides it for every
+    pub packages: BTreeMap<String, Installed>,
+    /// Global replacements: original ID → installed package that provides it for every
     /// consumer in this workspace.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub replacements: BTreeMap<String, String>,
     /// Forgotten packages of shared clones (`clone` set): their clone is kept (their
     /// `dist/` is not: they are not installed) and they still count as users of the clone, so `restore` and `uninstall` find
-    /// them. A forgotten plugin with its own clone needs no record (`plugins/<id>`).
+    /// them. A forgotten package with its own clone needs no record (`packages/<id>`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub forgotten: BTreeMap<String, Installed>,
 }
@@ -212,30 +206,46 @@ impl Default for State {
     fn default() -> Self {
         Self {
             format: STATE_FORMAT,
-            plugins: BTreeMap::new(),
+            packages: BTreeMap::new(),
             replacements: BTreeMap::new(),
             forgotten: BTreeMap::new(),
         }
     }
 }
 impl State {
-    /// `dist/<id>` is deployed exactly for the active plugins: installed, enabled and
-    /// not replaced by another plugin. A host loads everything under `dist/`.
+    /// `dist/<id>` is deployed exactly for the active packages: installed, enabled and
+    /// not replaced by another package. A host loads everything under `dist/`.
     pub fn is_active(&self, id: &str) -> bool {
-        self.plugins.get(id).is_some_and(|p| p.enabled) && !self.replacements.contains_key(id)
+        self.packages.get(id).is_some_and(|p| p.enabled) && !self.replacements.contains_key(id)
+    }
+    /// Refuse a `state.json` whose `format` is missing or not [`STATE_FORMAT`] with
+    /// `unsupported` (checked before any other field, so an older layout is never
+    /// misread). Malformed JSON is `invalid_data`.
+    pub(crate) fn check_format(bytes: &[u8]) -> Result<()> {
+        #[derive(Deserialize)]
+        struct Format {
+            format: Option<serde_json::Value>,
+        }
+        let found: Format = serde_json::from_slice(bytes)
+            .map_err(|e| Error::InvalidData(format!("invalid workspace state.json: {e}")))?;
+        let found = match found.format {
+            Some(serde_json::Value::Number(n)) if n.as_u64() == Some(STATE_FORMAT.into()) => {
+                return Ok(());
+            }
+            Some(value) => format!("format {value}"),
+            None => "no format".to_owned(),
+        };
+        Err(Error::Unsupported(format!(
+            "state.json has {found}, but this gitpm reads only format {STATE_FORMAT}; re-create the workspace (install its packages again) or use the gitpm that wrote it"
+        )))
     }
     /// Parse `state.json` and check what serde cannot: the format version, IDs, clone
     /// keys and package folders.
     pub(crate) fn parse(bytes: &[u8]) -> Result<Self> {
+        Self::check_format(bytes)?;
         let state: State = serde_json::from_slice(bytes)
             .map_err(|e| Error::InvalidData(format!("invalid workspace state.json: {e}")))?;
-        ensure!(
-            (1..=STATE_FORMAT).contains(&state.format),
-            Unsupported,
-            "state.json has format {}, but this gitpm reads formats 1 to {STATE_FORMAT}; use a newer gitpm",
-            state.format
-        );
-        for (id, p) in state.plugins.iter().chain(&state.forgotten) {
+        for (id, p) in state.packages.iter().chain(&state.forgotten) {
             valid_id(id)?;
             if let Some(key) = &p.clone {
                 valid_clone_key(key)?;
@@ -246,7 +256,7 @@ impl State {
         }
         for id in state.forgotten.keys() {
             ensure!(
-                !state.plugins.contains_key(id),
+                !state.packages.contains_key(id),
                 InvalidData,
                 "state.json lists {id} as installed and as forgotten"
             );
@@ -273,21 +283,21 @@ pub(crate) fn valid_clone_key(key: &str) -> Result<()> {
             && hash.len() == 16
             && hash.bytes().all(|c| c.is_ascii_hexdigit()),
         InvalidData,
-        "invalid clone name {key:?} in state.json: expected a folder name under repos/ such as plugins-0123456789abcdef"
+        "invalid clone name {key:?} in state.json: expected a folder name under repos/ such as packages-0123456789abcdef"
     );
     Ok(())
 }
 
-/// Flat view of one installed plugin (convenient for UIs and FFI).
+/// Flat view of one installed package (convenient for UIs and FFI).
 #[derive(Clone, Debug, Serialize)]
-pub struct InstalledPlugin {
+pub struct InstalledPackage {
     pub id: String,
     pub source: String,
     pub current: Revision,
     pub previous: Option<Revision>,
     pub enabled: bool,
-    /// Installed, enabled and not replaced ([`State::is_active`]): exactly the plugins
-    /// with `dist/<id>`. `enabled` alone is not enough (a replaced plugin is enabled).
+    /// Installed, enabled and not replaced ([`State::is_active`]): exactly the packages
+    /// with `dist/<id>`. `enabled` alone is not enough (a replaced package is enabled).
     pub active: bool,
     #[serde(rename = "forkOf", skip_serializing_if = "Option::is_none")]
     pub fork_of: Option<ForkOf>,
@@ -299,7 +309,7 @@ pub struct InstalledPlugin {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     /// Cache key of the shared clone `repos/<clone>` (as in state); `None`: the
-    /// plugin's own clone `plugins/<id>`.
+    /// package's own clone `packages/<id>`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clone: Option<String>,
     /// Descriptive metadata of the installed revision (`plugin.json`); always present
@@ -308,39 +318,24 @@ pub struct InstalledPlugin {
     pub description: Option<String>,
     pub provides: Vec<String>,
     pub tags: Vec<String>,
-    /// Each dependency with the plugin that provides it and whether it is satisfied.
+    /// Each dependency with the package that provides it and whether it is satisfied.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub dependencies: Vec<crate::deps::DependencyStatus>,
-    /// Original IDs this plugin currently stands in for (active replacements).
+    /// Original IDs this package currently stands in for (active replacements).
     #[serde(rename = "replacing", skip_serializing_if = "Vec::is_empty")]
     pub replacing: Vec<String>,
-    /// Installed plugins that depend on this one (directly, through any replacement).
+    /// Installed packages that depend on this one (directly, through any replacement).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub dependents: Vec<String>,
 }
 impl State {
-    /// Flat view of the installed plugins (sorted by ID), with the metadata recorded in
-    /// state (empty for records of an older gitpm; see [`State::installed_in`]).
-    pub fn installed(&self) -> Vec<InstalledPlugin> {
-        self.installed_with(|_, p| p.metadata.clone().unwrap_or_default())
-    }
-    /// [`State::installed`] for the workspace at `root`: a record without metadata
-    /// (written by gitpm 0.4 or earlier) gets it from the manifest of its installed
-    /// commit in the clone. Read-only; an unreadable manifest gives empty metadata.
-    pub fn installed_in(&self, root: &Path) -> Vec<InstalledPlugin> {
-        self.installed_with(|id, p| match &p.metadata {
-            Some(metadata) => metadata.clone(),
-            None => committed_metadata(root, id, p).unwrap_or_default(),
-        })
-    }
-    fn installed_with(
-        &self,
-        metadata: impl Fn(&str, &Installed) -> Metadata,
-    ) -> Vec<InstalledPlugin> {
-        self.plugins
+    /// Flat view of the installed packages (sorted by ID), with the metadata recorded in
+    /// state (the clone is never read).
+    pub fn installed(&self) -> Vec<InstalledPackage> {
+        self.packages
             .iter()
-            .map(|(id, p)| (id, p, metadata(id, p)))
-            .map(|(id, p, metadata)| InstalledPlugin {
+            .map(|(id, p)| (id, p, p.metadata.clone()))
+            .map(|(id, p, metadata)| InstalledPackage {
                 id: id.clone(),
                 source: p.source.clone(),
                 current: p.current.clone(),
@@ -369,29 +364,13 @@ impl State {
     }
 }
 
-/// Metadata of the manifest at the installed commit of `p` in its clone.
-fn committed_metadata(root: &Path, id: &str, p: &Installed) -> Option<Metadata> {
-    let commit = &p.current.commit;
-    if commit.is_empty() || !commit.bytes().all(|c| c.is_ascii_hexdigit()) {
-        return None;
-    }
-    let repo = root.join(p.clone_folder(id));
-    let file = match &p.path {
-        Some(path) => format!("{path}/plugin.json"),
-        None => "plugin.json".to_owned(),
-    };
-    let text = git(&repo, &["show", &format!("{commit}:{file}")]).ok()?;
-    let m: Manifest = serde_json::from_str(&text).ok()?;
-    Some(m.metadata())
-}
-
-/// `namespace/name` or a legacy unscoped ID; every component is a safe path part.
+/// `namespace/name`; both components are safe path parts.
 pub fn valid_id(id: &str) -> Result<()> {
     let parts: Vec<_> = id.split('/').collect();
     ensure!(
-        (1..=2).contains(&parts.len()),
+        parts.len() == 2,
         InvalidId,
-        "expected namespace/name (or a legacy unscoped ID)"
+        "invalid package ID {id:?}: expected namespace/name"
     );
     for part in parts {
         identity::valid_part(part)?;
@@ -443,7 +422,7 @@ pub(crate) fn manifest(repo: &Path) -> Result<Manifest> {
         ensure!(
             replaces.id != m.id,
             InvalidManifest,
-            "a plugin cannot replace itself"
+            "a package cannot replace itself"
         );
         crate::catalog::version_key(&replaces.version)?;
     }
@@ -451,7 +430,7 @@ pub(crate) fn manifest(repo: &Path) -> Result<Manifest> {
     ensure!(
         repo.join("dist").is_dir(),
         InvalidManifest,
-        "plugin must contain a ready dist/ directory"
+        "package must contain a ready dist/ directory"
     );
     Ok(m)
 }
@@ -552,9 +531,8 @@ mod tests {
     const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
 
     #[test]
-    fn valid_id_accepts_legacy_and_scoped_ids_only() {
+    fn valid_id_accepts_scoped_ids_only() {
         for ok in [
-            "demo1",
             "dan/demo1",
             "a-b/c_d",
             &format!("{}/{}", "x".repeat(80), "y".repeat(80)),
@@ -563,6 +541,8 @@ mod tests {
         }
         for bad in [
             "",
+            "demo1",
+            "all",
             "/",
             "dan/",
             "/demo1",
@@ -778,7 +758,7 @@ mod tests {
         };
         let cases: Vec<(String, bool, &str)> = vec![
             ("{".into(), true, "invalid_manifest"),
-            (r#"{"id":"demo1"}"#.into(), true, "invalid_manifest"),
+            (r#"{"id":"dan/demo1"}"#.into(), true, "invalid_manifest"),
             (
                 r#"{"id":"../demo1","version":"0.1.0"}"#.into(),
                 true,
@@ -790,27 +770,32 @@ mod tests {
                 "invalid_id",
             ),
             (
-                r#"{"id":"demo1","version":"  "}"#.into(),
+                r#"{"id":"demo1","version":"0.1.0"}"#.into(),
+                true,
+                "invalid_id",
+            ),
+            (
+                r#"{"id":"dan/demo1","version":"  "}"#.into(),
                 true,
                 "invalid_manifest",
             ),
             (
-                r#"{"id":"demo1","version":"0.1.0"}"#.into(),
+                r#"{"id":"dan/demo1","version":"0.1.0"}"#.into(),
                 false,
                 "invalid_manifest",
             ),
             (
-                r#"{"id":"demo1","version":"0.1.0","dependencies":{"dan/base":"banana"}}"#.into(),
+                r#"{"id":"dan/demo1","version":"0.1.0","dependencies":{"dan/base":"banana"}}"#.into(),
                 true,
                 "invalid_manifest",
             ),
             (
-                r#"{"id":"demo1","version":"0.1.0","dependencies":{"demo1":"^1"}}"#.into(),
+                r#"{"id":"dan/demo1","version":"0.1.0","dependencies":{"dan/demo1":"^1"}}"#.into(),
                 true,
                 "invalid_manifest",
             ),
             (
-                r#"{"id":"demo1","version":"0.1.0","dependencies":{"../x":"^1"}}"#.into(),
+                r#"{"id":"dan/demo1","version":"0.1.0","dependencies":{"../x":"^1"}}"#.into(),
                 true,
                 "invalid_id",
             ),
@@ -871,7 +856,7 @@ mod tests {
             let _ = fs::remove_dir_all(dir.join("repo"));
             let repo = repo_with(
                 &dir,
-                &format!(r#"{{"id":"demo1","version":"{version}"}}"#),
+                &format!(r#"{{"id":"dan/demo1","version":"{version}"}}"#),
                 true,
             );
             assert!(manifest(&repo).is_err(), "{version} must be rejected");
@@ -902,10 +887,10 @@ mod tests {
         assert_eq!(back.fork_of, m.fork_of);
     }
 
-    /// Byte format written by the stand prototype (`serde_json::to_vec_pretty`, no newline).
+    /// Byte format of `state.json` (`serde_json::to_vec_pretty`, no newline).
     const STATE: &str = r#"{
-  "format": 2,
-  "plugins": {
+  "format": 3,
+  "packages": {
     "dan/demo1": {
       "source": "git@github.com:dan/demo1.git",
       "current": {
@@ -916,9 +901,17 @@ mod tests {
         "version": "0.1.0",
         "commit": "a17e286b69daa620096f78fa54153696b8459b6b"
       },
-      "enabled": false
+      "enabled": false,
+      "metadata": {
+        "title": "Demo",
+        "description": null,
+        "provides": [
+          "theme"
+        ],
+        "tags": []
+      }
     },
-    "demo1": {
+    "me/demo1": {
       "source": "/tmp/demo1",
       "current": {
         "version": "1.0.0",
@@ -930,6 +923,12 @@ mod tests {
         "id": "vendor/demo1",
         "version": "0.9.0",
         "commit": "0123456789abcdef0123456789abcdef01234567"
+      },
+      "metadata": {
+        "title": null,
+        "description": null,
+        "provides": [],
+        "tags": []
       }
     }
   }
@@ -937,47 +936,55 @@ mod tests {
 
     #[test]
     fn state_round_trips_byte_for_byte() {
-        let state: State = serde_json::from_str(STATE).unwrap();
+        let state = State::parse(STATE.as_bytes()).unwrap();
         assert_eq!(
             String::from_utf8(serde_json::to_vec_pretty(&state).unwrap()).unwrap(),
             STATE
         );
-        let p = &state.plugins["dan/demo1"];
+        let p = &state.packages["dan/demo1"];
         assert!(!p.enabled && p.fork_of.is_none());
         assert_eq!(p.previous.as_ref().unwrap().version, "0.1.0");
         assert_eq!(
-            state.plugins["demo1"].fork_of.as_ref().unwrap().id,
+            state.packages["me/demo1"].fork_of.as_ref().unwrap().id,
             "vendor/demo1"
         );
         // Default state is the file a new workspace starts with.
         assert_eq!(
             serde_json::to_string_pretty(&State::default()).unwrap(),
-            "{\n  \"format\": 2,\n  \"plugins\": {}\n}"
+            "{\n  \"format\": 3,\n  \"packages\": {}\n}"
         );
     }
 
     #[test]
-    fn state_formats_one_and_two_are_read_newer_ones_refused() {
-        // gitpm 0.3: no `format`, no `clone`/`path`/`forgotten`.
-        let legacy = STATE.replace("  \"format\": 2,\n", "");
-        let state = State::parse(legacy.as_bytes()).unwrap();
-        assert_eq!(state.format, 1);
-        assert_eq!(state.plugins.len(), 2);
-        assert!(
-            state
-                .plugins
-                .values()
-                .all(|p| p.clone.is_none() && p.path.is_none())
-        );
-        assert_eq!(State::parse(STATE.as_bytes()).unwrap().format, 2);
-        let newer = STATE.replace("\"format\": 2", "\"format\": 3");
-        let error = State::parse(newer.as_bytes()).unwrap_err();
-        assert_eq!(error.kind(), "unsupported");
-        assert!(error.to_string().contains("format 3"), "{error}");
-        let zero = STATE.replace("\"format\": 2", "\"format\": 0");
+    fn state_format_other_than_current_is_refused() {
+        // gitpm 0.3: no `format`; gitpm 0.4/0.5: format 2 with `plugins`; a newer one.
+        let none = STATE
+            .replace("  \"format\": 3,\n", "")
+            .replace("\"packages\"", "\"plugins\"");
+        let two = STATE
+            .replace("\"format\": 3", "\"format\": 2")
+            .replace("\"packages\"", "\"plugins\"");
+        let four = STATE.replace("\"format\": 3", "\"format\": 4");
+        let text = STATE.replace("\"format\": 3", "\"format\": \"3\"");
+        for (old, found) in [
+            (none, "no format"),
+            (two, "format 2"),
+            (four, "format 4"),
+            (text, "format \"3\""),
+        ] {
+            let bytes = old.clone().into_bytes();
+            let error = State::parse(&bytes).unwrap_err();
+            assert_eq!(error.kind(), "unsupported", "{old}");
+            let message = error.to_string();
+            assert!(message.contains(found), "{message}");
+            assert!(message.contains("only format 3"), "{message}");
+            assert_eq!(bytes, old.as_bytes(), "bytes unchanged");
+        }
+        // Format 3 with the old key is not a valid state.
+        let mixed = STATE.replace("\"packages\"", "\"plugins\"");
         assert_eq!(
-            State::parse(zero.as_bytes()).unwrap_err().kind(),
-            "unsupported"
+            State::parse(mixed.as_bytes()).unwrap_err().kind(),
+            "invalid_data"
         );
     }
 
@@ -1003,20 +1010,21 @@ mod tests {
             assert_eq!(error.kind(), "invalid_data", "{bad:?}");
             assert!(error.to_string().contains("invalid clone name"), "{error}");
         }
-        let entry = r#"{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true,"clone":"../evil","path":"packages/x"}"#;
-        let text = format!(r#"{{"format":2,"plugins":{{"a/b":{entry}}}}}"#);
+        let entry = r#"{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true,"clone":"../evil","path":"packages/x","metadata":{}}"#;
+        let text = format!(r#"{{"format":3,"packages":{{"a/b":{entry}}}}}"#);
         assert_eq!(
             State::parse(text.as_bytes()).unwrap_err().kind(),
             "invalid_data"
         );
         // A forgotten record needs a shared clone and must not also be installed.
         let entry = entry.replace("../evil", "x-0123456789abcdef");
-        let both = format!(r#"{{"plugins":{{"a/b":{entry}}},"forgotten":{{"a/b":{entry}}}}}"#);
+        let both =
+            format!(r#"{{"format":3,"packages":{{"a/b":{entry}}},"forgotten":{{"a/b":{entry}}}}}"#);
         assert_eq!(
             State::parse(both.as_bytes()).unwrap_err().kind(),
             "invalid_data"
         );
-        let ok = format!(r#"{{"plugins":{{}},"forgotten":{{"a/b":{entry}}}}}"#);
+        let ok = format!(r#"{{"format":3,"packages":{{}},"forgotten":{{"a/b":{entry}}}}}"#);
         assert_eq!(State::parse(ok.as_bytes()).unwrap().forgotten.len(), 1);
     }
 
@@ -1024,15 +1032,23 @@ mod tests {
     fn state_requires_core_fields() {
         for broken in [
             r#"{}"#,
-            r#"{"plugins":{"a":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null}}}"#,
-            r#"{"plugins":{"a":{"current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true}}}"#,
-            r#"{"plugins":{"a":{"source":"s","current":{"version":"1.0.0"},"previous":null,"enabled":true}}}"#,
+            r#"{"format":3,"packages":{"a":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null}}}"#,
+            r#"{"format":3,"packages":{"a":{"current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true}}}"#,
+            r#"{"format":3,"packages":{"a":{"source":"s","current":{"version":"1.0.0"},"previous":null,"enabled":true}}}"#,
         ] {
             assert!(serde_json::from_str::<State>(broken).is_err(), "{broken}");
         }
         // forkOf is optional; previous may be null.
-        let ok = r#"{"plugins":{"a":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true}}}"#;
+        let ok = r#"{"format":3,"packages":{"a":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true,"metadata":{}}}}"#;
         assert!(serde_json::from_str::<State>(ok).is_ok());
+        // metadata is required in format 3: a record without it is invalid data.
+        let no_metadata = ok.replace(r#","metadata":{}"#, "");
+        assert!(serde_json::from_str::<State>(&no_metadata).is_err());
+        let no_metadata = no_metadata.replace(r#""a":"#, r#""dan/a":"#);
+        assert_eq!(
+            State::parse(no_metadata.as_bytes()).unwrap_err().kind(),
+            "invalid_data"
+        );
     }
 
     #[test]
@@ -1041,7 +1057,7 @@ mod tests {
         let list = state.installed();
         assert_eq!(
             list.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
-            ["dan/demo1", "demo1"]
+            ["dan/demo1", "me/demo1"]
         );
         assert_eq!(list[0].source, "git@github.com:dan/demo1.git");
         assert_eq!(list[0].current.version, "0.1.1");

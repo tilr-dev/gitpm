@@ -1,6 +1,6 @@
 """UC-034: Info and catalog read-only browsing (P1).
 
-Fixtures: g4_tree_catalog (v2 with namespaces/ and legacy/), g4_v1 (monolithic v1).
+Fixtures: g4_tree_catalog (v2 with namespaces/), g4_v1 (monolithic v1, refused).
 `info` shows the one catalog given by --catalog or GITPM_CATALOG (there is no remote or
 public fallback); `catalog` prints the directory links of one level as JSON.
 """
@@ -35,22 +35,23 @@ def line_after(out: str, prefix: str) -> str:
     raise AssertionError(f"no line starting with {prefix!r} in:\n{out}")
 
 
-def assert_plugins(t: T, out: str):
+def assert_packages(t: T, out: str):
     t.has(out, "dan/hello — latest: 0.1.1, versions: 2", f"Git: {t.repo('dan/hello')}",
           "acme/widget — latest: 1.1.0, versions: 2", f"Git: {t.repo('acme/widget')}",
-          "oldie — latest: 0.2.0, versions: 2", f"Git: {t.repo('oldie')}")
+          "old/oldie — latest: 0.2.0, versions: 2", f"Git: {t.repo('old/oldie')}")
 
 
 @case(fixture="g4_tree_catalog", spec=["catalog/catalog-v2-is-a-tree-of-static-files",
                                       "cli/settings-come-from-flags-environment-defaults", "catalog/bounded-overview#overview-lines"])
 def info_local_root(t: T):
-    """`info` on the local v2 root (from GITPM_CATALOG): catalog address, local type, format
-    v2, directories, each plugin's ID, latest, version count and Git source."""
+    """`info` on the local v2 root (from GITPM_CATALOG): catalog address, local type,
+    directories, each package's ID, latest, version count and Git source."""
     out = readonly(t, lambda: gitpm_env(t, "info").out)
     t.eq(line_after(out, "Catalog:"), str(t.catalog), "catalog address")
     t.eq(line_after(out, "Type:"), "local folder/JSON", "type")
-    t.has(out, "Format: v2", "legacy/", "namespaces/", "acme/", "dan/")
-    assert_plugins(t, out)
+    t.has(out, "Directories and packages:", "namespaces/", "acme/", "dan/", "old/")
+    t.lacks(out, "Format:", "legacy/")
+    assert_packages(t, out)
     t.lacks(out, "Overview limit")
 
 
@@ -59,8 +60,8 @@ def info_branch_path(t: T):
     """`info` on <catalog>/namespaces shows only that branch; --catalog wins over GITPM_CATALOG."""
     out = readonly(t, lambda: gitpm_env(t, "--catalog", t.catalog / "namespaces", "info").out)
     t.eq(line_after(out, "Catalog:"), str(t.catalog / "namespaces"), "catalog address")
-    t.has(out, "Format: v2", "dan/hello — latest: 0.1.1", "acme/widget — latest: 1.1.0")
-    t.lacks(out, "oldie", "legacy/")
+    t.has(out, "Directories and packages:", "dan/hello — latest: 0.1.1", "acme/widget — latest: 1.1.0")
+    t.lacks(out, "legacy/")
 
 
 @case(fixture="g4_tree_catalog", spec=["cli/json-output-for-state-and-catalog",
@@ -68,9 +69,9 @@ def info_branch_path(t: T):
 def catalog_prints_current_level_only(t: T):
     """`catalog` prints only the directory links of the given level (JSON)."""
     root = readonly(t, lambda: gitpm_env(t, "--catalog", t.catalog, "catalog").json())
-    t.eq(root, {"schema": 2, "directories": {"legacy": "legacy/", "namespaces": "namespaces/"}}, "root level")
+    t.eq(root, {"schema": 2, "directories": {"namespaces": "namespaces/"}}, "root level")
     branch = readonly(t, lambda: gitpm_env(t, "--catalog", t.catalog / "namespaces", "catalog").json())
-    t.eq(branch, {"schema": 2, "directories": {"acme": "acme/", "dan": "dan/"}}, "namespaces level")
+    t.eq(branch, {"schema": 2, "directories": {"acme": "acme/", "dan": "dan/", "old": "old/"}}, "namespaces level")
     leaf = readonly(t, lambda: gitpm_env(t, "--catalog", t.catalog / "namespaces/dan", "catalog").json())
     t.eq(leaf, {"schema": 2, "directories": {"hello": "hello/"}}, "dan level")
 
@@ -81,27 +82,27 @@ def info_and_catalog_over_loopback_http(t: T):
     srv = t.serve(t.catalog)
     out = readonly(t, lambda: gitpm_env(t, "--catalog", srv.url, "info").out)
     t.eq(line_after(out, "Catalog:"), srv.url, "catalog address")
-    t.has(out, "remote (HTTP)", "Format: v2")
-    assert_plugins(t, out)
-    branch = readonly(t, lambda: gitpm_env(t, "--catalog", srv.url + "/namespaces", "info").out)
+    t.has(out, "remote (HTTP)", "Directories and packages:")
+    assert_packages(t, out)
+    branch = readonly(t, lambda: gitpm_env(t, "--catalog", srv.url + "/namespaces/dan", "info").out)
     t.has(branch, "dan/hello — latest: 0.1.1")
     t.lacks(branch, "oldie")
     t.eq(readonly(t, lambda: gitpm_env(t, "--catalog", srv.url, "catalog").json()),
-         {"schema": 2, "directories": {"legacy": "legacy/", "namespaces": "namespaces/"}}, "catalog over HTTP")
+         {"schema": 2, "directories": {"namespaces": "namespaces/"}}, "catalog over HTTP")
     t.eq(readonly(t, lambda: gitpm_env(t, "--catalog", srv.url + "/namespaces/", "catalog").json())["directories"],
-         {"acme": "acme/", "dan": "dan/"}, "branch over HTTP")
+         {"acme": "acme/", "dan": "dan/", "old": "old/"}, "branch over HTTP")
 
 
-@case(fixture="g4_v1", spec=["catalog/v1-catalogs-stay-readable"])
-def info_v1(t: T):
-    """`info` on a v1 catalog: format v1, plugin list without directories; `catalog` prints the JSON."""
+@case(fixture="g4_v1", spec=["catalog/catalog-v2-is-a-tree-of-static-files"])
+def info_v1_is_refused(t: T):
+    """`info` on a v1 catalog fails with `catalog` and reads it as data only; `catalog`
+    still prints the raw root JSON."""
     v1 = t.root / "v1"
-    out = readonly(t, lambda: gitpm_env(t, "--catalog", v1, "info").out, v1)
-    t.has(out, "Format: v1", "dan/hello — latest: 0.1.1, versions: 2", f"Git: {t.repo('dan/hello')}",
-          "oldie — latest: 0.2.0, versions: 2", f"Git: {t.repo('oldie')}")
-    t.lacks(out, "Directories")
+    r = readonly(t, lambda: gitpm_env(t, "--catalog", v1, "info", ok=False), v1)
+    t.ok(r.code != 0, "info on v1 fails")
+    t.has(r.err, "Error kind: catalog", "v1 catalogs")
     t.eq(sorted(readonly(t, lambda: gitpm_env(t, "--catalog", v1, "catalog").json(), v1)["plugins"]),
-         ["dan/hello", "oldie"], "catalog of v1")
+         ["dan/hello", "old/oldie"], "raw root of v1")
 
 
 @case(fixture="g4_tree_catalog", spec=["cli/commands-that-need-a-catalog-say-so"])
@@ -142,19 +143,6 @@ def overview_limit_v2(t: T):
     t.lacks(out, "n44/p")
 
 
-@case(fixture="g4_tree_catalog", spec=["catalog/bounded-overview"])
-def overview_limit_v1(t: T):
-    """More than 40 plugins in a v1 catalog: 40 shown plus the limit hint."""
-    big = t.root / "big1"
-    big.mkdir()
-    plugins = {f"p{i:02}": {"source": f"https://git.example.invalid/p{i:02}.git", "versions": {}} for i in range(45)}
-    (big / "catalog.json").write_text(json.dumps({"plugins": plugins}))
-    out = readonly(t, lambda: gitpm_env(t, "--catalog", big, "info").out, big)
-    t.has(out, "Format: v1", "Overview limit: 40 entries")
-    t.eq(sum(1 for l in out.splitlines() if l.strip().startswith("p") and "latest:" in l), 40, "plugins shown")
-    t.lacks(out, "p44 —")
-
-
 @case(fixture="g4_tree_catalog", spec=["catalog/catalog-locations-and-transport#plain-http-to-a-remote-host"])
 def non_loopback_http_refused(t: T):
     """http:// to a non-loopback host is refused (HTTPS only) for info and catalog; nothing read."""
@@ -165,4 +153,4 @@ def non_loopback_http_refused(t: T):
             t.has(r.err, "Error kind: invalid_argument", "HTTPS")
     srv = t.serve(t.catalog)
     t.has(readonly(t, lambda: gitpm_env(t, "--catalog", srv.url.replace("127.0.0.1", "localhost"), "info").out),
-          "Format: v2")
+          "Directories and packages:")

@@ -94,7 +94,7 @@ def forced_provider_removal_drops_binding(t: T):
 @case(fixture="g6_replaced", spec=["fork-replacement/switching-back", "dist/switching-back-redeploys-the-original#back-to-the-original"])
 def switch_back_to_compatible_original(t: T):
     """replace --back: no prompt, every consumer on vendor/base again; fork keeps history and edits."""
-    fork_entry = t.plugin(FORK)
+    fork_entry = t.package(FORK)
     fork_files = t.snap(t.clone(FORK), t.dist(FORK), git=True)
     fork_author = t.snap(t.repo(FORK), git=True)
     r = t.gitpm_ok("replace", ORIGINAL, "--back")
@@ -107,7 +107,7 @@ def switch_back_to_compatible_original(t: T):
     t.eq(view[ORIGINAL].get("dependents"), CONSUMERS, "original dependents")
     t.ok(not view[FORK].get("dependents") and not view[FORK].get("replacing"), "fork is unused")
     t.has((t.dist(ORIGINAL) / "index.js").read_text(), "vendor/base 1.0.0")
-    t.eq(t.plugin(FORK), fork_entry, "fork state entry")
+    t.eq(t.package(FORK), fork_entry, "fork state entry")
     t.same(fork_files, "fork clone (with history) and dist")
     t.same(fork_author, "fork author repository")
     t.eq((t.dist(FORK) / "index.js").read_text(), FORK_PAYLOAD, "fork edits kept")
@@ -118,7 +118,7 @@ def original_breaks_consumers(t: T):
     """While replaced, vendor/base moves to 2.0.0, which app/a and app/b (^1.0) do not accept."""
     t.release(ORIGINAL, "2.0.0")
     t.gitpm_ok("update", ORIGINAL)
-    t.eq(t.plugin(ORIGINAL)["current"]["version"], "2.0.0", "original version")
+    t.eq(t.package(ORIGINAL)["current"]["version"], "2.0.0", "original version")
     on_fork(t)
 
 
@@ -185,7 +185,7 @@ def switch_back_to_unavailable_original(t: T):
     t.not_installed(ORIGINAL)
     t.repo(ORIGINAL).rename(t.root / "unreachable")
     before = t.snap(t.ws)
-    t.gitpm_err("replace", ORIGINAL, "--back", kind="not_installed", contains="plugin vendor/base is not installed")
+    t.gitpm_err("replace", ORIGINAL, "--back", kind="not_installed", contains="package vendor/base is not installed")
     t.gitpm_err("replace", ORIGINAL, "--back", "--force", kind="not_installed", contains="vendor/base")
     t.same(before, "workspace")
     on_fork(t)

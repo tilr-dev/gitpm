@@ -55,7 +55,7 @@ def rel_snap(path: Path) -> dict:
 @case(fixture="hello_installed", spec=["transactions-locking/workspace-lock#two-cli-processes"])
 def held_workspace_lock_refuses_every_mutation(t: T):
     t.release(ID, "0.1.1")
-    t.new_plugin("dan/other", "0.1.0")
+    t.new_package("dan/other", "0.1.0")
     holder = hold(WS_LOCK)
     before = t.snap(t.ws)
     for args in [("update", ID), ("disable", ID), ("rollback", ID), ("forget", ID), ("uninstall", ID, "--force"),
@@ -64,7 +64,7 @@ def held_workspace_lock_refuses_every_mutation(t: T):
     t.same(before, "workspace while locked")
     release(holder)
     t.gitpm_ok("update", ID)
-    t.eq(t.plugin(ID)["current"]["version"], "0.1.1", "retry after release")
+    t.eq(t.package(ID)["current"]["version"], "0.1.1", "retry after release")
     t.gitpm_ok("install", t.repo("dan/other"))
     t.ok(WS_LOCK.exists(), "lock file kept")
 
@@ -76,7 +76,7 @@ def killed_lock_owner_releases_the_workspace(t: T):
     release(holder, signal.SIGKILL)
     t.ok(WS_LOCK.exists(), "leftover lock file of the dead owner")
     t.gitpm_ok("disable", ID)
-    t.eq(t.plugin(ID)["enabled"], False, "mutation after the owner died")
+    t.eq(t.package(ID)["enabled"], False, "mutation after the owner died")
 
 
 @case(fixture="catalog", spec=["catalog/writers-are-serialized-and-crash-safe"])
@@ -87,7 +87,6 @@ def held_catalog_lock_refuses_writers_not_readers(t: T):
     before = t.snap(t.catalog)
     t.gitpm_err("register", t.repo("dan/hello"), "--ref", "dan/hello@0.3.0", kind="locked", contains="catalog locked")
     t.gitpm_err("catalog-update", kind="locked", contains="catalog locked")
-    t.gitpm_err("migrate-catalog", kind="locked", contains="catalog locked")
     t.same(before, "catalog while locked")
     # Readers do not take the writer lock.
     t.has(t.gitpm_ok("--catalog", t.catalog, "info").out, "dan/hello")
@@ -109,7 +108,7 @@ def workspace_and_catalog_locks_are_independent(t: T):
     t.gitpm_ok("install-catalog", "dan/hello", "--version", "0.3.0")
     t.gitpm_ok("install", t.repo("dan/num"))
     release(cat)
-    t.eq(sorted(t.state()["plugins"]), ["dan/hello", "dan/num"], "installed while the catalog was locked")
+    t.eq(sorted(t.state()["packages"]), ["dan/hello", "dan/num"], "installed while the catalog was locked")
 
 
 @case(fixture="catalog", spec=["catalog/writers-are-serialized-and-crash-safe"])
@@ -130,13 +129,13 @@ def uncommitted_transaction_is_discarded_on_next_open(t: T):
     .pm-txn; the live workspace stays exactly as it was."""
     before = t.snap(t.ws)
     txn = t.ws / ".pm-txn"
-    shutil.copytree(t.clone(ID), txn / "new/plugins" / ID, symlinks=True)
+    shutil.copytree(t.clone(ID), txn / "new/packages" / ID, symlinks=True)
     t.write(txn, {f"new/dist/{ID}/index.js": "half-staged\n", "state.json": "{ partial",
                   "scratch/incoming/plugin.json": "{}"})
     out = t.gitpm_ok("list").json()
     t.ok(not txn.exists(), ".pm-txn discarded")
     t.same(before, "live workspace")
-    t.eq(out["plugins"][ID]["current"]["version"], "0.1.0", "list shows the old state")
+    t.eq(out["packages"][ID]["current"]["version"], "0.1.0", "list shows the old state")
 
 
 def committed_txn(t: T, applied: list[str]) -> Path:
@@ -147,7 +146,7 @@ def committed_txn(t: T, applied: list[str]) -> Path:
     shutil.copytree(t.ws, after, symlinks=True)
     t.gitpm_ok("--root", after, "update", ID)
     txn = t.ws / ".pm-txn"
-    paths = [f"dist/{ID}", f"plugins/{ID}"]
+    paths = [f"dist/{ID}", f"packages/{ID}"]
     for rel in paths:
         shutil.copytree(after / rel, txn / "new" / rel, symlinks=True)
     shutil.copyfile(after / "state.json", txn / "state.json")
@@ -161,8 +160,8 @@ def committed_txn(t: T, applied: list[str]) -> Path:
 
 def rolled_forward(t: T, after: Path):
     t.ok(not (t.ws / ".pm-txn").exists(), "transaction finished")
-    t.eq(json.loads((t.ws / "state.json").read_text())["plugins"][ID]["current"],
-         json.loads((after / "state.json").read_text())["plugins"][ID]["current"], "state rolled forward")
+    t.eq(json.loads((t.ws / "state.json").read_text())["packages"][ID]["current"],
+         json.loads((after / "state.json").read_text())["packages"][ID]["current"], "state rolled forward")
     t.eq(rel_snap(t.dist(ID)), rel_snap(after / "dist" / ID), "dist rolled forward")
     t.eq(t.rev(t.clone(ID)), t.rev(ID, f"{ID}@0.1.1"), "clone HEAD rolled forward")
 
@@ -172,9 +171,9 @@ def committed_transaction_rolls_forward_on_next_open(t: T):
     """Crash after the journal with dist already moved: `list` finishes the commit."""
     after = committed_txn(t, [f"dist/{ID}"])
     t.has((t.dist(ID) / "index.js").read_text(), "0.1.1")
-    t.eq(t.plugin(ID)["current"]["version"], "0.1.0", "state not yet switched")
+    t.eq(t.package(ID)["current"]["version"], "0.1.0", "state not yet switched")
     out = t.gitpm_ok("list").json()
-    t.eq(out["plugins"][ID]["current"]["version"], "0.1.1", "list sees the recovered state")
+    t.eq(out["packages"][ID]["current"]["version"], "0.1.1", "list sees the recovered state")
     rolled_forward(t, after)
 
 
@@ -185,9 +184,9 @@ def committed_transaction_rolls_forward_before_next_mutation(t: T):
     after = committed_txn(t, [])
     t.gitpm_ok("disable", ID)
     t.ok(not (t.ws / ".pm-txn").exists(), "transaction finished")
-    t.eq(t.plugin(ID)["enabled"], False, "the new mutation applied on top")
-    t.eq(t.plugin(ID)["current"]["version"], "0.1.1", "state rolled forward")
-    t.eq(t.plugin(ID)["previous"]["version"], "0.1.0", "previous kept from the recovered update")
+    t.eq(t.package(ID)["enabled"], False, "the new mutation applied on top")
+    t.eq(t.package(ID)["current"]["version"], "0.1.1", "state rolled forward")
+    t.eq(t.package(ID)["previous"]["version"], "0.1.0", "previous kept from the recovered update")
     t.ok(not t.dist(ID).exists(), "disabled: no dist/ID")
     t.gitpm_ok("enable", ID)
     rolled_forward(t, after)

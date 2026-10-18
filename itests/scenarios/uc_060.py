@@ -27,7 +27,7 @@ def list_shows_fork_relation(t: T):
     base = t.rev(V, "vendor/p@1.0.0")
     before = mine_payload(t)
     out = t.gitpm_ok("list").json()
-    mine, vendor = out["plugins"][M], out["plugins"][V]
+    mine, vendor = out["packages"][M], out["packages"][V]
     t.eq(mine["forkOf"], {"id": V, "version": "1.0.0", "commit": base}, "forkOf")
     t.eq(mine["replaces"], {"id": V, "version": "1.0.0"}, "replaces")
     t.ok("forkOf" not in vendor and "replaces" not in vendor, "vendor/p has neither")
@@ -53,20 +53,20 @@ def check_compares_fork_with_own_releases(t: T):
 @case(fixture="g3_fork_catalog", spec=["fork-replacement/fork-metadata"])
 def fork_of_fork_points_to_immediate_parent(t: T):
     """3. other/p forked from mine/p: forkOf is mine/p (immediate parent)."""
-    mine = t.plugin(M)["current"]
+    mine = t.package(M)["current"]
     dest = t.root / "authors/other-p"
     t.gitpm_ok("fork", M, "--ns", "other", "--into", dest)
     t.gitpm_ok("install", dest, "--channel", "dev")
     out = t.gitpm_ok("list").json()
-    t.eq(out["plugins"][O]["forkOf"], {"id": M, "version": mine["version"], "commit": mine["commit"]}, "forkOf")
-    t.eq(out["plugins"][O]["replaces"], {"id": M, "version": mine["version"]}, "replaces")
+    t.eq(out["packages"][O]["forkOf"], {"id": M, "version": mine["version"], "commit": mine["commit"]}, "forkOf")
+    t.eq(out["packages"][O]["replaces"], {"id": M, "version": mine["version"]}, "replaces")
 
 
 @case(fixture="g3_fork_catalog", spec=["fork-replacement/check-shows-fork-upstream#original-has-a-newer-release"])
 def newer_original_release_is_visible(t: T):
     """4. vendor/p 1.1.0 published: check shows the original's 1.1.0 as newer than the fork base
     1.0.0 and vendor/p "update available"; mine/p state/payload unchanged; list unchanged."""
-    list_before = t.gitpm_ok("list").json()["plugins"][M]
+    list_before = t.gitpm_ok("list").json()["packages"][M]
     t.release(V, "1.1.0")
     t.gitpm_ok("register", t.repo(V), "--ref", "vendor/p@1.1.0")
     before = mine_payload(t)
@@ -74,5 +74,5 @@ def newer_original_release_is_visible(t: T):
     t.has(row(out, V), "update available", "1.1.0")
     t.has(out, f"{M}: fork of {V} (base 1.0.0); original in catalog: 1.1.0 — newer than the fork base")
     t.has(row(out, M), "not in catalog")
-    t.eq(t.gitpm_ok("list").json()["plugins"][M], list_before, "mine/p in list")
+    t.eq(t.gitpm_ok("list").json()["packages"][M], list_before, "mine/p in list")
     t.same(before, "mine/p state and payload")

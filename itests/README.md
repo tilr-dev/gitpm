@@ -116,7 +116,7 @@ def update_to_new_release(t: T):
     """1. update without a catalog picks the new release tag."""
     commit = t.release("dan/hello", "0.1.1")
     t.gitpm_ok("update", "dan/hello")
-    t.eq(t.plugin("dan/hello")["current"], {"version": "0.1.1", "commit": commit}, "current")
+    t.eq(t.package("dan/hello")["current"], {"version": "0.1.1", "commit": commit}, "current")
 ```
 
 * `spec=[…]` names what the case verifies: `CAPABILITY/REQUIREMENT-SLUG[#SCENARIO-SLUG]`,
@@ -133,7 +133,7 @@ def update_to_new_release(t: T):
 ### Command names
 
 Scenarios call catalog commands by their current names (`info`, `catalog`,
-`catalog-update`, `register`, `migrate-catalog`); `gitpmtest.COMMANDS` maps each to the
+`catalog-update`, `register`); `gitpmtest.COMMANDS` maps each to the
 argv `T.gitpm` really runs, so a CLI rename (change `cli-catalog-commands`) is a change of
 that mapping. `t.run("gitpm", …)` bypasses it.
 
@@ -144,11 +144,11 @@ that mapping. `t.run("gitpm", …)` bypasses it.
 | `gitpm(*args)`, `gitpm_ok(*args)`, `gitpm_err(*args, kind=, contains=)` | run the CLI; `input=` feeds stdin, `env=` adds variables, `cwd=` |
 | `run(*argv, check=False)` | any process, logged |
 | `git(repo_or_id, *args)` | git in an author repo (or any path); raises on failure |
-| `new_plugin(id, version, deps=, extra=, files=)` | init `/fx/repos/ID` with a tagged first release |
+| `new_package(id, version, deps=, extra=, files=)` | init `/fx/repos/ID` with a tagged first release |
 | `release(id, version, deps=, extra=, files=, tag=True)` | plugin.json + dist/index.js, commit, tag `ID@VERSION`; returns SHA |
 | `commit(repo, message, files)`, `tag(repo, name, rev, force=)`, `rev(repo, ref)` | |
 | `write(repo, {path: text/bytes/None})` | edit files (None deletes) |
-| `state()`, `plugin(id)`, `clone(id)`, `dist(id)`, `not_installed(id)` | workspace |
+| `state()`, `package(id)`, `clone(id)`, `dist(id)`, `not_installed(id)` | workspace |
 | `catalog_index(id)`, `catalog_release(id, version)`, `edit_json(path, fn)` | catalog files |
 | `snap(*paths, git=False)` → `same(snapshot, what)` | "nothing changed" |
 | `eq`, `ok`, `has`, `lacks` | assertions (logged) |
@@ -166,7 +166,7 @@ def hello_installed(t: T):
 
 @hello_installed.check
 def _(t: T):
-    t.eq(t.plugin("dan/hello")["current"]["version"], "0.1.0", "current version")
+    t.eq(t.package("dan/hello")["current"]["version"], "0.1.0", "current version")
 ```
 
 * Every fixture has a check (the registry refuses one without). A failed fixture marks its

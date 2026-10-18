@@ -99,10 +99,10 @@ def update_all_lines(t: T):
     t.gitpm_ok("commit", base, "0.1.2")
     o.lines(["update", "all", "--dry-run"], [f"{APP} up to date (0.1.1)", f"{BASE} would be updated 0.1.0 → 0.1.2",
                                            "1 updates, 0 installs, 0 kept back. Nothing was changed."])
-    t.eq(t.plugin(BASE)["current"]["version"], "0.1.0", "dry run changed nothing")
+    t.eq(t.package(BASE)["current"]["version"], "0.1.0", "dry run changed nothing")
     o.lines(["update", "all"], [f"{APP} up to date (0.1.1)", f"{BASE} updated 0.1.0 → 0.1.2",
                                 "1 updates, 0 installs, 0 kept back."])
-    o.lines(["sync-dist"], ["dist/ already holds exactly the active plugins."])
+    o.lines(["sync-dist"], ["dist/ already holds exactly the active packages."])
     o.no_ok_lines()
 
 

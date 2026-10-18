@@ -18,7 +18,7 @@ def deps(t: T):
     """vendor/base, its consumers app/a (^1.0) and app/b (>=0.9.0), and forks mine/base
     (replaces vendor/base 1.0.0) and old/base (replaces 0.9.0); each released at 1.0.0."""
     for id, (dependencies, extra) in GRAPH.items():
-        t.new_plugin(id, "1.0.0", deps=dependencies, extra=extra)
+        t.new_package(id, "1.0.0", deps=dependencies, extra=extra)
 
 
 @deps.check
@@ -31,7 +31,7 @@ def _(t: T):
 
 @fixture(requires=["deps"], gitpm=True)
 def deps_catalog(t: T):
-    """All five plugins of `deps` registered at 1.0.0 in /fx/catalog; empty workspace."""
+    """All five packages of `deps` registered at 1.0.0 in /fx/catalog; empty workspace."""
     for id in GRAPH:
         t.gitpm_ok("register", t.repo(id), "--ref", f"{id}@1.0.0")
 
@@ -52,5 +52,5 @@ def deps_installed(t: T):
 @deps_installed.check
 def _(t: T):
     state = t.gitpm_ok("list").json()
-    t.eq(sorted(state["plugins"]), sorted(GRAPH), "installed plugins")
+    t.eq(sorted(state["packages"]), sorted(GRAPH), "installed packages")
     t.ok("replacements" not in state or not state["replacements"], "no active replacement")

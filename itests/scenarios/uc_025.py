@@ -1,12 +1,10 @@
 """UC-025: Fork invalid destinations (P0).
 
-vendor/demo 0.1.0 installed (g3_vendor_installed); legacy `demo` installed for the
-legacy-to-scoped fork (g3_legacy_installed). `fork ID --ns NS --into DIR` accepts only a new
+vendor/demo 0.1.0 installed (g3_vendor_installed). `fork ID --ns NS --into DIR` accepts only a new
 folder or a repository with gitpm.json; every refusal is checked for: non-zero exit, Error
 kind, no destination created, and byte-identical workspace + author repositories.
 """
 
-import json
 import os
 
 from gitpmtest import T, case
@@ -54,7 +52,7 @@ def version_without_replace(t: T):
 def unknown_plugin(t: T):
     dest = t.root / "authors/none"
     refused(t, ["dan/missing", "--ns", "author", "--into", dest], "not_installed",
-            "plugin dan/missing is not installed", [dest])
+            "package dan/missing is not installed", [dest])
 
 
 @case(fixture="g3_vendor_installed", spec=["fork-replacement/fork-requires-explicit-namespace-and-destination"])
@@ -98,11 +96,11 @@ def installed_clone_as_destination(t: T):
 
 @case(fixture="g3_vendor_installed", spec=["fork-replacement/fork-requires-explicit-namespace-and-destination#destination-inside-the-workspace"])
 def new_path_inside_workspace(t: T):
-    """Non-existing managed paths: plugins/author/demo, dist/author/demo, ws/forks/x."""
-    for dest in [t.ws / "plugins/author/demo", t.ws / "dist/author/demo", t.ws / "forks/x"]:
+    """Non-existing managed paths: packages/author/demo, dist/author/demo, ws/forks/x."""
+    for dest in [t.ws / "packages/author/demo", t.ws / "dist/author/demo", t.ws / "forks/x"]:
         refused(t, [ID, "--ns", "author", "--into", dest], "invalid_argument",
                 "outside the managed workspace", [dest])
-    t.ok(not (t.ws / "plugins/author").exists() and not (t.ws / "forks").exists(), "no parents created")
+    t.ok(not (t.ws / "packages/author").exists() and not (t.ws / "forks").exists(), "no parents created")
 
 
 @case(fixture="g3_vendor_installed", spec=["fork-replacement/fork-requires-explicit-namespace-and-destination#destination-inside-the-workspace"])
@@ -117,22 +115,3 @@ def workspace_through_symlink(t: T):
 def parent_dir_component(t: T):
     dest = t.root / "authors/../escape"
     refused(t, [ID, "--ns", "author", "--into", dest], "invalid_argument", "'..'", [t.root / "escape"])
-
-
-@case(fixture="g3_legacy_installed", spec=["fork-replacement/fork-metadata#fork-manifest", "package-ids/release-tag-names#legacy-tag"])
-def legacy_to_scoped_fork(t: T):
-    """Legacy `demo` forks into dan/demo with legacy provenance; both coexist."""
-    installed = t.plugin("demo")["current"]
-    dest = t.root / "authors/dan-demo"
-    t.gitpm_ok("fork", "demo", "--ns", "dan", "--into", dest)
-    m = json.loads((dest / "plugin.json").read_text())
-    t.eq(m["id"], "dan/demo", "id")
-    t.eq(m["forkOf"], {"id": "demo", "version": "0.1.0", "commit": installed["commit"]}, "forkOf")
-    t.eq(m["replaces"], {"id": "demo", "version": "0.1.0"}, "replaces")
-    before = t.snap(t.clone("demo"), t.dist("demo"), git=True)
-    t.gitpm_ok("install", dest, "--channel", "dev")
-    p = t.plugin("dan/demo")
-    t.eq(p["forkOf"], m["forkOf"], "installed forkOf")
-    t.eq(t.plugin("demo")["current"], installed, "legacy installation unchanged")
-    t.same(before, "legacy clone and dist")
-    t.has((t.dist("dan/demo") / "index.js").read_text(), "demo 0.1.0")

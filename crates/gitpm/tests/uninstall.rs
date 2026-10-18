@@ -41,13 +41,13 @@ impl Fixture {
         let root = dir.join("workspace");
         let m = Manager::open(&root).unwrap();
         m.install(author.to_str().unwrap()).unwrap();
-        let repo = root.join("plugins/vendor/module");
+        let repo = root.join("packages/vendor/module");
         git(&repo, &["config", "user.name", "Test"]);
         git(&repo, &["config", "user.email", "test@example.invalid"]);
         (Self { dir, root }, m)
     }
     fn repo(&self) -> PathBuf {
-        self.root.join("plugins/vendor/module")
+        self.root.join("packages/vendor/module")
     }
     fn snapshot(&self) -> (Vec<u8>, String, String, Vec<u8>) {
         (
@@ -114,12 +114,12 @@ fn clean_clone_plan_is_empty_and_uninstall_needs_no_confirmation() {
     assert!(plan.lost_work.is_empty(), "{:?}", plan.lost_work);
     assert!(plan.registered);
     assert_eq!(plan.deletes.len(), 2);
-    assert!(plan.deletes[0].ends_with("plugins/vendor/module"));
+    assert!(plan.deletes[0].ends_with("packages/vendor/module"));
     assert!(plan.deletes[1].ends_with("dist/vendor/module"));
     m.uninstall("vendor/module", false).unwrap();
     assert!(!f.repo().exists());
     assert!(!f.root.join("dist/vendor/module").exists());
-    assert!(m.state().unwrap().plugins.is_empty());
+    assert!(m.state().unwrap().packages.is_empty());
 }
 
 #[test]
@@ -196,7 +196,7 @@ fn stash_alone_blocks_unconfirmed_uninstall() {
     assert_eq!(error.kind(), "local_changes");
     assert!(error.to_string().contains("stash"), "{error}");
     assert!(f.repo().exists());
-    assert!(m.state().unwrap().plugins.contains_key("vendor/module"));
+    assert!(m.state().unwrap().packages.contains_key("vendor/module"));
 }
 
 #[test]
@@ -219,7 +219,7 @@ fn confirmed_uninstall_deletes_lost_work() {
     m.uninstall("vendor/module", true).unwrap();
     assert!(!f.repo().exists());
     assert!(!f.root.join("dist/vendor/module").exists());
-    assert!(m.state().unwrap().plugins.is_empty());
+    assert!(m.state().unwrap().packages.is_empty());
 }
 
 #[test]
@@ -234,7 +234,7 @@ fn case_variant_id_never_touches_the_installed_plugin() {
         assert_eq!(f.snapshot(), before);
         assert!(f.repo().join(".git").is_dir());
     }
-    assert!(m.state().unwrap().plugins.contains_key("vendor/module"));
+    assert!(m.state().unwrap().packages.contains_key("vendor/module"));
 }
 
 #[test]

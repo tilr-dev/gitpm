@@ -19,7 +19,7 @@ TAGS = {"existing_version_refused": "authoring/existing-tags-are-never-moved",
 
 def author(t: T):
     """dan/rel 0.1.0 with tracked README.md and old.txt, *.log ignored, and an empty bare origin."""
-    t.new_plugin(ID, "0.1.0", files={"README.md": "readme v1\n", "old.txt": "old\n", ".gitignore": "*.log\n"})
+    t.new_package(ID, "0.1.0", files={"README.md": "readme v1\n", "old.txt": "old\n", ".gitignore": "*.log\n"})
     repo = t.repo(ID)
     bare = t.root / "origin.git"
     t.run("git", "init", "-q", "--bare", bare, check=True)
@@ -111,5 +111,5 @@ def released_version_is_installable(t: T):
     t.write(repo, {"dist/index.js": "export const greeting = 'v011';\n"})
     t.gitpm_ok("commit", repo, "0.1.1")
     t.gitpm_ok("install", repo)
-    t.eq(t.plugin(ID)["current"], {"version": "0.1.1", "commit": t.rev(repo)}, "latest release installed")
+    t.eq(t.package(ID)["current"], {"version": "0.1.1", "commit": t.rev(repo)}, "latest release installed")
     t.eq((t.dist(ID) / "index.js").read_text(), "export const greeting = 'v011';\n", "dist")

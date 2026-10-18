@@ -1,4 +1,4 @@
-//! End-to-end tests of plugin metadata (`title`, `description`, `provides`, `tags`) and
+//! End-to-end tests of package metadata (`title`, `description`, `provides`, `tags`) and
 //! of the authoring/CLI output added in 0.5 (`init --multi`, `init --no-release`,
 //! install/update lines, empty folders after removal).
 //! Hermetic: the CLI and Git run with a cleared environment, a fixture HOME/TMPDIR and
@@ -180,18 +180,18 @@ fn list_reports_metadata_present_or_absent_and_filters_by_provides() {
     assert!(store["title"].is_null() && store["description"].is_null());
     assert_eq!(store["provides"], serde_json::json!([]));
     assert_eq!(store["tags"], serde_json::json!([]));
-    // The shared clone is reported in resolved[] as in plugins{}.
-    let clone = &list["plugins"]["tilr/theme"]["clone"];
+    // The shared clone is reported in resolved[] as in packages{}.
+    let clone = &list["packages"]["tilr/theme"]["clone"];
     assert!(clone.is_string(), "{list:#}");
     assert_eq!(&theme["clone"], clone);
     assert_eq!(store["clone"], *clone);
     // State keeps the metadata of the installed revision.
     assert_eq!(
-        list["plugins"]["tilr/theme"]["metadata"]["provides"],
+        list["packages"]["tilr/theme"]["metadata"]["provides"],
         serde_json::json!(["theme"])
     );
     // Same shape in both places: absent strings are null, absent lists [].
-    let stored = &list["plugins"]["tilr/store"]["metadata"];
+    let stored = &list["packages"]["tilr/store"]["metadata"];
     for key in ["title", "description", "provides", "tags"] {
         assert_eq!(stored[key], store[key], "{key}: {list:#}");
         assert!(stored.get(key).is_some(), "{key} missing: {list:#}");
@@ -199,7 +199,7 @@ fn list_reports_metadata_present_or_absent_and_filters_by_provides() {
     assert!(stored["title"].is_null() && stored["description"].is_null());
     assert_eq!(stored["tags"], serde_json::json!([]));
     assert_eq!(stored["provides"], serde_json::json!([]));
-    let stored = &list["plugins"]["tilr/theme"]["metadata"];
+    let stored = &list["packages"]["tilr/theme"]["metadata"];
     for key in ["title", "description", "provides", "tags"] {
         assert_eq!(stored[key], theme[key], "{key}: {list:#}");
     }
@@ -207,7 +207,7 @@ fn list_reports_metadata_present_or_absent_and_filters_by_provides() {
     let only = f.list(&["--provides", "theme"]);
     assert_eq!(ids(&only), ["tilr/theme"]);
     assert_eq!(
-        only["plugins"]
+        only["packages"]
             .as_object()
             .unwrap()
             .keys()
@@ -216,7 +216,7 @@ fn list_reports_metadata_present_or_absent_and_filters_by_provides() {
     );
     let none = f.list(&["--provides", "store"]);
     assert!(none["forgotten"].is_null() && none["replacements"].is_null());
-    assert!(ids(&none).is_empty() && none["plugins"].as_object().unwrap().is_empty());
+    assert!(ids(&none).is_empty() && none["packages"].as_object().unwrap().is_empty());
     assert!(
         f.fails(&["check", "--provides", "theme"])
             .contains("--provides requires list")
@@ -231,29 +231,19 @@ fn list_reports_metadata_present_or_absent_and_filters_by_provides() {
         "metadata follows the installed revision"
     );
 
-    // A workspace written by gitpm 0.4 has no metadata in state: it is read from the
-    // installed commit in the clone.
+    // metadata is required in a format-3 record: a record without it is invalid data,
+    // and state.json is not rewritten.
     let path = f.dir.join("workspace/state.json");
     let mut state = f.json(&path);
-    for plugin in state["plugins"].as_object_mut().unwrap().values_mut() {
-        plugin.as_object_mut().unwrap().remove("metadata");
+    for record in state["packages"].as_object_mut().unwrap().values_mut() {
+        record.as_object_mut().unwrap().remove("metadata");
     }
-    fs::write(&path, serde_json::to_vec_pretty(&state).unwrap()).unwrap();
-    let list = f.list(&[]);
-    assert!(list["plugins"]["tilr/theme"].get("metadata").is_none());
-    assert_eq!(resolved(&list, "tilr/theme")["title"], "Theme");
-    assert_eq!(
-        resolved(&list, "tilr/store")["provides"],
-        serde_json::json!(["store", "sync"])
-    );
-    // ... and is empty, without an error, when the clone is gone.
-    fs::remove_dir_all(f.dir.join("workspace/repos")).unwrap();
-    let list = f.list(&[]);
-    assert!(resolved(&list, "tilr/theme")["title"].is_null());
-    assert_eq!(
-        resolved(&list, "tilr/theme")["provides"],
-        serde_json::json!([])
-    );
+    let bytes = serde_json::to_vec_pretty(&state).unwrap();
+    fs::write(&path, &bytes).unwrap();
+    let err = f.fails(&["list"]);
+    assert!(err.contains("Error kind: invalid_data"), "{err}");
+    assert!(err.contains("missing field `metadata`"), "{err}");
+    assert_eq!(fs::read(&path).unwrap(), bytes);
 }
 
 #[test]
@@ -422,9 +412,9 @@ fn catalog_update_publishes_historical_releases_with_wrong_typed_metadata() {
 #[test]
 fn init_multi_creates_a_multi_package_repository_that_takes_more_packages() {
     let f = Fixture::new();
-    let out = f.ok(&["init", "acme/one", "--into", "plugins", "--multi"]);
+    let out = f.ok(&["init", "acme/one", "--into", "packages", "--multi"]);
     assert!(out.contains("Git commit and tag acme/one@0.1.0"), "{out}");
-    let repo = f.dir.join("plugins");
+    let repo = f.dir.join("packages");
     assert_eq!(
         f.json(&repo.join("gitpm.json")),
         serde_json::json!({"packages": ["packages/*"]})
@@ -432,7 +422,7 @@ fn init_multi_creates_a_multi_package_repository_that_takes_more_packages() {
     assert!(!repo.join("plugin.json").exists());
     let m = f.json(&repo.join("packages/one/plugin.json"));
     assert_eq!((&m["id"], &m["title"]), (&"acme/one".into(), &"one".into()));
-    f.ok(&["init", "acme/two", "--into", "plugins"]);
+    f.ok(&["init", "acme/two", "--into", "packages"]);
     assert!(repo.join("packages/two/dist/index.js").is_file());
     assert_eq!(
         f.git_output(&repo, &["tag", "--list"]),
@@ -538,14 +528,14 @@ fn removal_leaves_no_empty_namespace_or_clone_folders() {
     f.ok(&["uninstall", "tilr/theme"]);
     assert!(!workspace.join("dist/tilr").exists());
     assert!(!workspace.join("repos").exists());
-    assert!(workspace.join("dist").is_dir() && workspace.join("plugins").is_dir());
+    assert!(workspace.join("dist").is_dir() && workspace.join("packages").is_dir());
 
-    // A root package's own clone plugins/<ns>/<name> as well.
+    // A root package's own clone packages/<ns>/<name> as well.
     f.ok(&["init", "acme/solo", "--into", "solo"]);
     f.ok(&["install", f.dir.join("solo").to_str().unwrap()]);
-    assert!(workspace.join("plugins/acme/solo").is_dir());
+    assert!(workspace.join("packages/acme/solo").is_dir());
     f.ok(&["uninstall", "acme/solo"]);
-    assert!(!workspace.join("plugins/acme").exists());
+    assert!(!workspace.join("packages/acme").exists());
     assert!(!workspace.join("dist/acme").exists());
 }
 

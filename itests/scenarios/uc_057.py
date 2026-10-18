@@ -36,7 +36,7 @@ def readonly(t: T, fn):
 def origin_catalog_recorded(t: T):
     """1. install-catalog x/p from A stores the originating catalog in state."""
     install_from_a(t)
-    p = t.plugin(XP)
+    p = t.package(XP)
     t.eq(p["catalog"], os.path.realpath(cat(t, "catA") / "catalog.json"), "state.catalog")
     t.eq(p["source"], str(t.repo(XP)), "source from A")
     t.eq(p["current"]["version"], "1.0.0", "version")
@@ -60,7 +60,7 @@ def update_keeps_original_source(t: T):
     which has 1.1.0 too); source and recorded catalog stay A's - never switched to B."""
     install_from_a(t)
     t.gitpm_ok("update", XP, env={"GITPM_CATALOG": str(cat(t, "catB"))})
-    p = t.plugin(XP)
+    p = t.package(XP)
     t.eq(p["source"], str(t.repo(XP)), "source unchanged (A)")
     t.eq(p["catalog"], os.path.realpath(cat(t, "catA") / "catalog.json"), "recorded catalog unchanged")
     t.eq(p["current"], {"version": "1.1.0", "commit": t.rev(XP, "x/p@1.1.0")}, "updated from its own origin")

@@ -22,6 +22,38 @@ The FFI crate SHALL generate the Swift module `Gitpm` over the C module `GitpmFF
 - **WHEN** a Swift host links the static library and the generated `Gitpm.swift`
 - **THEN** it can `import Gitpm` and call `PackageManager.open(root:options:)`
 
-#### Scenario: Former names
-- **WHEN** a host compiled against 0.5 calls `PluginManager` or uses `InstalledPlugin`
-- **THEN** it no longer compiles; README "Changed in 0.6" lists the renames as **BREAKING** and no alias is kept
+### Requirement: Manager surface
+`PackageManager` SHALL be opened with `open(root, ManagerOptions)` and SHALL expose every workspace operation of the library (list, check, catalog reads, install, update and update all, rollback, enable/disable, forget/restore, uninstall plan and uninstall, fork variants, replace and switch back with plans, sync-dist with plan), plus free functions `authCheck`, `browseCatalog`, `catalogRelease`, `readInstalled` and `describeLostWork`. Author and catalog-generation commands SHALL NOT be exposed.
+
+#### Scenario: Which calls open the workspace
+- **WHEN** a host calls a `PackageManager` method, `check` included, or `readInstalled`
+- **THEN** the method works on the opened (locked) workspace, while `readInstalled` reads `state.json` without opening it (transactions-locking, "Workspace lock"); `authCheck(source, customSsh)` takes the SSH setting explicitly
+
+#### Scenario: Catalog reads with and without a workspace
+- **WHEN** a host needs the catalog overview
+- **THEN** `PackageManager.browseCatalog`/`catalogRelease` read the catalog of `ManagerOptions.catalog`, and the free functions of the same names take an explicit location without opening a workspace
+
+#### Scenario: Update channel
+- **WHEN** a host calls `update(id, reference, channel)`
+- **THEN** `channel` is the `Channel` enum `Stable` or `Dev`
+
+#### Scenario: Round trip
+- **WHEN** a host opens an empty workspace through the FFI and lists it
+- **THEN** the list is empty and no error is raised
+- **AND** this is covered by `manager_round_trip_on_empty_workspace`
+
+#### Scenario: Method names
+- **WHEN** Swift bindings are generated
+- **THEN** `PackageManager` has `install` (optional `package`), `installFromCatalog`, `update`, `updateAllPlan`, `updateAll`, `rollback`, `enable`, `disable(force)`, `forget(force)`, `restore`, `uninstallPlan`, `uninstall(confirm, force)`, `fork`, `forkAndReplace`, `forkPackages`, `forkPackagesAndReplace`, `replacePlan`, `replace`, `switchBackPlan`, `switchBack`, `syncDistPlan` and `syncDist`
+
+#### Scenario: Catalog generation is not exposed
+- **WHEN** a host looks for `catalog-update`, `register`, `init` or `commit` in the bindings
+- **THEN** none exist; those stay library/CLI functions
+
+### Requirement: Records mirror library results
+FFI records SHALL convert library results field by field, including `InstalledPackage` (`active`, `clone`, `path`, metadata), `InstallResult` (`alreadyInstalled`, `available`), `CatalogRelease` (`path`, metadata), `PackageSummary`, `DistSync` (deployed, removed, unmanaged, skipped), `UpdateAllPlan`, and fork results with `ForkStep` (release, install, replace), `errorKind` and `errorMessage`.
+
+#### Scenario: Partial fork failure
+- **WHEN** `forkAndReplace` fails at the install step
+- **THEN** the result has `failedStep` `install` with the error kind and message, not a thrown error
+- **AND** this is covered by `records_convert_field_by_field` and `fork_replace_result_reports_the_failed_step_with_kind_and_message`

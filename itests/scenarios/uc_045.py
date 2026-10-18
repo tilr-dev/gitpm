@@ -29,15 +29,15 @@ def truncate(t: T):
 def bad_id_key(t: T):
     f = t.ws / "state.json"
     state = json.loads(f.read_text())
-    state["plugins"]["../x"] = dict(state["plugins"][B])
+    state["packages"]["../x"] = dict(state["packages"][B])
     f.write_text(json.dumps(state, indent=2))
 
 
 def wrong_types(t: T):
     f = t.ws / "state.json"
     state = json.loads(f.read_text())
-    state["plugins"][A]["enabled"] = "yes"
-    state["plugins"][A]["current"] = 5
+    state["packages"][A]["enabled"] = "yes"
+    state["packages"][A]["current"] = 5
     f.write_text(json.dumps(state, indent=2))
 
 
@@ -47,7 +47,7 @@ BREAKS = {"truncated": (truncate, "invalid_data"), "bad_id_key": (bad_id_key, "i
 
 def command(t: T, name: str) -> list:
     if name == "install":
-        t.new_plugin("dan/new", "0.1.0")
+        t.new_package("dan/new", "0.1.0")
         return ["install", t.repo("dan/new")]
     if name == "update":
         t.release(A, "0.1.2")
@@ -91,12 +91,12 @@ def missing_clone_case(name: str, argv: list):
         t.eq(t.state(), state, "state unchanged")
         t.same(b_before, "B untouched")
         t.gitpm_ok("update", B)
-        t.eq(t.plugin(B)["current"], {"version": "0.1.1", "commit": t.rev(B, "dan/b@0.1.1")}, "B updated")
+        t.eq(t.package(B)["current"], {"version": "0.1.1", "commit": t.rev(B, "dan/b@0.1.1")}, "B updated")
         t.has((t.dist(B) / "index.js").read_text(), "dan/b 0.1.1")
-        t.eq(t.plugin(A), state["plugins"][A], "A state entry kept")
+        t.eq(t.package(A), state["packages"][A], "A state entry kept")
 
     fn.__name__ = f"missing_clone_{name}"
-    fn.__doc__ = f"3. plugins/dan/a removed: `{' '.join(argv)}` fails with repository_not_found; B untouched and updatable."
+    fn.__doc__ = f"3. packages/dan/a removed: `{' '.join(argv)}` fails with repository_not_found; B untouched and updatable."
     return case(fixture="g3_trio_installed", spec=["dist/undeployable-packages-do-not-block-others",
                                                    "errors/failing-operations-leave-the-workspace-unchanged"])(fn)
 
@@ -114,7 +114,7 @@ def missing_dist_update_redeploys(t: T):
     commit = t.release(A, "0.1.2")
     shutil.rmtree(t.dist(A))
     t.gitpm_ok("update", A)
-    t.eq(t.plugin(A)["current"], {"version": "0.1.2", "commit": commit}, "current")
+    t.eq(t.package(A)["current"], {"version": "0.1.2", "commit": commit}, "current")
     t.eq((t.dist(A) / "index.js").read_text(), (t.clone(A) / "dist/index.js").read_text(), "dist from clone")
     t.has((t.dist(A) / "index.js").read_text(), "dan/a 0.1.2")
 
@@ -126,7 +126,7 @@ def missing_dist_restore_redeploys(t: T):
     t.gitpm_ok("forget", A)
     t.gitpm_ok("restore", A)
     t.has((t.dist(A) / "index.js").read_text(), "dan/a 0.1.1")
-    t.eq(t.plugin(A)["current"]["version"], "0.1.1", "restored version")
+    t.eq(t.package(A)["current"]["version"], "0.1.1", "restored version")
 
 
 # ---------------------------------------------------------------- 5. HEAD moved
@@ -160,12 +160,12 @@ def moved_head_uninstall_refused(t: T):
 
 @case(fixture="g3_trio_installed", spec=["transactions-locking/transactions-stage-only-touched-paths#failure-before-commit"])
 def uncommitted_transaction_discarded(t: T):
-    """6. <ws>/.pm-txn/new/... without a journal: list discards it; state and plugins identical."""
+    """6. <ws>/.pm-txn/new/... without a journal: list discards it; state and packages identical."""
     before = everything(t)
-    t.write(t.ws / ".pm-txn/new/plugins/dan/a", {"junk.txt": "half-staged\n"})
+    t.write(t.ws / ".pm-txn/new/packages/dan/a", {"junk.txt": "half-staged\n"})
     t.write(t.ws / ".pm-txn/new", {"state.json": "{}"})
     out = t.gitpm_ok("list").json()
-    t.eq(sorted(out["plugins"]), [A, B, "other/c"], "listed plugins")
+    t.eq(sorted(out["packages"]), [A, B, "other/c"], "listed packages")
     t.ok(not (t.ws / ".pm-txn").exists(), "leftover discarded")
     t.same(before, "workspace and author repos")
 
@@ -183,5 +183,5 @@ def restored_snapshot_updates(t: T):
     shutil.copytree(backup, t.ws, symlinks=True)
     commit = t.release(A, "0.1.2")
     t.gitpm_ok("update", A)
-    t.eq(t.plugin(A)["current"], {"version": "0.1.2", "commit": commit}, "updated")
-    t.eq(t.plugin(A)["previous"]["version"], "0.1.1", "previous")
+    t.eq(t.package(A)["current"], {"version": "0.1.2", "commit": commit}, "updated")
+    t.eq(t.package(A)["previous"]["version"], "0.1.1", "previous")

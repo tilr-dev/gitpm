@@ -13,7 +13,7 @@ def blob(t: T, ref: str) -> str:
 
 
 def at(t: T, version: str, commit: str, previous: str | None):
-    p = t.plugin(ID)
+    p = t.package(ID)
     t.eq(p["current"], {"version": version, "commit": commit}, "current")
     t.eq((p["previous"] or {}).get("version"), previous, "previous version")
     t.eq(t.rev(t.clone(ID)), commit, "clone HEAD")
@@ -24,7 +24,7 @@ def refused(t: T, *args, kind: str | None, contains=()):
     before = t.snap(t.ws, git=True)
     r = t.gitpm(*args)
     if r.code == 0:
-        raise Failure(f"gitpm {' '.join(args)} succeeded, expected a refusal; now current = {t.plugin(ID)['current']}")
+        raise Failure(f"gitpm {' '.join(args)} succeeded, expected a refusal; now current = {t.package(ID)['current']}")
     if kind is not None:
         t.has(r.err, f"Error kind: {kind}")
     t.has(r.err, *([contains] if isinstance(contains, str) else contains))
@@ -60,7 +60,7 @@ def explicit_older_revision_is_allowed(t: T):
     older = t.rev(ID, f"{ID}@0.1.0")
     t.gitpm_ok("update", ID, "--ref", f"{ID}@0.1.0")
     at(t, "0.1.0", older, "0.1.1")
-    t.eq(t.plugin(ID)["previous"]["commit"], newer, "previous commit")
+    t.eq(t.package(ID)["previous"]["commit"], newer, "previous commit")
 
 
 @case(fixture="hello_installed", spec=["updates/explicit-ref-resolves-against-the-origin#same-version-on-another-commit"])

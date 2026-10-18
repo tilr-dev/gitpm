@@ -1,7 +1,7 @@
-//! Plugin dependencies: version requirements (Cargo syntax), resolution with PubGrub
-//! over installed plugins and the catalog, and the dependency view of a workspace.
+//! Package dependencies: version requirements (Cargo syntax), resolution with PubGrub
+//! over installed packages and the catalog, and the dependency view of a workspace.
 //!
-//! Installed plugins are fixed at their installed version: resolution only adds
+//! Installed packages are fixed at their installed version: resolution only adds
 //! missing packages and never moves an installed one. A replaced original is seen by
 //! the solver as its replacement: the fork's declared `replaces.version` and the
 //! fork's own dependencies.
@@ -95,7 +95,7 @@ pub(crate) fn validate(m: &Manifest) -> Result<()> {
         ensure!(
             *id != m.id,
             InvalidManifest,
-            "plugin {} depends on itself",
+            "package {} depends on itself",
             m.id
         );
         requirement(text)?;
@@ -105,13 +105,13 @@ pub(crate) fn validate(m: &Manifest) -> Result<()> {
 
 // ---- workspace view -------------------------------------------------------------------
 
-/// How one dependency of an installed plugin is provided.
+/// How one dependency of an installed package is provided.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct DependencyStatus {
-    /// The ID the plugin depends on.
+    /// The ID the package depends on.
     pub id: String,
     pub requirement: String,
-    /// The installed plugin that provides it (the replacement fork when replaced).
+    /// The installed package that provides it (the replacement fork when replaced).
     pub provider: Option<String>,
     /// Version the provider offers for this ID (a fork's declared `replaces.version`).
     pub version: Option<String>,
@@ -121,16 +121,16 @@ pub struct DependencyStatus {
     pub problem: Option<String>,
 }
 
-/// The installed plugin providing `id` and the version it offers for it.
+/// The installed package providing `id` and the version it offers for it.
 pub(crate) fn provider<'a>(state: &'a State, id: &str) -> Option<(&'a str, &'a Installed, String)> {
     match state.replacements.get(id) {
         Some(fork) => {
-            let (fork, installed) = state.plugins.get_key_value(fork)?;
+            let (fork, installed) = state.packages.get_key_value(fork)?;
             let declared = installed.replaces.as_ref().filter(|r| r.id == id)?;
             Some((fork.as_str(), installed, declared.version.clone()))
         }
         None => {
-            let (id, installed) = state.plugins.get_key_value(id)?;
+            let (id, installed) = state.packages.get_key_value(id)?;
             Some((id.as_str(), installed, installed.current.version.clone()))
         }
     }
@@ -174,11 +174,11 @@ pub(crate) fn status(state: &State, plugin: &Installed) -> Vec<DependencyStatus>
         .collect()
 }
 
-/// Installed plugins (other than `provider` itself) whose dependencies are provided by
+/// Installed packages (other than `provider` itself) whose dependencies are provided by
 /// `provider`, sorted.
 pub(crate) fn dependents(state: &State, provider_id: &str) -> Vec<String> {
     state
-        .plugins
+        .packages
         .iter()
         .filter(|(id, plugin)| {
             id.as_str() != provider_id
@@ -196,13 +196,13 @@ pub(crate) fn dependents(state: &State, provider_id: &str) -> Vec<String> {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) enum Package {
     Workspace,
-    Plugin(String),
+    Id(String),
 }
 impl fmt::Display for Package {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Package::Workspace => f.write_str("the workspace"),
-            Package::Plugin(id) => f.write_str(id),
+            Package::Id(id) => f.write_str(id),
         }
     }
 }
@@ -216,11 +216,11 @@ pub(crate) struct Fixed {
     pub note: Option<String>,
 }
 
-/// Fixed packages for a workspace: installed plugins at their versions, replaced
+/// Fixed packages for a workspace: installed packages at their versions, replaced
 /// originals as their replacement.
 pub(crate) fn fixed_from_state(state: &State) -> Result<BTreeMap<String, Fixed>> {
     let mut fixed = BTreeMap::new();
-    for (id, plugin) in &state.plugins {
+    for (id, plugin) in &state.packages {
         fixed.insert(
             id.clone(),
             Fixed {
@@ -274,7 +274,7 @@ impl Provider<'_> {
     ) -> Result<DependencyConstraints<Package, Range>> {
         dependencies
             .iter()
-            .map(|(id, text)| Ok((Package::Plugin(id.clone()), requirement(text)?)))
+            .map(|(id, text)| Ok((Package::Id(id.clone()), requirement(text)?)))
             .collect()
     }
 }
@@ -295,8 +295,8 @@ impl DependencyProvider for Provider<'_> {
     ) -> Self::Priority {
         match package {
             Package::Workspace => (true, Reverse(0)),
-            Package::Plugin(id) if self.fixed.contains_key(id) => (true, Reverse(1)),
-            Package::Plugin(id) => {
+            Package::Id(id) if self.fixed.contains_key(id) => (true, Reverse(1)),
+            Package::Id(id) => {
                 let count = self
                     .versions
                     .borrow()
@@ -310,7 +310,7 @@ impl DependencyProvider for Provider<'_> {
     fn choose_version(&self, package: &Package, range: &Range) -> Result<Option<Version>> {
         Ok(match package {
             Package::Workspace => Some(Version::new(0, 0, 0)),
-            Package::Plugin(id) => match self.fixed.get(id) {
+            Package::Id(id) => match self.fixed.get(id) {
                 Some(fixed) => range
                     .contains(&fixed.version)
                     .then(|| fixed.version.clone()),
@@ -331,9 +331,9 @@ impl DependencyProvider for Provider<'_> {
             Package::Workspace => self
                 .roots
                 .iter()
-                .map(|(id, v)| (Package::Plugin(id.clone()), Range::singleton(v.clone())))
+                .map(|(id, v)| (Package::Id(id.clone()), Range::singleton(v.clone())))
                 .collect(),
-            Package::Plugin(id) => match self.fixed.get(id) {
+            Package::Id(id) => match self.fixed.get(id) {
                 Some(fixed) => self.constraints(&fixed.dependencies)?,
                 None => {
                     let location = self
@@ -365,7 +365,7 @@ pub(crate) fn solve(
         Ok(solution) => Ok(solution
             .into_iter()
             .filter_map(|(package, version)| match package {
-                Package::Plugin(id) if !fixed.contains_key(&id) => Some((id, version)),
+                Package::Id(id) if !fixed.contains_key(&id) => Some((id, version)),
                 _ => None,
             })
             .collect()),
@@ -385,7 +385,7 @@ pub(crate) fn solve(
                 message.push_str(&format!("\nnote: {note}"));
             }
             if catalog.is_none() {
-                message.push_str("\nnote: no catalog configured; only installed plugins can satisfy dependencies");
+                message.push_str("\nnote: no catalog configured; only installed packages can satisfy dependencies");
             }
             Err(Error::DependencyConflict(message))
         }
@@ -395,14 +395,14 @@ pub(crate) fn solve(
     }
 }
 
-/// Roots for a workspace check: every installed consumer (plugin with dependencies)
+/// Roots for a workspace check: every installed consumer (package with dependencies)
 /// whose dependencies are all satisfied now. Already broken ones (after a forced
 /// removal) are reported by `status` instead of blocking every later operation;
-/// replaced originals are not used. Plugins without dependencies constrain nothing
+/// replaced originals are not used. Packages without dependencies constrain nothing
 /// and stay out, so explanations name the consumers.
 pub(crate) fn healthy_roots(state: &State) -> Result<BTreeMap<String, Version>> {
     let mut roots = BTreeMap::new();
-    for (id, plugin) in &state.plugins {
+    for (id, plugin) in &state.packages {
         if state.replacements.contains_key(id) || plugin.dependencies.is_empty() {
             continue;
         }

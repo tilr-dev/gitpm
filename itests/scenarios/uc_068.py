@@ -25,7 +25,7 @@ def check_row(t: T) -> str:
 
 def at(t: T, version: str, previous: str | None, enabled: bool = True, catalog: bool = True):
     """State, clone HEAD and dist bytes match `version` (and `previous`); the catalog origin is kept."""
-    p = t.plugin(ID)
+    p = t.package(ID)
     if catalog:
         t.eq(p.get("catalog"), "/fx/catalog/catalog.json", "catalog origin")
     commit = t.rev(ID, f"{ID}@{version}")
@@ -65,7 +65,7 @@ def journey(t: T, until: str):
 def install_list_check(t: T):
     """install-catalog: state with catalog origin, clone HEAD, dist; list shows it; check says up to date."""
     at(t, "0.1.0", None)
-    t.ok(t.plugin(ID)["catalog"].startswith(str(t.catalog)), "catalog recorded in state")
+    t.ok(t.package(ID)["catalog"].startswith(str(t.catalog)), "catalog recorded in state")
     listed = {p["id"]: p for p in t.gitpm_ok("list").json()["resolved"]}
     t.eq(listed[ID]["current"]["version"], "0.1.0", "list")
     t.has(check_row(t), "0.1.0", "up to date")
@@ -86,11 +86,11 @@ def catalog_update_alone_changes_nothing(t: T):
 @case(fixture="g6_journey", spec=["updates/stable-update-moves-to-the-newest-release"])
 def update_to_new_release(t: T):
     """update: current 0.1.1, previous 0.1.0, catalog origin kept, check up to date."""
-    catalog = t.plugin(ID)["catalog"]
+    catalog = t.package(ID)["catalog"]
     journey(t, "update")
     t.gitpm_ok("update", ID)
     at(t, "0.1.1", "0.1.0")
-    t.eq(t.plugin(ID)["catalog"], catalog, "catalog origin unchanged")
+    t.eq(t.package(ID)["catalog"], catalog, "catalog origin unchanged")
     t.has(check_row(t), "0.1.1", "up to date")
 
 
@@ -122,13 +122,13 @@ def forget_restore_without_history(t: T):
     journey(t, "forget")
     files = t.snap(t.clone(ID), t.dist(ID), git=True)
     t.gitpm_ok("forget", ID)
-    t.ok(ID not in t.state()["plugins"], "entry forgotten")
+    t.ok(ID not in t.state()["packages"], "entry forgotten")
     t.ok(not t.dist(ID).exists(), "dist removed while forgotten")
     t.gitpm_ok("restore", ID)
     # Restore re-registers retained files from the clone; the library records no catalog origin
     # for it (Installed { ..Default }), which the README does not promise either way.
     at(t, "0.1.0", None, catalog=False)
-    print(f"  note: catalog after restore = {t.plugin(ID).get('catalog')!r}")
+    print(f"  note: catalog after restore = {t.package(ID).get('catalog')!r}")
     print(f"  note: check after restore: {check_row(t)}")
     t.same(files, "clone and dist after restore")
 

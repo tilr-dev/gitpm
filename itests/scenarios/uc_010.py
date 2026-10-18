@@ -26,14 +26,14 @@ def check_installed(t: T, root, tag: str):
     sha = t.rev(ID, tag)
     version = tag.split("@")[1]
     state = json.loads((root / "state.json").read_text())
-    p = state["plugins"][ID]
+    p = state["packages"][ID]
     t.eq(p["current"], {"version": version, "commit": sha}, "current")
     t.eq(p["previous"], None, "previous")
     t.eq(p["enabled"], True, "enabled")
     t.eq(p["source"], str(t.repo(ID).resolve()), "source")
     listed = t.gitpm_ok("--root", root, "list").json()
-    t.eq(listed["plugins"][ID]["current"], {"version": version, "commit": sha}, "list current")
-    clone, dist = root / "plugins" / ID, root / "dist" / ID
+    t.eq(listed["packages"][ID]["current"], {"version": version, "commit": sha}, "list current")
+    clone, dist = root / "packages" / ID, root / "dist" / ID
     t.eq(t.rev(clone), sha, "clone HEAD")
     t.eq((dist / "index.js").read_text(), blob(t, ID, tag), "dist/index.js bytes")
     t.eq(sorted(str(p.relative_to(dist)) for p in dist.rglob("*") if p.is_file()),
@@ -95,7 +95,7 @@ def repeated_install_from_the_same_source_is_a_noop(t: T):
         r = t.gitpm_ok("install", t.repo(ID), *args)
         t.eq(r.out, f"{ID} already installed (0.1.0){hint}\n", "output")
         t.same(before, "workspace")
-    t.eq(t.plugin(ID)["current"]["version"], "0.1.0", "installed version kept")
+    t.eq(t.package(ID)["current"]["version"], "0.1.0", "installed version kept")
 
 
 @case(fixture="hello_releases", spec=["install-uninstall/same-id-from-another-source-is-refused#other-source"])
@@ -107,6 +107,6 @@ def same_id_from_another_source_is_rejected(t: T):
     t.run("git", "clone", "-q", t.repo(ID), mirror, check=True)
     t.gitpm_err("install", mirror, "--ref", f"{ID}@0.1.1", kind="already_installed", contains=ID)
     t.same(before, "workspace")
-    p = t.plugin(ID)
+    p = t.package(ID)
     t.eq(p["current"]["version"], "0.1.0", "installed version kept")
     t.eq(p["source"], str(t.repo(ID).resolve()), "installed source kept")

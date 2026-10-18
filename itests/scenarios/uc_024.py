@@ -63,7 +63,7 @@ def newer_vendor_tag_is_ignored(t: T):
     t.has(t.git(dest, "tag", "--list"), "vendor/demo@0.3.0")
     commit = fork_release(t, dest, "0.2.0")
     t.gitpm_ok("install", dest)
-    t.eq(t.plugin(NEW)["current"], {"version": "0.2.0", "commit": commit}, "fork current")
+    t.eq(t.package(NEW)["current"], {"version": "0.2.0", "commit": commit}, "fork current")
 
 
 def both_released(t: T):
@@ -86,14 +86,14 @@ def scoped_tags_do_not_conflict(t: T):
 @case(fixture="g3_vendor_installed", spec=["fork-replacement/replacement-is-explicit-and-global"])
 def fork_installs_alongside_without_replacement(t: T):
     dest, mine, _ = both_released(t)
-    base = t.plugin(ID)["current"]
+    base = t.package(ID)["current"]
     vendor_before = t.snap(t.clone(ID), t.dist(ID), git=True)
     t.gitpm_ok("install", dest)
-    p = t.plugin(NEW)
+    p = t.package(NEW)
     t.eq(p["current"], {"version": "0.1.1", "commit": mine}, "fork current")
     t.eq(p["forkOf"], {"id": ID, "version": "0.1.0", "commit": base["commit"]}, "forkOf")
-    t.eq(t.plugin(ID)["current"], base, "original still at 0.1.0")
-    t.ok("forkOf" not in t.plugin(ID), "original has no forkOf")
+    t.eq(t.package(ID)["current"], base, "original still at 0.1.0")
+    t.ok("forkOf" not in t.package(ID), "original has no forkOf")
     t.ok(not t.state().get("replacements"), "no replacement")
     t.same(vendor_before, "original clone and dist")
     t.has((t.dist(NEW) / "index.js").read_text(), "fork 0.1.1")
@@ -104,11 +104,11 @@ def updating_original_leaves_fork(t: T):
     dest, _, theirs = both_released(t)
     t.gitpm_ok("install", dest)
     fork_before = t.snap(t.clone(NEW), t.dist(NEW), git=True)
-    fork_state = t.plugin(NEW)
+    fork_state = t.package(NEW)
     t.gitpm_ok("update", ID)
-    t.eq(t.plugin(ID)["current"], {"version": "0.1.1", "commit": theirs}, "original updated")
+    t.eq(t.package(ID)["current"], {"version": "0.1.1", "commit": theirs}, "original updated")
     t.has((t.dist(ID) / "index.js").read_text(), "vendor/demo 0.1.1")
-    t.eq(t.plugin(NEW), fork_state, "fork state")
+    t.eq(t.package(NEW), fork_state, "fork state")
     t.same(fork_before, "fork clone and dist")
     t.ok(not t.state().get("replacements"), "no replacement")
 
@@ -118,15 +118,15 @@ def updating_fork_leaves_original(t: T):
     dest, mine, _ = both_released(t)
     t.gitpm_ok("install", dest)
     vendor_before = t.snap(t.clone(ID), t.dist(ID), git=True)
-    vendor_state = t.plugin(ID)
-    forkof = t.plugin(NEW)["forkOf"]
+    vendor_state = t.package(ID)
+    forkof = t.package(NEW)["forkOf"]
     newer = fork_release(t, dest, "0.1.2")
     t.gitpm_ok("update", NEW)
-    p = t.plugin(NEW)
+    p = t.package(NEW)
     t.eq(p["current"], {"version": "0.1.2", "commit": newer}, "fork current")
     t.eq(p["previous"], {"version": "0.1.1", "commit": mine}, "fork previous")
     t.eq(p["forkOf"], forkof, "provenance kept")
-    t.eq(t.plugin(ID), vendor_state, "original state")
+    t.eq(t.package(ID), vendor_state, "original state")
     t.same(vendor_before, "original clone and dist")
 
 
@@ -137,14 +137,14 @@ def updating_fork_without_upstream_tags(t: T):
     mine = fork_release(t, dest, "0.1.1")
     t.gitpm_ok("install", dest)
     vendor_before = t.snap(t.clone(ID), t.dist(ID), git=True)
-    vendor_state = t.plugin(ID)
-    forkof = t.plugin(NEW)["forkOf"]
+    vendor_state = t.package(ID)
+    forkof = t.package(NEW)["forkOf"]
     newer = fork_release(t, dest, "0.1.2")
     t.gitpm_ok("update", NEW)
-    p = t.plugin(NEW)
+    p = t.package(NEW)
     t.eq(p["current"], {"version": "0.1.2", "commit": newer}, "fork current")
     t.eq(p["previous"], {"version": "0.1.1", "commit": mine}, "fork previous")
     t.eq(p["forkOf"], forkof, "provenance kept")
     t.has((t.dist(NEW) / "index.js").read_text(), "fork 0.1.2")
-    t.eq(t.plugin(ID), vendor_state, "original state")
+    t.eq(t.package(ID), vendor_state, "original state")
     t.same(vendor_before, "original clone and dist")

@@ -36,7 +36,7 @@ def up_to_date(t: T):
 
 @case(fixture="catalog", spec=["catalog/check-compares-installed-with-the-catalog", "catalog/catalog-v2-is-a-tree-of-static-files#direct-lookup"])
 def update_available_reads_only_installed_plugins(t: T):
-    """Two installed plugins; requests go to their index and current/latest releases only."""
+    """Two installed packages; requests go to their index and current/latest releases only."""
     srv = t.serve(t.catalog)
     t.gitpm_ok("--catalog", srv.url, "install-catalog", NUM, "--version", "1.9.0")
     t.gitpm_ok("--catalog", srv.url, "install-catalog", HELLO, "--version", "0.1.1")
@@ -49,7 +49,7 @@ def update_available_reads_only_installed_plugins(t: T):
                "/namespaces/dan/num/versions/1.10.0/release.json",
                "/namespaces/dan/hello/plugin.json", "/namespaces/dan/hello/versions/0.1.1/release.json",
                "/namespaces/dan/hello/versions/0.2.0/release.json"}
-    t.eq(sorted(set(requests) - allowed), [], "requests outside the installed plugins")
+    t.eq(sorted(set(requests) - allowed), [], "requests outside the installed packages")
     t.ok("/namespaces/dan/hello/versions/0.1.0/release.json" not in requests, "unrelated release not read")
 
     # Unrelated directory indexes broken: same statuses, same requests.
@@ -63,7 +63,7 @@ def update_available_reads_only_installed_plugins(t: T):
 @case(fixture="catalog", spec=["catalog/check-compares-installed-with-the-catalog"])
 def not_in_catalog(t: T):
     srv = t.serve(t.catalog)
-    t.new_plugin("dan/extra", "0.1.0")
+    t.new_package("dan/extra", "0.1.0")
     t.gitpm_ok("install", t.repo("dan/extra"))
     check(t, srv.url, "dan/extra", "not in catalog")
 
@@ -136,7 +136,7 @@ def invalid_catalog_data_local(t: T):
 
 @case(fixture="catalog", spec=["catalog/check-compares-installed-with-the-catalog#broken-payload"])
 def unreadable_release_is_an_error(t: T):
-    """Malformed JSON of an installed plugin's release fails check (not "no updates")."""
+    """Malformed JSON of an installed package's release fails check (not "no updates")."""
     served = t.root / "served"
     shutil.copytree(t.catalog, served)
     srv = t.serve(served)

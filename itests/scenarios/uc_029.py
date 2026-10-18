@@ -15,7 +15,7 @@ def registered(t: T, version: str) -> dict:
 def install_exact_version(t: T):
     """install-catalog --version installs exactly the registered commit."""
     t.gitpm_ok("install-catalog", ID, "--version", "1.9.0")
-    p = t.plugin(ID)
+    p = t.package(ID)
     t.eq(p["current"], {"version": "1.9.0", "commit": registered(t, "1.9.0")["commit"]}, "current")
     t.eq(t.rev(t.clone(ID)), p["current"]["commit"], "clone HEAD")
     t.has((t.dist(ID) / "index.js").read_text(), "dan/num 1.9.0")
@@ -29,7 +29,7 @@ def install_latest_is_numeric_and_pinned(t: T):
     moved = t.commit(ID, "after registration", {"dist/index.js": "moved\n"})
     t.tag(ID, f"{ID}@1.10.0", moved, force=True)
     t.gitpm_ok("install-catalog", ID)
-    p = t.plugin(ID)
+    p = t.package(ID)
     t.eq(p["current"], {"version": "1.10.0", "commit": pinned}, "current")
     t.has((t.dist(ID) / "index.js").read_text(), "dan/num 1.10.0")
 
@@ -39,8 +39,8 @@ def independent_roots(t: T):
     """Exact and latest installs into two independent workspaces."""
     t.gitpm_ok("--root", t.root / "exact", "install-catalog", ID, "--version", "1.9.0")
     t.gitpm_ok("--root", t.root / "latest", "install-catalog", ID)
-    exact = json.loads((t.root / "exact/state.json").read_text())["plugins"][ID]["current"]["version"]
-    latest = json.loads((t.root / "latest/state.json").read_text())["plugins"][ID]["current"]["version"]
+    exact = json.loads((t.root / "exact/state.json").read_text())["packages"][ID]["current"]["version"]
+    latest = json.loads((t.root / "latest/state.json").read_text())["packages"][ID]["current"]["version"]
     t.eq((exact, latest), ("1.9.0", "1.10.0"), "versions per root")
     t.ok(not t.ws.exists(), "default workspace untouched")
 

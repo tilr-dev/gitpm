@@ -7,7 +7,7 @@ use crate::{
 use serde::Serialize;
 use std::{fs, path::Path};
 
-/// Outcome of comparing one installed plugin with the catalog.
+/// Outcome of comparing one installed package with the catalog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CheckStatus {
@@ -88,7 +88,7 @@ pub fn compare(state: &State, catalog: &Catalog) -> Vec<CheckRow> {
 
 fn latest_version(catalog: &Catalog, id: &str) -> Option<String> {
     catalog
-        .plugins
+        .packages
         .get(id)?
         .versions
         .keys()
@@ -98,17 +98,17 @@ fn latest_version(catalog: &Catalog, id: &str) -> Option<String> {
 }
 
 /// [`compare`] for the catalog at `location` (canonical, see
-/// [`crate::catalog::canonical_location`]): plugins installed from another catalog
+/// [`crate::catalog::canonical_location`]): packages installed from another catalog
 /// are reported as [`CheckStatus::OtherCatalog`] and never offered an update, unless
 /// this catalog has a different source ([`CheckStatus::DifferentSource`]) or exactly
 /// the installed release ([`CheckStatus::UpToDate`]).
 pub fn compare_in(state: &State, catalog: &Catalog, location: Option<&str>) -> Vec<CheckRow> {
     state
-        .plugins
+        .packages
         .iter()
         .map(|(id, installed)| {
             let mut row = compare_one(id, installed, catalog);
-            // Single selected catalog: a plugin installed from another catalog is never
+            // Single selected catalog: a package installed from another catalog is never
             // offered an update from this one. A different source and an identical
             // release are still worth reporting as such.
             if let (Some(from), Some(selected)) = (installed.catalog.as_deref(), location)
@@ -146,7 +146,7 @@ fn compare_one(id: &str, installed: &crate::Installed, catalog: &Catalog) -> Che
             }
         }),
     };
-    let Some(plugin) = catalog.plugins.get(id) else {
+    let Some(plugin) = catalog.packages.get(id) else {
         return row;
     };
     // Do not suggest replacing a local fork with an unrelated repository of the same ID.
@@ -202,7 +202,7 @@ fn compare_one(id: &str, installed: &crate::Installed, catalog: &Catalog) -> Che
 /// workspace does not touch the catalog at all.
 pub fn check(root: &Path, catalog_location: &str) -> Result<Vec<CheckRow>> {
     let state = read_state(root)?;
-    if state.plugins.is_empty() {
+    if state.packages.is_empty() {
         return Ok(Vec::new());
     }
     check_state(&state, catalog_location)
@@ -219,7 +219,7 @@ mod tests {
     use super::*;
     use crate::{
         Installed, Manifest, Revision,
-        catalog::{Plugin, Release},
+        catalog::{Package, Release},
     };
     pub(crate) fn fixture() -> (State, Catalog) {
         let installed = Installed {
@@ -239,7 +239,7 @@ mod tests {
                     version.into(),
                     Release {
                         manifest: Manifest {
-                            id: "demo".into(),
+                            id: "vendor/demo".into(),
                             version: version.into(),
                             ..Default::default()
                         },
@@ -249,7 +249,7 @@ mod tests {
                         } else {
                             "b".repeat(40)
                         },
-                        reference: format!("v{version}"),
+                        reference: format!("vendor/demo@{version}"),
                         files: Default::default(),
                         build: None,
                         path: None,
@@ -258,9 +258,9 @@ mod tests {
             })
             .collect();
         let catalog = Catalog {
-            plugins: [(
-                "demo".into(),
-                Plugin {
+            packages: [(
+                "vendor/demo".into(),
+                Package {
                     source: installed.source.clone(),
                     versions,
                 },
@@ -269,7 +269,7 @@ mod tests {
         };
         (
             State {
-                plugins: [("demo".into(), installed)].into(),
+                packages: [("vendor/demo".into(), installed)].into(),
                 ..Default::default()
             },
             catalog,
@@ -292,13 +292,18 @@ mod tests {
             compare(&state, &Catalog::default())[0].status.message(),
             "not in catalog"
         );
-        catalog.plugins.get_mut("demo").unwrap().source = "another".into();
+        catalog.packages.get_mut("vendor/demo").unwrap().source = "another".into();
         assert_eq!(
             compare(&state, &catalog)[0].status.message(),
             "different source in catalog"
         );
         let (_, catalog) = fixture();
-        state.plugins.get_mut("demo").unwrap().current.commit = "c".repeat(40);
+        state
+            .packages
+            .get_mut("vendor/demo")
+            .unwrap()
+            .current
+            .commit = "c".repeat(40);
         let rows = compare(&state, &catalog);
         assert_eq!(rows[0].status.message(), "same version, different commit");
         assert!(!rows[0].update_available);
@@ -306,11 +311,16 @@ mod tests {
     #[test]
     fn current_and_ahead_versions() {
         let (mut state, catalog) = fixture();
-        let plugin = state.plugins.get_mut("demo").unwrap();
+        let plugin = state.packages.get_mut("vendor/demo").unwrap();
         plugin.current.version = "1.10.0".into();
         plugin.current.commit = "b".repeat(40);
         assert_eq!(compare(&state, &catalog)[0].status.message(), "up to date");
-        state.plugins.get_mut("demo").unwrap().current.version = "2.0.0".into();
+        state
+            .packages
+            .get_mut("vendor/demo")
+            .unwrap()
+            .current
+            .version = "2.0.0".into();
         assert_eq!(
             compare(&state, &catalog)[0].status.message(),
             "newer than catalog"
@@ -319,7 +329,7 @@ mod tests {
     #[test]
     fn plugin_from_another_catalog_is_never_offered_an_update() {
         let (mut state, mut catalog) = fixture();
-        state.plugins.get_mut("demo").unwrap().catalog = Some("/catalogs/a".into());
+        state.packages.get_mut("vendor/demo").unwrap().catalog = Some("/catalogs/a".into());
         let row = |state: &State, catalog: &Catalog| {
             compare_in(state, catalog, Some("/catalogs/b"))[0].clone()
         };
@@ -330,12 +340,12 @@ mod tests {
             (CheckStatus::OtherCatalog, false)
         );
         // Exactly the installed release in B: up to date.
-        let plugin = state.plugins.get_mut("demo").unwrap();
+        let plugin = state.packages.get_mut("vendor/demo").unwrap();
         plugin.current.version = "1.10.0".into();
         plugin.current.commit = "b".repeat(40);
         assert_eq!(row(&state, &catalog).status, CheckStatus::UpToDate);
         // Another source in B: reported as such.
-        catalog.plugins.get_mut("demo").unwrap().source = "another".into();
+        catalog.packages.get_mut("vendor/demo").unwrap().source = "another".into();
         assert_eq!(row(&state, &catalog).status, CheckStatus::DifferentSource);
         // Not in B at all.
         assert_eq!(
@@ -360,8 +370,8 @@ mod tests {
             let mut catalog = catalog.clone();
             change(
                 catalog
-                    .plugins
-                    .get_mut("demo")
+                    .packages
+                    .get_mut("vendor/demo")
                     .unwrap()
                     .versions
                     .get_mut("1.10.0")
@@ -377,7 +387,7 @@ mod tests {
         }
         // A version key that is not MAJOR.MINOR.PATCH invalidates the entry too.
         let mut bad = catalog.clone();
-        let plugin = bad.plugins.get_mut("demo").unwrap();
+        let plugin = bad.packages.get_mut("vendor/demo").unwrap();
         let mut release = plugin.versions["1.10.0"].clone();
         release.manifest.version = "2.0".into();
         plugin.versions.insert("2.0".into(), release);
@@ -387,13 +397,23 @@ mod tests {
     #[test]
     fn no_versions_and_uncomparable_installed_version() {
         let (mut state, mut catalog) = fixture();
-        catalog.plugins.get_mut("demo").unwrap().versions.clear();
+        catalog
+            .packages
+            .get_mut("vendor/demo")
+            .unwrap()
+            .versions
+            .clear();
         let row = &compare(&state, &catalog)[0];
         assert_eq!(row.status, CheckStatus::NoVersions);
         assert!(row.latest.is_none());
 
         let (_, catalog) = fixture();
-        state.plugins.get_mut("demo").unwrap().current.version = "1.9".into();
+        state
+            .packages
+            .get_mut("vendor/demo")
+            .unwrap()
+            .current
+            .version = "1.9".into();
         let row = &compare(&state, &catalog)[0];
         assert_eq!(row.status, CheckStatus::UncomparableVersion);
         assert_eq!(row.latest.as_deref(), Some("1.10.0"));
@@ -403,7 +423,7 @@ mod tests {
     #[test]
     fn installed_version_missing_from_catalog_still_compares_numerically() {
         let (mut state, catalog) = fixture();
-        let current = &mut state.plugins.get_mut("demo").unwrap().current;
+        let current = &mut state.packages.get_mut("vendor/demo").unwrap().current;
         current.version = "1.9.5".into();
         current.commit = "f".repeat(40);
         let row = &compare(&state, &catalog)[0];
@@ -415,10 +435,10 @@ mod tests {
     fn rows_follow_state_order_and_match_full_ids() {
         let (state, catalog) = fixture();
         let mut state = state;
-        let demo = state.plugins["demo"].clone();
-        // Same name in another namespace is a different plugin.
-        state.plugins.insert("dan/demo".into(), demo.clone());
-        state.plugins.insert("a/zzz".into(), demo);
+        let demo = state.packages["vendor/demo"].clone();
+        // Same name in another namespace is a different package.
+        state.packages.insert("dan/demo".into(), demo.clone());
+        state.packages.insert("a/zzz".into(), demo);
         let rows = compare(&state, &catalog);
         let summary: Vec<_> = rows.iter().map(|r| (r.id.as_str(), r.status)).collect();
         assert_eq!(
@@ -426,7 +446,7 @@ mod tests {
             [
                 ("a/zzz", CheckStatus::NotInCatalog),
                 ("dan/demo", CheckStatus::NotInCatalog),
-                ("demo", CheckStatus::UpdateAvailable),
+                ("vendor/demo", CheckStatus::UpdateAvailable),
             ]
         );
         assert_eq!(rows[0].installed, "1.9.0");
@@ -463,7 +483,7 @@ mod tests {
         assert_eq!(
             value,
             serde_json::json!({
-                "id": "demo", "installed": "1.9.0", "latest": "1.10.0",
+                "id": "vendor/demo", "installed": "1.9.0", "latest": "1.10.0",
                 "enabled": false, "update_available": true, "status": "update_available"
             })
         );
@@ -474,7 +494,7 @@ mod tests {
         use crate::test_support::TempDir;
         let dir = TempDir::new("check");
         let root = dir.join("workspace");
-        assert!(read_state(&root).unwrap().plugins.is_empty());
+        assert!(read_state(&root).unwrap().packages.is_empty());
         assert!(!root.exists(), "read_state must not create the workspace");
         // An existing directory without state.json is not an empty workspace.
         fs::create_dir(&root).unwrap();
@@ -487,13 +507,18 @@ mod tests {
                 .to_string()
                 .starts_with("invalid workspace state.json")
         );
+        // A state.json of another format is refused, never rewritten.
+        let old = r#"{"format":2,"plugins":{}}"#;
+        fs::write(root.join("state.json"), old).unwrap();
+        assert_eq!(read_state(&root).unwrap_err().kind(), "unsupported");
+        assert_eq!(fs::read_to_string(root.join("state.json")).unwrap(), old);
         let (state, _) = fixture();
         fs::write(
             root.join("state.json"),
             serde_json::to_vec_pretty(&state).unwrap(),
         )
         .unwrap();
-        assert_eq!(read_state(&root).unwrap().plugins.len(), 1);
+        assert_eq!(read_state(&root).unwrap().packages.len(), 1);
     }
 
     #[test]
@@ -504,7 +529,7 @@ mod tests {
         // The catalog location is invalid, but it is never read.
         assert!(check(&root, "ftp://invalid").unwrap().is_empty());
         fs::create_dir(&root).unwrap();
-        fs::write(root.join("state.json"), r#"{"plugins":{}}"#).unwrap();
+        fs::write(root.join("state.json"), r#"{"format":3,"packages":{}}"#).unwrap();
         assert!(check(&root, "ftp://invalid").unwrap().is_empty());
 
         let (state, _) = fixture();
@@ -531,8 +556,8 @@ mod tests {
         for id in ["dan/broken", "dan/healthy"] {
             crate::catalog::tests::save(&cat, &release(id, "1.0.0", source, 'a'));
             state
-                .plugins
-                .extend(state_with(id, source, "1.0.0", &"a".repeat(40)).plugins);
+                .packages
+                .extend(state_with(id, source, "1.0.0", &"a".repeat(40)).packages);
         }
         let path = cat.join("namespaces/dan/broken/versions/1.0.0/release.json");
         let mut value: serde_json::Value =
@@ -543,7 +568,7 @@ mod tests {
         assert_eq!(rows[0].status, CheckStatus::InvalidCatalogData);
         assert_eq!(rows[1].status, CheckStatus::UpToDate);
         assert!(crate::catalog::lookup(cat.to_str().unwrap(), "dan/broken", None).is_err());
-        // Directory indexes are unrelated to installed-plugin diagnostics.
+        // Directory indexes are unrelated to installed-package diagnostics.
         fs::write(cat.join("catalog.json"), "{ broken").unwrap();
         assert_eq!(check_state(&state, cat.to_str().unwrap()).unwrap().len(), 2);
         // Unreadable release data must remain a hard error.

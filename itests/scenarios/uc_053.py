@@ -34,9 +34,9 @@ def dependency(view: dict, consumer: str, dep: str) -> dict:
 @case(fixture="g6_forked", spec=["fork-replacement/replacement-is-explicit-and-global", "fork-replacement/fork-metadata"])
 def provenance_alone_does_not_redirect(t: T):
     """Installing the fork (forkOf + replaces in its manifest) leaves every consumer on vendor/base."""
-    fork = t.plugin(FORK)
+    fork = t.package(FORK)
     t.eq(fork["forkOf"]["id"], ORIGINAL, "forkOf id")
-    t.eq(fork["forkOf"]["commit"], t.plugin(ORIGINAL)["current"]["commit"], "forkOf commit")
+    t.eq(fork["forkOf"]["commit"], t.package(ORIGINAL)["current"]["commit"], "forkOf commit")
     t.eq(fork["replaces"], {"id": ORIGINAL, "version": "1.0.0"}, "declared replacement")
     t.ok(not t.state().get("replacements"), "no binding in state.json")
     view = resolved(t)
@@ -50,11 +50,11 @@ def provenance_alone_does_not_redirect(t: T):
 @case(fixture="g6_forked", spec=["fork-replacement/replacement-is-explicit-and-global#output-variants", "fork-replacement/replacement-is-explicit-and-global#replace-for-all-consumers", "dist/replace-removes-the-original-s-dist", "dist/dist-holds-exactly-the-active-packages#enabled-but-replaced"])
 def explicit_replacement_is_global_and_inspectable(t: T):
     """replace vendor/base --with mine/base: persisted binding, both consumers on the fork payload,
-    original installed and addressable, unrelated plugin untouched, binding survives a new process."""
+    original installed and addressable, unrelated package untouched, binding survives a new process."""
     other = t.snap(t.clone("other/x"), t.dist("other/x"))
-    other_entry = t.plugin("other/x")
+    other_entry = t.package("other/x")
     original_files = t.snap(t.clone(ORIGINAL))
-    original_entry = t.plugin(ORIGINAL)
+    original_entry = t.package(ORIGINAL)
 
     r = t.gitpm_ok("replace", ORIGINAL, "--with", FORK)
     t.has(r.out, f"{ORIGINAL} replaced by {FORK} 1.0.1 (as {ORIGINAL} 1.0.0) for: app/a, app/b")
@@ -79,17 +79,17 @@ def explicit_replacement_is_global_and_inspectable(t: T):
 
     # The original stays installed and independently addressable.
     t.same(original_files, "original clone")
-    t.eq(t.plugin(ORIGINAL), original_entry, "original state entry")
+    t.eq(t.package(ORIGINAL), original_entry, "original state entry")
     t.gitpm_ok("disable", ORIGINAL)
-    t.eq(t.plugin(ORIGINAL)["enabled"], False, "original disabled independently")
+    t.eq(t.package(ORIGINAL)["enabled"], False, "original disabled independently")
     t.gitpm_ok("enable", ORIGINAL)
     t.gitpm_ok("update", ORIGINAL)  # its own update path still works (no-op)
-    t.eq(t.plugin(ORIGINAL), original_entry, "original state entry after addressing it")
+    t.eq(t.package(ORIGINAL), original_entry, "original state entry after addressing it")
     t.ok(not t.dist(ORIGINAL).exists(), "still not deployed while replaced")
 
-    # The unrelated plugin is unchanged.
+    # The unrelated package is unchanged.
     t.same(other, "other/x clone and dist")
-    t.eq(t.plugin("other/x"), other_entry, "other/x state entry")
+    t.eq(t.package("other/x"), other_entry, "other/x state entry")
     t.ok(not view["other/x"].get("dependencies"), "other/x has no dependencies")
 
     # Reopen once more: unchanged.
@@ -101,10 +101,10 @@ def explicit_replacement_is_global_and_inspectable(t: T):
 def new_consumer_after_replacement_resolves_to_fork(t: T):
     """app/c (vendor/base ^1.0) installed after the replacement resolves to mine/base; nothing new fetched."""
     t.gitpm_ok("replace", ORIGINAL, "--with", FORK)
-    before = sorted(t.state()["plugins"])
+    before = sorted(t.state()["packages"])
     original = t.snap(t.clone(ORIGINAL), t.dist(ORIGINAL))  # dist absent: replaced
     t.gitpm_ok("install-catalog", "app/c")
-    t.eq(sorted(t.state()["plugins"]), sorted(before + ["app/c"]), "only app/c added")
+    t.eq(sorted(t.state()["packages"]), sorted(before + ["app/c"]), "only app/c added")
     t.same(original, "original clone and dist")
     view = resolved(t)
     row = dependency(view, "app/c", ORIGINAL)

@@ -1,6 +1,6 @@
 //! Workspace transactions that stage only what an operation touches.
 //!
-//! An operation prepares new plugin clones and `dist/` folders and the next
+//! An operation prepares new package clones and `dist/` folders and the next
 //! `state.json` inside `<root>/.pm-txn`; the live workspace is untouched until commit.
 //! Commit writes a journal and then moves each staged path into place (the replaced
 //! one goes to `.pm-txn/old`), `state.json` last via an atomic rename. A crash before
@@ -25,7 +25,7 @@ enum Change {
     Delete,
 }
 
-/// Paths (relative to the root, e.g. `plugins/dan/demo1`) and what commit does with them.
+/// Paths (relative to the root, e.g. `packages/dan/demo1`) and what commit does with them.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Journal {
     paths: BTreeMap<String, Change>,
@@ -48,7 +48,7 @@ fn remove(path: &Path) -> Result<()> {
     }
     Ok(())
 }
-/// Every directory between the root and a managed path (`plugins`, `plugins/<ns>`,
+/// Every directory between the root and a managed path (`packages`, `packages/<ns>`,
 /// `dist/<ns>`) must be a real directory: through a symlink a write or delete would
 /// land outside the workspace.
 fn ensure_managed_parents(root: &Path, relative: &str) -> Result<()> {
@@ -114,7 +114,7 @@ impl Txn {
     fn is_staged(&self, relative: &str) -> bool {
         self.journal.paths.get(relative) == Some(&Change::Replace)
     }
-    /// Writable copy of an installed clone at `relative` (`plugins/<id>` or
+    /// Writable copy of an installed clone at `relative` (`packages/<id>` or
     /// `repos/<key>`; `live` is its exact path in the workspace). Symlinks inside the
     /// repository are kept as symlinks. Staged once per transaction.
     // TODO: this copies the whole clone (all packages of a shared one, full history) for
@@ -162,14 +162,14 @@ impl Txn {
         let staged = self.stage_dist(id)?;
         crate::workspace::export_dist(&repo, commit, package, &staged)
     }
-    /// Remove a clone (`plugins/<id>` or `repos/<key>`) on commit.
+    /// Remove a clone (`packages/<id>` or `repos/<key>`) on commit.
     pub(crate) fn delete_repo(&mut self, relative: &str) -> Result<()> {
         ensure_managed_parents(&self.root, relative)?;
         remove(&self.staged(relative))?;
         self.journal.paths.insert(relative.into(), Change::Delete);
         Ok(())
     }
-    /// Remove the plugin's deployed files on commit (also drops a staged deploy).
+    /// Remove the package's deployed files on commit (also drops a staged deploy).
     pub(crate) fn delete_dist(&mut self, id: &str) -> Result<()> {
         self.delete_repo(&format!("dist/{id}"))
     }
@@ -197,14 +197,9 @@ impl Txn {
             .collect()
     }
     pub(crate) fn commit(mut self, state: &State) -> Result<()> {
-        // Always written in the current layout, whatever format was read.
-        let state = State {
-            format: crate::model::STATE_FORMAT,
-            ..state.clone()
-        };
         fs::write(
             self.dir.join("state.json"),
-            serde_json::to_vec_pretty(&state)?,
+            serde_json::to_vec_pretty(state)?,
         )?;
         remove(&self.dir.join("scratch"))?;
         let temporary = self.dir.join("journal.tmp");
@@ -238,12 +233,12 @@ pub(crate) fn recover(root: &Path) -> Result<()> {
     }
 }
 
-/// After a delete, remove the parents it left empty (`dist/<ns>`, `plugins/<ns>`,
-/// `repos`); `plugins` and `dist` themselves stay, as `Manager::open` creates them.
+/// After a delete, remove the parents it left empty (`dist/<ns>`, `packages/<ns>`,
+/// `repos`); `packages` and `dist` themselves stay, as `Manager::open` creates them.
 /// Best effort: a folder that is not empty (or cannot be removed) is kept.
 fn remove_empty_parents(root: &Path, relative: &str) {
     let parts: Vec<&str> = relative.split('/').collect();
-    let keep = if matches!(parts[0], "plugins" | "dist") {
+    let keep = if matches!(parts[0], "packages" | "dist") {
         1
     } else {
         0

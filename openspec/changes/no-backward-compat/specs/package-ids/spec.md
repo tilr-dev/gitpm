@@ -49,3 +49,10 @@ Single source for tag names: the release tag of a package SHALL be `namespace/na
 #### Scenario: Tags that are not release versions
 - **WHEN** a repository has tags `dan/demo1@2.0.0-beta`, `dan/demo1@2.0.0+b1` and `dan/demo1@latest` besides valid releases
 - **THEN** those tags are not releases: install, update and `catalog-update` never select them and do not warn about them
+
+### Requirement: No default namespace
+gitpm SHALL NOT derive or default a namespace: every command that creates a package (`init`) MUST receive a full `NAMESPACE/NAME`, and `fork` MUST receive the target namespace explicitly. There SHALL be no namespace configuration file or command.
+
+#### Scenario: init without a namespace
+- **WHEN** the user runs `gitpm init hello --into hello`
+- **THEN** the command fails with `package id needs a namespace: use NAMESPACE/NAME, for example acme/hello` (a CLI usage error: no `Error kind` line, exit status 1) and creates nothing

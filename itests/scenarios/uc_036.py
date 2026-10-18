@@ -77,23 +77,23 @@ def failing(t: T, srv: Server, *args, kinds=("catalog",), contains=(), limit=25.
 
 @case(fixture="catalog", spec=["catalog/catalog-locations-and-transport"])
 def base_and_full_url_read_the_same(t: T):
-    """URL and URL/catalog.json give the same `catalog`, `info` plugins and installs."""
+    """URL and URL/catalog.json give the same `catalog`, `info` packages and installs."""
     srv, _ = setup(t)
     base = t.gitpm_ok("--catalog", srv.url, "catalog").json()
     full = t.gitpm_ok("--catalog", srv.url + "/catalog.json", "catalog").json()
     t.eq(full, base, "catalog via full URL")
     strip = lambda out: [l for l in out.splitlines() if "—" in l or "Git:" in l]
     t.eq(strip(t.gitpm_ok("--catalog", srv.url + "/catalog.json", "info").out),
-         strip(t.gitpm_ok("--catalog", srv.url, "info").out), "info plugins via full URL")
+         strip(t.gitpm_ok("--catalog", srv.url, "info").out), "info packages via full URL")
     t.gitpm_ok("--root", t.root / "ws2", "--catalog", srv.url + "/catalog.json", "install-catalog", HELLO)
-    t.eq(json.loads((t.root / "ws2/state.json").read_text())["plugins"][HELLO]["current"]["version"], "0.2.0",
+    t.eq(json.loads((t.root / "ws2/state.json").read_text())["packages"][HELLO]["current"]["version"], "0.2.0",
          "install via full URL")
 
 
 @case(fixture="catalog", spec=["catalog/catalog-locations-and-transport", "errors/errors-name-the-package"])
 def plugin_404_is_not_in_catalog(t: T):
-    """A plugin whose index answers 404: install-catalog says it is not in the catalog
-    (naming the ID); check of an installed plugin whose index is gone shows "not in catalog"."""
+    """A package whose index answers 404: install-catalog says it is not in the catalog
+    (naming the ID); check of an installed package whose index is gone shows "not in catalog"."""
     srv, served = setup(t)
     r = failing(t, srv, "--catalog", srv.url, "install-catalog", "dan/missing", contains="not found in catalog")
     t.not_installed("dan/missing")
@@ -102,12 +102,12 @@ def plugin_404_is_not_in_catalog(t: T):
     out = t.gitpm_ok("--catalog", srv.url, "check").out
     t.has(next(l for l in out.splitlines() if l.startswith(NUM)), "not in catalog")
     t.same(before, "installed workspace")
-    t.has(r.err, "dan/missing")  # error messages name the plugin ID (product decision)
+    t.has(r.err, "dan/missing")  # error messages name the package ID (product decision)
 
 
 @case(fixture="catalog", spec=["catalog/catalog-locations-and-transport", "errors/stable-error-kinds"])
 def malformed_and_truncated_json(t: T):
-    """Malformed root, malformed plugin index and truncated release: kind catalog/invalid_data."""
+    """Malformed root, malformed package index and truncated release: kind catalog/invalid_data."""
     srv, served = setup(t)
     srv.overrides["/catalog.json"] = (200, {}, b"{ broken")
     failing(t, srv, "--catalog", srv.url, "catalog", kinds=("catalog", "invalid_data"))
@@ -124,7 +124,7 @@ def malformed_and_truncated_json(t: T):
 
 @case(fixture="catalog", spec=["catalog/catalog-v2-is-a-tree-of-static-files"])
 def unsupported_schema(t: T):
-    """schema 3 in a directory catalog and in a plugin index: refused (catalog/invalid_data)."""
+    """schema 3 in a directory catalog and in a package index: refused (catalog/invalid_data)."""
     srv, served = setup(t)
     srv.overrides["/catalog.json"] = (200, {}, json.dumps({"schema": 3, "directories": {"namespaces": "namespaces/"}}).encode())
     failing(t, srv, "--catalog", srv.url, "info", kinds=("catalog", "invalid_data"))
@@ -147,7 +147,7 @@ def server_down_is_http_error(t: T):
         failing(t, srv, "--catalog", dead, *args, kinds=("http",))
     # install-catalog in a fresh workspace (the main one is bound to the served catalog).
     failing(t, srv, "--root", t.root / "fresh", "--catalog", dead, "install-catalog", HELLO, kinds=("http",))
-    t.ok(not (t.root / "fresh/plugins/dan/hello").exists(), "nothing installed in the fresh workspace")
+    t.ok(not (t.root / "fresh/packages/dan/hello").exists(), "nothing installed in the fresh workspace")
 
 
 @case(fixture="catalog", spec=["catalog/catalog-locations-and-transport"])
@@ -165,7 +165,7 @@ def redirect_is_not_followed(t: T):
 
 @case(fixture="catalog", spec=["catalog/catalog-locations-and-transport"])
 def response_over_16_mib_refused(t: T):
-    """A 17 MiB catalog.json / plugin index is refused."""
+    """A 17 MiB catalog.json / package index is refused."""
     srv, _ = setup(t)
     big = b'{"schema": 2, "directories": {}, "pad": "' + b"x" * (17 * 1024 * 1024) + b'"}'
     srv.overrides["/catalog.json"] = (200, {}, big)
@@ -190,7 +190,7 @@ def unsafe_directory_links_refused(t: T):
 
 @case(fixture="catalog", spec=["catalog/catalog-v2-is-a-tree-of-static-files"])
 def unsafe_release_links_refused(t: T):
-    """Release links in a plugin index with `..`, an absolute path or another host are
+    """Release links in a package index with `..`, an absolute path or another host are
     refused (kind catalog) by install-catalog, check and info."""
     srv, served = setup(t)
     evil = t.serve(t.catalog)
@@ -204,10 +204,10 @@ def unsafe_release_links_refused(t: T):
             root = ("--root", t.root / "other-ws") if args[0] == "install-catalog" else ()
             failing(t, srv, *root, "--catalog", srv.url, *args, contains="invalid release link")
     t.eq(evil.requests, [], "foreign host never requested")
-    t.ok(not (t.root / "other-ws/plugins/dan/num").exists(), "no clone in the other workspace")
+    t.ok(not (t.root / "other-ws/packages/dan/num").exists(), "no clone in the other workspace")
     t.ok(not (t.root / "other-ws/dist/dan/num").exists(), "no dist in the other workspace")
     state = t.root / "other-ws/state.json"
-    t.ok(not state.exists() or NUM not in json.loads(state.read_text()).get("plugins", {}), "no state entry")
+    t.ok(not state.exists() or NUM not in json.loads(state.read_text()).get("packages", {}), "no state entry")
 
 
 @case(fixture="catalog", spec=["catalog/catalog-locations-and-transport", "catalog/register-one-version"])

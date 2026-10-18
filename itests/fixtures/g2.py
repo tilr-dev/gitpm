@@ -8,8 +8,8 @@ HELLO = "dan/hello"
 @fixture()
 def g2_demos(t: T):
     """vendor/demo and author/demo: same basename, different namespaces and payloads; 0.1.0 each."""
-    t.new_plugin("vendor/demo", "0.1.0")
-    t.new_plugin("author/demo", "0.1.0")
+    t.new_package("vendor/demo", "0.1.0")
+    t.new_package("author/demo", "0.1.0")
 
 
 @g2_demos.check
@@ -29,17 +29,17 @@ def g2_demos_installed(t: T):
 @g2_demos_installed.check
 def _(t: T):
     for id in ["vendor/demo", "author/demo"]:
-        p = t.plugin(id)
+        p = t.package(id)
         t.eq(p["current"], {"version": "0.1.0", "commit": t.rev(id)}, f"{id} current")
         t.eq(p["enabled"], True, f"{id} enabled")
         t.eq(t.rev(t.clone(id)), p["current"]["commit"], f"{id} clone HEAD")
         t.has((t.dist(id) / "index.js").read_text(), f"{id} 0.1.0")
-    t.eq(sorted(t.state()["plugins"]), ["author/demo", "vendor/demo"], "installed")
+    t.eq(sorted(t.state()["packages"]), ["author/demo", "vendor/demo"], "installed")
 
 
 def _reverse(t: T, id: str, annotated_first: bool):
     """1.10.0 committed and tagged first, 1.9.0 on top, then an untagged 1.11.0 HEAD."""
-    t.new_plugin(id, "1.10.0", tag=False)
+    t.new_package(id, "1.10.0", tag=False)
     if annotated_first:
         t.git(id, "tag", "-a", f"{id}@1.10.0", "-m", "release 1.10.0")
     else:
@@ -83,7 +83,7 @@ def g2_hello_history(t: T):
 
 @g2_hello_history.check
 def _(t: T):
-    p = t.plugin(HELLO)
+    p = t.package(HELLO)
     t.eq(p["current"], {"version": "0.1.2", "commit": t.rev(HELLO, f"{HELLO}@0.1.2")}, "current")
     t.eq(p["previous"], {"version": "0.1.1", "commit": t.rev(HELLO, f"{HELLO}@0.1.1")}, "previous")
     t.eq(p["enabled"], True, "enabled")
@@ -96,16 +96,16 @@ def _(t: T):
 def g2_guarded(t: T):
     """g2_hello_history plus an unrelated dan/other 0.1.0 installed, and an unapplied
     upstream release dan/hello 0.1.3 (so update and rollback would both change something)."""
-    t.new_plugin("dan/other", "0.1.0")
+    t.new_package("dan/other", "0.1.0")
     t.gitpm_ok("install", t.repo("dan/other"))
     t.release(HELLO, "0.1.3")
 
 
 @g2_guarded.check
 def _(t: T):
-    p = t.plugin(HELLO)
+    p = t.package(HELLO)
     t.eq((p["current"]["version"], p["previous"]["version"]), ("0.1.2", "0.1.1"), "dan/hello history")
-    t.eq(t.plugin("dan/other")["current"]["version"], "0.1.0", "dan/other installed")
+    t.eq(t.package("dan/other")["current"]["version"], "0.1.0", "dan/other installed")
     t.has(t.git(HELLO, "tag", "--list"), f"{HELLO}@0.1.3")
     for id in [HELLO, "dan/other"]:
         t.eq(t.git(t.clone(id), "status", "--porcelain", "--ignored"), "", f"{id} clean clone")

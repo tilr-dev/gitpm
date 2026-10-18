@@ -1,5 +1,5 @@
 //! End-to-end tests of the `dist/` rule: `dist/<id>` exists exactly for the active
-//! plugins (installed, enabled, not replaced), whatever command changed the state.
+//! packages (installed, enabled, not replaced), whatever command changed the state.
 //! Hermetic: the CLI and Git run with a cleared environment, a fixture HOME/TMPDIR and
 //! Git config; every path is inside a per-test temp directory removed on drop.
 use std::{
@@ -140,7 +140,7 @@ fn replace_removes_the_original_dist_and_back_restores_it_from_the_clone() {
     assert_eq!(f.dist("dan/demo").as_deref(), Some("fork"));
     // list still reports the original as installed and enabled.
     let state = f.state();
-    assert_eq!(state["plugins"]["vendor/demo"]["enabled"], true);
+    assert_eq!(state["packages"]["vendor/demo"]["enabled"], true);
     assert_eq!(state["replacements"]["vendor/demo"], "dan/demo");
     // resolved[].active is the dist rule; enabled alone is not.
     let resolved = |state: &serde_json::Value, id: &str| {
@@ -219,7 +219,7 @@ fn update_and_rollback_of_a_replaced_package_leave_dist_alone_until_back() {
     f.release("vendor/demo", "vendor 2", "0.3.0");
     f.ok(&["update", "vendor/demo"]);
     assert_eq!(
-        f.state()["plugins"]["vendor/demo"]["current"]["version"],
+        f.state()["packages"]["vendor/demo"]["current"]["version"],
         "0.3.0"
     );
     assert_eq!(f.dist("vendor/demo"), None);
@@ -371,7 +371,7 @@ fn sync_dist_repairs_a_tree_written_by_an_older_gitpm() {
     f.original_and_fork();
     f.ok(&["replace", "vendor/demo", "--with", "dan/demo"]);
     // As gitpm 0.4 left it: the replaced original deployed, the fork's dist missing,
-    // plus a folder of no known plugin.
+    // plus a folder of no known package.
     let dist = f.root().join("dist");
     fs::create_dir_all(dist.join("vendor/demo")).unwrap();
     fs::write(dist.join("vendor/demo/index.js"), "stale").unwrap();
@@ -394,7 +394,7 @@ fn sync_dist_repairs_a_tree_written_by_an_older_gitpm() {
     assert!(stdout.contains("Nothing was changed"), "{stdout}");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("dist/stray belongs to no known plugin"),
+        stderr.contains("dist/stray belongs to no known package"),
         "{stderr}"
     );
     assert_eq!(f.dist("vendor/demo").as_deref(), Some("stale"));
@@ -414,10 +414,10 @@ fn sync_dist_repairs_a_tree_written_by_an_older_gitpm() {
     );
     let out = f.ok(&["sync-dist"]);
     assert!(
-        out.contains("already holds exactly the active plugins"),
+        out.contains("already holds exactly the active packages"),
         "{out}"
     );
-    // A disabled plugin's leftover dist is removed as well.
+    // A disabled package's leftover dist is removed as well.
     f.ok(&["replace", "vendor/demo", "--back"]);
     f.ok(&["disable", "vendor/demo"]);
     fs::create_dir_all(dist.join("vendor/demo")).unwrap();
@@ -438,7 +438,7 @@ fn any_mutating_command_reconciles_the_whole_dist() {
     f.original_and_fork();
     f.ok(&["disable", "dan/demo"]);
     // Drift no command of this test touches: an active package's dist missing, a
-    // disabled package deployed, a folder of no known plugin.
+    // disabled package deployed, a folder of no known package.
     let dist = f.root().join("dist");
     fs::remove_dir_all(dist.join("vendor")).unwrap();
     fs::create_dir_all(dist.join("dan/demo")).unwrap();
@@ -452,7 +452,7 @@ fn any_mutating_command_reconciles_the_whole_dist() {
     assert!(out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("dist/stray belongs to no known plugin"),
+        stderr.contains("dist/stray belongs to no known package"),
         "{stderr}"
     );
     assert!(f.dist("other/pkg").is_some());
@@ -465,7 +465,7 @@ fn any_mutating_command_reconciles_the_whole_dist() {
     );
     let out = f.ok(&["sync-dist", "--dry-run"]);
     assert!(
-        out.contains("already holds exactly the active plugins"),
+        out.contains("already holds exactly the active packages"),
         "{out}"
     );
 }
@@ -485,7 +485,7 @@ fn a_namespace_path_that_is_not_a_folder_blocks_nothing_else() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{stderr}");
     assert!(
-        stderr.contains("dist/dan belongs to no known plugin or is not a folder"),
+        stderr.contains("dist/dan belongs to no known package or is not a folder"),
         "{stderr}"
     );
     assert_eq!(f.dist("vendor/demo").as_deref(), Some("vendor 1"));
@@ -506,7 +506,7 @@ fn a_namespace_path_that_is_not_a_folder_blocks_nothing_else() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{stderr}");
     assert!(
-        stderr.contains("dist/dan belongs to no known plugin or is not a folder"),
+        stderr.contains("dist/dan belongs to no known package or is not a folder"),
         "{stderr}"
     );
     assert_eq!(f.dist("vendor/demo").as_deref(), Some("vendor 1"));
@@ -522,7 +522,7 @@ fn a_namespace_path_that_is_not_a_folder_blocks_nothing_else() {
 fn a_missing_clone_is_reported_and_blocks_only_its_own_dist() {
     let f = Fixture::new();
     f.original_and_fork();
-    fs::remove_dir_all(f.root().join("plugins/vendor")).unwrap();
+    fs::remove_dir_all(f.root().join("packages/vendor")).unwrap();
     fs::remove_dir_all(f.root().join("dist/vendor")).unwrap();
     f.ok(&["init", "other/pkg", "--into", "other/pkg"]);
     let out = f.run(&["install", f.path("other/pkg").to_str().unwrap()]);
@@ -586,7 +586,7 @@ fn every_deploy_copies_the_committed_tree_with_nested_files_and_exec_bits() {
     f.ok(&["update", "vendor/demo"]);
     check("update");
     // Uncommitted edits in the clone are never deployed.
-    let clone = f.root().join("plugins/vendor/demo");
+    let clone = f.root().join("packages/vendor/demo");
     fs::write(clone.join("dist/index.js"), "edited").unwrap();
     f.ok(&["replace", "vendor/demo", "--with", "dan/demo"]);
     f.ok(&["replace", "vendor/demo", "--back"]);

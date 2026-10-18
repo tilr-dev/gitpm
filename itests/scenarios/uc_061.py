@@ -2,7 +2,7 @@
 
 Owner decision 2026-10-16: IDs/versions given on the command line are validated before
 the workspace is opened (nothing may be created); a refused direct Git install may leave
-an empty workspace skeleton (state.json without plugins, empty plugins/ and dist/, lock)
+an empty workspace skeleton (state.json without packages, empty packages/ and dist/, lock)
 — recorded as observed, not a failure — but never a clone, dist, state entry or .pm-txn.
 
 Subcase 3 (letter case) targets case-insensitive APFS; gitpm refuses case variants of
@@ -30,10 +30,10 @@ def plain_repo(t: T, dirname: str, plugin_id: str, version: str = "0.1.0", extra
 
 
 def nothing_installed(t: T):
-    """No plugin clone, dist, state entry or .pm-txn; an empty skeleton is only recorded."""
-    plugins = t.state().get("plugins", {})
+    """No package clone, dist, state entry or .pm-txn; an empty skeleton is only recorded."""
+    plugins = t.state().get("packages", {})
     t.eq(plugins, {}, "state entries")
-    for sub in ("plugins", "dist"):
+    for sub in ("packages", "dist"):
         d = t.ws / sub
         files = [str(p) for p in d.rglob("*")] if d.exists() else []
         t.eq(files, [], f"contents of {sub}/")
@@ -76,17 +76,17 @@ N80, N81 = "n" * 80, "n" * 81
 
 @case(fixture="catalog", spec=["package-ids/package-id-syntax#valid-scoped-id"])
 def id_components_of_80_accepted(t: T):
-    """1. namespace and name of exactly 80 characters: create, register, install-catalog, direct install."""
+    """1. namespace and name of exactly 80 characters: init, register, install-catalog, direct install."""
     pid = f"{N80}/{'p' * 80}"
-    t.gitpm_ok("create", pid, "--into", t.root / "repos/long" / ("p" * 80))
+    t.gitpm_ok("init", pid, "--into", t.root / "repos/long" / ("p" * 80))
     repo = t.root / "repos/long" / ("p" * 80)
     t.eq(json.loads((repo / "plugin.json").read_text())["id"], pid, "scaffold ID")
     t.gitpm_ok("register", repo, "--ref", f"{pid}@0.1.0")
     t.gitpm_ok("install-catalog", pid)
-    t.eq(t.plugin(pid)["current"]["version"], "0.1.0", "installed from catalog")
+    t.eq(t.package(pid)["current"]["version"], "0.1.0", "installed from catalog")
     t.ok((t.dist(pid) / "index.js").is_file(), "dist")
     t.gitpm_ok("--root", t.root / "direct", "install", repo)
-    t.ok(pid in json.loads((t.root / "direct/state.json").read_text())["plugins"], "direct install")
+    t.ok(pid in json.loads((t.root / "direct/state.json").read_text())["packages"], "direct install")
 
 
 @case(fixture="catalog", spec=["package-ids/package-id-syntax", "install-uninstall/refused-input-creates-nothing"])
@@ -143,10 +143,10 @@ for _name, _id in BAD_IDS:
 # ---------------------------------------------------------------- 3. letter case
 
 def case_setup(t: T):
-    t.new_plugin("dan/p", "1.0.0")
+    t.new_package("dan/p", "1.0.0")
     t.gitpm_ok("install", t.repo("dan/p"))
     for pid in ("Dan/p", "Dan/q"):
-        t.new_plugin(pid, "1.0.0")
+        t.new_package(pid, "1.0.0")
     return t.snap(t.clone("dan/p"), t.dist("dan/p"), git=True)
 
 
@@ -165,7 +165,7 @@ def case_variants_of_installed_id_refused(t: T):
     t.ok(not dest.exists(), "fork destination not created")
     t.same(before, "dan/p clone and dist")
     t.eq(t.state(), state, "state")
-    t.eq(sorted(t.state()["plugins"]), ["dan/p"], "installed IDs")
+    t.eq(sorted(t.state()["packages"]), ["dan/p"], "installed IDs")
 
 
 @case(spec=["package-ids/case-colliding-ids-are-refused#install-after-forget-of-a-case-variant"])
@@ -183,33 +183,32 @@ def case_variant_after_forget_refused(t: T):
 # ---------------------------------------------------------------- 4-7. tags
 
 def bad_history(t: T):
-    """dan/bt: tag v0.0.1 on a commit without plugin.json, then a valid v1.0.0."""
+    """dan/bt: tag dan/bt@0.0.1 on a commit without plugin.json, then a valid dan/bt@1.0.0."""
     repo = t.repo("dan/bt")
     repo.mkdir(parents=True)
     t.git(repo, "init", "-q", "-b", "main")
     t.commit(repo, "before the manifest", {"README.md": "early\n"})
-    t.tag(repo, "v0.0.1")
-    sha = t.release("dan/bt", "1.0.0", tag=False)
-    t.tag(repo, "v1.0.0")
+    t.tag(repo, "dan/bt@0.0.1")
+    sha = t.release("dan/bt", "1.0.0")
     return repo, sha
 
 
 @case(spec=["package-ids/broken-historical-tags-are-skipped#one-bad-old-tag", "install-uninstall/install-the-latest-release-of-a-git-source"])
 def bad_historical_tag_skipped_by_install(t: T):
-    """4. Stable install picks v1.0.0 and warns about v0.0.1."""
+    """4. Stable install picks 1.0.0 and warns about dan/bt@0.0.1."""
     repo, sha = bad_history(t)
     r = t.gitpm_ok("install", repo)
-    t.eq(t.plugin("dan/bt")["current"], {"version": "1.0.0", "commit": sha}, "installed")
-    t.has(r.err, "Warning", "v0.0.1")
+    t.eq(t.package("dan/bt")["current"], {"version": "1.0.0", "commit": sha}, "installed")
+    t.has(r.err, "Warning", "dan/bt@0.0.1")
 
 
 @case(spec=["package-ids/broken-historical-tags-are-skipped#one-bad-old-tag"])
 def bad_historical_tag_skipped_by_catalog_update(t: T):
-    """4. catalog-update registers 1.0.0 and warns about v0.0.1."""
+    """4. catalog-update registers 1.0.0 and warns about dan/bt@0.0.1."""
     repo, sha = bad_history(t)
     sources(t, repo)
     r = t.gitpm_ok("catalog-update")
-    t.has(r.err, "Warning", "v0.0.1")
+    t.has(r.err, "Warning", "dan/bt@0.0.1")
     index = json.loads(t.catalog_index("dan/bt").read_text())
     t.eq(sorted(index["versions"]), ["1.0.0"], "catalog versions")
     t.eq(json.loads(t.catalog_release("dan/bt", "1.0.0").read_text())["commit"], sha, "release commit")
@@ -217,7 +216,7 @@ def bad_historical_tag_skipped_by_catalog_update(t: T):
 
 def mismatched(t: T):
     """dan/mm: tag dan/mm@0.5.0 on a manifest that says 0.4.0, then a valid dan/mm@1.0.0."""
-    t.new_plugin("dan/mm", "0.1.0")
+    t.new_package("dan/mm", "0.1.0")
     t.release("dan/mm", "0.4.0", tag=False)
     t.tag("dan/mm", "dan/mm@0.5.0")
     return t.release("dan/mm", "1.0.0")
@@ -228,7 +227,7 @@ def mismatched_tag_skipped_by_install(t: T):
     """5. A tag whose manifest version differs (below the latest) is skipped with a warning."""
     sha = mismatched(t)
     r = t.gitpm_ok("install", t.repo("dan/mm"))
-    t.eq(t.plugin("dan/mm")["current"], {"version": "1.0.0", "commit": sha}, "installed")
+    t.eq(t.package("dan/mm")["current"], {"version": "1.0.0", "commit": sha}, "installed")
     t.has(r.err, "Warning", "dan/mm@0.5.0")
 
 
@@ -245,15 +244,15 @@ def mismatched_tag_skipped_by_catalog_update(t: T):
 @case(spec=["package-manifest/unknown-keys-are-preserved"])
 def unknown_manifest_field_accepted(t: T):
     """5. A release whose manifest has an unknown field installs; the field is kept as is."""
-    t.new_plugin("dan/uf", "0.1.0")
+    t.new_package("dan/uf", "0.1.0")
     t.release("dan/uf", "1.0.0", extra={"bogus": True})
     t.gitpm_ok("install", t.repo("dan/uf"), "--ref", "dan/uf@1.0.0")
-    t.eq(t.plugin("dan/uf")["current"]["version"], "1.0.0", "installed version")
+    t.eq(t.package("dan/uf")["current"]["version"], "1.0.0", "installed version")
 
 
 def off_branch(t: T):
     """dan/side: 1.0.0 on main; 2.0.0 tagged on branch side only."""
-    t.new_plugin("dan/side", "1.0.0")
+    t.new_package("dan/side", "1.0.0")
     t.git("dan/side", "checkout", "-q", "-b", "side")
     sha = t.release("dan/side", "2.0.0")
     t.git("dan/side", "checkout", "-q", "main")
@@ -266,7 +265,7 @@ def tag_off_default_branch_install(t: T):
     """6. install --ref of a tag not on main installs that commit."""
     sha = off_branch(t)
     t.gitpm_ok("install", t.repo("dan/side"), "--ref", "dan/side@2.0.0")
-    t.eq(t.plugin("dan/side")["current"], {"version": "2.0.0", "commit": sha}, "installed")
+    t.eq(t.package("dan/side")["current"], {"version": "2.0.0", "commit": sha}, "installed")
     t.eq(t.rev(t.clone("dan/side")), sha, "clone HEAD")
     t.has((t.dist("dan/side") / "index.js").read_text(), "dan/side 2.0.0")
 
@@ -282,27 +281,26 @@ def tag_off_default_branch_catalog_update(t: T):
 
 @case(spec=["package-ids/release-tag-names#vversion-tag-of-a-scoped-single-package-repository"])
 def scoped_id_with_v_tags(t: T):
-    """7. A scoped ID released with vX.Y.Z tags is accepted by install and catalog-update."""
+    """7. vX.Y.Z tags are not releases: install and catalog-update fail with no_releases."""
     repo = t.repo("dan/vt")
     repo.mkdir(parents=True)
     t.git(repo, "init", "-q", "-b", "main")
     t.release("dan/vt", "1.0.0", tag=False)
     t.tag(repo, "v1.0.0")
-    sha = t.release("dan/vt", "1.1.0", tag=False)
+    t.release("dan/vt", "1.1.0", tag=False)
     t.tag(repo, "v1.1.0")
-    t.gitpm_ok("install", repo)
-    t.eq(t.plugin("dan/vt")["current"], {"version": "1.1.0", "commit": sha}, "latest v-tag installed")
-    t.gitpm_ok("--root", t.root / "ws2", "install", repo, "--ref", "v1.0.0")
+    t.gitpm_err("install", repo, kind="no_releases", contains="dan/vt@VERSION")
+    t.not_installed("dan/vt")
     sources(t, repo)
-    t.gitpm_ok("catalog-update")
-    t.eq(sorted(json.loads(t.catalog_index("dan/vt").read_text())["versions"]), ["1.0.0", "1.1.0"], "catalog")
+    t.gitpm_err("catalog-update", kind="no_releases")
+    t.ok(not t.catalog_index("dan/vt").exists(), "nothing published")
 
 
 # ---------------------------------------------------------------- 8. invalid manifest versions
 
 def invalid_version_case(name: str, version: str, tag: str):
     def fn(t: T):
-        t.new_plugin("dan/iv", "0.1.0")
+        t.new_package("dan/iv", "0.1.0")
         sha = t.release("dan/iv", version, tag=False)
         t.gitpm_err("install", t.repo("dan/iv"), "--ref", sha, kind="invalid_version")
         nothing_installed(t)
@@ -328,7 +326,7 @@ for _name, _version, _tag in [("two_parts", "1.0", "package-ids/version-format")
 @case(spec=["package-ids/version-format#numeric-ordering", "catalog/bounded-overview"])
 def two_hundred_versions(t: T):
     """9. 200 releases (1.0.0 … 1.199.0): numeric maximum everywhere, each command under 60 s."""
-    t.new_plugin("dan/many", "1.0.0")
+    t.new_package("dan/many", "1.0.0")
     for i in range(1, 200):
         t.release("dan/many", f"1.{i}.0")
     sources(t, t.repo("dan/many"))
@@ -338,7 +336,7 @@ def two_hundred_versions(t: T):
     out = timed(t, "--catalog", t.catalog, "info").out
     t.has(out, "dan/many — latest: 1.199.0, versions: 200")
     timed(t, "install-catalog", "dan/many")
-    t.eq(t.plugin("dan/many")["current"]["version"], "1.199.0", "install-catalog latest")
+    t.eq(t.package("dan/many")["current"]["version"], "1.199.0", "install-catalog latest")
     timed(t, "--root", t.root / "direct", "install", t.repo("dan/many"))
-    t.eq(json.loads((t.root / "direct/state.json").read_text())["plugins"]["dan/many"]["current"]["version"],
+    t.eq(json.loads((t.root / "direct/state.json").read_text())["packages"]["dan/many"]["current"]["version"],
          "1.199.0", "direct install latest")

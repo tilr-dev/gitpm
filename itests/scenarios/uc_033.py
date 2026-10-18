@@ -33,7 +33,7 @@ def side_commit(t: T, manifest_version: str, tag: str, start: str = f"{ID}@1.9.0
 def numeric_latest(t: T):
     """1. Stable install and catalog-update pick 1.10.0 (numeric, not lexical)."""
     t.gitpm_ok("install", t.repo(ID))
-    t.eq(t.plugin(ID)["current"], {"version": "1.10.0", "commit": t.rev(ID, f"{ID}@1.10.0")}, "installed")
+    t.eq(t.package(ID)["current"], {"version": "1.10.0", "commit": t.rev(ID, f"{ID}@1.10.0")}, "installed")
     t.gitpm_ok("catalog-update", "--sources", sources(t, t.repo(ID)))
     t.eq(versions(t), ["1.10.0", "1.9.0"], "catalog versions")
     info = t.gitpm_ok("--catalog", t.catalog, "info").out
@@ -47,7 +47,7 @@ def old_mismatched_tag_is_skipped(t: T):
     side_commit(t, "0.1.0", f"{ID}@0.0.9")
     r = t.gitpm_ok("install", t.repo(ID))
     t.has(r.err, f"{ID}@0.0.9", "disagrees with manifest version 0.1.0")
-    t.eq(t.plugin(ID)["current"]["version"], "1.10.0", "installed latest valid")
+    t.eq(t.package(ID)["current"]["version"], "1.10.0", "installed latest valid")
     r = t.gitpm_ok("catalog-update", "--sources", sources(t, t.repo(ID)))
     t.has(r.err, f"Warning: {t.repo(ID)}: tag {ID}@0.0.9 disagrees with manifest version 0.1.0")
     t.has(r.out, "Catalog ready: 2 release(s)")
@@ -94,7 +94,7 @@ def prerelease_build_and_named_tags_ignored(t: T):
     side_commit(t, "2.0.0+b1", f"{ID}@2.0.0+b1", f"{ID}@1.10.0")
     side_commit(t, "3.0.0", f"{ID}@latest", f"{ID}@1.10.0")
     r = t.gitpm_ok("install", t.repo(ID))
-    t.eq(t.plugin(ID)["current"]["version"], "1.10.0", "installed")
+    t.eq(t.package(ID)["current"]["version"], "1.10.0", "installed")
     r2 = t.gitpm_ok("catalog-update", "--sources", sources(t, t.repo(ID)))
     t.has(r2.out, "Catalog ready: 2 release(s)")
     t.eq(versions(t), ["1.10.0", "1.9.0"], "catalog versions")
@@ -105,6 +105,6 @@ def prerelease_build_and_named_tags_ignored(t: T):
 @case(fixture="numeric", spec=["package-ids/version-format"])
 def two_part_version_refused(t: T):
     """6. A manifest with "version": "1.0" installed via --ref is refused (invalid_version)."""
-    t.new_plugin("dan/short", "1.0")
+    t.new_package("dan/short", "1.0")
     t.gitpm_err("install", t.repo("dan/short"), "--ref", "dan/short@1.0", kind="invalid_version")
     t.not_installed("dan/short")

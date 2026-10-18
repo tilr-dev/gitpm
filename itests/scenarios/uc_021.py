@@ -20,7 +20,7 @@ def retained(t: T):
 
 
 def no_entry(t: T):
-    t.ok(ID not in t.state().get("plugins", {}), f"{ID} not in state")
+    t.ok(ID not in t.state().get("packages", {}), f"{ID} not in state")
 
 
 @case(fixture="g2_hello_history", spec=["dist/forget-restore-and-uninstall-settle-dist", "install-uninstall/three-removal-levels"])
@@ -29,7 +29,7 @@ def forget_removes_state_only(t: T):
     files = t.snap(t.clone(ID), git=True)
     t.gitpm_ok("forget", ID)
     no_entry(t)
-    t.eq(t.gitpm_ok("list").json()["plugins"], {}, "list")
+    t.eq(t.gitpm_ok("list").json()["packages"], {}, "list")
     t.same(files, "retained clone")
     t.ok(not t.dist(ID).exists(), "dist/ID removed (forgotten packages are inactive)")
     t.eq([str(p) for p in t.ws.rglob("*.pm-txn*")], [], "no leftover transaction")
@@ -38,11 +38,11 @@ def forget_removes_state_only(t: T):
 @case(fixture="g2_hello_history", spec=["install-uninstall/three-removal-levels#forget-then-restore"])
 def restore_recreates_state_without_history(t: T):
     """restore after forget: current 0.1.2 at the retained commit, previous null, enabled; files unchanged."""
-    source = t.plugin(ID)["source"]
+    source = t.package(ID)["source"]
     files = retained(t)
     t.gitpm_ok("forget", ID)
     t.gitpm_ok("restore", ID)
-    p = t.plugin(ID)
+    p = t.package(ID)
     t.eq(p["current"], {"version": "0.1.2", "commit": tagged(t, "0.1.2")}, "current")
     t.eq(p["previous"], None, "no rollback history")
     t.eq(p["enabled"], True, "enabled")
@@ -55,31 +55,31 @@ def restore_recreates_state_without_history(t: T):
 
 @case(fixture="g2_hello_history", spec=["install-uninstall/three-removal-levels#forget-then-restore"])
 def restore_of_disabled_plugin_is_enabled(t: T):
-    """A forgotten disabled plugin is restored as a fresh registration (enabled)."""
+    """A forgotten disabled package is restored as a fresh registration (enabled)."""
     t.gitpm_ok("disable", ID)
     t.gitpm_ok("forget", ID)
     t.gitpm_ok("restore", ID)
-    t.eq(t.plugin(ID)["enabled"], True, "enabled after restore")
+    t.eq(t.package(ID)["enabled"], True, "enabled after restore")
 
 
 @case(fixture="g2_hello_history", spec=["errors/stable-error-kinds#removal-of-an-unknown-package"])
 def unknown_id(t: T):
     """forget/restore of an ID that has neither entry nor files: error naming the ID, nothing changes."""
     before = t.snap(t.ws, git=True)
-    t.gitpm_err("forget", "dan/missing", kind="not_installed", contains="plugin dan/missing is not installed")
+    t.gitpm_err("forget", "dan/missing", kind="not_installed", contains="package dan/missing is not installed")
     t.same(before, "workspace")
     t.gitpm_err("restore", "dan/missing", kind="repository_not_found", contains="dan/missing")
     t.same(before, "workspace")
-    t.gitpm_err("restore", "dan", kind="repository_not_found", contains="dan")
-    t.same(before, "workspace (namespace directory is not a plugin)")
+    t.gitpm_err("restore", "dan", kind="invalid_id", contains="namespace/name")
+    t.same(before, "workspace (a namespace is not a package ID)")
 
 
 @case(fixture="g2_hello_history", spec=["install-uninstall/restore-preconditions"])
 def duplicate_restore_is_rejected(t: T):
-    """restore of a registered plugin (never forgotten, and after a restore) is already_installed."""
+    """restore of a registered package (never forgotten, and after a restore) is already_installed."""
     before = t.snap(t.ws, git=True)
     t.gitpm_err("restore", ID, kind="already_installed", contains=ID)
-    t.same(before, "workspace (registered plugin keeps its history)")
+    t.same(before, "workspace (registered package keeps its history)")
     t.gitpm_ok("forget", ID)
     t.gitpm_ok("restore", ID)
     after = t.snap(t.ws, git=True)
@@ -119,7 +119,7 @@ def malformed_retained_manifest(t: T):
 
 @case(fixture="g2_hello_history", spec=["install-uninstall/restore-preconditions"])
 def retained_manifest_with_other_id(t: T):
-    """Retained clone whose manifest names another plugin: restore refuses, nothing fabricated."""
+    """Retained clone whose manifest names another package: restore refuses, nothing fabricated."""
     t.gitpm_ok("forget", ID)
     clone = t.clone(ID)
     (clone / "plugin.json").write_text('{"id": "dan/renamed", "version": "0.1.2"}\n')
@@ -128,4 +128,4 @@ def retained_manifest_with_other_id(t: T):
     t.gitpm_err("restore", ID, kind="invalid_manifest", contains="id")
     t.same(before, "workspace")
     no_entry(t)
-    t.ok("dan/renamed" not in t.state()["plugins"], "no entry for the other ID")
+    t.ok("dan/renamed" not in t.state()["packages"], "no entry for the other ID")

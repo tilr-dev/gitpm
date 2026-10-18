@@ -1,14 +1,14 @@
-//! Workspace: locked directory with plugin clones, deployed `dist/` and `state.json`.
+//! Workspace: locked directory with package clones, deployed `dist/` and `state.json`.
 //! Every modification stages only the paths it touches and commits them through a
 //! journal (see `txn`), so a crash at any point leaves a consistent workspace.
 //!
-//! `dist/<id>` exists exactly for the active plugins ([`State::is_active`]: installed,
+//! `dist/<id>` exists exactly for the active packages ([`State::is_active`]: installed,
 //! enabled, not replaced). Every mutating operation brings all of `dist/` in line with
 //! that rule in its transaction (see `settle_dist`); [`Manager::sync_dist`] does it on
-//! its own (a workspace upgraded from 0.4 that only ran read-only commands since).
+//! its own (an explicit repair, for example after a folder was copied into `dist/` by hand).
 use crate::error::{Context, Error, Require, Result, ensure, fail};
 use crate::{
-    ForkOf, Installed, InstalledPlugin, LostWork, Manifest, Replaces, Revision, State, catalog,
+    ForkOf, Installed, InstalledPackage, LostWork, Manifest, Replaces, Revision, State, catalog,
     check::{self, CheckRow},
     deps,
     exec::git,
@@ -32,8 +32,8 @@ use std::{
 mod clones;
 mod fork;
 use clones::{
-    configured_origin, guard_clone, installed_repo, place_clone, plugin_repo, removal, settle_head,
-    shared_head_moved,
+    configured_origin, guard_clone, installed_repo, package_repo, place_clone, removal,
+    settle_head, shared_head_moved,
 };
 pub use fork::{
     DependencyRewrite, ForkReplacement, ForkStep, ForkedPackage, PackageFork,
@@ -96,7 +96,7 @@ pub(crate) fn metadata_warnings(m: &Manifest) -> Vec<String> {
         .map(|problem| format!("{} {}: plugin.json {problem}; ignored", m.id, m.version))
         .collect()
 }
-/// Joint stable-release upgrade plan. No plugins are removed or downgraded.
+/// Joint stable-release upgrade plan. No packages are removed or downgraded.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct UpdateAllPlan {
     pub updates: Vec<RevisionChange>,
@@ -112,23 +112,23 @@ pub struct HeldBack {
 }
 
 /// What [`Manager::sync_dist`] changes (or would change) so that `dist/` holds exactly
-/// the active plugins. IDs are sorted.
+/// the active packages. IDs are sorted.
 #[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
 pub struct DistSync {
-    /// Active plugins whose missing `dist/<id>` is deployed from the installed commit.
+    /// Active packages whose missing `dist/<id>` is deployed from the installed commit.
     pub deployed: Vec<String>,
-    /// Inactive (disabled, replaced, forgotten or retained) plugins whose `dist/<id>`
+    /// Inactive (disabled, replaced, forgotten or retained) packages whose `dist/<id>`
     /// is removed.
     pub removed: Vec<String>,
-    /// Workspace-relative paths under `dist/` that belong to no known plugin, or are not
+    /// Workspace-relative paths under `dist/` that belong to no known package, or are not
     /// real folders where a namespace folder belongs; left alone.
     pub unmanaged: Vec<String>,
-    /// Active plugins whose missing `dist/<id>` is not deployed, with the reason (clone
-    /// or installed commit missing, or another error in `sync_dist`). Plugins below a
+    /// Active packages whose missing `dist/<id>` is not deployed, with the reason (clone
+    /// or installed commit missing, or another error in `sync_dist`). Packages below a
     /// namespace path that is not a folder are not listed: that path is in `unmanaged`.
     pub skipped: Vec<SkippedDist>,
 }
-/// An active plugin left without `dist/` (see [`DistSync::skipped`]).
+/// An active package left without `dist/` (see [`DistSync::skipped`]).
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct SkippedDist {
     pub id: String,
@@ -150,7 +150,7 @@ pub struct UninstallPlan {
     pub deletes: Vec<String>,
     /// Empty for a clean clone: then uninstall needs no confirmation.
     pub lost_work: Vec<LostWork>,
-    /// Installed plugins that depend on this one: uninstall refuses unless forced.
+    /// Installed packages that depend on this one: uninstall refuses unless forced.
     pub dependents: Vec<String>,
 }
 
@@ -316,7 +316,7 @@ fn ensure_no_case_collision(base: &Path, id: &str) -> Result<()> {
             let name = entry?.file_name();
             if name != part && name.to_string_lossy().eq_ignore_ascii_case(part) {
                 return Err(Error::Workspace(format!(
-                    "plugin ID {id} collides with an existing path that differs only in letter case"
+                    "package ID {id} collides with an existing path that differs only in letter case"
                 )));
             }
         }
@@ -371,6 +371,8 @@ impl Manager {
             _lock: lock,
         };
         if root.join("state.json").exists() {
+            // Another format is refused before anything is recovered or created.
+            State::check_format(&fs::read(root.join("state.json"))?)?;
             txn::recover(&root)?;
         }
         if root.exists() && !root.join("state.json").exists() {
@@ -380,7 +382,7 @@ impl Manager {
                 "refusing nonempty directory without state.json"
             );
         }
-        fs::create_dir_all(root.join("plugins"))?;
+        fs::create_dir_all(root.join("packages"))?;
         fs::create_dir_all(root.join("dist"))?;
         if !root.join("state.json").exists() {
             fs::write(
@@ -406,13 +408,13 @@ impl Manager {
             .as_deref()
             .require(Error::InvalidArgument, "no catalog configured")
     }
-    /// The workspace state (`state.json`, any readable format; see [`crate::STATE_FORMAT`]).
+    /// The workspace state (`state.json` of format [`crate::STATE_FORMAT`]).
     pub fn state(&self) -> Result<State> {
         State::parse(&fs::read(self.root.join("state.json"))?)
     }
-    /// Installed plugins as a flat list (sorted by ID).
-    pub fn list(&self) -> Result<Vec<InstalledPlugin>> {
-        Ok(self.state()?.installed_in(&self.root))
+    /// Installed packages as a flat list (sorted by ID).
+    pub fn list(&self) -> Result<Vec<InstalledPackage>> {
+        Ok(self.state()?.installed())
     }
     /// Run `action` on a transaction that stages only the paths it touches; nothing
     /// in the live workspace changes unless the action succeeds.
@@ -426,7 +428,7 @@ impl Manager {
         // The installed revisions of each shared clone stay reachable (see `clones`): in
         // the staged copy as part of the transaction, else in the live clone afterwards.
         let keys: std::collections::BTreeSet<&str> = state
-            .plugins
+            .packages
             .values()
             .chain(state.forgotten.values())
             .filter_map(|p| p.clone.as_deref())
@@ -452,7 +454,7 @@ impl Manager {
     /// Compare installed versions with the configured catalog. Read-only.
     pub fn check(&self) -> Result<Vec<CheckRow>> {
         let state = self.state()?;
-        if state.plugins.is_empty() {
+        if state.packages.is_empty() {
             return Ok(Vec::new());
         }
         let location = self.catalog_location()?;
@@ -574,7 +576,7 @@ impl Manager {
             };
             let cloned = clone_revision(txn, &fetch, "incoming")?;
             let m = cloned.manifest.clone();
-            if let Some(installed) = state.plugins.get(&m.id).filter(|p| p.source == source) {
+            if let Some(installed) = state.packages.get(&m.id).filter(|p| p.source == source) {
                 let resolved = revision(&cloned.repo, &m)?;
                 already = Some(InstallResult {
                     id: m.id.clone(),
@@ -588,11 +590,11 @@ impl Manager {
                 });
             }
             check_new_id(txn.root(), state, &m)?;
-            // Everything installed stays at its version; the new plugin is added on top.
+            // Everything installed stays at its version; the new package is added on top.
             let mut next = state.clone();
-            next.plugins.insert(m.id.clone(), Installed::default());
-            next.plugins.get_mut(&m.id).unwrap().current.version = m.version.clone();
-            next.plugins.get_mut(&m.id).unwrap().adopt(&m);
+            next.packages.insert(m.id.clone(), Installed::default());
+            next.packages.get_mut(&m.id).unwrap().current.version = m.version.clone();
+            next.packages.get_mut(&m.id).unwrap().adopt(&m);
             let mut roots = deps::healthy_roots(state)?;
             if !state.replacements.contains_key(&m.id) {
                 roots.insert(m.id.clone(), deps::version(&m.version)?);
@@ -665,7 +667,7 @@ impl Manager {
         }
         let mut next = state.clone();
         let entry = next
-            .plugins
+            .packages
             .get_mut(id)
             .ok_or_else(|| Error::NotInstalled { id: id.into() })?;
         entry.current.version = m.version.clone();
@@ -678,7 +680,7 @@ impl Manager {
             if !next.replacements.contains_key(&root) {
                 roots.insert(
                     root.clone(),
-                    deps::version(&next.plugins[&root].current.version)?,
+                    deps::version(&next.packages[&root].current.version)?,
                 );
             }
         }
@@ -697,7 +699,7 @@ impl Manager {
         )?;
         self.install_missing(txn, state, &missing)
     }
-    /// Resolve all installed plugins together, without changing installed files or state.
+    /// Resolve all installed packages together, without changing installed files or state.
     /// Reads release tags from each origin; new dependencies come from the catalog.
     /// Prefers newer versions, with installed IDs in lexical order as tie-breaker.
     pub fn update_all_plan(&self) -> Result<UpdateAllPlan> {
@@ -718,7 +720,7 @@ impl Manager {
         let mut latest = BTreeMap::new();
         // One scratch copy per clone: the packages of a multi-package source share it.
         let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for (id, installed) in &state.plugins {
+        for (id, installed) in &state.packages {
             groups
                 .entry(installed.clone_folder(id))
                 .or_default()
@@ -727,8 +729,8 @@ impl Manager {
         let mut repos: BTreeMap<String, PathBuf> = BTreeMap::new();
         for (number, (relative, ids)) in groups.iter().enumerate() {
             let first = &ids[0];
-            let key = state.plugins[first].clone.as_deref();
-            let live = installed_repo(txn.root(), first, &state.plugins[first])?;
+            let key = state.packages[first].clone.as_deref();
+            let live = installed_repo(txn.root(), first, &state.packages[first])?;
             guard_clone(
                 &live,
                 state,
@@ -776,7 +778,7 @@ impl Manager {
                 }
             }
             for id in ids {
-                let installed = &state.plugins[id];
+                let installed = &state.packages[id];
                 let current = deps::version(&installed.current.version)?;
                 let mut newest = current.clone();
                 let mut versions = BTreeMap::new();
@@ -842,7 +844,7 @@ impl Manager {
         let mut plan = UpdateAllPlan::default();
         for (number, (id, release)) in selected.iter().enumerate() {
             let m = &release.manifest;
-            if let Some(installed) = state.plugins.get(id) {
+            if let Some(installed) = state.packages.get(id) {
                 if latest[id] != m.version {
                     plan.kept_back.push(HeldBack {
                         id: id.clone(),
@@ -866,7 +868,7 @@ impl Manager {
                     "release manifest changed for {id}"
                 );
                 let next = revision(&repo, m)?;
-                let installed = state.plugins.get_mut(id).unwrap();
+                let installed = state.packages.get_mut(id).unwrap();
                 plan.updates.push(RevisionChange {
                     id: id.clone(),
                     from: installed.current.clone(),
@@ -926,7 +928,7 @@ impl Manager {
         valid_id(id)?;
         self.transaction(|txn, state| {
             let p = state
-                .plugins
+                .packages
                 .get(id)
                 .cloned()
                 .ok_or_else(|| Error::NotInstalled { id: id.into() })?;
@@ -1021,13 +1023,13 @@ impl Manager {
             let path = match packages::find_at(&repo, &target, Some(id)) {
                 Ok(found) => found.subdir().map(str::to_owned),
                 Err(Error::InvalidArgument(_)) => {
-                    fail!(InvalidManifest, "plugin id changed upstream")
+                    fail!(InvalidManifest, "package id changed upstream")
                 }
                 Err(error) => return Err(error),
             };
             git(&repo, &["checkout", "--detach", &target])?;
             let m = package_manifest(&repo, path.as_deref())?;
-            ensure!(m.id == id, InvalidManifest, "plugin id changed upstream");
+            ensure!(m.id == id, InvalidManifest, "package id changed upstream");
             // Dev identity is the commit; release channels require a version bump.
             ensure!(
                 dev || m.version != p.current.version,
@@ -1036,7 +1038,7 @@ impl Manager {
             );
             self.check_change(txn, state, id, &m, true)?;
             let next = revision(&repo, &m)?;
-            let entry = state.plugins.get_mut(id).unwrap();
+            let entry = state.packages.get_mut(id).unwrap();
             entry.previous = Some(p.current.clone());
             entry.current = next.clone();
             entry.path = path.clone();
@@ -1056,7 +1058,7 @@ impl Manager {
         valid_id(id)?;
         self.transaction(|txn, state| {
             let p = state
-                .plugins
+                .packages
                 .get(id)
                 .cloned()
                 .ok_or_else(|| Error::NotInstalled { id: id.into() })?;
@@ -1089,7 +1091,7 @@ impl Manager {
                 "rollback manifest mismatch"
             );
             self.check_change(txn, state, id, &m, false)?;
-            let entry = state.plugins.get_mut(id).unwrap();
+            let entry = state.packages.get_mut(id).unwrap();
             entry.previous = Some(p.current.clone());
             entry.current = previous.clone();
             entry.path = path.clone();
@@ -1108,13 +1110,13 @@ impl Manager {
         self.set_enabled_with(id, enabled, false)
     }
     /// Disabling removes `dist/<id>`; enabling deploys it again from the clone at the
-    /// installed commit (unless the plugin is replaced). Disabling a plugin others
+    /// installed commit (unless the package is replaced). Disabling a package others
     /// depend on, or one that replaces another (`dependents` then names the originals),
     /// is refused with [`Error::HasDependents`] unless `force`.
     pub fn set_enabled_with(&self, id: &str, enabled: bool, force: bool) -> Result<()> {
         valid_id(id)?;
         self.transaction(|_, state| {
-            if !state.plugins.contains_key(id) {
+            if !state.packages.contains_key(id) {
                 return Err(Error::NotInstalled { id: id.into() });
             }
             if !enabled && !force {
@@ -1137,7 +1139,7 @@ impl Manager {
                     });
                 }
             }
-            state.plugins.get_mut(id).unwrap().enabled = enabled;
+            state.packages.get_mut(id).unwrap().enabled = enabled;
             Ok(())
         })
     }
@@ -1148,12 +1150,12 @@ impl Manager {
         self.set_enabled(id, false)
     }
     /// Forget registration but retain the repository; `dist/<id>` is removed (a
-    /// forgotten plugin is not installed) and `restore` deploys it again.
+    /// forgotten package is not installed) and `restore` deploys it again.
     pub fn forget(&self, id: &str) -> Result<()> {
         self.forget_with(id, false)
     }
     /// Like [`Manager::forget`]; dependents refuse unless `force`. Replacements this
-    /// plugin provides are dropped (their consumers go back to the original, whose
+    /// package provides are dropped (their consumers go back to the original, whose
     /// `dist/` is deployed again). A package
     /// of a shared clone is kept in `State::forgotten`, so its clone stays while it is
     /// forgotten and `restore`/`uninstall` find it; the clone's HEAD moves to a
@@ -1161,13 +1163,13 @@ impl Manager {
     pub fn forget_with(&self, id: &str, force: bool) -> Result<()> {
         valid_id(id)?;
         self.transaction(|txn, state| {
-            if !state.plugins.contains_key(id) {
+            if !state.packages.contains_key(id) {
                 return Err(Error::NotInstalled { id: id.into() });
             }
             if !force {
                 refuse_dependents(state, id, "forget")?;
             }
-            let installed = state.plugins.remove(id).unwrap();
+            let installed = state.packages.remove(id).unwrap();
             state.replacements.retain(|_, fork| fork != id);
             if let Some(key) = installed.clone.clone() {
                 let relative = installed.clone_folder(id);
@@ -1187,11 +1189,11 @@ impl Manager {
                 return restore_shared(txn, state, id, record);
             }
             // A missing clone is the real problem even when the ID is still registered.
-            let repo = plugin_repo(txn.root(), id)?;
-            if state.plugins.contains_key(id) {
+            let repo = package_repo(txn.root(), id)?;
+            if state.packages.contains_key(id) {
                 return Err(Error::AlreadyInstalled {
                     id: id.into(),
-                    message: format!("plugin {id} is already registered"),
+                    message: format!("package {id} is already registered"),
                 });
             }
             clean(&repo, id)?;
@@ -1199,11 +1201,11 @@ impl Manager {
             let head = git(&repo, &["rev-parse", "HEAD"])?;
             let path = match packages::find_at(&repo, &head, Some(id)) {
                 Ok(found) => found.subdir().map(str::to_owned),
-                Err(Error::InvalidArgument(_)) => fail!(InvalidManifest, "plugin id mismatch"),
+                Err(Error::InvalidArgument(_)) => fail!(InvalidManifest, "package id mismatch"),
                 Err(error) => return Err(error),
             };
             let m = package_manifest(&repo, path.as_deref())?;
-            ensure!(m.id == id, InvalidManifest, "plugin id mismatch");
+            ensure!(m.id == id, InvalidManifest, "package id mismatch");
             let mut installed = Installed {
                 source: configured_origin(&repo)
                     .require(Error::Git, "the retained clone has no origin remote")?,
@@ -1224,13 +1226,13 @@ impl Manager {
                 already_installed: false,
                 available: None,
             };
-            state.plugins.insert(id.to_owned(), installed);
-            txn.deploy(id, &format!("plugins/{id}"), path.as_deref(), &head)?;
+            state.packages.insert(id.to_owned(), installed);
+            txn.deploy(id, &format!("packages/{id}"), path.as_deref(), &head)?;
             Ok(result)
         })
     }
     /// Read-only: what `uninstall` would delete, which local work would be lost and
-    /// which installed plugins depend on it.
+    /// which installed packages depend on it.
     /// Matches the exact ID spelling (never a case variant on a case-insensitive FS).
     pub fn uninstall_plan(&self, id: &str) -> Result<UninstallPlan> {
         valid_id(id)?;
@@ -1247,13 +1249,13 @@ impl Manager {
         }
         Ok(UninstallPlan {
             id: id.into(),
-            registered: state.plugins.contains_key(id),
+            registered: state.packages.contains_key(id),
             deletes,
             lost_work: removal.lost_work,
             dependents: deps::dependents(&state, id),
         })
     }
-    /// Remove state entry, repository and dist; replacements this plugin provides are
+    /// Remove state entry, repository and dist; replacements this package provides are
     /// dropped (the originals become active again and their `dist/` is deployed). For a
     /// package of a shared clone the clone
     /// stays while other packages (registered or forgotten) use it, and its HEAD moves to
@@ -1265,7 +1267,7 @@ impl Manager {
     pub fn uninstall(&self, id: &str, confirm: bool) -> Result<()> {
         self.uninstall_with(id, confirm, false)
     }
-    /// [`Manager::uninstall`] that removes a plugin others depend on when `force`; the
+    /// [`Manager::uninstall`] that removes a package others depend on when `force`; the
     /// dependents then report an unsatisfied dependency.
     pub fn uninstall_with(&self, id: &str, confirm: bool, force: bool) -> Result<()> {
         valid_id(id)?;
@@ -1277,7 +1279,7 @@ impl Manager {
             if !confirm && !removal.lost_work.is_empty() {
                 return Err(lost_work::refusal(id, removal.lost_work));
             }
-            state.plugins.remove(id);
+            state.packages.remove(id);
             state.forgotten.remove(id);
             state.replacements.retain(|_, fork| fork != id);
             match (&removal.repo, &removal.key) {
@@ -1299,7 +1301,7 @@ impl Manager {
         let _busy = self.busy();
         replacement_plan(&self.state()?, original, Some(replacement))
     }
-    /// Make `replacement` (an installed plugin declaring `replaces: original`) the
+    /// Make `replacement` (an installed package declaring `replaces: original`) the
     /// provider of `original` for every consumer. Unsatisfied consumers refuse with
     /// [`Error::IncompatibleReplacement`] unless `confirm`. Self and cyclic replacement
     /// are always refused. Replacing again switches the single binding. `dist/<original>`
@@ -1342,21 +1344,20 @@ impl Manager {
         let _busy = self.busy();
         dist_drift(&self.root, &self.state()?)
     }
-    /// Make `dist/` hold exactly the active plugins: deploy a missing `dist/<id>` of an
-    /// active plugin from its clone at the installed commit and remove the `dist/` of
-    /// inactive ones (a workspace written by gitpm 0.4 or earlier keeps every installed
-    /// plugin there). An existing `dist/<id>` of an active plugin is left as it is;
+    /// Make `dist/` hold exactly the active packages: deploy a missing `dist/<id>` of an
+    /// active package from its clone at the installed commit and remove the `dist/` of
+    /// inactive ones (for example a folder copied into `dist/` by hand). An existing `dist/<id>` of an active package is left as it is;
     /// unknown folders are only reported. Every mutating operation does the same at its
     /// end; this one changes nothing else. A missing `dist/` that cannot be deployed
     /// (its clone is gone) is reported as an error here.
-    /// A plugin that cannot be deployed (see [`DistSync::skipped`], or any other error
+    /// A package that cannot be deployed (see [`DistSync::skipped`], or any other error
     /// for it) is reported in `skipped` and the others are still synced.
     pub fn sync_dist(&self) -> Result<DistSync> {
         self.transaction(|txn, state| {
             let mut plan = dist_drift(txn.root(), state)?;
             let mut deployed = Vec::new();
             for id in std::mem::take(&mut plan.deployed) {
-                match deploy_committed(txn, &id, &state.plugins[&id]) {
+                match deploy_committed(txn, &id, &state.packages[&id]) {
                     Ok(()) => deployed.push(id),
                     Err(error) => {
                         // Settled as "nothing to deploy" (the live dist is missing).
@@ -1377,12 +1378,12 @@ impl Manager {
 
 /// Bring all of `dist/` in line with [`State::is_active`] at the end of every mutating
 /// operation, inside its transaction: a staged or live `dist/<id>` of an inactive known
-/// plugin is removed; an active plugin whose `dist/` is missing, or that just became
-/// active, gets it from its clone at the installed commit. Folders of no known plugin
-/// are left alone, and so is an active plugin that cannot be deployed because its clone
+/// package is removed; an active package whose `dist/` is missing, or that just became
+/// active, gets it from its clone at the installed commit. Folders of no known package
+/// are left alone, and so is an active package that cannot be deployed because its clone
 /// or installed commit is missing or its namespace path is not a folder (callers report
 /// both with [`Manager::sync_dist_plan`]); any other failure fails the operation. Cheap:
-/// one listing of `dist/`, and Git reads only for the plugins deployed.
+/// one listing of `dist/`, and Git reads only for the packages deployed.
 fn settle_dist(txn: &mut Txn, before: &State, after: &State) -> Result<()> {
     let drift = dist_drift(txn.root(), after)?;
     for id in txn.staged_dists().into_iter().chain(drift.removed) {
@@ -1390,11 +1391,11 @@ fn settle_dist(txn: &mut Txn, before: &State, after: &State) -> Result<()> {
             txn.delete_dist(&id)?;
         }
     }
-    for (id, p) in &after.plugins {
+    for (id, p) in &after.packages {
         if !after.is_active(id) || txn.has_dist(id) || drift.skipped.iter().any(|s| s.id == *id) {
             continue;
         }
-        // A plugin below a namespace path that is not a folder is never deployed.
+        // A package below a namespace path that is not a folder is never deployed.
         let blocked = id
             .split_once('/')
             .is_some_and(|(ns, _)| drift.unmanaged.contains(&format!("dist/{ns}")))
@@ -1416,24 +1417,24 @@ fn deploy_committed(txn: &mut Txn, id: &str, p: &Installed) -> Result<()> {
     txn.deploy(id, &relative, p.path.as_deref(), &p.current.commit)
 }
 
-/// Compare `dist/` with the active plugins of `state` (read-only).
+/// Compare `dist/` with the active packages of `state` (read-only).
 fn dist_drift(root: &Path, state: &State) -> Result<DistSync> {
     let mut plan = DistSync::default();
     let dist = root.join("dist");
-    // A known ID: registered, forgotten, or a retained own clone `plugins/<id>`.
+    // A known ID: registered, forgotten, or a retained own clone `packages/<id>`.
     let known = |id: &str| {
         valid_id(id).is_ok()
-            && (state.plugins.contains_key(id)
+            && (state.packages.contains_key(id)
                 || state.forgotten.contains_key(id)
-                || plugin_repo(root, id).is_ok())
+                || package_repo(root, id).is_ok())
     };
     let is_namespace = |name: &str| {
         state
-            .plugins
+            .packages
             .keys()
             .chain(state.forgotten.keys())
             .any(|id| id.split_once('/').is_some_and(|(ns, _)| ns == name))
-            || (identity::valid_part(name).is_ok() && root.join("plugins").join(name).is_dir())
+            || (identity::valid_part(name).is_ok() && root.join("packages").join(name).is_dir())
     };
     // (name, real directory: not a symlink, not a file)
     let names = |folder: &Path| -> Result<Vec<(String, bool)>> {
@@ -1475,7 +1476,7 @@ fn dist_drift(root: &Path, state: &State) -> Result<DistSync> {
         .filter(|id| !state.is_active(id))
         .cloned()
         .collect();
-    for (id, p) in &state.plugins {
+    for (id, p) in &state.packages {
         if !state.is_active(id) || present.contains(id) {
             continue;
         }
@@ -1563,7 +1564,7 @@ fn restore_shared(
         available: None,
     };
     state.forgotten.remove(id);
-    state.plugins.insert(id.to_owned(), installed);
+    state.packages.insert(id.to_owned(), installed);
     txn.deploy(id, &relative, path.as_deref(), &commit)?;
     Ok(result)
 }
@@ -1683,9 +1684,9 @@ fn clone_revision(txn: &Txn, fetch: &Fetch, name: &str) -> Result<Cloned> {
     })
 }
 
-/// The new plugin's ID must not collide with anything installed or retained.
+/// The new package's ID must not collide with anything installed or retained.
 fn check_new_id(root: &Path, state: &State, m: &Manifest) -> Result<()> {
-    if state.plugins.contains_key(&m.id) {
+    if state.packages.contains_key(&m.id) {
         return Err(Error::AlreadyInstalled {
             message: format!("already installed: {}", m.id),
             id: m.id.clone(),
@@ -1700,29 +1701,20 @@ fn check_new_id(root: &Path, state: &State, m: &Manifest) -> Result<()> {
             id: m.id.clone(),
         });
     }
-    let taken = || state.plugins.keys().chain(state.forgotten.keys());
-    // A legacy ID can be a prefix of a scoped ID; never nest a repository in another.
-    ensure!(
-        !taken()
-            .any(|id| id.starts_with(&format!("{}/", m.id)) || m.id.starts_with(&format!("{id}/"))),
-        Workspace,
-        "plugin ID conflicts with an installed namespace path"
-    );
+    let taken = || state.packages.keys().chain(state.forgotten.keys());
     if let Some(other) = taken().find(|id| ids_collide(id, &m.id)) {
         return Err(Error::Workspace(format!(
-            "plugin ID {} differs only in letter case from installed {other}",
+            "package ID {} differs only in letter case from installed {other}",
             m.id
         )));
     }
-    ensure_no_case_collision(&root.join("plugins"), &m.id)?;
-    let dest = root.join("plugins").join(&m.id);
-    if m.id.contains('/') {
-        ensure!(
-            !dest.parent().unwrap().join(".git").exists(),
-            Workspace,
-            "namespace path is an existing plugin repository"
-        );
-    }
+    ensure_no_case_collision(&root.join("packages"), &m.id)?;
+    let dest = root.join("packages").join(&m.id);
+    ensure!(
+        !dest.parent().unwrap().join(".git").exists(),
+        Workspace,
+        "namespace path is an existing package repository"
+    );
     if dest.exists() {
         return Err(Error::AlreadyInstalled {
             message: format!("repository already exists: {}; use restore", m.id),
@@ -1732,7 +1724,7 @@ fn check_new_id(root: &Path, state: &State, m: &Manifest) -> Result<()> {
     Ok(())
 }
 
-/// Stage the verified clone as an installed plugin and register it.
+/// Stage the verified clone as an installed package and register it.
 fn adopt(
     txn: &mut Txn,
     state: &mut State,
@@ -1755,7 +1747,7 @@ fn adopt(
         ..Default::default()
     };
     installed.adopt(m);
-    state.plugins.insert(m.id.clone(), installed);
+    state.packages.insert(m.id.clone(), installed);
     Ok(InstallResult {
         id: m.id.clone(),
         source,
@@ -1768,9 +1760,9 @@ fn adopt(
     })
 }
 
-/// One catalog per workspace: plugins from another catalog must not be mixed in.
+/// One catalog per workspace: packages from another catalog must not be mixed in.
 fn ensure_single_catalog(state: &State, origin: &str) -> Result<()> {
-    if let Some((id, other)) = state.plugins.iter().find_map(|(id, p)| {
+    if let Some((id, other)) = state.packages.iter().find_map(|(id, p)| {
         p.catalog
             .as_deref()
             .filter(|c| *c != origin)
@@ -1778,7 +1770,7 @@ fn ensure_single_catalog(state: &State, origin: &str) -> Result<()> {
     }) {
         return Err(Error::Catalog(format!(
             "this workspace uses catalog {other} ({id} was installed from it); \
-             mixing catalogs is not supported, select that catalog or uninstall its plugins"
+             mixing catalogs is not supported, select that catalog or uninstall its packages"
         )));
     }
     Ok(())
@@ -1809,13 +1801,13 @@ pub struct IncompatibleConsumer {
 #[derive(Clone, Debug, Serialize)]
 pub struct ReplacementPlan {
     pub original: String,
-    /// Plugin that provides `original` afterwards (the original itself when switching back).
+    /// Package that provides `original` afterwards (the original itself when switching back).
     pub provider: String,
     /// Version consumers see: the fork's declared `replaces.version`, or the original's.
     pub version: String,
     /// Current provider if `original` is replaced now.
     pub current: Option<String>,
-    /// Installed plugins that depend on `original`.
+    /// Installed packages that depend on `original`.
     pub consumers: Vec<String>,
     /// Consumers whose requirement `version` does not satisfy (need confirmation).
     pub incompatible: Vec<IncompatibleConsumer>,
@@ -1858,7 +1850,7 @@ fn replacement_plan(
                 "cannot replace {original} by itself"
             );
             let installed = state
-                .plugins
+                .packages
                 .get(fork)
                 .ok_or_else(|| Error::NotInstalled { id: fork.into() })?;
             // A disabled replacement has no dist/: nothing would be loaded for either.
@@ -1903,7 +1895,7 @@ fn replacement_plan(
                 format!("{original} is not replaced"),
             )?;
             let installed = state
-                .plugins
+                .packages
                 .get(original)
                 .ok_or_else(|| Error::NotInstalled {
                     id: original.into(),
@@ -1912,7 +1904,7 @@ fn replacement_plan(
         }
     };
     let consumers: Vec<String> = state
-        .plugins
+        .packages
         .iter()
         .filter(|(id, p)| **id != provider && p.dependencies.contains_key(original))
         .map(|(id, _)| id.clone())
@@ -1920,7 +1912,7 @@ fn replacement_plan(
     let incompatible = consumers
         .iter()
         .filter_map(|id| {
-            let requirement = &state.plugins[id].dependencies[original];
+            let requirement = &state.packages[id].dependencies[original];
             (!deps::matches(requirement, &version)).then(|| IncompatibleConsumer {
                 id: id.clone(),
                 requirement: requirement.clone(),
@@ -1937,7 +1929,7 @@ fn replacement_plan(
             next.replacements.remove(original);
         }
     }
-    let broken: Vec<String> = deps::status(&next, &next.plugins[&provider])
+    let broken: Vec<String> = deps::status(&next, &next.packages[&provider])
         .into_iter()
         .filter(|s| !s.satisfied)
         .map(|s| {
@@ -2003,7 +1995,7 @@ mod tests {
             (ws, m)
         }
         fn repo(&self) -> PathBuf {
-            self.root.join("plugins").join(&self.author.id)
+            self.root.join("packages").join(&self.author.id)
         }
         fn dist(&self) -> PathBuf {
             self.root.join("dist").join(&self.author.id)
@@ -2080,17 +2072,17 @@ mod tests {
     #[test]
     fn exact_path_matches_spelling_component_by_component() {
         let dir = TempDir::new("workspace");
-        fs::create_dir_all(dir.join("plugins/vendor/module/.git")).unwrap();
-        let plugins = dir.join("plugins");
+        fs::create_dir_all(dir.join("packages/vendor/module/.git")).unwrap();
+        let plugins = dir.join("packages");
         assert!(exact_path(&plugins, "vendor/module").unwrap());
         assert!(exact_path(&plugins, "vendor").unwrap());
         for other in ["Vendor/module", "vendor/Module", "vendor/mod", "x"] {
             assert!(!exact_path(&plugins, other).unwrap(), "{other}");
         }
         assert!(!exact_path(&dir.join("missing"), "vendor").unwrap());
-        assert!(plugin_repo(dir.path(), "vendor/module").is_ok());
+        assert!(package_repo(dir.path(), "vendor/module").is_ok());
         for other in ["vendor", "Vendor/module", "vendor/other"] {
-            let error = plugin_repo(dir.path(), other).unwrap_err();
+            let error = package_repo(dir.path(), other).unwrap_err();
             assert!(
                 matches!(&error, Error::RepositoryNotFound { id } if id == other),
                 "{error:?}"
@@ -2112,9 +2104,10 @@ mod tests {
         assert_eq!(m.options().catalog.as_deref(), Some("catalog-local"));
         assert_eq!(
             read(&root.join("state.json")),
-            "{\n  \"format\": 2,\n  \"plugins\": {}\n}"
+            "{\n  \"format\": 3,\n  \"packages\": {}\n}"
         );
-        assert!(root.join("plugins").is_dir() && root.join("dist").is_dir());
+        assert!(root.join("packages").is_dir() && root.join("dist").is_dir());
+        assert!(!root.join("plugins").exists());
         assert!(dir.join("nested/.workspace.lock").exists());
         assert!(m.list().unwrap().is_empty());
         let error = Manager::open(&root).err().unwrap();
@@ -2151,11 +2144,15 @@ mod tests {
         for (text, kind) in [
             ("{truncated", "invalid_data"),
             (
-                r#"{"plugins":{"../evil":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true}}}"#,
+                r#"{"format":3,"packages":{"../evil":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true,"metadata":{}}}}"#,
                 "invalid_id",
             ),
             (
-                r#"{"plugins":{"a/b/c":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true}}}"#,
+                r#"{"format":3,"packages":{"a/b/c":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true,"metadata":{}}}}"#,
+                "invalid_id",
+            ),
+            (
+                r#"{"format":3,"packages":{"demo1":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true,"metadata":{}}}}"#,
                 "invalid_id",
             ),
         ] {
@@ -2188,7 +2185,7 @@ mod tests {
             let recovered = ws.open();
             for author in [&ws.author, &other] {
                 let state = recovered.state().unwrap();
-                let installed = &state.plugins[&author.id];
+                let installed = &state.packages[&author.id];
                 assert_eq!(installed.current.version, "0.2.0", "crash after {renames}");
                 assert_eq!(installed.previous.as_ref().unwrap().version, "0.1.0");
                 assert_eq!(installed.current.commit, author.head());
@@ -2211,7 +2208,7 @@ mod tests {
             drop(m);
             let m = ws.open();
             assert!(
-                !m.state().unwrap().plugins[id].enabled,
+                !m.state().unwrap().packages[id].enabled,
                 "crash after {renames}"
             );
             assert!(!ws.dist().exists(), "crash after {renames}");
@@ -2224,7 +2221,7 @@ mod tests {
             drop(m);
             let m = ws.open();
             assert!(
-                m.state().unwrap().plugins[id].enabled,
+                m.state().unwrap().packages[id].enabled,
                 "crash after {renames}"
             );
             assert_eq!(
@@ -2311,7 +2308,7 @@ mod tests {
         drop(m);
         let before = tree_hash(&ws.root);
         // Crash while staging: no journal yet.
-        fs::create_dir_all(ws.root.join(txn::DIR).join("new/plugins/dan/half")).unwrap();
+        fs::create_dir_all(ws.root.join(txn::DIR).join("new/packages/dan/half")).unwrap();
         let m = ws.open();
         assert_eq!(tree_hash(&ws.root), before);
         ws.no_leftovers();
@@ -2379,17 +2376,17 @@ mod tests {
                 matches!(&error, Error::NotInstalled { id: e } if e == id),
                 "{error:?}"
             );
-            assert_eq!(error.to_string(), format!("plugin {id} is not installed"));
+            assert_eq!(error.to_string(), format!("package {id} is not installed"));
         }
         for error in [
             ws.refuses("repository_not_found", || m.uninstall_plan(id)),
             ws.refuses("repository_not_found", || m.uninstall(id, false)),
             ws.refuses("repository_not_found", || m.uninstall(id, true)),
-            // A namespace directory is not a plugin.
-            ws.refuses("repository_not_found", || m.uninstall("dan", true)),
         ] {
             assert!(matches!(error, Error::RepositoryNotFound { .. }));
         }
+        // A namespace is not a package ID.
+        ws.refuses("invalid_id", || m.uninstall("dan", true));
         // Restore of an unknown ID fails too (see the ignored test for its kind).
         let before = tree_hash(&ws.root);
         assert!(m.restore(id).is_err());
@@ -2407,7 +2404,7 @@ mod tests {
     fn corrupt_state_blocks_every_operation_and_is_not_overwritten() {
         let (ws, m) = Ws::installed("dan/demo1");
         let id = "dan/demo1";
-        fs::write(ws.root.join("state.json"), "{\"plugins\": {").unwrap();
+        fs::write(ws.root.join("state.json"), "{\"packages\": {").unwrap();
         let other = ws.other_author("other", "dan/other");
         ws.refuses("invalid_data", || m.state());
         ws.refuses("invalid_data", || m.list());
@@ -2423,7 +2420,7 @@ mod tests {
         ws.refuses("invalid_data", || {
             m.fork_in_namespace(id, &ws.dir.join("f"), "me")
         });
-        assert_eq!(read(&ws.root.join("state.json")), "{\"plugins\": {");
+        assert_eq!(read(&ws.root.join("state.json")), "{\"packages\": {");
         assert!(!ws.dir.join("f").exists());
     }
 
@@ -2451,7 +2448,7 @@ mod tests {
         assert!(result.fork_of.is_none());
 
         let state = m.state().unwrap();
-        let p = &state.plugins["dan/demo1"];
+        let p = &state.packages["dan/demo1"];
         assert!(p.enabled && p.previous.is_none() && p.fork_of.is_none());
         assert_eq!(p.current.commit, c110);
         assert_eq!(fixture_git(&ws.repo(), &["rev-parse", "HEAD"]), c110);
@@ -2473,24 +2470,24 @@ mod tests {
 
     #[test]
     fn install_channels_and_explicit_refs() {
-        let ws = Ws::new("demo1");
+        let ws = Ws::new("dan/demo1");
         let first = ws.author.head();
         ws.author.release("0.2.0");
         let head = ws.author.commit("0.3.0");
         let m = ws.open();
         ws.refuses("invalid_argument", || {
-            m.install_channel(ws.author.source(), Some("v0.1.0"), true)
+            m.install_channel(ws.author.source(), Some("dan/demo1@0.1.0"), true)
         });
         let r = m
-            .install_channel(ws.author.source(), Some("v0.1.0"), false)
+            .install_channel(ws.author.source(), Some("dan/demo1@0.1.0"), false)
             .unwrap();
         assert_eq!(
             (r.id.as_str(), r.current.commit.as_str()),
-            ("demo1", first.as_str())
+            ("dan/demo1", first.as_str())
         );
-        assert!(ws.root.join("plugins/demo1/.git").is_dir());
-        assert!(ws.root.join("dist/demo1/index.js").is_file());
-        m.uninstall("demo1", false).unwrap();
+        assert!(ws.root.join("packages/dan/demo1/.git").is_dir());
+        assert!(ws.root.join("dist/dan/demo1/index.js").is_file());
+        m.uninstall("dan/demo1", false).unwrap();
         let r = m.install_channel(ws.author.source(), None, true).unwrap();
         assert_eq!(
             (r.current.version.as_str(), r.current.commit),
@@ -2510,7 +2507,7 @@ mod tests {
         );
         assert_eq!(
             again.current,
-            m.state().unwrap().plugins["dan/demo1"].current
+            m.state().unwrap().packages["dan/demo1"].current
         );
         assert_eq!(tree_hash(&ws.root), before);
         ws.no_leftovers();
@@ -2548,14 +2545,11 @@ mod tests {
             m.install_ref(no_dist.source(), Some("HEAD"), None)
         });
 
-        // A legacy ID is a prefix of an installed scoped ID (and vice versa).
-        let legacy = ws.other_author("legacy", "dan");
-        let error = ws.refuses("workspace", || m.install(legacy.source()));
-        assert!(error.to_string().contains("namespace path"));
-        let legacy2 = ws.other_author("legacy2", "solo");
-        m.install(legacy2.source()).unwrap();
-        let nested = ws.other_author("nested", "solo/inner");
-        ws.refuses("workspace", || m.install(nested.source()));
+        // An unscoped ID is refused, also when it equals an installed namespace.
+        let unscoped = ws.other_author("unscoped", "dan");
+        ws.refuses("invalid_id", || m.install(unscoped.source()));
+        let solo = ws.other_author("solo", "solo");
+        ws.refuses("invalid_id", || m.install(solo.source()));
 
         // The expected manifest must match the Git revision exactly.
         let other = ws.other_author("other", "dan/other");
@@ -2603,11 +2597,11 @@ mod tests {
         let restored = m.restore("dan/demo1").unwrap();
         assert_eq!(restored.source, ws.author.source());
         assert_eq!(restored.current.version, "0.1.0");
-        let p = &m.state().unwrap().plugins["dan/demo1"];
+        let p = &m.state().unwrap().packages["dan/demo1"];
         assert!(p.enabled && p.previous.is_none());
         assert!(ws.dist().join("index.js").is_file());
         let error = ws.refuses("already_installed", || m.restore("dan/demo1"));
-        assert_eq!(error.to_string(), "plugin dan/demo1 is already registered");
+        assert_eq!(error.to_string(), "package dan/demo1 is already registered");
     }
 
     #[test]
@@ -2626,10 +2620,10 @@ mod tests {
         let error = ws.refuses("local_changes", || m.restore("dan/demo1"));
         assert!(matches!(error, Error::LocalChanges { items, .. } if items.len() == 1));
         fixture_git(&ws.repo(), &["checkout", "-q", "--", "dist/index.js"]);
-        // The repository's manifest names another plugin.
-        copy_tree(&ws.repo(), &ws.root.join("plugins/dan/alias2"), true).unwrap();
+        // The repository's manifest names another package.
+        copy_tree(&ws.repo(), &ws.root.join("packages/dan/alias2"), true).unwrap();
         let error = ws.refuses("invalid_manifest", || m.restore("dan/alias2"));
-        assert_eq!(error.to_string(), "plugin id mismatch");
+        assert_eq!(error.to_string(), "package id mismatch");
     }
 
     // ---- update / rollback ----------------------------------------------------------
@@ -2649,11 +2643,11 @@ mod tests {
             (change.from.commit.as_str(), change.to.commit.as_str()),
             (v1.as_str(), v2.as_str())
         );
-        let p = m.state().unwrap().plugins[id].clone();
+        let p = m.state().unwrap().packages[id].clone();
         assert_eq!(p.current.version, "0.2.0");
         assert_eq!(p.previous.as_ref().unwrap().commit, v1);
         assert!(!p.enabled, "update keeps the enabled flag");
-        assert!(!ws.dist().exists(), "a disabled plugin has no dist");
+        assert!(!ws.dist().exists(), "a disabled package has no dist");
         m.enable(id).unwrap();
         assert_eq!(
             read(&ws.dist().join("index.js")),
@@ -2671,7 +2665,7 @@ mod tests {
             read(&ws.dist().join("index.js")),
             "export const v = \"0.1.0\";\n"
         );
-        let p = m.state().unwrap().plugins[id].clone();
+        let p = m.state().unwrap().packages[id].clone();
         assert_eq!(p.previous.unwrap().version, "0.2.0");
         let forward = m.rollback(id).unwrap();
         assert_eq!(forward.to.commit, v2);
@@ -2697,7 +2691,7 @@ mod tests {
         fixture_git(&ws.author.path, &["commit", "-q", "-am", "rename"]);
         let renamed = ws.author.head();
         let error = ws.refuses("invalid_manifest", || m.update_ref(id, Some(&renamed)));
-        assert_eq!(error.to_string(), "plugin id changed upstream");
+        assert_eq!(error.to_string(), "package id changed upstream");
     }
 
     /// New upstream commit that keeps the manifest version.
@@ -2896,17 +2890,17 @@ mod tests {
     #[test]
     fn enable_and_disable_change_only_the_flag() {
         let (ws, m) = Ws::installed("dan/demo1");
-        let before = serde_json::to_value(&m.state().unwrap().plugins["dan/demo1"]).unwrap();
-        let payload = tree_hash(&ws.root.join("plugins"));
+        let before = serde_json::to_value(&m.state().unwrap().packages["dan/demo1"]).unwrap();
+        let payload = tree_hash(&ws.root.join("packages"));
         m.disable("dan/demo1").unwrap();
         m.disable("dan/demo1").unwrap();
-        let mut after = serde_json::to_value(&m.state().unwrap().plugins["dan/demo1"]).unwrap();
+        let mut after = serde_json::to_value(&m.state().unwrap().packages["dan/demo1"]).unwrap();
         assert_eq!(after["enabled"], false);
         after["enabled"] = true.into();
         assert_eq!(after, before);
         m.set_enabled("dan/demo1", true).unwrap();
         assert!(m.list().unwrap()[0].enabled);
-        assert_eq!(tree_hash(&ws.root.join("plugins")), payload);
+        assert_eq!(tree_hash(&ws.root.join("packages")), payload);
         ws.no_leftovers();
     }
 
@@ -2940,9 +2934,9 @@ mod tests {
         let (ws, m) = Ws::installed("dan/demo1");
         let other = ws.other_author("other", "dan/other");
         m.install(other.source()).unwrap();
-        let other_repo = tree_hash(&ws.root.join("plugins/dan/other"));
+        let other_repo = tree_hash(&ws.root.join("packages/dan/other"));
         m.uninstall("dan/demo1", false).unwrap();
-        assert_eq!(tree_hash(&ws.root.join("plugins/dan/other")), other_repo);
+        assert_eq!(tree_hash(&ws.root.join("packages/dan/other")), other_repo);
         assert!(ws.root.join("dist/dan/other/index.js").is_file());
         assert_eq!(m.list().unwrap().len(), 1);
     }
@@ -2987,8 +2981,7 @@ mod tests {
                 .version,
             "0.2.0"
         );
-        let overview = m.browse_catalog().unwrap();
-        assert_eq!(overview.format, catalog::CatalogFormat::V2);
+        assert!(!m.browse_catalog().unwrap().items.is_empty());
 
         let installed = m.install_from_catalog("dan/demo1", Some("0.1.0")).unwrap();
         assert_eq!(installed.current.version, "0.1.0");
@@ -3082,8 +3075,17 @@ mod tests {
             ws.author.source()
         );
         assert_eq!(fixture_git(&path, &["branch", "--show-current"]), "fork-2");
-        assert_eq!(fixture_git(&path, &["config", "pm.forkBase"]), base);
-        assert_eq!(fixture_git(&path, &["config", "pm.forkVersion"]), "0.1.0");
+        // `forkOf` in the manifest is the only fork provenance: no `pm.*` Git config.
+        let config = std::process::Command::new("git")
+            .args(["config", "--local", "--get-regexp", r"^pm\."])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+        assert!(
+            !config.status.success() && config.stdout.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&config.stdout)
+        );
         assert_eq!(fixture_git(&path, &["status", "--porcelain"]), "");
         assert_eq!(
             fixture_git(&path, &["log", "-1", "--format=%s"]),
@@ -3115,7 +3117,7 @@ mod tests {
             m.fork_in_namespace(id, &ws.root.join("inside"), "me")
         });
         ws.refuses("invalid_argument", || {
-            m.fork_in_namespace(id, &ws.root.join("plugins/new/deeper"), "me")
+            m.fork_in_namespace(id, &ws.root.join("packages/new/deeper"), "me")
         });
         fs::create_dir_all(&dest).unwrap();
         let error = ws.refuses("invalid_argument", || m.fork_in_namespace(id, &dest, "me"));
@@ -3176,12 +3178,12 @@ mod tests {
         fixture_git(&linked.path, &["tag", "-f", "dan/linked@0.1.0"]);
         m.install(linked.source()).expect("dist/ has no symlink");
         m.disable("dan/demo1")
-            .expect("other plugins stay manageable");
-        // The plugin itself stays updatable; its repository symlink is kept.
+            .expect("other packages stay manageable");
+        // The package itself stays updatable; its repository symlink is kept.
         linked.release("0.2.0");
         m.update("dan/linked").unwrap();
         assert!(
-            fs::symlink_metadata(ws.root.join("plugins/dan/linked/manifest-link"))
+            fs::symlink_metadata(ws.root.join("packages/dan/linked/manifest-link"))
                 .unwrap()
                 .file_type()
                 .is_symlink()
@@ -3197,22 +3199,22 @@ mod tests {
 
     #[test]
     fn symlinked_namespace_directory_is_never_followed() {
-        // Install: `plugins/vendor` points outside; nothing may be written there.
+        // Install: `packages/vendor` points outside; nothing may be written there.
         let ws = Ws::new("vendor/demo1");
         let m = ws.open();
         let outside = ws.dir.join("outside");
         fs::create_dir_all(&outside).unwrap();
-        std::os::unix::fs::symlink(&outside, ws.root.join("plugins/vendor")).unwrap();
+        std::os::unix::fs::symlink(&outside, ws.root.join("packages/vendor")).unwrap();
         ws.refuses("workspace", || m.install(ws.author.source()));
         assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
 
-        // Uninstall/update of an installed plugin whose namespace was swapped for a
+        // Uninstall/update of an installed package whose namespace was swapped for a
         // symlink: the external directory survives untouched.
         let (ws, m) = Ws::installed("dan/demo1");
         let outside = ws.dir.join("outside");
         fs::create_dir_all(&outside).unwrap();
-        fs::rename(ws.root.join("plugins/dan"), outside.join("dan")).unwrap();
-        std::os::unix::fs::symlink(outside.join("dan"), ws.root.join("plugins/dan")).unwrap();
+        fs::rename(ws.root.join("packages/dan"), outside.join("dan")).unwrap();
+        std::os::unix::fs::symlink(outside.join("dan"), ws.root.join("packages/dan")).unwrap();
         ws.refuses("workspace", || m.uninstall_with("dan/demo1", true, true));
         assert!(outside.join("dan/demo1/.git").is_dir());
         ws.author.release("0.2.0");
@@ -3375,9 +3377,9 @@ mod tests {
         let clones = mono.clones();
         assert_eq!(clones.len(), 1, "{clones:?}");
         assert!(clones[0].starts_with("mono-"), "{clones:?}");
-        assert!(!mono.root.join("plugins/tilr").exists());
+        assert!(!mono.root.join("packages/tilr").exists());
         let state = m.state().unwrap();
-        let p = &state.plugins["tilr/store"];
+        let p = &state.packages["tilr/store"];
         assert_eq!(p.clone.as_deref(), Some(clones[0].as_str()));
         assert_eq!(p.path.as_deref(), Some("packages/store"));
         // Only the package's own dist is deployed.
@@ -3434,7 +3436,7 @@ mod tests {
         // The other package has no new release: nothing changes.
         assert!(!m.update("tilr/theme").unwrap().changed);
         let state = m.state().unwrap();
-        assert_eq!(state.plugins["tilr/theme"].current.version, "1.0.0");
+        assert_eq!(state.packages["tilr/theme"].current.version, "1.0.0");
         m.rollback("tilr/store").unwrap();
         assert_eq!(mono.dist("store"), "store 1.0.0");
         m.update("tilr/store").unwrap();
@@ -3495,7 +3497,7 @@ mod tests {
         mono.refuses("local_changes", || m.uninstall("tilr/theme", false));
         m.uninstall("tilr/theme", true).unwrap();
         assert!(mono.clones().is_empty());
-        assert!(m.state().unwrap().plugins.is_empty());
+        assert!(m.state().unwrap().packages.is_empty());
     }
 
     #[test]
@@ -3520,12 +3522,12 @@ mod tests {
             error.to_string().contains("not in this repository"),
             "{error}"
         );
-        // Legacy v-tags are ambiguous in a multi-package repository.
+        // A `vVERSION` tag is no release of any package: ignored without a warning.
         fixture_git(&mono.repo, &["tag", "v3.0.0"]);
-        let error = mono.refuses("version_conflict", || {
-            m.install_package(mono.source(), Some("tilr/theme"), None, false)
-        });
-        assert!(error.to_string().contains("ambiguous"), "{error}");
+        let installed = m
+            .install_package(mono.source(), Some("tilr/theme"), None, false)
+            .unwrap();
+        assert_eq!(installed.current.version, "1.0.0");
     }
 
     #[test]
@@ -3545,7 +3547,7 @@ mod tests {
         assert_eq!(config.packages, ["packages/theme"]);
         let state = m.state().unwrap();
         assert_eq!(state.replacements["tilr/theme"], "me/theme");
-        let fork = &state.plugins["me/theme"];
+        let fork = &state.packages["me/theme"];
         assert_eq!(fork.path.as_deref(), Some("packages/theme"));
         assert_eq!(fork.fork_of.as_ref().unwrap().id, "tilr/theme");
         // A second fork_replace fails before anything is created.
@@ -3670,7 +3672,7 @@ mod tests {
         assert_eq!(theme.failed, Some(ForkStep::Release));
         assert_eq!(result.error().unwrap().kind(), "version_conflict");
         assert!(third.join("packages/theme/plugin.json").is_file());
-        assert!(!m.state().unwrap().plugins.contains_key("ns3/theme"));
+        assert!(!m.state().unwrap().packages.contains_key("ns3/theme"));
     }
 
     // ---- regressions: forks, shared clones, layouts ------------------------------------
@@ -3716,7 +3718,7 @@ mod tests {
 
     #[test]
     fn a_root_package_moved_into_a_folder_keeps_updating_and_forks() {
-        // B2/B8: own clone (`plugins/<id>`) with a package folder.
+        // B2/B8: own clone (`packages/<id>`) with a package folder.
         let dir = TempDir::new("moved");
         let repo = scaffold::init(&dir.join("x"), "acme", "x").unwrap().repo;
         let m = reopen(&dir.join("workspace")).unwrap();
@@ -3736,7 +3738,7 @@ mod tests {
         scaffold::commit_package(&repo, "0.2.0", Some("acme/x")).unwrap();
         m.update("acme/x").unwrap();
         let state = m.state().unwrap();
-        let p = &state.plugins["acme/x"];
+        let p = &state.packages["acme/x"];
         assert_eq!(p.path.as_deref(), Some("packages/x"));
         assert!(p.clone.is_none() && !p.is_root_package());
         fs::write(repo.join("packages/x/dist/index.js"), "x 0.3.0").unwrap();
@@ -3757,7 +3759,7 @@ mod tests {
         let restored = m.restore("acme/x").unwrap();
         assert_eq!(restored.current.version, "0.3.0");
         assert_eq!(
-            m.state().unwrap().plugins["acme/x"].path.as_deref(),
+            m.state().unwrap().packages["acme/x"].path.as_deref(),
             Some("packages/x")
         );
     }
@@ -3773,7 +3775,7 @@ mod tests {
         }
         m.forget("tilr/store").unwrap();
         let state = m.state().unwrap();
-        assert!(!state.plugins.contains_key("tilr/store"));
+        assert!(!state.packages.contains_key("tilr/store"));
         assert_eq!(
             state.forgotten["tilr/store"].path.as_deref(),
             Some("packages/store")
@@ -3794,7 +3796,7 @@ mod tests {
         let state = m.state().unwrap();
         assert!(state.forgotten.is_empty());
         assert_eq!(
-            state.plugins["tilr/store"].clone.as_deref(),
+            state.packages["tilr/store"].clone.as_deref(),
             Some(mono.clones()[0].as_str())
         );
         mono.release("store", "1.1.0");
@@ -3810,7 +3812,7 @@ mod tests {
         assert!(mono.clones().is_empty());
         assert!(!mono.root.join("dist/tilr/store").exists());
         let state = m.state().unwrap();
-        assert!(state.plugins.is_empty() && state.forgotten.is_empty());
+        assert!(state.packages.is_empty() && state.forgotten.is_empty());
         mono.refuses("repository_not_found", || m.uninstall("tilr/store", true));
     }
 
@@ -3823,7 +3825,7 @@ mod tests {
             m.install_package(mono.source(), Some(id), None, false)
                 .unwrap();
         }
-        let store = m.state().unwrap().plugins["tilr/store"]
+        let store = m.state().unwrap().packages["tilr/store"]
             .current
             .commit
             .clone();
@@ -3921,13 +3923,13 @@ mod tests {
         m.update("tilr/store").unwrap();
         assert_eq!(mono.dist("store"), "store moved");
         assert_eq!(
-            m.state().unwrap().plugins["tilr/store"].path.as_deref(),
+            m.state().unwrap().packages["tilr/store"].path.as_deref(),
             Some("apps/store")
         );
         m.rollback("tilr/store").unwrap();
         assert_eq!(mono.dist("store"), "store 1.0.0");
         assert_eq!(
-            m.state().unwrap().plugins["tilr/store"].path.as_deref(),
+            m.state().unwrap().packages["tilr/store"].path.as_deref(),
             Some("packages/store")
         );
         m.update_all().unwrap();
@@ -3963,7 +3965,7 @@ mod tests {
         // A missing installed revision is reported as such, not as diverged history.
         let mut state: serde_json::Value =
             serde_json::from_slice(&fs::read(mono.root.join("state.json")).unwrap()).unwrap();
-        state["plugins"]["tilr/store"]["current"]["commit"] = "1".repeat(40).into();
+        state["packages"]["tilr/store"]["current"]["commit"] = "1".repeat(40).into();
         fs::write(mono.root.join("state.json"), state.to_string()).unwrap();
         let error = m
             .fork_packages(
@@ -4055,26 +4057,31 @@ mod tests {
     }
 
     #[test]
-    fn a_workspace_of_gitpm_0_3_opens_and_is_written_as_format_2() {
+    fn a_workspace_of_another_state_format_is_refused_unchanged() {
         let (ws, m) = Ws::installed("dan/demo1");
         drop(m);
         let path = ws.root.join("state.json");
         let mut state: serde_json::Value =
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        state.as_object_mut().unwrap().remove("format");
-        fs::write(&path, serde_json::to_vec_pretty(&state).unwrap()).unwrap();
-        let m = ws.open();
-        assert_eq!(m.state().unwrap().format, 1);
-        assert_eq!(m.list().unwrap().len(), 1);
-        m.disable("dan/demo1").unwrap();
-        assert_eq!(m.state().unwrap().format, 2);
-        assert!(read(&path).starts_with("{\n  \"format\": 2,"));
-        drop(m);
-        state["format"] = 3.into();
-        fs::write(&path, serde_json::to_vec_pretty(&state).unwrap()).unwrap();
-        let error = reopen(&ws.root).err().unwrap();
-        assert_eq!(error.kind(), "unsupported");
-        assert!(error.to_string().contains("newer gitpm"), "{error}");
+        // gitpm 0.4/0.5: format 2, packages under `plugins`, clones under `plugins/`.
+        let packages = state.as_object_mut().unwrap().remove("packages").unwrap();
+        state["plugins"] = packages;
+        for format in [None, Some(2), Some(4)] {
+            match format {
+                Some(n) => state["format"] = n.into(),
+                None => drop(state.as_object_mut().unwrap().remove("format")),
+            }
+            fs::write(&path, serde_json::to_vec_pretty(&state).unwrap()).unwrap();
+            let before = tree_hash(ws.dir.path());
+            let error = reopen(&ws.root).err().unwrap();
+            assert_eq!(error.kind(), "unsupported", "{format:?}");
+            assert!(error.to_string().contains("only format 3"), "{error}");
+            assert_eq!(
+                tree_hash(ws.dir.path()),
+                before,
+                "nothing is rewritten or created"
+            );
+        }
     }
 
     // ---- revisions, tags and records of shared clones ----------------------------------
@@ -4117,7 +4124,10 @@ mod tests {
         mono.write("theme", "1.2.0", &[]);
         let dev = mono.commit("theme dev");
         m.update_channel("tilr/theme", None, true).unwrap();
-        assert_eq!(m.state().unwrap().plugins["tilr/theme"].current.commit, dev);
+        assert_eq!(
+            m.state().unwrap().packages["tilr/theme"].current.commit,
+            dev
+        );
         let clone = mono.clone_dir();
         assert_eq!(
             keep_refs(&clone),
@@ -4136,7 +4146,7 @@ mod tests {
         gc(&clone);
         for commit in [
             &dev,
-            &m.state().unwrap().plugins["tilr/theme"]
+            &m.state().unwrap().packages["tilr/theme"]
                 .previous
                 .clone()
                 .unwrap()
@@ -4254,7 +4264,7 @@ mod tests {
         assert!(plan.deletes.is_empty(), "{:?}", plan.deletes);
         m.uninstall("tilr/store", false).unwrap();
         let state = m.state().unwrap();
-        assert!(state.forgotten.is_empty() && state.plugins.is_empty());
+        assert!(state.forgotten.is_empty() && state.packages.is_empty());
         assert!(!mono.root.join("dist/tilr/store").exists());
     }
 

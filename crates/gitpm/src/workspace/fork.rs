@@ -410,7 +410,7 @@ impl Manager {
         let mut installed = Vec::new();
         for id in ids {
             let p = state
-                .plugins
+                .packages
                 .get(*id)
                 .ok_or_else(|| Error::NotInstalled { id: (*id).into() })?;
             installed.push((*id, p));
@@ -477,19 +477,19 @@ impl Manager {
             ensure!(
                 !ids_collide(&new_id, id)
                     && !state
-                        .plugins
+                        .packages
                         .keys()
                         .chain(state.forgotten.keys())
                         .any(|other| ids_collide(other, &new_id)),
                 InvalidArgument,
-                "fork ID {new_id} differs only in letter case from an installed plugin"
+                "fork ID {new_id} differs only in letter case from an installed package"
             );
             let commit = own_head.clone().unwrap_or_else(|| p.current.commit.clone());
             let package = match packages::find_at(&clone, &commit, Some(id)) {
                 Ok(package) => package,
                 Err(Error::InvalidArgument(_)) if own_head.is_some() => fail!(
                     InvalidManifest,
-                    "installed repository HEAD has a different plugin ID"
+                    "installed repository HEAD has a different package ID"
                 ),
                 Err(error) => return Err(error),
             };
@@ -776,14 +776,6 @@ fn new_fork(
     ];
     args.extend(committed.iter().map(String::as_str));
     git(destination, &args)?;
-    // The lineage belongs to this author checkout, not to installed state or the catalog.
-    git(destination, &["config", "--local", "pm.forkBase", &base])?;
-    if let [source] = sources {
-        git(
-            destination,
-            &["config", "--local", "pm.forkVersion", &source.base.version],
-        )?;
-    }
     let commit = git(destination, &["rev-parse", "HEAD"])?;
     if root {
         packages::find_at(destination, &commit, Some(&sources[0].id))?;

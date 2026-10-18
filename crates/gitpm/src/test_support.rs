@@ -1,4 +1,4 @@
-//! Shared fixtures for unit tests: unique temp directories, hermetic `git`, small plugin
+//! Shared fixtures for unit tests: unique temp directories, hermetic `git`, small package
 //! repositories and a tree hash for byte-identical comparisons. Test-only.
 use crate::catalog::{FileDigest, Release};
 use crate::{Manifest, State};
@@ -104,13 +104,13 @@ pub(crate) fn read_json(path: &Path) -> serde_json::Value {
     serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
 }
 
-/// An author's plugin repository: `plugin.json` + `dist/index.js`, branch `main`.
+/// An author's package repository: `plugin.json` + `dist/index.js`, branch `main`.
 pub(crate) struct Author {
     pub(crate) path: PathBuf,
     pub(crate) id: String,
 }
 impl Author {
-    /// Create, commit and tag `id@0.1.0` (`v0.1.0` for a legacy ID).
+    /// Create, commit and tag `id@0.1.0`.
     pub(crate) fn new(path: PathBuf, id: &str) -> Self {
         let author = Self::untagged(path, id, "0.1.0");
         author.tag("0.1.0");
@@ -228,10 +228,10 @@ pub(crate) fn release(id: &str, version: &str, source: &str, commit_char: char) 
     }
 }
 
-/// State with one installed plugin.
+/// State with one installed package.
 pub(crate) fn state_with(id: &str, source: &str, version: &str, commit: &str) -> State {
     State {
-        plugins: BTreeMap::from([(
+        packages: BTreeMap::from([(
             id.to_owned(),
             crate::Installed {
                 source: source.into(),

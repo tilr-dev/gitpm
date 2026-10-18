@@ -122,7 +122,7 @@ def install_ignores_unreachable_build(t: T):
     stub.chmod(0o755)
     path = f"{stub.parent}:{os.environ['PATH']}"
     t.gitpm_ok("install-catalog", ID, "--version", "0.3.0", env={"PATH": path})
-    p = t.plugin(ID)
+    p = t.package(ID)
     t.eq(p["current"], {"version": "0.3.0", "commit": commit}, "installed from Git at the catalog commit")
     t.eq(t.rev(t.clone(ID)), commit, "clone HEAD")
     t.eq((t.dist(ID) / "index.js").read_text(), t.git(ID, "show", f"{ID}@0.3.0:dist/index.js") + "\n", "dist bytes")

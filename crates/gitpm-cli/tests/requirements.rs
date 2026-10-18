@@ -100,7 +100,7 @@ fn required_dependent_plugin_installation() {
         "REQUIRED CAPABILITY MISSING: install a consumer of an already installed compatible module: {result:?}. Fork replacement, dependent update and switch-back cannot be accepted until this prerequisite works. Artifacts: {}",
         dir.display()
     );
-    assert!(m.state().unwrap().plugins.contains_key("app/consumer"));
+    assert!(m.state().unwrap().packages.contains_key("app/consumer"));
     // Further replacement behavior is mandatory in ATQ UC-053..056; this gate alone
     // must never be reported as proof that replacement works.
 }
@@ -186,7 +186,7 @@ fn required_global_fork_replacement_through_the_cli() {
         serde_json::from_slice(&pm(dir, &["list"]).stdout).unwrap()
     };
     assert!(
-        list(&dir)["plugins"]["vendor/base"].is_object(),
+        list(&dir)["packages"]["vendor/base"].is_object(),
         "pulled in as a dependency"
     );
 

@@ -34,7 +34,7 @@ CASES: list["Case"] = []
 
 
 # Catalog commands of the current gitpm CLI, by the name scenarios use. A rename of the
-# CLI (change cli-catalog-commands: `catalog show|links|update|register|migrate`) is a
+# CLI (change cli-catalog-commands: `catalog show|links|update|register`) is a
 # change of this mapping only; T.gitpm rewrites the command word before running gitpm.
 # `t.run("gitpm", ...)` bypasses the mapping (for cases about the exact spelling).
 COMMANDS: dict[str, tuple[str, ...]] = {
@@ -42,7 +42,6 @@ COMMANDS: dict[str, tuple[str, ...]] = {
     "catalog": ("catalog",),
     "catalog-update": ("catalog-update",),
     "register": ("register",),
-    "migrate-catalog": ("migrate-catalog",),
 }
 # Global options taking a value (they may precede the command word).
 VALUE_OPTIONS = {"--root", "--catalog", "--sources"}
@@ -226,7 +225,7 @@ class T:
     def repo(self, id: str) -> Path:
         return self.root / "repos" / id
 
-    def new_plugin(self, id: str, version: str = "0.1.0", **kw) -> str:
+    def new_package(self, id: str, version: str = "0.1.0", **kw) -> str:
         """Create an author repository on branch main with its first tagged release."""
         repo = self.repo(id)
         (repo / "dist").mkdir(parents=True)
@@ -283,21 +282,21 @@ class T:
         f = self.ws / "state.json"
         return json.loads(f.read_text()) if f.exists() else {}
 
-    def plugin(self, id: str) -> dict:
-        plugins = self.state().get("plugins", {})
-        if id not in plugins:
-            raise Failure(f"{id} is not in state.json (have: {', '.join(plugins) or 'none'})")
-        return plugins[id]
+    def package(self, id: str) -> dict:
+        packages = self.state().get("packages", {})
+        if id not in packages:
+            raise Failure(f"{id} is not in state.json (have: {', '.join(packages) or 'none'})")
+        return packages[id]
 
     def clone(self, id: str) -> Path:
-        return self.ws / "plugins" / id
+        return self.ws / "packages" / id
 
     def dist(self, id: str) -> Path:
         return self.ws / "dist" / id
 
     def not_installed(self, id: str):
         """No state entry, clone, dist or leftover transaction for the ID."""
-        self.ok(id not in self.state().get("plugins", {}), f"{id} not in state")
+        self.ok(id not in self.state().get("packages", {}), f"{id} not in state")
         self.ok(not self.clone(id).exists(), f"no clone of {id}")
         self.ok(not self.dist(id).exists(), f"no dist of {id}")
         leftovers = [str(p) for p in self.ws.rglob("*.pm-txn*")] if self.ws.exists() else []

@@ -1,7 +1,7 @@
 """UC-001: CLI and isolated environment (P0).
 
 Help in every spelling, required tools, `list` on an empty explicit --root, and invalid
-invocations that must fail without creating a plugin, a catalog release or changing
+invocations that must fail without creating a package, a catalog release or changing
 any fixture data (the whole /fx tree, Git internals included, is compared).
 """
 
@@ -14,8 +14,8 @@ ID = "dan/hello"
 OPT = "cli/option-validation"
 # Every command of `gitpm --help` (main.rs COMMANDS).
 COMMANDS = ["install", "install-catalog", "list", "check", "update", "rollback", "enable", "disable", "forget",
-            "restore", "uninstall", "fork", "replace", "sync-dist", "init", "create", "commit", "remote", "auth",
-            "info", "catalog", "catalog-update", "register", "migrate-catalog"]
+            "restore", "uninstall", "fork", "replace", "sync-dist", "init", "commit", "remote", "auth",
+            "info", "catalog", "catalog-update", "register"]
 
 
 @case(fixture="hello", spec=["cli/help", "cli/command-set#every-command-documented"])
@@ -47,11 +47,11 @@ def required_tools_present(t: T):
 
 @case(spec=["cli/json-output-for-state-and-catalog", "cli/settings-come-from-flags-environment-defaults"])
 def list_on_empty_explicit_root(t: T):
-    """2. `list --root EMPTY` prints valid JSON with no plugins."""
+    """2. `list --root EMPTY` prints valid JSON with no packages."""
     empty = t.root / "empty-root"
     r = t.gitpm_ok("--root", empty, "list")
     value = json.loads(r.out)
-    t.eq(value.get("plugins"), {}, "plugins")
+    t.eq(value.get("packages"), {}, "plugins")
     t.ok(not t.ws.exists(), "GITPM_ROOT workspace untouched (explicit --root wins)")
 
 

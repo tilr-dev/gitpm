@@ -1,6 +1,6 @@
 [package]
 name = "gitpm-ffi"
-version = "0.1.0"
+version = "0.5.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -21,6 +21,6 @@ required-features = ["bindgen"]
 bindgen = ["uniffi/cli"]
 
 [dependencies]
-gitpm = { path = "../gitpm" }
+gitpm = { path = "../gitpm", version = "0.5.0" }
 thiserror = "2"
 uniffi = "0.32.2"

@@ -66,7 +66,7 @@ def original_release_does_not_switch_back(t: T):
     fork_files = t.snap(t.clone(FORK), t.dist(FORK))
     sha = t.release(ORIGINAL, "1.1.0")
     t.gitpm_ok("update", ORIGINAL)
-    t.eq(t.plugin(ORIGINAL)["current"], {"version": "1.1.0", "commit": sha}, "original updated")
+    t.eq(t.package(ORIGINAL)["current"], {"version": "1.1.0", "commit": sha}, "original updated")
     t.ok(not t.dist(ORIGINAL).exists(), "the replaced original stays undeployed (only active packages)")
     bound(t)
     t.same(fork_files, "fork clone and dist")
@@ -75,10 +75,10 @@ def original_release_does_not_switch_back(t: T):
 @case(fixture="g6_replaced", spec=["fork-replacement/active-fork-rules"])
 def fork_update_preserves_binding(t: T):
     """A fork release (new payload, declares 1.1.0) is followed by the provider and its resolution."""
-    previous = t.plugin(FORK)["current"]
+    previous = t.package(FORK)["current"]
     sha = fork_release(t, "1.0.2", payload="fork payload 2\n", declares="1.1.0")
     t.gitpm_ok("update", FORK)
-    p = t.plugin(FORK)
+    p = t.package(FORK)
     t.eq(p["current"], {"version": "1.0.2", "commit": sha}, "fork current")
     t.eq(p["previous"], previous, "fork previous")
     t.eq(t.rev(t.clone(FORK)), sha, "fork clone HEAD")
@@ -89,11 +89,11 @@ def fork_update_preserves_binding(t: T):
 @case(fixture="g6_replaced", spec=["fork-replacement/active-fork-rules", "updates/rollback-swaps-current-and-previous"])
 def fork_rollback_follows_revision(t: T):
     """Rollback of the fork returns provider bytes, version and declared resolution to 1.0.1."""
-    before = t.plugin(FORK)["current"]
+    before = t.package(FORK)["current"]
     fork_release(t, "1.0.2", payload="fork payload 2\n", declares="1.1.0")
     t.gitpm_ok("update", FORK)
     t.gitpm_ok("rollback", FORK)
-    p = t.plugin(FORK)
+    p = t.package(FORK)
     t.eq(p["current"], before, "fork current after rollback")
     t.eq(p["previous"]["version"], "1.0.2", "fork previous after rollback")
     t.eq(t.rev(t.clone(FORK)), before["commit"], "fork clone HEAD")

@@ -21,7 +21,7 @@ FORK_PAYLOAD = "export const greeting = 'fork payload';\n"
 
 def committed(t: T, id: str, path: str = "dist/index.js") -> str:
     """The bytes of `path` at the installed commit of `id` (from its clone)."""
-    commit = t.plugin(id)["current"]["commit"]
+    commit = t.package(id)["current"]["commit"]
     return t.run("git", "-C", t.clone(id), "show", f"{commit}:{path}", quiet=True, check=True).out
 
 
@@ -77,11 +77,11 @@ def forget_removes_restore_redeploys(t: T):
 
 @case(fixture="g2_demos_installed", spec=["dist/empty-parent-folders-are-removed#last-package-of-a-namespace"])
 def uninstall_removes_empty_namespace_folders(t: T):
-    """uninstall A (the only package of namespace vendor) removes dist/vendor and plugins/vendor."""
+    """uninstall A (the only package of namespace vendor) removes dist/vendor and packages/vendor."""
     t.eq(t.gitpm_ok("uninstall", A).out, f"{A} uninstalled\n", "output")
     t.not_installed(A)
     t.ok(not (t.ws / "dist/vendor").exists(), "dist/vendor removed")
-    t.ok(not (t.ws / "plugins/vendor").exists(), "plugins/vendor removed")
+    t.ok(not (t.ws / "packages/vendor").exists(), "packages/vendor removed")
     deployed(t, B)
 
 
@@ -91,7 +91,7 @@ def unknown_folder_is_left_alone_and_warned(t: T):
     t.write(t.ws / "dist/custom", {"keep.js": "custom\n"})
     custom = t.snap(t.ws / "dist/custom")
     r = t.gitpm_ok("disable", A)
-    t.has(r.err, "Warning: dist/custom belongs to no known plugin or is not a folder; left as it is")
+    t.has(r.err, "Warning: dist/custom belongs to no known package or is not a folder; left as it is")
     t.same(custom, "dist/custom")
     t.ok(not t.dist(A).exists(), "dist/A still removed")
 
@@ -143,7 +143,7 @@ def update_of_replaced_package_deploys_nothing_until_back(t: T):
     """A replaced vendor/base updated to 1.1.0: state and clone move, no dist until replace --back (1.1.0)."""
     commit = t.release(ORIGINAL, "1.1.0")
     t.gitpm_ok("update", ORIGINAL)
-    t.eq(t.plugin(ORIGINAL)["current"], {"version": "1.1.0", "commit": commit}, "state")
+    t.eq(t.package(ORIGINAL)["current"], {"version": "1.1.0", "commit": commit}, "state")
     t.eq(t.rev(t.clone(ORIGINAL)), commit, "clone HEAD")
     t.ok(not t.dist(ORIGINAL).exists(), "no dist/vendor/base while replaced")
     t.gitpm_ok("replace", ORIGINAL, "--back", "--force")

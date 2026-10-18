@@ -82,13 +82,13 @@ impl Fixture {
         fs::create_dir_all(self.repo.join("dist")).unwrap();
         fs::write(
             self.repo.join("plugin.json"),
-            format!(r#"{{"id":"hello","version":"{version}"}}"#),
+            format!(r#"{{"id":"dan/hello","version":"{version}"}}"#),
         )
         .unwrap();
         fs::write(self.repo.join("dist/index.js"), contents).unwrap();
         self.git(&["add", "."]);
         self.git(&["commit", "-m", version]);
-        self.git(&["tag", "-f", &format!("v{version}")]);
+        self.git(&["tag", "-f", &format!("dan/hello@{version}")]);
     }
     fn cli(&self, args: &[&str], success: bool) -> String {
         let out = self
@@ -114,7 +114,7 @@ impl Fixture {
         serde_json::from_str(&self.cli(&["list"], true)).unwrap()
     }
     fn content(&self) -> String {
-        fs::read_to_string(self.root.join("dist/hello/index.js")).unwrap()
+        fs::read_to_string(self.root.join("dist/dan/hello/index.js")).unwrap()
     }
 }
 impl Drop for Fixture {
@@ -131,29 +131,32 @@ fn lifecycle_and_three_removal_levels() {
     f.install();
     assert_eq!(f.content(), "hello v1");
     f.release("2.0.0", "hello v2");
-    f.cli(&["update", "hello"], true);
+    f.cli(&["update", "dan/hello"], true);
     assert_eq!(f.content(), "hello v2");
-    assert_eq!(f.state()["plugins"]["hello"]["current"]["version"], "2.0.0");
-    f.cli(&["rollback", "hello"], true);
+    assert_eq!(
+        f.state()["packages"]["dan/hello"]["current"]["version"],
+        "2.0.0"
+    );
+    f.cli(&["rollback", "dan/hello"], true);
     assert_eq!(f.content(), "hello v1");
-    f.cli(&["update", "hello"], true);
+    f.cli(&["update", "dan/hello"], true);
     assert_eq!(f.content(), "hello v2");
-    f.cli(&["disable", "hello"], true);
-    assert_eq!(f.state()["plugins"]["hello"]["enabled"], false);
-    // dist/ holds only active plugins.
-    assert!(!f.root.join("dist/hello").exists());
-    f.cli(&["enable", "hello"], true);
+    f.cli(&["disable", "dan/hello"], true);
+    assert_eq!(f.state()["packages"]["dan/hello"]["enabled"], false);
+    // dist/ holds only active packages.
+    assert!(!f.root.join("dist/dan/hello").exists());
+    f.cli(&["enable", "dan/hello"], true);
     assert_eq!(f.content(), "hello v2");
-    f.cli(&["forget", "hello"], true);
-    assert!(f.state()["plugins"].as_object().unwrap().is_empty());
-    assert!(f.root.join("plugins/hello/.git").exists());
-    assert!(!f.root.join("dist/hello").exists());
-    f.cli(&["restore", "hello"], true);
-    assert_eq!(f.state()["plugins"]["hello"]["enabled"], true);
+    f.cli(&["forget", "dan/hello"], true);
+    assert!(f.state()["packages"].as_object().unwrap().is_empty());
+    assert!(f.root.join("packages/dan/hello/.git").exists());
+    assert!(!f.root.join("dist/dan/hello").exists());
+    f.cli(&["restore", "dan/hello"], true);
+    assert_eq!(f.state()["packages"]["dan/hello"]["enabled"], true);
     assert_eq!(f.content(), "hello v2");
-    f.cli(&["uninstall", "hello"], true);
-    assert!(!f.root.join("plugins/hello").exists());
-    assert!(!f.root.join("dist/hello").exists());
+    f.cli(&["uninstall", "dan/hello"], true);
+    assert!(!f.root.join("packages/dan/hello").exists());
+    assert!(!f.root.join("dist/dan/hello").exists());
 }
 #[test]
 fn failed_update_keeps_files_and_state() {
@@ -161,19 +164,19 @@ fn failed_update_keeps_files_and_state() {
     f.install();
     let before = f.state();
     f.release("1.0.0", "changed without version bump");
-    f.cli(&["update", "hello"], false);
+    f.cli(&["update", "dan/hello"], false);
     assert_eq!(f.state(), before);
     assert_eq!(f.content(), "hello v1");
     f.release("2.0.0", "v2");
     fs::write(
         f.repo.join("plugin.json"),
-        r#"{"id":"hello","version":"3.0.0","dependencies":{"missing":"1"}}"#,
+        r#"{"id":"dan/hello","version":"3.0.0","dependencies":{"missing":"1"}}"#,
     )
     .unwrap();
     f.git(&["add", "."]);
     f.git(&["commit", "-m", "dependency"]);
     f.git(&["tag", "v3.0.0"]);
-    f.cli(&["update", "hello"], false);
+    f.cli(&["update", "dan/hello"], false);
     assert_eq!(f.state(), before);
     assert_eq!(f.content(), "hello v1");
 }
@@ -181,12 +184,12 @@ fn failed_update_keeps_files_and_state() {
 fn protects_local_edits_and_force_is_explicit() {
     let f = Fixture::new();
     f.install();
-    fs::write(f.root.join("plugins/hello/my-work.txt"), "keep me").unwrap();
-    f.cli(&["update", "hello"], false);
-    f.cli(&["uninstall", "hello"], false);
-    assert!(f.root.join("plugins/hello/my-work.txt").exists());
-    f.cli(&["uninstall", "hello", "--force"], true);
-    assert!(!f.root.join("plugins/hello").exists());
+    fs::write(f.root.join("packages/dan/hello/my-work.txt"), "keep me").unwrap();
+    f.cli(&["update", "dan/hello"], false);
+    f.cli(&["uninstall", "dan/hello"], false);
+    assert!(f.root.join("packages/dan/hello/my-work.txt").exists());
+    f.cli(&["uninstall", "dan/hello", "--force"], true);
+    assert!(!f.root.join("packages/dan/hello").exists());
 }
 #[test]
 fn rejects_duplicate_path_escape_and_missing_payload() {
@@ -194,11 +197,11 @@ fn rejects_duplicate_path_escape_and_missing_payload() {
     f.install();
     let before = f.state();
     let again = f.cli(&["install", f.repo.to_str().unwrap()], true);
-    assert_eq!(again, "hello already installed (1.0.0)\n");
+    assert_eq!(again, "dan/hello already installed (1.0.0)\n");
     f.cli(&["uninstall", "../upstream", "--force"], false);
     assert!(f.repo.exists());
     assert_eq!(f.state(), before);
-    f.cli(&["uninstall", "hello"], true);
+    f.cli(&["uninstall", "dan/hello"], true);
     fs::remove_dir_all(f.repo.join("dist")).unwrap();
     f.git(&["add", "."]);
     f.git(&["commit", "-m", "missing dist"]);
@@ -206,7 +209,7 @@ fn rejects_duplicate_path_escape_and_missing_payload() {
         &["install", f.repo.to_str().unwrap(), "--channel", "dev"],
         false,
     );
-    assert!(f.state()["plugins"].as_object().unwrap().is_empty());
+    assert!(f.state()["packages"].as_object().unwrap().is_empty());
 }
 #[test]
 fn recovery_and_lock() {
@@ -216,8 +219,8 @@ fn recovery_and_lock() {
     assert!(gitpm::Manager::open(&f.root).is_err());
     drop(manager);
     // An interrupted, uncommitted transaction is discarded on the next run.
-    fs::create_dir_all(f.root.join(".pm-txn/new/dist/hello")).unwrap();
-    fs::write(f.root.join(".pm-txn/new/dist/hello/index.js"), "half").unwrap();
+    fs::create_dir_all(f.root.join(".pm-txn/new/dist/dan/hello")).unwrap();
+    fs::write(f.root.join(".pm-txn/new/dist/dan/hello/index.js"), "half").unwrap();
     assert_eq!(f.content_after_recovery(), "hello v1");
     assert!(!f.root.join(".pm-txn").exists());
 }
@@ -231,24 +234,24 @@ impl Fixture {
 #[test]
 fn direct_git_refs_and_local_author_commit() {
     let f = Fixture::new();
-    f.git(&["tag", "-f", "v1.0.0"]);
+    f.git(&["tag", "-f", "dan/hello@1.0.0"]);
     let repo = f.repo.to_str().unwrap();
-    f.cli(&["install", repo, "--ref", "v1.0.0"], true);
-    assert!(f.state()["plugins"]["hello"].get("pinned").is_none());
+    f.cli(&["install", repo, "--ref", "dan/hello@1.0.0"], true);
+    assert!(f.state()["packages"]["dan/hello"].get("pinned").is_none());
     fs::write(f.repo.join("dist/index.js"), "author release").unwrap();
     f.cli(&["commit", repo, "1.0.1"], true);
     f.cli(&["commit", repo, "1.0.1"], false);
-    f.cli(&["update", "hello"], true);
+    f.cli(&["update", "dan/hello"], true);
     assert_eq!(f.content(), "author release");
-    f.cli(&["update", "hello", "--ref", "v1.0.1"], true);
+    f.cli(&["update", "dan/hello", "--ref", "dan/hello@1.0.1"], true);
     assert_eq!(f.content(), "author release");
-    let sha = f.state()["plugins"]["hello"]["current"]["commit"]
+    let sha = f.state()["packages"]["dan/hello"]["current"]["commit"]
         .as_str()
         .unwrap()
         .to_owned();
-    f.cli(&["rollback", "hello"], true);
+    f.cli(&["rollback", "dan/hello"], true);
     assert_eq!(f.content(), "hello v1");
-    f.cli(&["uninstall", "hello"], true);
+    f.cli(&["uninstall", "dan/hello"], true);
     f.cli(&["install", repo, "--ref", &sha], true);
     assert_eq!(f.content(), "author release");
 }
@@ -256,32 +259,36 @@ fn direct_git_refs_and_local_author_commit() {
 #[test]
 fn catalog_manifest_is_verified_before_install() {
     let f = Fixture::new();
-    f.git(&["tag", "-f", "v1.0.0"]);
+    f.git(&["tag", "-f", "dan/hello@1.0.0"]);
     let manager = gitpm::Manager::open(&f.root).unwrap();
     let wrong = gitpm::Manifest {
-        id: "hello".into(),
+        id: "dan/hello".into(),
         version: "99.0.0".into(),
         ..Default::default()
     };
     assert!(
         manager
-            .install_ref(f.repo.to_str().unwrap(), Some("v1.0.0"), Some(&wrong))
+            .install_ref(
+                f.repo.to_str().unwrap(),
+                Some("dan/hello@1.0.0"),
+                Some(&wrong)
+            )
             .is_err()
     );
-    assert!(manager.state().unwrap().plugins.is_empty());
-    assert!(!f.root.join("dist/hello").exists());
+    assert!(manager.state().unwrap().packages.is_empty());
+    assert!(!f.root.join("dist/dan/hello").exists());
 }
 
 #[test]
 fn explicit_same_commit_and_numeric_versions_sort_correctly() {
     let f = Fixture::new();
     f.install();
-    f.git(&["tag", "-f", "v1.0.0"]);
-    f.cli(&["update", "hello", "--ref", "v1.0.0"], true);
-    assert!(f.state()["plugins"]["hello"].get("pinned").is_none());
+    f.git(&["tag", "-f", "dan/hello@1.0.0"]);
+    f.cli(&["update", "dan/hello", "--ref", "dan/hello@1.0.0"], true);
+    assert!(f.state()["packages"]["dan/hello"].get("pinned").is_none());
     use gitpm::catalog::version_key;
     assert!(version_key("1.10.0").unwrap() > version_key("1.9.0").unwrap());
-    for invalid in ["01.0.0", "v1.0.0", "1.0", "1.0.0-dev", "-1.0.0"] {
+    for invalid in ["01.0.0", "dan/hello@1.0.0", "1.0", "1.0.0-dev", "-1.0.0"] {
         assert!(version_key(invalid).is_err());
     }
 }
@@ -303,10 +310,10 @@ fn config_files(dir: &std::path::Path) -> Vec<PathBuf> {
 }
 
 #[test]
-fn create_and_init_take_an_explicit_id_and_repository_folder() {
+fn init_takes_an_explicit_id_and_repository_folder() {
     use std::process::Stdio;
     let f = Fixture::new();
-    for (command, id) in [("create", "dan/hello"), ("init", "vendor/demo1")] {
+    for (command, id) in [("init", "acme/hello"), ("init", "vendor/demo1")] {
         let output = f
             .pm()
             .current_dir(&f.dir)
@@ -335,7 +342,7 @@ fn create_and_init_take_an_explicit_id_and_repository_folder() {
             ],
             true,
         );
-        assert_eq!(f.state()["plugins"][id]["current"]["version"], "0.1.0");
+        assert_eq!(f.state()["packages"][id]["current"]["version"], "0.1.0");
         // Never overwrites: the same folder again fails and keeps the repository.
         let retry = f
             .pm()
@@ -354,39 +361,35 @@ fn create_and_init_take_an_explicit_id_and_repository_folder() {
 }
 
 #[test]
-fn create_requires_a_namespace_and_never_prompts_or_reads_the_environment() {
+fn init_requires_a_namespace_and_never_prompts_or_reads_the_environment() {
     use std::process::Stdio;
     let f = Fixture::new();
     fs::create_dir_all(f.dir.join("dan/existing")).unwrap();
     fs::write(f.dir.join("dan/existing/keep.txt"), "untouched").unwrap();
     for (args, message) in [
         (
-            &["create", "hello", "--into", "hello"][..],
-            "plugin id needs a namespace: use NAMESPACE/NAME, for example acme/hello",
-        ),
-        (
             &["init", "hello", "--into", "hello"][..],
-            "plugin id needs a namespace",
+            "package id needs a namespace: use NAMESPACE/NAME, for example acme/hello",
         ),
-        (&["create"][..], "create: expected 1 argument(s), got 0"),
         (&["init"][..], "init: expected 1 argument(s), got 0"),
-        (&["create", "dan/a/b", "--into", "x"][..], "namespace/name"),
+        (&["init", "dan/a/b", "--into", "x"][..], "namespace/name"),
+        (&["init", "../escape", "--into", "x"][..], "namespace/name"),
+        (&["init", "/hello", "--into", "x"][..], "namespace/name"),
+        (&["init", "dan/", "--into", "x"][..], "namespace/name"),
         (
-            &["create", "../escape", "--into", "x"][..],
-            "namespace/name",
-        ),
-        (&["create", "/hello", "--into", "x"][..], "namespace/name"),
-        (&["create", "dan/", "--into", "x"][..], "namespace/name"),
-        (
-            &["create", "dan/hello", "--namespace", "me"][..],
+            &["init", "dan/hello", "--namespace", "me"][..],
             "unknown option: --namespace",
         ),
         // No default folder: the repository is always given.
-        (&["create", "dan/hello"][..], "create needs --into DIR"),
         (&["init", "dan/hello"][..], "init needs --into DIR"),
         (
-            &["create", "dan/existing", "--into", "dan/existing"][..],
+            &["init", "dan/existing", "--into", "dan/existing"][..],
             "is not a Git repository",
+        ),
+        // The former alias is an unknown command.
+        (
+            &["create", "dan/hello", "--into", "dan/hello"][..],
+            "unknown command: create; use --help",
         ),
     ] {
         // Legacy and removed namespace variables must not supply a default.
@@ -425,14 +428,17 @@ fn create_requires_a_namespace_and_never_prompts_or_reads_the_environment() {
 fn fork_preserves_history_edits_and_original_installation() {
     let f = Fixture::new();
     f.install();
-    let installed = f.root.join("plugins/hello");
+    let installed = f.root.join("packages/dan/hello");
     fs::write(installed.join("dist/index.js"), "local edit").unwrap();
     fs::write(installed.join("notes.txt"), "untracked work").unwrap();
     let state = fs::read(f.root.join("state.json")).unwrap();
     let destination = f.dir.join("me/hello");
-    let out = f.cli(&["fork", "hello", "--ns", "me", "--into", "me/hello"], true);
+    let out = f.cli(
+        &["fork", "dan/hello", "--ns", "me", "--into", "me/hello"],
+        true,
+    );
     assert!(
-        out.contains("me/hello forked from hello (repository root)"),
+        out.contains("me/hello forked from dan/hello (repository root)"),
         "{out}"
     );
     let git_at = |path: &std::path::Path, args: &[&str]| {
@@ -477,7 +483,7 @@ fn fork_preserves_history_edits_and_original_installation() {
     );
     // An existing folder that is not a multi-package repository is refused.
     f.cli(
-        &["fork", "hello", "--ns", "me", "--into", "me/hello"],
+        &["fork", "dan/hello", "--ns", "me", "--into", "me/hello"],
         false,
     );
     assert_eq!(
@@ -491,11 +497,11 @@ fn fork_rejects_managed_destinations_and_unknown_plugins() {
     let f = Fixture::new();
     f.install();
     // A fork repository inside a managed repository is refused.
-    let installed = f.root.join("plugins/hello");
+    let installed = f.root.join("packages/dan/hello");
     let out = f
         .pm()
         .current_dir(&installed)
-        .args(["fork", "hello", "--ns", "me", "--into", "me-hello"])
+        .args(["fork", "dan/hello", "--ns", "me", "--into", "me-hello"])
         .output()
         .unwrap();
     assert!(!out.status.success());
@@ -508,19 +514,19 @@ fn fork_rejects_managed_destinations_and_unknown_plugins() {
     for (args, message) in [
         // The old form `fork ID NAMESPACE/NAME` is gone: a second argument is an ID.
         (
-            &["fork", "hello", "me/hello", "--ns", "me", "--into", "x"][..],
-            "plugin me/hello is not installed",
+            &["fork", "dan/hello", "me/hello", "--ns", "me", "--into", "x"][..],
+            "package me/hello is not installed",
         ),
         (
-            &["fork", "hello", "--into", "x"][..],
+            &["fork", "dan/hello", "--into", "x"][..],
             "fork needs --ns NAMESPACE",
         ),
         (
-            &["fork", "hello", "--ns", "me"][..],
+            &["fork", "dan/hello", "--ns", "me"][..],
             "fork needs --into DIR",
         ),
         (
-            &["fork", "hello", "--ns", "me/a", "--into", "x"][..],
+            &["fork", "dan/hello", "--ns", "me/a", "--into", "x"][..],
             "namespace/name",
         ),
         (
@@ -528,11 +534,11 @@ fn fork_rejects_managed_destinations_and_unknown_plugins() {
             "fork: expected 1 argument(s), got 0",
         ),
         (
-            &["fork", "hello", "--namespace", "x"][..],
+            &["fork", "dan/hello", "--namespace", "x"][..],
             "unknown option: --namespace",
         ),
         (
-            &["fork", "hello", "--ns", "me", "--into", "../x"][..],
+            &["fork", "dan/hello", "--ns", "me", "--into", "../x"][..],
             "without '..'",
         ),
     ] {
@@ -596,14 +602,14 @@ fn namespaced_fork_and_original_coexist_and_release_independently() {
     assert_eq!(m["forkOf"]["id"], "vendor/demo");
     assert_eq!(
         m["forkOf"]["commit"],
-        f.state()["plugins"]["vendor/demo"]["current"]["commit"]
+        f.state()["packages"]["vendor/demo"]["current"]["commit"]
     );
     f.cli(
         &["install", fork.to_str().unwrap(), "--channel", "dev"],
         true,
     );
     assert!(f.root.join("dist/dan/demo/index.js").exists());
-    assert_eq!(f.state()["plugins"]["dan/demo"]["forkOf"], m["forkOf"]);
+    assert_eq!(f.state()["packages"]["dan/demo"]["forkOf"], m["forkOf"]);
     fs::write(fork.join("dist/index.js"), "fork release").unwrap();
     f.cli(&["commit", fork.to_str().unwrap(), "0.1.1"], true);
     f.cli(&["update", "dan/demo", "--ref", "dan/demo@0.1.1"], true);
@@ -612,8 +618,8 @@ fn namespaced_fork_and_original_coexist_and_release_independently() {
         "fork release"
     );
     f.cli(&["rollback", "dan/demo"], true);
-    f.cli(&["uninstall", "dan", "--force"], false); // namespace is not a plugin
-    assert!(f.root.join("plugins/dan/demo/.git").exists());
+    f.cli(&["uninstall", "dan", "--force"], false); // namespace is not a package
+    assert!(f.root.join("packages/dan/demo/.git").exists());
     f.cli(&["uninstall", "dan/demo"], true);
     assert!(f.root.join("dist/vendor/demo/index.js").exists());
     assert!(
@@ -624,18 +630,20 @@ fn namespaced_fork_and_original_coexist_and_release_independently() {
 }
 
 #[test]
-fn namespaces_reject_path_traversal_and_legacy_prefix_collisions() {
+fn namespaces_reject_path_traversal_and_unscoped_ids() {
     let f = Fixture::new();
     f.install();
-    f.cli(&["create", "../bad", "--into", "bad"], false);
-    for id in ["../hello", "a/../hello", "/hello", "a/b/c", "a//b"] {
+    f.cli(&["init", "../bad", "--into", "bad"], false);
+    for id in ["../hello", "a/../hello", "/hello", "a/b/c", "a//b", "hello"] {
         f.cli(&["uninstall", id, "--force"], false);
     }
+    // A namespace equal to an installed package's name is just another namespace.
     let source = f.dir.join("hello/demo");
     f.cli(&["init", "hello/demo", "--into", "hello/demo"], true);
     assert!(source.join("plugin.json").exists());
-    f.cli(&["install", source.to_str().unwrap()], false);
-    assert!(f.root.join("plugins/hello/.git").exists());
+    f.cli(&["install", source.to_str().unwrap()], true);
+    assert!(f.root.join("packages/dan/hello/.git").exists());
+    assert!(f.root.join("packages/hello/demo/.git").exists());
 }
 
 #[test]
@@ -652,7 +660,7 @@ fn local_catalog_register_read_install_and_immutable_versions() {
     let original = fs::read(&file).unwrap();
     assert!(
         f.cli(&["--catalog", location, "catalog"], true)
-            .contains("legacy")
+            .contains("namespaces")
     );
     f.cli(
         &["--catalog", location, "register", repo, "--ref", "HEAD"],
@@ -664,13 +672,13 @@ fn local_catalog_register_read_install_and_immutable_versions() {
             "--catalog",
             file.to_str().unwrap(),
             "install-catalog",
-            "hello",
+            "dan/hello",
         ],
         true,
     );
     assert!(
         f.cli(&["--catalog", location, "check"], true)
-            .contains("hello")
+            .contains("dan/hello")
     );
     fs::write(
         f.repo.join("dist/index.js"),
@@ -762,14 +770,14 @@ fn split_catalog_hashes_and_direct_lookup_are_independent_of_directory_indexes()
             .to_string()
             .contains("hashes")
     );
-    assert!(manager.state().unwrap().plugins.is_empty());
+    assert!(manager.state().unwrap().packages.is_empty());
     manager.install_release(&found).unwrap();
     assert_eq!(
         fs::read_to_string(f.root.join("dist/dan/hello/index.js")).unwrap(),
         "abc"
     );
     let selected = catalog::selected(location, &manager.state().unwrap()).unwrap();
-    assert_eq!(selected.plugins.len(), 1);
+    assert_eq!(selected.packages.len(), 1);
     let index_path = dir.join("namespaces/dan/hello/plugin.json");
     let mut index: serde_json::Value =
         serde_json::from_slice(&fs::read(&index_path).unwrap()).unwrap();
@@ -780,36 +788,55 @@ fn split_catalog_hashes_and_direct_lookup_are_independent_of_directory_indexes()
 }
 
 #[test]
-fn migration_preserves_legacy_releases_and_backup() {
+fn v1_catalog_is_refused_and_left_unchanged() {
     use gitpm::catalog;
     let f = Fixture::new();
     let first = f.dir.join("first");
-    let mut release =
+    let release =
         catalog::register(first.to_str().unwrap(), f.repo.to_str().unwrap(), "HEAD").unwrap();
-    release.files.clear();
-    let old = serde_json::json!({"plugins": {"hello": {"source": release.source, "versions": {"1.0.0": release}}}});
+    let old = serde_json::json!({"plugins": {"dan/hello": {"source": release.source, "versions": {"1.0.0": release}}}});
     let dir = f.dir.join("old");
     fs::create_dir(&dir).unwrap();
     let original = serde_json::to_vec(&old).unwrap();
     fs::write(dir.join("catalog.json"), &original).unwrap();
     let location = dir.to_str().unwrap();
-    let before = catalog::lookup(location, "hello", None).unwrap();
-    catalog::migrate(location).unwrap();
-    let after = catalog::lookup(location, "hello", None).unwrap();
     assert_eq!(
-        serde_json::to_value(before).unwrap(),
-        serde_json::to_value(after).unwrap()
+        catalog::lookup(location, "dan/hello", None)
+            .unwrap_err()
+            .kind(),
+        "catalog"
     );
-    assert_eq!(fs::read(dir.join(".catalog-v1.json")).unwrap(), original);
-    catalog::migrate(location).unwrap();
-    let retry = catalog::register(location, f.repo.to_str().unwrap(), "HEAD").unwrap();
-    assert!(retry.files.is_empty());
-    let out = f.cli(&["--catalog", location, "migrate-catalog"], true);
-    assert_eq!(
-        out,
-        format!("Catalog migrated: {location} (format v2, one folder per plugin)\n")
+    for args in [
+        &["--catalog", location, "info"][..],
+        &["--catalog", location, "install-catalog", "dan/hello"][..],
+        &[
+            "--catalog",
+            location,
+            "register",
+            f.repo.to_str().unwrap(),
+            "--ref",
+            "HEAD",
+        ][..],
+        &["--catalog", location, "catalog-update"][..],
+    ] {
+        f.cli(args, false);
+    }
+    assert_eq!(fs::read(dir.join("catalog.json")).unwrap(), original);
+    assert_eq!(fs::read_dir(&dir).unwrap().count(), 1, "nothing written");
+    assert!(
+        !f.root.join("dist").exists() || fs::read_dir(f.root.join("dist")).unwrap().count() == 0
     );
-    assert_eq!(fs::read(dir.join(".catalog-v1.json")).unwrap(), original);
+    // migrate-catalog is gone.
+    let out = f
+        .pm()
+        .args(["--catalog", location, "migrate-catalog"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("unknown command: migrate-catalog; use --help")
+    );
 }
 
 #[test]
@@ -828,7 +855,7 @@ fn invalid_build_metadata_does_not_publish_release() {
     );
     assert!(result.is_err());
     assert!(
-        !dir.join("legacy/hello/versions/1.0.0/release.json")
+        !dir.join("namespaces/dan/hello/versions/1.0.0/release.json")
             .exists()
     );
 }
@@ -838,12 +865,12 @@ fn stable_install_and_update_ignore_untagged_head_and_sort_versions() {
     let f = Fixture::new();
     f.release("1.9.0", "nine");
     f.release("1.10.0", "ten");
-    f.git(&["tag", "-d", "v1.10.0"]);
-    f.git(&["tag", "-a", "v1.10.0", "-m", "annotated release"]);
+    f.git(&["tag", "-d", "dan/hello@1.10.0"]);
+    f.git(&["tag", "-a", "dan/hello@1.10.0", "-m", "annotated release"]);
     // A newer-looking version on the branch is not a release.
     fs::write(
         f.repo.join("plugin.json"),
-        r#"{"id":"hello","version":"9.0.0"}"#,
+        r#"{"id":"dan/hello","version":"9.0.0"}"#,
     )
     .unwrap();
     fs::write(f.repo.join("dist/index.js"), "unreleased").unwrap();
@@ -851,15 +878,15 @@ fn stable_install_and_update_ignore_untagged_head_and_sort_versions() {
     f.git(&["commit", "-m", "development"]);
     f.install();
     assert_eq!(f.content(), "ten");
-    f.cli(&["update", "hello"], true);
+    f.cli(&["update", "dan/hello"], true);
     assert_eq!(f.content(), "ten");
-    f.cli(&["update", "hello", "--channel", "dev"], true);
+    f.cli(&["update", "dan/hello", "--channel", "dev"], true);
     assert_eq!(f.content(), "unreleased");
     let before = f.state();
-    f.cli(&["update", "hello"], false); // no automatic downgrade
+    f.cli(&["update", "dan/hello"], false); // no automatic downgrade
     assert_eq!(before, f.state());
     f.cli(
-        &["update", "hello", "--channel", "dev", "--ref", "HEAD"],
+        &["update", "dan/hello", "--channel", "dev", "--ref", "HEAD"],
         false,
     );
 }
@@ -874,7 +901,7 @@ fn catalog_update_generates_all_tags_and_rejects_moved_releases_without_partial_
     let sources = f.dir.join("sources.txt");
     fs::write(&sources, "# Git sources\n\n./upstream\n./upstream\n").unwrap();
     f.cli(&["--catalog", location, "catalog-update"], true);
-    let first = catalog::lookup(location, "hello", None).unwrap();
+    let first = catalog::lookup(location, "dan/hello", None).unwrap();
     assert_eq!(first.manifest.version, "1.0.0");
     assert!(!first.files.is_empty());
     let original_root = fs::read(catalog_dir.join("catalog.json")).unwrap();
@@ -890,7 +917,7 @@ fn catalog_update_generates_all_tags_and_rejects_moved_releases_without_partial_
         true,
     );
     assert_eq!(
-        catalog::lookup(location, "hello", None)
+        catalog::lookup(location, "dan/hello", None)
             .unwrap()
             .manifest
             .version,
@@ -900,7 +927,7 @@ fn catalog_update_generates_all_tags_and_rejects_moved_releases_without_partial_
         fs::read(catalog_dir.join("catalog.json")).unwrap(),
         original_root
     );
-    let index = catalog_dir.join("legacy/hello/plugin.json");
+    let index = catalog_dir.join("namespaces/dan/hello/plugin.json");
     let original_index = fs::read(&index).unwrap();
     f.cli(&["--catalog", location, "catalog-update"], true);
     assert_eq!(fs::read(&index).unwrap(), original_index);
@@ -911,11 +938,11 @@ fn catalog_update_generates_all_tags_and_rejects_moved_releases_without_partial_
     assert_eq!(fs::read(index).unwrap(), original_index);
     assert!(
         !catalog_dir
-            .join("legacy/hello/versions/2.0.0/release.json")
+            .join("namespaces/dan/hello/versions/2.0.0/release.json")
             .exists()
     );
     assert_eq!(
-        catalog::lookup(location, "hello", Some("1.0.0"))
+        catalog::lookup(location, "dan/hello", Some("1.0.0"))
             .unwrap()
             .commit,
         first.commit
@@ -954,7 +981,7 @@ fn catalog_update_validates_every_source_before_writing_and_retains_removed_sour
     f.cli(&["init", "dan/second", "--into", "dan/second"], true);
     fs::write(&sources, "./dan/second\n").unwrap();
     f.cli(&["--catalog", location, "catalog-update"], true);
-    assert!(directory.join("legacy/hello/plugin.json").exists());
+    assert!(directory.join("namespaces/dan/hello/plugin.json").exists());
     assert!(directory.join("namespaces/dan/second/plugin.json").exists());
 }
 
@@ -964,9 +991,9 @@ fn release_manifest_must_match_tag_and_update_rejects_retagging() {
     f.install();
     let before = f.state();
     f.release("1.0.0", "replacement");
-    f.cli(&["update", "hello"], false);
+    f.cli(&["update", "dan/hello"], false);
     assert_eq!(f.state(), before);
-    f.git(&["tag", "v8.0.0"]); // manifest still says 1.0.0
+    f.git(&["tag", "dan/hello@8.0.0"]); // manifest still says 1.0.0
     let dir = f.dir.join("generated");
     fs::write(f.dir.join("sources.txt"), "./upstream\n").unwrap();
     f.cli(
@@ -977,7 +1004,7 @@ fn release_manifest_must_match_tag_and_update_rejects_retagging() {
 }
 
 #[test]
-fn info_shows_directory_tree_and_legacy_catalog_without_installing() {
+fn info_shows_directory_tree_without_installing() {
     use gitpm::catalog;
     use gitpm_cli::catalog::info;
     let f = Fixture::new();
@@ -985,17 +1012,12 @@ fn info_shows_directory_tree_and_legacy_catalog_without_installing() {
     let location = dir.to_str().unwrap();
     let release = catalog::register(location, f.repo.to_str().unwrap(), "HEAD").unwrap();
     let result = f.cli(&["--catalog", location, "info"], true);
-    assert!(result.contains("Format: v2"));
-    assert!(result.contains("legacy/"));
+    assert!(result.contains("Directories and packages:"));
+    assert!(result.contains("namespaces/"));
     assert!(result.contains("hello/"));
-    assert!(result.contains("latest: 1.0.0, versions: 1"));
+    assert!(result.contains("dan/hello — latest: 1.0.0, versions: 1"));
     assert!(result.contains(&release.source));
     assert!(!f.root.exists());
-    let old = serde_json::json!({"plugins": {"hello": {"source": release.source, "versions": {"1.0.0": release}}}});
-    fs::write(dir.join("catalog.json"), serde_json::to_vec(&old).unwrap()).unwrap();
-    let result = info(location).unwrap();
-    assert!(result.contains("Format: v1"));
-    assert!(result.contains("hello — latest: 1.0.0"));
     fs::write(
         dir.join("catalog.json"),
         r#"{"schema":2,"directories":{"escape":"../"}}"#,
@@ -1053,7 +1075,7 @@ fn auth_check_is_read_only_and_accepts_empty_repositories() {
 fn uninstall_without_tty_refuses_and_lists_lost_work_including_stash() {
     let f = Fixture::new();
     f.install();
-    let repo = f.root.join("plugins/hello");
+    let repo = f.root.join("packages/dan/hello");
     let git = |args: &[&str]| {
         let out = f
             .command("git")
@@ -1077,7 +1099,7 @@ fn uninstall_without_tty_refuses_and_lists_lost_work_including_stash() {
         .pm()
         .arg("--root")
         .arg(&f.root)
-        .args(["uninstall", "hello"])
+        .args(["uninstall", "dan/hello"])
         .stdin(std::process::Stdio::null())
         .output()
         .unwrap();
@@ -1087,7 +1109,7 @@ fn uninstall_without_tty_refuses_and_lists_lost_work_including_stash() {
     assert!(!String::from_utf8_lossy(&out.stdout).contains("[y/N]"));
     assert_eq!(f.state(), before);
     assert!(repo.join(".git").is_dir());
-    f.cli(&["uninstall", "hello", "--force"], true);
+    f.cli(&["uninstall", "dan/hello", "--force"], true);
     assert!(!repo.exists());
 }
 
@@ -1099,7 +1121,7 @@ fn uninstall_on_tty_asks_before_losing_work() {
     }
     let f = Fixture::new();
     f.install();
-    let repo = f.root.join("plugins/hello");
+    let repo = f.root.join("packages/dan/hello");
     fs::write(repo.join("notes.txt"), "untracked work").unwrap();
     // BSD script(1) takes the command as arguments; util-linux needs -c.
     let util_linux = Command::new("script")
@@ -1107,9 +1129,9 @@ fn uninstall_on_tty_asks_before_losing_work() {
         .output()
         .is_ok_and(|o| o.status.success());
     let script = if util_linux {
-        "script -qec \"'$0' --root '$1' uninstall hello\" /dev/null"
+        "script -qec \"'$0' --root '$1' uninstall dan/hello\" /dev/null"
     } else {
-        "script -q /dev/null \"$0\" --root \"$1\" uninstall hello"
+        "script -q /dev/null \"$0\" --root \"$1\" uninstall dan/hello"
     };
     let ask = |answer: &str| {
         let out = f
@@ -1128,11 +1150,11 @@ fn uninstall_on_tty_asks_before_losing_work() {
     assert!(output.contains("Delete anyway? [y/N]"), "{output}");
     assert!(output.contains("untracked: notes.txt"), "{output}");
     assert!(repo.join("notes.txt").exists());
-    assert_eq!(f.state()["plugins"]["hello"]["enabled"], true);
+    assert_eq!(f.state()["packages"]["dan/hello"]["enabled"], true);
     let output = ask("y");
-    assert!(output.contains("hello uninstalled"), "{output}");
+    assert!(output.contains("dan/hello uninstalled"), "{output}");
     assert!(!repo.exists());
-    assert!(f.state()["plugins"].as_object().unwrap().is_empty());
+    assert!(f.state()["packages"].as_object().unwrap().is_empty());
 }
 
 #[test]
@@ -1161,7 +1183,7 @@ fn usage_errors_name_the_problem_and_create_nothing() {
         ),
         (&["namespace"][..], "unknown command: namespace"),
         (&["namespace", "me"][..], "unknown command: namespace"),
-        (&["create", "hello"][..], "plugin id needs a namespace"),
+        (&["init", "hello"][..], "package id needs a namespace"),
         (
             &["list", "--namespace", "me"][..],
             "unknown option: --namespace",
@@ -1190,7 +1212,6 @@ fn catalog_commands_name_the_missing_catalog_and_create_nothing() {
         &["info"][..],
         &["catalog"][..],
         &["catalog-update"][..],
-        &["migrate-catalog"][..],
         &["register", "x", "--ref", "HEAD"][..],
         &["install-catalog", "qa/demo"][..],
     ] {
@@ -1245,11 +1266,15 @@ fn defaults_are_relative_to_the_current_directory() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(f.dir.join("gitpm-workspace/dist/hello/index.js").exists());
+    assert!(
+        f.dir
+            .join("gitpm-workspace/dist/dan/hello/index.js")
+            .exists()
+    );
     let out = f
         .command(env!("CARGO_BIN_EXE_gitpm"))
         .current_dir(&f.dir)
-        .args(["create", "me/hello", "--into", "me/hello"])
+        .args(["init", "me/hello", "--into", "me/hello"])
         .output()
         .unwrap();
     assert!(
@@ -1284,17 +1309,21 @@ fn legacy_pm_variables_are_ignored() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(f.dir.join("gitpm-workspace/dist/hello/index.js").exists());
+    assert!(
+        f.dir
+            .join("gitpm-workspace/dist/dan/hello/index.js")
+            .exists()
+    );
     let out = cli(&["info"]);
     assert!(!out.status.success());
     assert!(
         String::from_utf8_lossy(&out.stderr)
             .contains("needs a catalog: pass --catalog DIR_OR_JSON_OR_URL or set GITPM_CATALOG")
     );
-    let out = cli(&["create", "hello", "--into", "hello"]);
+    let out = cli(&["init", "hello", "--into", "hello"]);
     assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("plugin id needs a namespace"));
-    let out = cli(&["create", "dan/hello", "--into", "dan/hello"]);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("package id needs a namespace"));
+    let out = cli(&["init", "dan/hello", "--into", "dan/hello"]);
     assert!(
         out.status.success(),
         "{}",
@@ -1304,7 +1333,7 @@ fn legacy_pm_variables_are_ignored() {
         serde_json::from_slice(&fs::read(f.dir.join("dan/hello/plugin.json")).unwrap()).unwrap();
     assert_eq!(m["id"], "dan/hello");
     // The workspace is ./gitpm-workspace (PM_ROOT ignored), so hello is found there.
-    let out = cli(&["fork", "hello", "--ns", "me", "--into", "me/hello"]);
+    let out = cli(&["fork", "dan/hello", "--ns", "me", "--into", "me/hello"]);
     assert!(
         out.status.success(),
         "{}",
@@ -1316,9 +1345,9 @@ fn legacy_pm_variables_are_ignored() {
 }
 
 #[test]
-fn create_install_and_fork_into_explicit_folders() {
+fn init_install_and_fork_into_explicit_folders() {
     let f = Fixture::new();
-    f.cli(&["create", "dan/hello", "--into", "dan/hello"], true);
+    f.cli(&["init", "dan/hello", "--into", "dan/hello"], true);
     f.cli(&["install", "./dan/hello"], true);
     let out = f.cli(
         &["fork", "dan/hello", "--ns", "me", "--into", "me/hello"],
@@ -1363,11 +1392,15 @@ fn gitpm_variables_set_root_catalog_and_sources() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(f.dir.join("catalog/legacy/hello/plugin.json").exists());
+    assert!(
+        f.dir
+            .join("catalog/namespaces/dan/hello/plugin.json")
+            .exists()
+    );
     let out = f
         .pm()
         .current_dir(&f.dir)
-        .args(["install-catalog", "hello"])
+        .args(["install-catalog", "dan/hello"])
         .output()
         .unwrap();
     assert!(
@@ -1397,6 +1430,25 @@ fn help_names_the_binary_and_removed_commands_are_unknown() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(stderr.contains("unknown"), "{args:?}: {stderr}");
     }
+    // Removed commands and aliases are unknown commands, not hidden ones.
+    assert!(
+        !help
+            .lines()
+            .any(|l| l.starts_with("  create ") || l.contains("migrate-catalog"))
+    );
+    for command in ["create", "migrate-catalog"] {
+        let out = f
+            .pm()
+            .args([command, "dan/hello", "--into", "x"])
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains(&format!("unknown command: {command}; use --help")),
+            "{stderr}"
+        );
+    }
     assert!(!f.root.exists());
 }
 
@@ -1408,7 +1460,7 @@ fn update_all_previews_applies_and_rejects_unsupported_options() {
     let before = f.state();
     let preview = f.cli(&["update", "all", "--dry-run"], true);
     assert!(
-        preview.contains("hello would be updated 1.0.0 → 2.0.0"),
+        preview.contains("dan/hello would be updated 1.0.0 → 2.0.0"),
         "{preview}"
     );
     assert!(preview.contains("Nothing was changed."));
@@ -1417,18 +1469,18 @@ fn update_all_previews_applies_and_rejects_unsupported_options() {
     for args in [
         vec!["update", "all", "--ref", "main"],
         vec!["update", "all", "--channel", "dev"],
-        vec!["update", "hello", "--dry-run"],
+        vec!["update", "dan/hello", "--dry-run"],
     ] {
         f.cli(&args, false);
         assert_eq!(f.state(), before);
     }
     let out = f.cli(&["update", "all"], true);
     assert!(out.contains("1 updates, 0 installs"), "{out}");
-    assert!(out.contains("hello updated 1.0.0 → 2.0.0"), "{out}");
+    assert!(out.contains("dan/hello updated 1.0.0 → 2.0.0"), "{out}");
     assert_eq!(f.content(), "hello v2");
     let out = f.cli(&["update", "all"], true);
     assert!(out.contains("0 updates, 0 installs"), "{out}");
-    assert!(out.contains("hello up to date (2.0.0)"), "{out}");
+    assert!(out.contains("dan/hello up to date (2.0.0)"), "{out}");
 }
 
 #[test]
@@ -1437,12 +1489,12 @@ fn install_again_reports_already_installed_and_changes_nothing() {
     f.install();
     let source = f.repo.to_str().unwrap();
     let state = || fs::read(f.root.join("state.json")).unwrap();
-    let dist = f.root.join("dist/hello/index.js");
+    let dist = f.root.join("dist/dan/hello/index.js");
     let (before, modified) = (state(), fs::metadata(&dist).unwrap().modified().unwrap());
     // Same source, same revision.
     assert_eq!(
         f.cli(&["install", source], true),
-        "hello already installed (1.0.0)\n"
+        "dan/hello already installed (1.0.0)\n"
     );
     assert_eq!(state(), before);
     assert_eq!(fs::metadata(&dist).unwrap().modified().unwrap(), modified);
@@ -1450,22 +1502,22 @@ fn install_again_reports_already_installed_and_changes_nothing() {
     f.release("1.1.0", "hello v2");
     assert_eq!(
         f.cli(&["install", source], true),
-        "hello already installed (1.0.0); run update\n"
+        "dan/hello already installed (1.0.0); run update\n"
     );
     assert_eq!(state(), before);
-    assert!(f.state()["plugins"]["hello"]["previous"].is_null());
+    assert!(f.state()["packages"]["dan/hello"]["previous"].is_null());
     // An explicit ref or the dev channel is named in the hint, never silently ignored.
     assert_eq!(
-        f.cli(&["install", source, "--ref", "v1.1.0"], true),
-        "hello already installed (1.0.0); requested --ref v1.1.0 — run update hello --ref v1.1.0\n"
+        f.cli(&["install", source, "--ref", "dan/hello@1.1.0"], true),
+        "dan/hello already installed (1.0.0); requested --ref dan/hello@1.1.0 — run update dan/hello --ref dan/hello@1.1.0\n"
     );
     assert_eq!(
-        f.cli(&["install", source, "--ref", "v1.0.0"], true),
-        "hello already installed (1.0.0)\n"
+        f.cli(&["install", source, "--ref", "dan/hello@1.0.0"], true),
+        "dan/hello already installed (1.0.0)\n"
     );
     assert_eq!(
         f.cli(&["install", source, "--channel", "dev"], true),
-        "hello already installed (1.0.0); requested --channel dev — run update hello --channel dev\n"
+        "dan/hello already installed (1.0.0); requested --channel dev — run update dan/hello --channel dev\n"
     );
     assert_eq!(state(), before);
     assert_eq!(f.content(), "hello v1");
@@ -1487,14 +1539,14 @@ fn install_again_reports_already_installed_and_changes_nothing() {
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("already installed: hello")
+        stderr.contains("already installed: dan/hello")
             && stderr.contains("Error kind: already_installed"),
         "{stderr}"
     );
     assert_eq!(state(), before);
     assert_eq!(
-        f.cli(&["update", "hello"], true),
-        "hello updated 1.0.0 → 1.1.0\n"
+        f.cli(&["update", "dan/hello"], true),
+        "dan/hello updated 1.0.0 → 1.1.0\n"
     );
 }
 
@@ -1503,20 +1555,20 @@ fn mutating_commands_print_one_line_per_package_and_no_ok_lines() {
     let f = Fixture::new();
     f.install();
     f.release("1.1.0", "hello v2");
-    f.cli(&["update", "hello"], true);
+    f.cli(&["update", "dan/hello"], true);
     for (args, expected) in [
         (
-            &["rollback", "hello"][..],
-            "hello rolled back 1.1.0 → 1.0.0\n",
+            &["rollback", "dan/hello"][..],
+            "dan/hello rolled back 1.1.0 → 1.0.0\n",
         ),
-        (&["disable", "hello"][..], "hello disabled\n"),
-        (&["enable", "hello"][..], "hello enabled\n"),
+        (&["disable", "dan/hello"][..], "dan/hello disabled\n"),
+        (&["enable", "dan/hello"][..], "dan/hello enabled\n"),
         (
-            &["forget", "hello"][..],
-            "hello forgotten (clone kept; restore re-registers it)\n",
+            &["forget", "dan/hello"][..],
+            "dan/hello forgotten (clone kept; restore re-registers it)\n",
         ),
-        (&["restore", "hello"][..], "hello restored 1.0.0\n"),
-        (&["uninstall", "hello"][..], "hello uninstalled\n"),
+        (&["restore", "dan/hello"][..], "dan/hello restored 1.0.0\n"),
+        (&["uninstall", "dan/hello"][..], "dan/hello uninstalled\n"),
     ] {
         assert_eq!(f.cli(args, true), expected, "{args:?}");
     }

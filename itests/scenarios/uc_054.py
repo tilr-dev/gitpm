@@ -158,8 +158,8 @@ def cyclic_replacement_refused(t: T):
     mine/base, and dep/base (replaces vendor/base but depends on it) cannot provide vendor/base; --force
     and y do not override."""
     t.gitpm_ok("replace", ORIGINAL, "--with", "mine/base")
-    t.new_plugin("cyc/base", "0.1.0", extra={"replaces": {"id": "mine/base", "version": "0.1.0"}})
-    t.new_plugin("dep/base", "0.1.0", deps={ORIGINAL: "^1"},
+    t.new_package("cyc/base", "0.1.0", extra={"replaces": {"id": "mine/base", "version": "0.1.0"}})
+    t.new_package("dep/base", "0.1.0", deps={ORIGINAL: "^1"},
                  extra={"replaces": {"id": ORIGINAL, "version": "1.4.0"}})
     t.gitpm_ok("install", t.repo("cyc/base"))
     t.gitpm_ok("install", t.repo("dep/base"))
@@ -180,7 +180,7 @@ def cyclic_replacement_refused(t: T):
 def two_compatible_forks_single_binding(t: T):
     """5. Two compatible forks: none is chosen automatically; each explicit replace activates exactly one,
     the second switches the single global binding."""
-    t.new_plugin("alt/base", "0.1.0", extra={"replaces": {"id": ORIGINAL, "version": "1.4.0"}})
+    t.new_package("alt/base", "0.1.0", extra={"replaces": {"id": ORIGINAL, "version": "1.4.0"}})
     t.gitpm_ok("install", t.repo("alt/base"))
     t.ok(not t.state().get("replacements"), "no fork chosen automatically")
     t.eq(provider(resolved(t), "app/a"), (ORIGINAL, True), "consumers on the original")
@@ -204,7 +204,7 @@ def provenance_never_triggers_replacement(t: T):
     t.gitpm_ok("fork", ORIGINAL, "--ns", "prov", "--into", fork)
     t.gitpm_ok("commit", fork, "1.4.1")
     t.gitpm_ok("install", fork)
-    p = t.plugin("prov/base")
+    p = t.package("prov/base")
     t.eq(p["forkOf"]["id"], ORIGINAL, "forkOf")
     t.eq(p["replaces"]["id"], ORIGINAL, "replaces")
     t.ok(not t.state().get("replacements"), "no binding")

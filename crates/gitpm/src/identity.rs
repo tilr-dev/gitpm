@@ -1,4 +1,4 @@
-//! Namespaces, stable plugin IDs and release tags. There is no default namespace: every
+//! Namespaces, stable package IDs and release tags. There is no default namespace: every
 //! ID is given in full (`namespace/name`).
 use crate::error::{Result, ensure};
 
@@ -20,12 +20,9 @@ pub fn qualified(namespace: &str, name: &str) -> Result<String> {
     valid_part(name)?;
     Ok(format!("{namespace}/{name}"))
 }
+/// The release tag `ID@VERSION`, the only tag spelling gitpm creates and reads.
 pub fn release_tag(id: &str, version: &str) -> String {
-    if id.contains('/') {
-        format!("{id}@{version}")
-    } else {
-        format!("v{version}")
-    }
+    format!("{id}@{version}")
 }
 
 #[cfg(test)]
@@ -78,8 +75,7 @@ mod tests {
     }
 
     #[test]
-    fn release_tag_is_v_for_legacy_and_at_for_scoped_ids() {
-        assert_eq!(release_tag("demo1", "1.2.3"), "v1.2.3");
+    fn release_tag_is_id_at_version() {
         assert_eq!(release_tag("dan/demo1", "1.2.3"), "dan/demo1@1.2.3");
     }
 }

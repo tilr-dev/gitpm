@@ -18,12 +18,12 @@ def tagged(t: T, version: str) -> str:
 
 
 def failed_update(t: T, *extra, kind: str | None = None, contains=()):
-    before, entry = t.snap(t.ws, git=True), t.plugin(ID)
+    before, entry = t.snap(t.ws, git=True), t.package(ID)
     r = t.gitpm_err("update", ID, *extra, kind=kind, contains=contains)
     t.has(r.err, "Error kind:")
     t.same(before, "workspace (state, clone with .git, dist)")
     t.eq([str(p) for p in t.ws.rglob("*.pm-txn*")], [], "no half-installed transaction files")
-    t.eq(t.plugin(ID), entry, "state entry kept")
+    t.eq(t.package(ID), entry, "state entry kept")
     t.eq((entry["current"]["version"], entry["previous"]["version"]), ("0.1.2", "0.1.1"), "versions")
     return r
 
@@ -31,16 +31,16 @@ def failed_update(t: T, *extra, kind: str | None = None, contains=()):
 def rollback_still_works(t: T):
     """Rollback to 0.1.1 and back to 0.1.2 after the failure."""
     t.gitpm_ok("rollback", ID)
-    t.eq(t.plugin(ID)["current"]["version"], "0.1.1", "rolled back")
+    t.eq(t.package(ID)["current"]["version"], "0.1.1", "rolled back")
     t.has((t.dist(ID) / "index.js").read_text(), f"{ID} 0.1.1")
     t.gitpm_ok("rollback", ID)
-    t.eq(t.plugin(ID)["current"]["version"], "0.1.2", "rolled forward again")
+    t.eq(t.package(ID)["current"]["version"], "0.1.2", "rolled forward again")
 
 
 def valid_update_succeeds(t: T, version: str):
     commit = t.release(ID, version)
     t.gitpm_ok("update", ID)
-    p = t.plugin(ID)
+    p = t.package(ID)
     t.eq(p["current"], {"version": version, "commit": commit}, "current after the valid update")
     t.eq(p["previous"]["version"], "0.1.2", "previous after the valid update")
     t.eq(t.rev(t.clone(ID)), commit, "clone HEAD")
@@ -101,4 +101,4 @@ def origin_unavailable(t: T):
     rollback_still_works(t)
     shutil.move(away, t.repo(ID))
     t.gitpm_ok("update", ID)
-    t.eq(t.plugin(ID)["current"], {"version": "0.1.3", "commit": tagged(t, "0.1.3")}, "update after origin is back")
+    t.eq(t.package(ID)["current"], {"version": "0.1.3", "commit": tagged(t, "0.1.3")}, "update after origin is back")

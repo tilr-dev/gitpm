@@ -29,6 +29,21 @@
           "type": "toml",
           "path": "/Cargo.lock",
           "jsonpath": "$.package[?(@.name.value=='gitpm-cli')].version"
+        },
+        {
+          "type": "toml",
+          "path": "/crates/gitpm-ffi/Cargo.toml",
+          "jsonpath": "$.package.version"
+        },
+        {
+          "type": "toml",
+          "path": "/crates/gitpm-ffi/Cargo.toml",
+          "jsonpath": "$.dependencies.gitpm.version"
+        },
+        {
+          "type": "toml",
+          "path": "/Cargo.lock",
+          "jsonpath": "$.package[?(@.name.value=='gitpm-ffi')].version"
         }
       ]
     }

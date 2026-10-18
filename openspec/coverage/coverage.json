@@ -1,18 +1,18 @@
 {
  "generated_from": {
   "specs": "openspec/specs",
-  "cases": 638,
+  "cases": 631,
   "last_run": {
-   "started": "2026-10-17T23:12:25.268506+00:00",
-   "commit": "8d9e2f9+dirty",
+   "started": "2026-10-18T12:35:16.678400+00:00",
+   "commit": "15394cd+dirty",
    "counts": {
-    "PASS": 993,
+    "PASS": 984,
     "FAIL": 0,
     "BLOCKED": 1,
     "XFAIL": 1,
     "XPASS": 0
    },
-   "path": "itests/results/20261018T011220-7646"
+   "path": "itests/results/20261018T143512-99470"
   }
  },
  "capabilities": [
@@ -24,15 +24,17 @@
      "title": "init creates a package with its first release",
      "tag": "authoring/init-creates-a-package-with-its-first-release",
      "cases": [
+      "uc_004:create_is_an_unknown_command",
       "uc_004:existing_identity_is_not_overridden",
       "uc_004:missing_identity_is_repository_local",
       "uc_042:each_commit_creates_one_commit_and_tag"
      ],
      "all_cases": [
       "uc_001:missing_init_into",
-      "uc_004:create_absolute_path_with_spaces",
+      "uc_004:create_is_an_unknown_command",
       "uc_004:existing_identity_is_not_overridden",
-      "uc_004:init_and_create_are_separate_repositories",
+      "uc_004:init_absolute_path_with_spaces",
+      "uc_004:init_into_siblings_gives_separate_repositories",
       "uc_004:init_nested_relative_path",
       "uc_004:missing_identity_is_repository_local",
       "uc_042:each_commit_creates_one_commit_and_tag"
@@ -56,8 +58,8 @@
        "title": "New package repository",
        "tag": "authoring/init-creates-a-package-with-its-first-release#new-package-repository",
        "cases": [
-        "uc_004:create_absolute_path_with_spaces",
-        "uc_004:init_and_create_are_separate_repositories"
+        "uc_004:init_absolute_path_with_spaces",
+        "uc_004:init_into_siblings_gives_separate_repositories"
        ],
        "covered": true
       },
@@ -74,9 +76,10 @@
      "covered": true,
      "last_run": {
       "uc_001:missing_init_into": "PASS",
-      "uc_004:create_absolute_path_with_spaces": "PASS",
+      "uc_004:create_is_an_unknown_command": "PASS",
       "uc_004:existing_identity_is_not_overridden": "PASS",
-      "uc_004:init_and_create_are_separate_repositories": "PASS",
+      "uc_004:init_absolute_path_with_spaces": "PASS",
+      "uc_004:init_into_siblings_gives_separate_repositories": "PASS",
       "uc_004:init_nested_relative_path": "PASS",
       "uc_004:missing_identity_is_repository_local": "PASS",
       "uc_042:each_commit_creates_one_commit_and_tag": "PASS"
@@ -90,7 +93,6 @@
       "uc_072:init_multi_then_add_packages"
      ],
      "all_cases": [
-      "uc_004:create_existing_directory_preserved",
       "uc_004:init_existing_directory_preserved",
       "uc_072:init_multi_then_add_packages"
      ],
@@ -111,7 +113,6 @@
        "title": "Existing folder that is not a repository",
        "tag": "authoring/init-into-a-multi-package-repository#existing-folder-that-is-not-a-repository",
        "cases": [
-        "uc_004:create_existing_directory_preserved",
         "uc_004:init_existing_directory_preserved"
        ],
        "covered": true
@@ -133,7 +134,6 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_004:create_existing_directory_preserved": "PASS",
       "uc_004:init_existing_directory_preserved": "PASS",
       "uc_072:init_multi_then_add_packages": "PASS"
      }
@@ -432,24 +432,30 @@
      "title": "Catalog v2 is a tree of static files",
      "tag": "catalog/catalog-v2-is-a-tree-of-static-files",
      "cases": [
-      "uc_026:legacy_and_scoped_catalog_entries_coexist",
+      "uc_026:unscoped_id_is_never_registered",
       "uc_028:schema2_directories_and_links_resolve",
       "uc_034:catalog_prints_current_level_only",
       "uc_034:info_local_root",
+      "uc_034:info_v1_is_refused",
       "uc_036:unsafe_directory_links_refused",
       "uc_036:unsafe_release_links_refused",
-      "uc_036:unsupported_schema"
+      "uc_036:unsupported_schema",
+      "uc_037:every_read_is_refused",
+      "uc_037:writes_into_a_v1_catalog_are_refused"
      ],
      "all_cases": [
-      "uc_026:legacy_and_scoped_catalog_entries_coexist",
+      "uc_026:unscoped_id_is_never_registered",
       "uc_028:schema2_directories_and_links_resolve",
       "uc_034:catalog_prints_current_level_only",
       "uc_034:info_branch_path",
       "uc_034:info_local_root",
+      "uc_034:info_v1_is_refused",
       "uc_035:update_available_reads_only_installed_plugins",
       "uc_036:unsafe_directory_links_refused",
       "uc_036:unsafe_release_links_refused",
       "uc_036:unsupported_schema",
+      "uc_037:every_read_is_refused",
+      "uc_037:writes_into_a_v1_catalog_are_refused",
       "uc_077:release_uploaded_before_the_index"
      ],
      "cargo_tests": [
@@ -485,15 +491,18 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_026:legacy_and_scoped_catalog_entries_coexist": "PASS",
+      "uc_026:unscoped_id_is_never_registered": "PASS",
       "uc_028:schema2_directories_and_links_resolve": "PASS",
       "uc_034:catalog_prints_current_level_only": "PASS",
       "uc_034:info_branch_path": "PASS",
       "uc_034:info_local_root": "PASS",
+      "uc_034:info_v1_is_refused": "PASS",
       "uc_035:update_available_reads_only_installed_plugins": "PASS",
       "uc_036:unsafe_directory_links_refused": "PASS",
       "uc_036:unsafe_release_links_refused": "PASS",
       "uc_036:unsupported_schema": "PASS",
+      "uc_037:every_read_is_refused": "PASS",
+      "uc_037:writes_into_a_v1_catalog_are_refused": "PASS",
       "uc_077:release_uploaded_before_the_index": "PASS"
      }
     },
@@ -508,11 +517,9 @@
       "uc_029:tampered_commit",
       "uc_029:tampered_file_hash",
       "uc_029:tampered_file_size",
-      "uc_031:all_releases_indexed_once",
-      "uc_037:registrations_after_migration"
+      "uc_031:all_releases_indexed_once"
      ],
      "all_cases": [
-      "uc_026:register_and_install_legacy",
       "uc_027:register_into_new_catalog",
       "uc_027:uncommitted_dist_does_not_affect_hashes",
       "uc_028:releases_match_git",
@@ -520,9 +527,6 @@
       "uc_029:tampered_file_hash",
       "uc_029:tampered_file_size",
       "uc_031:all_releases_indexed_once",
-      "uc_037:read_and_install_before_migration",
-      "uc_037:registrations_after_migration",
-      "uc_065:legacy_release_may_lack_hashes",
       "uc_065:namespaced_release_with_empty_files_is_refused",
       "uc_065:namespaced_release_without_files_is_refused"
      ],
@@ -535,12 +539,8 @@
        "slug": "legacy-release-without-hashes",
        "title": "Legacy release without hashes",
        "tag": "catalog/release-record#legacy-release-without-hashes",
-       "cases": [
-        "uc_026:register_and_install_legacy",
-        "uc_037:read_and_install_before_migration",
-        "uc_065:legacy_release_may_lack_hashes"
-       ],
-       "covered": true
+       "cases": [],
+       "covered": false
       },
       {
        "slug": "namespaced-release-without-hashes",
@@ -555,7 +555,6 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_026:register_and_install_legacy": "PASS",
       "uc_027:register_into_new_catalog": "PASS",
       "uc_027:uncommitted_dist_does_not_affect_hashes": "PASS",
       "uc_028:releases_match_git": "PASS",
@@ -563,9 +562,6 @@
       "uc_029:tampered_file_hash": "PASS",
       "uc_029:tampered_file_size": "PASS",
       "uc_031:all_releases_indexed_once": "PASS",
-      "uc_037:read_and_install_before_migration": "PASS",
-      "uc_037:registrations_after_migration": "PASS",
-      "uc_065:legacy_release_may_lack_hashes": "PASS",
       "uc_065:namespaced_release_with_empty_files_is_refused": "PASS",
       "uc_065:namespaced_release_without_files_is_refused": "PASS"
      }
@@ -574,19 +570,8 @@
      "slug": "v1-catalogs-stay-readable",
      "title": "v1 catalogs stay readable",
      "tag": "catalog/v1-catalogs-stay-readable",
-     "cases": [
-      "uc_034:info_v1",
-      "uc_037:read_and_install_before_migration",
-      "uc_037:register_auto_migrates"
-     ],
-     "all_cases": [
-      "uc_034:info_v1",
-      "uc_037:migrate_keeps_backup_and_releases",
-      "uc_037:read_and_install_before_migration",
-      "uc_037:register_auto_migrates",
-      "uc_037:repeated_migration_is_safe",
-      "uc_062:migrate_v2_catalog"
-     ],
+     "cases": [],
+     "all_cases": [],
      "cargo_tests": [
       "migration_preserves_legacy_releases_and_backup",
       "catalog::migrate_refuses_invalid_catalogs_without_writing"
@@ -596,42 +581,26 @@
        "slug": "migrate",
        "title": "Migrate",
        "tag": "catalog/v1-catalogs-stay-readable#migrate",
-       "cases": [
-        "uc_037:migrate_keeps_backup_and_releases",
-        "uc_037:repeated_migration_is_safe",
-        "uc_062:migrate_v2_catalog"
-       ],
-       "covered": true
+       "cases": [],
+       "covered": false
       },
       {
        "slug": "migrate-a-v2-catalog",
        "title": "Migrate a v2 catalog",
        "tag": "catalog/v1-catalogs-stay-readable#migrate-a-v2-catalog",
-       "cases": [
-        "uc_037:repeated_migration_is_safe",
-        "uc_062:migrate_v2_catalog"
-       ],
-       "covered": true
+       "cases": [],
+       "covered": false
       },
       {
        "slug": "register-into-a-v1-catalog",
        "title": "Register into a v1 catalog",
        "tag": "catalog/v1-catalogs-stay-readable#register-into-a-v1-catalog",
-       "cases": [
-        "uc_037:register_auto_migrates"
-       ],
-       "covered": true
+       "cases": [],
+       "covered": false
       }
      ],
      "covered": true,
-     "last_run": {
-      "uc_034:info_v1": "PASS",
-      "uc_037:migrate_keeps_backup_and_releases": "PASS",
-      "uc_037:read_and_install_before_migration": "PASS",
-      "uc_037:register_auto_migrates": "PASS",
-      "uc_037:repeated_migration_is_safe": "PASS",
-      "uc_062:migrate_v2_catalog": "PASS"
-     }
+     "last_run": {}
     },
     {
      "slug": "catalog-generated-from-git-release-tags",
@@ -643,6 +612,7 @@
       "uc_032:unreachable_second_source",
       "uc_033:fork_ignores_original_tags",
       "uc_033:numeric_latest",
+      "uc_037:regenerate_into_an_empty_folder",
       "uc_042:catalog_update_is_idempotent_and_keeps_old_releases",
       "uc_042:fork_release_gets_its_own_catalog_entry",
       "uc_061:tag_off_default_branch_catalog_update",
@@ -655,6 +625,7 @@
       "uc_032:unreachable_second_source",
       "uc_033:fork_ignores_original_tags",
       "uc_033:numeric_latest",
+      "uc_037:regenerate_into_an_empty_folder",
       "uc_042:catalog_update_is_idempotent_and_keeps_old_releases",
       "uc_042:fork_release_gets_its_own_catalog_entry",
       "uc_061:tag_off_default_branch_catalog_update",
@@ -706,6 +677,7 @@
       "uc_032:unreachable_second_source": "PASS",
       "uc_033:fork_ignores_original_tags": "PASS",
       "uc_033:numeric_latest": "PASS",
+      "uc_037:regenerate_into_an_empty_folder": "PASS",
       "uc_042:catalog_update_is_idempotent_and_keeps_old_releases": "PASS",
       "uc_042:fork_release_gets_its_own_catalog_entry": "PASS",
       "uc_061:tag_off_default_branch_catalog_update": "PASS",
@@ -721,7 +693,6 @@
       "uc_027:identical_registration_is_safe",
       "uc_027:other_source_same_id_conflicts",
       "uc_028:adding_release_preserves_previous_records",
-      "uc_037:registrations_after_migration",
       "uc_062:register_same_release"
      ],
      "all_cases": [
@@ -734,7 +705,6 @@
       "uc_031:repeat_is_safe",
       "uc_032:build_metadata_preserved",
       "uc_032:removed_source_entries_remain",
-      "uc_037:registrations_after_migration",
       "uc_042:catalog_update_is_idempotent_and_keeps_old_releases",
       "uc_062:catalog_update_unchanged_sources",
       "uc_062:register_same_release"
@@ -778,7 +748,6 @@
       "uc_031:repeat_is_safe": "PASS",
       "uc_032:build_metadata_preserved": "PASS",
       "uc_032:removed_source_entries_remain": "PASS",
-      "uc_037:registrations_after_migration": "PASS",
       "uc_042:catalog_update_is_idempotent_and_keeps_old_releases": "PASS",
       "uc_062:catalog_update_unchanged_sources": "PASS",
       "uc_062:register_same_release": "PASS"
@@ -795,7 +764,7 @@
       "uc_028:adding_release_preserves_previous_records",
       "uc_030:valid_pair_is_stored",
       "uc_036:register_to_http_catalog_refused",
-      "uc_037:register_auto_migrates",
+      "uc_037:writes_into_a_v1_catalog_are_refused",
       "uc_041:dist_symlink_refused_at_register",
       "uc_044:catalog_round_trip_keeps_provenance",
       "uc_066:s1_publish_to_catalog",
@@ -812,7 +781,7 @@
       "uc_030:url_alone_is_rejected",
       "uc_030:valid_pair_is_stored",
       "uc_036:register_to_http_catalog_refused",
-      "uc_037:register_auto_migrates",
+      "uc_037:writes_into_a_v1_catalog_are_refused",
       "uc_041:dist_symlink_refused_at_register",
       "uc_044:catalog_round_trip_keeps_provenance",
       "uc_066:s1_publish_to_catalog",
@@ -848,7 +817,7 @@
       "uc_030:url_alone_is_rejected": "PASS",
       "uc_030:valid_pair_is_stored": "PASS",
       "uc_036:register_to_http_catalog_refused": "PASS",
-      "uc_037:register_auto_migrates": "PASS",
+      "uc_037:writes_into_a_v1_catalog_are_refused": "PASS",
       "uc_041:dist_symlink_refused_at_register": "PASS",
       "uc_044:catalog_round_trip_keeps_provenance": "PASS",
       "uc_066:s1_publish_to_catalog": "PASS",
@@ -1008,19 +977,17 @@
      "title": "Bounded overview",
      "tag": "catalog/bounded-overview",
      "cases": [
-      "uc_034:overview_limit_v1",
       "uc_061:two_hundred_versions",
-      "uc_063:info_v1_41_shows_hint",
-      "uc_063:info_v1_exactly_40_has_no_hint",
+      "uc_063:info_at_the_limit_shows_hint",
+      "uc_063:info_below_the_limit_has_no_hint",
       "uc_063:info_v2_more_than_40_entries"
      ],
      "all_cases": [
       "uc_034:info_local_root",
-      "uc_034:overview_limit_v1",
       "uc_034:overview_limit_v2",
       "uc_061:two_hundred_versions",
-      "uc_063:info_v1_41_shows_hint",
-      "uc_063:info_v1_exactly_40_has_no_hint",
+      "uc_063:info_at_the_limit_shows_hint",
+      "uc_063:info_below_the_limit_has_no_hint",
       "uc_063:info_v2_more_than_40_entries"
      ],
      "cargo_tests": [
@@ -1049,11 +1016,10 @@
      "covered": true,
      "last_run": {
       "uc_034:info_local_root": "PASS",
-      "uc_034:overview_limit_v1": "PASS",
       "uc_034:overview_limit_v2": "PASS",
       "uc_061:two_hundred_versions": "PASS",
-      "uc_063:info_v1_41_shows_hint": "PASS",
-      "uc_063:info_v1_exactly_40_has_no_hint": "PASS",
+      "uc_063:info_at_the_limit_shows_hint": "PASS",
+      "uc_063:info_below_the_limit_has_no_hint": "PASS",
       "uc_063:info_v2_more_than_40_entries": "PASS"
      }
     },
@@ -1271,7 +1237,9 @@
      "all_cases": [
       "uc_001:help_in_every_spelling",
       "uc_001:unknown_command",
+      "uc_004:create_is_an_unknown_command",
       "uc_008:auth_check_needs_check_subcommand",
+      "uc_037:migrate_catalog_is_unknown",
       "uc_063:help_lists_every_command",
       "uc_063:removed_namespace_command",
       "uc_063:removed_sync_command",
@@ -1317,6 +1285,8 @@
        "tag": "cli/command-set#removed-command",
        "cases": [
         "uc_001:unknown_command",
+        "uc_004:create_is_an_unknown_command",
+        "uc_037:migrate_catalog_is_unknown",
         "uc_063:removed_namespace_command",
         "uc_063:removed_sync_command",
         "uc_063:unknown_command"
@@ -1328,7 +1298,9 @@
      "last_run": {
       "uc_001:help_in_every_spelling": "PASS",
       "uc_001:unknown_command": "PASS",
+      "uc_004:create_is_an_unknown_command": "PASS",
       "uc_008:auth_check_needs_check_subcommand": "PASS",
+      "uc_037:migrate_catalog_is_unknown": "PASS",
       "uc_063:help_lists_every_command": "PASS",
       "uc_063:removed_namespace_command": "PASS",
       "uc_063:removed_sync_command": "PASS",
@@ -2879,6 +2851,7 @@
      "tag": "errors/stable-error-kinds",
      "cases": [
       "uc_036:malformed_and_truncated_json",
+      "uc_037:every_read_is_refused",
       "uc_052:bad_manifest_kind"
      ],
      "all_cases": [
@@ -2886,6 +2859,7 @@
       "uc_021:unknown_id",
       "uc_022:unknown_id_changes_nothing",
       "uc_036:malformed_and_truncated_json",
+      "uc_037:every_read_is_refused",
       "uc_052:bad_manifest_kind",
       "uc_062:uninstall_uninstalled"
      ],
@@ -2944,6 +2918,7 @@
       "uc_021:unknown_id": "PASS",
       "uc_022:unknown_id_changes_nothing": "PASS",
       "uc_036:malformed_and_truncated_json": "PASS",
+      "uc_037:every_read_is_refused": "PASS",
       "uc_052:bad_manifest_kind": "PASS",
       "uc_062:uninstall_uninstalled": "PASS"
      }
@@ -3561,7 +3536,6 @@
       "uc_023:identity_version_and_provenance",
       "uc_024:branch_name_is_unique",
       "uc_024:single_existing_fork_branch",
-      "uc_025:legacy_to_scoped_fork",
       "uc_044:catalog_round_trip_keeps_provenance",
       "uc_044:fork_of_fork_records_immediate_parent",
       "uc_044:fork_of_local_head",
@@ -3583,7 +3557,6 @@
        "tag": "fork-replacement/fork-metadata#fork-manifest",
        "cases": [
         "uc_023:identity_version_and_provenance",
-        "uc_025:legacy_to_scoped_fork",
         "uc_066:s3_fork_edit_release_install",
         "uc_072:fork_one_package_of_the_repository"
        ],
@@ -3596,7 +3569,6 @@
       "uc_023:identity_version_and_provenance": "PASS",
       "uc_024:branch_name_is_unique": "PASS",
       "uc_024:single_existing_fork_branch": "PASS",
-      "uc_025:legacy_to_scoped_fork": "PASS",
       "uc_044:catalog_round_trip_keeps_provenance": "PASS",
       "uc_044:fork_of_fork_records_immediate_parent": "PASS",
       "uc_044:fork_of_local_head": "PASS",
@@ -4438,7 +4410,6 @@
      "tag": "install-uninstall/install-the-latest-release-of-a-git-source",
      "cases": [
       "uc_024:newer_vendor_tag_is_ignored",
-      "uc_026:install_latest_legacy_tag",
       "uc_061:bad_historical_tag_skipped_by_install"
      ],
      "all_cases": [
@@ -4448,7 +4419,6 @@
       "uc_011:repository_without_release_tags_fails",
       "uc_024:inherited_vendor_tags_are_not_fork_releases",
       "uc_024:newer_vendor_tag_is_ignored",
-      "uc_026:install_latest_legacy_tag",
       "uc_061:bad_historical_tag_skipped_by_install"
      ],
      "cargo_tests": [
@@ -4485,7 +4455,6 @@
       "uc_011:repository_without_release_tags_fails": "PASS",
       "uc_024:inherited_vendor_tags_are_not_fork_releases": "PASS",
       "uc_024:newer_vendor_tag_is_ignored": "PASS",
-      "uc_026:install_latest_legacy_tag": "PASS",
       "uc_061:bad_historical_tag_skipped_by_install": "PASS"
      }
     },
@@ -4645,7 +4614,6 @@
      "tag": "install-uninstall/install-from-the-catalog",
      "cases": [
       "uc_014:catalog_release_pointing_to_broken_manifest",
-      "uc_026:register_and_install_legacy",
       "uc_029:independent_roots",
       "uc_029:install_exact_version",
       "uc_029:install_latest_is_numeric_and_pinned",
@@ -4667,7 +4635,6 @@
      "all_cases": [
       "uc_014:catalog_release_pointing_to_broken_manifest",
       "uc_014:catalog_release_with_escaping_file_path",
-      "uc_026:register_and_install_legacy",
       "uc_029:independent_roots",
       "uc_029:install_exact_version",
       "uc_029:install_latest_is_numeric_and_pinned",
@@ -4705,7 +4672,6 @@
      "last_run": {
       "uc_014:catalog_release_pointing_to_broken_manifest": "PASS",
       "uc_014:catalog_release_with_escaping_file_path": "PASS",
-      "uc_026:register_and_install_legacy": "PASS",
       "uc_029:independent_roots": "PASS",
       "uc_029:install_exact_version": "PASS",
       "uc_029:install_latest_is_numeric_and_pinned": "PASS",
@@ -4730,8 +4696,7 @@
      "title": "Refused input creates nothing",
      "tag": "install-uninstall/refused-input-creates-nothing",
      "cases": [
-      "uc_026:legacy_namespace_named_id_then_scoped",
-      "uc_026:scoped_then_legacy_namespace_named_id",
+      "uc_026:unscoped_id_is_refused",
       "uc_041:manifest_with_a_path_id_is_refused",
       "uc_058:missing_dependency_refused_in_empty_workspace",
       "uc_061:id_component_of_81_refused_in_manifest",
@@ -4741,8 +4706,7 @@
       "uc_061:invalid_manifest_version_two_parts"
      ],
      "all_cases": [
-      "uc_026:legacy_namespace_named_id_then_scoped",
-      "uc_026:scoped_then_legacy_namespace_named_id",
+      "uc_026:unscoped_id_is_refused",
       "uc_041:manifest_with_a_path_id_is_refused",
       "uc_058:missing_dependency_refused_in_empty_workspace",
       "uc_061:id_component_of_81_refused_in_manifest",
@@ -4766,8 +4730,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_026:legacy_namespace_named_id_then_scoped": "PASS",
-      "uc_026:scoped_then_legacy_namespace_named_id": "PASS",
+      "uc_026:unscoped_id_is_refused": "PASS",
       "uc_041:manifest_with_a_path_id_is_refused": "PASS",
       "uc_058:missing_dependency_refused_in_empty_workspace": "PASS",
       "uc_061:id_component_of_81_refused_in_manifest": "PASS",
@@ -5689,9 +5652,7 @@
      "tag": "package-ids/package-id-syntax",
      "cases": [
       "uc_022:namespace_directory_is_refused",
-      "uc_026:legacy_namespace_named_id_then_scoped",
-      "uc_026:scoped_and_legacy_coexist",
-      "uc_026:scoped_then_legacy_namespace_named_id",
+      "uc_026:unscoped_id_is_never_registered",
       "uc_061:id_component_of_81_refused_in_manifest",
       "uc_061:id_component_of_81_refused_on_cli"
      ],
@@ -5708,9 +5669,9 @@
       "uc_003:valid_characters_accepted",
       "uc_014:invalid_id",
       "uc_022:namespace_directory_is_refused",
-      "uc_026:legacy_namespace_named_id_then_scoped",
-      "uc_026:scoped_and_legacy_coexist",
-      "uc_026:scoped_then_legacy_namespace_named_id",
+      "uc_026:unscoped_id_equal_to_an_installed_namespace",
+      "uc_026:unscoped_id_is_never_registered",
+      "uc_026:unscoped_id_is_refused",
       "uc_041:manifest_with_a_path_id_is_refused",
       "uc_041:traversal_and_absolute_ids_are_refused",
       "uc_058:invalid_dependency_id_refused",
@@ -5760,6 +5721,7 @@
         "uc_003:space_refused",
         "uc_003:too_long_refused",
         "uc_014:invalid_id",
+        "uc_026:unscoped_id_is_refused",
         "uc_041:manifest_with_a_path_id_is_refused",
         "uc_041:traversal_and_absolute_ids_are_refused",
         "uc_058:invalid_dependency_id_refused",
@@ -5793,8 +5755,10 @@
        "slug": "legacy-id-equal-to-an-installed-namespace",
        "title": "Legacy ID equal to an installed namespace",
        "tag": "package-ids/package-id-syntax#legacy-id-equal-to-an-installed-namespace",
-       "cases": [],
-       "covered": false
+       "cases": [
+        "uc_026:unscoped_id_equal_to_an_installed_namespace"
+       ],
+       "covered": true
       }
      ],
      "covered": true,
@@ -5811,9 +5775,9 @@
       "uc_003:valid_characters_accepted": "PASS",
       "uc_014:invalid_id": "PASS",
       "uc_022:namespace_directory_is_refused": "PASS",
-      "uc_026:legacy_namespace_named_id_then_scoped": "PASS",
-      "uc_026:scoped_and_legacy_coexist": "PASS",
-      "uc_026:scoped_then_legacy_namespace_named_id": "PASS",
+      "uc_026:unscoped_id_equal_to_an_installed_namespace": "PASS",
+      "uc_026:unscoped_id_is_never_registered": "PASS",
+      "uc_026:unscoped_id_is_refused": "PASS",
       "uc_041:manifest_with_a_path_id_is_refused": "PASS",
       "uc_041:traversal_and_absolute_ids_are_refused": "PASS",
       "uc_058:invalid_dependency_id_refused": "PASS",
@@ -5877,9 +5841,8 @@
       "uc_024:inherited_vendor_tags_are_not_fork_releases",
       "uc_024:newer_vendor_tag_is_ignored",
       "uc_024:scoped_tags_do_not_conflict",
-      "uc_025:legacy_to_scoped_fork",
-      "uc_026:install_latest_legacy_tag",
-      "uc_026:update_legacy_by_v_tag",
+      "uc_026:v_tag_next_to_a_release_is_ignored",
+      "uc_026:v_tag_of_a_scoped_package_is_no_release",
       "uc_032:broken_latest_tag_in_second_source",
       "uc_033:broken_tag_newer_than_valid",
       "uc_033:fork_ignores_original_tags",
@@ -5912,8 +5875,10 @@
        "slug": "two-tags-for-one-version",
        "title": "Two tags for one version",
        "tag": "package-ids/release-tag-names#two-tags-for-one-version",
-       "cases": [],
-       "covered": false
+       "cases": [
+        "uc_026:v_tag_next_to_a_release_is_ignored"
+       ],
+       "covered": true
       },
       {
        "slug": "scoped-tag",
@@ -5929,18 +5894,15 @@
        "slug": "legacy-tag",
        "title": "Legacy tag",
        "tag": "package-ids/release-tag-names#legacy-tag",
-       "cases": [
-        "uc_025:legacy_to_scoped_fork",
-        "uc_026:install_latest_legacy_tag",
-        "uc_026:update_legacy_by_v_tag"
-       ],
-       "covered": true
+       "cases": [],
+       "covered": false
       },
       {
        "slug": "vversion-tag-of-a-scoped-single-package-repository",
        "title": "vVERSION tag of a scoped single-package repository",
        "tag": "package-ids/release-tag-names#vversion-tag-of-a-scoped-single-package-repository",
        "cases": [
+        "uc_026:v_tag_of_a_scoped_package_is_no_release",
         "uc_061:scoped_id_with_v_tags"
        ],
        "covered": true
@@ -5960,9 +5922,8 @@
       "uc_024:inherited_vendor_tags_are_not_fork_releases": "PASS",
       "uc_024:newer_vendor_tag_is_ignored": "PASS",
       "uc_024:scoped_tags_do_not_conflict": "PASS",
-      "uc_025:legacy_to_scoped_fork": "PASS",
-      "uc_026:install_latest_legacy_tag": "PASS",
-      "uc_026:update_legacy_by_v_tag": "PASS",
+      "uc_026:v_tag_next_to_a_release_is_ignored": "PASS",
+      "uc_026:v_tag_of_a_scoped_package_is_no_release": "PASS",
       "uc_032:broken_latest_tag_in_second_source": "PASS",
       "uc_033:broken_tag_newer_than_valid": "PASS",
       "uc_033:fork_ignores_original_tags": "PASS",
@@ -7069,7 +7030,6 @@
       "uc_024:updating_fork_leaves_original",
       "uc_024:updating_fork_without_upstream_tags",
       "uc_024:updating_original_leaves_fork",
-      "uc_026:update_legacy_by_v_tag",
       "uc_045:restored_snapshot_updates",
       "uc_057:update_keeps_original_source",
       "uc_068:update_to_new_release"
@@ -7081,7 +7041,6 @@
       "uc_024:updating_fork_leaves_original",
       "uc_024:updating_fork_without_upstream_tags",
       "uc_024:updating_original_leaves_fork",
-      "uc_026:update_legacy_by_v_tag",
       "uc_045:restored_snapshot_updates",
       "uc_057:update_keeps_original_source",
       "uc_062:update_nothing_new",
@@ -7111,7 +7070,6 @@
       "uc_024:updating_fork_leaves_original": "PASS",
       "uc_024:updating_fork_without_upstream_tags": "PASS",
       "uc_024:updating_original_leaves_fork": "PASS",
-      "uc_026:update_legacy_by_v_tag": "PASS",
       "uc_045:restored_snapshot_updates": "PASS",
       "uc_057:update_keeps_original_source": "PASS",
       "uc_062:update_nothing_new": "PASS",
@@ -7572,12 +7530,10 @@
      "title": "Workspace folders",
      "tag": "workspace-layout/workspace-folders",
      "cases": [
-      "uc_013:same_basename_coexists",
-      "uc_026:scoped_and_legacy_coexist"
+      "uc_013:same_basename_coexists"
      ],
      "all_cases": [
-      "uc_013:same_basename_coexists",
-      "uc_026:scoped_and_legacy_coexist"
+      "uc_013:same_basename_coexists"
      ],
      "cargo_tests": [
       "workspace::open_creates_the_workspace_layout_and_lock"
@@ -7600,8 +7556,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_013:same_basename_coexists": "PASS",
-      "uc_026:scoped_and_legacy_coexist": "PASS"
+      "uc_013:same_basename_coexists": "PASS"
      }
     },
     {
@@ -8112,7 +8067,7 @@
    "last_run": "PASS"
   },
   {
-   "id": "uc_004:create_absolute_path_with_spaces",
+   "id": "uc_004:init_absolute_path_with_spaces",
    "spec": [
     "authoring/init-creates-a-package-with-its-first-release#new-package-repository"
    ],
@@ -8120,7 +8075,7 @@
    "last_run": "PASS"
   },
   {
-   "id": "uc_004:init_and_create_are_separate_repositories",
+   "id": "uc_004:init_into_siblings_gives_separate_repositories",
    "spec": [
     "authoring/init-creates-a-package-with-its-first-release#new-package-repository"
    ],
@@ -8153,9 +8108,10 @@
    "last_run": "PASS"
   },
   {
-   "id": "uc_004:create_existing_directory_preserved",
+   "id": "uc_004:create_is_an_unknown_command",
    "spec": [
-    "authoring/init-into-a-multi-package-repository#existing-folder-that-is-not-a-repository"
+    "authoring/init-creates-a-package-with-its-first-release",
+    "cli/command-set#removed-command"
    ],
    "xfail": null,
    "last_run": "PASS"
@@ -9574,71 +9530,42 @@
    "last_run": "PASS"
   },
   {
-   "id": "uc_025:legacy_to_scoped_fork",
+   "id": "uc_026:unscoped_id_is_refused",
    "spec": [
-    "fork-replacement/fork-metadata#fork-manifest",
-    "package-ids/release-tag-names#legacy-tag"
-   ],
-   "xfail": null,
-   "last_run": "PASS"
-  },
-  {
-   "id": "uc_026:install_latest_legacy_tag",
-   "spec": [
-    "package-ids/release-tag-names#legacy-tag",
-    "install-uninstall/install-the-latest-release-of-a-git-source"
-   ],
-   "xfail": null,
-   "last_run": "PASS"
-  },
-  {
-   "id": "uc_026:update_legacy_by_v_tag",
-   "spec": [
-    "package-ids/release-tag-names#legacy-tag",
-    "updates/stable-update-moves-to-the-newest-release"
-   ],
-   "xfail": null,
-   "last_run": "PASS"
-  },
-  {
-   "id": "uc_026:register_and_install_legacy",
-   "spec": [
-    "catalog/release-record#legacy-release-without-hashes",
-    "install-uninstall/install-from-the-catalog"
-   ],
-   "xfail": null,
-   "last_run": "PASS"
-  },
-  {
-   "id": "uc_026:scoped_and_legacy_coexist",
-   "spec": [
-    "package-ids/package-id-syntax",
-    "workspace-layout/workspace-folders"
-   ],
-   "xfail": null,
-   "last_run": "PASS"
-  },
-  {
-   "id": "uc_026:legacy_namespace_named_id_then_scoped",
-   "spec": [
-    "package-ids/package-id-syntax",
+    "package-ids/package-id-syntax#unsafe-components-are-refused",
     "install-uninstall/refused-input-creates-nothing"
    ],
    "xfail": null,
    "last_run": "PASS"
   },
   {
-   "id": "uc_026:scoped_then_legacy_namespace_named_id",
+   "id": "uc_026:v_tag_of_a_scoped_package_is_no_release",
    "spec": [
-    "package-ids/package-id-syntax",
-    "install-uninstall/refused-input-creates-nothing"
+    "package-ids/release-tag-names#vversion-tag-of-a-scoped-single-package-repository"
    ],
    "xfail": null,
    "last_run": "PASS"
   },
   {
-   "id": "uc_026:legacy_and_scoped_catalog_entries_coexist",
+   "id": "uc_026:v_tag_next_to_a_release_is_ignored",
    "spec": [
+    "package-ids/release-tag-names#two-tags-for-one-version"
+   ],
+   "xfail": null,
+   "last_run": "PASS"
+  },
+  {
+   "id": "uc_026:unscoped_id_equal_to_an_installed_namespace",
+   "spec": [
+    "package-ids/package-id-syntax#legacy-id-equal-to-an-installed-namespace"
+   ],
+   "xfail": null,
+   "last_run": "PASS"
+  },
+  {
+   "id": "uc_026:unscoped_id_is_never_registered",
+   "spec": [
+    "package-ids/package-id-syntax",
     "catalog/catalog-v2-is-a-tree-of-static-files"
    ],
    "xfail": null,
@@ -10040,9 +9967,9 @@
    "last_run": "PASS"
   },
   {
-   "id": "uc_034:info_v1",
+   "id": "uc_034:info_v1_is_refused",
    "spec": [
-    "catalog/v1-catalogs-stay-readable"
+    "catalog/catalog-v2-is-a-tree-of-static-files"
    ],
    "xfail": null,
    "last_run": "PASS"
@@ -10059,14 +9986,6 @@
    "id": "uc_034:overview_limit_v2",
    "spec": [
     "catalog/bounded-overview#large-catalog"
-   ],
-   "xfail": null,
-   "last_run": "PASS"
-  },
-  {
-   "id": "uc_034:overview_limit_v1",
-   "spec": [
-    "catalog/bounded-overview"
    ],
    "xfail": null,
    "last_run": "PASS"
@@ -10261,46 +10180,35 @@
    "last_run": "PASS"
   },
   {
-   "id": "uc_037:read_and_install_before_migration",
+   "id": "uc_037:every_read_is_refused",
    "spec": [
-    "catalog/v1-catalogs-stay-readable",
-    "catalog/release-record#legacy-release-without-hashes"
+    "catalog/catalog-v2-is-a-tree-of-static-files",
+    "errors/stable-error-kinds"
    ],
    "xfail": null,
    "last_run": "PASS"
   },
   {
-   "id": "uc_037:migrate_keeps_backup_and_releases",
+   "id": "uc_037:writes_into_a_v1_catalog_are_refused",
    "spec": [
-    "catalog/v1-catalogs-stay-readable#migrate"
+    "catalog/catalog-v2-is-a-tree-of-static-files",
+    "catalog/register-one-version"
    ],
    "xfail": null,
    "last_run": "PASS"
   },
   {
-   "id": "uc_037:repeated_migration_is_safe",
+   "id": "uc_037:migrate_catalog_is_unknown",
    "spec": [
-    "catalog/v1-catalogs-stay-readable#migrate",
-    "catalog/v1-catalogs-stay-readable#migrate-a-v2-catalog"
+    "cli/command-set#removed-command"
    ],
    "xfail": null,
    "last_run": "PASS"
   },
   {
-   "id": "uc_037:registrations_after_migration",
+   "id": "uc_037:regenerate_into_an_empty_folder",
    "spec": [
-    "catalog/published-versions-are-immutable",
-    "catalog/release-record"
-   ],
-   "xfail": null,
-   "last_run": "PASS"
-  },
-  {
-   "id": "uc_037:register_auto_migrates",
-   "spec": [
-    "catalog/v1-catalogs-stay-readable",
-    "catalog/register-one-version",
-    "catalog/v1-catalogs-stay-readable#register-into-a-v1-catalog"
+    "catalog/catalog-generated-from-git-release-tags"
    ],
    "xfail": null,
    "last_run": "PASS"
@@ -12081,15 +11989,6 @@
    "last_run": "PASS"
   },
   {
-   "id": "uc_062:migrate_v2_catalog",
-   "spec": [
-    "catalog/v1-catalogs-stay-readable#migrate",
-    "catalog/v1-catalogs-stay-readable#migrate-a-v2-catalog"
-   ],
-   "xfail": null,
-   "last_run": "PASS"
-  },
-  {
    "id": "uc_062:commit_existing_version",
    "spec": [
     "authoring/existing-tags-are-never-moved"
@@ -12308,7 +12207,7 @@
    "last_run": "PASS"
   },
   {
-   "id": "uc_063:info_v1_exactly_40_has_no_hint",
+   "id": "uc_063:info_below_the_limit_has_no_hint",
    "spec": [
     "catalog/bounded-overview"
    ],
@@ -12316,7 +12215,7 @@
    "last_run": "PASS"
   },
   {
-   "id": "uc_063:info_v1_41_shows_hint",
+   "id": "uc_063:info_at_the_limit_shows_hint",
    "spec": [
     "catalog/bounded-overview"
    ],
@@ -12482,14 +12381,6 @@
    "id": "uc_065:namespaced_release_without_files_is_refused",
    "spec": [
     "catalog/release-record#namespaced-release-without-hashes"
-   ],
-   "xfail": null,
-   "last_run": "PASS"
-  },
-  {
-   "id": "uc_065:legacy_release_may_lack_hashes",
-   "spec": [
-    "catalog/release-record#legacy-release-without-hashes"
    ],
    "xfail": null,
    "last_run": "PASS"

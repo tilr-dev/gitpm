@@ -40,24 +40,24 @@ def apply_updates_and_keeps_back(t: T):
     r = t.gitpm_ok("update", "all")
     t.eq(lines(r.out), ["app/a up to date (1.0.0)", "app/c up to date (1.0.0)", KEPT,
                         "other/x updated 1.0.0 → 1.1.0", "1 updates, 0 installs, 1 kept back."], "output")
-    t.eq(t.plugin("other/x")["current"], {"version": "1.1.0", "commit": commit}, "other/x state")
+    t.eq(t.package("other/x")["current"], {"version": "1.1.0", "commit": commit}, "other/x state")
     t.eq(t.rev(t.clone("other/x")), commit, "other/x clone HEAD")
     t.has((t.dist("other/x") / "index.js").read_text(), "other/x 1.1.0")
-    t.eq(t.plugin(CORE)["current"]["version"], "1.1.0", "lib/core not upgraded past its dependents")
-    t.eq(sorted(t.state()["plugins"]), ["app/a", "app/c", CORE, "other/x"], "nothing removed")
+    t.eq(t.package(CORE)["current"]["version"], "1.1.0", "lib/core not upgraded past its dependents")
+    t.eq(sorted(t.state()["packages"]), ["app/a", "app/c", CORE, "other/x"], "nothing removed")
 
 
 @case(fixture="g6_core_deps_installed", spec=["updates/joint-upgrade-of-all-packages"])
 def new_dependency_is_installed_from_the_catalog(t: T):
     """app/c 1.1.0 needs dep/new ^1 (only in the catalog): update all installs it as a new dependency."""
-    t.new_plugin("dep/new", "1.0.0")
+    t.new_package("dep/new", "1.0.0")
     t.gitpm_ok("register", t.repo("dep/new"), "--ref", "dep/new@1.0.0")
     t.release("app/c", "1.1.0", deps={CORE: "1", "dep/new": "^1"})
     r = t.gitpm_ok("update", "all")
     t.eq(lines(r.out), ["app/a up to date (1.0.0)", "app/c updated 1.0.0 → 1.1.0", KEPT,
                         "other/x up to date (1.0.0)", "dep/new installed 1.0.0 (new dependency)",
                         "1 updates, 1 installs, 1 kept back."], "output")
-    t.eq(t.plugin("dep/new")["current"]["version"], "1.0.0", "dep/new installed")
+    t.eq(t.package("dep/new")["current"]["version"], "1.0.0", "dep/new installed")
     t.has((t.dist("dep/new") / "index.js").read_text(), "dep/new 1.0.0")
 
 
@@ -72,7 +72,7 @@ def app_and_dependency_cross_a_major_boundary_together(t: T):
                         f"{CORE} updated 1.1.0 → 2.0.0", "other/x up to date (1.0.0)",
                         "3 updates, 0 installs, 0 kept back."], "output")
     for id, v in [("app/a", "2.0.0"), ("app/c", "2.0.0"), (CORE, "2.0.0")]:
-        t.eq(t.plugin(id)["current"]["version"], v, f"{id} version")
+        t.eq(t.package(id)["current"]["version"], v, f"{id} version")
         t.has((t.dist(id) / "index.js").read_text(), f"{id} {v}")
 
 

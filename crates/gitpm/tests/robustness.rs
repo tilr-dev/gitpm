@@ -77,7 +77,7 @@ fn ignored_work_survives_rejected_operations_and_fork() {
     let m = f.installed();
     f.release("0.1.1");
     m.update("vendor/module").unwrap();
-    let repo = f.root.join("plugins/vendor/module");
+    let repo = f.root.join("packages/vendor/module");
     fs::create_dir_all(repo.join("node_modules")).unwrap();
     fs::write(repo.join("node_modules/private.txt"), "irreplaceable").unwrap();
     let before = state(&m);
@@ -109,7 +109,7 @@ fn ignored_work_survives_rejected_operations_and_fork() {
 fn fork_records_local_head_preserves_index_and_immediate_parent() {
     let f = Fixture::new();
     let m = f.installed();
-    let repo = f.root.join("plugins/vendor/module");
+    let repo = f.root.join("packages/vendor/module");
     git(&repo, &["config", "user.name", "Test"]);
     git(&repo, &["config", "user.email", "test@example.invalid"]);
     fs::write(repo.join("local.txt"), "local commit").unwrap();
@@ -159,21 +159,21 @@ fn disabled_update_rollback_and_offline_restore() {
     m.set_enabled("vendor/module", false).unwrap();
     f.release("0.1.1");
     m.update("vendor/module").unwrap();
-    assert!(!m.state().unwrap().plugins["vendor/module"].enabled);
+    assert!(!m.state().unwrap().packages["vendor/module"].enabled);
     fs::rename(&f.author, f.dir.join("unavailable-origin")).unwrap();
     m.rollback("vendor/module").unwrap();
-    assert!(!m.state().unwrap().plugins["vendor/module"].enabled);
+    assert!(!m.state().unwrap().packages["vendor/module"].enabled);
     assert_eq!(
-        m.state().unwrap().plugins["vendor/module"].current.version,
+        m.state().unwrap().packages["vendor/module"].current.version,
         "0.1.0"
     );
     m.forget("vendor/module").unwrap();
     m.restore("vendor/module").unwrap();
     let s = m.state().unwrap();
-    assert!(s.plugins["vendor/module"].enabled);
-    assert!(s.plugins["vendor/module"].previous.is_none());
+    assert!(s.packages["vendor/module"].enabled);
+    assert!(s.packages["vendor/module"].previous.is_none());
     m.uninstall("vendor/module", false).unwrap();
-    assert!(m.state().unwrap().plugins.is_empty());
+    assert!(m.state().unwrap().packages.is_empty());
 }
 
 #[test]
@@ -194,20 +194,20 @@ fn corrupt_state_is_not_overwritten() {
 fn forgotten_dirty_clone_cannot_be_overwritten_by_install_or_restore() {
     let f = Fixture::new();
     let m = f.installed();
-    let local = f.root.join("plugins/vendor/module/local.txt");
+    let local = f.root.join("packages/vendor/module/local.txt");
     fs::write(&local, "keep").unwrap();
     m.forget("vendor/module").unwrap();
     assert!(m.install(f.author.to_str().unwrap()).is_err());
     assert!(m.restore("vendor/module").is_err());
     assert_eq!(fs::read_to_string(local).unwrap(), "keep");
-    assert!(m.state().unwrap().plugins.is_empty());
+    assert!(m.state().unwrap().packages.is_empty());
 }
 
 #[test]
 fn explicit_fork_toggle_update_rollback_does_not_replace_original_identity() {
     let f = Fixture::new();
     let m = f.installed();
-    let original = state(&m)["plugins"]["vendor/module"].clone();
+    let original = state(&m)["packages"]["vendor/module"].clone();
     let fork = m
         .fork_in_namespace("vendor/module", &f.dir.join("fork"), "mine")
         .unwrap();
@@ -234,9 +234,9 @@ fn explicit_fork_toggle_update_rollback_does_not_replace_original_identity() {
     m.rollback("mine/module").unwrap();
     m.set_enabled("mine/module", false).unwrap();
     m.set_enabled("vendor/module", true).unwrap();
-    assert_eq!(state(&m)["plugins"]["vendor/module"], original);
+    assert_eq!(state(&m)["packages"]["vendor/module"], original);
     assert_eq!(
-        m.state().unwrap().plugins["mine/module"]
+        m.state().unwrap().packages["mine/module"]
             .fork_of
             .as_ref()
             .unwrap()

@@ -2,7 +2,7 @@
 
 vendor/demo 0.1.0 is installed (g3_vendor_installed). Each case adds a tracked edit and an
 untracked file to the installed clone and forks it with `--ns author --into DIR` into a folder
-whose basename differs from the plugin name.
+whose basename differs from the package name.
 """
 
 import json
@@ -25,7 +25,7 @@ def dirty_and_fork(t: T):
 @case(fixture="g3_vendor_installed", spec=["fork-replacement/fork-metadata"])
 def history_and_branch(t: T):
     """History is kept: the identity commit sits on top of the installed commit on branch fork."""
-    installed = t.plugin(ID)["current"]["commit"]
+    installed = t.package(ID)["current"]["commit"]
     dest, _ = dirty_and_fork(t)
     t.eq(t.git(dest, "branch", "--show-current"), "fork", "branch")
     t.eq(t.rev(dest, "HEAD~1"), installed, "parent of the identity commit")
@@ -49,8 +49,8 @@ def local_changes_preserved_uncommitted(t: T):
 @case(fixture="g3_vendor_installed", spec=["fork-replacement/fork-metadata#fork-manifest"])
 def identity_version_and_provenance(t: T):
     """ID author/demo regardless of the destination basename; version kept; forkOf records the
-    original ID/version/commit; replaces declares vendor/demo 0.1.0; pm.forkBase/forkVersion set."""
-    installed = t.plugin(ID)["current"]["commit"]
+    original ID/version/commit; replaces declares vendor/demo 0.1.0; no pm.* Git config."""
+    installed = t.package(ID)["current"]["commit"]
     dest, _ = dirty_and_fork(t)
     m = json.loads((dest / "plugin.json").read_text())
     t.eq(m["id"], NEW, "id")
@@ -58,8 +58,9 @@ def identity_version_and_provenance(t: T):
     t.eq(m["forkOf"], {"id": ID, "version": "0.1.0", "commit": installed}, "forkOf")
     t.eq(m["replaces"], {"id": ID, "version": "0.1.0"}, "replaces")
     t.eq(json.loads(t.git(dest, "show", "HEAD:plugin.json")), m, "committed manifest")
-    t.eq(t.git(dest, "config", "--local", "pm.forkBase"), installed, "pm.forkBase")
-    t.eq(t.git(dest, "config", "--local", "pm.forkVersion"), "0.1.0", "pm.forkVersion")
+    # forkOf is the only provenance: no pm.forkBase/pm.forkVersion Git config.
+    r = t.run("git", "-C", dest, "config", "--local", "--get-regexp", r"^pm\.")
+    t.eq((r.code, r.out), (1, ""), "no pm.* Git config")
     t.ok(not t.git(dest, "tag", "--list", f"{NEW}@*"), "no release tag created by fork")
 
 
@@ -68,7 +69,7 @@ def remotes_follow_readme(t: T):
     """README: origin removed, upstream = source of the original installation."""
     dest, _ = dirty_and_fork(t)
     t.eq(t.git(dest, "remote").split(), ["upstream"], "remotes")
-    t.eq(t.git(dest, "remote", "get-url", "upstream"), t.plugin(ID)["source"], "upstream url")
+    t.eq(t.git(dest, "remote", "get-url", "upstream"), t.package(ID)["source"], "upstream url")
 
 
 @case(fixture="g3_vendor_installed", spec=["fork-replacement/fork-copies-an-installed-package"])
@@ -77,7 +78,7 @@ def existing_upstream_is_replaced(t: T):
     t.git(t.clone(ID), "remote", "add", "upstream", "https://example.invalid/other.git")
     dest = t.root / "authors/x"
     t.gitpm_ok("fork", ID, "--ns", "author", "--into", dest)
-    t.eq(t.git(dest, "remote", "get-url", "upstream"), t.plugin(ID)["source"], "upstream url")
+    t.eq(t.git(dest, "remote", "get-url", "upstream"), t.package(ID)["source"], "upstream url")
     t.eq(t.git(dest, "remote").split(), ["upstream"], "remotes")
 
 
@@ -86,5 +87,5 @@ def original_installation_unchanged(t: T):
     """Original clone (incl. .git), dist, state and author repository are byte-identical."""
     dest, before = dirty_and_fork(t)
     t.same(before, "workspace and author repository")
-    t.eq(sorted(t.state()["plugins"]), [ID], "fork is not installed")
+    t.eq(sorted(t.state()["packages"]), [ID], "fork is not installed")
     t.ok(dest.is_dir(), "fork created")

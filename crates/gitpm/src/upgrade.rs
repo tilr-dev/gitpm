@@ -56,10 +56,15 @@ impl Provider<'_> {
             } else {
                 requirement
             };
-            if self.state.plugins.get(provider).is_some_and(|p| !p.enabled) {
+            if self
+                .state
+                .packages
+                .get(provider)
+                .is_some_and(|p| !p.enabled)
+            {
                 allowed = Range::empty();
             }
-            let key = Package::Plugin(provider.clone());
+            let key = Package::Id(provider.clone());
             if let Some(previous) = result.get(&key) {
                 allowed = allowed.intersection(previous);
             }
@@ -83,13 +88,13 @@ impl DependencyProvider for Provider<'_> {
     ) -> Self::Priority {
         match package {
             Package::Workspace => (true, Reverse(String::new())),
-            Package::Plugin(id) => (self.state.plugins.contains_key(id), Reverse(id.clone())),
+            Package::Id(id) => (self.state.packages.contains_key(id), Reverse(id.clone())),
         }
     }
     fn choose_version(&self, package: &Package, range: &Range) -> Result<Option<Version>> {
         Ok(match package {
             Package::Workspace => Some(Version::new(0, 0, 0)),
-            Package::Plugin(id) => self
+            Package::Id(id) => self
                 .candidates(id)?
                 .into_keys()
                 .rev()
@@ -104,16 +109,16 @@ impl DependencyProvider for Provider<'_> {
         let constraints = match package {
             Package::Workspace => self
                 .state
-                .plugins
+                .packages
                 .iter()
                 .map(|(id, p)| {
                     Ok((
-                        Package::Plugin(id.clone()),
+                        Package::Id(id.clone()),
                         Range::higher_than(deps::version(&p.current.version)?),
                     ))
                 })
                 .collect::<Result<_>>()?,
-            Package::Plugin(id) => {
+            Package::Id(id) => {
                 let release = self.candidates(id)?.remove(version).ok_or_else(|| {
                     Error::DependencyConflict(format!("missing candidate {id}@{version}"))
                 })?;
@@ -143,7 +148,7 @@ pub(crate) fn solve(
         Ok(solution) => solution
             .into_iter()
             .filter_map(|(p, v)| match p {
-                Package::Plugin(id) => Some(provider.candidates(&id).and_then(|mut candidates| {
+                Package::Id(id) => Some(provider.candidates(&id).and_then(|mut candidates| {
                     candidates.remove(&v).map(|r| (id, r)).ok_or_else(|| {
                         Error::DependencyConflict("selected candidate disappeared".into())
                     })

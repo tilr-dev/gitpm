@@ -31,13 +31,13 @@ def second_err(t: T, first: list, again: list | None = None, **kw):
 @case(fixture="g3_trio_installed", spec=["dist/enable-and-disable-deploy-and-remove"])
 def enable_enabled(t: T):
     second_ok(t, "enable", B)
-    t.eq(t.plugin(B)["enabled"], True, "enabled")
+    t.eq(t.package(B)["enabled"], True, "enabled")
 
 
 @case(fixture="g3_trio_installed", spec=["dist/enable-and-disable-deploy-and-remove"])
 def disable_disabled(t: T):
     second_ok(t, "disable", B)
-    t.eq(t.plugin(B)["enabled"], False, "disabled")
+    t.eq(t.package(B)["enabled"], False, "disabled")
 
 
 @case(fixture="g3_trio_installed", spec=["install-uninstall/install-is-idempotent-for-the-same-source#repeat-install"])
@@ -50,7 +50,7 @@ def install_installed(t: T):
 
 @case(fixture="g3_trio_installed", spec=["errors/errors-name-the-package#repeated-forget"])
 def forget_forgotten(t: T):
-    second_err(t, ["forget", B], kind="not_installed", contains=f"plugin {B} is not installed")
+    second_err(t, ["forget", B], kind="not_installed", contains=f"package {B} is not installed")
 
 
 @case(fixture="g3_trio_installed", spec=["errors/stable-error-kinds#removal-of-an-unknown-package"])
@@ -85,18 +85,6 @@ def catalog_update_unchanged_sources(t: T):
     t.has(t.catalog_index("dan/hello").read_text(), '"0.2.0"')
 
 
-@case(fixture="catalog", spec=["catalog/v1-catalogs-stay-readable#migrate", "catalog/v1-catalogs-stay-readable#migrate-a-v2-catalog"])
-def migrate_v2_catalog(t: T):
-    """migrate-catalog on a v2 catalog changes nothing (exit code recorded)."""
-    before = everything(t)
-    r = t.gitpm("migrate-catalog")
-    print(f"  migrate-catalog on v2: exit {r.code}")
-    t.same(before, "everything")
-    r = t.gitpm("migrate-catalog")
-    print(f"  second migrate-catalog: exit {r.code}")
-    t.same(before, "everything after the second call")
-
-
 @case(fixture="hello", spec=["authoring/existing-tags-are-never-moved"])
 def commit_existing_version(t: T):
     """Second commit with the same version: tag already exists; HEAD and tags unchanged."""
@@ -122,4 +110,4 @@ def remote_same_url(t: T):
 @case(fixture="hello_installed", spec=["updates/stable-update-moves-to-the-newest-release#update-and-repeat"])
 def update_nothing_new(t: T):
     second_ok(t, "update", "dan/hello")
-    t.eq(t.plugin("dan/hello")["current"]["version"], "0.1.0", "version")
+    t.eq(t.package("dan/hello")["current"]["version"], "0.1.0", "version")

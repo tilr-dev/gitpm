@@ -27,7 +27,7 @@ A workspace root SHALL contain `state.json` (installed packages, replacement bin
 - **THEN** opening the state fails with `unsupported`
 
 ### Requirement: Installed package record
-Single source for the record format: each `state.json` `packages.<id>` record SHALL hold `source`, `current` and `previous` revisions (`version`, `commit`), `enabled`, and when present `forkOf`, `dependencies`, `replaces`, `catalog` (canonical catalog location), `clone` (shared-clone key), `path` (package folder) and `metadata`. At most one previous revision SHALL be kept. Verified by `model::state_round_trips_byte_for_byte`.
+Single source for the record format: each `state.json` `packages.<id>` record SHALL hold `source`, `current` and `previous` revisions (`version`, `commit`), `enabled`, `metadata` (required; a record without it is `invalid_data`), and when present `forkOf`, `dependencies`, `replaces`, `catalog` (canonical catalog location), `clone` (shared-clone key) and `path` (package folder). At most one previous revision SHALL be kept. Verified by `model::state_round_trips_byte_for_byte`.
 
 #### Scenario: Fresh install has no previous revision
 - **WHEN** a package was just installed or restored

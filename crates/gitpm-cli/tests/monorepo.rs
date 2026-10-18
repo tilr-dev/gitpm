@@ -150,15 +150,15 @@ fn two_packages_of_one_repository_share_one_clone_and_update_independently() {
     assert_eq!(f.dist("tilr/store"), "store 1.0.0");
     assert_eq!(f.dist("tilr/theme"), "theme 1.0.0");
     assert_eq!(f.clones(), 1);
-    assert!(!f.dir.join("workspace/plugins/tilr").exists());
+    assert!(!f.dir.join("workspace/packages/tilr").exists());
     let state = f.state();
     assert_eq!(
-        state["plugins"]["tilr/store"]["path"], "packages/store",
+        state["packages"]["tilr/store"]["path"], "packages/store",
         "{state:#}"
     );
     assert_eq!(
-        state["plugins"]["tilr/store"]["repo"],
-        state["plugins"]["tilr/theme"]["repo"]
+        state["packages"]["tilr/store"]["repo"],
+        state["packages"]["tilr/theme"]["repo"]
     );
 
     // Releasing A moves only A.
@@ -167,7 +167,7 @@ fn two_packages_of_one_repository_share_one_clone_and_update_independently() {
     assert_eq!(f.dist("tilr/store"), "store 1.1.0");
     assert_eq!(f.dist("tilr/theme"), "theme 1.0.0");
     assert_eq!(
-        f.state()["plugins"]["tilr/theme"]["current"]["version"],
+        f.state()["packages"]["tilr/theme"]["current"]["version"],
         "1.0.0"
     );
     f.ok(&["rollback", "tilr/store"]);
@@ -229,7 +229,7 @@ fn uninstalling_one_package_keeps_the_other_working() {
     f.ok(&["uninstall", "tilr/theme"]);
     assert_eq!(f.clones(), 0);
     assert!(
-        f.state()["plugins"].as_object().unwrap().is_empty(),
+        f.state()["packages"].as_object().unwrap().is_empty(),
         "nothing left"
     );
 }
@@ -270,9 +270,9 @@ fn legacy_root_repository_installs_and_updates_as_before() {
     };
     release("1.0.0");
     f.ok(&["install", legacy.to_str().unwrap()]);
-    assert!(f.dir.join("workspace/plugins/acme/hello/.git").is_dir());
+    assert!(f.dir.join("workspace/packages/acme/hello/.git").is_dir());
     assert_eq!(f.clones(), 0);
-    let entry = &f.state()["plugins"]["acme/hello"];
+    let entry = &f.state()["packages"]["acme/hello"];
     assert!(
         entry.get("path").is_none() && entry.get("repo").is_none(),
         "{entry}"
@@ -504,7 +504,7 @@ fn fork_replace_keeps_the_fork_and_says_how_to_finish_when_a_step_fails() {
     f.git(&legacy, &["tag", "acme/hello@1.0.0"]);
     f.ok(&["install", legacy.to_str().unwrap()]);
     // A symlink in the edited dist gets released with the fork but cannot be installed.
-    let installed = f.dir.join("workspace/plugins/acme/hello");
+    let installed = f.dir.join("workspace/packages/acme/hello");
     std::os::unix::fs::symlink("index.js", installed.join("dist/link.js")).unwrap();
     let error = f.fails(&[
         "fork",
@@ -528,7 +528,7 @@ fn fork_replace_keeps_the_fork_and_says_how_to_finish_when_a_step_fails() {
     let fork = f.dir.join("me/hello");
     assert!(fork.join("plugin.json").is_file(), "fork folder is kept");
     let state = f.state();
-    assert!(state["plugins"].get("me/hello").is_none());
+    assert!(state["packages"].get("me/hello").is_none());
     assert!(state.get("replacements").is_none());
     // Without --replace the output names the next steps.
     fs::remove_file(installed.join("dist/link.js")).unwrap();
@@ -986,7 +986,7 @@ fn fork_replace_of_several_packages_reports_each_failure_and_keeps_the_fork() {
     );
     let state = f.state();
     assert_eq!(state["replacements"]["tilr/theme"], "me/theme");
-    assert!(state["plugins"].get("me/panel").is_none());
+    assert!(state["packages"].get("me/panel").is_none());
     assert!(state["replacements"].get("tilr/panel").is_none());
 }
 
@@ -1012,4 +1012,43 @@ fn a_url_rewrite_in_the_git_config_does_not_hide_the_shared_clone() {
     f.ok(&["forget", "tilr/store"]);
     f.ok(&["restore", "tilr/store"]);
     assert_eq!(f.dist("tilr/store"), "store 1.0.0");
+}
+
+#[test]
+fn a_v_version_tag_in_a_multi_package_repository_is_ignored_without_a_warning() {
+    let f = Fixture::new();
+    // `v0.2.0` on a later commit: no release of any package, and never mentioned.
+    f.release("store", "1.1.0");
+    f.git(&f.mono, &["tag", "v0.2.0"]);
+    let quiet = |args: &[&str]| {
+        let out = f.run(args);
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(out.status.success(), "{args:?}: {stderr}");
+        assert!(
+            !stderr.contains("v0.2.0") && !stdout.contains("v0.2.0"),
+            "{args:?}: {stdout}{stderr}"
+        );
+        stdout
+    };
+    quiet(&[
+        "install",
+        f.source(),
+        "tilr/store",
+        "--ref",
+        "tilr/store@1.0.0",
+    ]);
+    quiet(&["install", f.source(), "tilr/theme"]);
+    assert_eq!(f.dist("tilr/theme"), "theme 1.0.0");
+    let out = quiet(&["update", "tilr/store"]);
+    assert!(out.contains("tilr/store updated 1.0.0 → 1.1.0"), "{out}");
+    quiet(&["update", "all"]);
+    fs::write(f.dir.join("sources.txt"), "mono\n").unwrap();
+    let out = quiet(&["catalog-update"]);
+    assert!(out.contains("3 release(s)"), "{out}");
+    assert!(
+        !f.dir
+            .join("catalog/namespaces/tilr/store/versions/0.2.0")
+            .exists()
+    );
 }

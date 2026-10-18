@@ -32,7 +32,7 @@ def inspect_scaffold(t: T, repo: Path, plugin_id: str):
 
 def install_scaffold(t: T, repo: Path, plugin_id: str):
     t.gitpm_ok("install", repo, "--ref", f"{plugin_id}@0.1.0")
-    p = t.plugin(plugin_id)
+    p = t.package(plugin_id)
     t.eq(p["current"], {"version": "0.1.0", "commit": t.rev(repo)}, "installed release")
     t.eq((t.dist(plugin_id) / "index.js").read_bytes(), (repo / "dist/index.js").read_bytes(), "dist bytes")
 
@@ -50,20 +50,20 @@ def init_nested_relative_path(t: T):
 
 
 @case(spec=[f"{SCAFFOLD}#new-package-repository"])
-def create_absolute_path_with_spaces(t: T):
-    """create (alias of init) into a new absolute path with spaces."""
-    repo = t.root / "my plugins/sub dir/demo2"
-    r = t.gitpm_ok("create", "dan/demo2", "--into", repo)
+def init_absolute_path_with_spaces(t: T):
+    """init into a new absolute path with spaces."""
+    repo = t.root / "my packages/sub dir/demo2"
+    r = t.gitpm_ok("init", "dan/demo2", "--into", repo)
     t.has(r.out, "ID: dan/demo2", "dan/demo2@0.1.0")
     inspect_scaffold(t, repo, "dan/demo2")
     install_scaffold(t, repo, "dan/demo2")
 
 
 @case(spec=[f"{SCAFFOLD}#new-package-repository"])
-def init_and_create_are_separate_repositories(t: T):
-    """init and create into sibling paths give two independent repositories."""
+def init_into_siblings_gives_separate_repositories(t: T):
+    """Two inits into sibling paths give two independent repositories."""
     t.gitpm_ok("init", "local/one", "--into", "x/one")
-    t.gitpm_ok("create", "local/two", "--into", "x/two")
+    t.gitpm_ok("init", "local/two", "--into", "x/two")
     for name in ("one", "two"):
         inspect_scaffold(t, t.root / "x" / name, f"local/{name}")
     t.ok(not (t.root / "x/.git").exists(), "parent is not a repository")
@@ -71,7 +71,7 @@ def init_and_create_are_separate_repositories(t: T):
 
 @case(spec=[SCAFFOLD, "authoring/git-identity-is-never-invented-in-existing-repositories"])
 def missing_identity_is_repository_local(t: T):
-    """Without a Git identity, Plugin Demo <demo@example.invalid> is set only in the new repository."""
+    """Without a Git identity, Package Demo <demo@example.invalid> is set only in the new repository."""
     gitconfig = t.root / "empty-gitconfig"
     gitconfig.write_text("[init]\n\tdefaultBranch = main\n")
     digest = hashlib.sha256(gitconfig.read_bytes()).hexdigest()
@@ -84,9 +84,9 @@ def missing_identity_is_repository_local(t: T):
     r = t.run(*unset, "gitpm", "init", "local/demo3", "--into", "noid/demo3", env=env)
     t.eq(r.code, 0, "init exit without identity")
     repo = t.root / "noid/demo3"
-    t.eq(t.git(repo, "config", "--local", "user.name"), "Plugin Demo", "local user.name")
+    t.eq(t.git(repo, "config", "--local", "user.name"), "Package Demo", "local user.name")
     t.eq(t.git(repo, "config", "--local", "user.email"), "demo@example.invalid", "local user.email")
-    t.eq(t.git(repo, "log", "-1", "--format=%an <%ae>"), "Plugin Demo <demo@example.invalid>", "author")
+    t.eq(t.git(repo, "log", "-1", "--format=%an <%ae>"), "Package Demo <demo@example.invalid>", "author")
     t.eq(hashlib.sha256(gitconfig.read_bytes()).hexdigest(), digest, "global config unchanged")
     t.eq(list((t.root / "home").iterdir()), [], "nothing written to HOME")
     t.eq(t.git(repo, "tag", "--list"), "local/demo3@0.1.0", "tag")
@@ -118,5 +118,15 @@ def existing_case(command: str):
     case(spec=["authoring/init-into-a-multi-package-repository#existing-folder-that-is-not-a-repository"])(fn)
 
 
-for _command in ("init", "create"):
-    existing_case(_command)
+existing_case("init")
+
+
+@case(spec=["authoring/init-creates-a-package-with-its-first-release", "cli/command-set#removed-command"])
+def create_is_an_unknown_command(t: T):
+    """The former alias `create` fails with `unknown command: create; use --help` and creates nothing."""
+    before = t.snap(t.root, git=True)
+    r = t.gitpm("create", "acme/hello", "--into", "hello")
+    t.ok(r.code != 0, "create refused")
+    t.has(r.err, "unknown command: create; use --help")
+    t.same(before, "fixture")
+    t.ok(not (t.root / "hello").exists(), "nothing created")

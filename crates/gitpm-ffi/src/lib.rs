@@ -1,9 +1,9 @@
 //! UniFFI bindings for native apps (Swift/Kotlin). Consumer operations only: open a
 //! workspace, browse a catalog, install/update/rollback/enable/disable/forget/restore,
-//! plan and confirm uninstall, fork, replace a plugin by a fork and switch back,
+//! plan and confirm uninstall, fork, replace a package by a fork and switch back,
 //! bring `dist/` in line with state (`syncDist`), check repository access.
 //!
-//! `dist/<id>` exists exactly for the active plugins (installed, enabled, not
+//! `dist/<id>` exists exactly for the active packages (installed, enabled, not
 //! replaced): a host loads everything under `dist/` without resolving replacements.
 //!
 //! All calls block (Git/network); call them off the main thread.
@@ -61,7 +61,7 @@ pub enum PmError {
     /// Dependencies cannot be satisfied; `message` is the solver's explanation.
     #[error("{message}")]
     DependencyConflict { message: String },
-    /// Other installed plugins depend on `id`; retry with `force` to proceed anyway.
+    /// Other installed packages depend on `id`; retry with `force` to proceed anyway.
     #[error("{message}")]
     HasDependents {
         id: String,
@@ -168,7 +168,7 @@ impl From<pm::ForkOf> for ForkOf {
     }
 }
 
-/// The plugin can stand in for `id` at `version` (used only after an explicit replace).
+/// The package can stand in for `id` at `version` (used only after an explicit replace).
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct Replaces {
     pub id: String,
@@ -183,7 +183,7 @@ impl From<pm::Replaces> for Replaces {
     }
 }
 
-/// One dependency of an installed plugin and the plugin that provides it.
+/// One dependency of an installed package and the package that provides it.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct DependencyStatus {
     pub id: String,
@@ -208,14 +208,14 @@ impl From<pm::deps::DependencyStatus> for DependencyStatus {
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
-pub struct InstalledPlugin {
+pub struct InstalledPackage {
     pub id: String,
     pub source: String,
     pub current: Revision,
     pub previous: Option<Revision>,
     pub enabled: bool,
-    /// Enabled and not replaced: exactly the plugins with `dist/<id>` (what a host
-    /// loads). A replaced plugin is `enabled` but not `active`.
+    /// Enabled and not replaced: exactly the packages with `dist/<id>` (what a host
+    /// loads). A replaced package is `enabled` but not `active`.
     pub active: bool,
     pub fork_of: Option<ForkOf>,
     pub replaces: Option<Replaces>,
@@ -232,13 +232,13 @@ pub struct InstalledPlugin {
     pub provides: Vec<String>,
     pub tags: Vec<String>,
     pub dependencies: Vec<DependencyStatus>,
-    /// Original IDs this plugin currently provides for every consumer.
+    /// Original IDs this package currently provides for every consumer.
     pub replacing: Vec<String>,
-    /// Installed plugins that depend on this one.
+    /// Installed packages that depend on this one.
     pub dependents: Vec<String>,
 }
-impl From<pm::InstalledPlugin> for InstalledPlugin {
-    fn from(p: pm::InstalledPlugin) -> Self {
+impl From<pm::InstalledPackage> for InstalledPackage {
+    fn from(p: pm::InstalledPackage) -> Self {
         Self {
             id: p.id,
             source: p.source,
@@ -267,7 +267,7 @@ pub struct IncompatibleConsumer {
     pub id: String,
     pub requirement: String,
 }
-/// What replacing (or switching back) would change; see `PluginManager.replace`.
+/// What replacing (or switching back) would change; see `PackageManager.replace`.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct ReplacementPlan {
     pub original: String,
@@ -330,7 +330,7 @@ pub struct RevisionChange {
     pub id: String,
     pub from: Revision,
     pub to: Revision,
-    /// False when the plugin was already at the target revision.
+    /// False when the package was already at the target revision.
     pub changed: bool,
 }
 impl From<pm::RevisionChange> for RevisionChange {
@@ -431,17 +431,17 @@ pub fn describe_lost_work(item: LostWork) -> String {
 }
 
 /// What `syncDist` changes (or would change) so that `dist/` holds exactly the active
-/// plugins (installed, enabled, not replaced). IDs are sorted.
+/// packages (installed, enabled, not replaced). IDs are sorted.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct DistSync {
-    /// Active plugins whose missing `dist/<id>` is deployed.
+    /// Active packages whose missing `dist/<id>` is deployed.
     pub deployed: Vec<String>,
-    /// Inactive plugins whose `dist/<id>` is removed.
+    /// Inactive packages whose `dist/<id>` is removed.
     pub removed: Vec<String>,
-    /// Workspace-relative paths under `dist/` of no known plugin, or not real folders
+    /// Workspace-relative paths under `dist/` of no known package, or not real folders
     /// where a namespace folder belongs (left alone).
     pub unmanaged: Vec<String>,
-    /// Active plugins left without `dist/`, with the reason (clone missing, …).
+    /// Active packages left without `dist/`, with the reason (clone missing, …).
     pub skipped: Vec<SkippedDist>,
 }
 #[derive(Debug, Clone, uniffi::Record)]
@@ -476,7 +476,7 @@ pub struct UninstallPlan {
     /// Empty: uninstall without asking. Otherwise show it and call `uninstall(id, true)`
     /// only after the user confirmed.
     pub lost_work: Vec<LostWork>,
-    /// Installed plugins that depend on it: uninstall refuses unless `force`.
+    /// Installed packages that depend on it: uninstall refuses unless `force`.
     pub dependents: Vec<String>,
 }
 impl From<pm::UninstallPlan> for UninstallPlan {
@@ -564,13 +564,8 @@ impl From<pm::check::CheckRow> for CheckRow {
     }
 }
 
-#[derive(Debug, Clone, Copy, uniffi::Enum)]
-pub enum CatalogFormat {
-    V1,
-    V2,
-}
 #[derive(Debug, Clone, uniffi::Record)]
-pub struct PluginSummary {
+pub struct PackageSummary {
     pub id: String,
     pub source: String,
     pub versions: Vec<String>,
@@ -585,13 +580,12 @@ pub struct PluginSummary {
 pub enum OverviewItem {
     Directory { depth: u32, name: String },
     Empty { depth: u32 },
-    Plugin { depth: u32, plugin: PluginSummary },
+    Package { depth: u32, package: PackageSummary },
 }
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct CatalogOverview {
     pub location: String,
     pub remote: bool,
-    pub format: CatalogFormat,
     /// Depth-first rows of the catalog tree (flat; use `depth` for indentation).
     pub items: Vec<OverviewItem>,
     pub truncated: bool,
@@ -601,10 +595,6 @@ impl From<pm::catalog::CatalogOverview> for CatalogOverview {
         Self {
             location: o.location,
             remote: o.remote,
-            format: match o.format {
-                pm::catalog::CatalogFormat::V1 => CatalogFormat::V1,
-                pm::catalog::CatalogFormat::V2 => CatalogFormat::V2,
-            },
             items: o
                 .items
                 .into_iter()
@@ -613,19 +603,21 @@ impl From<pm::catalog::CatalogOverview> for CatalogOverview {
                         OverviewItem::Directory { depth, name }
                     }
                     pm::catalog::OverviewItem::Empty { depth } => OverviewItem::Empty { depth },
-                    pm::catalog::OverviewItem::Plugin { depth, plugin } => OverviewItem::Plugin {
-                        depth,
-                        plugin: PluginSummary {
-                            id: plugin.id,
-                            source: plugin.source,
-                            versions: plugin.versions,
-                            latest: plugin.latest,
-                            title: plugin.title,
-                            description: plugin.description,
-                            provides: plugin.provides,
-                            tags: plugin.tags,
-                        },
-                    },
+                    pm::catalog::OverviewItem::Package { depth, package } => {
+                        OverviewItem::Package {
+                            depth,
+                            package: PackageSummary {
+                                id: package.id,
+                                source: package.source,
+                                versions: package.versions,
+                                latest: package.latest,
+                                title: package.title,
+                                description: package.description,
+                                provides: package.provides,
+                                tags: package.tags,
+                            },
+                        }
+                    }
                 })
                 .collect(),
             truncated: o.truncated,
@@ -757,7 +749,7 @@ pub struct ForkedPackage {
     pub path: String,
     pub version: String,
 }
-/// Result of `PluginManager.forkPackages` (`gitpm::PackageFork`): `created` is false
+/// Result of `PackageManager.forkPackages` (`gitpm::PackageFork`): `created` is false
 /// when the packages were added to an existing multi-package repository.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct PackageFork {
@@ -787,7 +779,7 @@ impl From<pm::PackageFork> for PackageFork {
         }
     }
 }
-/// Result of `PluginManager.forkPackagesAndReplace` (`gitpm::PackageForkReplacement`):
+/// Result of `PackageManager.forkPackagesAndReplace` (`gitpm::PackageForkReplacement`):
 /// one entry per package (install order), each with its own
 /// `failedStep`/`errorKind`/`errorMessage`.
 #[derive(Debug, Clone, uniffi::Record)]
@@ -838,12 +830,12 @@ pub struct ManagerOptions {
 
 /// An open, locked workspace. Thread-safe; operations are serialized internally.
 #[derive(uniffi::Object)]
-pub struct PluginManager {
+pub struct PackageManager {
     inner: pm::Manager,
 }
 
 #[uniffi::export]
-impl PluginManager {
+impl PackageManager {
     /// Open (or create) a dedicated workspace directory and take its lock.
     #[uniffi::constructor]
     pub fn open(root: String, options: ManagerOptions) -> Result<Arc<Self>> {
@@ -858,7 +850,7 @@ impl PluginManager {
     pub fn root(&self) -> String {
         self.inner.root().to_string_lossy().into_owned()
     }
-    pub fn list(&self) -> Result<Vec<InstalledPlugin>> {
+    pub fn list(&self) -> Result<Vec<InstalledPackage>> {
         Ok(self.inner.list()?.into_iter().map(Into::into).collect())
     }
     /// Compare installed versions with the configured catalog (read-only).
@@ -924,7 +916,7 @@ impl PluginManager {
     pub fn rollback(&self, id: String) -> Result<RevisionChange> {
         Ok(self.inner.rollback(&id)?.into())
     }
-    /// Deploys `dist/<id>` again (unless the plugin is replaced).
+    /// Deploys `dist/<id>` again (unless the package is replaced).
     pub fn enable(&self, id: String) -> Result<()> {
         Ok(self.inner.enable(&id)?)
     }
@@ -948,9 +940,9 @@ impl PluginManager {
     pub fn sync_dist_plan(&self) -> Result<DistSync> {
         Ok(self.inner.sync_dist_plan()?.into())
     }
-    /// Make `dist/` hold exactly the active plugins; run once on a workspace written by
-    /// gitpm 0.4 or earlier (it kept every installed plugin in `dist/`). Mutating calls
-    /// reconcile too; `syncDistPlan().skipped` tells which active plugins have no dist.
+    /// Make `dist/` hold exactly the active packages (an explicit repair, for example after
+    /// a folder was copied into `dist/` by hand). Mutating calls
+    /// reconcile too; `syncDistPlan().skipped` tells which active packages have no dist.
     pub fn sync_dist(&self) -> Result<DistSync> {
         Ok(self.inner.sync_dist()?.into())
     }
@@ -1095,10 +1087,10 @@ pub fn catalog_release(
 
 /// Read installed state without opening (locking or creating) the workspace.
 #[uniffi::export]
-pub fn read_installed(root: String) -> Result<Vec<InstalledPlugin>> {
+pub fn read_installed(root: String) -> Result<Vec<InstalledPackage>> {
     let root = std::path::Path::new(&root);
     Ok(pm::check::read_state(root)?
-        .installed_in(root)
+        .installed()
         .into_iter()
         .map(Into::into)
         .collect())
@@ -1111,7 +1103,7 @@ mod tests {
     fn errors_keep_kind_and_message() {
         let error: PmError = pm::Error::NotInstalled { id: "a/b".into() }.into();
         assert!(matches!(&error, PmError::NotInstalled { id, .. } if id == "a/b"));
-        assert_eq!(error.to_string(), "plugin a/b is not installed");
+        assert_eq!(error.to_string(), "package a/b is not installed");
         let error: PmError = pm::Error::LocalChanges {
             id: "a/b".into(),
             message: "dirty".into(),
@@ -1127,7 +1119,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("pm-ffi-{}", std::process::id()));
         let root = dir.join("workspace");
         let manager =
-            PluginManager::open(root.to_string_lossy().into(), ManagerOptions::default()).unwrap();
+            PackageManager::open(root.to_string_lossy().into(), ManagerOptions::default()).unwrap();
         assert!(manager.list().unwrap().is_empty());
         assert!(matches!(
             manager.uninstall_plan("a/b".into()),
@@ -1135,7 +1127,7 @@ mod tests {
         ));
         assert!(matches!(manager.check(), Ok(rows) if rows.is_empty()));
         assert!(matches!(
-            PluginManager::open(root.to_string_lossy().into(), ManagerOptions::default()),
+            PackageManager::open(root.to_string_lossy().into(), ManagerOptions::default()),
             Err(PmError::Locked { .. })
         ));
         assert!(manager.update_all_plan().unwrap().updates.is_empty());
@@ -1377,7 +1369,7 @@ mod tests {
 
     #[test]
     fn records_convert_field_by_field() {
-        let plugin = InstalledPlugin::from(pm::InstalledPlugin {
+        let package = InstalledPackage::from(pm::InstalledPackage {
             id: "me/x".into(),
             source: "src".into(),
             current: revision("1.0.0"),
@@ -1398,26 +1390,30 @@ mod tests {
             dependents: vec![],
         });
         assert_eq!(
-            (plugin.id.as_str(), plugin.source.as_str(), plugin.enabled),
+            (
+                package.id.as_str(),
+                package.source.as_str(),
+                package.enabled
+            ),
             ("me/x", "src", false)
         );
-        assert_eq!(plugin.path.as_deref(), Some("packages/x"));
-        assert_eq!(plugin.clone.as_deref(), Some("mono-0123456789abcdef"));
+        assert_eq!(package.path.as_deref(), Some("packages/x"));
+        assert_eq!(package.clone.as_deref(), Some("mono-0123456789abcdef"));
         assert_eq!(
-            (plugin.title.as_deref(), plugin.description.as_deref()),
+            (package.title.as_deref(), package.description.as_deref()),
             (Some("X"), None)
         );
-        assert_eq!(plugin.provides, ["theme"]);
-        assert_eq!(plugin.tags, ["ui", "dark"]);
+        assert_eq!(package.provides, ["theme"]);
+        assert_eq!(package.tags, ["ui", "dark"]);
         assert_eq!(
             (
-                plugin.current.version.as_str(),
-                plugin.current.commit.as_str()
+                package.current.version.as_str(),
+                package.current.commit.as_str()
             ),
             ("1.0.0", "1.0.0-commit")
         );
-        assert_eq!(plugin.previous.unwrap().version, "0.9.0");
-        let f = plugin.fork_of.unwrap();
+        assert_eq!(package.previous.unwrap().version, "0.9.0");
+        let f = package.fork_of.unwrap();
         assert_eq!(
             (f.id.as_str(), f.version.as_str(), f.commit),
             ("vendor/x", "0.9.0", "f".repeat(40))
@@ -1454,12 +1450,12 @@ mod tests {
         let plan = UninstallPlan::from(pm::UninstallPlan {
             id: "me/x".into(),
             registered: false,
-            deletes: vec!["/w/plugins/me/x".into(), "/w/dist/me/x".into()],
+            deletes: vec!["/w/packages/me/x".into(), "/w/dist/me/x".into()],
             lost_work: all_lost_work(),
             dependents: vec![],
         });
         assert!(!plan.registered);
-        assert_eq!(plan.deletes, ["/w/plugins/me/x", "/w/dist/me/x"]);
+        assert_eq!(plan.deletes, ["/w/packages/me/x", "/w/dist/me/x"]);
         assert_eq!(plan.lost_work.len(), 8);
         assert!(matches!(
             plan.lost_work[5],
@@ -1505,22 +1501,21 @@ mod tests {
     #[test]
     fn catalog_records_convert() {
         use pm::catalog::{
-            Build, CatalogFormat as F, CatalogOverview as O, FileDigest, OverviewItem as I,
-            PluginSummary as P, Release,
+            Build, CatalogOverview as O, FileDigest, OverviewItem as I, PackageSummary as P,
+            Release,
         };
         let overview = CatalogOverview::from(O {
             location: "https://pkg.example".into(),
             remote: true,
-            format: F::V2,
             items: vec![
                 I::Directory {
                     depth: 1,
                     name: "namespaces".into(),
                 },
                 I::Empty { depth: 2 },
-                I::Plugin {
+                I::Package {
                     depth: 3,
-                    plugin: P {
+                    package: P {
                         id: "dan/x".into(),
                         source: "src".into(),
                         versions: vec!["1.9.0".into(), "1.10.0".into()],
@@ -1542,7 +1537,6 @@ mod tests {
             ),
             ("https://pkg.example", true, true)
         );
-        assert!(matches!(overview.format, CatalogFormat::V2));
         assert!(
             matches!(&overview.items[0], OverviewItem::Directory { depth: 1, name } if name == "namespaces")
         );
@@ -1550,25 +1544,17 @@ mod tests {
             overview.items[1],
             OverviewItem::Empty { depth: 2 }
         ));
-        let OverviewItem::Plugin { depth: 3, plugin } = &overview.items[2] else {
+        let OverviewItem::Package { depth: 3, package } = &overview.items[2] else {
             panic!()
         };
-        assert_eq!(plugin.versions, ["1.9.0", "1.10.0"]);
-        assert_eq!(plugin.latest.as_deref(), Some("1.10.0"));
+        assert_eq!(package.versions, ["1.9.0", "1.10.0"]);
+        assert_eq!(package.latest.as_deref(), Some("1.10.0"));
         assert_eq!(
-            (plugin.title.as_deref(), plugin.description.as_deref()),
+            (package.title.as_deref(), package.description.as_deref()),
             (Some("X"), Some("An x"))
         );
-        assert_eq!(plugin.provides, ["theme"]);
-        assert!(plugin.tags.is_empty());
-        let v1 = CatalogOverview::from(O {
-            location: "l".into(),
-            remote: false,
-            format: F::V1,
-            items: vec![],
-            truncated: false,
-        });
-        assert!(matches!(v1.format, CatalogFormat::V1) && v1.items.is_empty());
+        assert_eq!(package.provides, ["theme"]);
+        assert!(package.tags.is_empty());
 
         let mut files = std::collections::BTreeMap::new();
         for name in ["a.js", "b/c.js"] {
@@ -1658,15 +1644,19 @@ mod tests {
             Err(PmError::InvalidId { .. })
         ));
         assert!(matches!(
+            catalog_release("/nonexistent-pm-catalog".into(), "x".into(), None),
+            Err(PmError::InvalidId { .. })
+        ));
+        assert!(matches!(
             catalog_release(
                 "/nonexistent-pm-catalog".into(),
-                "x".into(),
+                "acme/x".into(),
                 Some("1.0".into())
             ),
             Err(PmError::InvalidVersion { .. })
         ));
         assert!(matches!(
-            catalog_release("/nonexistent-pm-catalog".into(), "x".into(), None),
+            catalog_release("/nonexistent-pm-catalog".into(), "acme/x".into(), None),
             Err(PmError::Catalog { .. })
         ));
         // A workspace that does not exist yet reads as empty and is not created.
@@ -1684,9 +1674,24 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("pm-ffi-state-{}", std::process::id()));
         let root = dir.join("workspace");
         std::fs::create_dir_all(&root).unwrap();
+        // Another state format is refused, never rewritten.
+        let old = r#"{"format":2,"plugins":{}}"#;
+        std::fs::write(root.join("state.json"), old).unwrap();
+        assert!(matches!(
+            read_installed(root.to_string_lossy().into()),
+            Err(PmError::Unsupported { .. })
+        ));
+        assert!(matches!(
+            PackageManager::open(root.to_string_lossy().into(), ManagerOptions::default()),
+            Err(PmError::Unsupported { .. })
+        ));
+        assert_eq!(
+            std::fs::read_to_string(root.join("state.json")).unwrap(),
+            old
+        );
         std::fs::write(
             root.join("state.json"),
-            r#"{"plugins":{"me/x":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":false,"forkOf":{"id":"vendor/x","version":"0.9.0","commit":"f"}}}}"#,
+            r#"{"format":3,"packages":{"me/x":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":false,"forkOf":{"id":"vendor/x","version":"0.9.0","commit":"f"},"metadata":{}}}}"#,
         )
         .unwrap();
         let list = read_installed(root.to_string_lossy().into()).unwrap();
@@ -1695,7 +1700,7 @@ mod tests {
         assert_eq!(list[0].fork_of.as_ref().unwrap().id, "vendor/x");
 
         let manager =
-            PluginManager::open(root.to_string_lossy().into(), ManagerOptions::default()).unwrap();
+            PackageManager::open(root.to_string_lossy().into(), ManagerOptions::default()).unwrap();
         assert_eq!(manager.root(), root.to_string_lossy());
         assert_eq!(manager.list().unwrap()[0].current.version, "1.0.0");
         assert!(matches!(

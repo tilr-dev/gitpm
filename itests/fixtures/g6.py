@@ -33,7 +33,7 @@ def g6_core(t: T):
     app/lonely (lib/missing ^1), the cycle x/a ↔ x/b, and other/x without dependencies."""
     for id, releases in CORE.items():
         first, deps = releases[0]
-        t.new_plugin(id, first, deps=deps)
+        t.new_package(id, first, deps=deps)
         for version, deps in releases[1:]:
             t.release(id, version, deps=deps)
 
@@ -72,8 +72,8 @@ def g6_core_deps_installed(t: T):
 @g6_core_deps_installed.check
 def _(t: T):
     state = t.state()
-    t.eq(sorted(state["plugins"]), ["app/a", "app/c", "lib/core", "other/x"], "installed")
-    t.eq(state["plugins"]["lib/core"]["current"]["version"], "1.1.0", "lib/core version")
+    t.eq(sorted(state["packages"]), ["app/a", "app/c", "lib/core", "other/x"], "installed")
+    t.eq(state["packages"]["lib/core"]["current"]["version"], "1.1.0", "lib/core version")
     resolved = {p["id"]: p for p in t.gitpm_ok("list").json()["resolved"]}
     t.eq(resolved["lib/core"].get("dependents"), ["app/a", "app/c"], "lib/core dependents")
 
@@ -94,7 +94,7 @@ FORK_PAYLOAD = "export const greeting = 'fork payload';\n"
 def g6_base(t: T):
     """Author repos at 1.0.0: vendor/base; app/a, app/b, app/c (vendor/base ^1.0); other/x."""
     for id, deps in BASE.items():
-        t.new_plugin(id, "1.0.0", deps=deps)
+        t.new_package(id, "1.0.0", deps=deps)
 
 
 @g6_base.check
@@ -106,7 +106,7 @@ def _(t: T):
 
 @fixture(requires=["g6_base"], gitpm=True)
 def g6_base_catalog(t: T):
-    """All g6_base plugins registered at 1.0.0 in /fx/catalog; empty workspace."""
+    """All g6_base packages registered at 1.0.0 in /fx/catalog; empty workspace."""
     for id in BASE:
         t.gitpm_ok("register", t.repo(id), "--ref", f"{id}@1.0.0")
 
@@ -126,7 +126,7 @@ def g6_base_installed(t: T):
 
 @g6_base_installed.check
 def _(t: T):
-    t.eq(sorted(t.state()["plugins"]), ["app/a", "app/b", "other/x", "vendor/base"], "installed")
+    t.eq(sorted(t.state()["packages"]), ["app/a", "app/b", "other/x", "vendor/base"], "installed")
     t.ok(not t.state().get("replacements"), "no replacement")
 
 
@@ -143,7 +143,7 @@ def g6_forked(t: T):
 
 @g6_forked.check
 def _(t: T):
-    m = t.plugin("mine/base")
+    m = t.package("mine/base")
     t.eq(m["current"]["version"], "1.0.1", "fork version")
     t.eq(m["forkOf"]["id"], "vendor/base", "forkOf")
     t.eq(m["replaces"], {"id": "vendor/base", "version": "1.0.0"}, "replaces")
@@ -184,13 +184,13 @@ COMPAT_FORKS = {
 def g6_compat(t: T):
     """vendor/base 1.4.0 (1.0.0 first); app/a (^1.0), app/b (>=1.3), lib/mid (^1), app/c (lib/mid ^1);
     forks mine/base 0.1.0 (replaces vendor/base 1.4.0) and old/base 0.1.0 (replaces 1.2.0)."""
-    t.new_plugin("vendor/base", "1.0.0")
+    t.new_package("vendor/base", "1.0.0")
     t.release("vendor/base", "1.4.0")
     for id, (deps, _) in COMPAT.items():
         if id != "vendor/base":
-            t.new_plugin(id, "1.0.0", deps=deps)
+            t.new_package(id, "1.0.0", deps=deps)
     for id, declares in COMPAT_FORKS.items():
-        t.new_plugin(id, "0.1.0", extra={"replaces": {"id": "vendor/base", "version": declares}})
+        t.new_package(id, "0.1.0", extra={"replaces": {"id": "vendor/base", "version": declares}})
 
 
 @g6_compat.check
@@ -217,9 +217,9 @@ def g6_compat_installed(t: T):
 @g6_compat_installed.check
 def _(t: T):
     state = t.state()
-    t.eq(sorted(state["plugins"]),
+    t.eq(sorted(state["packages"]),
          ["app/a", "app/b", "app/c", "lib/mid", "mine/base", "old/base", "vendor/base"], "installed")
-    t.eq(state["plugins"]["vendor/base"]["current"]["version"], "1.4.0", "vendor/base version")
+    t.eq(state["packages"]["vendor/base"]["current"]["version"], "1.4.0", "vendor/base version")
     t.ok(not state.get("replacements"), "no replacement")
 
 
@@ -235,7 +235,7 @@ def g6_journey(t: T):
 
 @g6_journey.check
 def _(t: T):
-    p = t.plugin("dan/hello")
+    p = t.package("dan/hello")
     t.eq(p["current"], {"version": "0.1.0", "commit": t.rev("dan/hello", "dan/hello@0.1.0")}, "current")
     t.eq(p["previous"], None, "previous")
     t.ok(p.get("catalog"), "catalog recorded")

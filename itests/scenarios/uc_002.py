@@ -31,7 +31,7 @@ def root_option_beats_env(t: T):
     other = t.root / "other-ws"
     t.gitpm_ok("--root", other, "install", t.repo(ID))
     state = json.loads((other / "state.json").read_text())
-    t.ok(ID in state["plugins"], "installed into --root")
+    t.ok(ID in state["packages"], "installed into --root")
     t.ok(not t.ws.exists(), "GITPM_ROOT untouched")
 
 
@@ -39,7 +39,7 @@ def root_option_beats_env(t: T):
 def root_env_is_used_without_option(t: T):
     """Without --root the workspace is GITPM_ROOT."""
     t.gitpm_ok("install", t.repo(ID))
-    t.ok(ID in t.state()["plugins"], "installed into GITPM_ROOT")
+    t.ok(ID in t.state()["packages"], "installed into GITPM_ROOT")
     t.ok(not (t.root / "gitpm-workspace").exists(), "no default workspace")
 
 
@@ -55,7 +55,7 @@ def catalog_option_beats_env(t: T):
 @case(fixture="hello", spec=[SETTINGS])
 def sources_option_beats_env(t: T):
     """--sources wins over GITPM_SOURCES; without it GITPM_SOURCES is used."""
-    t.new_plugin("dan/other", "1.0.0")
+    t.new_package("dan/other", "1.0.0")
     (t.root / "sources.txt").write_text(f"{t.repo('dan/other')}\n")   # GITPM_SOURCES
     (t.root / "explicit.txt").write_text(f"{t.repo(ID)}\n")
     t.gitpm_ok("catalog-update", "--sources", t.root / "explicit.txt")
@@ -72,7 +72,7 @@ def defaults_in_isolated_cwd(t: T):
     iso.mkdir()
     r = t.run(*without_gitpm_env("gitpm", "install", t.repo(ID)), cwd=iso)
     t.eq(r.code, 0, "install exit")
-    t.ok(ID in json.loads((iso / "gitpm-workspace/state.json").read_text())["plugins"], "./gitpm-workspace")
+    t.ok(ID in json.loads((iso / "gitpm-workspace/state.json").read_text())["packages"], "./gitpm-workspace")
     (iso / "sources.txt").write_text(f"{t.repo(ID)}\n")
     r = t.run(*without_gitpm_env("gitpm", "--catalog", "cat", "catalog-update"), cwd=iso)
     t.eq(r.code, 0, "catalog-update exit")
@@ -101,7 +101,7 @@ def catalog_commands_without_catalog(t: T):
     """Catalog commands without --catalog/GITPM_CATALOG name the missing catalog and create nothing."""
     iso = t.root / "iso"
     iso.mkdir()
-    for argv in (["info"], ["catalog"], ["catalog-update"], ["migrate-catalog"],
+    for argv in (["info"], ["catalog"], ["catalog-update"],
                  ["register", "/fx/none", "--ref", "x"], ["install-catalog", ID]):
         r = t.run(*without_gitpm_env("gitpm", *argv), cwd=iso)
         t.ok(r.code != 0, f"{argv[0]} fails")

@@ -9,7 +9,7 @@ from gitpmtest import T, case
 
 def check_numeric_max(t: T, id: str):
     tagged = t.rev(id, f"{id}@1.10.0")
-    p = t.plugin(id)
+    p = t.package(id)
     t.eq(p["current"], {"version": "1.10.0", "commit": tagged}, "current (numeric maximum)")
     t.ok(p["current"]["commit"] != t.rev(id), "untagged HEAD (1.11.0) not chosen")
     t.ok(p["current"]["commit"] != t.rev(id, f"{id}@1.9.0"), "newest tagged commit (1.9.0) not chosen")
@@ -44,10 +44,10 @@ def both_forms_in_one_workspace(t: T):
 def repository_without_release_tags_fails(t: T):
     """No release tags (only unrelated tags): stable install fails instead of installing HEAD."""
     id = "dan/notags"
-    t.new_plugin(id, "0.1.0", tag=False)
+    t.new_package(id, "0.1.0", tag=False)
     t.release(id, "0.2.0", tag=False)
     t.tag(id, "wip")
-    t.tag(id, "other/plugin@1.0.0")
+    t.tag(id, "other/package@1.0.0")
     for extra in [(), ("--channel", "stable")]:
         t.gitpm_err("install", t.repo(id), *extra, kind="no_releases", contains=("no release tags", id))
         t.not_installed(id)

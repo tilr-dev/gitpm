@@ -51,18 +51,18 @@ def sync_dist_fixes_then_has_nothing_to_do(t: T):
     t.ok(not t.dist(A).exists(), "dist/A removed")
     t.eq((t.dist(B) / "index.js").read_text(), f'export const greeting = "{B} 0.1.0";\n', "dist/B deployed")
     before = t.snap(t.ws, git=True)
-    t.eq(t.gitpm_ok("sync-dist").out, "dist/ already holds exactly the active plugins.\n", "second run")
+    t.eq(t.gitpm_ok("sync-dist").out, "dist/ already holds exactly the active packages.\n", "second run")
     t.same(before, "workspace after the second run")
 
 
 @case(fixture="g2_demos_installed", spec=["dist/sync-dist-repairs-dist-explicitly#nothing-to-do",
                                           "dist/unknown-paths-are-left-alone"])
 def unmanaged_paths_are_only_warned(t: T):
-    """With dist/ matching the active plugins, an unknown dist/custom is warned about, not counted."""
+    """With dist/ matching the active packages, an unknown dist/custom is warned about, not counted."""
     t.write(t.ws / "dist/custom", {"keep.js": "custom\n"})
     r = t.gitpm_ok("sync-dist")
-    t.eq(r.out, "dist/ already holds exactly the active plugins.\n", "output")
-    t.has(r.err, "Warning: dist/custom belongs to no known plugin or is not a folder; left as it is")
+    t.eq(r.out, "dist/ already holds exactly the active packages.\n", "output")
+    t.has(r.err, "Warning: dist/custom belongs to no known package or is not a folder; left as it is")
     t.ok((t.ws / "dist/custom/keep.js").is_file(), "dist/custom kept")
 
 
@@ -70,7 +70,7 @@ def unmanaged_paths_are_only_warned(t: T):
 def next_mutation_reconciles_the_stale_tree(t: T):
     """Installing an unrelated package removes the disabled package's leftover dist in the same command."""
     stale(t)
-    t.new_plugin("dan/other", "0.1.0")
+    t.new_package("dan/other", "0.1.0")
     t.gitpm_ok("install", t.repo("dan/other"))
     t.ok(not t.dist(A).exists(), "stale dist/A removed")
     t.has((t.dist("dan/other") / "index.js").read_text(), "dan/other 0.1.0")

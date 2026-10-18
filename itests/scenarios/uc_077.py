@@ -1,7 +1,7 @@
 """UC-077: Partial publication seen by a consumer (P1).
 
 A catalog is static files uploaded by the author in some order, so a consumer can read it
-half-updated: a plugin index that already lists a version whose release.json is not there
+half-updated: a package index that already lists a version whose release.json is not there
 yet, or an index that does not list a release that is already uploaded. Fixture `catalog`
 (dan/hello 0.1.0, 0.1.1, 0.2.0; dan/num 1.9.0, 1.10.0) copied to /fx/served and read over
 loopback HTTP. Every failing read must leave the workspace byte-identical and name a
@@ -47,7 +47,7 @@ def index_lists_a_release_not_yet_uploaded(t: T):
     t.ok(any("versions/0.2.0/release.json" in p for p in srv.take()), "the missing release was requested")
     restore()
     t.gitpm_ok("--catalog", srv.url, "install-catalog", HELLO)
-    t.eq(t.plugin(HELLO)["current"], {"version": "0.2.0", "commit": t.rev(HELLO, f"{HELLO}@0.2.0")}, "installed")
+    t.eq(t.package(HELLO)["current"], {"version": "0.2.0", "commit": t.rev(HELLO, f"{HELLO}@0.2.0")}, "installed")
 
 
 @case(fixture="catalog", spec=["catalog/catalog-locations-and-transport", "install-uninstall/install-from-the-catalog"])
@@ -104,25 +104,25 @@ def release_uploaded_before_the_index(t: T):
     t.has(r.err, "0.3.0")
     t.not_installed(HELLO)
     t.gitpm_ok("--catalog", srv.url, "install-catalog", HELLO)
-    t.eq(t.plugin(HELLO)["current"]["version"], "0.2.0", "latest per the old index")
+    t.eq(t.package(HELLO)["current"]["version"], "0.2.0", "latest per the old index")
     t.catalog_index(HELLO, root).write_bytes(new_index)
     out = t.gitpm_ok("--catalog", srv.url, "check").out
     t.has(next(l for l in out.splitlines() if l.startswith(HELLO)), "update available", "0.3.0")
     t.gitpm_ok("update", HELLO)
-    t.eq(t.plugin(HELLO)["current"]["version"], "0.3.0", "update after the index appeared")
+    t.eq(t.package(HELLO)["current"]["version"], "0.3.0", "update after the index appeared")
 
 
 @case(fixture="catalog", spec=["catalog/catalog-locations-and-transport", "install-uninstall/install-from-the-catalog"])
 def plugin_index_not_yet_uploaded(t: T):
-    """A namespace catalog.json links a plugin whose plugin.json is missing: install-catalog
-    of it fails naming the plugin; after the upload it installs."""
+    """A namespace catalog.json links a package whose plugin.json is missing: install-catalog
+    of it fails naming the package; after the upload it installs."""
     root, srv = served(t)
     restore = hide(t.catalog_index("dan/num", root))
     r = t.gitpm("--catalog", srv.url, "install-catalog", "dan/num")
-    t.ok(r.code != 0, "install of a plugin without an index fails")
+    t.ok(r.code != 0, "install of a package without an index fails")
     t.has(r.err, "dan/num")
     t.not_installed("dan/num")
     restore()
     t.gitpm_ok("--catalog", srv.url, "install-catalog", "dan/num")
-    t.eq(t.plugin("dan/num")["current"]["version"], "1.10.0", "installed after the upload")
+    t.eq(t.package("dan/num")["current"]["version"], "1.10.0", "installed after the upload")
     t.eq(json.loads(t.catalog_index("dan/num", root).read_text())["id"], "dan/num", "index restored")

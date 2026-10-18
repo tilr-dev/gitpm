@@ -9,7 +9,7 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 #[derive(Debug, Clone, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
-    #[error("plugin {id} is not installed")]
+    #[error("package {id} is not installed")]
     NotInstalled { id: String },
     /// The ID is registered or its repository already exists in the workspace.
     #[error("{message}")]
@@ -40,8 +40,8 @@ pub enum Error {
     NoPreviousVersion { id: String },
     #[error("{0}")]
     NoReleases(String),
-    /// The path for the ID is not a plugin repository (also for case variants of an ID).
-    #[error("plugin repository {id} not found (a namespace directory is not a plugin)")]
+    /// The path for the ID is not a package repository (also for case variants of an ID).
+    #[error("package repository {id} not found (a namespace directory is not a package)")]
     RepositoryNotFound { id: String },
     /// Workspace layout or path conflicts.
     #[error("{0}")]
@@ -61,7 +61,7 @@ pub enum Error {
     /// Dependencies cannot be satisfied; the message explains why (solver report).
     #[error("{0}")]
     DependencyConflict(String),
-    /// Other installed plugins depend on this one; pass `force` to proceed anyway.
+    /// Other installed packages depend on this one; pass `force` to proceed anyway.
     #[error("{message}")]
     HasDependents {
         id: String,
@@ -316,7 +316,7 @@ mod tests {
     fn display_is_the_complete_message() {
         assert_eq!(
             Error::NotInstalled { id: "a/b".into() }.to_string(),
-            "plugin a/b is not installed"
+            "package a/b is not installed"
         );
         assert_eq!(
             Error::NoPreviousVersion { id: "a/b".into() }.to_string(),
@@ -324,7 +324,7 @@ mod tests {
         );
         assert_eq!(
             Error::RepositoryNotFound { id: "a/b".into() }.to_string(),
-            "plugin repository a/b not found (a namespace directory is not a plugin)"
+            "package repository a/b not found (a namespace directory is not a package)"
         );
         // Every other variant renders exactly its message.
         for (error, _) in all() {

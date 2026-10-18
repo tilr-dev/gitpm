@@ -1,4 +1,4 @@
-//! Detection of local work that deleting or replacing a plugin clone would lose.
+//! Detection of local work that deleting or replacing a package clone would lose.
 use crate::error::{Error, Result};
 use crate::exec::{git, git_raw};
 use serde::Serialize;
@@ -7,7 +7,7 @@ use std::path::Path;
 /// Upper bound of listed unpublished commits per plan (the check itself is exact).
 const MAX_COMMITS: &str = "--max-count=50";
 
-/// One item of local work in a plugin clone.
+/// One item of local work in a package clone.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum LostWork {
@@ -74,7 +74,7 @@ impl LostWork {
 }
 
 const DIRTY: &str =
-    "plugin has local changes (including untracked/ignored files); keep or remove them first";
+    "package has local changes (including untracked/ignored files); keep or remove them first";
 
 /// Modified, untracked and ignored files (`git status`, without taking optional locks).
 fn status(repo: &Path) -> Result<Vec<LostWork>> {
@@ -462,7 +462,7 @@ mod tests {
         );
     }
 
-    /// A clone of a tagged author repository (has `origin`, like an installed plugin).
+    /// A clone of a tagged author repository (has `origin`, like an installed package).
     fn clone(dir: &TempDir) -> PathBuf {
         let author = Author::new(dir.join("author"), "dan/demo1");
         fixture_git(dir.path(), &["clone", "-q", author.source(), "clone"]);

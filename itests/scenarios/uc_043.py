@@ -1,7 +1,7 @@
 """UC-043: Ignored files, unpublished refs and uninstall confirmation (P0, mandatory).
 
 Workspace g3_trio_installed: dan/a (0.1.1, previous 0.1.0) gets one kind of local work per
-case; dan/b and other/c are the unrelated plugins. A new release dan/a@0.1.2 exists
+case; dan/b and other/c are the unrelated packages. A new release dan/a@0.1.2 exists
 upstream so a non-refusing update would really change the clone.
 
 Per kind of local work two cases: `<kind>_refused` (update, rollback, uninstall without
@@ -25,7 +25,7 @@ def tty(t: T, args: list, answer: str = ""):
 
 
 def installed(t: T) -> str:
-    return t.plugin(A)["current"]["commit"]
+    return t.package(A)["current"]["commit"]
 
 
 # ------------------------------------------------------------------ kinds of local work
@@ -122,7 +122,7 @@ def refused_case(kind: str):
         t.release(A, "0.1.2")
         setup(t, t.clone(A))
         before = everything(t)
-        entry = t.plugin(A)
+        entry = t.package(A)
 
         r = t.gitpm_err("update", A, kind="local_changes", contains=needle)
         t.same(before, "everything after update")
@@ -137,7 +137,7 @@ def refused_case(kind: str):
             t.has(r.out, f"Uninstall {A} would delete:", str(t.clone(A)), str(t.dist(A)),
                   f"state.json entry {A}", "Local work that would be lost:", needle, "Delete anyway? [y/N]")
             t.same(before, f"everything after TTY answer {what}")
-        t.eq(t.plugin(A), entry, "state entry")
+        t.eq(t.package(A), entry, "state entry")
 
         fork = t.root / "forks/a"
         t.gitpm_ok("fork", A, "--ns", "mine", "--into", fork)
@@ -164,9 +164,9 @@ def confirmed_case(kind: str):
         t.eq(r.code, 0, "exit code")
         t.has(r.out, needle, "Delete anyway? [y/N]")
         t.not_installed(A)
-        del state["plugins"][A]
+        del state["packages"][A]
         t.eq(t.state(), state, "state minus dan/a")
-        t.same(keep, "unrelated plugins and author repositories")
+        t.same(keep, "unrelated packages and author repositories")
 
     fn.__name__ = f"{kind}_confirmed"
     fn.__doc__ = f"{kind}: uninstall on a TTY answered y removes only dan/a."
@@ -190,7 +190,7 @@ def forced_uninstall(t: T):
     t.eq(r.code, 0, "exit code")
     t.lacks(r.out, "Delete anyway")
     t.not_installed(A)
-    t.same(keep, "unrelated plugins and author repositories")
+    t.same(keep, "unrelated packages and author repositories")
 
 
 @case(fixture="g3_trio_installed", spec=["install-uninstall/cli-confirmation-flow-for-uninstall#no-tty"])
@@ -201,4 +201,4 @@ def forced_uninstall_without_tty(t: T):
     keep = t.snap(*[t.clone(i) for i in OTHERS], *[t.dist(i) for i in OTHERS], t.root / "repos", git=True)
     t.gitpm_ok("uninstall", A, "--force")
     t.not_installed(A)
-    t.same(keep, "unrelated plugins and author repositories")
+    t.same(keep, "unrelated packages and author repositories")

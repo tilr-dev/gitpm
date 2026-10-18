@@ -1,119 +1,68 @@
-"""UC-037: V1 migration and backward compatibility (P0).
+"""UC-037: v1 catalogs are refused, there is no migration (P0).
 
-Fixture g4_v1: /fx/v1/catalog.json in the monolithic v1 format of the lifecycle
-tests: legacy `oldie` 0.1.0, 0.2.0 without files/build; dan/hello 0.1.0, 0.1.1 with
-files, without build.
+Fixture g4_v1: /fx/v1/catalog.json in the monolithic v1 format gitpm 0.5 still read:
+old/oldie 0.1.0, 0.2.0 without files/build; dan/hello 0.1.0, 0.1.1 with files. No
+backward compatibility before 1.0: every catalog read fails with `catalog`, nothing is
+written, and `migrate-catalog` is an unknown command. The way forward is catalog-update
+into an empty folder.
 """
-
-import json
-import shutil
 
 from gitpmtest import T, case
 
-OLD, HELLO = "oldie", "dan/hello"
+OLD, HELLO = "old/oldie", "dan/hello"
 
 
 def v1(t: T):
     return t.root / "v1"
 
 
-def original(t: T) -> dict:
-    return json.loads((v1(t) / "catalog.json").read_text())
-
-
-def release_path(t: T, id: str, version: str, root=None):
-    root = root or v1(t)
-    folder = ("namespaces/" if "/" in id else "legacy/") + id
-    return root / folder / "versions" / version / "release.json"
-
-
-def check_migrated(t: T, root, data: dict, original_bytes: bytes):
-    t.eq((root / ".catalog-v1.json").read_bytes(), original_bytes, "backup is the original v1 JSON")
-    t.eq(json.loads((root / "catalog.json").read_text()),
-         {"schema": 2, "directories": {"legacy": "legacy/", "namespaces": "namespaces/"}}, "v2 root")
-    for id, plugin in data["plugins"].items():
-        folder = root / (("namespaces/" if "/" in id else "legacy/") + id)
-        index = json.loads((folder / "plugin.json").read_text())
-        t.eq(index["source"], plugin["source"], f"{id} source")
-        t.ok(set(plugin["versions"]) <= set(index["versions"]), f"{id}: all old versions linked")
-        for version, old in plugin["versions"].items():
-            new = json.loads(release_path(t, id, version, root).read_text())
-            for key in ["source", "commit", "reference"]:
-                t.eq(new[key], old[key], f"{id} {version} {key}")
-            for key, value in old["manifest"].items():
-                t.eq(new["manifest"].get(key), value, f"{id} {version} manifest.{key}")
-            t.eq(new.get("files"), old.get("files"), f"{id} {version} files (absent hashes not invented)")
-            t.ok("build" not in new, f"{id} {version} no build invented")
-
-
-@case(fixture="g4_v1", spec=["catalog/v1-catalogs-stay-readable", "catalog/release-record#legacy-release-without-hashes"])
-def read_and_install_before_migration(t: T):
-    """The v1 catalog is readable and installable as is (legacy without files, scoped
-    with files), check works; the catalog file is not modified."""
+@case(fixture="g4_v1", spec=["catalog/catalog-v2-is-a-tree-of-static-files", "errors/stable-error-kinds"])
+def every_read_is_refused(t: T):
+    """info, install-catalog, check and update fail with `catalog`; the v1 file and the
+    workspace keep their bytes."""
     before = t.snap(v1(t))
-    t.has(t.gitpm_ok("--catalog", v1(t), "info").out, "Format: v1", "oldie — latest: 0.2.0")
-    t.gitpm_ok("--catalog", v1(t), "install-catalog", OLD)
-    t.gitpm_ok("--catalog", v1(t), "install-catalog", HELLO, "--version", "0.1.0")
-    t.eq(t.plugin(OLD)["current"], {"version": "0.2.0", "commit": t.rev(OLD, "v0.2.0")}, "oldie installed")
-    t.eq(t.plugin(HELLO)["current"]["commit"], t.rev(HELLO, f"{HELLO}@0.1.0"), "hello installed")
-    t.has((t.dist(OLD) / "lib/util.js").read_text(), "util 0.2.0")
-    out = t.gitpm_ok("--catalog", v1(t), "check").out
-    t.has(next(l for l in out.splitlines() if l.startswith(HELLO)), "update available")
-    t.has(next(l for l in out.splitlines() if l.startswith(OLD)), "up to date")
-    t.same(before, "v1 catalog (read-only)")
+    for argv in (["info"], ["install-catalog", HELLO], ["install-catalog", OLD]):
+        t.gitpm_err("--catalog", v1(t), *argv, kind="catalog", contains="v1 catalogs")
+    t.ok(not t.state().get("packages"), "nothing installed")
+    t.gitpm_ok("install", t.repo(HELLO), "--ref", f"{HELLO}@0.1.0")
+    t.gitpm_err("--catalog", v1(t), "check", kind="catalog", contains="v1 catalogs")
+    t.same(before, "v1 catalog")
 
 
-@case(fixture="g4_v1", spec=["catalog/v1-catalogs-stay-readable#migrate"])
-def migrate_keeps_backup_and_releases(t: T):
-    """migrate-catalog: .catalog-v1.json is the original, every old release survives
-    byte-for-byte in meaning, absent files/build are not invented; installs still work."""
-    data, raw = original(t), (v1(t) / "catalog.json").read_bytes()
-    t.gitpm_ok("--catalog", v1(t), "migrate-catalog")
-    check_migrated(t, v1(t), data, raw)
-    t.ok("files" not in json.loads(release_path(t, OLD, "0.1.0").read_text()), "legacy release still has no files key")
-    t.gitpm_ok("--catalog", v1(t), "install-catalog", OLD, "--version", "0.1.0")
-    t.gitpm_ok("--catalog", v1(t), "install-catalog", HELLO)
-    t.eq(t.plugin(HELLO)["current"]["version"], "0.1.1", "latest after migration")
-    t.eq(t.plugin(OLD)["current"]["commit"], t.rev(OLD, "v0.1.0"), "legacy exact version after migration")
-
-
-@case(fixture="g4_v1", spec=["catalog/v1-catalogs-stay-readable#migrate", "catalog/v1-catalogs-stay-readable#migrate-a-v2-catalog"])
-def repeated_migration_is_safe(t: T):
-    """A second migrate-catalog changes nothing (backup included)."""
-    t.gitpm_ok("--catalog", v1(t), "migrate-catalog")
+@case(fixture="g4_v1", spec=["catalog/catalog-v2-is-a-tree-of-static-files", "catalog/register-one-version"])
+def writes_into_a_v1_catalog_are_refused(t: T):
+    """register and catalog-update into the v1 folder fail with `catalog` and write nothing
+    (no backup, no v2 tree)."""
     before = t.snap(v1(t))
-    t.gitpm_ok("--catalog", v1(t), "migrate-catalog")
-    t.same(before, "migrated catalog after a repeated migration")
+    t.gitpm_err("--catalog", v1(t), "register", t.repo(HELLO), "--ref", f"{HELLO}@0.2.0",
+                kind="catalog", contains="v1 catalogs")
+    sources = t.root / "sources.txt"
+    sources.write_text(f"{t.repo(HELLO)}\n")
+    t.gitpm_err("--catalog", v1(t), "catalog-update", "--sources", sources, kind="catalog", contains="v1 catalogs")
+    t.same(before, "v1 catalog")
+    t.ok(not (v1(t) / ".catalog-v1.json").exists() and not (v1(t) / "namespaces").exists(), "nothing written")
 
 
-@case(fixture="g4_v1", spec=["catalog/published-versions-are-immutable", "catalog/release-record"])
-def registrations_after_migration(t: T):
-    """New registrations calculate hashes; re-registering an old legacy release keeps it
-    unchanged (no hashes added)."""
-    t.gitpm_ok("--catalog", v1(t), "migrate-catalog")
-    old = t.snap(v1(t) / "legacy/oldie/versions")
-    t.gitpm_ok("--catalog", v1(t), "register", t.repo(OLD), "--ref", "v0.1.0")
-    t.same(old, "legacy releases after identical re-registration")
-    t.gitpm_ok("--catalog", v1(t), "register", t.repo(HELLO), "--ref", f"{HELLO}@0.2.0")
-    new = json.loads(release_path(t, HELLO, "0.2.0").read_text())
-    t.ok(new["files"].get("index.js", {}).get("size", 0) > 0, "new release has file hashes")
-    t.release(OLD, "0.3.0", tag=False)
-    t.tag(OLD, "v0.3.0")
-    t.gitpm_ok("--catalog", v1(t), "register", t.repo(OLD), "--ref", "v0.3.0")
-    t.ok(json.loads(release_path(t, OLD, "0.3.0").read_text()).get("files"), "new legacy release has hashes")
+@case(fixture="g4_v1", spec=["cli/command-set#removed-command"])
+def migrate_catalog_is_unknown(t: T):
+    """migrate-catalog is no command any more; the v1 catalog is untouched."""
+    before = t.snap(v1(t))
+    r = t.run("gitpm", "--catalog", v1(t), "migrate-catalog")
+    t.ok(r.code != 0, "migrate-catalog fails")
+    t.has(r.err, "unknown command: migrate-catalog; use --help")
+    t.same(before, "v1 catalog")
 
 
-@case(fixture="g4_v1", spec=["catalog/v1-catalogs-stay-readable", "catalog/register-one-version", "catalog/v1-catalogs-stay-readable#register-into-a-v1-catalog"])
-def register_auto_migrates(t: T):
-    """register into an untouched v1 copy migrates it first: backup, v2 tree, old releases
-    kept; the new release carries hashes."""
-    copy = t.root / "v1-copy"
-    shutil.copytree(v1(t), copy)
-    data, raw = original(t), (copy / "catalog.json").read_bytes()
-    t.gitpm_ok("--catalog", copy, "register", t.repo(HELLO), "--ref", f"{HELLO}@0.2.0")
-    check_migrated(t, copy, data, raw)
-    new = json.loads(release_path(t, HELLO, "0.2.0", copy).read_text())
-    t.ok(new["files"], "new release has hashes")
-    t.eq(sorted(json.loads((copy / "namespaces/dan/hello/plugin.json").read_text())["versions"]),
-         ["0.1.0", "0.1.1", "0.2.0"], "hello versions")
-    t.eq((v1(t) / "catalog.json").read_bytes(), raw, "the other copy untouched")
+@case(fixture="g4_v1", spec=["catalog/catalog-generated-from-git-release-tags"])
+def regenerate_into_an_empty_folder(t: T):
+    """The migration path: catalog-update from the release tags into an empty folder gives
+    a v2 catalog with file hashes for every release."""
+    fresh = t.root / "fresh"
+    sources = t.root / "sources.txt"
+    sources.write_text(f"{t.repo(HELLO)}\n{t.repo(OLD)}\n")
+    t.gitpm_ok("--catalog", fresh, "catalog-update", "--sources", sources)
+    for id in (HELLO, OLD):
+        t.ok(t.catalog_index(id, fresh).is_file(), f"{id} index")
+    t.ok(t.catalog_release(OLD, "0.1.0", fresh).is_file(), "old/oldie 0.1.0 published")
+    t.gitpm_ok("--catalog", fresh, "install-catalog", OLD)
+    t.eq(t.package(OLD)["current"]["version"], "0.2.0", "installed from the regenerated catalog")

@@ -20,17 +20,16 @@ def created_id(t: T, path) -> str:
 @case(spec=["package-ids/no-default-namespace#init-without-a-namespace"])
 def init_without_namespace_refused(t: T):
     """`init hello --into a/p1` (no namespace) is refused and creates nothing."""
-    for command in ("init", "create"):
-        r = t.gitpm(command, "hello", "--into", "a/p1")
-        t.ok(r.code != 0, f"{command} refused")
-        t.has(r.err, "plugin id needs a namespace: use NAMESPACE/NAME, for example acme/hello")
+    r = t.gitpm("init", "hello", "--into", "a/p1")
+    t.ok(r.code != 0, "init refused")
+    t.has(r.err, "package id needs a namespace: use NAMESPACE/NAME, for example acme/hello")
     t.ok(not (t.root / "a").exists(), "nothing created")
 
 
 def invalid_case(name: str, value: str, doc: str):
     def fn(t: T):
         before = t.snap(t.root, git=True)
-        for command in ("init", "create"):
+        for command in ("init",):
             r = t.gitpm(command, f"{value}/x", "--into", "a/x")
             t.ok(r.code != 0, f"{command} {value!r}/x refused (exit {r.code})")
             if value.startswith("-"):
@@ -39,7 +38,7 @@ def invalid_case(name: str, value: str, doc: str):
             else:
                 t.has(r.err, "Error kind: invalid_id", "1–80 ASCII letters, digits, '-' or '_'")
         t.same(before, "fixture (files)")
-        t.ok(not (t.root / "a").exists(), "no plugin directory created")
+        t.ok(not (t.root / "a").exists(), "no package directory created")
     fn.__name__, fn.__doc__, fn.__module__ = name, doc, __name__
     tag = f"{SYNTAX}#empty-namespace" if value == "" else f"{SYNTAX}#unsafe-components-are-refused"
     case(spec=[tag])(fn)
@@ -79,6 +78,6 @@ def release_and_update_keep_the_id(t: T):
     t.gitpm_ok("commit", repo, "0.1.1")
     t.gitpm_ok("update", "first/keep")
     state = t.gitpm_ok("list").json()
-    t.eq(sorted(state["plugins"]), ["first/keep"], "installed IDs")
-    t.eq(t.plugin("first/keep")["current"]["version"], "0.1.1", "updated under its own ID")
-    t.ok(t.clone("first/keep").is_dir() and not (t.ws / "plugins/second").exists(), "clone path kept")
+    t.eq(sorted(state["packages"]), ["first/keep"], "installed IDs")
+    t.eq(t.package("first/keep")["current"]["version"], "0.1.1", "updated under its own ID")
+    t.ok(t.clone("first/keep").is_dir() and not (t.ws / "packages/second").exists(), "clone path kept")

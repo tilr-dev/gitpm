@@ -29,9 +29,7 @@ mod version_tests {
 
 /// Text overview of a catalog, as printed by `gitpm info`.
 pub mod catalog {
-    use gitpm::catalog::{
-        CatalogFormat, CatalogOverview, OVERVIEW_LIMIT, OverviewItem, PluginSummary, browse,
-    };
+    use gitpm::catalog::{CatalogOverview, OVERVIEW_LIMIT, OverviewItem, PackageSummary, browse};
     use std::fmt::Write as _;
 
     /// Browse a catalog (local folder, JSON file or HTTP URL) and render it as text.
@@ -39,26 +37,26 @@ pub mod catalog {
         Ok(render_overview(&browse(location)?))
     }
 
-    fn summary(plugin: &PluginSummary) -> String {
+    fn summary(package: &PackageSummary) -> String {
         let mut text = format!(
             "{} — latest: {}, versions: {}\n    Git: {}",
-            plugin.id,
-            plugin.latest.as_deref().unwrap_or("no releases"),
-            plugin.versions.len(),
-            plugin.source
+            package.id,
+            package.latest.as_deref().unwrap_or("no releases"),
+            package.versions.len(),
+            package.source
         );
         // Metadata of the latest release, when it has any.
-        if let Some(title) = &plugin.title {
+        if let Some(title) = &package.title {
             let _ = write!(text, "\n    Title: {title}");
         }
-        if let Some(description) = &plugin.description {
+        if let Some(description) = &package.description {
             let _ = write!(text, "\n    Description: {description}");
         }
-        if !plugin.provides.is_empty() {
-            let _ = write!(text, "\n    Provides: {}", plugin.provides.join(", "));
+        if !package.provides.is_empty() {
+            let _ = write!(text, "\n    Provides: {}", package.provides.join(", "));
         }
-        if !plugin.tags.is_empty() {
-            let _ = write!(text, "\n    Tags: {}", plugin.tags.join(", "));
+        if !package.tags.is_empty() {
+            let _ = write!(text, "\n    Tags: {}", package.tags.join(", "));
         }
         text
     }
@@ -73,35 +71,19 @@ pub mod catalog {
                 "local folder/JSON"
             }
         );
-        match overview.format {
-            CatalogFormat::V1 => {
-                output.push_str("Format: v1 — single JSON file, no directory tree\nPlugins:\n");
-                for item in &overview.items {
-                    match item {
-                        OverviewItem::Plugin { plugin, .. } => {
-                            let _ = writeln!(output, "  {}", summary(plugin));
-                        }
-                        OverviewItem::Empty { .. } => output.push_str("  (empty)\n"),
-                        OverviewItem::Directory { .. } => {}
-                    }
+        output.push_str("Directories and packages:\n");
+        for item in &overview.items {
+            match item {
+                OverviewItem::Empty { depth } => {
+                    let _ = writeln!(output, "{}(empty)", "  ".repeat(*depth as usize));
                 }
-            }
-            CatalogFormat::V2 => {
-                output.push_str("Format: v2\nDirectories and plugins:\n");
-                for item in &overview.items {
-                    match item {
-                        OverviewItem::Empty { depth } => {
-                            let _ = writeln!(output, "{}(empty)", "  ".repeat(*depth as usize));
-                        }
-                        OverviewItem::Directory { depth, name } => {
-                            let _ = writeln!(output, "{}{name}/", "  ".repeat(*depth as usize));
-                        }
-                        OverviewItem::Plugin { depth, plugin } => {
-                            let indent = "  ".repeat(*depth as usize);
-                            for line in summary(plugin).lines() {
-                                let _ = writeln!(output, "{indent}  {line}");
-                            }
-                        }
+                OverviewItem::Directory { depth, name } => {
+                    let _ = writeln!(output, "{}{name}/", "  ".repeat(*depth as usize));
+                }
+                OverviewItem::Package { depth, package } => {
+                    let indent = "  ".repeat(*depth as usize);
+                    for line in summary(package).lines() {
+                        let _ = writeln!(output, "{indent}  {line}");
                     }
                 }
             }
@@ -135,7 +117,7 @@ pub mod check {
         let latest = |row: &CheckRow| row.latest.clone().unwrap_or_else(|| "—".into());
         let mut output = format!(
             "{:<24} {:<14} {:<14} {:<8} STATUS\n",
-            "PLUGIN", "INSTALLED", "LATEST", "ENABLED"
+            "PACKAGE", "INSTALLED", "LATEST", "ENABLED"
         );
         for row in rows {
             output.push_str(&format!(

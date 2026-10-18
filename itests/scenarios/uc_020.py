@@ -1,6 +1,6 @@
 """UC-020: Enable and disable (P1).
 
-Fixture g2_demos_installed: two unrelated plugins without dependencies,
+Fixture g2_demos_installed: two unrelated packages without dependencies,
 A = vendor/demo and B = author/demo.
 """
 
@@ -21,16 +21,16 @@ def files(t: T):
 
 
 def expect_only_enabled_changed(t: T, before: str, enabled: bool):
-    """state.json equals `before` with plugins.A.enabled set, byte for byte (same serializer layout)."""
+    """state.json equals `before` with packages.A.enabled set, byte for byte (same serializer layout)."""
     value = json.loads(before)
     t.eq(json.dumps(value, indent=2), before, "state.json layout is reproducible (precondition)")
-    value["plugins"][A]["enabled"] = enabled
-    t.eq(state_text(t), json.dumps(value, indent=2), f"state.json with only plugins.{A}.enabled = {enabled}")
+    value["packages"][A]["enabled"] = enabled
+    t.eq(state_text(t), json.dumps(value, indent=2), f"state.json with only packages.{A}.enabled = {enabled}")
 
 
 @case(fixture="g2_demos_installed", spec=["dist/enable-and-disable-deploy-and-remove", "dist/empty-parent-folders-are-removed"])
 def disable_changes_only_enabled_flag(t: T):
-    """disable A: only plugins.A.enabled flips in state.json, dist/A is removed; clones and B's dist identical."""
+    """disable A: only packages.A.enabled flips in state.json, dist/A is removed; clones and B's dist identical."""
     before = state_text(t)
     payload = t.snap(t.clone(A), t.clone(B), t.dist(B), git=True)
     t.gitpm_ok("disable", A)
@@ -47,7 +47,7 @@ def repeated_disable_is_noop(t: T):
     before = t.snap(t.ws, git=True)
     t.gitpm_ok("disable", A)
     t.same(before, "workspace after the second disable")
-    t.eq(t.plugin(A)["enabled"], False, "A disabled")
+    t.eq(t.package(A)["enabled"], False, "A disabled")
 
 
 @case(fixture="g2_demos_installed", spec=["dist/enable-and-disable-deploy-and-remove#disable-and-enable"])
@@ -78,7 +78,7 @@ def unknown_id_is_not_installed(t: T):
     """disable/enable of an unknown ID: not_installed naming the ID, nothing changes."""
     before = t.snap(t.ws, git=True)
     for command in ["disable", "enable"]:
-        t.gitpm_err(command, "dan/missing", kind="not_installed", contains="plugin dan/missing is not installed")
+        t.gitpm_err(command, "dan/missing", kind="not_installed", contains="package dan/missing is not installed")
         t.same(before, f"workspace after {command} of an unknown ID")
 
 
@@ -88,15 +88,15 @@ def update_of_disabled_plugin_keeps_it_disabled(t: T):
     (which deploys 0.2.0); B untouched."""
     t.gitpm_ok("disable", A)
     b = t.snap(t.clone(B), t.dist(B), git=True)
-    b_entry = t.plugin(B)
+    b_entry = t.package(B)
     commit = t.release(A, "0.2.0")
     t.gitpm_ok("update", A)
-    p = t.plugin(A)
+    p = t.package(A)
     t.eq(p["enabled"], False, "still disabled")
     t.eq(p["current"], {"version": "0.2.0", "commit": commit}, "current")
     t.eq(t.rev(t.clone(A)), commit, "clone HEAD")
     t.ok(not t.dist(A).exists(), "no dist/A while disabled")
     t.same(b, "B clone and dist")
-    t.eq(t.plugin(B), b_entry, "B state entry")
+    t.eq(t.package(B), b_entry, "B state entry")
     t.gitpm_ok("enable", A)
     t.eq((t.dist(A) / "index.js").read_text(), f'export const greeting = "{A} 0.2.0";\n', "enable deploys 0.2.0")
