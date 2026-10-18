@@ -148,9 +148,9 @@ $ gitpm check
 Workspace: gitpm-workspace
 Catalog: /…/catalog
 
-PACKAGE                  INSTALLED      LATEST         ENABLED  STATUS
-acme/greeter             0.2.0          0.2.0          yes      up to date
-acme/hello               0.1.1          0.1.1          yes      up to date
+PACKAGE                  INSTALLED      LATEST         ENABLED  SOURCE   STATUS
+acme/greeter             0.2.0          0.2.0          yes      catalog  up to date
+acme/hello               0.1.1          0.1.1          yes      catalog  up to date
 
 Updates: 0. Nothing was changed.
 ```
@@ -374,6 +374,27 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   `ForkResume { applied, failed }`); `UpdateAllPlan` also gains `skipped`;
   `PmError.NotDeployed { message, sync }` (the whole `DistSync` report) is new and
   `PmError.HasDependents` gains `replacing`. Migration: call the free functions, read the new fields.
+- `check` works without a catalog: a package the catalog does not list, or every package
+  when no catalog is given, gets an origin row from `git ls-remote --tags` of its recorded
+  source. `CheckStatus::NotInCatalog` (`not_in_catalog`, "not in catalog") is removed; new
+  statuses `newer_than_origin`, `no_releases`, `origin_unreachable`. `CheckRow` gains
+  `source` (`CheckSource::Catalog`/`Origin`) and `problem`, `Upstream` gains `source`
+  (`Option<CheckSource>`) and `problem`; `check::compare`/`compare_in` are no longer pure:
+  they run `git ls-remote` for packages the given catalog does not list (was `not in
+  catalog`); `check::Row` (alias of `CheckRow`) is removed; `check::check`
+  and `Manager::check` no longer fail with "no catalog configured". The CLI table gains
+  the `SOURCE` column, prints `Catalog: none (each package's origin)` without a catalog,
+  and the fork line says `original in catalog: V` or `original at origin: V`
+  (`original: unknown` instead of `not in catalog`). FFI: `CheckStatus.notInCatalog`
+  removed, `newerThanOrigin`/`noReleases`/`originUnreachable` and enum `CheckSource` new,
+  `CheckRow` gains `source`/`problem`, `Upstream` gains `source`/`problem`. Migration: handle the
+  new statuses and drop `not_in_catalog`.
+- `fork` writes `forkOf.source` (the original's recorded source) into the fork's
+  `plugin.json`; `forkOf` is `{id, version, commit, source?}` (`source` optional when
+  reading; `invalid_manifest` when empty, relative or a remote helper such as `ext::…`;
+  `fork` leaves it out when the original's source is not a URL or an absolute path). FFI
+  `ForkOf` gains `source`. A gitpm before this
+  change refuses such a manifest or state record (unknown key in `forkOf`).
 
 ## Working without a catalog
 
@@ -381,17 +402,42 @@ A catalog is optional; the quickstart up to the catalog ran without one. `instal
 the source (a local path canonicalized) as `packages.<id>.source`, and `update ID` and
 `update all` fetch the release tags of that recorded origin directly. `list`, `rollback`,
 `enable`/`disable`, `forget`/`restore`, `uninstall`, `fork`, `replace` and `sync-dist`
-never read a catalog. Two limits:
+never read a catalog. One limit: dependencies are not fetched. A direct install, or an
+update whose new version adds a dependency, accepts only dependencies that are already
+installed and otherwise fails with `dependency_conflict` naming the missing one ("no
+catalog configured").
 
-- Dependencies are not fetched: a direct install, or an update whose new version adds a
-  dependency, accepts only dependencies that are already installed and otherwise fails
-  with `dependency_conflict` naming the missing one ("no catalog configured").
-- `check` compares with a catalog only: with packages installed it fails without one
-  (`check needs a catalog`), and with one it reports a package the catalog does not list
-  as `not in catalog`.
-  To see which newer releases the origins have, run `gitpm update all --dry-run` (it
-  changes nothing), or `gitpm install SOURCE` again (`; run update` when the source has
-  another revision).
+`check` needs no catalog either. Every installed package gets one row: from the catalog
+when one is given and lists the package (column `SOURCE` `catalog`), otherwise from its
+recorded origin (`origin`): `git ls-remote --tags` of `packages.<id>.source`, read once per
+source, without fetching or changing the clone. The newest `ID@VERSION` tag counts by name
+(its manifest is verified only when updating). Origin rows say `up to date`, `update
+available`, `newer than origin`, `no releases on origin` or `origin unreachable` (with a
+hint such as "The Git server is unreachable. …"; git's own output is never shown), or
+`version cannot be compared` for a malformed installed version. An unreachable origin only
+marks its own row; `check` still exits 0. Tags are compared by name: an origin tag of the
+installed version that now points to another commit still counts as `up to date`. Only a
+Git URL (`https`, `http`, `ssh`, `git`, `file`, `host:path`) or an absolute path is queried,
+with remote helpers (`ext::`, `fd::`, any `::`) never allowed; any other recorded source
+gives `origin unreachable: source not queried: …` without starting git.
+
+```console
+$ gitpm check
+Workspace: gitpm-workspace
+Catalog: none (each package's origin)
+
+PACKAGE                  INSTALLED      LATEST         ENABLED  SOURCE   STATUS
+acme/greeter             0.1.0          0.2.0          yes      origin   update available
+
+Updates: 1. Nothing was changed.
+
+Available updates:
+  acme/greeter: 0.1.0 → 0.2.0
+```
+
+A fork records the original's source in `forkOf.source`, so `check` shows the original's
+newest release without a catalog too: `me/hello: fork of acme/hello (base 1.0.0); original
+at origin: 1.1.0 — newer than the fork base` (or `original: unreachable (REASON)`).
 
 Catalog commands (`info`, `catalog`, `catalog-update`, `register`) and
 `install-catalog` need a catalog.
@@ -626,7 +672,7 @@ all commands, `gitpm COMMAND --help` one). There is no config file; the old `PM_
 | Flag | Variable | Default |
 | --- | --- | --- |
 | `--root DIR` | `GITPM_ROOT` | `./gitpm-workspace` |
-| `--catalog LOC` (folder, `catalog.json` or HTTP(S) URL) | `GITPM_CATALOG` | none (optional, see [working without a catalog](#working-without-a-catalog)): catalog commands, `install-catalog` and `check` ask for it |
+| `--catalog LOC` (folder, `catalog.json` or HTTP(S) URL) | `GITPM_CATALOG` | none (optional, see [working without a catalog](#working-without-a-catalog)): catalog commands and `install-catalog` ask for it |
 | `--sources FILE` | `GITPM_SOURCES` | `./sources.txt` |
 
 Publishing a catalog is up to you: it is a folder of static files, so any static host
@@ -774,7 +820,7 @@ Modules with free functions (no workspace lock needed):
 | --- | --- |
 | `list` | `list_with(root, &ListOptions)` → `ListView` (raw state + `resolved`; `provides` filter) |
 | `catalog` | `browse`, `list`, `links`, `lookup`, `selected`, `register`, `register_build`, `register_package`, `update_sources` (progress callback), `hash_files`, `version_key`, `validate_location`, `ensure_publishable` |
-| `check` | `read_state` (does not create/lock), `compare`, `check(root, catalog)` → `CheckReport`; `CheckStatus::message()` |
+| `check` | `read_state` (does not create/lock), `compare`/`compare_in` (run `git ls-remote` for packages the catalog does not list), `check(root, catalog: Option)` → `CheckReport`; `CheckStatus::message()`, `CheckSource` |
 | `auth` | `check(source, &AuthOptions)` — `git ls-remote` only; refuses credentials in the URL, stores nothing; failures are `auth` |
 | `scaffold` | `init(dir, namespace, name)` (the `init --into` rule; the only way to create a package besides `create_package`), `init_with` (`InitOptions { multi, release }`), `create_package` (into a multi-package repo), `commit`, `commit_package` (`Commit { package, version, tag }`), `release_current`, `set_remote`, `shell_quote` |
 | `packages` | `config_at`, `layout_at` (packages and defective folders of a commit), `packages_at` (strict), `find_at` (one package of a commit), `read_config`, `packages_in` (working tree), `matches`, `validate_pattern` |
@@ -868,16 +914,21 @@ active fork needs `force`. A replaced original has no `dist/` (see
 ### Catalog
 
 A catalog is optional ([working without a catalog](#working-without-a-catalog)):
-without one, `check` (of a non-empty workspace), `browse_catalog` and `catalog_release`
-fail with `invalid_argument` ("no catalog configured"). A configured local location that
+without one, `browse_catalog`, `catalog_release` and `install_from_catalog` fail with
+`invalid_argument` ("no catalog configured"); `check` then reads each package's origin. A configured local location that
 does not exist is not "no catalog": `Manager::open_with` and every catalog reader refuse
 it with `invalid_argument` ("catalog location PATH does not exist") before anything is
 created; only `catalog-update` and `register` create a missing local catalog. A workspace uses one catalog. `install_from_catalog` records the canonical catalog
 location per package (`packages.<id>.catalog`) and refuses to install from a different
 catalog while packages from another one are installed. `check` reports packages from
-another catalog as `other_catalog` instead of comparing them, and for a fork adds
-`upstream { id, base, latest, newer }`: the original's latest catalog release against
-the version the fork started from.
+another catalog as `other_catalog` instead of comparing them; a package the catalog does
+not list gets an origin row (`CheckRow.source` is `CheckSource::Catalog` or `Origin`,
+`CheckRow.problem` explains `origin_unreachable`). For a fork it adds
+`upstream { id, base, latest, newer, source }`: the original's latest release against the
+version the fork started from, from the catalog when it lists the original, otherwise from
+the tags of `forkOf.source` (`source` `None` when neither is known; `problem` when
+`forkOf.source` cannot be read). `compare`/`compare_in` and `check` run `git ls-remote` for
+every package (and fork original) the catalog does not list.
 
 ### Error kinds
 
@@ -927,7 +978,8 @@ records have the names of the library types `gitpm::ForkReplacement`, `PackageFo
 `ForkStep`. Free functions, which read without opening, locking or creating the
 workspace: `list(root, provides)` and `readState(root)` (`ListView`: `format`,
 `packages`, `replacements`, `forgotten`, `resolved`), `check(root, catalog)`
-(`CheckReport`: rows, replacements, unsatisfied dependencies), `catalogLinks(location)`,
+(`CheckReport`: rows with `source` `.catalog`/`.origin` and `problem`, fork `upstream`
+with its `source`, replacements, unsatisfied dependencies; `catalog` may be `nil`), `catalogLinks(location)`,
 `authCheck(source, customSsh)`, `browseCatalog`, `catalogRelease`, `describeLostWork`.
 Every CLI command that reads or changes a workspace, reads a catalog or checks access has
 its FFI call; `init`, `commit`, `remote`, `catalog-update` and `register` stay library and

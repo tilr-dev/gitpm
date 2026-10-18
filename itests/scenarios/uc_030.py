@@ -109,7 +109,7 @@ def adding_build_to_existing_release_is_rejected(t: T):
     t.ok("build" not in stored(t, "0.2.0"), "0.2.0 still without build")
 
 
-@case(fixture="catalog", spec=["cli/nothing-is-built-executed-or-uploaded", "install-uninstall/install-from-the-catalog"])
+@case(fixture="catalog", spec=["catalog/nothing-is-built-executed-or-uploaded", "install-uninstall/install-from-the-catalog"])
 def install_ignores_unreachable_build(t: T):
     """A release whose build URL is unreachable and whose archive hash is arbitrary installs
     from Git; no HTTP request is made and archive bytes are never checked."""

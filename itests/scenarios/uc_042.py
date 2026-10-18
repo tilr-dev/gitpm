@@ -109,7 +109,7 @@ def fork_release_gets_its_own_catalog_entry(t: T):
     t.gitpm_ok("--root", scratch, "fork", ID, "--ns", "mine", "--into", fork)
     m = json.loads((fork / "plugin.json").read_text())
     t.eq(m["id"], "mine/journey", "fork ID")
-    t.eq(m["forkOf"], {"id": ID, "version": "0.1.1", "commit": base}, "forkOf")
+    t.eq(m["forkOf"], {"id": ID, "version": "0.1.1", "commit": base, "source": str(REPO)}, "forkOf")
     t.eq(m["replaces"], {"id": ID, "version": "0.1.1"}, "replaces")
     before_commit = t.rev(fork)
     dist = b"export const greeting = 'mine fork';\n"

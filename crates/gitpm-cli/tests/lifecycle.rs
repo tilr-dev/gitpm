@@ -109,6 +109,25 @@ impl Fixture {
         );
         String::from_utf8(out.stdout).unwrap()
     }
+    /// [`Fixture::cli`] with neither `--catalog` nor `GITPM_CATALOG`.
+    fn cli_without_catalog(&self, args: &[&str], success: bool) -> String {
+        let out = self
+            .pm()
+            .env_remove("GITPM_CATALOG")
+            .current_dir(&self.dir)
+            .arg("--root")
+            .arg(&self.root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(
+            out.status.success(),
+            success,
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    }
     fn install(&self) {
         self.cli(&["install", self.repo.to_str().unwrap()], true);
     }
@@ -159,6 +178,51 @@ fn lifecycle_and_three_removal_levels() {
     f.cli(&["uninstall", "dan/hello"], true);
     assert!(!f.root.join("packages/dan/hello").exists());
     assert!(!f.root.join("dist/dan/hello").exists());
+}
+#[test]
+fn lifecycle_and_check_without_a_catalog() {
+    let f = Fixture::new();
+    let row = |out: &str| {
+        out.lines()
+            .find(|l| l.starts_with("dan/hello "))
+            .unwrap_or_else(|| panic!("no row: {out}"))
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    f.cli_without_catalog(&["install", f.repo.to_str().unwrap()], true);
+    let out = f.cli_without_catalog(&["check"], true);
+    assert!(out.contains("Catalog: none"), "{out}");
+    assert_eq!(row(&out), "dan/hello 1.0.0 1.0.0 yes origin up to date");
+    f.release("2.0.0", "hello v2");
+    let state = fs::read(f.root.join("state.json")).unwrap();
+    let out = f.cli_without_catalog(&["check"], true);
+    assert_eq!(
+        row(&out),
+        "dan/hello 1.0.0 2.0.0 yes origin update available"
+    );
+    assert!(out.contains("dan/hello: 1.0.0 → 2.0.0"), "{out}");
+    assert_eq!(fs::read(f.root.join("state.json")).unwrap(), state);
+    assert_eq!(f.content(), "hello v1", "check never updates");
+    f.cli_without_catalog(&["update", "dan/hello"], true);
+    assert_eq!(f.content(), "hello v2");
+    let out = f.cli_without_catalog(&["check"], true);
+    assert_eq!(row(&out), "dan/hello 2.0.0 2.0.0 yes origin up to date");
+    f.cli_without_catalog(&["rollback", "dan/hello"], true);
+    assert_eq!(f.content(), "hello v1");
+    f.cli_without_catalog(&["forget", "dan/hello"], true);
+    f.cli_without_catalog(&["restore", "dan/hello"], true);
+    assert_eq!(f.content(), "hello v1");
+    // An origin that disappeared is a row, not a failed check.
+    fs::rename(&f.repo, f.dir.join("moved")).unwrap();
+    let out = f.cli_without_catalog(&["check"], true);
+    assert!(
+        row(&out)
+            .starts_with("dan/hello 1.0.0 — yes origin origin unreachable: Repository not found"),
+        "{out}"
+    );
+    f.cli_without_catalog(&["uninstall", "dan/hello"], true);
+    assert!(!f.root.join("packages/dan/hello").exists());
 }
 #[test]
 fn failed_update_keeps_files_and_state() {

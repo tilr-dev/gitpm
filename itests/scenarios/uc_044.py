@@ -35,7 +35,7 @@ def fork_of_local_head(t: T):
     installed = t.package(ID)["current"]
     dest, local_head, before = prepare(t)
     m = json.loads((dest / "plugin.json").read_text())
-    t.eq(m["forkOf"], {"id": ID, "version": "0.1.5", "commit": local_head}, "forkOf")
+    t.eq(m["forkOf"], {"id": ID, "version": "0.1.5", "commit": local_head, "source": t.package(ID)["source"]}, "forkOf")
     t.eq(m["version"], "0.1.5", "fork version")
     t.eq(m["replaces"], {"id": ID, "version": "0.1.5"}, "replaces")
     t.ok(local_head != installed["commit"], "local HEAD differs from the installed commit")
@@ -72,7 +72,7 @@ def fork_of_fork_records_immediate_parent(t: T):
     t.gitpm_ok("fork", MINE, "--ns", "third", "--into", third)
     m = json.loads((third / "plugin.json").read_text())
     t.eq(m["id"], THIRD, "id")
-    t.eq(m["forkOf"], {"id": MINE, "version": "0.1.5", "commit": fork_head}, "immediate parent")
+    t.eq(m["forkOf"], {"id": MINE, "version": "0.1.5", "commit": fork_head, "source": t.package(MINE)["source"]}, "immediate parent")
     t.eq(m["replaces"], {"id": MINE, "version": "0.1.5"}, "replaces the immediate parent")
     t.eq(t.git(third, "remote", "get-url", "upstream"), str(dest), "upstream is the mine/demo source")
 
@@ -84,7 +84,7 @@ def catalog_round_trip_keeps_provenance(t: T):
     t.gitpm_ok("commit", dest, "0.2.0")
     t.gitpm_ok("register", dest, "--ref", f"{MINE}@0.2.0")
     release = json.loads(t.catalog_release(MINE, "0.2.0").read_text())
-    forkof = {"id": ID, "version": "0.1.5", "commit": local_head}
+    forkof = {"id": ID, "version": "0.1.5", "commit": local_head, "source": t.package(ID)["source"]}
     t.eq(release["manifest"]["forkOf"], forkof, "catalog manifest forkOf")
     t.gitpm_ok("--root", t.root / "ws2", "install-catalog", MINE)
     state = json.loads((t.root / "ws2/state.json").read_text())
@@ -94,7 +94,7 @@ def catalog_round_trip_keeps_provenance(t: T):
 @case(fixture="g3_vendor_installed", spec=["fork-replacement/active-fork-rules", "updates/rollback-swaps-current-and-previous"])
 def update_and_rollback_keep_provenance(t: T):
     dest, local_head, _ = prepare(t)
-    forkof = {"id": ID, "version": "0.1.5", "commit": local_head}
+    forkof = {"id": ID, "version": "0.1.5", "commit": local_head, "source": t.package(ID)["source"]}
     first = (t.gitpm_ok("commit", dest, "0.2.0"), t.rev(dest))[1]
     t.gitpm_ok("install", dest)
     t.eq(t.package(MINE)["current"], {"version": "0.2.0", "commit": first}, "installed 0.2.0")

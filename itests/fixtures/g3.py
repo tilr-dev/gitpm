@@ -132,6 +132,7 @@ def _(t: T):
     t.ok("forkOf" not in vendor and "replaces" not in vendor, "vendor/p has no fork fields")
     mine = t.package("mine/p")
     t.eq(mine["current"], {"version": "1.0.1", "commit": t.rev("mine/p", "mine/p@1.0.1")}, "mine/p current")
-    t.eq(mine["forkOf"], {"id": "vendor/p", "version": "1.0.0", "commit": base}, "mine/p forkOf")
+    t.eq(mine["forkOf"], {"id": "vendor/p", "version": "1.0.0", "commit": base,
+                          "source": str(t.repo("vendor/p"))}, "mine/p forkOf")
     t.eq(mine["replaces"], {"id": "vendor/p", "version": "1.0.0"}, "mine/p replaces")
     t.has(t.gitpm_ok("--catalog", t.catalog, "info").out, "vendor/p")

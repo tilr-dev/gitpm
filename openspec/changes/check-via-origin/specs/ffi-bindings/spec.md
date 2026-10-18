@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Check report record
-The free function `check(root, catalog)` SHALL return a `CheckReport` record that mirrors the library report field by field: rows (with `status`, message and `source` `catalog`/`origin`), the fork `upstream` of each row (with its `source`), the replacement bindings and the unsatisfied dependencies, so a host shows what `gitpm check` prints. This adds to "Records mirror library results". Verified by `records_convert_field_by_field`.
+The free function `check(root, catalog)` SHALL return a `CheckReport` record that mirrors the library report field by field: rows (with `status`, message, `source` `catalog`/`origin` and `problem`), the fork `upstream` of each row (with its `source` and `problem`), the replacement bindings and the unsatisfied dependencies, so a host shows what `gitpm check` prints. This adds to "Records mirror library results". Verified by `records_convert_field_by_field`.
 
 #### Scenario: check without a catalog from Swift
 - **WHEN** a host calls `check(root, nil)` on a workspace with packages installed from Git

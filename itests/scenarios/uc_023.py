@@ -55,7 +55,7 @@ def identity_version_and_provenance(t: T):
     m = json.loads((dest / "plugin.json").read_text())
     t.eq(m["id"], NEW, "id")
     t.eq(m["version"], "0.1.0", "version")
-    t.eq(m["forkOf"], {"id": ID, "version": "0.1.0", "commit": installed}, "forkOf")
+    t.eq(m["forkOf"], {"id": ID, "version": "0.1.0", "commit": installed, "source": t.package(ID)["source"]}, "forkOf")
     t.eq(m["replaces"], {"id": ID, "version": "0.1.0"}, "replaces")
     t.eq(json.loads(t.git(dest, "show", "HEAD:plugin.json")), m, "committed manifest")
     # forkOf is the only provenance: no pm.forkBase/pm.forkVersion Git config.

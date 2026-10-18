@@ -124,6 +124,10 @@ pub struct ForkOf {
     pub id: String,
     pub version: String,
     pub commit: String,
+    /// Recorded source of the original, so `check` can read its releases without a
+    /// catalog. Optional when reading; never empty when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Revision {
@@ -407,6 +411,15 @@ pub(crate) fn manifest(repo: &Path) -> Result<Manifest> {
             InvalidManifest,
             "invalid forkOf.commit"
         );
+        if let Some(source) = &base.source {
+            ensure!(
+                !source.trim().is_empty(),
+                InvalidManifest,
+                "forkOf.source is empty"
+            );
+            crate::auth::validate_recorded(source)
+                .map_err(|e| Error::InvalidManifest(format!("invalid forkOf.source: {e}")))?;
+        }
     }
     ensure!(
         !m.version.trim().is_empty(),
@@ -736,7 +749,8 @@ mod tests {
             Some(ForkOf {
                 id: "dan/demo1".into(),
                 version: "0.1.0".into(),
-                commit: COMMIT.into()
+                commit: COMMIT.into(),
+                source: None,
             })
         );
         // SHA-256 object IDs are accepted as fork commits too.
@@ -829,6 +843,34 @@ mod tests {
             (fork("../x", "0.1.0", COMMIT), true, "invalid_id"),
             (
                 format!(
+                    r#"{{"id":"me/demo1","version":"0.2.0","forkOf":{{"id":"dan/demo1","version":"0.1.0","commit":"{COMMIT}","source":""}}}}"#
+                ),
+                true,
+                "invalid_manifest",
+            ),
+            (
+                format!(
+                    r#"{{"id":"me/demo1","version":"0.2.0","forkOf":{{"id":"dan/demo1","version":"0.1.0","commit":"{COMMIT}","source":"ext::sh -c id"}}}}"#
+                ),
+                true,
+                "invalid_manifest",
+            ),
+            (
+                format!(
+                    r#"{{"id":"me/demo1","version":"0.2.0","forkOf":{{"id":"dan/demo1","version":"0.1.0","commit":"{COMMIT}","source":"fd::5"}}}}"#
+                ),
+                true,
+                "invalid_manifest",
+            ),
+            (
+                format!(
+                    r#"{{"id":"me/demo1","version":"0.2.0","forkOf":{{"id":"dan/demo1","version":"0.1.0","commit":"{COMMIT}","source":"foo/bar"}}}}"#
+                ),
+                true,
+                "invalid_manifest",
+            ),
+            (
+                format!(
                     r#"{{"id":"me/demo1","version":"0.2.0","forkOf":{{"id":"dan/demo1","version":"0.1.0","commit":"{COMMIT}","extra":1}}}}"#
                 ),
                 true,
@@ -878,6 +920,7 @@ mod tests {
             id: "vendor/demo1".into(),
             version: "0.0.9".into(),
             commit: COMMIT.into(),
+            source: Some("https://git.example/vendor/demo1.git".into()),
         });
         let text = manifest_json(&m).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();

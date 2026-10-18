@@ -1,17 +1,19 @@
-//! Read-only comparison of installed state with selected catalog releases.
+//! Read-only comparison of installed packages with the selected catalog, or, for a
+//! package the catalog does not list (or without a catalog), with the release tags of
+//! its recorded origin.
 use crate::error::{Error, Result};
 use crate::{
-    State,
+    ForkOf, Installed, State,
     catalog::{Catalog, version_key},
+    exec,
 };
 use serde::Serialize;
 use std::{collections::BTreeMap, fs, path::Path};
 
-/// Outcome of comparing one installed package with the catalog.
+/// Outcome of comparing one installed package with the catalog or its origin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CheckStatus {
-    NotInCatalog,
     DifferentSource,
     InvalidCatalogData,
     NoVersions,
@@ -22,12 +24,17 @@ pub enum CheckStatus {
     NewerThanCatalog,
     /// Installed from another catalog than the selected one; not compared.
     OtherCatalog,
+    /// Origin row: the installed version is newer than every release tag of the origin.
+    NewerThanOrigin,
+    /// Origin row: the origin has no `ID@VERSION` release tag of the package.
+    NoReleases,
+    /// Origin row: the origin could not be read; see [`CheckRow::problem`].
+    OriginUnreachable,
 }
 impl CheckStatus {
     /// Human-readable status.
     pub fn message(self) -> &'static str {
         match self {
-            CheckStatus::NotInCatalog => "not in catalog",
             CheckStatus::DifferentSource => "different source in catalog",
             CheckStatus::InvalidCatalogData => "invalid catalog data",
             CheckStatus::NoVersions => "no versions in catalog",
@@ -37,6 +44,27 @@ impl CheckStatus {
             CheckStatus::UpToDate => "up to date",
             CheckStatus::NewerThanCatalog => "newer than catalog",
             CheckStatus::OtherCatalog => "installed from another catalog",
+            CheckStatus::NewerThanOrigin => "newer than origin",
+            CheckStatus::NoReleases => "no releases on origin",
+            CheckStatus::OriginUnreachable => "origin unreachable",
+        }
+    }
+}
+
+/// Where a row (or a fork's upstream) was taken from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckSource {
+    /// The selected catalog.
+    Catalog,
+    /// The release tags of the recorded source (`git ls-remote`, nothing fetched).
+    Origin,
+}
+impl CheckSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CheckSource::Catalog => "catalog",
+            CheckSource::Origin => "origin",
         }
     }
 }
@@ -45,29 +73,41 @@ impl CheckStatus {
 pub struct CheckRow {
     pub id: String,
     pub installed: String,
-    /// Latest catalog version, `None` if unknown.
+    /// Latest release in the catalog or on the origin, `None` if unknown.
     pub latest: Option<String>,
     pub enabled: bool,
     pub update_available: bool,
     pub status: CheckStatus,
-    /// For a fork: the original's latest catalog release against the fork base.
+    /// Whether the row comes from the catalog or from the package's origin.
+    pub source: CheckSource,
+    /// Why the origin could not be read ([`CheckStatus::OriginUnreachable`]); a
+    /// classified hint, never git's raw stderr.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
+    /// For a fork: the original's latest release against the fork base.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub upstream: Option<Upstream>,
 }
 
-/// Where a fork's original stands in the catalog.
+/// Where a fork's original stands: in the catalog when it lists the original,
+/// otherwise at `forkOf.source`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Upstream {
     pub id: String,
     /// Original version the fork started from (`forkOf.version`).
     pub base: String,
-    /// Latest catalog release of the original, `None` if unknown.
+    /// Latest release of the original, `None` if unknown.
     pub latest: Option<String>,
     /// The original has a release newer than the fork base.
     pub newer: bool,
+    /// Where `latest` was looked up; `None` when neither the catalog lists the
+    /// original nor the fork records `forkOf.source`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<CheckSource>,
+    /// Why `forkOf.source` could not be read (classified hint, like [`CheckRow::problem`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
 }
-/// Backwards-compatible name.
-pub type Row = CheckRow;
 
 /// Read `state.json` without opening (locking or creating) the workspace.
 /// A missing workspace means "nothing installed".
@@ -82,6 +122,8 @@ pub fn read_state(root: &Path) -> Result<State> {
     }
 }
 
+/// [`compare_in`] without a selected catalog location. Runs `git ls-remote` for every
+/// package the catalog does not list (and for fork originals it does not list).
 pub fn compare(state: &State, catalog: &Catalog) -> Vec<CheckRow> {
     compare_in(state, catalog, None)
 }
@@ -97,62 +139,196 @@ fn latest_version(catalog: &Catalog, id: &str) -> Option<String> {
         .map(|(_, v)| v.clone())
 }
 
-/// [`compare`] for the catalog at `location` (canonical, see
-/// [`crate::catalog::canonical_location`]): packages installed from another catalog
-/// are reported as [`CheckStatus::OtherCatalog`] and never offered an update, unless
-/// this catalog has a different source ([`CheckStatus::DifferentSource`]) or exactly
-/// the installed release ([`CheckStatus::UpToDate`]).
+/// Rows for `state` against the catalog snapshot `catalog` read from `location`
+/// (canonical, see [`crate::catalog::canonical_location`]). A package the catalog
+/// lists gets a catalog row; one installed from another catalog is reported as
+/// [`CheckStatus::OtherCatalog`] and never offered an update, unless this catalog has a
+/// different source ([`CheckStatus::DifferentSource`]) or exactly the installed release
+/// ([`CheckStatus::UpToDate`]). Every other package gets an origin row from the release
+/// tags of its recorded source: this runs `git ls-remote --tags` (bounded, once per
+/// source, nothing fetched); a source that is not a URL or an absolute path, or uses a
+/// remote helper, is not queried and its row is [`CheckStatus::OriginUnreachable`].
 pub fn compare_in(state: &State, catalog: &Catalog, location: Option<&str>) -> Vec<CheckRow> {
+    rows(state, Some((catalog, location)))
+}
+
+/// One row per installed package, in state order. Each distinct origin is read once.
+fn rows(state: &State, catalog: Option<(&Catalog, Option<&str>)>) -> Vec<CheckRow> {
+    let mut origins = Origins::default();
     state
         .packages
         .iter()
         .map(|(id, installed)| {
-            let mut row = compare_one(id, installed, catalog);
-            // Single selected catalog: a package installed from another catalog is never
-            // offered an update from this one. A different source and an identical
-            // release are still worth reporting as such.
-            if let (Some(from), Some(selected)) = (installed.catalog.as_deref(), location)
-                && from != selected
-                && !matches!(
-                    row.status,
-                    CheckStatus::DifferentSource | CheckStatus::UpToDate
-                )
-            {
-                row.status = CheckStatus::OtherCatalog;
-                row.update_available = false;
-            }
+            let mut row = catalog
+                .and_then(|(catalog, location)| catalog_row(id, installed, catalog, location))
+                .unwrap_or_else(|| origin_row(id, installed, &mut origins));
+            row.upstream = installed
+                .fork_of
+                .as_ref()
+                .map(|base| upstream(base, catalog.map(|(c, _)| c), &mut origins));
             row
         })
         .collect()
 }
 
-fn compare_one(id: &str, installed: &crate::Installed, catalog: &Catalog) -> CheckRow {
-    let mut row = CheckRow {
+fn new_row(id: &str, installed: &Installed, source: CheckSource) -> CheckRow {
+    CheckRow {
         id: id.into(),
         installed: installed.current.version.clone(),
         latest: None,
         enabled: installed.enabled,
         update_available: false,
-        status: CheckStatus::NotInCatalog,
-        upstream: installed.fork_of.as_ref().map(|base| {
-            let latest = latest_version(catalog, &base.id);
-            Upstream {
-                id: base.id.clone(),
-                base: base.version.clone(),
-                newer: latest.as_deref().is_some_and(|l| {
-                    matches!((version_key(l), version_key(&base.version)), (Ok(l), Ok(b)) if l > b)
-                }),
-                latest,
-            }
-        }),
+        status: CheckStatus::UpToDate,
+        source,
+        problem: None,
+        upstream: None,
+    }
+}
+
+/// Status of `latest` against the installed version.
+fn versus(row: &mut CheckRow, latest: &str, newer: CheckStatus) {
+    let (Ok(latest_key), Ok(current_key)) = (version_key(latest), version_key(&row.installed))
+    else {
+        row.status = CheckStatus::UncomparableVersion;
+        return;
     };
-    let Some(plugin) = catalog.packages.get(id) else {
-        return row;
+    match latest_key.cmp(&current_key) {
+        std::cmp::Ordering::Greater => {
+            row.update_available = true;
+            row.status = CheckStatus::UpdateAvailable;
+        }
+        std::cmp::Ordering::Equal => row.status = CheckStatus::UpToDate,
+        std::cmp::Ordering::Less => row.status = newer,
+    }
+}
+
+fn upstream(base: &ForkOf, catalog: Option<&Catalog>, origins: &mut Origins) -> Upstream {
+    let mut problem = None;
+    let (latest, source) = match catalog.filter(|c| c.packages.contains_key(&base.id)) {
+        Some(catalog) => (
+            latest_version(catalog, &base.id),
+            Some(CheckSource::Catalog),
+        ),
+        None => match &base.source {
+            Some(source) => match origins.latest(source, &base.id) {
+                Ok(latest) => (latest, Some(CheckSource::Origin)),
+                Err(reason) => {
+                    problem = Some(reason);
+                    (None, Some(CheckSource::Origin))
+                }
+            },
+            None => (None, None),
+        },
     };
+    Upstream {
+        id: base.id.clone(),
+        base: base.version.clone(),
+        newer: latest.as_deref().is_some_and(
+            |l| matches!((version_key(l), version_key(&base.version)), (Ok(l), Ok(b)) if l > b),
+        ),
+        latest,
+        source,
+        problem,
+    }
+}
+
+/// Release tags per origin, read once per distinct source with `git ls-remote`.
+#[derive(Default)]
+struct Origins(BTreeMap<String, std::result::Result<BTreeMap<String, String>, String>>);
+impl Origins {
+    /// Newest `ID@VERSION` tag version on `source` by name (its manifest is verified
+    /// only when updating); `Err` is the classified reason the origin was unreadable.
+    fn latest(&mut self, source: &str, id: &str) -> std::result::Result<Option<String>, String> {
+        let tags = self
+            .0
+            .entry(source.to_owned())
+            .or_insert_with(|| {
+                // Never hand git a source it would run a helper for, or resolve
+                // against the temp dir: such a source is not queried at all.
+                if let Err(e) = crate::auth::validate_recorded(source) {
+                    return Err(format!("source not queried: {e}"));
+                }
+                exec::ls_remote_tags(source).map_err(|e| {
+                    // Classify git's message only, not the command line with the source.
+                    let text = e.to_string();
+                    let stderr = text.split_once(": ").map_or(text.as_str(), |(_, s)| s);
+                    crate::auth::failure(stderr).to_owned()
+                })
+            })
+            .as_ref()
+            .map_err(Clone::clone)?;
+        let prefix = format!("{id}@");
+        Ok(tags
+            .keys()
+            .filter_map(|name| {
+                let version = name.strip_prefix(&prefix)?;
+                Some((version_key(version).ok()?, version))
+            })
+            .max()
+            .map(|(_, version)| version.to_owned()))
+    }
+}
+
+fn origin_row(id: &str, installed: &Installed, origins: &mut Origins) -> CheckRow {
+    let mut row = new_row(id, installed, CheckSource::Origin);
+    match origins.latest(&installed.source, id) {
+        Err(problem) => {
+            row.status = CheckStatus::OriginUnreachable;
+            row.problem = Some(problem);
+        }
+        Ok(None) => row.status = CheckStatus::NoReleases,
+        Ok(Some(latest)) => {
+            versus(&mut row, &latest, CheckStatus::NewerThanOrigin);
+            row.latest = Some(latest);
+        }
+    }
+    row
+}
+
+/// The catalog row of `id`, `None` when the catalog does not list it (and it was not
+/// installed from another catalog): then the origin is asked.
+fn catalog_row(
+    id: &str,
+    installed: &Installed,
+    catalog: &Catalog,
+    location: Option<&str>,
+) -> Option<CheckRow> {
+    let other_catalog = matches!(
+        (installed.catalog.as_deref(), location),
+        (Some(from), Some(selected)) if from != selected
+    );
+    let mut row = new_row(id, installed, CheckSource::Catalog);
+    match catalog.packages.get(id) {
+        Some(plugin) => compare_listed(&mut row, id, installed, plugin),
+        None if other_catalog => {}
+        None => return None,
+    }
+    // Single selected catalog: a package installed from another catalog is never
+    // offered an update from this one. A different source and an identical release are
+    // still worth reporting as such.
+    if other_catalog
+        && (!catalog.packages.contains_key(id)
+            || !matches!(
+                row.status,
+                CheckStatus::DifferentSource | CheckStatus::UpToDate
+            ))
+    {
+        row.status = CheckStatus::OtherCatalog;
+        row.update_available = false;
+    }
+    Some(row)
+}
+
+fn compare_listed(
+    row: &mut CheckRow,
+    id: &str,
+    installed: &Installed,
+    plugin: &crate::catalog::Package,
+) {
     // Do not suggest replacing a local fork with an unrelated repository of the same ID.
     if plugin.source != installed.source {
         row.status = CheckStatus::DifferentSource;
-        return row;
+        return;
     }
     let versions = plugin
         .versions
@@ -170,32 +346,22 @@ fn compare_one(id: &str, installed: &crate::Installed, catalog: &Catalog) -> Che
         .collect::<Option<Vec<_>>>();
     let Some(versions) = versions else {
         row.status = CheckStatus::InvalidCatalogData;
-        return row;
+        return;
     };
-    let Some((latest_key, latest)) = versions.into_iter().max_by_key(|(key, _)| *key) else {
+    let Some((_, latest)) = versions.into_iter().max_by_key(|(key, _)| *key) else {
         row.status = CheckStatus::NoVersions;
-        return row;
+        return;
     };
     row.latest = Some(latest.manifest.version.clone());
-    let Ok(current_key) = version_key(&installed.current.version) else {
-        row.status = CheckStatus::UncomparableVersion;
-        return row;
-    };
-    if let Some(current) = plugin.versions.get(&installed.current.version)
+    if version_key(&installed.current.version).is_ok()
+        && let Some(current) = plugin.versions.get(&installed.current.version)
         && current.commit != installed.current.commit
     {
         row.status = CheckStatus::SameVersionDifferentCommit;
-        return row;
+        return;
     }
-    match latest_key.cmp(&current_key) {
-        std::cmp::Ordering::Greater => {
-            row.update_available = true;
-            row.status = CheckStatus::UpdateAvailable;
-        }
-        std::cmp::Ordering::Equal => row.status = CheckStatus::UpToDate,
-        std::cmp::Ordering::Less => row.status = CheckStatus::NewerThanCatalog,
-    }
-    row
+    let latest = latest.manifest.version.clone();
+    versus(row, &latest, CheckStatus::NewerThanCatalog);
 }
 
 /// What `check` reports: one row per installed package, the replacement bindings and
@@ -217,16 +383,17 @@ pub struct UnsatisfiedDependency {
     pub problem: Option<String>,
 }
 
-/// Read the workspace state without opening it and compare it with the catalog. An
-/// empty or missing workspace does not touch the catalog at all and needs none; any
-/// other needs `catalog` ([`Error::InvalidArgument`] "no catalog configured").
+/// Read the workspace state without opening it and report every installed package:
+/// from `catalog` when given and it lists the package, otherwise from the release tags
+/// of its recorded origin (`git ls-remote`, nothing fetched or written). An empty or
+/// missing workspace reads nothing. An unreachable origin only marks its own rows
+/// [`CheckStatus::OriginUnreachable`]; a broken or unreadable catalog fails the check.
 pub fn check(root: &Path, catalog: Option<&str>) -> Result<CheckReport> {
     let state = read_state(root)?;
     if state.packages.is_empty() {
         return Ok(CheckReport::default());
     }
-    let location = catalog.ok_or_else(|| Error::InvalidArgument(NO_CATALOG.into()))?;
-    let rows = check_state(&state, location)?;
+    let rows = check_state(&state, catalog)?;
     let unsatisfied = state
         .installed()
         .into_iter()
@@ -252,7 +419,10 @@ pub fn check(root: &Path, catalog: Option<&str>) -> Result<CheckReport> {
 /// Refusal of a catalog operation without a catalog location.
 pub(crate) const NO_CATALOG: &str = "no catalog configured";
 
-pub(crate) fn check_state(state: &State, location: &str) -> Result<Vec<CheckRow>> {
+pub(crate) fn check_state(state: &State, location: Option<&str>) -> Result<Vec<CheckRow>> {
+    let Some(location) = location else {
+        return Ok(rows(state, None));
+    };
     let snapshot = crate::catalog::selected_for_check(location, state)?;
     let canonical = crate::catalog::canonical_location(location).ok();
     Ok(compare_in(state, &snapshot, canonical.as_deref()))
@@ -267,7 +437,8 @@ mod tests {
     };
     pub(crate) fn fixture() -> (State, Catalog) {
         let installed = Installed {
-            source: "https://example.com/demo.git".into(),
+            // A missing local path: an origin lookup fails fast, without network.
+            source: "/nonexistent/pm-check/demo.git".into(),
             current: Revision {
                 version: "1.9.0".into(),
                 commit: "a".repeat(40),
@@ -332,10 +503,13 @@ mod tests {
     #[test]
     fn missing_source_and_commit_mismatch_are_not_updates() {
         let (mut state, mut catalog) = fixture();
+        // Not listed: the origin is asked (and is unreachable here).
+        let row = compare(&state, &Catalog::default()).remove(0);
         assert_eq!(
-            compare(&state, &Catalog::default())[0].status.message(),
-            "not in catalog"
+            (row.status, row.source),
+            (CheckStatus::OriginUnreachable, CheckSource::Origin)
         );
+        assert!(row.problem.is_some() && !row.update_available);
         catalog.packages.get_mut("vendor/demo").unwrap().source = "another".into();
         assert_eq!(
             compare(&state, &catalog)[0].status.message(),
@@ -488,8 +662,8 @@ mod tests {
         assert_eq!(
             summary,
             [
-                ("a/zzz", CheckStatus::NotInCatalog),
-                ("dan/demo", CheckStatus::NotInCatalog),
+                ("a/zzz", CheckStatus::OriginUnreachable),
+                ("dan/demo", CheckStatus::OriginUnreachable),
                 ("vendor/demo", CheckStatus::UpdateAvailable),
             ]
         );
@@ -501,7 +675,6 @@ mod tests {
     fn statuses_have_distinct_messages_and_snake_case_names() {
         use std::collections::BTreeSet;
         let all = [
-            (CheckStatus::NotInCatalog, "not_in_catalog"),
             (CheckStatus::DifferentSource, "different_source"),
             (CheckStatus::InvalidCatalogData, "invalid_catalog_data"),
             (CheckStatus::NoVersions, "no_versions"),
@@ -513,6 +686,10 @@ mod tests {
             (CheckStatus::UpdateAvailable, "update_available"),
             (CheckStatus::UpToDate, "up_to_date"),
             (CheckStatus::NewerThanCatalog, "newer_than_catalog"),
+            (CheckStatus::OtherCatalog, "other_catalog"),
+            (CheckStatus::NewerThanOrigin, "newer_than_origin"),
+            (CheckStatus::NoReleases, "no_releases"),
+            (CheckStatus::OriginUnreachable, "origin_unreachable"),
         ];
         for (status, name) in all {
             assert_eq!(serde_json::to_value(status).unwrap(), name);
@@ -522,15 +699,18 @@ mod tests {
         assert_eq!(messages.len(), all.len());
         assert_eq!(CheckStatus::UpdateAvailable.message(), "update available");
         let (state, catalog) = fixture();
-        let row: Row = compare(&state, &catalog).remove(0);
+        let row: CheckRow = compare(&state, &catalog).remove(0);
         let value = serde_json::to_value(row).unwrap();
         assert_eq!(
             value,
             serde_json::json!({
                 "id": "vendor/demo", "installed": "1.9.0", "latest": "1.10.0",
-                "enabled": false, "update_available": true, "status": "update_available"
+                "enabled": false, "update_available": true, "status": "update_available",
+                "source": "catalog"
             })
         );
+        assert_eq!(serde_json::to_value(CheckSource::Origin).unwrap(), "origin");
+        assert_eq!(CheckSource::Catalog.as_str(), "catalog");
     }
 
     #[test]
@@ -583,11 +763,9 @@ mod tests {
             check(&root, Some("ftp://invalid")).unwrap_err().kind(),
             "invalid_argument"
         );
-        let error = check(&root, None).unwrap_err();
-        assert_eq!(
-            (error.kind(), error.to_string().as_str()),
-            ("invalid_argument", NO_CATALOG)
-        );
+        // Without a catalog the origin is asked; an unreachable one is a row, not an error.
+        let rows = check(&root, None).unwrap().rows;
+        assert_eq!(rows[0].status, CheckStatus::OriginUnreachable);
         // A missing catalog is an error, not "no updates".
         let missing = dir.join("missing-catalog");
         let error = check(&root, Some(missing.to_str().unwrap())).unwrap_err();
@@ -613,20 +791,20 @@ mod tests {
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         value["manifest"]["id"] = "dan/wrong".into();
         fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
-        let rows = check_state(&state, cat.to_str().unwrap()).unwrap();
+        let rows = check_state(&state, cat.to_str()).unwrap();
         assert_eq!(rows[0].status, CheckStatus::InvalidCatalogData);
         assert_eq!(rows[1].status, CheckStatus::UpToDate);
         assert!(crate::catalog::lookup(cat.to_str().unwrap(), "dan/broken", None).is_err());
         // Directory indexes are unrelated to installed-package diagnostics.
         fs::write(cat.join("catalog.json"), "{ broken").unwrap();
-        assert_eq!(check_state(&state, cat.to_str().unwrap()).unwrap().len(), 2);
+        assert_eq!(check_state(&state, cat.to_str()).unwrap().len(), 2);
         // Unreadable release data must remain a hard error.
         fs::write(
             cat.join("namespaces/dan/broken/versions/1.0.0/release.json"),
             "{ broken",
         )
         .unwrap();
-        assert!(check_state(&state, cat.to_str().unwrap()).is_err());
+        assert!(check_state(&state, cat.to_str()).is_err());
     }
 
     #[test]
@@ -648,5 +826,287 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].status, CheckStatus::UpdateAvailable);
         assert_eq!(rows[0].latest.as_deref(), Some("1.10.0"));
+    }
+
+    /// Write `state` as the workspace state of `root`.
+    fn write_state(root: &Path, state: &State) {
+        fs::create_dir_all(root).unwrap();
+        fs::write(root.join("state.json"), serde_json::to_vec(state).unwrap()).unwrap();
+    }
+    fn installed(source: &str, version: &str) -> Installed {
+        crate::test_support::state_with("x/y", source, version, &"a".repeat(40))
+            .packages
+            .remove("x/y")
+            .unwrap()
+    }
+
+    #[test]
+    fn check_without_catalog_reads_each_origin() {
+        use crate::test_support::{Author, TempDir, tree_hash};
+        use crate::{Manager, Options};
+        let dir = TempDir::new("check-origin");
+        let root = dir.join("workspace");
+        let greeter = Author::new(dir.join("greeter"), "acme/greeter");
+        let m = Manager::open_with(&root, Options::default()).unwrap();
+        m.install(greeter.source()).unwrap();
+        // A newer release appears on the origin after the install.
+        greeter.release("0.2.0");
+        drop(m);
+        let before = tree_hash(&root);
+        let report = check(&root, None).unwrap();
+        // Nothing fetched or written: the clone's refs and the workspace are unchanged.
+        assert_eq!(tree_hash(&root), before, "check must not fetch or write");
+        let row = &report.rows[0];
+        assert_eq!(
+            (
+                row.id.as_str(),
+                row.status,
+                row.source,
+                row.latest.as_deref()
+            ),
+            (
+                "acme/greeter",
+                CheckStatus::UpdateAvailable,
+                CheckSource::Origin,
+                Some("0.2.0")
+            )
+        );
+        assert!(row.update_available && row.problem.is_none());
+        // The Manager reads the origin as well when no catalog is configured.
+        let m = Manager::open_with(&root, Options::default()).unwrap();
+        assert_eq!(m.check().unwrap()[0].status, CheckStatus::UpdateAvailable);
+        drop(m);
+
+        // Every origin status, each distinct origin read once.
+        let newer = Author::new(dir.join("newer"), "acme/newer");
+        let untagged = Author::untagged(dir.join("untagged"), "acme/untagged", "0.1.0");
+        // Tags of other packages and non-release names do not count.
+        crate::test_support::git(&untagged.path, &["tag", "acme/other@9.0.0"]);
+        crate::test_support::git(&untagged.path, &["tag", "v9.0.0"]);
+        crate::test_support::git(&untagged.path, &["tag", "acme/untagged@banana"]);
+        let state = State {
+            packages: [
+                ("acme/greeter".into(), installed(greeter.source(), "0.2.0")),
+                ("acme/newer".into(), installed(newer.source(), "0.3.0")),
+                (
+                    "acme/untagged".into(),
+                    installed(untagged.source(), "0.1.0"),
+                ),
+            ]
+            .into(),
+            ..Default::default()
+        };
+        let statuses: Vec<_> = rows(&state, None)
+            .into_iter()
+            .map(|r| (r.id, r.status, r.latest))
+            .collect();
+        assert_eq!(
+            statuses,
+            [
+                (
+                    "acme/greeter".into(),
+                    CheckStatus::UpToDate,
+                    Some("0.2.0".into())
+                ),
+                (
+                    "acme/newer".into(),
+                    CheckStatus::NewerThanOrigin,
+                    Some("0.1.0".into())
+                ),
+                ("acme/untagged".into(), CheckStatus::NoReleases, None),
+            ]
+        );
+    }
+
+    #[test]
+    fn check_mixes_catalog_and_origin_rows() {
+        use crate::test_support::{Author, TempDir, release};
+        let dir = TempDir::new("check-mixed");
+        let listed = Author::new(dir.join("listed"), "acme/listed");
+        let direct = Author::new(dir.join("direct"), "acme/direct");
+        direct.release("0.2.0");
+        let cat = dir.join("catalog");
+        let mut record = release("acme/listed", "0.1.0", listed.source(), 'a');
+        record.commit = listed.head();
+        crate::catalog::tests::save(&cat, &record);
+        let mut state = State::default();
+        state
+            .packages
+            .insert("acme/listed".into(), installed(listed.source(), "0.1.0"));
+        state
+            .packages
+            .get_mut("acme/listed")
+            .unwrap()
+            .current
+            .commit = listed.head();
+        state
+            .packages
+            .insert("acme/direct".into(), installed(direct.source(), "0.1.0"));
+        let root = dir.join("workspace");
+        write_state(&root, &state);
+        let report = check(&root, cat.to_str()).unwrap();
+        let summary: Vec<_> = report
+            .rows
+            .iter()
+            .map(|r| (r.id.as_str(), r.status, r.source))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                (
+                    "acme/direct",
+                    CheckStatus::UpdateAvailable,
+                    CheckSource::Origin
+                ),
+                ("acme/listed", CheckStatus::UpToDate, CheckSource::Catalog),
+            ]
+        );
+    }
+
+    #[test]
+    fn unreachable_origin_is_a_row_not_a_failure() {
+        use crate::test_support::{Author, TempDir};
+        let dir = TempDir::new("check-unreachable");
+        let healthy = Author::new(dir.join("healthy"), "acme/healthy");
+        let gone = dir.join("gone");
+        let state = State {
+            packages: [
+                (
+                    "acme/gone".into(),
+                    installed(gone.to_str().unwrap(), "0.1.0"),
+                ),
+                ("acme/healthy".into(), installed(healthy.source(), "0.1.0")),
+            ]
+            .into(),
+            ..Default::default()
+        };
+        let root = dir.join("workspace");
+        write_state(&root, &state);
+        let rows = check(&root, None).unwrap().rows;
+        assert_eq!(rows[0].status, CheckStatus::OriginUnreachable);
+        assert_eq!(rows[0].status.message(), "origin unreachable");
+        let problem = rows[0].problem.as_deref().unwrap();
+        // A classified hint, never git's stderr (which may contain secrets).
+        assert!(problem.starts_with("Repository not found"), "{problem}");
+        assert!(rows[0].latest.is_none() && !rows[0].update_available);
+        assert_eq!(rows[1].status, CheckStatus::UpToDate);
+    }
+
+    #[test]
+    fn fork_upstream_from_fork_of_source() {
+        use crate::test_support::{Author, TempDir, release};
+        let dir = TempDir::new("check-fork");
+        let original = Author::new(dir.join("hello"), "acme/hello");
+        original.release("1.1.0");
+        let fork = Author::new(dir.join("fork"), "me/hello");
+        let base = |source: Option<&str>| ForkOf {
+            id: "acme/hello".into(),
+            version: "0.1.0".into(),
+            commit: "a".repeat(40),
+            source: source.map(Into::into),
+        };
+        let mut state = State::default();
+        let mut me = installed(fork.source(), "0.1.0");
+        me.fork_of = Some(base(Some(original.source())));
+        state.packages.insert("me/hello".into(), me);
+        let upstream = |state: &State, catalog: Option<&Catalog>| {
+            rows(state, catalog.map(|c| (c, None)))[0]
+                .upstream
+                .clone()
+                .unwrap()
+        };
+        assert_eq!(
+            upstream(&state, None),
+            Upstream {
+                id: "acme/hello".into(),
+                base: "0.1.0".into(),
+                latest: Some("1.1.0".into()),
+                newer: true,
+                source: Some(CheckSource::Origin),
+                problem: None,
+            }
+        );
+        // A catalog that does not list the original: still the origin.
+        assert_eq!(
+            upstream(&state, Some(&Catalog::default())).source,
+            Some(CheckSource::Origin)
+        );
+        // A catalog that lists the original wins.
+        let cat = dir.join("catalog");
+        crate::catalog::tests::save(
+            &cat,
+            &release("acme/hello", "1.0.0", original.source(), 'b'),
+        );
+        let snapshot = crate::catalog::selected_for_check(cat.to_str().unwrap(), &state).unwrap();
+        let from_catalog = upstream(&state, Some(&snapshot));
+        assert_eq!(
+            (from_catalog.latest.as_deref(), from_catalog.source),
+            (Some("1.0.0"), Some(CheckSource::Catalog))
+        );
+        // An unreachable forkOf.source keeps the reason.
+        state.packages.get_mut("me/hello").unwrap().fork_of =
+            Some(base(Some(dir.join("gone").to_str().unwrap())));
+        let gone = upstream(&state, None);
+        assert_eq!(
+            (gone.latest, gone.source),
+            (None, Some(CheckSource::Origin))
+        );
+        assert!(gone.problem.unwrap().starts_with("Repository not found"));
+        // Without forkOf.source and catalog the original's latest is unknown.
+        state.packages.get_mut("me/hello").unwrap().fork_of = Some(base(None));
+        let unknown = upstream(&state, None);
+        assert_eq!(
+            (unknown.latest, unknown.newer, unknown.source),
+            (None, false, None)
+        );
+    }
+
+    #[test]
+    fn unsafe_or_relative_sources_are_never_handed_to_git() {
+        use crate::test_support::{TempDir, tree_hash};
+        let dir = TempDir::new("check-unsafe");
+        let marker = dir.join("pwned");
+        let ext = format!("ext::sh -c touch% {}", marker.display());
+        let mut state = State::default();
+        for (id, source) in [
+            ("acme/ext", ext.as_str()),
+            ("acme/fd", "fd::5"),
+            ("acme/relative", "foo/bar"),
+        ] {
+            state.packages.insert(id.into(), installed(source, "0.1.0"));
+        }
+        // A fork whose forkOf.source came from a foreign manifest.
+        state.packages.get_mut("acme/relative").unwrap().fork_of = Some(ForkOf {
+            id: "acme/original".into(),
+            version: "0.1.0".into(),
+            commit: "a".repeat(40),
+            source: Some(ext.clone()),
+        });
+        let root = dir.join("workspace");
+        write_state(&root, &state);
+        let before = tree_hash(&root);
+        let rows = check(&root, None).unwrap().rows;
+        // "source not queried": refused before any git process was started.
+        for row in &rows {
+            assert_eq!(row.status, CheckStatus::OriginUnreachable, "{}", row.id);
+            assert!(
+                row.problem
+                    .as_deref()
+                    .unwrap()
+                    .starts_with("source not queried: "),
+                "{:?}",
+                row.problem
+            );
+        }
+        let upstream = rows[2].upstream.as_ref().unwrap();
+        assert!(
+            upstream
+                .problem
+                .as_deref()
+                .unwrap()
+                .starts_with("source not queried: ")
+        );
+        assert!(!marker.exists(), "ext:: helper must never run");
+        assert_eq!(tree_hash(&root), before);
     }
 }

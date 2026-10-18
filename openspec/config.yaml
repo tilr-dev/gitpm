@@ -28,7 +28,9 @@ context: |
   user configured their own, http.lowSpeed limits, a 10-minute wall-clock kill. Exceptions:
   the `auth check` ls-remote uses its own SSH command (BatchMode, StrictHostKeyChecking=yes,
   no keepalives) and has no wall-clock kill; the `git config --get core.sshCommand` probe has
-  no timeout. curl has --connect-timeout 5 and --max-time 20. IDs and refs are validated
+  no timeout. The repository-less `check` ls-remote (`ls_remote_tags`) has the repository
+  bounds plus LC_ALL=C, the temp dir as cwd and a transport allowlist (file, git, http(s),
+  ssh; never remote helpers), and runs only on sources passing `auth::validate_recorded`. curl has --connect-timeout 5 and --max-time 20. IDs and refs are validated
   before they reach git, and positional names go after `--`.
 
   Catalog transport: remote catalogs are HTTPS only; plain http:// is accepted only for

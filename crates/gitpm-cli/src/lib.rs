@@ -100,7 +100,7 @@ pub mod catalog {
 
 /// The table printed by `gitpm check`.
 pub mod check {
-    use gitpm::check::CheckRow;
+    use gitpm::check::{CheckRow, CheckSource};
 
     pub fn display(rows: &[CheckRow]) -> String {
         display_colored(rows, false)
@@ -116,12 +116,16 @@ pub mod check {
         };
         let latest = |row: &CheckRow| row.latest.clone().unwrap_or_else(|| "—".into());
         let mut output = format!(
-            "{:<24} {:<14} {:<14} {:<8} STATUS\n",
-            "PACKAGE", "INSTALLED", "LATEST", "ENABLED"
+            "{:<24} {:<14} {:<14} {:<8} {:<8} STATUS\n",
+            "PACKAGE", "INSTALLED", "LATEST", "ENABLED", "SOURCE"
         );
         for row in rows {
+            let status = match &row.problem {
+                Some(problem) => format!("{}: {problem}", row.status.message()),
+                None => row.status.message().to_owned(),
+            };
             output.push_str(&format!(
-                "{:<24} {:<14} {} {:<8} {}\n",
+                "{:<24} {:<14} {} {:<8} {:<8} {}\n",
                 row.id,
                 row.installed,
                 if row.update_available {
@@ -130,18 +134,36 @@ pub mod check {
                     format!("{:<14}", latest(row))
                 },
                 if row.enabled { "yes" } else { "no" },
+                row.source.as_str(),
                 if row.update_available {
-                    green(row.status.message().to_owned())
+                    green(status)
                 } else {
-                    row.status.message().to_owned()
+                    status
                 }
             ));
         }
         for row in rows {
             if let Some(upstream) = &row.upstream {
-                let latest = upstream.latest.as_deref().unwrap_or("not in catalog");
+                let latest = upstream.latest.as_deref();
+                let (place, latest) = match upstream.source {
+                    Some(CheckSource::Catalog) => {
+                        ("original in catalog", latest.unwrap_or("no versions"))
+                    }
+                    Some(CheckSource::Origin) => {
+                        ("original at origin", latest.unwrap_or("unknown"))
+                    }
+                    None => ("original", "unknown"),
+                };
+                let unreachable;
+                let (place, latest) = match &upstream.problem {
+                    Some(problem) => {
+                        unreachable = format!("unreachable ({problem})");
+                        ("original", unreachable.as_str())
+                    }
+                    None => (place, latest),
+                };
                 output.push_str(&format!(
-                    "\n{}: fork of {} (base {}); original in catalog: {}{}",
+                    "\n{}: fork of {} (base {}); {place}: {}{}",
                     row.id,
                     upstream.id,
                     upstream.base,
@@ -184,6 +206,8 @@ pub mod check {
                 latest: Some("1.10.0".into()),
                 enabled: false,
                 upstream: None,
+                source: CheckSource::Catalog,
+                problem: None,
                 update_available,
                 status: if update_available {
                     CheckStatus::UpdateAvailable
@@ -203,6 +227,49 @@ pub mod check {
             let text = display(&[row(false)]);
             assert!(text.contains("Updates: 0."));
             assert!(!text.contains("Available updates"));
+        }
+        #[test]
+        fn table_names_the_source_and_fork_upstream_place() {
+            use gitpm::check::Upstream;
+            let mut fork = row(false);
+            fork.id = "me/hello".into();
+            fork.source = CheckSource::Origin;
+            let upstream = |latest: Option<&str>, source| Upstream {
+                id: "acme/hello".into(),
+                base: "1.0.0".into(),
+                latest: latest.map(Into::into),
+                newer: latest.is_some(),
+                source,
+                problem: None,
+            };
+            fork.upstream = Some(upstream(Some("1.1.0"), Some(CheckSource::Origin)));
+            let text = display(std::slice::from_ref(&fork));
+            assert!(text.contains(" origin "), "{text}");
+            assert!(
+                text.contains("me/hello: fork of acme/hello (base 1.0.0); original at origin: 1.1.0 — newer than the fork base"),
+                "{text}"
+            );
+            fork.upstream = Some(upstream(Some("1.1.0"), Some(CheckSource::Catalog)));
+            assert!(
+                display(std::slice::from_ref(&fork)).contains("original in catalog: 1.1.0 — newer")
+            );
+            let mut gone = upstream(None, Some(CheckSource::Origin));
+            gone.problem = Some("The Git server is unreachable.".into());
+            fork.upstream = Some(gone);
+            assert!(
+                display(std::slice::from_ref(&fork)).contains(
+                    "(base 1.0.0); original: unreachable (The Git server is unreachable.)"
+                )
+            );
+            fork.upstream = Some(upstream(None, None));
+            assert!(
+                display(std::slice::from_ref(&fork)).contains("(base 1.0.0); original: unknown")
+            );
+            fork.status = CheckStatus::OriginUnreachable;
+            fork.problem = Some("The Git server is unreachable.".into());
+            assert!(
+                display(&[fork]).contains("origin unreachable: The Git server is unreachable.")
+            );
         }
     }
 }

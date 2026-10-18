@@ -21,6 +21,7 @@ Depends on: `no-backward-compat`, `thin-cli-boundary` (FFI free `check`, neutral
 - `updates`: "Updates need no catalog".
 - `package-manifest`: "Known manifest keys" (`forkOf.source`).
 - `fork-replacement`: "Fork metadata", "check shows fork upstream".
+- `git-safety`: new "Origin tag lookup is bounded and restricted".
 - `cli`: "Commands that need a catalog say so".
 - `ffi-bindings`: new "Check report record" (adds the `CheckReport` record to the records of `thin-cli-boundary`).
 
@@ -29,6 +30,7 @@ Depends on: `no-backward-compat`, `thin-cli-boundary` (FFI free `check`, neutral
 - Branch and pinned modes in `check` (`single-ref-mode`).
 - Verified catalogs and "not in catalog" for protected packages (`protected-catalog`).
 - Verifying the manifest of the newest origin tag during `check` (done at update).
+- Comparing the commit of an origin tag with the installed commit: origin tags are compared by name, so a moved tag of the installed version is `up_to_date` (warnings for moved and retracted tags come with `no-tag-immutability`).
 
 ## Impact
 

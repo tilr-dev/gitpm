@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Fork metadata
-The fork's manifest SHALL get `forkOf` `{id, version, commit, source}` of the forked revision (`source`: the original's recorded source) and `replaces` `{id, version}` at the forked version; metadata and unknown keys SHALL be kept (package-manifest, "Unknown keys are preserved"; plugin-metadata, "Metadata survives rewrites"). The fork SHALL be on a new branch `fork` (`fork-2`, … when taken) with attached HEAD. Verified by `fork_records_local_head_preserves_index_and_immediate_parent`.
+The fork's manifest SHALL get `forkOf` `{id, version, commit, source}` of the forked revision (`source`: the original's recorded source, left out when it is not a Git URL or an absolute path or names a remote helper) and `replaces` `{id, version}` at the forked version; metadata and unknown keys SHALL be kept (package-manifest, "Unknown keys are preserved"; plugin-metadata, "Metadata survives rewrites"). The fork SHALL be on a new branch `fork` (`fork-2`, … when taken) with attached HEAD. Verified by `fork_records_local_head_preserves_index_and_immediate_parent`.
 
 #### Scenario: Fork manifest
 - **WHEN** `acme/hello` 1.0.0, installed from `https://git.example/acme/hello.git`, is forked into namespace `me`
@@ -9,7 +9,7 @@ The fork's manifest SHALL get `forkOf` `{id, version, commit, source}` of the fo
 - **AND** metadata keys are carried unchanged; this is covered by `metadata::fork_and_commit_carry_the_metadata_unchanged`
 
 ### Requirement: check shows fork upstream
-For a fork, `check` SHALL add `upstream {id, base, latest, newer, source}`: the original's latest release against the version the fork started from, taken from the catalog when it lists the original, otherwise from the release tags of `forkOf.source` (`source` `catalog` or `origin`); without either, `latest` is unknown. Verified by `check_shows_fork_upstream_and_other_catalogs` and `check::fork_upstream_from_fork_of_source`.
+For a fork, `check` SHALL add `upstream {id, base, latest, newer, source, problem}`: the original's latest release against the version the fork started from, taken from the catalog when it lists the original, otherwise from the release tags of `forkOf.source` (`source` `catalog` or `origin`); without either, `latest` is unknown. When `forkOf.source` cannot be read, `problem` says why and the CLI prints `original: unreachable (PROBLEM)`. Verified by `check_shows_fork_upstream_and_other_catalogs` and `check::fork_upstream_from_fork_of_source`.
 
 #### Scenario: Original has a newer release
 - **WHEN** `me/hello` forked `acme/hello` 1.0.0 and the catalog has `acme/hello` 1.1.0

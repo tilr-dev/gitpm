@@ -93,14 +93,14 @@ def base_and_full_url_read_the_same(t: T):
 @case(fixture="catalog", spec=["catalog/catalog-locations-and-transport", "errors/errors-name-the-package"])
 def plugin_404_is_not_in_catalog(t: T):
     """A package whose index answers 404: install-catalog says it is not in the catalog
-    (naming the ID); check of an installed package whose index is gone shows "not in catalog"."""
+    (naming the ID); check of an installed package whose index is gone reads its origin."""
     srv, served = setup(t)
     r = failing(t, srv, "--catalog", srv.url, "install-catalog", "dan/missing", contains="not found in catalog")
     t.not_installed("dan/missing")
     shutil.rmtree(served / "namespaces/dan/num")
     before = t.snap(t.ws)
     out = t.gitpm_ok("--catalog", srv.url, "check").out
-    t.has(next(l for l in out.splitlines() if l.startswith(NUM)), "not in catalog")
+    t.has(next(l for l in out.splitlines() if l.startswith(NUM)), " origin ")
     t.same(before, "installed workspace")
     t.has(r.err, "dan/missing")  # error messages name the package ID (product decision)
 

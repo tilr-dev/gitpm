@@ -151,7 +151,8 @@ def fork_one_package_of_the_repository(t: T):
     m = json.loads((dest / "packages/theme/plugin.json").read_text())
     theme = t.package(THEME)["current"]
     t.eq((m["id"], m["forkOf"], m["replaces"]),
-         ("me/theme", {"id": THEME, "version": "0.1.0", "commit": theme["commit"]}, {"id": THEME, "version": "0.1.0"}),
+         ("me/theme", {"id": THEME, "version": "0.1.0", "commit": theme["commit"],
+                       "source": t.package(THEME)["source"]}, {"id": THEME, "version": "0.1.0"}),
          "fork manifest")
     t.same(before, "workspace")
     t.gitpm_ok("commit", dest, "0.1.1", "--package", "me/theme")

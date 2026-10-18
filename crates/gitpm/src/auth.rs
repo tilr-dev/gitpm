@@ -25,14 +25,49 @@ pub(crate) const NONINTERACTIVE_SSH: &str =
     "ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes";
 
 fn validate(source: &str) -> Result<()> {
+    basic(source)?;
+    if Path::new(source).exists() {
+        return Ok(());
+    }
+    url_rules(source)
+}
+
+fn basic(source: &str) -> Result<()> {
     ensure!(
         !source.is_empty() && !source.starts_with('-') && !source.chars().any(char::is_control),
         InvalidArgument,
         "Specify a Git URL or a local path."
     );
-    if Path::new(source).exists() {
+    Ok(())
+}
+
+/// A recorded source that gitpm queries on its own (`packages.<id>.source` in `check`,
+/// `forkOf.source`), possibly from a foreign manifest: an absolute path, or a Git URL
+/// (`scheme://` of the supported schemes, or `host:path`) without remote helpers
+/// (`::`) or credentials. Pure syntax: nothing is read from disk or run.
+pub(crate) fn validate_recorded(source: &str) -> Result<()> {
+    basic(source)?;
+    ensure!(
+        !source.contains("::"),
+        InvalidArgument,
+        "Git remote helpers are not supported."
+    );
+    if Path::new(source).is_absolute() {
         return Ok(());
     }
+    let url = source.contains("://")
+        || source
+            .split_once(':')
+            .is_some_and(|(host, _)| !host.is_empty() && !host.contains('/'));
+    ensure!(
+        url,
+        InvalidArgument,
+        "Specify a Git URL or an absolute repository path."
+    );
+    url_rules(source)
+}
+
+fn url_rules(source: &str) -> Result<()> {
     if let Some((scheme, rest)) = source.split_once("://") {
         ensure!(
             matches!(scheme, "https" | "http" | "ssh" | "git" | "file"),
@@ -74,7 +109,7 @@ fn validate(source: &str) -> Result<()> {
     Ok(())
 }
 
-fn failure(stderr: &str) -> &'static str {
+pub(crate) fn failure(stderr: &str) -> &'static str {
     let message = stderr.to_lowercase();
     if message.contains("host key verification failed")
         || message.contains("remote host identification has changed")
@@ -176,6 +211,36 @@ mod tests {
             assert!(validate(value).is_ok());
         }
     }
+    #[test]
+    fn recorded_sources_are_urls_or_absolute_paths_without_helpers() {
+        for ok in [
+            "/abs/repo",
+            "/abs/missing.git",
+            "https://git.example/acme/hello.git",
+            "ssh://git@git.example/acme/hello.git",
+            "git@git.example:acme/hello.git",
+            "file:///abs/repo",
+        ] {
+            assert!(validate_recorded(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "",
+            "fd::5",
+            "ext::sh -c id",
+            "foo/bar",
+            "./foo",
+            "../foo",
+            "foo",
+            "-uhelp",
+            "ftp://host/x",
+            "https://user:token@git.example/x.git",
+            "/abs/with\nnewline",
+        ] {
+            let error = validate_recorded(bad).unwrap_err();
+            assert_eq!(error.kind(), "invalid_argument", "{bad}");
+        }
+    }
+
     #[test]
     fn validate_covers_every_rule() {
         let cases: &[(&str, Option<&str>)] = &[

@@ -173,6 +173,8 @@ pub struct ForkOf {
     pub id: String,
     pub version: String,
     pub commit: String,
+    /// Recorded source of the original; `None` in manifests written without it.
+    pub source: Option<String>,
 }
 impl From<pm::ForkOf> for ForkOf {
     fn from(f: pm::ForkOf) -> Self {
@@ -180,6 +182,7 @@ impl From<pm::ForkOf> for ForkOf {
             id: f.id,
             version: f.version,
             commit: f.commit,
+            source: f.source,
         }
     }
 }
@@ -669,7 +672,6 @@ impl From<pm::UninstallPlan> for UninstallPlan {
 
 #[derive(Debug, Clone, Copy, uniffi::Enum)]
 pub enum CheckStatus {
-    NotInCatalog,
     DifferentSource,
     InvalidCatalogData,
     NoVersions,
@@ -679,12 +681,14 @@ pub enum CheckStatus {
     UpToDate,
     NewerThanCatalog,
     OtherCatalog,
+    NewerThanOrigin,
+    NoReleases,
+    OriginUnreachable,
 }
 impl From<pm::check::CheckStatus> for CheckStatus {
     fn from(s: pm::check::CheckStatus) -> Self {
         use pm::check::CheckStatus as S;
         match s {
-            S::NotInCatalog => CheckStatus::NotInCatalog,
             S::DifferentSource => CheckStatus::DifferentSource,
             S::InvalidCatalogData => CheckStatus::InvalidCatalogData,
             S::NoVersions => CheckStatus::NoVersions,
@@ -694,6 +698,24 @@ impl From<pm::check::CheckStatus> for CheckStatus {
             S::UpToDate => CheckStatus::UpToDate,
             S::NewerThanCatalog => CheckStatus::NewerThanCatalog,
             S::OtherCatalog => CheckStatus::OtherCatalog,
+            S::NewerThanOrigin => CheckStatus::NewerThanOrigin,
+            S::NoReleases => CheckStatus::NoReleases,
+            S::OriginUnreachable => CheckStatus::OriginUnreachable,
+        }
+    }
+}
+
+/// Where a check row (or a fork's upstream) was taken from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum CheckSource {
+    Catalog,
+    Origin,
+}
+impl From<pm::check::CheckSource> for CheckSource {
+    fn from(s: pm::check::CheckSource) -> Self {
+        match s {
+            pm::check::CheckSource::Catalog => CheckSource::Catalog,
+            pm::check::CheckSource::Origin => CheckSource::Origin,
         }
     }
 }
@@ -708,7 +730,11 @@ pub struct CheckRow {
     pub status: CheckStatus,
     /// Human-readable status text.
     pub status_message: String,
-    /// For a fork: where its original stands in the catalog.
+    /// Whether the row comes from the catalog or from the package's origin.
+    pub source: CheckSource,
+    /// Why the origin could not be read (`OriginUnreachable`).
+    pub problem: Option<String>,
+    /// For a fork: where its original stands in the catalog or at its origin.
     pub upstream: Option<Upstream>,
 }
 #[derive(Debug, Clone, uniffi::Record)]
@@ -719,6 +745,10 @@ pub struct Upstream {
     pub latest: Option<String>,
     /// The original has a newer release than the fork base.
     pub newer: bool,
+    /// Where `latest` was looked up; `None`: neither catalog nor `forkOf.source`.
+    pub source: Option<CheckSource>,
+    /// Why `forkOf.source` could not be read.
+    pub problem: Option<String>,
 }
 impl From<pm::check::CheckRow> for CheckRow {
     fn from(r: pm::check::CheckRow) -> Self {
@@ -730,11 +760,15 @@ impl From<pm::check::CheckRow> for CheckRow {
             enabled: r.enabled,
             update_available: r.update_available,
             status: r.status.into(),
+            source: r.source.into(),
+            problem: r.problem,
             upstream: r.upstream.map(|u| Upstream {
                 id: u.id,
                 base: u.base,
                 latest: u.latest,
                 newer: u.newer,
+                source: u.source.map(Into::into),
+                problem: u.problem,
             }),
         }
     }
@@ -1678,6 +1712,7 @@ mod tests {
             id: "vendor/x".into(),
             version: "0.9.0".into(),
             commit: "f".repeat(40),
+            source: Some("https://git.example/vendor/x.git".into()),
         }
     }
 
@@ -1756,6 +1791,83 @@ mod tests {
         assert_eq!(
             (f.id.as_str(), f.version.as_str(), f.commit),
             ("vendor/x", "0.9.0", "f".repeat(40))
+        );
+        assert_eq!(
+            f.source.as_deref(),
+            Some("https://git.example/vendor/x.git")
+        );
+
+        let check = CheckReport::from(pm::check::CheckReport {
+            rows: vec![pm::check::CheckRow {
+                id: "me/x".into(),
+                installed: "1.0.0".into(),
+                latest: None,
+                enabled: true,
+                update_available: false,
+                status: pm::check::CheckStatus::OriginUnreachable,
+                source: pm::check::CheckSource::Origin,
+                problem: Some("unreachable".into()),
+                upstream: Some(pm::check::Upstream {
+                    id: "vendor/x".into(),
+                    base: "0.9.0".into(),
+                    latest: Some("1.0.0".into()),
+                    newer: true,
+                    source: Some(pm::check::CheckSource::Origin),
+                    problem: Some("original gone".into()),
+                }),
+            }],
+            replacements: [("vendor/x".to_owned(), "me/x".to_owned())].into(),
+            unsatisfied: vec![pm::check::UnsatisfiedDependency {
+                package: "me/x".into(),
+                dependency: "lib/core".into(),
+                requirement: "^2".into(),
+                problem: Some("not installed".into()),
+            }],
+        });
+        let row = &check.rows[0];
+        assert_eq!(
+            (
+                row.id.as_str(),
+                row.installed.as_str(),
+                row.latest.as_deref(),
+                row.enabled,
+                row.update_available
+            ),
+            ("me/x", "1.0.0", None, true, false)
+        );
+        assert!(matches!(row.status, CheckStatus::OriginUnreachable));
+        assert_eq!(row.status_message, "origin unreachable");
+        assert_eq!(
+            (row.source, row.problem.as_deref()),
+            (CheckSource::Origin, Some("unreachable"))
+        );
+        let upstream = row.upstream.as_ref().unwrap();
+        assert_eq!(
+            (
+                upstream.id.as_str(),
+                upstream.base.as_str(),
+                upstream.latest.as_deref(),
+                upstream.newer,
+                upstream.source
+            ),
+            (
+                "vendor/x",
+                "0.9.0",
+                Some("1.0.0"),
+                true,
+                Some(CheckSource::Origin)
+            )
+        );
+        assert_eq!(check.replacements["vendor/x"], "me/x");
+        let dep = &check.unsatisfied[0];
+        assert_eq!(
+            (
+                dep.package.as_str(),
+                dep.dependency.as_str(),
+                dep.requirement.as_str(),
+                dep.problem.as_deref()
+            ),
+            ("me/x", "lib/core", "^2", Some("not installed"))
         );
 
         let skipped = || {
@@ -2081,7 +2193,6 @@ mod tests {
     fn check_rows_carry_status_and_message() {
         use pm::check::CheckStatus as S;
         let statuses = [
-            (S::NotInCatalog, "NotInCatalog"),
             (S::DifferentSource, "DifferentSource"),
             (S::InvalidCatalogData, "InvalidCatalogData"),
             (S::NoVersions, "NoVersions"),
@@ -2091,6 +2202,9 @@ mod tests {
             (S::UpToDate, "UpToDate"),
             (S::NewerThanCatalog, "NewerThanCatalog"),
             (S::OtherCatalog, "OtherCatalog"),
+            (S::NewerThanOrigin, "NewerThanOrigin"),
+            (S::NoReleases, "NoReleases"),
+            (S::OriginUnreachable, "OriginUnreachable"),
         ];
         for (status, name) in statuses {
             let row = CheckRow::from(pm::check::CheckRow {
@@ -2100,6 +2214,8 @@ mod tests {
                 enabled: false,
                 update_available: status == S::UpdateAvailable,
                 status,
+                source: pm::check::CheckSource::Catalog,
+                problem: None,
                 upstream: None,
             });
             assert_eq!(format!("{:?}", row.status), name);
@@ -2346,10 +2462,13 @@ mod tests {
             PackageManager::open(root.to_string_lossy().into(), ManagerOptions::default()).unwrap();
         assert_eq!(manager.root(), root.to_string_lossy());
         assert_eq!(manager.list().unwrap()[0].current.version, "1.0.0");
+        // Without a catalog check asks the origin; "s" is unreachable: a row, no error.
+        let report = check(root.to_string_lossy().into(), None).unwrap();
         assert!(matches!(
-            check(root.to_string_lossy().into(), None),
-            Err(PmError::InvalidArgument { .. })
+            report.rows[0].status,
+            CheckStatus::OriginUnreachable
         ));
+        assert_eq!(report.rows[0].source, CheckSource::Origin);
         assert!(matches!(
             manager.browse_catalog(),
             Err(PmError::InvalidArgument { .. })

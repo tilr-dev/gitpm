@@ -91,7 +91,7 @@ def fork_installs_alongside_without_replacement(t: T):
     t.gitpm_ok("install", dest)
     p = t.package(NEW)
     t.eq(p["current"], {"version": "0.1.1", "commit": mine}, "fork current")
-    t.eq(p["forkOf"], {"id": ID, "version": "0.1.0", "commit": base["commit"]}, "forkOf")
+    t.eq(p["forkOf"], {"id": ID, "version": "0.1.0", "commit": base["commit"], "source": t.package(ID)["source"]}, "forkOf")
     t.eq(t.package(ID)["current"], base, "original still at 0.1.0")
     t.ok("forkOf" not in t.package(ID), "original has no forkOf")
     t.ok(not t.state().get("replacements"), "no replacement")

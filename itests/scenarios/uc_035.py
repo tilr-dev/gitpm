@@ -20,6 +20,7 @@ def status(t: T, out: str, id: str) -> str:
 
 
 def check(t: T, url: str, id: str, expected: str) -> str:
+    """`check` with the catalog at `url`: the row of `id` says `expected`, nothing changes."""
     before = t.snap(t.ws)
     out = t.gitpm_ok("--catalog", url, "check").out
     t.has(status(t, out, id), expected)
@@ -60,12 +61,35 @@ def update_available_reads_only_installed_plugins(t: T):
     t.eq(sorted(set(srv.take())), sorted(set(requests)), "requests after breaking directory indexes")
 
 
-@case(fixture="catalog", spec=["catalog/check-compares-installed-with-the-catalog"])
-def not_in_catalog(t: T):
+@case(fixture="catalog", spec=["catalog/check-compares-installed-with-the-catalog#statuses"])
+def not_in_catalog_reads_the_origin(t: T):
+    """A package the catalog does not list gets an origin row from its recorded source:
+    up to date, then update available once the origin has a newer release tag."""
     srv = t.serve(t.catalog)
     t.new_package("dan/extra", "0.1.0")
     t.gitpm_ok("install", t.repo("dan/extra"))
-    check(t, srv.url, "dan/extra", "not in catalog")
+    t.has(status(t, check(t, srv.url, "dan/extra", "up to date"), "dan/extra"), "origin")
+    t.release("dan/extra", "0.2.0")
+    row = status(t, check(t, srv.url, "dan/extra", "update available"), "dan/extra")
+    t.has(row, "origin", "0.2.0")
+
+
+@case(fixture="catalog", spec=["catalog/check-compares-installed-with-the-catalog#statuses"])
+def origin_statuses(t: T):
+    """Origin rows: newer than origin (installed past the last tag), no releases on origin
+    (tags gone), origin unreachable (repository moved) — each only its own row, check exits 0."""
+    srv = t.serve(t.catalog)
+    t.new_package("dan/ahead", "0.1.0")
+    t.release("dan/ahead", "0.2.0")
+    t.gitpm_ok("install", t.repo("dan/ahead"))
+    t.git("dan/ahead", "tag", "-d", "dan/ahead@0.2.0")
+    check(t, srv.url, "dan/ahead", "newer than origin")
+    t.git("dan/ahead", "tag", "-d", "dan/ahead@0.1.0")
+    check(t, srv.url, "dan/ahead", "no releases on origin")
+    t.gitpm_ok("--catalog", srv.url, "install-catalog", HELLO)
+    shutil.move(t.repo("dan/ahead"), t.root / "moved")
+    out = check(t, srv.url, "dan/ahead", "origin unreachable")
+    t.has(status(t, out, HELLO), "catalog", "up to date")
 
 
 @case(fixture="catalog", spec=["catalog/check-compares-installed-with-the-catalog"])

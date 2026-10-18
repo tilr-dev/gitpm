@@ -623,7 +623,7 @@ Workspace (installed packages):",
     },
     Help {
         commands: &["check"],
-        text: "  check                            compare installed versions with the catalog",
+        text: "  check                            compare installed versions with the catalog or each origin",
     },
     Help {
         commands: &["update"],
@@ -741,7 +741,7 @@ Catalog (a local folder of static JSON files, or an HTTP(S) URL for reading):",
 Settings (flag, then environment, then default; there is no config file):
   --root DIR      GITPM_ROOT       workspace directory; default ./gitpm-workspace
   --catalog LOC   GITPM_CATALOG    catalog folder, catalog.json or URL; no default
-                                   (needed by catalog commands, install-catalog, check)
+                                   (needed by catalog commands and install-catalog)
   --sources FILE  GITPM_SOURCES    Git sources list for catalog-update; default ./sources.txt
 
 Nothing is built or executed and nothing is pushed or uploaded: gitpm clones Git
@@ -1070,20 +1070,16 @@ fn run(invocation: &mut Invocation) -> Result<()> {
             return Ok(());
         }
         "check" => {
-            let report = match check::check(Path::new(&root), catalog_location.as_deref()) {
-                // Only a non-empty workspace needs the catalog.
-                Err(PmError::InvalidArgument(_)) if catalog_location.is_none() => {
-                    return Err(require_catalog().unwrap_err());
-                }
-                report => report?,
-            };
+            let report = check::check(Path::new(&root), catalog_location.as_deref())?;
             if report.rows.is_empty() {
                 println!("No packages installed in workspace {root}.");
                 return Ok(());
             }
             println!(
                 "Workspace: {root}\nCatalog: {}\n",
-                catalog_location.as_deref().unwrap_or_default()
+                catalog_location
+                    .as_deref()
+                    .unwrap_or("none (each package's origin)")
             );
             let color = io::stdout().is_terminal()
                 && std::env::var_os("NO_COLOR").is_none()

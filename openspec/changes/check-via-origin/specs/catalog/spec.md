@@ -6,12 +6,12 @@
 ## MODIFIED Requirements
 
 ### Requirement: check compares installed packages with their catalog or origin
-`check(root, catalog)` (CLI `check`, FFI `check`) SHALL be read-only (opens, locks and creates nothing) and report one row per installed package: from the catalog when one is given and lists the package, otherwise from the package's recorded origin. Each row SHALL carry a stable snake_case `CheckStatus`, a human message and its `source` (`catalog` or `origin`). The report SHALL also list replacements and unsatisfied dependencies. Verified by `check::check_without_catalog_reads_each_origin`.
+`check(root, catalog)` (CLI `check`, FFI `check`) SHALL be read-only (opens, locks and creates nothing) and report one row per installed package: from the catalog when one is given and lists the package, otherwise from the package's recorded origin. Each row SHALL carry a stable snake_case `CheckStatus`, a human message, its `source` (`catalog` or `origin`) and, for `origin_unreachable`, a `problem`: a classified hint, never git's stderr. The report SHALL also list replacements and unsatisfied dependencies. Verified by `check::check_without_catalog_reads_each_origin`.
 
 #### Scenario: Statuses
 - **WHEN** `check` reports a package
 - **THEN** a catalog row is one of `up_to_date` ("up to date"), `update_available` ("update available"), `newer_than_catalog` ("newer than catalog"), `different_source` ("different source in catalog"), `invalid_catalog_data` ("invalid catalog data"), `no_versions` ("no versions in catalog"), `uncomparable_version` ("version cannot be compared"), `same_version_different_commit` ("same version, different commit") or `other_catalog` ("installed from another catalog")
-- **AND** an origin row is one of `up_to_date`, `update_available`, `newer_than_origin` ("newer than origin"), `no_releases` ("no releases on origin") or `origin_unreachable` ("origin unreachable")
+- **AND** an origin row is one of `up_to_date`, `update_available`, `newer_than_origin` ("newer than origin"), `no_releases` ("no releases on origin"), `origin_unreachable` ("origin unreachable", with `problem`) or `uncomparable_version` (the installed version is malformed)
 
 #### Scenario: Identity mismatch
 - **WHEN** one package's catalog entry has the wrong ID or version for its location
@@ -34,6 +34,12 @@
 - **WHEN** `acme/greeter` 0.1.0 was installed from `./greeter`, which now also has the tag `acme/greeter@0.2.0`, and no catalog is given (or the catalog does not list it)
 - **THEN** its row is `update_available` with latest `0.2.0` and source `origin`
 - **AND** the origin's release tags are read with `git ls-remote` without fetching or changing the clone; the newest `ID@VERSION` tag counts by name, and its manifest is verified only when updating
+- **AND** tags are compared by name: an origin tag of the installed version that points to another commit is `up_to_date` (stated limitation; the commit is not compared)
+
+#### Scenario: Source that is not queried
+- **WHEN** a recorded source (or `forkOf.source`) is neither a Git URL nor an absolute path, or names a remote helper (`ext::…`, `fd::5`)
+- **THEN** git is not started for it and its row is `origin_unreachable` with `problem` `source not queried: …`; the other rows are reported normally
+- **AND** this is covered by `check::unsafe_or_relative_sources_are_never_handed_to_git`
 
 #### Scenario: Exit status
 - **WHEN** `gitpm check` finds an update available, or finds none

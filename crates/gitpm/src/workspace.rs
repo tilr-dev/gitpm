@@ -507,14 +507,15 @@ impl Manager {
         Ok((value, report))
     }
 
-    /// Compare installed versions with the configured catalog. Read-only.
+    /// Compare installed versions with the configured catalog, or with each package's
+    /// origin when there is none or it does not list the package
+    /// ([`check::check`]). Read-only.
     pub fn check(&self) -> Result<Vec<CheckRow>> {
         let state = self.state()?;
         if state.packages.is_empty() {
             return Ok(Vec::new());
         }
-        let location = self.catalog_location()?;
-        check::check_state(&state, location)
+        check::check_state(&state, self.options.catalog.as_deref())
     }
     /// Bounded overview of the configured catalog.
     pub fn browse_catalog(&self) -> Result<catalog::CatalogOverview> {
@@ -3198,9 +3199,11 @@ mod tests {
     #[test]
     fn catalog_operations_need_a_configured_catalog() {
         let (ws, m) = Ws::installed("dan/demo1");
-        let error = ws.refuses("invalid_argument", || m.check());
+        // check needs no catalog: it reads the origin.
+        let rows = m.check().unwrap();
+        assert_eq!(rows[0].source, check::CheckSource::Origin);
+        let error = ws.refuses("invalid_argument", || m.browse_catalog());
         assert_eq!(error.to_string(), "no catalog configured");
-        ws.refuses("invalid_argument", || m.browse_catalog());
         ws.refuses("invalid_argument", || m.catalog_release("dan/demo1", None));
         ws.refuses("invalid_argument", || {
             m.install_from_catalog("dan/demo1", None)
@@ -3318,7 +3321,8 @@ mod tests {
             Some(ForkOf {
                 id: "vendor/demo1".into(),
                 version: "0.1.0".into(),
-                commit: base.clone()
+                commit: base.clone(),
+                source: Some(ws.author.source().into()),
             })
         );
         assert_eq!(fixture_git(&path, &["remote"]), "upstream");

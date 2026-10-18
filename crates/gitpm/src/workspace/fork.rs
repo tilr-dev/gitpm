@@ -140,6 +140,8 @@ impl PackageForkReplacement {
 /// One package to fork: where it comes from and what it becomes.
 struct Source {
     original: String,
+    /// Recorded source of the original (`packages.<original>.source`).
+    original_source: String,
     id: String,
     /// Revision the fork starts the package from: the installed commit (for an own
     /// clone its HEAD, which may hold local commits on top of it).
@@ -584,6 +586,7 @@ impl Manager {
             };
             sources.push(Source {
                 original: (*id).into(),
+                original_source: p.source.clone(),
                 id: new_id,
                 commit,
                 path: package.path,
@@ -684,6 +687,10 @@ fn identify(m: &mut Manifest, source: &Source) {
         id: source.original.clone(),
         version: source.base.version.clone(),
         commit: source.commit.clone(),
+        // Only a source `check` may query (a URL or an absolute path, no remote helper).
+        source: crate::auth::validate_recorded(&source.original_source)
+            .is_ok()
+            .then(|| source.original_source.clone()),
     });
 }
 

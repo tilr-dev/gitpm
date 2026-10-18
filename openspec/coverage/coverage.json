@@ -1,18 +1,18 @@
 {
  "generated_from": {
   "specs": "openspec/specs",
-  "cases": 631,
+  "cases": 632,
   "last_run": {
-   "started": "2026-10-18T12:35:16.678400+00:00",
-   "commit": "15394cd+dirty",
+   "started": "2026-10-18T14:50:03.458770+00:00",
+   "commit": "39c1d0e+dirty",
    "counts": {
-    "PASS": 984,
+    "PASS": 1013,
     "FAIL": 0,
     "BLOCKED": 1,
     "XFAIL": 1,
     "XPASS": 0
    },
-   "path": "itests/results/20261018T143512-99470"
+   "path": "itests/results/20261018T164958-51239"
   }
  },
  "capabilities": [
@@ -71,6 +71,13 @@
         "uc_001:missing_init_into"
        ],
        "covered": true
+      },
+      {
+       "slug": "former-alias",
+       "title": "Former alias",
+       "tag": "authoring/init-creates-a-package-with-its-first-release#former-alias",
+       "cases": [],
+       "covered": false
       }
      ],
      "covered": true,
@@ -421,6 +428,27 @@
       "uc_007:subdirectory_refused": "PASS",
       "uc_062:remote_same_url": "PASS"
      }
+    },
+    {
+     "slug": "commit-returns-what-it-released",
+     "title": "commit returns what it released",
+     "tag": "authoring/commit-returns-what-it-released",
+     "cases": [],
+     "all_cases": [],
+     "cargo_tests": [
+      "scaffold::commit_package_returns_package_version_and_tag"
+     ],
+     "scenarios": [
+      {
+       "slug": "result-of-a-release",
+       "title": "Result of a release",
+       "tag": "authoring/commit-returns-what-it-released#result-of-a-release",
+       "cases": [],
+       "covered": false
+      }
+     ],
+     "covered": true,
+     "last_run": {}
     }
    ]
   },
@@ -467,6 +495,13 @@
        "slug": "unknown-schema",
        "title": "Unknown schema",
        "tag": "catalog/catalog-v2-is-a-tree-of-static-files#unknown-schema",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "v1-catalog",
+       "title": "v1 catalog",
+       "tag": "catalog/catalog-v2-is-a-tree-of-static-files#v1-catalog",
        "cases": [],
        "covered": false
       },
@@ -565,42 +600,6 @@
       "uc_065:namespaced_release_with_empty_files_is_refused": "PASS",
       "uc_065:namespaced_release_without_files_is_refused": "PASS"
      }
-    },
-    {
-     "slug": "v1-catalogs-stay-readable",
-     "title": "v1 catalogs stay readable",
-     "tag": "catalog/v1-catalogs-stay-readable",
-     "cases": [],
-     "all_cases": [],
-     "cargo_tests": [
-      "migration_preserves_legacy_releases_and_backup",
-      "catalog::migrate_refuses_invalid_catalogs_without_writing"
-     ],
-     "scenarios": [
-      {
-       "slug": "migrate",
-       "title": "Migrate",
-       "tag": "catalog/v1-catalogs-stay-readable#migrate",
-       "cases": [],
-       "covered": false
-      },
-      {
-       "slug": "migrate-a-v2-catalog",
-       "title": "Migrate a v2 catalog",
-       "tag": "catalog/v1-catalogs-stay-readable#migrate-a-v2-catalog",
-       "cases": [],
-       "covered": false
-      },
-      {
-       "slug": "register-into-a-v1-catalog",
-       "title": "Register into a v1 catalog",
-       "tag": "catalog/v1-catalogs-stay-readable#register-into-a-v1-catalog",
-       "cases": [],
-       "covered": false
-      }
-     ],
-     "covered": true,
-     "last_run": {}
     },
     {
      "slug": "catalog-generated-from-git-release-tags",
@@ -1066,7 +1065,9 @@
      "title": "A catalog is optional",
      "tag": "catalog/a-catalog-is-optional",
      "cases": [],
-     "all_cases": [],
+     "all_cases": [
+      "uc_060:upstream_from_fork_of_source_without_a_catalog"
+     ],
      "cargo_tests": [
       "workspace::catalog_operations_need_a_configured_catalog",
       "lifecycle_and_three_removal_levels"
@@ -1083,12 +1084,16 @@
        "slug": "check-without-a-catalog",
        "title": "check without a catalog",
        "tag": "catalog/a-catalog-is-optional#check-without-a-catalog",
-       "cases": [],
-       "covered": false
+       "cases": [
+        "uc_060:upstream_from_fork_of_source_without_a_catalog"
+       ],
+       "covered": true
       }
      ],
      "covered": true,
-     "last_run": {}
+     "last_run": {
+      "uc_060:upstream_from_fork_of_source_without_a_catalog": "PASS"
+     }
     },
     {
      "slug": "check-compares-installed-with-the-catalog",
@@ -1097,7 +1102,6 @@
      "cases": [
       "uc_035:newer_than_catalog",
       "uc_035:no_versions",
-      "uc_035:not_in_catalog",
       "uc_035:update_available_reads_only_installed_plugins",
       "uc_063:check_exit_code_without_updates",
       "uc_063:check_pipe_has_no_colour",
@@ -1113,7 +1117,8 @@
       "uc_035:invalid_catalog_data_local",
       "uc_035:newer_than_catalog",
       "uc_035:no_versions",
-      "uc_035:not_in_catalog",
+      "uc_035:not_in_catalog_reads_the_origin",
+      "uc_035:origin_statuses",
       "uc_035:same_version_different_commit",
       "uc_035:unreadable_release_is_an_error",
       "uc_035:up_to_date",
@@ -1139,8 +1144,11 @@
        "slug": "statuses",
        "title": "Statuses",
        "tag": "catalog/check-compares-installed-with-the-catalog#statuses",
-       "cases": [],
-       "covered": false
+       "cases": [
+        "uc_035:not_in_catalog_reads_the_origin",
+        "uc_035:origin_statuses"
+       ],
+       "covered": true
       },
       {
        "slug": "identity-mismatch",
@@ -1204,7 +1212,8 @@
       "uc_035:invalid_catalog_data_local": "PASS",
       "uc_035:newer_than_catalog": "PASS",
       "uc_035:no_versions": "PASS",
-      "uc_035:not_in_catalog": "PASS",
+      "uc_035:not_in_catalog_reads_the_origin": "PASS",
+      "uc_035:origin_statuses": "PASS",
       "uc_035:same_version_different_commit": "PASS",
       "uc_035:unreadable_release_is_an_error": "PASS",
       "uc_035:up_to_date": "PASS",
@@ -1220,6 +1229,59 @@
       "uc_068:install_list_check": "PASS",
       "uc_077:check_with_a_missing_latest_release_fails_then_recovers": "PASS"
      }
+    },
+    {
+     "slug": "nothing-is-built-executed-or-uploaded",
+     "title": "Nothing is built, executed or uploaded",
+     "tag": "catalog/nothing-is-built-executed-or-uploaded",
+     "cases": [
+      "uc_030:install_ignores_unreachable_build"
+     ],
+     "all_cases": [
+      "uc_030:install_ignores_unreachable_build"
+     ],
+     "cargo_tests": [],
+     "scenarios": [
+      {
+       "slug": "catalog-publishing",
+       "title": "Catalog publishing",
+       "tag": "catalog/nothing-is-built-executed-or-uploaded#catalog-publishing",
+       "cases": [],
+       "covered": false
+      }
+     ],
+     "covered": true,
+     "last_run": {
+      "uc_030:install_ignores_unreachable_build": "PASS"
+     }
+    },
+    {
+     "slug": "a-configured-catalog-location-must-exist",
+     "title": "A configured catalog location must exist",
+     "tag": "catalog/a-configured-catalog-location-must-exist",
+     "cases": [],
+     "all_cases": [],
+     "cargo_tests": [
+      "workspace::a_missing_catalog_location_is_refused_before_creating_anything"
+     ],
+     "scenarios": [
+      {
+       "slug": "typo-in-the-catalog-path",
+       "title": "Typo in the catalog path",
+       "tag": "catalog/a-configured-catalog-location-must-exist#typo-in-the-catalog-path",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "new-catalog",
+       "title": "New catalog",
+       "tag": "catalog/a-configured-catalog-location-must-exist#new-catalog",
+       "cases": [],
+       "covered": false
+      }
+     ],
+     "covered": true,
+     "last_run": {}
     }
    ]
   },
@@ -1381,11 +1443,13 @@
      "tag": "cli/commands-that-need-a-catalog-say-so",
      "cases": [
       "uc_002:catalog_commands_without_catalog",
-      "uc_034:info_without_a_catalog_names_it"
+      "uc_034:info_without_a_catalog_names_it",
+      "uc_058:missing_catalog_location_is_refused"
      ],
      "all_cases": [
       "uc_002:catalog_commands_without_catalog",
-      "uc_034:info_without_a_catalog_names_it"
+      "uc_034:info_without_a_catalog_names_it",
+      "uc_058:missing_catalog_location_is_refused"
      ],
      "cargo_tests": [
       "catalog_commands_name_the_missing_catalog_and_create_nothing"
@@ -1397,12 +1461,20 @@
        "tag": "cli/commands-that-need-a-catalog-say-so#catalog-command-without-a-catalog",
        "cases": [],
        "covered": false
+      },
+      {
+       "slug": "catalog-path-that-does-not-exist",
+       "title": "Catalog path that does not exist",
+       "tag": "cli/commands-that-need-a-catalog-say-so#catalog-path-that-does-not-exist",
+       "cases": [],
+       "covered": false
       }
      ],
      "covered": true,
      "last_run": {
       "uc_002:catalog_commands_without_catalog": "PASS",
-      "uc_034:info_without_a_catalog_names_it": "PASS"
+      "uc_034:info_without_a_catalog_names_it": "PASS",
+      "uc_058:missing_catalog_location_is_refused": "PASS"
      }
     },
     {
@@ -1432,7 +1504,6 @@
      ],
      "all_cases": [
       "uc_001:build_flags_outside_register",
-      "uc_001:channel_with_ref",
       "uc_001:dry_run_outside_update_all",
       "uc_001:missing_auth_url",
       "uc_001:missing_commit_version",
@@ -1448,8 +1519,6 @@
       "uc_012:install_dev_installs_default_branch_head",
       "uc_012:ref_with_channel_is_rejected",
       "uc_030:build_on_other_command_is_rejected",
-      "uc_063:channel_with_ref_install",
-      "uc_063:channel_with_ref_update",
       "uc_063:dry_run_with_catalog_update",
       "uc_063:force_with_list",
       "uc_063:force_with_update",
@@ -1478,13 +1547,10 @@
        "title": "Channel and ref",
        "tag": "cli/option-validation#channel-and-ref",
        "cases": [
-        "uc_001:channel_with_ref",
         "uc_001:unsupported_channel",
         "uc_010:install_by_scoped_tag",
         "uc_012:install_dev_installs_default_branch_head",
-        "uc_012:ref_with_channel_is_rejected",
-        "uc_063:channel_with_ref_install",
-        "uc_063:channel_with_ref_update"
+        "uc_012:ref_with_channel_is_rejected"
        ],
        "covered": true
       },
@@ -1520,7 +1586,6 @@
      "covered": true,
      "last_run": {
       "uc_001:build_flags_outside_register": "PASS",
-      "uc_001:channel_with_ref": "PASS",
       "uc_001:dry_run_outside_update_all": "PASS",
       "uc_001:missing_auth_url": "PASS",
       "uc_001:missing_commit_version": "PASS",
@@ -1536,8 +1601,6 @@
       "uc_012:install_dev_installs_default_branch_head": "PASS",
       "uc_012:ref_with_channel_is_rejected": "PASS",
       "uc_030:build_on_other_command_is_rejected": "PASS",
-      "uc_063:channel_with_ref_install": "PASS",
-      "uc_063:channel_with_ref_update": "PASS",
       "uc_063:dry_run_with_catalog_update": "PASS",
       "uc_063:force_with_list": "PASS",
       "uc_063:force_with_update": "PASS",
@@ -1690,6 +1753,13 @@
        "tag": "cli/warnings-go-to-stderr#skipped-tag-on-install",
        "cases": [],
        "covered": false
+      },
+      {
+       "slug": "skipped-tag-on-update",
+       "title": "Skipped tag on update",
+       "tag": "cli/warnings-go-to-stderr#skipped-tag-on-update",
+       "cases": [],
+       "covered": false
       }
      ],
      "covered": true,
@@ -1715,6 +1785,13 @@
         "uc_022:unknown_id_changes_nothing"
        ],
        "covered": true
+      },
+      {
+       "slug": "command-hint",
+       "title": "Command hint",
+       "tag": "cli/errors-and-exit-codes#command-hint",
+       "cases": [],
+       "covered": false
       }
      ],
      "covered": true,
@@ -1826,6 +1903,13 @@
         "uc_054:incompatible_fork_empty_answer"
        ],
        "covered": true
+      },
+      {
+       "slug": "uninstall-prompt-stream",
+       "title": "Uninstall prompt stream",
+       "tag": "cli/prompts-only-on-a-tty#uninstall-prompt-stream",
+       "cases": [],
+       "covered": false
       }
      ],
      "covered": true,
@@ -1842,31 +1926,6 @@
       "uc_056:switch_back_incompatible_answer_no": "PASS",
       "uc_056:switch_back_incompatible_answer_yes": "PASS",
       "uc_056:switch_back_incompatible_eof": "PASS"
-     }
-    },
-    {
-     "slug": "nothing-is-built-executed-or-uploaded",
-     "title": "Nothing is built, executed or uploaded",
-     "tag": "cli/nothing-is-built-executed-or-uploaded",
-     "cases": [
-      "uc_030:install_ignores_unreachable_build"
-     ],
-     "all_cases": [
-      "uc_030:install_ignores_unreachable_build"
-     ],
-     "cargo_tests": [],
-     "scenarios": [
-      {
-       "slug": "catalog-publishing",
-       "title": "Catalog publishing",
-       "tag": "cli/nothing-is-built-executed-or-uploaded#catalog-publishing",
-       "cases": [],
-       "covered": false
-      }
-     ],
-     "covered": true,
-     "last_run": {
-      "uc_030:install_ignores_unreachable_build": "PASS"
      }
     }
    ]
@@ -2696,13 +2755,13 @@
      "cases": [
       "uc_045:missing_clone_restore",
       "uc_045:missing_clone_rollback",
-      "uc_045:missing_clone_uninstall",
+      "uc_045:missing_clone_uninstall_drops_the_record",
       "uc_045:missing_clone_update"
      ],
      "all_cases": [
       "uc_045:missing_clone_restore",
       "uc_045:missing_clone_rollback",
-      "uc_045:missing_clone_uninstall",
+      "uc_045:missing_clone_uninstall_drops_the_record",
       "uc_045:missing_clone_update",
       "uc_069:missing_clone_blocks_only_its_own_dist"
      ],
@@ -2724,7 +2783,7 @@
      "last_run": {
       "uc_045:missing_clone_restore": "PASS",
       "uc_045:missing_clone_rollback": "PASS",
-      "uc_045:missing_clone_uninstall": "PASS",
+      "uc_045:missing_clone_uninstall_drops_the_record": "PASS",
       "uc_045:missing_clone_update": "PASS",
       "uc_069:missing_clone_blocks_only_its_own_dist": "PASS"
      }
@@ -2733,8 +2792,11 @@
      "slug": "read-only-commands-never-change-dist",
      "title": "Read-only commands never change dist",
      "tag": "dist/read-only-commands-never-change-dist",
-     "cases": [],
+     "cases": [
+      "uc_040:list_reads_during_a_held_lock"
+     ],
      "all_cases": [
+      "uc_040:list_reads_during_a_held_lock",
       "uc_070:list_leaves_a_stale_tree_alone"
      ],
      "cargo_tests": [],
@@ -2747,10 +2809,25 @@
         "uc_070:list_leaves_a_stale_tree_alone"
        ],
        "covered": true
+      },
+      {
+       "slug": "list-of-a-state-edited-by-hand",
+       "title": "list of a state edited by hand",
+       "tag": "dist/read-only-commands-never-change-dist#list-of-a-state-edited-by-hand",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "list-after-an-interrupted-commit",
+       "title": "list after an interrupted commit",
+       "tag": "dist/read-only-commands-never-change-dist#list-after-an-interrupted-commit",
+       "cases": [],
+       "covered": false
       }
      ],
      "covered": true,
      "last_run": {
+      "uc_040:list_reads_during_a_held_lock": "PASS",
       "uc_070:list_leaves_a_stale_tree_alone": "PASS"
      }
     },
@@ -2759,9 +2836,11 @@
      "title": "sync-dist repairs dist explicitly",
      "tag": "dist/sync-dist-repairs-dist-explicitly",
      "cases": [
+      "uc_045:missing_clone_uninstall_drops_the_record",
       "uc_070:undeployable_package_is_named_and_others_synced"
      ],
      "all_cases": [
+      "uc_045:missing_clone_uninstall_drops_the_record",
       "uc_070:dry_run_lists_drift_and_changes_nothing",
       "uc_070:sync_dist_fixes_then_has_nothing_to_do",
       "uc_070:undeployable_package_is_named_and_others_synced",
@@ -2800,6 +2879,7 @@
      ],
      "covered": true,
      "last_run": {
+      "uc_045:missing_clone_uninstall_drops_the_record": "PASS",
       "uc_070:dry_run_lists_drift_and_changes_nothing": "PASS",
       "uc_070:sync_dist_fixes_then_has_nothing_to_do": "PASS",
       "uc_070:undeployable_package_is_named_and_others_synced": "PASS",
@@ -2839,6 +2919,34 @@
       "uc_069:forget_removes_restore_redeploys": "PASS",
       "uc_069:uninstall_removes_empty_namespace_folders": "PASS"
      }
+    },
+    {
+     "slug": "mutating-results-carry-the-dist-report",
+     "title": "Mutating results carry the dist report",
+     "tag": "dist/mutating-results-carry-the-dist-report",
+     "cases": [],
+     "all_cases": [],
+     "cargo_tests": [
+      "workspace::mutating_results_carry_the_dist_report"
+     ],
+     "scenarios": [
+      {
+       "slug": "unknown-folder-in-an-install-result",
+       "title": "Unknown folder in an install result",
+       "tag": "dist/mutating-results-carry-the-dist-report#unknown-folder-in-an-install-result",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "skipped-package-in-an-enable-result",
+       "title": "Skipped package in an enable result",
+       "tag": "dist/mutating-results-carry-the-dist-report#skipped-package-in-an-enable-result",
+       "cases": [],
+       "covered": false
+      }
+     ],
+     "covered": true,
+     "last_run": {}
     }
    ]
   },
@@ -2954,7 +3062,8 @@
       "uc_059:uninstall_refused_naming_dependents"
      ],
      "cargo_tests": [
-      "error::display_is_the_complete_message"
+      "error::display_is_the_complete_message",
+      "error::messages_name_no_cli_command"
      ],
      "scenarios": [
       {
@@ -2966,6 +3075,13 @@
         "uc_059:uninstall_refused_naming_dependents"
        ],
        "covered": true
+      },
+      {
+       "slug": "neutral-advice",
+       "title": "Neutral advice",
+       "tag": "errors/display-is-the-complete-message#neutral-advice",
+       "cases": [],
+       "covered": false
       }
      ],
      "covered": true,
@@ -3103,7 +3219,6 @@
       "uc_041:fifo_in_clone_is_refused_without_hanging",
       "uc_045:missing_clone_restore",
       "uc_045:missing_clone_rollback",
-      "uc_045:missing_clone_uninstall",
       "uc_045:missing_clone_update",
       "uc_049:revoked_access_fails_update_cleanly",
       "uc_055:corrupt_fork_release_preserves_binding",
@@ -3128,7 +3243,6 @@
       "uc_041:fifo_in_clone_is_refused_without_hanging",
       "uc_045:missing_clone_restore",
       "uc_045:missing_clone_rollback",
-      "uc_045:missing_clone_uninstall",
       "uc_045:missing_clone_update",
       "uc_047:update_fails_cleanly_offline_then_succeeds",
       "uc_049:revoked_access_fails_update_cleanly",
@@ -3194,7 +3308,6 @@
       "uc_041:fifo_in_clone_is_refused_without_hanging": "PASS",
       "uc_045:missing_clone_restore": "PASS",
       "uc_045:missing_clone_rollback": "PASS",
-      "uc_045:missing_clone_uninstall": "PASS",
       "uc_045:missing_clone_update": "PASS",
       "uc_047:update_fails_cleanly_offline_then_succeeds": "PASS",
       "uc_049:revoked_access_fails_update_cleanly": "PASS",
@@ -3215,7 +3328,9 @@
      "tag": "ffi-bindings/binding-names",
      "cases": [],
      "all_cases": [],
-     "cargo_tests": [],
+     "cargo_tests": [
+      "manager_round_trip_on_empty_workspace"
+     ],
      "scenarios": [
       {
        "slug": "swift-import",
@@ -3225,7 +3340,7 @@
        "covered": false
       }
      ],
-     "covered": false,
+     "covered": true,
      "last_run": {}
     },
     {
@@ -3301,6 +3416,13 @@
        "tag": "ffi-bindings/errors-keep-kind-and-message#local-changes-from-swift",
        "cases": [],
        "covered": false
+      },
+      {
+       "slug": "undeployed-packages-from-swift",
+       "title": "Undeployed packages from Swift",
+       "tag": "ffi-bindings/errors-keep-kind-and-message#undeployed-packages-from-swift",
+       "cases": [],
+       "covered": false
       }
      ],
      "covered": true,
@@ -3318,9 +3440,23 @@
      ],
      "scenarios": [
       {
+       "slug": "fork-results",
+       "title": "Fork results",
+       "tag": "ffi-bindings/records-mirror-library-results#fork-results",
+       "cases": [],
+       "covered": false
+      },
+      {
        "slug": "partial-fork-failure",
        "title": "Partial fork failure",
        "tag": "ffi-bindings/records-mirror-library-results#partial-fork-failure",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "warnings-reach-the-host",
+       "title": "Warnings reach the host",
+       "tag": "ffi-bindings/records-mirror-library-results#warnings-reach-the-host",
        "cases": [],
        "covered": false
       }
@@ -3337,6 +3473,13 @@
      "cargo_tests": [],
      "scenarios": [
       {
+       "slug": "breaking-binding-change",
+       "title": "Breaking binding change",
+       "tag": "ffi-bindings/ffi-is-not-published#breaking-binding-change",
+       "cases": [],
+       "covered": false
+      },
+      {
        "slug": "one-target-installed",
        "title": "One target installed",
        "tag": "ffi-bindings/ffi-is-not-published#one-target-installed",
@@ -3352,6 +3495,34 @@
       }
      ],
      "covered": false,
+     "last_run": {}
+    },
+    {
+     "slug": "cli-and-ffi-parity",
+     "title": "CLI and FFI parity",
+     "tag": "ffi-bindings/cli-and-ffi-parity",
+     "cases": [],
+     "all_cases": [],
+     "cargo_tests": [
+      "ffi_covers_every_workspace_and_catalog_read_command"
+     ],
+     "scenarios": [
+      {
+       "slug": "list-with-a-filter",
+       "title": "list with a filter",
+       "tag": "ffi-bindings/cli-and-ffi-parity#list-with-a-filter",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "restorable-packages",
+       "title": "Restorable packages",
+       "tag": "ffi-bindings/cli-and-ffi-parity#restorable-packages",
+       "cases": [],
+       "covered": false
+      }
+     ],
+     "covered": true,
      "last_run": {}
     }
    ]
@@ -3965,11 +4136,13 @@
      "title": "check shows fork upstream",
      "tag": "fork-replacement/check-shows-fork-upstream",
      "cases": [
-      "uc_060:check_compares_fork_with_own_releases"
+      "uc_060:check_compares_fork_with_own_releases",
+      "uc_060:upstream_from_fork_of_source_without_a_catalog"
      ],
      "all_cases": [
       "uc_060:check_compares_fork_with_own_releases",
-      "uc_060:newer_original_release_is_visible"
+      "uc_060:newer_original_release_is_visible",
+      "uc_060:upstream_from_fork_of_source_without_a_catalog"
      ],
      "cargo_tests": [
       "check_shows_fork_upstream_and_other_catalogs"
@@ -3988,8 +4161,65 @@
      "covered": true,
      "last_run": {
       "uc_060:check_compares_fork_with_own_releases": "PASS",
-      "uc_060:newer_original_release_is_visible": "PASS"
+      "uc_060:newer_original_release_is_visible": "PASS",
+      "uc_060:upstream_from_fork_of_source_without_a_catalog": "PASS"
      }
+    },
+    {
+     "slug": "a-pending-replacement-of-fork-replace-is-confirmed-and-resumed",
+     "title": "A pending replacement of fork --replace is confirmed and resumed",
+     "tag": "fork-replacement/a-pending-replacement-of-fork-replace-is-confirmed-and-resumed",
+     "cases": [],
+     "all_cases": [],
+     "cargo_tests": [
+      "fork_replace_pending_replacement_is_resumed_after_confirmation"
+     ],
+     "scenarios": [
+      {
+       "slug": "confirmed-on-a-tty",
+       "title": "Confirmed on a TTY",
+       "tag": "fork-replacement/a-pending-replacement-of-fork-replace-is-confirmed-and-resumed#confirmed-on-a-tty",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "no-terminal",
+       "title": "No terminal",
+       "tag": "fork-replacement/a-pending-replacement-of-fork-replace-is-confirmed-and-resumed#no-terminal",
+       "cases": [],
+       "covered": false
+      }
+     ],
+     "covered": true,
+     "last_run": {}
+    },
+    {
+     "slug": "replacement-plans-carry-what-the-output-needs",
+     "title": "Replacement plans carry what the output needs",
+     "tag": "fork-replacement/replacement-plans-carry-what-the-output-needs",
+     "cases": [],
+     "all_cases": [],
+     "cargo_tests": [
+      "replacement_plan_carries_installed_version_and_fork_enabled"
+     ],
+     "scenarios": [
+      {
+       "slug": "switch-back-to-a-disabled-fork",
+       "title": "Switch back to a disabled fork",
+       "tag": "fork-replacement/replacement-plans-carry-what-the-output-needs#switch-back-to-a-disabled-fork",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "fork-version-differs-from-the-declared-one",
+       "title": "Fork version differs from the declared one",
+       "tag": "fork-replacement/replacement-plans-carry-what-the-output-needs#fork-version-differs-from-the-declared-one",
+       "cases": [],
+       "covered": false
+      }
+     ],
+     "covered": true,
+     "last_run": {}
     }
    ]
   },
@@ -5333,7 +5563,8 @@
      ],
      "cargo_tests": [
       "a_package_can_move_to_another_folder_between_releases",
-      "a_tag_on_a_commit_without_its_package_is_a_clear_error"
+      "a_tag_on_a_commit_without_its_package_is_a_clear_error",
+      "a_v_version_tag_in_a_multi_package_repository_is_ignored_without_a_warning"
      ],
      "scenarios": [
       {
@@ -5351,6 +5582,13 @@
         "uc_072:per_package_release_and_update"
        ],
        "covered": true
+      },
+      {
+       "slug": "vversion-tag-in-a-multi-package-repository",
+       "title": "vVERSION tag in a multi-package repository",
+       "tag": "multi-package-repos/per-package-releases#vversion-tag-in-a-multi-package-repository",
+       "cases": [],
+       "covered": false
       }
      ],
      "covered": true,
@@ -5694,7 +5932,7 @@
      ],
      "cargo_tests": [
       "identity::valid_part_accepts_1_to_80_safe_ascii_characters",
-      "model::valid_id_accepts_legacy_and_scoped_ids_only"
+      "model::valid_id_accepts_scoped_ids_only"
      ],
      "scenarios": [
       {
@@ -5759,6 +5997,13 @@
         "uc_026:unscoped_id_equal_to_an_installed_namespace"
        ],
        "covered": true
+      },
+      {
+       "slug": "the-word-all",
+       "title": "The word all",
+       "tag": "package-ids/package-id-syntax#the-word-all",
+       "cases": [],
+       "covered": false
       }
      ],
      "covered": true,
@@ -5853,9 +6098,7 @@
       "uc_061:scoped_id_with_v_tags"
      ],
      "cargo_tests": [
-      "identity::release_tag_is_v_for_legacy_and_at_for_scoped_ids",
-      "release_manifest_must_match_tag_and_update_rejects_retagging",
-      "version_conflict"
+      "identity::release_tag_is_id_at_version"
      ],
      "scenarios": [
       {
@@ -5975,6 +6218,13 @@
         "uc_061:bad_historical_tag_skipped_by_install"
        ],
        "covered": true
+      },
+      {
+       "slug": "update-past-a-broken-old-tag",
+       "title": "Update past a broken old tag",
+       "tag": "package-ids/broken-historical-tags-are-skipped#update-past-a-broken-old-tag",
+       "cases": [],
+       "covered": false
       }
      ],
      "covered": true,
@@ -6507,7 +6757,10 @@
      "all_cases": [
       "uc_073:list_reports_all_four_keys"
      ],
-     "cargo_tests": [],
+     "cargo_tests": [
+      "list_reports_metadata_present_or_absent_and_filters_by_provides",
+      "model::state_requires_core_fields"
+     ],
      "scenarios": [
       {
        "slug": "workspace-from-0-4",
@@ -6880,6 +7133,7 @@
      ],
      "all_cases": [
       "uc_040:held_workspace_lock_refuses_every_mutation",
+      "uc_040:list_reads_during_a_held_lock",
       "uc_040:workspace_and_catalog_locks_are_independent",
       "uc_050:independent_workspaces_and_catalogs_run_in_parallel",
       "uc_050:same_plugin_installed_concurrently_once",
@@ -6906,6 +7160,7 @@
        "tag": "transactions-locking/workspace-lock#two-cli-processes",
        "cases": [
         "uc_040:held_workspace_lock_refuses_every_mutation",
+        "uc_040:list_reads_during_a_held_lock",
         "uc_050:same_workspace_concurrent_installs",
         "uc_050:same_workspace_mixed_mutations_lose_nothing"
        ],
@@ -6915,6 +7170,7 @@
      "covered": true,
      "last_run": {
       "uc_040:held_workspace_lock_refuses_every_mutation": "PASS",
+      "uc_040:list_reads_during_a_held_lock": "PASS",
       "uc_040:workspace_and_catalog_locks_are_independent": "PASS",
       "uc_050:independent_workspaces_and_catalogs_run_in_parallel": "PASS",
       "uc_050:same_plugin_installed_concurrently_once": "PASS",
@@ -7519,6 +7775,27 @@
       "uc_071:dry_run_previews_and_changes_nothing": "PASS",
       "uc_075:update_all_lines": "PASS"
      }
+    },
+    {
+     "slug": "update-all-reports-every-package",
+     "title": "update all reports every package",
+     "tag": "updates/update-all-reports-every-package",
+     "cases": [],
+     "all_cases": [],
+     "cargo_tests": [
+      "update_all_plan_lists_unchanged_packages"
+     ],
+     "scenarios": [
+      {
+       "slug": "one-update-one-current",
+       "title": "One update, one current",
+       "tag": "updates/update-all-reports-every-package#one-update-one-current",
+       "cases": [],
+       "covered": false
+      }
+     ],
+     "covered": true,
+     "last_run": {}
     }
    ]
   },
@@ -7643,14 +7920,20 @@
      "cases": [],
      "all_cases": [],
      "cargo_tests": [
-      "model::state_formats_one_and_two_are_read_newer_ones_refused",
-      "workspace::a_workspace_of_gitpm_0_3_opens_and_is_written_as_format_2"
+      "model::state_format_other_than_current_is_refused"
      ],
      "scenarios": [
       {
        "slug": "workspace-from-gitpm-0-3",
        "title": "Workspace from gitpm 0.3",
        "tag": "workspace-layout/state-format-versions#workspace-from-gitpm-0-3",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "workspace-of-gitpm-0-5",
+       "title": "Workspace of gitpm 0.5",
+       "tag": "workspace-layout/state-format-versions#workspace-of-gitpm-0-5",
        "cases": [],
        "covered": false
       },
@@ -7745,6 +8028,27 @@
       }
      ],
      "covered": false,
+     "last_run": {}
+    },
+    {
+     "slug": "options-are-validated-before-anything-is-created",
+     "title": "Options are validated before anything is created",
+     "tag": "workspace-layout/options-are-validated-before-anything-is-created",
+     "cases": [],
+     "all_cases": [],
+     "cargo_tests": [
+      "workspace::open_with_validates_options_before_creating_anything"
+     ],
+     "scenarios": [
+      {
+       "slug": "invalid-options-on-a-new-root",
+       "title": "Invalid options on a new root",
+       "tag": "workspace-layout/options-are-validated-before-anything-is-created#invalid-options-on-a-new-root",
+       "cases": [],
+       "covered": false
+      }
+     ],
+     "covered": true,
      "last_run": {}
     }
    ]
@@ -7867,14 +8171,6 @@
   },
   {
    "id": "uc_001:unsupported_channel",
-   "spec": [
-    "cli/option-validation#channel-and-ref"
-   ],
-   "xfail": null,
-   "last_run": "PASS"
-  },
-  {
-   "id": "uc_001:channel_with_ref",
    "spec": [
     "cli/option-validation#channel-and-ref"
    ],
@@ -9785,7 +10081,7 @@
   {
    "id": "uc_030:install_ignores_unreachable_build",
    "spec": [
-    "cli/nothing-is-built-executed-or-uploaded",
+    "catalog/nothing-is-built-executed-or-uploaded",
     "install-uninstall/install-from-the-catalog"
    ],
    "xfail": null,
@@ -10016,9 +10312,17 @@
    "last_run": "PASS"
   },
   {
-   "id": "uc_035:not_in_catalog",
+   "id": "uc_035:not_in_catalog_reads_the_origin",
    "spec": [
-    "catalog/check-compares-installed-with-the-catalog"
+    "catalog/check-compares-installed-with-the-catalog#statuses"
+   ],
+   "xfail": null,
+   "last_run": "PASS"
+  },
+  {
+   "id": "uc_035:origin_statuses",
+   "spec": [
+    "catalog/check-compares-installed-with-the-catalog#statuses"
    ],
    "xfail": null,
    "last_run": "PASS"
@@ -10217,6 +10521,15 @@
    "id": "uc_040:held_workspace_lock_refuses_every_mutation",
    "spec": [
     "transactions-locking/workspace-lock#two-cli-processes"
+   ],
+   "xfail": null,
+   "last_run": "PASS"
+  },
+  {
+   "id": "uc_040:list_reads_during_a_held_lock",
+   "spec": [
+    "transactions-locking/workspace-lock#two-cli-processes",
+    "dist/read-only-commands-never-change-dist"
    ],
    "xfail": null,
    "last_run": "PASS"
@@ -10726,10 +11039,10 @@
    "last_run": "PASS"
   },
   {
-   "id": "uc_045:missing_clone_uninstall",
+   "id": "uc_045:missing_clone_uninstall_drops_the_record",
    "spec": [
-    "dist/undeployable-packages-do-not-block-others",
-    "errors/failing-operations-leave-the-workspace-unchanged"
+    "dist/sync-dist-repairs-dist-explicitly",
+    "dist/undeployable-packages-do-not-block-others"
    ],
    "xfail": null,
    "last_run": "PASS"
@@ -11559,6 +11872,14 @@
    "last_run": "PASS"
   },
   {
+   "id": "uc_058:missing_catalog_location_is_refused",
+   "spec": [
+    "cli/commands-that-need-a-catalog-say-so"
+   ],
+   "xfail": null,
+   "last_run": "PASS"
+  },
+  {
    "id": "uc_058:direct_install_with_dependency_installed",
    "spec": [
     "dependencies/install-resolves-dependencies"
@@ -11672,6 +11993,15 @@
    "id": "uc_060:newer_original_release_is_visible",
    "spec": [
     "fork-replacement/check-shows-fork-upstream#original-has-a-newer-release"
+   ],
+   "xfail": null,
+   "last_run": "PASS"
+  },
+  {
+   "id": "uc_060:upstream_from_fork_of_source_without_a_catalog",
+   "spec": [
+    "fork-replacement/check-shows-fork-upstream",
+    "catalog/a-catalog-is-optional#check-without-a-catalog"
    ],
    "xfail": null,
    "last_run": "PASS"
@@ -12152,22 +12482,6 @@
    "id": "uc_063:unknown_auth_subcommand",
    "spec": [
     "cli/command-set"
-   ],
-   "xfail": null,
-   "last_run": "PASS"
-  },
-  {
-   "id": "uc_063:channel_with_ref_install",
-   "spec": [
-    "cli/option-validation#channel-and-ref"
-   ],
-   "xfail": null,
-   "last_run": "PASS"
-  },
-  {
-   "id": "uc_063:channel_with_ref_update",
-   "spec": [
-    "cli/option-validation#channel-and-ref"
    ],
    "xfail": null,
    "last_run": "PASS"
