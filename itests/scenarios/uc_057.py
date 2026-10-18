@@ -42,7 +42,7 @@ def origin_catalog_recorded(t: T):
     t.eq(p["current"]["version"], "1.0.0", "version")
 
 
-@case(fixture="g4_two_catalogs", spec=["catalog/check-compares-installed-with-the-catalog#identity-mismatch", "catalog/check-compares-installed-with-the-catalog#other-catalog"])
+@case(fixture="g4_two_catalogs", spec=["catalog/check-compares-installed-packages-with-their-catalog-or-origin#identity-mismatch", "catalog/check-compares-installed-packages-with-their-catalog-or-origin#other-catalog"])
 def check_against_b_reports_different_source(t: T):
     """2. GITPM_CATALOG switched to B (local and HTTP): x/p is "different source", not an update to 1.1.0."""
     install_from_a(t)
@@ -79,7 +79,7 @@ def mixing_catalogs_refused(t: T):
         t.not_installed(YQ)
 
 
-@case(fixture="g4_two_catalogs", spec=["catalog/check-compares-installed-with-the-catalog#other-catalog"])
+@case(fixture="g4_two_catalogs", spec=["catalog/check-compares-installed-packages-with-their-catalog-or-origin#other-catalog"])
 def same_commit_same_source_is_up_to_date(t: T):
     """5. z/r installed from A, identical release (source + commit) in B: check against B says "up to date"."""
     install_from_a(t, ZR)

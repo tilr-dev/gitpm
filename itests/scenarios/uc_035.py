@@ -28,14 +28,14 @@ def check(t: T, url: str, id: str, expected: str) -> str:
     return out
 
 
-@case(fixture="catalog", spec=["catalog/check-compares-installed-with-the-catalog#cli-table"])
+@case(fixture="catalog", spec=["catalog/check-compares-installed-packages-with-their-catalog-or-origin#cli-table"])
 def up_to_date(t: T):
     srv = t.serve(t.catalog)
     t.gitpm_ok("--catalog", srv.url, "install-catalog", HELLO)
     check(t, srv.url, HELLO, "up to date")
 
 
-@case(fixture="catalog", spec=["catalog/check-compares-installed-with-the-catalog", "catalog/catalog-v2-is-a-tree-of-static-files#direct-lookup"])
+@case(fixture="catalog", spec=["catalog/check-compares-installed-packages-with-their-catalog-or-origin", "catalog/catalog-v2-is-a-tree-of-static-files#direct-lookup"])
 def update_available_reads_only_installed_plugins(t: T):
     """Two installed packages; requests go to their index and current/latest releases only."""
     srv = t.serve(t.catalog)
@@ -61,7 +61,7 @@ def update_available_reads_only_installed_plugins(t: T):
     t.eq(sorted(set(srv.take())), sorted(set(requests)), "requests after breaking directory indexes")
 
 
-@case(fixture="catalog", spec=["catalog/check-compares-installed-with-the-catalog#statuses"])
+@case(fixture="catalog", spec=["catalog/check-compares-installed-packages-with-their-catalog-or-origin#statuses"])
 def not_in_catalog_reads_the_origin(t: T):
     """A package the catalog does not list gets an origin row from its recorded source:
     up to date, then update available once the origin has a newer release tag."""
@@ -74,7 +74,7 @@ def not_in_catalog_reads_the_origin(t: T):
     t.has(row, "origin", "0.2.0")
 
 
-@case(fixture="catalog", spec=["catalog/check-compares-installed-with-the-catalog#statuses"])
+@case(fixture="catalog", spec=["catalog/check-compares-installed-packages-with-their-catalog-or-origin#statuses"])
 def origin_statuses(t: T):
     """Origin rows: newer than origin (installed past the last tag), no releases on origin
     (tags gone), origin unreachable (repository moved) — each only its own row, check exits 0."""
@@ -92,7 +92,7 @@ def origin_statuses(t: T):
     t.has(status(t, out, HELLO), "catalog", "up to date")
 
 
-@case(fixture="catalog", spec=["catalog/check-compares-installed-with-the-catalog"])
+@case(fixture="catalog", spec=["catalog/check-compares-installed-packages-with-their-catalog-or-origin"])
 def newer_than_catalog(t: T):
     """Installed from the catalog, then updated from Git past the last registered release."""
     srv = t.serve(t.catalog)
@@ -102,7 +102,7 @@ def newer_than_catalog(t: T):
     check(t, srv.url, HELLO, "newer than catalog")
 
 
-@case(fixture="catalog", spec=["catalog/check-compares-installed-with-the-catalog#identity-mismatch"])
+@case(fixture="catalog", spec=["catalog/check-compares-installed-packages-with-their-catalog-or-origin#identity-mismatch"])
 def same_version_different_commit(t: T):
     """A direct install of another commit that still says 0.1.1."""
     srv = t.serve(t.catalog)
@@ -112,7 +112,7 @@ def same_version_different_commit(t: T):
     check(t, srv.url, HELLO, "same version, different commit")
 
 
-@case(fixture="catalog", spec=["catalog/check-compares-installed-with-the-catalog#identity-mismatch"])
+@case(fixture="catalog", spec=["catalog/check-compares-installed-packages-with-their-catalog-or-origin#identity-mismatch"])
 def different_source(t: T):
     """A direct install from a mirror path: the catalog source differs literally."""
     srv = t.serve(t.catalog)
@@ -121,7 +121,7 @@ def different_source(t: T):
     check(t, srv.url, HELLO, "different source in catalog")
 
 
-@case(fixture="catalog", spec=["catalog/check-compares-installed-with-the-catalog#other-catalog"])
+@case(fixture="catalog", spec=["catalog/check-compares-installed-packages-with-their-catalog-or-origin#other-catalog"])
 def installed_from_other_catalog(t: T):
     """Installed from the local catalog path, checked against its HTTP copy. An older
     install is not compared ("up to date" still wins for the same release, UC-057)."""
@@ -130,7 +130,7 @@ def installed_from_other_catalog(t: T):
     check(t, srv.url, HELLO, "installed from another catalog")
 
 
-@case(fixture="catalog", spec=["catalog/check-compares-installed-with-the-catalog"])
+@case(fixture="catalog", spec=["catalog/check-compares-installed-packages-with-their-catalog-or-origin"])
 def no_versions(t: T):
     served = t.root / "served"
     shutil.copytree(t.catalog, served)
@@ -140,7 +140,7 @@ def no_versions(t: T):
     check(t, srv.url, HELLO, "no versions in catalog")
 
 
-@case(fixture="catalog", spec=["catalog/check-compares-installed-with-the-catalog#broken-payload"])
+@case(fixture="catalog", spec=["catalog/check-compares-installed-packages-with-their-catalog-or-origin#broken-payload"])
 def invalid_catalog_data(t: T):
     served = t.root / "served"
     shutil.copytree(t.catalog, served)
@@ -150,7 +150,7 @@ def invalid_catalog_data(t: T):
     check(t, srv.url, HELLO, "invalid catalog data")
 
 
-@case(fixture="catalog", spec=["catalog/check-compares-installed-with-the-catalog#broken-payload"])
+@case(fixture="catalog", spec=["catalog/check-compares-installed-packages-with-their-catalog-or-origin#broken-payload"])
 def invalid_catalog_data_local(t: T):
     """The same mismatch in a local catalog folder."""
     t.gitpm_ok("install-catalog", HELLO)
@@ -158,7 +158,7 @@ def invalid_catalog_data_local(t: T):
     check(t, str(t.catalog), HELLO, "invalid catalog data")
 
 
-@case(fixture="catalog", spec=["catalog/check-compares-installed-with-the-catalog#broken-payload"])
+@case(fixture="catalog", spec=["catalog/check-compares-installed-packages-with-their-catalog-or-origin#broken-payload"])
 def unreadable_release_is_an_error(t: T):
     """Malformed JSON of an installed package's release fails check (not "no updates")."""
     served = t.root / "served"

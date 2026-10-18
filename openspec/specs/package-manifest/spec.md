@@ -14,19 +14,23 @@ A package SHALL be a folder in a Git repository (the repository root, or a folde
 - **THEN** install fails with `invalid_manifest` ("missing plugin.json: …")
 
 ### Requirement: Known manifest keys
-The manifest SHALL require `id` (a valid package ID) and `version` (format in package-ids, "Version format") and MAY carry `dependencies` (see dependencies), `forkOf` `{id, version, commit}` and `replaces` `{id, version}` without unknown keys; their IDs MUST be valid and other than the own `id`, their versions MUST pass the version format. Verified by `model::manifest_parses_minimal_and_fork_manifests` and `model::manifest_rejections_have_precise_kinds`.
+The manifest SHALL require `id` (a valid package ID) and `version` (package-ids, "Version format"); it MAY carry `dependencies`, `forkOf` `{id, version, commit, source?}` and `replaces` `{id, version}`, which take no unknown keys. Their IDs MUST be valid and differ from `id`, their versions MUST pass the version format, and `forkOf.source` MUST be a Git URL or an absolute path. Verified by `model::manifest_parses_minimal_and_fork_manifests` and `model::manifest_rejections_have_precise_kinds`.
 
 #### Scenario: Minimal manifest
 - **WHEN** `plugin.json` is `{"id": "acme/greeter", "version": "0.1.0"}`
 - **THEN** it is a valid manifest with no dependencies
 
 #### Scenario: Invalid forkOf
-- **WHEN** `forkOf.id` equals the manifest's own `id`, or `forkOf.commit` is not a 40- or 64-character hex commit, or `forkOf.version` is empty or not MAJOR.MINOR.PATCH
-- **THEN** the manifest is refused with `invalid_manifest` (own ID, malformed commit, empty version), or with `invalid_version` when `forkOf.version` is not MAJOR.MINOR.PATCH (rule in package-ids, "Version format")
+- **WHEN** `forkOf.id` equals the manifest's own `id`, or `forkOf.commit` is not a 40- or 64-character hex commit, or `forkOf.version` is empty or not MAJOR.MINOR.PATCH, or `forkOf.source` is empty, relative (`foo/bar`), a remote helper (`ext::sh -c id`, `fd::5`, any `::`) or a URL of another scheme than `https`, `http`, `ssh`, `git`, `file` (or `host:path`) or with credentials
+- **THEN** the manifest is refused with `invalid_manifest` (own ID, malformed commit, empty version, invalid source), or with `invalid_version` when `forkOf.version` is not MAJOR.MINOR.PATCH (rule in package-ids, "Version format")
 
 #### Scenario: Self-replacement
 - **WHEN** `replaces.id` equals the manifest's own `id`
 - **THEN** the manifest is refused with `invalid_manifest` ("a package cannot replace itself")
+
+#### Scenario: Fork manifest without source
+- **WHEN** a fork's manifest has `forkOf` without `source`
+- **THEN** it is valid; `check` then knows the original only from the catalog
 
 ### Requirement: Unknown keys are preserved
 Single source for unknown keys: top-level keys gitpm does not know SHALL be accepted and SHALL be written back unchanged whenever gitpm rewrites the manifest (`commit`, `fork`, `fork --replace`), after the known keys and in their original order relative to each other. The metadata keys (plugin-metadata) count as unknown keys for this rule. Verified by `model::manifest_keeps_unknown_top_level_keys_through_read_and_write` and `model::manifest_keeps_the_original_order_of_unknown_keys`.

@@ -41,7 +41,7 @@ The CLI SHALL resolve `--root DIR` / `GITPM_ROOT` (default `./gitpm-workspace`),
 - **THEN** the workspace is `./gitpm-workspace`
 
 ### Requirement: Commands that need a catalog say so
-Catalog commands (`info`, `catalog`, `catalog-update`, `register`), `install-catalog` and `check` on a non-empty workspace SHALL fail without a catalog with `COMMAND needs a catalog: pass --catalog DIR_OR_JSON_OR_URL or set GITPM_CATALOG` (a CLI usage error without `Error kind`) and create nothing. A given location SHALL be passed to the library unchanged, also for `install`. Verified by `catalog_commands_name_the_missing_catalog_and_create_nothing`.
+Catalog commands (`info`, `catalog`, `catalog-update`, `register`) and `install-catalog` SHALL fail without a catalog with `COMMAND needs a catalog: pass --catalog DIR_OR_JSON_OR_URL or set GITPM_CATALOG` (a CLI usage error without `Error kind`) and create nothing; `check` works without one. A given location SHALL be passed to the library unchanged, also for `install`. Verified by `catalog_commands_name_the_missing_catalog_and_create_nothing`.
 
 #### Scenario: Catalog command without a catalog
 - **WHEN** neither `--catalog` nor `GITPM_CATALOG` is set and the user runs `gitpm info`
@@ -51,6 +51,10 @@ Catalog commands (`info`, `catalog`, `catalog-update`, `register`), `install-cat
 #### Scenario: Catalog path that does not exist
 - **WHEN** the user runs `gitpm --catalog ./missing install ./greeter`
 - **THEN** it fails with the library's `invalid_argument` (catalog, "A configured catalog location must exist"), prints `Error kind: invalid_argument`, exits with status 1 and creates nothing
+
+#### Scenario: check without a catalog
+- **WHEN** neither `--catalog` nor `GITPM_CATALOG` is set and the user runs `gitpm check` on a workspace with packages
+- **THEN** it prints the check table from each package's origin and exits 0
 
 ### Requirement: Option validation
 Before calling the library the CLI SHALL refuse only syntax: unknown or repeated options, options on commands they do not apply to (for example `--dry-run` outside `update all`/`sync-dist`), values outside a fixed set and wrong argument counts, with a message ending `; use --help` where applicable (usage errors without `Error kind`). Domain combinations are checked by the library. Verified by `usage_errors_name_the_problem_and_create_nothing`.

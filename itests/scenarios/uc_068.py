@@ -61,7 +61,7 @@ def journey(t: T, until: str):
          "forget": lambda t: (t.gitpm_ok("forget", ID), t.gitpm_ok("restore", ID))}[step](t)
 
 
-@case(fixture="g6_journey", spec=["install-uninstall/install-from-the-catalog", "catalog/check-compares-installed-with-the-catalog#cli-table"])
+@case(fixture="g6_journey", spec=["install-uninstall/install-from-the-catalog", "catalog/check-compares-installed-packages-with-their-catalog-or-origin#cli-table"])
 def install_list_check(t: T):
     """install-catalog: state with catalog origin, clone HEAD, dist; list shows it; check says up to date."""
     at(t, "0.1.0", None)
@@ -71,7 +71,7 @@ def install_list_check(t: T):
     t.has(check_row(t), "0.1.0", "up to date")
 
 
-@case(fixture="g6_journey", spec=["catalog/check-compares-installed-with-the-catalog"])
+@case(fixture="g6_journey", spec=["catalog/check-compares-installed-packages-with-their-catalog-or-origin"])
 def catalog_update_alone_changes_nothing(t: T):
     """New release + catalog update: consumer unchanged; check shows update available 0.1.1 until update."""
     author_releases(t)

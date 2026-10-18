@@ -67,7 +67,7 @@ def exact_version_of_a_missing_release_fails_others_install(t: T):
     t.same(before, "state and dist reinstalled at 0.1.1")
 
 
-@case(fixture="catalog", spec=["catalog/check-compares-installed-with-the-catalog#broken-payload"])
+@case(fixture="catalog", spec=["catalog/check-compares-installed-packages-with-their-catalog-or-origin#broken-payload"])
 def check_with_a_missing_latest_release_fails_then_recovers(t: T):
     """dan/hello 0.1.1 installed from the served catalog; 0.2.0 listed but not uploaded:
     check fails (not "up to date" or "no updates") and changes nothing; once uploaded,

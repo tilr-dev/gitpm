@@ -174,7 +174,7 @@ def tty(t: T, cmd: str, env: dict):
     return t.run("script", "-qec", cmd, "/dev/null", env=env, input="")
 
 
-@case(fixture="g1_ws_catalog", spec=["catalog/check-compares-installed-with-the-catalog"])
+@case(fixture="g1_ws_catalog", spec=["catalog/check-compares-installed-packages-with-their-catalog-or-origin"])
 def check_pipe_has_no_colour(t: T):
     """7. check into a pipe: no ANSI codes, update listed, exit 0."""
     r = t.gitpm("check", env={"TERM": "xterm-256color"})
@@ -183,7 +183,7 @@ def check_pipe_has_no_colour(t: T):
     t.lacks(r.out + r.err, ESC)
 
 
-@case(fixture="g1_ws_catalog", spec=["catalog/check-compares-installed-with-the-catalog"])
+@case(fixture="g1_ws_catalog", spec=["catalog/check-compares-installed-packages-with-their-catalog-or-origin"])
 def check_tty_is_coloured(t: T):
     """7. check on a TTY: the update is green; exit 0 and stable across runs."""
     codes = []
@@ -194,7 +194,7 @@ def check_tty_is_coloured(t: T):
     t.eq(codes, [0, 0], "exit codes with an update available")
 
 
-@case(fixture="g1_ws_catalog", spec=["catalog/check-compares-installed-with-the-catalog"])
+@case(fixture="g1_ws_catalog", spec=["catalog/check-compares-installed-packages-with-their-catalog-or-origin"])
 def check_tty_no_color(t: T):
     """7. NO_COLOR=1 on a TTY: no ANSI codes."""
     r = tty(t, "gitpm check", {"TERM": "xterm-256color", "NO_COLOR": "1"})
@@ -203,7 +203,7 @@ def check_tty_no_color(t: T):
     t.lacks(r.out, ESC)
 
 
-@case(fixture="g1_ws_catalog", spec=["catalog/check-compares-installed-with-the-catalog"])
+@case(fixture="g1_ws_catalog", spec=["catalog/check-compares-installed-packages-with-their-catalog-or-origin"])
 def check_tty_term_dumb(t: T):
     """7. TERM=dumb on a TTY: no ANSI codes."""
     r = tty(t, "gitpm check", {"TERM": "dumb"})
@@ -212,7 +212,7 @@ def check_tty_term_dumb(t: T):
     t.lacks(r.out, ESC)
 
 
-@case(fixture="g1_ws_catalog", spec=["catalog/check-compares-installed-with-the-catalog", "catalog/check-compares-installed-with-the-catalog#exit-status"])
+@case(fixture="g1_ws_catalog", spec=["catalog/check-compares-installed-packages-with-their-catalog-or-origin", "catalog/check-compares-installed-packages-with-their-catalog-or-origin#exit-status"])
 def check_exit_code_without_updates(t: T):
     """7. The exit code is 0 with and without updates (README: updates do not change it)."""
     t.eq(t.gitpm("check").code, 0, "with an update")

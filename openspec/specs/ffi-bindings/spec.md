@@ -93,3 +93,10 @@ Every CLI command that reads or changes a workspace, reads a catalog or checks a
 #### Scenario: Restorable packages
 - **WHEN** a host wants to offer `restore` for forgotten packages
 - **THEN** `readState(root)` returns the full state view (raw state including `forgotten` and `replacements`, plus `resolved` with `active`) without opening the workspace; it is the only free function for the state
+
+### Requirement: Check report record
+The free function `check(root, catalog)` SHALL return a `CheckReport` record that mirrors the library report field by field: rows (with `status`, message, `source` `catalog`/`origin` and `problem`), the fork `upstream` of each row (with its `source` and `problem`), the replacement bindings and the unsatisfied dependencies, so a host shows what `gitpm check` prints. This adds to "Records mirror library results". Verified by `records_convert_field_by_field`.
+
+#### Scenario: check without a catalog from Swift
+- **WHEN** a host calls `check(root, nil)` on a workspace with packages installed from Git
+- **THEN** it receives a `CheckReport` whose rows have `source` `origin`, plus the replacement bindings and unsatisfied dependencies the CLI prints

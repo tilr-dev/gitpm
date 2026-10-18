@@ -33,12 +33,13 @@ Defines forking an installed package into an author repository under a new names
 - **THEN** the fork fails with `invalid_argument` ("fork destination must be outside the managed workspace") and nothing is created
 
 ### Requirement: Fork metadata
-The fork's manifest SHALL get `forkOf` `{id, version, commit}` of the forked revision and `replaces` `{id, version}` set to the forked version; metadata and unknown keys SHALL be kept (package-manifest, "Unknown keys are preserved"; plugin-metadata, "Metadata survives rewrites"). The fork SHALL be on a new branch `fork` (or `fork-2`, `fork-3`, … when that name is taken) with attached HEAD. Verified by `fork_records_local_head_preserves_index_and_immediate_parent`.
+The fork's manifest SHALL get `forkOf` `{id, version, commit, source}` of the forked revision (`source`: the original's recorded source) and `replaces` `{id, version}` at the forked version; metadata and unknown keys SHALL be kept (package-manifest, "Unknown keys are preserved"; plugin-metadata, "Metadata survives rewrites"). The fork SHALL be on a new branch `fork` (`fork-2`, … when taken) with attached HEAD. Verified by `fork_records_local_head_preserves_index_and_immediate_parent`.
 
 #### Scenario: Fork manifest
-- **WHEN** `acme/hello` 1.0.0 is forked into namespace `me`
-- **THEN** the fork's `plugin.json` has `forkOf.id` `acme/hello`, `forkOf.version` `1.0.0` and `replaces` `{"id": "acme/hello", "version": "1.0.0"}`
+- **WHEN** `acme/hello` 1.0.0, installed from `https://git.example/acme/hello.git`, is forked into namespace `me`
+- **THEN** the fork's `plugin.json` has `forkOf.id` `acme/hello`, `forkOf.version` `1.0.0`, `forkOf.source` `https://git.example/acme/hello.git` and `replaces` `{"id": "acme/hello", "version": "1.0.0"}`
 - **AND** metadata keys are carried unchanged; this is covered by `metadata::fork_and_commit_carry_the_metadata_unchanged`
+- **AND** `forkOf.source` is left out when the original's source is not a Git URL or an absolute path, or names a remote helper
 
 ### Requirement: Fork output names the next steps
 Without `--replace`, the CLI SHALL print the fork lines and the next steps per package (the strings below are the common forms): `gitpm commit DIR NEW_VERSION --package ID` (commit local edits, tag), `gitpm install DIR ID`, `gitpm replace ORIGINAL --with ID`, and for a new fork `gitpm remote DIR GIT_URL`.
@@ -131,11 +132,19 @@ Single source for what happens to a replacement binding when a package leaves or
 - **THEN** it is still replaced by the fork until `replace vendor/base --back`
 
 ### Requirement: check shows fork upstream
-For a fork, `check` SHALL add `upstream {id, base, latest, newer}`: the original's latest catalog release against the version the fork started from. Verified by `check_shows_fork_upstream_and_other_catalogs`.
+For a fork, `check` SHALL add `upstream {id, base, latest, newer, source, problem}`: the original's latest release against the version the fork started from, taken from the catalog when it lists the original, otherwise from the release tags of `forkOf.source` (`source` `catalog` or `origin`); without either, `latest` is unknown. Verified by `check_shows_fork_upstream_and_other_catalogs` and `check::fork_upstream_from_fork_of_source`.
 
 #### Scenario: Original has a newer release
 - **WHEN** `me/hello` forked `acme/hello` 1.0.0 and the catalog has `acme/hello` 1.1.0
 - **THEN** `check` prints `me/hello: fork of acme/hello (base 1.0.0); original in catalog: 1.1.0 — newer than the fork base`
+
+#### Scenario: Upstream without a catalog
+- **WHEN** no catalog is given and `forkOf.source` of `me/hello` has the tag `acme/hello@1.1.0`
+- **THEN** `check` prints `me/hello: fork of acme/hello (base 1.0.0); original at origin: 1.1.0 — newer than the fork base`
+
+#### Scenario: Unreadable upstream
+- **WHEN** no catalog lists the original and `forkOf.source` cannot be read
+- **THEN** `upstream.problem` says why and `check` prints `me/hello: fork of acme/hello (base 1.0.0); original: unreachable (PROBLEM)`
 
 ### Requirement: A pending replacement of fork --replace is confirmed and resumed
 When the replace step of `fork --replace` needs confirmation (incompatible consumers, not forced), the library SHALL stop that package after its install and return its `ReplacementPlan` as pending; `Manager::fork_replace_resume` (FFI `forkReplaceResume`) SHALL apply the pending replacements once confirmed, re-planning under the lock (`incompatible_replacement` when the consumers changed). Verified by `fork_replace_pending_replacement_is_resumed_after_confirmation`.

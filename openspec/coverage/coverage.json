@@ -3,16 +3,16 @@
   "specs": "openspec/specs",
   "cases": 632,
   "last_run": {
-   "started": "2026-10-18T14:50:03.458770+00:00",
-   "commit": "39c1d0e+dirty",
+   "started": "2026-10-18T14:59:43.162698+00:00",
+   "commit": "7ea6307+dirty",
    "counts": {
-    "PASS": 1013,
+    "PASS": 671,
     "FAIL": 0,
     "BLOCKED": 1,
     "XFAIL": 1,
     "XPASS": 0
    },
-   "path": "itests/results/20261018T164958-51239"
+   "path": "itests/results/20261018T165939-3237"
   }
  },
  "capabilities": [
@@ -1096,9 +1096,9 @@
      }
     },
     {
-     "slug": "check-compares-installed-with-the-catalog",
-     "title": "check compares installed with the catalog",
-     "tag": "catalog/check-compares-installed-with-the-catalog",
+     "slug": "check-compares-installed-packages-with-their-catalog-or-origin",
+     "title": "check compares installed packages with their catalog or origin",
+     "tag": "catalog/check-compares-installed-packages-with-their-catalog-or-origin",
      "cases": [
       "uc_035:newer_than_catalog",
       "uc_035:no_versions",
@@ -1135,15 +1135,21 @@
       "uc_077:check_with_a_missing_latest_release_fails_then_recovers"
      ],
      "cargo_tests": [
+      "check::check_without_catalog_reads_each_origin",
       "check_shows_fork_upstream_and_other_catalogs",
       "check::read_state_never_creates_or_locks_a_workspace",
-      "check::check_reports_invalid_release_without_hiding_healthy_plugins"
+      "check::check_reports_invalid_release_without_hiding_healthy_plugins",
+      "update_available",
+      "up_to_date",
+      "fd::5",
+      "origin_unreachable",
+      "check::unsafe_or_relative_sources_are_never_handed_to_git"
      ],
      "scenarios": [
       {
        "slug": "statuses",
        "title": "Statuses",
-       "tag": "catalog/check-compares-installed-with-the-catalog#statuses",
+       "tag": "catalog/check-compares-installed-packages-with-their-catalog-or-origin#statuses",
        "cases": [
         "uc_035:not_in_catalog_reads_the_origin",
         "uc_035:origin_statuses"
@@ -1153,7 +1159,7 @@
       {
        "slug": "identity-mismatch",
        "title": "Identity mismatch",
-       "tag": "catalog/check-compares-installed-with-the-catalog#identity-mismatch",
+       "tag": "catalog/check-compares-installed-packages-with-their-catalog-or-origin#identity-mismatch",
        "cases": [
         "uc_035:different_source",
         "uc_035:same_version_different_commit",
@@ -1164,7 +1170,7 @@
       {
        "slug": "broken-payload",
        "title": "Broken payload",
-       "tag": "catalog/check-compares-installed-with-the-catalog#broken-payload",
+       "tag": "catalog/check-compares-installed-packages-with-their-catalog-or-origin#broken-payload",
        "cases": [
         "uc_035:invalid_catalog_data",
         "uc_035:invalid_catalog_data_local",
@@ -1176,7 +1182,7 @@
       {
        "slug": "cli-table",
        "title": "CLI table",
-       "tag": "catalog/check-compares-installed-with-the-catalog#cli-table",
+       "tag": "catalog/check-compares-installed-packages-with-their-catalog-or-origin#cli-table",
        "cases": [
         "uc_035:up_to_date",
         "uc_068:install_list_check"
@@ -1186,7 +1192,7 @@
       {
        "slug": "other-catalog",
        "title": "Other catalog",
-       "tag": "catalog/check-compares-installed-with-the-catalog#other-catalog",
+       "tag": "catalog/check-compares-installed-packages-with-their-catalog-or-origin#other-catalog",
        "cases": [
         "uc_035:installed_from_other_catalog",
         "uc_057:check_against_b_reports_different_source",
@@ -1195,9 +1201,23 @@
        "covered": true
       },
       {
+       "slug": "origin-row",
+       "title": "Origin row",
+       "tag": "catalog/check-compares-installed-packages-with-their-catalog-or-origin#origin-row",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "source-that-is-not-queried",
+       "title": "Source that is not queried",
+       "tag": "catalog/check-compares-installed-packages-with-their-catalog-or-origin#source-that-is-not-queried",
+       "cases": [],
+       "covered": false
+      },
+      {
        "slug": "exit-status",
        "title": "Exit status",
-       "tag": "catalog/check-compares-installed-with-the-catalog#exit-status",
+       "tag": "catalog/check-compares-installed-packages-with-their-catalog-or-origin#exit-status",
        "cases": [
         "uc_063:check_exit_code_without_updates"
        ],
@@ -1466,6 +1486,13 @@
        "slug": "catalog-path-that-does-not-exist",
        "title": "Catalog path that does not exist",
        "tag": "cli/commands-that-need-a-catalog-say-so#catalog-path-that-does-not-exist",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "check-without-a-catalog",
+       "title": "check without a catalog",
+       "tag": "cli/commands-that-need-a-catalog-say-so#check-without-a-catalog",
        "cases": [],
        "covered": false
       }
@@ -3524,6 +3551,27 @@
      ],
      "covered": true,
      "last_run": {}
+    },
+    {
+     "slug": "check-report-record",
+     "title": "Check report record",
+     "tag": "ffi-bindings/check-report-record",
+     "cases": [],
+     "all_cases": [],
+     "cargo_tests": [
+      "records_convert_field_by_field"
+     ],
+     "scenarios": [
+      {
+       "slug": "check-without-a-catalog-from-swift",
+       "title": "check without a catalog from Swift",
+       "tag": "ffi-bindings/check-report-record#check-without-a-catalog-from-swift",
+       "cases": [],
+       "covered": false
+      }
+     ],
+     "covered": true,
+     "last_run": {}
     }
    ]
   },
@@ -4145,7 +4193,8 @@
       "uc_060:upstream_from_fork_of_source_without_a_catalog"
      ],
      "cargo_tests": [
-      "check_shows_fork_upstream_and_other_catalogs"
+      "check_shows_fork_upstream_and_other_catalogs",
+      "check::fork_upstream_from_fork_of_source"
      ],
      "scenarios": [
       {
@@ -4156,6 +4205,20 @@
         "uc_060:newer_original_release_is_visible"
        ],
        "covered": true
+      },
+      {
+       "slug": "upstream-without-a-catalog",
+       "title": "Upstream without a catalog",
+       "tag": "fork-replacement/check-shows-fork-upstream#upstream-without-a-catalog",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "unreadable-upstream",
+       "title": "Unreadable upstream",
+       "tag": "fork-replacement/check-shows-fork-upstream#unreadable-upstream",
+       "cases": [],
+       "covered": false
       }
      ],
      "covered": true,
@@ -4622,6 +4685,49 @@
        "slug": "developer-git-config",
        "title": "Developer git config",
        "tag": "git-safety/hermetic-tests#developer-git-config",
+       "cases": [],
+       "covered": false
+      }
+     ],
+     "covered": true,
+     "last_run": {}
+    },
+    {
+     "slug": "origin-tag-lookup-is-bounded-and-restricted",
+     "title": "Origin tag lookup is bounded and restricted",
+     "tag": "git-safety/origin-tag-lookup-is-bounded-and-restricted",
+     "cases": [],
+     "all_cases": [],
+     "cargo_tests": [
+      "exec::ls_remote_tags_lists_tags_with_peeled_commits_and_fails_as_git",
+      "auth::tests::recorded_sources_are_urls_or_absolute_paths_without_helpers"
+     ],
+     "scenarios": [
+      {
+       "slug": "bounds",
+       "title": "Bounds",
+       "tag": "git-safety/origin-tag-lookup-is-bounded-and-restricted#bounds",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "source-rule",
+       "title": "Source rule",
+       "tag": "git-safety/origin-tag-lookup-is-bounded-and-restricted#source-rule",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "remote-helper-from-a-foreign-manifest",
+       "title": "Remote helper from a foreign manifest",
+       "tag": "git-safety/origin-tag-lookup-is-bounded-and-restricted#remote-helper-from-a-foreign-manifest",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "local-paths-stay-allowed",
+       "title": "Local paths stay allowed",
+       "tag": "git-safety/origin-tag-lookup-is-bounded-and-restricted#local-paths-stay-allowed",
        "cases": [],
        "covered": false
       }
@@ -6515,6 +6621,13 @@
        "tag": "package-manifest/known-manifest-keys#self-replacement",
        "cases": [],
        "covered": false
+      },
+      {
+       "slug": "fork-manifest-without-source",
+       "title": "Fork manifest without source",
+       "tag": "package-manifest/known-manifest-keys#fork-manifest-without-source",
+       "cases": [],
+       "covered": false
       }
      ],
      "covered": true,
@@ -7360,6 +7473,13 @@
        "slug": "catalog-less-update-all-preview",
        "title": "Catalog-less update all preview",
        "tag": "updates/updates-need-no-catalog#catalog-less-update-all-preview",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "catalog-less-check",
+       "title": "Catalog-less check",
+       "tag": "updates/updates-need-no-catalog#catalog-less-check",
        "cases": [],
        "covered": false
       }
@@ -10297,7 +10417,7 @@
   {
    "id": "uc_035:up_to_date",
    "spec": [
-    "catalog/check-compares-installed-with-the-catalog#cli-table"
+    "catalog/check-compares-installed-packages-with-their-catalog-or-origin#cli-table"
    ],
    "xfail": null,
    "last_run": "PASS"
@@ -10305,7 +10425,7 @@
   {
    "id": "uc_035:update_available_reads_only_installed_plugins",
    "spec": [
-    "catalog/check-compares-installed-with-the-catalog",
+    "catalog/check-compares-installed-packages-with-their-catalog-or-origin",
     "catalog/catalog-v2-is-a-tree-of-static-files#direct-lookup"
    ],
    "xfail": null,
@@ -10314,7 +10434,7 @@
   {
    "id": "uc_035:not_in_catalog_reads_the_origin",
    "spec": [
-    "catalog/check-compares-installed-with-the-catalog#statuses"
+    "catalog/check-compares-installed-packages-with-their-catalog-or-origin#statuses"
    ],
    "xfail": null,
    "last_run": "PASS"
@@ -10322,7 +10442,7 @@
   {
    "id": "uc_035:origin_statuses",
    "spec": [
-    "catalog/check-compares-installed-with-the-catalog#statuses"
+    "catalog/check-compares-installed-packages-with-their-catalog-or-origin#statuses"
    ],
    "xfail": null,
    "last_run": "PASS"
@@ -10330,7 +10450,7 @@
   {
    "id": "uc_035:newer_than_catalog",
    "spec": [
-    "catalog/check-compares-installed-with-the-catalog"
+    "catalog/check-compares-installed-packages-with-their-catalog-or-origin"
    ],
    "xfail": null,
    "last_run": "PASS"
@@ -10338,7 +10458,7 @@
   {
    "id": "uc_035:same_version_different_commit",
    "spec": [
-    "catalog/check-compares-installed-with-the-catalog#identity-mismatch"
+    "catalog/check-compares-installed-packages-with-their-catalog-or-origin#identity-mismatch"
    ],
    "xfail": null,
    "last_run": "PASS"
@@ -10346,7 +10466,7 @@
   {
    "id": "uc_035:different_source",
    "spec": [
-    "catalog/check-compares-installed-with-the-catalog#identity-mismatch"
+    "catalog/check-compares-installed-packages-with-their-catalog-or-origin#identity-mismatch"
    ],
    "xfail": null,
    "last_run": "PASS"
@@ -10354,7 +10474,7 @@
   {
    "id": "uc_035:installed_from_other_catalog",
    "spec": [
-    "catalog/check-compares-installed-with-the-catalog#other-catalog"
+    "catalog/check-compares-installed-packages-with-their-catalog-or-origin#other-catalog"
    ],
    "xfail": null,
    "last_run": "PASS"
@@ -10362,7 +10482,7 @@
   {
    "id": "uc_035:no_versions",
    "spec": [
-    "catalog/check-compares-installed-with-the-catalog"
+    "catalog/check-compares-installed-packages-with-their-catalog-or-origin"
    ],
    "xfail": null,
    "last_run": "PASS"
@@ -10370,7 +10490,7 @@
   {
    "id": "uc_035:invalid_catalog_data",
    "spec": [
-    "catalog/check-compares-installed-with-the-catalog#broken-payload"
+    "catalog/check-compares-installed-packages-with-their-catalog-or-origin#broken-payload"
    ],
    "xfail": null,
    "last_run": "PASS"
@@ -10378,7 +10498,7 @@
   {
    "id": "uc_035:invalid_catalog_data_local",
    "spec": [
-    "catalog/check-compares-installed-with-the-catalog#broken-payload"
+    "catalog/check-compares-installed-packages-with-their-catalog-or-origin#broken-payload"
    ],
    "xfail": null,
    "last_run": "PASS"
@@ -10386,7 +10506,7 @@
   {
    "id": "uc_035:unreadable_release_is_an_error",
    "spec": [
-    "catalog/check-compares-installed-with-the-catalog#broken-payload"
+    "catalog/check-compares-installed-packages-with-their-catalog-or-origin#broken-payload"
    ],
    "xfail": null,
    "last_run": "PASS"
@@ -11723,8 +11843,8 @@
   {
    "id": "uc_057:check_against_b_reports_different_source",
    "spec": [
-    "catalog/check-compares-installed-with-the-catalog#identity-mismatch",
-    "catalog/check-compares-installed-with-the-catalog#other-catalog"
+    "catalog/check-compares-installed-packages-with-their-catalog-or-origin#identity-mismatch",
+    "catalog/check-compares-installed-packages-with-their-catalog-or-origin#other-catalog"
    ],
    "xfail": null,
    "last_run": "PASS"
@@ -11749,7 +11869,7 @@
   {
    "id": "uc_057:same_commit_same_source_is_up_to_date",
    "spec": [
-    "catalog/check-compares-installed-with-the-catalog#other-catalog"
+    "catalog/check-compares-installed-packages-with-their-catalog-or-origin#other-catalog"
    ],
    "xfail": null,
    "last_run": "PASS"
@@ -12547,7 +12667,7 @@
   {
    "id": "uc_063:check_pipe_has_no_colour",
    "spec": [
-    "catalog/check-compares-installed-with-the-catalog"
+    "catalog/check-compares-installed-packages-with-their-catalog-or-origin"
    ],
    "xfail": null,
    "last_run": "PASS"
@@ -12555,7 +12675,7 @@
   {
    "id": "uc_063:check_tty_is_coloured",
    "spec": [
-    "catalog/check-compares-installed-with-the-catalog"
+    "catalog/check-compares-installed-packages-with-their-catalog-or-origin"
    ],
    "xfail": null,
    "last_run": "PASS"
@@ -12563,7 +12683,7 @@
   {
    "id": "uc_063:check_tty_no_color",
    "spec": [
-    "catalog/check-compares-installed-with-the-catalog"
+    "catalog/check-compares-installed-packages-with-their-catalog-or-origin"
    ],
    "xfail": null,
    "last_run": "PASS"
@@ -12571,7 +12691,7 @@
   {
    "id": "uc_063:check_tty_term_dumb",
    "spec": [
-    "catalog/check-compares-installed-with-the-catalog"
+    "catalog/check-compares-installed-packages-with-their-catalog-or-origin"
    ],
    "xfail": null,
    "last_run": "PASS"
@@ -12579,8 +12699,8 @@
   {
    "id": "uc_063:check_exit_code_without_updates",
    "spec": [
-    "catalog/check-compares-installed-with-the-catalog",
-    "catalog/check-compares-installed-with-the-catalog#exit-status"
+    "catalog/check-compares-installed-packages-with-their-catalog-or-origin",
+    "catalog/check-compares-installed-packages-with-their-catalog-or-origin#exit-status"
    ],
    "xfail": null,
    "last_run": "PASS"
@@ -12837,7 +12957,7 @@
    "id": "uc_068:install_list_check",
    "spec": [
     "install-uninstall/install-from-the-catalog",
-    "catalog/check-compares-installed-with-the-catalog#cli-table"
+    "catalog/check-compares-installed-packages-with-their-catalog-or-origin#cli-table"
    ],
    "xfail": null,
    "last_run": "PASS"
@@ -12845,7 +12965,7 @@
   {
    "id": "uc_068:catalog_update_alone_changes_nothing",
    "spec": [
-    "catalog/check-compares-installed-with-the-catalog"
+    "catalog/check-compares-installed-packages-with-their-catalog-or-origin"
    ],
    "xfail": null,
    "last_run": "PASS"
@@ -13318,7 +13438,7 @@
   {
    "id": "uc_077:check_with_a_missing_latest_release_fails_then_recovers",
    "spec": [
-    "catalog/check-compares-installed-with-the-catalog#broken-payload"
+    "catalog/check-compares-installed-packages-with-their-catalog-or-origin#broken-payload"
    ],
    "xfail": null,
    "last_run": "PASS"

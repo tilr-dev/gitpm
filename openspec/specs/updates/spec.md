@@ -14,7 +14,7 @@ Defines how installed packages move between revisions: single-package `update` (
 - **THEN** the first prints `acme/greeter updated 0.1.0 → 0.2.0`, the second `acme/greeter up to date (0.2.0)`
 
 ### Requirement: Updates need no catalog
-`update ID` (stable, `--ref`, `--channel dev`) and `update all` SHALL read releases from the origin of the package's clone (set from `packages.<id>.source` at install) and SHALL NOT read a catalog for installed packages, so they work without one. Verified by `workspace::update_and_rollback_swap_revisions_and_redeploy` (no catalog configured).
+`update ID` (stable, `--ref`, `--channel dev`) and `update all` SHALL read releases from the origin of the package's clone (set from `packages.<id>.source` at install) and SHALL NOT read a catalog for installed packages, so they work without one; `check` reads the same origin for packages the catalog does not list (catalog, "check compares installed packages with their catalog or origin"). Verified by `workspace::update_and_rollback_swap_revisions_and_redeploy` (no catalog configured).
 
 #### Scenario: New dependency without a catalog
 - **WHEN** no catalog is configured and the newest release of a package adds a dependency that is not installed
@@ -27,6 +27,10 @@ Defines how installed packages move between revisions: single-package `update` (
 #### Scenario: Catalog-less update all preview
 - **WHEN** the same workspace has no catalog and the user runs `gitpm update all --dry-run`
 - **THEN** it prints `acme/greeter would be updated 0.1.0 → 0.2.0` and the totals line ends with `Nothing was changed.`
+
+#### Scenario: Catalog-less check
+- **WHEN** the same workspace has no catalog and the user runs `gitpm check`
+- **THEN** the row of `acme/greeter` says `update available` with `0.2.0` from the origin, and nothing in the workspace changes
 
 ### Requirement: Stable update never downgrades or accepts mutated releases
 A stable update SHALL refuse with `version_conflict` when the newest release is older than the installed one ("downgrading requires an explicit ref"), when the installed version's release commit changed, when an observed release tag moved to another commit (rule in package-ids, "Moved release tags are refused"), or when the origin changed without a version bump. Verified by `stable_update_never_downgrades` and `stable_update_refuses_a_release_whose_commit_changed`.
