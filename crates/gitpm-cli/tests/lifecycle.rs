@@ -2042,3 +2042,76 @@ fn refs_are_exact_and_the_mode_is_named() {
         "dan/hello follows branch main at 1.0.0\n"
     );
 }
+
+#[test]
+fn verified_catalog_protects_updates_and_detach_drops_it() {
+    let f = Fixture::new();
+    let catalog_dir = f.dir.join("verified-catalog");
+    let location = catalog_dir.to_str().unwrap();
+    let repo = f.repo.to_str().unwrap();
+    f.cli(
+        &[
+            "--catalog",
+            location,
+            "register",
+            repo,
+            "--ref",
+            "dan/hello@1.0.0",
+        ],
+        true,
+    );
+    // Unverified: discovery only.
+    f.cli(
+        &["--catalog", location, "install-catalog", "dan/hello"],
+        true,
+    );
+    let out = f.cli(&["--catalog", location, "check"], true);
+    assert!(
+        out.contains(&format!("Catalog: {location} (unverified: discovery only)")),
+        "{out}"
+    );
+    assert!(f.state()["resolved"][0].get("catalog").is_none());
+    f.cli(&["uninstall", "dan/hello"], true);
+
+    // The owner marks the catalog verified by hand.
+    let file = catalog_dir.join("catalog.json");
+    let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+    value["verified"] = serde_json::Value::Bool(true);
+    fs::write(&file, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+    fs::write(f.dir.join("sources.txt"), format!("{repo}\n")).unwrap();
+    let before = fs::read(&file).unwrap();
+    f.cli(&["--catalog", location, "catalog-update"], false);
+    assert_eq!(fs::read(&file).unwrap(), before);
+    let info = f.cli(&["--catalog", location, "info"], true);
+    assert!(info.contains("Verified: yes"), "{info}");
+
+    f.cli(
+        &["--catalog", location, "install-catalog", "dan/hello"],
+        true,
+    );
+    assert!(f.state()["resolved"][0]["catalog"].is_string());
+    f.release("1.1.0", "hello v2");
+    // No catalog given: the recorded verified catalog is read.
+    let out = f.cli_without_catalog(&["update", "dan/hello"], true);
+    assert!(
+        out.contains("dan/hello kept at 1.0.0 (upstream 1.1.0 not in catalog)"),
+        "{out}"
+    );
+    let out = f.cli(&["--catalog", location, "check"], true);
+    assert!(
+        out.contains(&format!("Catalog: {location} (verified)")),
+        "{out}"
+    );
+    assert!(out.contains("upstream 1.1.0 not in catalog"), "{out}");
+    f.cli(&["update", "all", "--detach"], false);
+    f.cli(&["install", repo, "--detach"], false);
+
+    let out = f.cli_without_catalog(&["update", "dan/hello", "--detach"], true);
+    assert!(
+        out.contains("dan/hello detached from catalog") && out.contains("updated 1.0.0 → 1.1.0"),
+        "{out}"
+    );
+    assert!(f.state()["resolved"][0].get("catalog").is_none());
+    assert_eq!(f.content(), "hello v2");
+    f.cli(&["update", "dan/hello", "--detach"], false);
+}

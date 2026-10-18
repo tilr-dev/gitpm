@@ -212,6 +212,7 @@ Catalog ready: 2 release(s) checked from sources.
 $ gitpm info
 Catalog: /…/catalog
 Type: local folder/JSON
+Verified: no (discovery only)
 Directories and packages:
   namespaces/
     acme/
@@ -241,13 +242,62 @@ $ cat gitpm-workspace/dist/acme/hello/index.js
 export const greeting = "hello v2";
 $ gitpm check
 Workspace: gitpm-workspace
-Catalog: /…/catalog
+Catalog: /…/catalog (unverified: discovery only)
 
 PACKAGE                  INSTALLED      LATEST         ENABLED  SOURCE   STATUS
 acme/greeter             0.2.0          0.2.0          yes      catalog  up to date
 acme/hello               0.1.1          0.1.1          yes      catalog  up to date
 
 Updates: 0. Nothing was changed.
+```
+
+#### Verified catalogs
+
+A catalog is a guarantor only when its owner says so: `"verified": true` in the
+top-level `catalog.json`, set by hand (no command sets it; `register` keeps it). Any other
+catalog serves discovery only: `install-catalog` still installs exactly the release record
+(commit, manifest and file hashes are checked), but records nothing, and the package then
+updates from its origin like a direct install.
+
+- Versions enter a verified catalog only one by one through `register` (a manual act of
+  verification); `catalog-update` into it fails with `invalid_argument` ("a verified
+  catalog takes versions only one by one through register") and changes nothing. An ID
+  stays bound to the source that first registered it, which is the namespace ownership.
+- A package installed from a verified catalog (and each dependency pulled from it) is
+  protected: its record has `catalog` (the canonical location; `list` shows it only for
+  protected packages). `update ID` and `update all` move it only to versions that catalog
+  lists, read from the recorded location whatever `--catalog` says, after checking that
+  the origin has the release commit and that manifest, package folder and dist file hashes
+  equal the record (`catalog`: "catalog file hashes do not match git dist of ID@V: the
+  release differs from the one added to the catalog"; nothing changes). A newer origin
+  release the catalog lacks is not installed: `ID kept at V (upstream W not in catalog)`,
+  and `check` says `upstream W not in catalog`. A ref or branch target (`--ref`, `--dev`)
+  needs a detach. New dependencies of a protected package come from its catalog too (and
+  are protected by it). If the owner removes the flag, or the catalog cannot be read,
+  `update ID` fails with `catalog` (or `http`) until the package is detached, while
+  `update all` keeps only that package: `ID kept at V (catalog unavailable: REASON)`;
+  `check` adds the problem `catalog no longer verified` to its row.
+- `install-catalog` over a direct install (or download) of the same source protects it
+  when the installed revision is exactly the catalog's record of its version (commit and
+  file hashes checked; `ID is now protected by catalog LOCATION`); otherwise it fails with
+  `catalog` and changes nothing.
+- `update ID --detach` drops the protection: the record loses `catalog` and the package
+  updates from its origin by the given target in the same transaction (`ID detached from
+  catalog LOCATION; it now follows its origin`). Direct (URL or path) installs never
+  consult a catalog.
+- One verified catalog per workspace: installing from a second verified catalog is refused
+  with `catalog` ("… mixing verified catalogs is not supported"); unverified catalogs are
+  exempt. `check` prints `Catalog: LOCATION (verified)` or `(unverified: discovery only)`
+  and `info` a `Verified:` line.
+
+```console
+$ gitpm install-catalog acme/hello            # catalog.json has "verified": true
+installed acme/hello@0.1.1 from /…/hello
+$ gitpm update acme/hello                     # the origin also has 0.2.0, not registered
+acme/hello kept at 0.1.1 (upstream 0.2.0 not in catalog)
+$ gitpm update acme/hello --detach
+acme/hello detached from catalog /…/catalog/catalog.json; it now follows its origin
+acme/hello updated 0.1.1 → 0.2.0
 ```
 
 `gitpm fork ID --ns NAMESPACE --into DIR` copies an installed package (with its Git
@@ -327,7 +377,7 @@ Changed in 0.5:
   | Command | Line |
   | --- | --- |
   | `install`, `install-catalog` | `installed ID@VERSION from SOURCE`, or `ID already installed (VERSION)[; run update]` |
-  | `update ID`, `update all` | `ID updated A → B`, `ID up to date (A)` (`update all --dry-run`: `would be updated`); `update all` also `ID kept back at A (latest L: REASON)` and `ID skipped at A (dependency DEP is not installed)` |
+  | `update ID`, `update all` | `ID updated A → B`, `ID up to date (A)` (`update all --dry-run`: `would be updated`); `update all` also `ID kept back at A (latest L: REASON)` and `ID skipped at A (dependency DEP is not installed)`; a protected package `ID kept at A (upstream W not in catalog)`; `update ID --detach` first `ID detached from catalog LOCATION; it now follows its origin` |
   | `rollback` | `ID rolled back A → B` |
   | `enable`, `disable` | `ID enabled`, `ID disabled` |
   | `forget`, `restore` | `ID forgotten (clone kept; restore re-registers it)`, `ID restored VERSION` |
@@ -657,6 +707,30 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   installed version at another commit is accepted and pinned ("upstream changed without
   a version bump" is gone; a moved release tag of that version warns `release tag ID@V
   now points to COMMIT`).
+- Protected catalogs ([Verified catalogs](#verified-catalogs)): only a catalog whose
+  top-level `catalog.json` has `"verified": true` binds packages. An unverified catalog no
+  longer records `packages.<id>.catalog` on `install-catalog` (or for pulled
+  dependencies), so its packages update from their origins and the one-catalog rule
+  ignores it; the refusal now says "mixing verified catalogs is not supported".
+  `catalog-update` into a verified catalog is refused with `invalid_argument`. Packages
+  from a verified catalog update only to its versions, hash-checked (`catalog` on a
+  mismatch); `update ID --detach` drops the protection. Library: `Manager::update_with(id,
+  target, UpdateOptions { detach })`, `RevisionChange.detached`,
+  `UnchangedReason::NotInCatalog { version }`, `UnchangedReason::CatalogUnavailable {
+  reason }`, `check::CATALOG_NO_LONGER_VERIFIED`, `catalog::is_verified`,
+  `CatalogOverview.verified`, `CheckStatus::UpstreamNotInCatalog`,
+  `CheckRow.origin_latest`, `CheckRow::message()`, `CheckReport.catalog_verified`; without
+  a given catalog `check` compares a protected package with its recorded catalog. FFI:
+  `update(id, target, detach)` (default `false`), `RevisionChange.detached`,
+  `UnchangedReason.notInCatalog(version)`, `UnchangedReason.catalogUnavailable(reason)`,
+  `CatalogOverview.verified`,
+  `CheckStatus.upstreamNotInCatalog`, `CheckRow.originLatest`,
+  `CheckReport.catalogVerified`. `info` prints `Verified: yes|no …`, the `check` header
+  `Catalog: LOCATION (verified)` or `(unverified: discovery only)`. Migration: add
+  `"verified": true` to a catalog you vouch for and register its versions with `register`;
+  a record that names an unverified catalog (written by an earlier gitpm) is still
+  protected and its updates fail with `catalog` ("… is no longer verified") until you run
+  `update ID --detach` (or verify that catalog).
 
 ## Working without a catalog
 
@@ -1066,6 +1140,7 @@ pm.download_from_catalog("acme/demo1", None)?;         // the same from the cata
 pm.enable_with(id, /* force: enable over inactive dependencies */ false)?;
 pm.update("acme/demo1")?;                              // by the recorded mode (pinned: unchanged_reason)
 pm.update_to(id, Target::Release)?;  pm.update_to(id, Target::Ref("feature".into()))?;
+pm.update_with(id, Target::Recorded, UpdateOptions { detach: true })?; // leave a verified catalog
 pm.rollback(id)?;  pm.enable(id)?;  pm.disable(id)?;  pm.forget(id)?;  pm.restore(id)?;
 let plan = pm.uninstall_plan(id)?;                    // deletes + lost_work + dependents
 if let Some(refusal) = plan.refusal() { return Err(refusal) } // has_dependents with lost_work
@@ -1098,8 +1173,8 @@ Modules with free functions (no workspace lock needed):
 | Module | Functions |
 | --- | --- |
 | `list` | `list_with(root, &ListOptions)` → `ListView` (raw state + `resolved`; `provides` filter) |
-| `catalog` | `browse`, `list`, `links`, `lookup`, `selected`, `register`, `register_build`, `register_package`, `update_sources` (progress callback), `hash_files`, `version_key`, `validate_location`, `ensure_publishable` |
-| `check` | `read_state` (does not create/lock), `compare`/`compare_in` (run `git ls-remote` for packages the catalog does not list), `check(root, catalog: Option)` → `CheckReport`; `CheckStatus::message()`, `CheckSource` |
+| `catalog` | `browse` (`CatalogOverview.verified`), `is_verified`, `list`, `links`, `lookup`, `selected`, `register`, `register_build`, `register_package`, `update_sources` (progress callback), `hash_files`, `version_key`, `validate_location`, `ensure_publishable` |
+| `check` | `read_state` (does not create/lock), `compare`/`compare_in` (run `git ls-remote` for packages the catalog does not list), `check(root, catalog: Option)` → `CheckReport` (`catalog_verified`); `CheckStatus::message()`, `CheckRow::message()`, `CheckSource` |
 | `auth` | `check(source, &AuthOptions)` — `git ls-remote` only; refuses credentials in the URL, stores nothing; failures are `auth` |
 | `scaffold` | `init(dir, namespace, name)` (the `init --into` rule; the only way to create a package besides `create_package`), `init_with` (`InitOptions { multi, release }`), `create_package` (into a multi-package repo), `commit`, `commit_package` (`Commit { package, version, tag }`), `release_current`, `set_remote`, `shell_quote` |
 | `packages` | `config_at`, `layout_at` (packages and defective folders of a commit), `packages_at` (strict), `find_at` (one package of a commit), `read_config`, `packages_in` (working tree), `matches`, `validate_pattern` |
@@ -1257,10 +1332,17 @@ without one, `browse_catalog`, `catalog_release` and `install_from_catalog` fail
 `invalid_argument` ("no catalog configured"); `check` then reads each package's origin. A configured local location that
 does not exist is not "no catalog": `Manager::open_with` and every catalog reader refuse
 it with `invalid_argument` ("catalog location PATH does not exist") before anything is
-created; only `catalog-update` and `register` create a missing local catalog. A workspace uses one catalog. `install_from_catalog` records the canonical catalog
-location per package (`packages.<id>.catalog`) and refuses to install from a different
-catalog while packages from another one are installed. `check` reports packages from
-another catalog as `other_catalog` instead of comparing them; a package the catalog does
+created; only `catalog-update` and `register` create a missing local catalog. A workspace uses one verified catalog
+([Verified catalogs](#verified-catalogs), `catalog::is_verified`). `install_from_catalog`
+records the canonical location of a verified catalog per package (`packages.<id>.catalog`,
+the package is then protected) and refuses to install from a second verified catalog;
+an unverified catalog records nothing. `update_to`/`update_with` and `update_all` move a
+protected package only to the versions its catalog lists (`UnchangedReason::NotInCatalog`
+when the origin is ahead), `UpdateOptions { detach: true }` drops the protection. `check`
+compares a protected package with its own catalog when none is given (status
+`upstream_not_in_catalog` with `CheckRow.origin_latest` when its origin is ahead), reports
+packages from another catalog as `other_catalog` instead of comparing them, and says in
+`CheckReport.catalog_verified` whether the given catalog is verified; a package the catalog does
 not list gets an origin row (`CheckRow.source` is `CheckSource::Catalog` or `Origin`,
 `CheckRow.problem` explains `origin_unreachable`). For a fork it adds
 `upstream { id, base, latest, newer, source }`: the original's latest release against the

@@ -1,6 +1,6 @@
 """UC-068: Consumer journey: install from catalog → lifecycle → uninstall (P0).
 
-Fixture g6_journey: dan/hello 0.1.0 registered in /fx/catalog and installed from it.
+Fixture g6_journey: dan/hello 0.1.0 registered in /fx/catalog (verified) and installed from it.
 Each step is its own case that first replays the earlier steps (`journey`), and
 `whole_journey` checks that the author repository and the catalog are byte-identical
 across all consumer steps.

@@ -1,11 +1,15 @@
 ## ADDED Requirements
 
 ### Requirement: Catalog verification in records
-The FFI `CheckReport` SHALL carry `catalogVerified` (whether the configured catalog is verified) and its rows the status `upstream_not_in_catalog`, and `update(id, target, detach)` SHALL take the detach flag. This adds to "Records mirror library results" and "Check report record". Verified by `records_convert_field_by_field`.
+FFI records SHALL carry every field protected catalogs add: `CheckReport.catalogVerified`, the status `upstreamNotInCatalog` with `CheckRow.originLatest`, `CatalogOverview.verified`, `RevisionChange.detached`, `UnchangedReason.notInCatalog(version)` and `UnchangedReason.catalogUnavailable(reason)`; `update(id, target, detach)` SHALL take the detach flag (default `false`). Verified by `records_convert_field_by_field`.
 
 #### Scenario: Verified catalog from Swift
 - **WHEN** a host calls `check(root, location)` with a catalog whose `catalog.json` has `"verified": true`
-- **THEN** the report has `catalogVerified` true, and a protected package whose origin has a release the catalog lacks has status `upstream_not_in_catalog`
+- **THEN** the report has `catalogVerified` true, and a protected package whose origin has a release the catalog lacks has status `upstreamNotInCatalog`, `originLatest` that version and `statusMessage` `upstream V not in catalog`
+
+#### Scenario: Detach from Swift
+- **WHEN** a host calls `update(id, .recorded, detach: true)` on a protected package
+- **THEN** the returned `RevisionChange.detached` names the catalog location, and a later `update(id, .recorded)` without a detach on a protected package that stays returns `unchangedReason` `notInCatalog(version)` when the origin is ahead of the catalog
 
 ## MODIFIED Requirements
 

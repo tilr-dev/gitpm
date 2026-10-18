@@ -63,12 +63,17 @@ pub mod catalog {
 
     pub fn render_overview(overview: &CatalogOverview) -> String {
         let mut output = format!(
-            "Catalog: {}\nType: {}\n",
+            "Catalog: {}\nType: {}\nVerified: {}\n",
             overview.location,
             if overview.remote {
                 "remote (HTTP)"
             } else {
                 "local folder/JSON"
+            },
+            if overview.verified {
+                "yes (protects the packages installed from it)"
+            } else {
+                "no (discovery only)"
             }
         );
         output.push_str("Directories and packages:\n");
@@ -127,8 +132,8 @@ pub mod check {
         );
         for row in rows {
             let mut status = match &row.problem {
-                Some(problem) => format!("{}: {problem}", row.status.message()),
-                None => row.status.message().to_owned(),
+                Some(problem) => format!("{}: {problem}", row.message()),
+                None => row.message(),
             };
             match &row.mode {
                 Mode::Release => {}
@@ -220,6 +225,7 @@ pub mod check {
                 source: CheckSource::Catalog,
                 mode: Mode::Release,
                 problem: None,
+                origin_latest: None,
                 update_available,
                 status: if update_available {
                     CheckStatus::UpdateAvailable

@@ -90,6 +90,14 @@ pub enum Target {
     /// Follow the origin's default branch.
     Dev,
 }
+/// Options of [`Manager::update_with`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UpdateOptions {
+    /// Drop the protection of a package installed from a verified catalog (its record
+    /// loses `catalog`) and update it from its origin like a direct install, in the same
+    /// transaction. Refused with `invalid_argument` for a package that is not protected.
+    pub detach: bool,
+}
 impl From<InstallTarget> for Target {
     fn from(target: InstallTarget) -> Self {
         match target {
@@ -117,6 +125,13 @@ pub enum UnchangedReason {
     /// dependency for it (`update all` only; `update ID` refuses with
     /// `dependency_conflict`).
     BrokenDependency { dependency: String, problem: String },
+    /// A package protected by a verified catalog: the origin has the newer release
+    /// `version`, which the catalog does not list, so it is not installed.
+    NotInCatalog { version: String },
+    /// A package protected by a verified catalog whose catalog could not be used (not
+    /// reachable, invalid, or no longer verified; `reason` is the error message). `update
+    /// all` only; `update ID` fails with `catalog` (or `http`).
+    CatalogUnavailable { reason: String },
 }
 impl fmt::Display for UnchangedReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -134,6 +149,12 @@ impl fmt::Display for UnchangedReason {
                 dependency,
                 problem,
             } => write!(f, "dependency {dependency}: {problem}"),
+            UnchangedReason::NotInCatalog { version } => {
+                write!(f, "upstream {version} not in catalog")
+            }
+            UnchangedReason::CatalogUnavailable { reason } => {
+                write!(f, "catalog unavailable: {reason}")
+            }
         }
     }
 }
@@ -260,6 +281,10 @@ pub struct RevisionChange {
     /// mode alone is a change: `changed` with `from` and `to` at the same commit.
     #[serde(skip_serializing_if = "Mode::is_release")]
     pub mode: Mode,
+    /// The canonical location of the verified catalog the package was detached from
+    /// ([`UpdateOptions::detach`]); the record no longer has `catalog`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detached: Option<String>,
     /// Reconciliation report of the transaction (empty inside an [`UpdateAllPlan`], which
     /// carries the report of its one transaction).
     pub dist: DistSync,
@@ -937,10 +962,16 @@ impl Manager {
         version: Option<&str>,
         activation: Activation,
     ) -> Result<InstallResult> {
-        let origin = catalog::canonical_location(self.catalog_location()?)?;
-        ensure_single_catalog(&self.state()?, &origin)?;
         let release = self.catalog_release(id, version)?;
-        self.install_release_from(&release, Some(origin), activation)
+        let origin = self.protecting_catalog(&self.state()?)?;
+        self.install_release_from(&release, origin, activation)
+    }
+    /// The canonical location of the configured catalog when it is verified: what a
+    /// package installed from it records as `catalog` (it is then protected). Installing
+    /// from a second verified catalog is refused with `catalog`; an unverified catalog
+    /// protects nothing and is exempt (`None`).
+    fn protecting_catalog(&self, state: &State) -> Result<Option<String>> {
+        protecting_catalog_at(self.catalog_location()?, state)
     }
     /// Install or download one package with its missing dependencies. An install of a
     /// package downloaded (disabled) from the same source enables it.
@@ -986,9 +1017,22 @@ impl Manager {
                     .then(|| cloned.mode.clone());
                 let available =
                     (resolved.commit != installed.current.commit).then_some(resolved.clone());
+                // Installed from this source without protection and now asked for from a
+                // verified catalog: the installed revision must be exactly that catalog's
+                // release of its version; then it becomes protected.
+                let protect = match (&origin, &installed.catalog) {
+                    (Some(location), None) => {
+                        verify_installed_release(&cloned.repo, &m.id, installed, location)?;
+                        Some(location.clone())
+                    }
+                    _ => None,
+                };
+                let protected_note = protect
+                    .as_ref()
+                    .map(|location| format!("{} is now protected by catalog {location}", m.id));
                 if enabled && !installed.enabled {
                     // Downloaded before: the install enables the recorded revision and mode.
-                    let mut warnings = Vec::new();
+                    let mut warnings: Vec<String> = protected_note.into_iter().collect();
                     if let Some(requested) = &requested_mode {
                         warnings.push(format!(
                             "{} is enabled in its recorded mode {}, not the requested {}; updating it with the same target moves it",
@@ -1015,16 +1059,20 @@ impl Manager {
                     if !force && !state.replacements.contains_key(&m.id) {
                         deps::refuse_inactive_dependencies(state, &m.id, "install", true)?;
                     }
-                    state.packages.get_mut(&m.id).unwrap().enabled = true;
+                    let entry = state.packages.get_mut(&m.id).unwrap();
+                    entry.enabled = true;
+                    if protect.is_some() {
+                        entry.catalog = protect;
+                    }
                     return Ok(result);
                 }
-                already = Some(InstallResult {
+                let result = InstallResult {
                     id: m.id.clone(),
                     source: source.clone(),
                     current: installed.current.clone(),
                     fork_of: installed.fork_of.clone(),
                     skipped: cloned.skipped.clone(),
-                    warnings: Vec::new(),
+                    warnings: protected_note.into_iter().collect(),
                     already_installed: true,
                     available,
                     mode: installed.mode.clone(),
@@ -1032,7 +1080,13 @@ impl Manager {
                     enabled: installed.enabled,
                     dependencies: Vec::new(),
                     dist: DistSync::default(),
-                });
+                };
+                if protect.is_some() {
+                    // Recording the protection is the only change.
+                    state.packages.get_mut(&m.id).unwrap().catalog = protect;
+                    return Ok(result);
+                }
+                already = Some(result);
             }
             check_new_id(txn.root(), state, &m)?;
             // Everything installed stays at its version; the new package is added on top.
@@ -1051,7 +1105,13 @@ impl Manager {
                 new.note = Some(format!("being installed at {}", m.version));
             }
             let missing = deps::solve(&fixed, &roots, self.options.catalog.as_deref())?;
-            let dependencies = self.install_missing(txn, state, &missing, enabled)?;
+            let dependencies = self.install_missing(
+                txn,
+                state,
+                &missing,
+                enabled,
+                self.options.catalog.as_deref(),
+            )?;
             let skipped = cloned.skipped.clone();
             let mut result = adopt(txn, state, cloned, source.clone(), origin.clone(), enabled)?;
             if enabled && !force && state.is_active(&m.id) {
@@ -1066,21 +1126,22 @@ impl Manager {
             (installed, _) => installed.map(|(result, dist)| InstallResult { dist, ..result }),
         }
     }
-    /// Install catalog releases chosen by the solver (inside the current transaction),
-    /// recorded `enabled` or disabled (download).
+    /// Install catalog releases chosen by the solver (inside the current transaction)
+    /// from the catalog at `location`, recorded `enabled` or disabled (download), and
+    /// protected when that catalog is verified.
     fn install_missing(
         &self,
         txn: &mut Txn,
         state: &mut State,
         missing: &BTreeMap<String, semver::Version>,
         enabled: bool,
+        location: Option<&str>,
     ) -> Result<Vec<InstalledDependency>> {
         if missing.is_empty() {
             return Ok(Vec::new());
         }
-        let location = self.catalog_location()?;
-        let origin = catalog::canonical_location(location)?;
-        ensure_single_catalog(state, &origin)?;
+        let location = location.require(Error::InvalidArgument, check::NO_CATALOG)?;
+        let origin = protecting_catalog_at(location, state)?;
         let mut installed = Vec::new();
         for (number, (id, version)) in missing.iter().enumerate() {
             let release = catalog::lookup(location, id, Some(&version.to_string()))?;
@@ -1096,7 +1157,7 @@ impl Manager {
                 state,
                 cloned,
                 release.source.clone(),
-                Some(origin.clone()),
+                origin.clone(),
                 enabled,
             )?;
             installed.push(InstalledDependency {
@@ -1110,14 +1171,14 @@ impl Manager {
         Ok(installed)
     }
     /// Check that `id` moving to manifest `m` keeps every working dependency working;
-    /// with `fetch`, dependencies the new revision adds are installed from the catalog.
+    /// with a `catalog`, dependencies the new revision adds are installed from it.
     fn check_change(
         &self,
         txn: &mut Txn,
         state: &mut State,
         id: &str,
         m: &Manifest,
-        fetch: bool,
+        catalog: Option<&str>,
     ) -> Result<()> {
         for (original, fork) in &state.replacements {
             ensure!(
@@ -1150,18 +1211,11 @@ impl Manager {
         if let Some(changed) = fixed.get_mut(id) {
             changed.note = Some(format!("being changed to {}", m.version));
         }
-        let missing = deps::solve(
-            &fixed,
-            &roots,
-            if fetch {
-                self.options.catalog.as_deref()
-            } else {
-                None
-            },
-        )?;
+        let missing = deps::solve(&fixed, &roots, catalog)?;
         // Dependencies an inactive package pulls stay disabled with it.
         let active = state.is_active(id);
-        self.install_missing(txn, state, &missing, active).map(drop)
+        self.install_missing(txn, state, &missing, active, catalog)
+            .map(drop)
     }
     /// Resolve all installed packages together, without changing installed files or state.
     /// Reads release tags from each origin; new dependencies come from the catalog.
@@ -1216,7 +1270,15 @@ impl Manager {
         let mut held: BTreeMap<String, HeldBackReason> = BTreeMap::new();
         // Release-mode packages whose installed release tag moved or was deleted.
         let mut tag_warnings: BTreeMap<String, String> = BTreeMap::new();
-        let catalog = self.options.catalog.as_deref();
+        // With protected packages, new dependencies come from their verified catalog (one
+        // per workspace) while it is still verified, whatever the configured catalog is.
+        let dependency_catalog = state
+            .packages
+            .values()
+            .find_map(|p| p.catalog.clone())
+            .filter(|location| catalog::is_verified(location).unwrap_or(false))
+            .or_else(|| self.options.catalog.clone());
+        let catalog = dependency_catalog.as_deref();
         // Broken release tags passed over, for every installed package.
         let mut skipped: Vec<releases::SkippedTag> = Vec::new();
         let installed_versions: Vec<(String, String)> = state
@@ -1365,6 +1427,50 @@ impl Manager {
                         continue;
                     }
                 }
+                // A protected package: only the versions its verified catalog lists.
+                if let Some(location) = &installed.catalog {
+                    // An unusable catalog keeps only this package where it is.
+                    let (releases, upstream) =
+                        match catalog_candidates(&repo, id, installed, location) {
+                            Ok(found) => found,
+                            Err(error) => {
+                                reasons.insert(
+                                    id.clone(),
+                                    UnchangedReason::CatalogUnavailable {
+                                        reason: error.to_string(),
+                                    },
+                                );
+                                latest.insert(id.clone(), newest.to_string());
+                                candidates.insert(id.clone(), versions);
+                                continue;
+                            }
+                        };
+                    if releases.is_empty()
+                        && let Some(version) = upstream
+                    {
+                        reasons.insert(id.clone(), UnchangedReason::NotInCatalog { version });
+                    }
+                    for release in releases {
+                        let version = deps::version(&release.manifest.version)?;
+                        newest = newest.max(version.clone());
+                        if let Some(original) = no_longer_replaces(state, id, &release.manifest) {
+                            if no_longer.as_ref().is_none_or(|(v, _)| *v < version) {
+                                no_longer = Some((version, original));
+                            }
+                            continue;
+                        }
+                        deps::validate(&release.manifest)?;
+                        versions.insert(version, release);
+                    }
+                    if let Some(reason) =
+                        held_back_reason(state, catalog, &newest, &versions, no_longer)
+                    {
+                        held.insert(id.clone(), reason);
+                    }
+                    latest.insert(id.clone(), newest.to_string());
+                    candidates.insert(id.clone(), versions);
+                    continue;
+                }
                 // Every tag of the package may be gone (all retracted).
                 let found = match releases::discover_all(&repo, Some(id)) {
                     Err(Error::NoReleases(_)) => releases::Discovery::default(),
@@ -1437,8 +1543,25 @@ impl Manager {
                     Some(staged) => staged,
                     None => repos[&relative].clone(),
                 };
+                // A protected package's catalog release is verified before any change.
+                let protected = installed.catalog.is_some();
+                if protected {
+                    ensure_release_commit(&repo, release)?;
+                    let found = packages::find_at(&repo, &release.commit, Some(id))?;
+                    ensure!(
+                        found.subdir() == release.path.as_deref(),
+                        Catalog,
+                        "catalog package folder {} of {id}@{} does not match git revision ({})",
+                        release.path.as_deref().unwrap_or("(root)"),
+                        m.version,
+                        found.subdir().unwrap_or("(root)")
+                    );
+                }
                 git(&repo, &["checkout", "--detach", &release.commit])?;
                 let actual = package_manifest(&repo, release.path.as_deref())?;
+                if protected {
+                    verify_catalog_release(&repo, &actual, release)?;
+                }
                 ensure!(
                     serde_json::to_value(&actual)? == serde_json::to_value(m)?,
                     VersionConflict,
@@ -1455,6 +1578,7 @@ impl Manager {
                     skipped: Vec::new(),
                     unchanged_reason: None,
                     mode: installed.mode.clone(),
+                    detached: None,
                     dist: DistSync::default(),
                 });
                 installed.previous = Some(installed.current.with_mode(&installed.mode));
@@ -1467,8 +1591,10 @@ impl Manager {
                 }
                 txn.deploy(id, &relative, path.as_deref(), &release.commit)?;
             } else {
-                let origin = catalog::canonical_location(self.catalog_location()?)?;
-                ensure_single_catalog(state, &origin)?;
+                let origin = protecting_catalog_at(
+                    catalog.require(Error::InvalidArgument, check::NO_CATALOG)?,
+                    state,
+                )?;
                 let cloned = clone_revision(
                     txn,
                     &Fetch::release(release),
@@ -1480,7 +1606,7 @@ impl Manager {
                     state,
                     cloned,
                     release.source.clone(),
-                    Some(origin),
+                    origin,
                     // Enabled only when an active package pulls it (as `update ID`).
                     active_new.contains(id),
                 )?);
@@ -1515,8 +1641,27 @@ impl Manager {
     /// explicit target stays unchanged with [`UnchangedReason::Pinned`]. Branch mode
     /// moves by commit and refuses a diverged history; a tag or commit must change the
     /// version. Refused if the new version breaks a dependent; new dependencies are
-    /// installed.
+    /// installed. A package protected by a verified catalog moves only to the versions
+    /// that catalog lists (see [`Manager::update_with`]).
     pub fn update_to(&self, id: &str, target: Target) -> Result<RevisionChange> {
+        self.update_with(id, target, UpdateOptions::default())
+    }
+    /// [`Manager::update_to`] with [`UpdateOptions`]. A package protected by a verified
+    /// catalog (recorded `catalog`) follows releases only through that catalog, read from
+    /// the recorded location whatever [`Options::catalog`] is: it moves to the newest
+    /// version the catalog lists above the installed one, after checking that the
+    /// origin has the release commit and that its manifest, package folder and dist file
+    /// hashes equal the release record (`catalog` otherwise, nothing changed). A newer
+    /// origin release the catalog lacks leaves it unchanged with
+    /// [`UnchangedReason::NotInCatalog`]; a ref or branch target is refused with
+    /// `invalid_argument`. `detach` drops the protection first and then updates from the
+    /// origin by `target`, in one transaction.
+    pub fn update_with(
+        &self,
+        id: &str,
+        target: Target,
+        options: UpdateOptions,
+    ) -> Result<RevisionChange> {
         valid_id(id)?;
         let (change, dist) = self.transaction(|txn, state| {
             let p = state
@@ -1524,6 +1669,25 @@ impl Manager {
                 .get(id)
                 .cloned()
                 .ok_or_else(|| Error::NotInstalled { id: id.into() })?;
+            let detached = if options.detach {
+                let location = p.catalog.clone().ok_or_else(|| {
+                    Error::InvalidArgument(format!(
+                        "{id} is not protected by a catalog; there is nothing to detach"
+                    ))
+                })?;
+                state.packages.get_mut(id).unwrap().catalog = None;
+                Some(location)
+            } else {
+                None
+            };
+            let protected = p.catalog.clone().filter(|_| detached.is_none());
+            if let Some(location) = &protected {
+                ensure!(
+                    matches!(target, Target::Recorded | Target::Release),
+                    InvalidArgument,
+                    "{id} is protected by catalog {location} and moves only to the versions it lists; detach it to follow a ref or branch of its origin"
+                );
+            }
             let unchanged = |reason: Option<UnchangedReason>, skipped| RevisionChange {
                 id: id.into(),
                 from: p.current.clone(),
@@ -1533,9 +1697,12 @@ impl Manager {
                 skipped,
                 unchanged_reason: reason,
                 mode: p.mode.clone(),
+                detached: None,
                 dist: DistSync::default(),
             };
-            if let (Target::Recorded, Mode::Pinned(reference)) = (&target, &p.mode) {
+            if let (Target::Recorded, Mode::Pinned(reference), None) =
+                (&target, &p.mode, &detached)
+            {
                 return Ok(unchanged(
                     Some(UnchangedReason::Pinned {
                         reference: reference.clone(),
@@ -1568,7 +1735,23 @@ impl Manager {
             let mut skipped = Vec::new();
             // Moved or retracted installed release tag (release mode).
             let mut warnings: Vec<String> = Vec::new();
+            // The catalog release a protected package moves to.
+            let mut expected: Option<catalog::Release> = None;
             let (next_commit, mode) = match (&target, &p.mode) {
+                _ if protected.is_some() => {
+                    let location = protected.as_deref().unwrap();
+                    let (releases, upstream) = catalog_candidates(&repo, id, &p, location)?;
+                    let Some(release) = releases.into_iter().last() else {
+                        return Ok(unchanged(
+                            upstream.map(|version| UnchangedReason::NotInCatalog { version }),
+                            Vec::new(),
+                        ));
+                    };
+                    let commit = release.commit.clone();
+                    ensure_release_commit(&repo, &release)?;
+                    expected = Some(release);
+                    (commit, Mode::Release)
+                }
                 (Target::Ref(reference), _) => resolve_upstream_ref(&repo, reference)?,
                 (Target::Dev, _) => resolve_upstream_ref(&repo, "HEAD")?,
                 (Target::Recorded, Mode::Branch(branch)) => {
@@ -1628,8 +1811,9 @@ impl Manager {
                 && mode == p.mode
                 && !matches!(target, Target::Ref(_));
             if next_commit == p.current.commit {
-                // A new mode is recorded even when the revision stays: that is a change.
-                if mode == p.mode {
+                // A new mode (or a detach) is recorded even when the revision stays: that
+                // is a change.
+                if mode == p.mode && detached.is_none() {
                     return Ok(RevisionChange {
                         warnings,
                         ..unchanged(None, skipped)
@@ -1640,6 +1824,7 @@ impl Manager {
                     changed: true,
                     mode,
                     warnings,
+                    detached,
                     ..unchanged(None, skipped)
                 });
             }
@@ -1664,9 +1849,22 @@ impl Manager {
                 }
                 Err(error) => return Err(error),
             };
+            if let Some(release) = &expected {
+                ensure!(
+                    path == release.path,
+                    Catalog,
+                    "catalog package folder {} of {id}@{} does not match git revision ({})",
+                    release.path.as_deref().unwrap_or("(root)"),
+                    release.manifest.version,
+                    path.as_deref().unwrap_or("(root)")
+                );
+            }
             git(&repo, &["checkout", "--detach", &next_commit])?;
             let m = package_manifest(&repo, path.as_deref())?;
             ensure!(m.id == id, InvalidManifest, "package id changed upstream");
+            if let Some(release) = &expected {
+                verify_catalog_release(&repo, &m, release)?;
+            }
             // Tags are not policed: an explicit tag or commit may keep the installed version
             // at another commit; when it is the moved release tag of that version, say so.
             if let Target::Ref(reference) = &target
@@ -1678,7 +1876,12 @@ impl Manager {
                     &next_commit[..next_commit.len().min(12)]
                 ));
             }
-            self.check_change(txn, state, id, &m, true)?;
+            // A protected package takes new dependencies from its own catalog.
+            let dependency_catalog = match &protected {
+                Some(location) => Some(location.clone()),
+                None => self.options.catalog.clone(),
+            };
+            self.check_change(txn, state, id, &m, dependency_catalog.as_deref())?;
             let next = revision(&repo, &m)?;
             let entry = state.packages.get_mut(id).unwrap();
             entry.previous = Some(p.current.with_mode(&p.mode));
@@ -1700,6 +1903,7 @@ impl Manager {
                 skipped,
                 unchanged_reason: None,
                 mode,
+                detached,
                 dist: DistSync::default(),
             })
         })?;
@@ -1754,7 +1958,7 @@ impl Manager {
                 InvalidManifest,
                 "rollback manifest mismatch"
             );
-            self.check_change(txn, state, id, &m, false)?;
+            self.check_change(txn, state, id, &m, None)?;
             // Revision and mode swap together.
             let entry = state.packages.get_mut(id).unwrap();
             entry.previous = Some(p.current.with_mode(&p.mode));
@@ -1775,6 +1979,7 @@ impl Manager {
                 skipped: Vec::new(),
                 unchanged_reason: None,
                 mode: previous.mode.clone(),
+                detached: None,
                 dist: DistSync::default(),
             })
         })?;
@@ -2000,7 +2205,7 @@ impl Manager {
         state.packages.insert(id.to_owned(), installed);
         if moved {
             // A newer branch commit must keep the workspace's dependencies working.
-            self.check_change(txn, state, id, &m, false)?;
+            self.check_change(txn, state, id, &m, None)?;
         }
         state.packages.get_mut(id).unwrap().adopt(&m);
         if state.is_active(id) {
@@ -2555,7 +2760,146 @@ fn adopt(
     })
 }
 
-/// One catalog per workspace: packages from another catalog must not be mixed in.
+/// [`Manager::protecting_catalog`] for the catalog at `location`.
+fn protecting_catalog_at(location: &str, state: &State) -> Result<Option<String>> {
+    if !catalog::is_verified(location)? {
+        return Ok(None);
+    }
+    let origin = catalog::canonical_location(location)?;
+    ensure_single_catalog(state, &origin)?;
+    Ok(Some(origin))
+}
+/// The releases of protected `id` its verified catalog at `location` lists above the
+/// installed version (ascending), and the newest origin release (the tags fetched into
+/// `repo`) above every catalog version and the installed one, which the catalog lacks.
+/// Refused with `catalog` when the catalog is no longer verified or lists the package
+/// from another source.
+fn catalog_candidates(
+    repo: &Path,
+    id: &str,
+    installed: &Installed,
+    location: &str,
+) -> Result<(Vec<catalog::Release>, Option<String>)> {
+    ensure!(
+        catalog::is_verified(location)?,
+        Catalog,
+        "catalog {location} that protects {id} is no longer verified; detach {id} to update it from its origin"
+    );
+    let current = catalog::version_key(&installed.current.version)?;
+    let mut listed = catalog::versions(location, id)?
+        .into_iter()
+        .map(|version| Ok((catalog::version_key(&version)?, version)))
+        .collect::<Result<Vec<_>>>()?;
+    listed.sort();
+    let top = listed
+        .last()
+        .map(|(key, _)| *key)
+        .unwrap_or(current)
+        .max(current);
+    let mut releases = Vec::new();
+    for (key, version) in listed {
+        if key <= current {
+            continue;
+        }
+        let release = catalog::lookup(location, id, Some(&version))?;
+        ensure!(
+            release.source == installed.source,
+            Catalog,
+            "catalog {location} lists {id} from {}, not from its recorded source {}",
+            release.source,
+            installed.source
+        );
+        releases.push(release);
+    }
+    // Tag names only: the origin's newer release is reported, never installed.
+    let upstream = match releases::discover_all(repo, Some(id)) {
+        Ok(found) => found
+            .tags
+            .iter()
+            .filter_map(|tag| {
+                Some((
+                    catalog::version_key(&tag.manifest.version).ok()?,
+                    &tag.manifest.version,
+                ))
+            })
+            .filter(|(key, _)| *key > top)
+            .max()
+            .map(|(_, version)| version.clone()),
+        Err(_) => None,
+    };
+    Ok((releases, upstream))
+}
+/// The installed revision of `id` must be the release record of its version in the
+/// verified catalog at `location`: the same source and commit, and (checked out in
+/// `repo`, a clone of that source) the same package folder, manifest and file hashes.
+fn verify_installed_release(
+    repo: &Path,
+    id: &str,
+    installed: &Installed,
+    location: &str,
+) -> Result<()> {
+    let version = &installed.current.version;
+    let release = catalog::lookup(location, id, Some(version))?;
+    ensure!(
+        release.source == installed.source && release.commit == installed.current.commit,
+        Catalog,
+        "installed {id}@{version} at {} is not the release the catalog lists ({}); it cannot be protected by that catalog",
+        &installed.current.commit[..installed.current.commit.len().min(12)],
+        &release.commit[..release.commit.len().min(12)]
+    );
+    ensure_release_commit(repo, &release)?;
+    let found = packages::find_at(repo, &release.commit, Some(id))?;
+    ensure!(
+        found.subdir() == release.path.as_deref(),
+        Catalog,
+        "catalog package folder of {id}@{version} does not match git revision"
+    );
+    git(repo, &["checkout", "--detach", &release.commit])?;
+    let actual = package_manifest(repo, release.path.as_deref())?;
+    verify_catalog_release(repo, &actual, &release)
+}
+/// The commit of a catalog release must be in `repo` (the clone after fetching its origin).
+fn ensure_release_commit(repo: &Path, release: &catalog::Release) -> Result<()> {
+    ensure!(
+        git(
+            repo,
+            &["cat-file", "-e", &format!("{}^{{commit}}", release.commit)]
+        )
+        .is_ok(),
+        Catalog,
+        "commit {} of catalog release {}@{} is not in the package's clone after fetching its origin",
+        release.commit,
+        release.manifest.id,
+        release.manifest.version
+    );
+    Ok(())
+}
+/// The checked-out revision in `repo` (manifest `actual`) must be exactly the catalog
+/// release: the same manifest and dist file hashes (`catalog` otherwise).
+fn verify_catalog_release(
+    repo: &Path,
+    actual: &Manifest,
+    release: &catalog::Release,
+) -> Result<()> {
+    let name = format!("{}@{}", release.manifest.id, release.manifest.version);
+    ensure!(
+        serde_json::to_value(actual)? == serde_json::to_value(&release.manifest)?,
+        Catalog,
+        "catalog manifest does not match git revision of {name}: the release differs from the one added to the catalog"
+    );
+    let dist = match &release.path {
+        Some(path) => repo.join(path).join("dist"),
+        None => repo.join("dist"),
+    };
+    ensure!(
+        catalog::hash_files(&dist)? == release.files,
+        Catalog,
+        "catalog file hashes do not match git dist of {name}: the release differs from the one added to the catalog"
+    );
+    Ok(())
+}
+/// One verified catalog per workspace: packages protected by another one must not be
+/// mixed in.
 fn ensure_single_catalog(state: &State, origin: &str) -> Result<()> {
     if let Some((id, other)) = state.packages.iter().find_map(|(id, p)| {
         p.catalog
@@ -2564,8 +2908,8 @@ fn ensure_single_catalog(state: &State, origin: &str) -> Result<()> {
             .map(|c| (id, c))
     }) {
         return Err(Error::Catalog(format!(
-            "this workspace uses catalog {other} ({id} was installed from it); \
-             mixing catalogs is not supported, select that catalog or uninstall its packages"
+            "this workspace uses verified catalog {other} ({id} was installed from it); \
+             mixing verified catalogs is not supported, select that catalog, or detach or uninstall its packages"
         )));
     }
     Ok(())
@@ -3609,6 +3953,8 @@ mod tests {
         catalog::register(&location, ws.author.source(), "dan/demo1@0.1.0").unwrap();
         ws.author.release("0.2.0");
         catalog::register(&location, ws.author.source(), "dan/demo1@0.2.0").unwrap();
+        // A verified catalog records `catalog`, which restore keeps.
+        crate::test_support::verify_catalog(&catalog_dir);
         let m = Manager::open_with(
             &ws.root,
             Options {
@@ -3636,8 +3982,13 @@ mod tests {
 
         // Pinned mode is kept too; a HEAD moved to another (published) commit is local work.
         m.enable(id).unwrap();
-        m.update_to(id, Target::Ref("dan/demo1@0.1.0".into()))
-            .unwrap();
+        // A protected package follows a ref only once detached.
+        m.update_with(
+            id,
+            Target::Ref("dan/demo1@0.1.0".into()),
+            UpdateOptions { detach: true },
+        )
+        .unwrap();
         m.forget(id).unwrap();
         fixture_git(
             &ws.repo(),
@@ -3658,7 +4009,7 @@ mod tests {
         let p = &m.state().unwrap().packages[id];
         assert_eq!(p.mode, Mode::Pinned("dan/demo1@0.1.0".into()));
         assert_eq!(p.current.version, "0.1.0");
-        assert!(p.enabled && p.catalog.is_some());
+        assert!(p.enabled && p.catalog.is_none());
         assert!(ws.dist().join("index.js").is_file());
     }
 
@@ -4368,6 +4719,418 @@ mod tests {
         assert_eq!(tree_hash(&ws.root.join("packages/dan/other")), other_repo);
         assert!(ws.root.join("dist/dan/other/index.js").is_file());
         assert_eq!(m.list().unwrap().len(), 1);
+    }
+
+    // ---- protected (verified) catalogs ----------------------------------------------
+
+    /// `dan/demo1` 0.1.0 and 0.2.0 registered in a verified catalog, installed from it at
+    /// 0.1.0; returns the catalog folder.
+    fn protected_install(ws: &Ws) -> PathBuf {
+        let catalog_dir = ws.dir.join("catalog");
+        let location = catalog_dir.to_str().unwrap().to_owned();
+        catalog::register(&location, ws.author.source(), "dan/demo1@0.1.0").unwrap();
+        ws.author.release("0.2.0");
+        catalog::register(&location, ws.author.source(), "dan/demo1@0.2.0").unwrap();
+        crate::test_support::verify_catalog(&catalog_dir);
+        let m = Manager::open_with(
+            &ws.root,
+            Options {
+                catalog: Some(location),
+            },
+        )
+        .unwrap();
+        m.install_from_catalog("dan/demo1", Some("0.1.0")).unwrap();
+        catalog_dir
+    }
+
+    #[test]
+    fn protected_packages_update_only_to_catalog_versions() {
+        let id = "dan/demo1";
+        let ws = Ws::new(id);
+        let catalog_dir = protected_install(&ws);
+        let recorded = catalog::canonical_location(catalog_dir.to_str().unwrap()).unwrap();
+        // The origin has 0.3.0, which the catalog does not list.
+        ws.author.release("0.3.0");
+        // No catalog configured: the recorded location is read.
+        let m = ws.open();
+        assert_eq!(
+            m.state().unwrap().packages[id].catalog.as_deref(),
+            Some(recorded.as_str())
+        );
+        let plan = m.update_all_plan().unwrap();
+        assert_eq!(
+            plan.updates
+                .iter()
+                .map(|c| c.to.version.as_str())
+                .collect::<Vec<_>>(),
+            ["0.2.0"]
+        );
+        let change = m.update(id).unwrap();
+        assert_eq!(
+            (change.changed, change.to.version.as_str()),
+            (true, "0.2.0")
+        );
+        // Up to date with the catalog: the newer origin release is named, not installed.
+        let change = ws.refuses_nothing(|| m.update(id));
+        assert_eq!(
+            (change.changed, change.unchanged_reason),
+            (
+                false,
+                Some(UnchangedReason::NotInCatalog {
+                    version: "0.3.0".into()
+                })
+            )
+        );
+        assert_eq!(
+            UnchangedReason::NotInCatalog {
+                version: "0.3.0".into()
+            }
+            .to_string(),
+            "upstream 0.3.0 not in catalog"
+        );
+        let plan = m.update_all_plan().unwrap();
+        assert!(plan.updates.is_empty());
+        assert_eq!(
+            plan.unchanged[0].reason,
+            Some(UnchangedReason::NotInCatalog {
+                version: "0.3.0".into()
+            })
+        );
+        // A ref or branch target needs a detach.
+        let error = ws.refuses("invalid_argument", || {
+            m.update_to(id, Target::Ref("dan/demo1@0.3.0".into()))
+        });
+        assert!(error.to_string().contains("detach it"), "{error}");
+        ws.refuses("invalid_argument", || m.update_to(id, Target::Dev));
+
+        // A catalog release whose files do not match the tagged dist: refused, unchanged.
+        let tampered = ws.author.release("0.4.0");
+        catalog::register(
+            catalog_dir.to_str().unwrap(),
+            ws.author.source(),
+            "dan/demo1@0.4.0",
+        )
+        .unwrap();
+        let release_json = catalog_dir.join("namespaces/dan/demo1/versions/0.4.0/release.json");
+        let mut value = crate::test_support::read_json(&release_json);
+        value["files"]["index.js"]["sha256"] = serde_json::Value::String("0".repeat(64));
+        crate::test_support::write_json(&release_json, &value);
+        let error = ws.refuses("catalog", || m.update(id));
+        assert!(
+            error
+                .to_string()
+                .contains("catalog file hashes do not match git dist of dan/demo1@0.4.0"),
+            "{error}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("differs from the one added to the catalog"),
+            "{error}"
+        );
+        ws.refuses("catalog", || m.update_all());
+        // A release commit the origin does not have.
+        assert_ne!(tampered, "1".repeat(40));
+        value["commit"] = serde_json::Value::String("1".repeat(40));
+        crate::test_support::write_json(&release_json, &value);
+        let error = ws.refuses("catalog", || m.update(id));
+        assert!(
+            error.to_string().contains("is not in the package's clone"),
+            "{error}"
+        );
+
+        // Detach: the record loses `catalog` and the origin's newest release is taken.
+        let change = m
+            .update_with(id, Target::Recorded, UpdateOptions { detach: true })
+            .unwrap();
+        assert_eq!(
+            (
+                change.changed,
+                change.to.version.as_str(),
+                change.detached.as_deref()
+            ),
+            (true, "0.4.0", Some(recorded.as_str()))
+        );
+        assert!(m.state().unwrap().packages[id].catalog.is_none());
+        let error = ws.refuses("invalid_argument", || {
+            m.update_with(id, Target::Recorded, UpdateOptions { detach: true })
+        });
+        assert!(error.to_string().contains("not protected"), "{error}");
+        // Unprotected now: a newer origin release is taken without the catalog.
+        ws.author.release("0.5.0");
+        assert_eq!(m.update(id).unwrap().to.version, "0.5.0");
+        ws.no_leftovers();
+    }
+
+    #[test]
+    fn detach_without_a_new_release_is_a_change() {
+        let id = "dan/demo1";
+        let ws = Ws::new(id);
+        protected_install(&ws);
+        let m = ws.open();
+        m.update(id).unwrap();
+        let change = m
+            .update_with(id, Target::Recorded, UpdateOptions { detach: true })
+            .unwrap();
+        assert!(change.changed && change.detached.is_some());
+        assert_eq!(change.from, change.to);
+        assert!(m.state().unwrap().packages[id].catalog.is_none());
+    }
+
+    #[test]
+    fn a_catalog_that_is_no_longer_verified_refuses_protected_updates() {
+        let id = "dan/demo1";
+        let ws = Ws::new(id);
+        let catalog_dir = protected_install(&ws);
+        let path = catalog_dir.join("catalog.json");
+        let mut value = crate::test_support::read_json(&path);
+        value.as_object_mut().unwrap().remove("verified");
+        crate::test_support::write_json(&path, &value);
+        let m = ws.open();
+        let error = ws.refuses("catalog", || m.update(id));
+        assert!(error.to_string().contains("no longer verified"), "{error}");
+        // update all keeps only this package where it is, with the reason.
+        let plan = ws.refuses_nothing(|| m.update_all_plan());
+        let reason = plan.unchanged[0].reason.clone();
+        assert!(
+            matches!(&reason, Some(UnchangedReason::CatalogUnavailable { reason })
+                if reason.contains("no longer verified")),
+            "{reason:?}"
+        );
+        assert!(
+            reason
+                .unwrap()
+                .to_string()
+                .starts_with("catalog unavailable: ")
+        );
+        // check names it on the row; the status follows the versions.
+        let report = check::check(&ws.root, None).unwrap();
+        assert_eq!(
+            report.rows[0].problem.as_deref(),
+            Some(check::CATALOG_NO_LONGER_VERIFIED)
+        );
+        assert_eq!(report.rows[0].status, check::CheckStatus::UpdateAvailable);
+        // An unreachable catalog: the same for update all.
+        fs::remove_dir_all(&catalog_dir).unwrap();
+        let plan = m.update_all_plan().unwrap();
+        assert!(matches!(
+            plan.unchanged[0].reason,
+            Some(UnchangedReason::CatalogUnavailable { .. })
+        ));
+    }
+
+    /// `dan/demo1` 0.1.0 protected by a verified catalog that also lists `dan/lib`
+    /// 0.1.0 and `dan/demo1` 0.2.0, which needs `dan/lib ^0.1`; returns the catalog.
+    fn protected_with_new_dependency(ws: &Ws) -> PathBuf {
+        let catalog_dir = ws.dir.join("catalog");
+        let location = catalog_dir.to_str().unwrap().to_owned();
+        let lib = ws.other_author("lib", "dan/lib");
+        catalog::register(&location, lib.source(), "dan/lib@0.1.0").unwrap();
+        catalog::register(&location, ws.author.source(), "dan/demo1@0.1.0").unwrap();
+        crate::test_support::verify_catalog(&catalog_dir);
+        Manager::open_with(
+            &ws.root,
+            Options {
+                catalog: Some(location.clone()),
+            },
+        )
+        .unwrap()
+        .install_from_catalog("dan/demo1", None)
+        .unwrap();
+        let mut app = make_manifest("dan/demo1", "0.2.0");
+        app.dependencies.insert("dan/lib".into(), "^0.1".into());
+        write_manifest(&ws.author.path, &app);
+        fixture_git(&ws.author.path, &["commit", "-q", "-am", "0.2.0"]);
+        ws.author.tag("0.2.0");
+        catalog::register(&location, ws.author.source(), "dan/demo1@0.2.0").unwrap();
+        catalog_dir
+    }
+
+    #[test]
+    fn new_dependencies_of_a_protected_package_come_from_its_catalog() {
+        let recorded = |dir: &Path| catalog::canonical_location(dir.to_str().unwrap()).unwrap();
+        // (a) update ID without a configured catalog.
+        let ws = Ws::new("dan/demo1");
+        let catalog_dir = protected_with_new_dependency(&ws);
+        let m = ws.open();
+        let change = m.update("dan/demo1").unwrap();
+        assert_eq!(change.to.version, "0.2.0");
+        let state = m.state().unwrap();
+        assert_eq!(
+            state.packages["dan/lib"].catalog,
+            Some(recorded(&catalog_dir))
+        );
+        drop(m);
+        // (b) update all with an unverified catalog configured that lacks `dan/lib`.
+        let ws = Ws::new("dan/demo1");
+        let catalog_dir = protected_with_new_dependency(&ws);
+        let other = ws.dir.join("other-catalog");
+        let stranger = ws.other_author("stranger", "dan/stranger");
+        catalog::register(
+            other.to_str().unwrap(),
+            stranger.source(),
+            "dan/stranger@0.1.0",
+        )
+        .unwrap();
+        let m = Manager::open_with(
+            &ws.root,
+            Options {
+                catalog: Some(other.to_str().unwrap().into()),
+            },
+        )
+        .unwrap();
+        let plan = m.update_all().unwrap();
+        assert_eq!(plan.installs[0].id, "dan/lib");
+        let state = m.state().unwrap();
+        assert_eq!(state.packages["dan/demo1"].current.version, "0.2.0");
+        assert_eq!(
+            state.packages["dan/lib"].catalog,
+            Some(recorded(&catalog_dir))
+        );
+        // update ID the same way, from a fresh workspace with the unverified catalog set.
+        drop(m);
+        let ws = Ws::new("dan/demo1");
+        let catalog_dir = protected_with_new_dependency(&ws);
+        let m = Manager::open_with(
+            &ws.root,
+            Options {
+                catalog: Some(other.to_str().unwrap().into()),
+            },
+        )
+        .unwrap();
+        m.update("dan/demo1").unwrap();
+        assert_eq!(
+            m.state().unwrap().packages["dan/lib"].catalog,
+            Some(recorded(&catalog_dir))
+        );
+    }
+
+    #[test]
+    fn install_from_a_verified_catalog_protects_a_direct_install_of_its_release() {
+        let id = "dan/demo1";
+        let ws = Ws::new(id);
+        let catalog_dir = ws.dir.join("catalog");
+        let location = catalog_dir.to_str().unwrap().to_owned();
+        catalog::register(&location, ws.author.source(), "dan/demo1@0.1.0").unwrap();
+        crate::test_support::verify_catalog(&catalog_dir);
+        let m = Manager::open_with(
+            &ws.root,
+            Options {
+                catalog: Some(location.clone()),
+            },
+        )
+        .unwrap();
+        // Downloaded directly, then installed from the catalog: enabled and protected.
+        m.download(ws.author.source(), None, InstallTarget::Release)
+            .unwrap();
+        assert!(m.state().unwrap().packages[id].catalog.is_none());
+        let result = m.install_from_catalog(id, None).unwrap();
+        assert!(result.enabled && !result.already_installed);
+        assert!(result.warnings[0].contains("is now protected by catalog"));
+        let state = m.state().unwrap();
+        assert_eq!(
+            state.packages[id].catalog,
+            Some(catalog::canonical_location(&location).unwrap())
+        );
+        // An enabled direct install becomes protected the same way.
+        m.update_with(id, Target::Recorded, UpdateOptions { detach: true })
+            .unwrap();
+        let again = m.install_from_catalog(id, None).unwrap();
+        assert!(again.already_installed);
+        assert!(m.state().unwrap().packages[id].catalog.is_some());
+
+        // A direct install whose files differ from the catalog record: refused, unchanged.
+        let ws = Ws::new(id);
+        let catalog_dir = ws.dir.join("catalog");
+        let location = catalog_dir.to_str().unwrap().to_owned();
+        catalog::register(&location, ws.author.source(), "dan/demo1@0.1.0").unwrap();
+        crate::test_support::verify_catalog(&catalog_dir);
+        // The tag moves to another commit of the same version (the old one stays reachable).
+        fixture_git(&ws.author.path, &["branch", "keep"]);
+        fs::write(ws.author.path.join("dist/index.js"), "moved\n").unwrap();
+        fixture_git(&ws.author.path, &["commit", "-q", "-am", "moved"]);
+        fixture_git(&ws.author.path, &["tag", "-f", "dan/demo1@0.1.0"]);
+        let m = Manager::open_with(
+            &ws.root,
+            Options {
+                catalog: Some(location.clone()),
+            },
+        )
+        .unwrap();
+        m.download(ws.author.source(), None, InstallTarget::Release)
+            .unwrap();
+        let error = ws.refuses("catalog", || m.install_from_catalog(id, None));
+        assert!(
+            error
+                .to_string()
+                .contains("cannot be protected by that catalog"),
+            "{error}"
+        );
+        assert!(m.state().unwrap().packages[id].catalog.is_none());
+    }
+
+    #[test]
+    fn unverified_catalog_installs_follow_the_origin() {
+        let id = "dan/demo1";
+        let ws = Ws::new(id);
+        let location = ws.dir.join("catalog").to_str().unwrap().to_owned();
+        catalog::register(&location, ws.author.source(), "dan/demo1@0.1.0").unwrap();
+        let m = Manager::open_with(
+            &ws.root,
+            Options {
+                catalog: Some(location),
+            },
+        )
+        .unwrap();
+        m.install_from_catalog(id, None).unwrap();
+        assert!(m.state().unwrap().packages[id].catalog.is_none());
+        ws.author.release("0.2.0");
+        assert_eq!(m.update(id).unwrap().to.version, "0.2.0");
+    }
+
+    #[test]
+    fn check_compares_protected_packages_with_their_catalog() {
+        let id = "dan/demo1";
+        let ws = Ws::new(id);
+        let catalog_dir = protected_install(&ws);
+        let location = catalog_dir.to_str().unwrap();
+        let m = ws.open();
+        m.update(id).unwrap();
+        ws.author.release("0.3.0");
+        for given in [None, Some(location)] {
+            let report = check::check(&ws.root, given).unwrap();
+            let row = &report.rows[0];
+            assert_eq!(
+                (
+                    row.status,
+                    row.source,
+                    row.latest.as_deref(),
+                    row.origin_latest.as_deref(),
+                    row.update_available
+                ),
+                (
+                    check::CheckStatus::UpstreamNotInCatalog,
+                    check::CheckSource::Catalog,
+                    Some("0.2.0"),
+                    Some("0.3.0"),
+                    false
+                ),
+                "{given:?}"
+            );
+            assert_eq!(row.message(), "upstream 0.3.0 not in catalog");
+            assert_eq!(report.catalog_verified, given.is_some());
+        }
+        // An unverified catalog given: reported as such.
+        let other = ws.dir.join("other-catalog");
+        catalog::register(
+            other.to_str().unwrap(),
+            ws.author.source(),
+            "dan/demo1@0.3.0",
+        )
+        .unwrap();
+        let report = check::check(&ws.root, Some(other.to_str().unwrap())).unwrap();
+        assert!(!report.catalog_verified);
+        assert_eq!(report.rows[0].status, check::CheckStatus::OtherCatalog);
     }
 
     // ---- catalog-backed operations --------------------------------------------------

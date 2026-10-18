@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Install resolves dependencies
-Install and single-package update SHALL resolve dependencies with PubGrub: installed packages stay at their versions; missing ones SHALL be installed from the configured catalog in the same transaction, each recorded with that catalog's location only when it is verified (catalog, "One catalog per workspace"). Single source for the no-catalog case: without a catalog only installed packages SHALL satisfy dependencies, and a missing one SHALL fail with `dependency_conflict` naming it.
+Install and single-package update SHALL resolve dependencies with PubGrub: installed packages stay at their versions; missing ones SHALL be installed from the configured catalog in the same transaction, each recorded with that catalog's location only when it is verified (catalog, "One catalog per workspace"); a protected package takes new dependencies from its own verified catalog (updates, "Protected packages update through their catalog"). Single source for the no-catalog case: without a catalog only installed packages SHALL satisfy dependencies, and a missing one SHALL fail with `dependency_conflict` naming it.
 
 #### Scenario: Dependency pulled from the catalog
 - **WHEN** `app` requires `lib ^1` and only the catalog has `lib`

@@ -37,7 +37,8 @@ def up_to_date(t: T):
 
 @case(fixture="catalog", spec=["catalog/check-compares-installed-packages-with-their-catalog-or-origin", "catalog/catalog-v2-is-a-tree-of-static-files#direct-lookup"])
 def update_available_reads_only_installed_plugins(t: T):
-    """Two installed packages; requests go to their index and current/latest releases only."""
+    """Two installed packages; requests go to their index and current/latest releases only, plus
+    the top-level catalog.json for the verified flag (a broken one reads as unverified)."""
     srv = t.serve(t.catalog)
     t.gitpm_ok("--catalog", srv.url, "install-catalog", NUM, "--version", "1.9.0")
     t.gitpm_ok("--catalog", srv.url, "install-catalog", HELLO, "--version", "0.1.1")
@@ -49,7 +50,7 @@ def update_available_reads_only_installed_plugins(t: T):
     allowed = {"/namespaces/dan/num/plugin.json", "/namespaces/dan/num/versions/1.9.0/release.json",
                "/namespaces/dan/num/versions/1.10.0/release.json",
                "/namespaces/dan/hello/plugin.json", "/namespaces/dan/hello/versions/0.1.1/release.json",
-               "/namespaces/dan/hello/versions/0.2.0/release.json"}
+               "/namespaces/dan/hello/versions/0.2.0/release.json", "/catalog.json"}
     t.eq(sorted(set(requests) - allowed), [], "requests outside the installed packages")
     t.ok("/namespaces/dan/hello/versions/0.1.0/release.json" not in requests, "unrelated release not read")
 
@@ -126,8 +127,9 @@ def different_source(t: T):
 
 @case(fixture="catalog", spec=["catalog/check-compares-installed-packages-with-their-catalog-or-origin#other-catalog"])
 def installed_from_other_catalog(t: T):
-    """Installed from the local catalog path, checked against its HTTP copy. An older
+    """Installed from the local (verified) catalog path, checked against its HTTP copy. An older
     install is not compared ("up to date" still wins for the same release, UC-057)."""
+    t.edit_json(t.catalog / "catalog.json", lambda c: c.update(verified=True))
     srv = t.serve(t.catalog)
     t.gitpm_ok("install-catalog", HELLO, "--version", "0.1.1")
     check(t, srv.url, HELLO, "installed from another catalog")

@@ -9,7 +9,11 @@ use crate::{
     exec,
 };
 use serde::Serialize;
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::Path,
+};
 
 /// Outcome of comparing one installed package with the catalog or its origin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -33,6 +37,10 @@ pub enum CheckStatus {
     OriginUnreachable,
     /// Pinned to a tag or commit ([`CheckRow::mode`]): not compared, nothing queried.
     Pinned,
+    /// Catalog row of a package protected by a verified catalog: the origin has a newer
+    /// release ([`CheckRow::origin_latest`]) than every version the catalog lists; no
+    /// update is offered.
+    UpstreamNotInCatalog,
 }
 impl CheckStatus {
     /// Human-readable status.
@@ -51,6 +59,7 @@ impl CheckStatus {
             CheckStatus::NoReleases => "no releases on origin",
             CheckStatus::OriginUnreachable => "origin unreachable",
             CheckStatus::Pinned => "pinned",
+            CheckStatus::UpstreamNotInCatalog => "upstream not in catalog",
         }
     }
 }
@@ -92,9 +101,26 @@ pub struct CheckRow {
     /// classified hint, never git's raw stderr.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub problem: Option<String>,
+    /// The newest release on the origin when the catalog lacks it
+    /// ([`CheckStatus::UpstreamNotInCatalog`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin_latest: Option<String>,
     /// For a fork: the original's latest release against the fork base.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub upstream: Option<Upstream>,
+}
+
+impl CheckRow {
+    /// Human-readable status of the row: [`CheckStatus::message`], with the origin's
+    /// version for [`CheckStatus::UpstreamNotInCatalog`] (`upstream V not in catalog`).
+    pub fn message(&self) -> String {
+        match (&self.status, &self.origin_latest) {
+            (CheckStatus::UpstreamNotInCatalog, Some(version)) => {
+                format!("upstream {version} not in catalog")
+            }
+            (status, _) => status.message().to_owned(),
+        }
+    }
 }
 
 /// Where a fork's original stands: in the catalog when it lists the original,
@@ -157,19 +183,46 @@ fn latest_version(catalog: &Catalog, id: &str) -> Option<String> {
 /// source, nothing fetched); a source that is not a URL or an absolute path, or uses a
 /// remote helper, is not queried and its row is [`CheckStatus::OriginUnreachable`].
 pub fn compare_in(state: &State, catalog: &Catalog, location: Option<&str>) -> Vec<CheckRow> {
-    rows(state, Some((catalog, location)))
+    rows(
+        state,
+        Some((catalog, location)),
+        &BTreeMap::new(),
+        &BTreeSet::new(),
+    )
 }
 
 /// One row per installed package, in state order. Each distinct origin is read once.
-fn rows(state: &State, catalog: Option<(&Catalog, Option<&str>)>) -> Vec<CheckRow> {
+/// `own` holds the snapshots of the verified catalogs protected packages were installed
+/// from, by canonical location, when no catalog is selected.
+/// `unverified` are the recorded catalogs whose owner dropped `"verified": true`: their
+/// protected rows get the problem [`CATALOG_NO_LONGER_VERIFIED`].
+fn rows(
+    state: &State,
+    catalog: Option<(&Catalog, Option<&str>)>,
+    own: &BTreeMap<String, Catalog>,
+    unverified: &BTreeSet<String>,
+) -> Vec<CheckRow> {
     let mut origins = Origins::default();
     state
         .packages
         .iter()
         .map(|(id, installed)| {
+            let protecting = installed
+                .catalog
+                .as_deref()
+                .and_then(|location| own.get(location).map(|c| (c, Some(location))));
+            // Compared with the verified catalog that protects it (not another one).
+            let own_catalog = installed.catalog.is_some()
+                && (protecting.is_some()
+                    || catalog.and_then(|(_, location)| location) == installed.catalog.as_deref());
             let mut row = match &installed.mode {
-                Mode::Release => catalog
+                Mode::Release => protecting
+                    .or(catalog)
                     .and_then(|(catalog, location)| catalog_row(id, installed, catalog, location))
+                    .map(|row| match own_catalog {
+                        true => protected_row(row, id, installed, &mut origins),
+                        false => row,
+                    })
                     .unwrap_or_else(|| origin_row(id, installed, &mut origins)),
                 Mode::Pinned(_) => {
                     let mut row = new_row(id, installed, CheckSource::Origin);
@@ -178,6 +231,14 @@ fn rows(state: &State, catalog: Option<(&Catalog, Option<&str>)>) -> Vec<CheckRo
                 }
                 Mode::Branch(branch) => branch_row(id, installed, branch, &mut origins),
             };
+            if installed
+                .catalog
+                .as_ref()
+                .is_some_and(|location| unverified.contains(location))
+                && row.problem.is_none()
+            {
+                row.problem = Some(CATALOG_NO_LONGER_VERIFIED.into());
+            }
             row.upstream = installed
                 .fork_of
                 .as_ref()
@@ -198,8 +259,31 @@ fn new_row(id: &str, installed: &Installed, source: CheckSource) -> CheckRow {
         source,
         mode: installed.mode.clone(),
         problem: None,
+        origin_latest: None,
         upstream: None,
     }
+}
+
+/// A protected package that is up to date with its own verified catalog: when the
+/// origin has a newer release than the catalog lists, the row is
+/// [`CheckStatus::UpstreamNotInCatalog`] (an unreadable origin changes nothing).
+fn protected_row(
+    mut row: CheckRow,
+    id: &str,
+    installed: &Installed,
+    origins: &mut Origins,
+) -> CheckRow {
+    if row.status != CheckStatus::UpToDate {
+        return row;
+    }
+    let top = row.latest.as_deref().unwrap_or(&row.installed);
+    if let (Ok(Some(newest)), Ok(top)) = (origins.latest(&installed.source, id), version_key(top))
+        && version_key(&newest).is_ok_and(|newest| newest > top)
+    {
+        row.status = CheckStatus::UpstreamNotInCatalog;
+        row.origin_latest = Some(newest);
+    }
+    row
 }
 
 /// Status of `latest` against the installed version.
@@ -414,6 +498,9 @@ fn compare_listed(
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct CheckReport {
     pub rows: Vec<CheckRow>,
+    /// The given catalog is verified (its top-level `catalog.json` has
+    /// `"verified": true`); `false` without a catalog.
+    pub catalog_verified: bool,
     /// `ORIGINAL → FORK` for every consumer.
     pub replacements: BTreeMap<String, String>,
     pub unsatisfied: Vec<UnsatisfiedDependency>,
@@ -439,6 +526,10 @@ pub fn check(root: &Path, catalog: Option<&str>) -> Result<CheckReport> {
         return Ok(CheckReport::default());
     }
     let rows = check_state(&state, catalog)?;
+    // Display only: an unreadable top-level `catalog.json` (the rows never need it)
+    // reports the catalog as unverified instead of failing the check.
+    let catalog_verified =
+        catalog.is_some_and(|location| crate::catalog::is_verified(location).unwrap_or(false));
     let unsatisfied = state
         .installed()
         .into_iter()
@@ -457,20 +548,50 @@ pub fn check(root: &Path, catalog: Option<&str>) -> Result<CheckReport> {
         .collect();
     Ok(CheckReport {
         rows,
+        catalog_verified,
         replacements: state.replacements,
         unsatisfied,
     })
 }
+/// [`CheckRow::problem`] of a protected package whose recorded catalog is no longer
+/// verified.
+pub const CATALOG_NO_LONGER_VERIFIED: &str = "catalog no longer verified";
 /// Refusal of a catalog operation without a catalog location.
 pub(crate) const NO_CATALOG: &str = "no catalog configured";
 
+/// Rows of `state` against the catalog at `location`; without one, a protected package
+/// is compared with the verified catalog it was installed from (read once per location;
+/// a broken or unreadable one fails the check like a selected catalog).
 pub(crate) fn check_state(state: &State, location: Option<&str>) -> Result<Vec<CheckRow>> {
+    // Recorded catalogs whose flag was dropped (an unreadable one is not claimed to be).
+    let unverified: BTreeSet<String> = state
+        .packages
+        .values()
+        .filter_map(|p| p.catalog.clone())
+        .filter(|recorded| crate::catalog::is_verified(recorded).is_ok_and(|v| !v))
+        .collect();
     let Some(location) = location else {
-        return Ok(rows(state, None));
+        let mut own = BTreeMap::new();
+        for installed in state.packages.values() {
+            if let Some(recorded) = &installed.catalog
+                && !own.contains_key(recorded)
+            {
+                own.insert(
+                    recorded.clone(),
+                    crate::catalog::selected_for_check(recorded, state)?,
+                );
+            }
+        }
+        return Ok(rows(state, None, &own, &unverified));
     };
     let snapshot = crate::catalog::selected_for_check(location, state)?;
     let canonical = crate::catalog::canonical_location(location).ok();
-    Ok(compare_in(state, &snapshot, canonical.as_deref()))
+    Ok(rows(
+        state,
+        Some((&snapshot, canonical.as_deref())),
+        &BTreeMap::new(),
+        &unverified,
+    ))
 }
 
 #[cfg(test)]
@@ -963,7 +1084,7 @@ mod tests {
         // A pinned package is never queried: even an unreachable origin is not read.
         let mut state = read_state(&root).unwrap();
         state.packages.get_mut("acme/pinned").unwrap().source = "ext::sh -c id".into();
-        let row = rows(&state, None).remove(1);
+        let row = rows(&state, None, &BTreeMap::new(), &BTreeSet::new()).remove(1);
         assert_eq!(
             (row.status, row.problem, row.mode),
             (CheckStatus::Pinned, None, pinned_mode)
@@ -971,7 +1092,7 @@ mod tests {
         // A branch the origin no longer has is reported, not hidden.
         let entry = state.packages.get_mut("acme/branch").unwrap();
         entry.mode = Mode::Branch("gone".into());
-        let row = rows(&state, None).remove(0);
+        let row = rows(&state, None, &BTreeMap::new(), &BTreeSet::new()).remove(0);
         assert_eq!(row.status, CheckStatus::OriginUnreachable);
         assert_eq!(
             row.problem.as_deref(),
@@ -1035,7 +1156,7 @@ mod tests {
             .into(),
             ..Default::default()
         };
-        let statuses: Vec<_> = rows(&state, None)
+        let statuses: Vec<_> = rows(&state, None, &BTreeMap::new(), &BTreeSet::new())
             .into_iter()
             .map(|r| (r.id, r.status, r.latest))
             .collect();
@@ -1149,10 +1270,15 @@ mod tests {
         me.fork_of = Some(base(Some(original.source())));
         state.packages.insert("me/hello".into(), me);
         let upstream = |state: &State, catalog: Option<&Catalog>| {
-            rows(state, catalog.map(|c| (c, None)))[0]
-                .upstream
-                .clone()
-                .unwrap()
+            rows(
+                state,
+                catalog.map(|c| (c, None)),
+                &BTreeMap::new(),
+                &BTreeSet::new(),
+            )[0]
+            .upstream
+            .clone()
+            .unwrap()
         };
         assert_eq!(
             upstream(&state, None),

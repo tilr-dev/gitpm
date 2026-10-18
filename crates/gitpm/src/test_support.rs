@@ -248,3 +248,10 @@ pub(crate) fn state_with(id: &str, source: &str, version: &str, commit: &str) ->
         ..Default::default()
     }
 }
+/// Mark the catalog folder `dir` verified, as its owner does by hand.
+pub(crate) fn verify_catalog(dir: &Path) {
+    let path = dir.join("catalog.json");
+    let mut value = read_json(&path);
+    value["verified"] = serde_json::Value::Bool(true);
+    write_json(&path, &value);
+}

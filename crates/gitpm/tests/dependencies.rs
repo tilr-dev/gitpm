@@ -86,6 +86,13 @@ impl Fixture {
     fn catalog(&self, name: &str) -> String {
         self.path(name).to_str().unwrap().to_owned()
     }
+    /// Mark a catalog verified, as its owner does by hand in `catalog.json`.
+    fn verify(&self, catalog: &str) {
+        let path = Path::new(catalog).join("catalog.json");
+        let mut value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        value["verified"] = json!(true);
+        fs::write(&path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+    }
     fn open(&self, catalog: &str) -> Manager {
         Manager::open_with(
             self.path("workspace"),
@@ -165,8 +172,19 @@ fn core_catalog(f: &Fixture) -> String {
 
 #[test]
 fn catalog_install_resolves_dependencies_and_records_edges() {
+    // An unverified catalog serves discovery only: nothing records it.
     let f = Fixture::new();
     let cat = core_catalog(&f);
+    let m = f.open(&cat);
+    m.install_from_catalog("app/a", None).unwrap();
+    let state = m.state().unwrap();
+    assert!(state.packages["app/a"].catalog.is_none());
+    assert!(state.packages["lib/core"].catalog.is_none());
+    drop((m, f));
+
+    let f = Fixture::new();
+    let cat = core_catalog(&f);
+    f.verify(&cat);
     let m = f.open(&cat);
     let installed = m.install_from_catalog("app/a", None).unwrap();
     assert_eq!(ids(&m), ["app/a", "lib/core"]);
@@ -838,10 +856,29 @@ fn one_catalog_per_workspace() {
     let other = f.author("y/q");
     let tag = f.release(&other, "y/q", "1.0.0", &[]);
     catalog::register(&b, other.to_str().unwrap(), &tag).unwrap();
+    f.verify(&a);
+    f.verify(&b);
     f.open(&a).install_from_catalog("x/p", None).unwrap();
     let m = f.open(&b);
     let error = f.refuses("catalog", || m.install_from_catalog("y/q", None));
-    assert!(error.to_string().contains("mixing catalogs"), "{error}");
+    assert!(
+        error.to_string().contains("mixing verified catalogs"),
+        "{error}"
+    );
+    // An unverified catalog is exempt: it records nothing.
+    let c = f.catalog("catalog-c");
+    let third = f.author("z/r");
+    let tag = f.release(&third, "z/r", "1.0.0", &[]);
+    catalog::register(&c, third.to_str().unwrap(), &tag).unwrap();
+    drop(m);
+    let m = f.open(&c);
+    m.install_from_catalog("z/r", None).unwrap();
+    let state = m.state().unwrap();
+    assert!(state.packages["z/r"].catalog.is_none());
+    assert_eq!(
+        state.packages["x/p"].catalog.as_deref(),
+        Some(catalog::canonical_location(&a).unwrap().as_str())
+    );
     // Same catalog through another spelling is the same catalog.
     drop(m);
     let m = f.open(&format!("{a}/catalog.json"));
@@ -858,6 +895,7 @@ fn check_shows_fork_upstream_and_other_catalogs() {
     let f = Fixture::new();
     let a = f.catalog("catalog-a");
     f.publish(&a, "vendor/p", "1.0.0", &[]);
+    f.verify(&a);
     let m = f.open(&a);
     m.install_from_catalog("vendor/p", None).unwrap();
     let fork = m
@@ -904,7 +942,8 @@ fn check_shows_fork_upstream_and_other_catalogs() {
         (Some("1.1.0"), Some(CheckSource::Origin))
     );
 
-    // Without any catalog every row and the fork upstream come from the origins.
+    // Without any catalog the protected original is compared with its verified catalog;
+    // the fork's row and its upstream come from the origins.
     drop(m);
     let m = Manager::open_with(f.path("workspace"), Options::default()).unwrap();
     let original = row(&m, "vendor/p");
@@ -912,7 +951,7 @@ fn check_shows_fork_upstream_and_other_catalogs() {
         (original.status, original.source, original.latest.as_deref()),
         (
             CheckStatus::UpdateAvailable,
-            CheckSource::Origin,
+            CheckSource::Catalog,
             Some("1.1.0")
         )
     );

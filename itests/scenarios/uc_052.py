@@ -70,7 +70,9 @@ def lifecycle_matches_library_contract(t: T):
 
 @case(fixture="g6_core_catalog", spec=["dependencies/install-resolves-dependencies#dependency-pulled-from-the-catalog"])
 def catalog_install_with_dependency(t: T):
-    """install-catalog app/a: the library's catalog_install_resolves_dependencies_and_records_edges outcome."""
+    """install-catalog app/a: the library's catalog_install_resolves_dependencies_and_records_edges outcome
+    (the catalog verified, so the pulled dependency records it)."""
+    t.edit_json(t.catalog / "catalog.json", lambda c: c.update(verified=True))
     t.gitpm_ok("install-catalog", "app/a")
     state = t.state()
     t.eq(sorted(state["packages"]), ["app/a", "lib/core"], "ids")

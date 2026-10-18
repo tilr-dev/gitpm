@@ -69,7 +69,11 @@ def restore_of_a_disabled_package_keeps_it_disabled(t: T):
 
 @case(fixture="g1_ws_catalog", spec=["install-uninstall/three-removal-levels#forget-then-restore"])
 def restore_keeps_the_catalog(t: T):
-    """A package installed from the catalog keeps its catalog binding through forget and restore."""
+    """A package installed from a verified catalog keeps its catalog binding through forget and
+    restore (the fixture's catalog is verified and the package installed from it again)."""
+    t.edit_json(t.catalog / "catalog.json", lambda c: c.update(verified=True))
+    t.gitpm_ok("uninstall", ID)
+    t.gitpm_ok("install-catalog", ID, "--version", "0.1.1")
     record = t.package(ID)
     t.ok(record.get("catalog"), "installed from the catalog")
     t.gitpm_ok("forget", ID)

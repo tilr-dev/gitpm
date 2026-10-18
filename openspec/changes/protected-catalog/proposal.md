@@ -8,16 +8,16 @@ The owner decided on 2026-10-18 (decision D4, TILR-34; namespace ownership folde
 
 - `"verified": true` in the top-level `catalog.json`, set by the owner by hand and kept by writers; **BREAKING** `catalog-update` into a verified catalog is refused (`invalid_argument`), versions enter one by one via `register`. The existing ID-to-source binding is the namespace ownership. Into an unverified catalog `catalog-update` keeps working and never replaces a published record: a difference keeps the record with a warning (`no-tag-immutability`; owner decision of 2026-10-18 on TILR-34). One catalog per workspace stays.
 - Protected packages: installed from a verified catalog (and dependencies pulled from it) record `catalog`; `update`/`update all` move them only to catalog-listed versions, checking commit, manifest and file hashes (`catalog` on mismatch), from the recorded location.
-- `update ID --detach` (FFI `update(id, target, detach)`) drops the protection and updates from the origin.
+- `update ID --detach` (FFI `update(id, target, detach)`) drops the protection and updates from the origin. A protected package whose origin is ahead of its catalog stays with the new reason `not_in_catalog` (`update ID`, `update all`). **BREAKING** (FFI/API): `update` takes `detach`; `RevisionChange.detached`, `UnchangedReason::NotInCatalog`, `CatalogOverview.verified` are new fields/cases.
 - **BREAKING** Unverified catalogs: discovery only. `install-catalog` still verifies at install but records no `catalog`; updates follow the origin; the one-catalog rule applies only among verified catalogs.
-- `check`: protected packages compare with their catalog; a newer origin release that the catalog lacks shows `upstream_not_in_catalog` ("upstream V not in catalog"); the report says whether the catalog is verified. `list` shows `catalog` only for protected packages.
+- `check`: protected packages compare with their catalog; a newer origin release that the catalog lacks shows `upstream_not_in_catalog` ("upstream V not in catalog"); the report says whether the catalog is verified (`catalog_verified`), `info` prints `Verified: yes|no`. `list` shows `catalog` only for protected packages.
 
 Depends on: `no-backward-compat`, `thin-cli-boundary`, `check-via-origin`, `single-ref-mode`, `download-and-enable`, `update-all-skips-broken`, `removal-and-restore-rules`, `no-tag-immutability`.
 
 ## Capabilities
 
 ### Modified Capabilities
-- `catalog`: new "Verified catalogs"; "One catalog per workspace", "check compares installed packages with their catalog or origin".
+- `catalog`: new "Verified catalogs"; "Bounded overview" (the `Verified:` line), "One catalog per workspace", "check compares installed packages with their catalog or origin".
 - `install-uninstall`: "Install from the catalog".
 - `updates`: new "Protected packages update through their catalog"; "Updates need no catalog".
 - `dependencies`: "Install resolves dependencies".
@@ -30,6 +30,7 @@ Depends on: `no-backward-compat`, `thin-cli-boundary`, `check-via-origin`, `sing
 - Signing catalogs or releases; a command to set the flag.
 - Hosting or access control of catalogs (the owner's job).
 - Per-namespace policy files.
+- Hashing the `git archive` export tree instead of the checked-out `dist/` (TILR-46, change `robustness-fixes`); it applies to the install and the protected update path alike.
 
 ## Impact
 

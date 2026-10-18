@@ -228,8 +228,10 @@ def _(t: T):
 
 @fixture(requires=["hello"], gitpm=True)
 def g6_journey(t: T):
-    """dan/hello 0.1.0 registered in /fx/catalog and installed from it with install-catalog."""
+    """dan/hello 0.1.0 registered in /fx/catalog (verified) and installed from it with install-catalog."""
     t.gitpm_ok("register", t.repo("dan/hello"), "--ref", "dan/hello@0.1.0")
+    # A verified catalog: the installed package records it (protected).
+    t.edit_json(t.catalog / "catalog.json", lambda c: c.update(verified=True))
     t.gitpm_ok("install-catalog", "dan/hello")
 
 

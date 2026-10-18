@@ -45,5 +45,5 @@ pub use workspace::{
     ForkedPackage, HeldBack, HeldBackReason, IncompatibleConsumer, InstallResult, InstallTarget,
     InstalledDependency, Manager, Options, PackageFork, PackageForkReplacement, PendingReplacement,
     ReplacementPlan, ResumeFailure, RevisionChange, SkippedDist, Target, Unchanged,
-    UnchangedReason, UninstallPlan, UpdateAllPlan,
+    UnchangedReason, UninstallPlan, UpdateAllPlan, UpdateOptions,
 };

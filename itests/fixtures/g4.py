@@ -219,7 +219,7 @@ def _(t: T):
 def g4_two_catalogs(t: T):
     """Catalog A /fx/catA: x/p 1.0.0 (source /fx/repos/x/p), z/r 1.0.0. Catalog B /fx/catB:
     x/p 1.0.0 + 1.1.0 from /fx/mirror/x/p (a different source), y/q 1.0.0, z/r 1.0.0 (same
-    source and commit as in A). Empty workspace."""
+    source and commit as in A). Both are verified (`"verified": true`). Empty workspace."""
     a, b = t.root / "catA", t.root / "catB"
     t.gitpm_ok("--catalog", a, "register", t.repo("x/p"), "--ref", "x/p@1.0.0")
     t.gitpm_ok("--catalog", a, "register", t.repo("z/r"), "--ref", "z/r@1.0.0")
@@ -227,6 +227,9 @@ def g4_two_catalogs(t: T):
         t.gitpm_ok("--catalog", b, "register", t.root / "mirror/x/p", "--ref", f"x/p@{v}")
     t.gitpm_ok("--catalog", b, "register", t.repo("y/q"), "--ref", "y/q@1.0.0")
     t.gitpm_ok("--catalog", b, "register", t.repo("z/r"), "--ref", "z/r@1.0.0")
+    # Both owners mark their catalog verified by hand.
+    for catalog in [a, b]:
+        t.edit_json(catalog / "catalog.json", lambda c: c.update(verified=True))
 
 
 @g4_two_catalogs.check
@@ -236,6 +239,8 @@ def _(t: T):
     t.eq(json.loads(t.catalog_index("x/p", b).read_text())["source"], str(t.root / "mirror/x/p"), "B source of x/p")
     t.eq(sorted(json.loads(t.catalog_index("x/p", b).read_text())["versions"]), ["1.0.0", "1.1.0"], "B x/p versions")
     t.ok(not t.catalog_index("y/q", a).exists(), "y/q only in B")
+    for catalog in [a, b]:
+        t.eq(json.loads((catalog / "catalog.json").read_text()).get("verified"), True, f"{catalog} verified")
     t.eq(t.catalog_release("z/r", "1.0.0", a).read_bytes(), t.catalog_release("z/r", "1.0.0", b).read_bytes(),
          "z/r release identical in A and B")
     t.ok(not t.ws.exists(), "workspace untouched")

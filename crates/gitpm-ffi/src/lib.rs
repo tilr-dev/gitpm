@@ -331,6 +331,12 @@ pub enum UnchangedReason {
     /// A broken consumer (`updateAll`): `dependency` is not satisfied (`problem`, for
     /// example `not installed` after a forced removal); it is never installed for it.
     BrokenDependency { dependency: String, problem: String },
+    /// Protected by a verified catalog: the origin's newer release `version` is not in
+    /// the catalog, so it is not installed.
+    NotInCatalog { version: String },
+    /// `updateAll`: the verified catalog of a protected package could not be used
+    /// (`reason`); it stays.
+    CatalogUnavailable { reason: String },
 }
 impl From<pm::UnchangedReason> for UnchangedReason {
     fn from(reason: pm::UnchangedReason) -> Self {
@@ -345,6 +351,12 @@ impl From<pm::UnchangedReason> for UnchangedReason {
                 dependency,
                 problem,
             },
+            pm::UnchangedReason::NotInCatalog { version } => {
+                UnchangedReason::NotInCatalog { version }
+            }
+            pm::UnchangedReason::CatalogUnavailable { reason } => {
+                UnchangedReason::CatalogUnavailable { reason }
+            }
         }
     }
 }
@@ -606,6 +618,8 @@ pub struct RevisionChange {
     /// The recorded mode afterwards; a change of mode alone is `changed` with `from` and
     /// `to` at the same commit.
     pub mode: Mode,
+    /// The verified catalog the package was detached from (`update(…, detach: true)`).
+    pub detached: Option<String>,
     /// Reconciliation report (empty inside an `UpdateAllPlan`, which carries its own).
     pub dist: DistSync,
 }
@@ -620,6 +634,7 @@ impl From<pm::RevisionChange> for RevisionChange {
             skipped: c.skipped.into_iter().map(Into::into).collect(),
             unchanged_reason: c.unchanged_reason.map(Into::into),
             mode: c.mode.into(),
+            detached: c.detached,
             dist: c.dist.into(),
         }
     }
@@ -890,6 +905,7 @@ pub enum CheckStatus {
     NoReleases,
     OriginUnreachable,
     Pinned,
+    UpstreamNotInCatalog,
 }
 impl From<pm::check::CheckStatus> for CheckStatus {
     fn from(s: pm::check::CheckStatus) -> Self {
@@ -908,6 +924,7 @@ impl From<pm::check::CheckStatus> for CheckStatus {
             S::NoReleases => CheckStatus::NoReleases,
             S::OriginUnreachable => CheckStatus::OriginUnreachable,
             S::Pinned => CheckStatus::Pinned,
+            S::UpstreamNotInCatalog => CheckStatus::UpstreamNotInCatalog,
         }
     }
 }
@@ -944,6 +961,8 @@ pub struct CheckRow {
     pub mode: Mode,
     /// Why the origin could not be read (`OriginUnreachable`).
     pub problem: Option<String>,
+    /// The origin's newer release the catalog lacks (`UpstreamNotInCatalog`).
+    pub origin_latest: Option<String>,
     /// For a fork: where its original stands in the catalog or at its origin.
     pub upstream: Option<Upstream>,
 }
@@ -963,7 +982,7 @@ pub struct Upstream {
 impl From<pm::check::CheckRow> for CheckRow {
     fn from(r: pm::check::CheckRow) -> Self {
         Self {
-            status_message: r.status.message().into(),
+            status_message: r.message(),
             id: r.id,
             installed: r.installed,
             latest: r.latest,
@@ -973,6 +992,7 @@ impl From<pm::check::CheckRow> for CheckRow {
             source: r.source.into(),
             mode: r.mode.into(),
             problem: r.problem,
+            origin_latest: r.origin_latest,
             upstream: r.upstream.map(|u| Upstream {
                 id: u.id,
                 base: u.base,
@@ -988,6 +1008,8 @@ impl From<pm::check::CheckRow> for CheckRow {
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct CheckReport {
     pub rows: Vec<CheckRow>,
+    /// The given catalog is verified (`"verified": true`); false without a catalog.
+    pub catalog_verified: bool,
     /// Original → fork, for every consumer.
     pub replacements: HashMap<String, String>,
     pub unsatisfied: Vec<UnsatisfiedDependency>,
@@ -1003,6 +1025,7 @@ impl From<pm::check::CheckReport> for CheckReport {
     fn from(r: pm::check::CheckReport) -> Self {
         Self {
             rows: r.rows.into_iter().map(Into::into).collect(),
+            catalog_verified: r.catalog_verified,
             replacements: r.replacements.into_iter().collect(),
             unsatisfied: r
                 .unsatisfied
@@ -1115,6 +1138,8 @@ pub enum OverviewItem {
 pub struct CatalogOverview {
     pub location: String,
     pub remote: bool,
+    /// The catalog's top-level `catalog.json` has `"verified": true`.
+    pub verified: bool,
     /// Depth-first rows of the catalog tree (flat; use `depth` for indentation).
     pub items: Vec<OverviewItem>,
     pub truncated: bool,
@@ -1124,6 +1149,7 @@ impl From<pm::catalog::CatalogOverview> for CatalogOverview {
         Self {
             location: o.location,
             remote: o.remote,
+            verified: o.verified,
             items: o
                 .items
                 .into_iter()
@@ -1486,9 +1512,15 @@ impl PackageManager {
             .download_from_catalog(&id, version.as_deref())?
             .into())
     }
-    /// Move `id` by `target`; `Recorded` follows the recorded mode.
-    pub fn update(&self, id: String, target: Target) -> Result<RevisionChange> {
-        Ok(self.inner.update_to(&id, target.into())?.into())
+    /// Move `id` by `target`; `Recorded` follows the recorded mode. A package protected
+    /// by a verified catalog moves only to the versions it lists (hashes checked);
+    /// `detach` drops that protection and updates from the origin.
+    #[uniffi::method(default(detach = false))]
+    pub fn update(&self, id: String, target: Target, detach: bool) -> Result<RevisionChange> {
+        Ok(self
+            .inner
+            .update_with(&id, target.into(), pm::UpdateOptions { detach })?
+            .into())
     }
     pub fn update_all_plan(&self) -> Result<UpdateAllPlan> {
         Ok(self.inner.update_all_plan()?.into())
@@ -2170,6 +2202,7 @@ mod tests {
         );
 
         let check = CheckReport::from(pm::check::CheckReport {
+            catalog_verified: true,
             rows: vec![pm::check::CheckRow {
                 id: "me/x".into(),
                 installed: "1.0.0".into(),
@@ -2180,6 +2213,7 @@ mod tests {
                 source: pm::check::CheckSource::Origin,
                 mode: pm::Mode::Pinned("me/x@1.0.0".into()),
                 problem: Some("unreachable".into()),
+                origin_latest: Some("1.2.0".into()),
                 upstream: Some(pm::check::Upstream {
                     id: "vendor/x".into(),
                     base: "0.9.0".into(),
@@ -2197,7 +2231,9 @@ mod tests {
                 problem: Some("not installed".into()),
             }],
         });
+        assert!(check.catalog_verified);
         let row = &check.rows[0];
+        assert_eq!(row.origin_latest.as_deref(), Some("1.2.0"));
         assert_eq!(
             (
                 row.id.as_str(),
@@ -2360,9 +2396,27 @@ mod tests {
                 reference: "me/x@1.0.0".into(),
             }),
             mode: pm::Mode::Pinned("me/x@1.0.0".into()),
+            detached: Some("/catalogs/a".into()),
             dist: report(),
         });
         assert!(change.changed);
+        assert_eq!(change.detached.as_deref(), Some("/catalogs/a"));
+        assert_eq!(
+            UnchangedReason::from(pm::UnchangedReason::NotInCatalog {
+                version: "1.2.0".into()
+            }),
+            UnchangedReason::NotInCatalog {
+                version: "1.2.0".into()
+            }
+        );
+        assert_eq!(
+            UnchangedReason::from(pm::UnchangedReason::CatalogUnavailable {
+                reason: "gone".into()
+            }),
+            UnchangedReason::CatalogUnavailable {
+                reason: "gone".into()
+            }
+        );
         assert_eq!(
             change.mode,
             Mode::Pinned {
@@ -2709,6 +2763,7 @@ mod tests {
             (S::NoReleases, "NoReleases"),
             (S::OriginUnreachable, "OriginUnreachable"),
             (S::Pinned, "Pinned"),
+            (S::UpstreamNotInCatalog, "UpstreamNotInCatalog"),
         ];
         for (status, name) in statuses {
             let row = CheckRow::from(pm::check::CheckRow {
@@ -2721,10 +2776,16 @@ mod tests {
                 source: pm::check::CheckSource::Catalog,
                 mode: pm::Mode::Release,
                 problem: None,
+                origin_latest: (status == S::UpstreamNotInCatalog).then(|| "1.2.0".into()),
                 upstream: None,
             });
             assert_eq!(format!("{:?}", row.status), name);
-            assert_eq!(row.status_message, status.message());
+            if status == S::UpstreamNotInCatalog {
+                assert_eq!(row.status_message, "upstream 1.2.0 not in catalog");
+                assert_eq!(row.origin_latest.as_deref(), Some("1.2.0"));
+            } else {
+                assert_eq!(row.status_message, status.message());
+            }
             assert_eq!(row.update_available, status == S::UpdateAvailable);
             assert_eq!(
                 (row.installed.as_str(), row.latest.as_deref(), row.enabled),
@@ -2742,6 +2803,7 @@ mod tests {
         let overview = CatalogOverview::from(O {
             location: "https://pkg.example".into(),
             remote: true,
+            verified: true,
             items: vec![
                 I::Directory {
                     depth: 1,
@@ -2768,9 +2830,10 @@ mod tests {
             (
                 overview.location.as_str(),
                 overview.remote,
+                overview.verified,
                 overview.truncated
             ),
-            ("https://pkg.example", true, true)
+            ("https://pkg.example", true, true, true)
         );
         assert!(
             matches!(&overview.items[0], OverviewItem::Directory { depth: 1, name } if name == "namespaces")
@@ -2983,7 +3046,7 @@ mod tests {
         let view = read_state(root.to_string_lossy().into()).unwrap();
         assert_eq!(view.packages["acme/greeter"].mode, pinned);
         let change = manager
-            .update("acme/greeter".into(), Target::Recorded)
+            .update("acme/greeter".into(), Target::Recorded, false)
             .unwrap();
         assert!(!change.changed);
         assert_eq!(
@@ -3062,7 +3125,8 @@ mod tests {
                 "me/missing".into(),
                 Target::Ref {
                     reference: "main".into()
-                }
+                },
+                false
             ),
             Err(PmError::NotInstalled { .. })
         ));

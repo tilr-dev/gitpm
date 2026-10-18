@@ -460,6 +460,12 @@ fn unchanged_line(id: &str, version: &str, reason: Option<&gitpm::UnchangedReaso
         Some(reason @ gitpm::UnchangedReason::BrokenDependency { .. }) => {
             format!("{id} skipped at {version} ({reason})")
         }
+        Some(
+            reason @ (gitpm::UnchangedReason::NotInCatalog { .. }
+            | gitpm::UnchangedReason::CatalogUnavailable { .. }),
+        ) => {
+            format!("{id} kept at {version} ({reason})")
+        }
     }
 }
 /// The line of a change of mode alone (the revision stays): `ID pinned at V (REF)`,
@@ -484,7 +490,15 @@ fn mode_note(mode: &gitpm::Mode) -> String {
 fn print_change(change: &gitpm::RevisionChange, verb: &str) {
     warn_skipped(&change.skipped);
     warn(&change.warnings);
-    if change.changed && change.from.commit == change.to.commit {
+    if let Some(location) = &change.detached {
+        println!(
+            "{} detached from catalog {location}; it now follows its origin",
+            change.id
+        );
+    }
+    if change.changed && change.from.commit == change.to.commit && change.detached.is_some() {
+        println!("{} stays at {}", change.id, change.to.version);
+    } else if change.changed && change.from.commit == change.to.commit {
         println!(
             "{}",
             mode_line(&change.id, &change.to.version, &change.mode)
@@ -741,7 +755,10 @@ Workspace (installed packages):",
         commands: &["update"],
         text: "  update ID [--ref REF | --dev | --release]  follow the recorded mode (latest release,
                                    branch HEAD; a pinned package stays); --ref/--dev switch
-                                   as in install, --release returns to releases",
+                                   as in install, --release returns to releases. A package
+                                   installed from a verified catalog moves only to the
+                                   versions that catalog lists (hashes checked)
+    [--detach]                     drop that protection and update from the origin",
     },
     Help {
         commands: &["update"],
@@ -937,6 +954,7 @@ fn run(invocation: &mut Invocation) -> Result<()> {
     let dry_run = flag(&mut args, "--dry-run")?;
     let dev = flag(&mut args, "--dev")?;
     let release = flag(&mut args, "--release")?;
+    let detach = flag(&mut args, "--detach")?;
     ensure!(!args.is_empty(), "command required; use --help");
     if let Some(unknown) = args.iter().find(|a| a.len() > 1 && a.starts_with('-')) {
         bail!("unknown option: {unknown}; use --help");
@@ -955,6 +973,10 @@ fn run(invocation: &mut Invocation) -> Result<()> {
         "--dev requires install/download/update"
     );
     ensure!(!release || command == "update", "--release requires update");
+    ensure!(
+        !detach || command == "update",
+        "--detach requires update ID"
+    );
     ensure!(!dev || reference.is_none(), "--dev conflicts with --ref");
     ensure!(
         !release || reference.is_none(),
@@ -1062,6 +1084,10 @@ fn run(invocation: &mut Invocation) -> Result<()> {
     ensure!(
         !update_all || (reference.is_none() && !dev && !release),
         "update all takes no --ref, --dev or --release; it follows each package's recorded mode"
+    );
+    ensure!(
+        !update_all || !detach,
+        "update all takes no --detach; detach one package with update ID --detach"
     );
     // Parse IDs and versions with the library's parsers before opening the workspace: a
     // rejected command creates nothing.
@@ -1211,12 +1237,17 @@ fn run(invocation: &mut Invocation) -> Result<()> {
                 println!("No packages installed in workspace {root}.");
                 return Ok(());
             }
-            println!(
-                "Workspace: {root}\nCatalog: {}\n",
-                catalog_location
-                    .as_deref()
-                    .unwrap_or("none (each package's origin)")
-            );
+            match catalog_location.as_deref() {
+                Some(location) => println!(
+                    "Workspace: {root}\nCatalog: {location} ({})\n",
+                    if report.catalog_verified {
+                        "verified"
+                    } else {
+                        "unverified: discovery only"
+                    }
+                ),
+                None => println!("Workspace: {root}\nCatalog: none (each package's origin)\n"),
+            }
             let color = io::stdout().is_terminal()
                 && std::env::var_os("NO_COLOR").is_none()
                 && std::env::var("TERM").as_deref() != Ok("dumb");
@@ -1378,7 +1409,10 @@ fn run(invocation: &mut Invocation) -> Result<()> {
                     (None, false, true) => gitpm::Target::Release,
                     (None, false, false) => gitpm::Target::Recorded,
                 };
-                print_change(&manager.update_to(id, target)?, "updated");
+                print_change(
+                    &manager.update_with(id, target, gitpm::UpdateOptions { detach })?,
+                    "updated",
+                );
             }
         }
         "rollback" => print_change(&manager.rollback(id)?, "rolled back"),

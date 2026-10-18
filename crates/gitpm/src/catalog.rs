@@ -53,6 +53,10 @@ pub struct Build {
 #[serde(deny_unknown_fields)]
 struct Directory {
     schema: u32,
+    /// Only in the top-level `catalog.json`: set by the catalog's owner by hand. Writers
+    /// keep it; a verified catalog takes versions only through [`register`].
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    verified: bool,
     directories: BTreeMap<String, String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -326,6 +330,15 @@ pub fn links(location: &str) -> Result<CatalogLinks> {
         directories: directory.directories,
     })
 }
+/// Whether the catalog at `location` is verified: its top-level `catalog.json` has
+/// `"verified": true` (set by its owner by hand). A verified catalog protects the
+/// packages installed from it; any other catalog serves discovery only.
+pub fn is_verified(location: &str) -> Result<bool> {
+    Ok(root_directory(location)?.verified)
+}
+/// Refusal of bulk generation into a verified catalog.
+const VERIFIED_TAKES_REGISTER_ONLY: &str =
+    "a verified catalog takes versions only one by one through register";
 /// Raw root `catalog.json` at this catalog level.
 pub fn list(location: &str) -> Result<serde_json::Value> {
     validate_location(location)?;
@@ -802,7 +815,20 @@ pub struct SkippedSourceTag {
     pub tag: crate::releases::SkippedTag,
 }
 
-/// Read-only source discovery and hashing precede any catalog changes.
+/// `catalog-update` never writes into a verified catalog (an existing top-level
+/// `catalog.json` must also be a valid v2 directory file).
+fn refuse_verified(location: &str) -> Result<()> {
+    if let Some(value) = read_json(location, "catalog.json")? {
+        ensure!(
+            !directory_of(value)?.verified,
+            InvalidArgument,
+            "{VERIFIED_TAKES_REGISTER_ONLY}"
+        );
+    }
+    Ok(())
+}
+/// Read-only source discovery and hashing precede any catalog changes. A verified
+/// catalog is refused with `invalid_argument` before anything is read or written.
 /// Removal from the source list never deletes already published releases.
 pub fn update_sources(
     location: &str,
@@ -810,6 +836,7 @@ pub fn update_sources(
     progress: &mut dyn FnMut(Progress),
 ) -> Result<UpdateSourcesReport> {
     let path = local_file(location)?.require(Error::InvalidArgument, WRITE_NEEDS_LOCAL)?;
+    refuse_verified(location)?;
     let text = fs::read_to_string(sources_file).context(Error::Io, "cannot read sources file")?;
     let base = sources_file
         .parent()
@@ -907,9 +934,7 @@ pub fn update_sources(
         }
     }
     let _lock = lock(&path)?;
-    if let Some(value) = read_json(location, "catalog.json")? {
-        directory_of(value)?;
-    }
+    refuse_verified(location)?;
     // Check every source and immutable version before writing any release.
     let mut warnings = Vec::new();
     let mut kept = Vec::new();
@@ -1006,6 +1031,8 @@ pub enum OverviewItem {
 pub struct CatalogOverview {
     pub location: String,
     pub remote: bool,
+    /// The top-level `catalog.json` has `"verified": true` (see [`is_verified`]).
+    pub verified: bool,
     pub items: Vec<OverviewItem>,
     /// The entry limit was reached; browse a subdirectory for more.
     pub truncated: bool,
@@ -1114,12 +1141,14 @@ pub fn browse(location: &str) -> Result<CatalogOverview> {
     }
     let remote = local_file(location)?.is_none();
     let value = list(location)?;
+    let verified = directory_of(value.clone())?.verified;
     let mut remaining = OVERVIEW_LIMIT;
     let mut items = Vec::new();
     walk(location, "", value, 1, &mut remaining, &mut items)?;
     Ok(CatalogOverview {
         location: location.into(),
         remote,
+        verified,
         items,
         truncated: remaining == 0,
     })
@@ -2099,6 +2128,47 @@ pub(crate) mod tests {
                 .kind(),
             "invalid_version"
         );
+    }
+
+    #[test]
+    fn verified_catalog_takes_only_registered_versions() {
+        let dir = TempDir::new("catalog");
+        let author = Author::new(dir.join("repo"), "dan/demo1");
+        let cat = dir.join("catalog");
+        register(loc(&cat), author.source(), "dan/demo1@0.1.0").unwrap();
+        assert!(!is_verified(loc(&cat)).unwrap());
+        assert!(!browse(loc(&cat)).unwrap().verified);
+        crate::test_support::verify_catalog(&cat);
+        assert!(is_verified(loc(&cat)).unwrap());
+        assert!(browse(loc(&cat)).unwrap().verified);
+        // register keeps the flag.
+        author.release("0.2.0");
+        register(loc(&cat), author.source(), "dan/demo1@0.2.0").unwrap();
+        assert_eq!(read(&cat.join("catalog.json"))["verified"], json!(true));
+        assert_eq!(versions(loc(&cat), "dan/demo1").unwrap().len(), 2);
+        // Bulk generation is refused before anything is read or written.
+        author.release("0.3.0");
+        let list = sources(dir.path(), "repo\n");
+        let before = tree_hash(&cat);
+        let error = update_sources(loc(&cat), &list, &mut |_| {}).unwrap_err();
+        assert_eq!(error.kind(), "invalid_argument");
+        assert_eq!(
+            error.to_string(),
+            "a verified catalog takes versions only one by one through register"
+        );
+        assert_eq!(tree_hash(&cat), before);
+        // The ID stays bound to its first source (namespace ownership).
+        let other = Author::new(dir.join("other"), "dan/demo1");
+        other.release("0.4.0");
+        let error = register(loc(&cat), other.source(), "dan/demo1@0.4.0").unwrap_err();
+        assert_eq!(error.kind(), "catalog");
+        assert!(error.to_string().contains("different source"), "{error}");
+        assert_eq!(tree_hash(&cat), before);
+        // An unverified catalog still takes catalog-update.
+        let open = dir.join("open-catalog");
+        let report = update_sources(loc(&open), &list, &mut |_| {}).unwrap();
+        assert_eq!(report.releases, 3);
+        assert!(!is_verified(loc(&open)).unwrap());
     }
 
     #[test]
