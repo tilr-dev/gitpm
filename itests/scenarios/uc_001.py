@@ -13,7 +13,7 @@ from gitpmtest import T, case
 ID = "dan/hello"
 OPT = "cli/option-validation"
 # Every command of `gitpm --help` (main.rs COMMANDS).
-COMMANDS = ["install", "install-catalog", "list", "check", "update", "rollback", "enable", "disable", "forget",
+COMMANDS = ["install", "install-catalog", "download", "download-catalog", "list", "check", "update", "rollback", "enable", "disable", "forget",
             "restore", "uninstall", "fork", "replace", "sync-dist", "init", "commit", "remote", "auth",
             "info", "catalog", "catalog-update", "register"]
 

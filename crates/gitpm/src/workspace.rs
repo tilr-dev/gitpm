@@ -40,6 +40,23 @@ pub use fork::{
     PackageForkReplacement, PendingReplacement, ResumeFailure,
 };
 
+/// A mode in messages: `release`, `pinned at REF`, `branch NAME`.
+fn mode_text(mode: &Mode) -> String {
+    match mode {
+        Mode::Release => "release".into(),
+        Mode::Pinned(reference) => format!("pinned at {reference}"),
+        Mode::Branch(branch) => format!("branch {branch}"),
+    }
+}
+
+/// Whether a fetched package is recorded enabled (install, optionally forced past
+/// inactive dependencies) or disabled (download).
+#[derive(Clone, Copy)]
+enum Activation {
+    Download,
+    Install { force: bool },
+}
+
 /// Settings passed explicitly by the caller; the library never reads environment variables.
 #[derive(Clone, Debug, Default)]
 pub struct Options {
@@ -133,9 +150,29 @@ pub struct InstallResult {
     /// recorded one (`update` with the same target records it).
     #[serde(rename = "requestedMode", skip_serializing_if = "Option::is_none")]
     pub requested_mode: Option<Mode>,
+    /// The package is recorded enabled: false after a download (with `already_installed`
+    /// or a restore: the recorded flag).
+    pub enabled: bool,
+    /// Missing dependencies installed (or, by a download, downloaded) from the catalog in
+    /// the same transaction, sorted by ID.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub dependencies: Vec<InstalledDependency>,
     /// Reconciliation report of the transaction (empty when nothing was written, for
     /// example `already_installed`, or inside an `update all` plan).
     pub dist: DistSync,
+}
+/// A dependency an install or download added from the catalog (see
+/// [`InstallResult::dependencies`]).
+#[derive(Clone, Debug, Serialize)]
+pub struct InstalledDependency {
+    pub id: String,
+    pub source: String,
+    pub current: Revision,
+    /// Recorded enabled (false when downloaded).
+    pub enabled: bool,
+    /// Metadata keys of its manifest with the wrong type, ignored.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 /// Result of update/rollback: `from` → `to`; `changed` is false for a no-op update.
 #[derive(Clone, Debug, Serialize)]
@@ -604,17 +641,52 @@ impl Manager {
     /// followed) or the origin's default branch (its name is recorded). A repository
     /// with a `gitpm.json` listing several packages needs `package` (unless the ref is
     /// an `ID@VERSION` tag); for a single-package repository a given `package` must
-    /// match.
+    /// match. An install is a [`Manager::download`] plus enabling the package and the
+    /// dependencies it downloaded, in one transaction: a dependency that only a disabled
+    /// package provides refuses with [`Error::DependencyConflict`] ("DEP is disabled;
+    /// enable it").
     pub fn install_package(
         &self,
         source: &str,
         package: Option<&str>,
         target: InstallTarget,
     ) -> Result<InstallResult> {
+        self.install_package_with(source, package, target, false)
+    }
+    /// [`Manager::install_package`]; with `force` the package itself is enabled even when
+    /// a dependency is not active (download plus a forced [`Manager::enable_with`]);
+    /// missing dependencies are still installed as usual.
+    pub fn install_package_with(
+        &self,
+        source: &str,
+        package: Option<&str>,
+        target: InstallTarget,
+        force: bool,
+    ) -> Result<InstallResult> {
+        self.fetch_package(source, package, &target, Activation::Install { force })
+    }
+    /// Clone, verify and record a package exactly as [`Manager::install_package`] does,
+    /// but disabled and without deploying it; missing dependencies are downloaded from
+    /// the catalog the same way (disabled), so a later [`Manager::enable`] works offline.
+    pub fn download(
+        &self,
+        source: &str,
+        package: Option<&str>,
+        target: InstallTarget,
+    ) -> Result<InstallResult> {
+        self.fetch_package(source, package, &target, Activation::Download)
+    }
+    fn fetch_package(
+        &self,
+        source: &str,
+        package: Option<&str>,
+        target: &InstallTarget,
+        activation: Activation,
+    ) -> Result<InstallResult> {
         if let Some(package) = package {
             valid_id(package)?;
         }
-        let target = match &target {
+        let target = match target {
             InstallTarget::Release => FetchTarget::Latest,
             InstallTarget::Ref(reference) => FetchTarget::Ref(reference),
             InstallTarget::Dev => FetchTarget::Dev,
@@ -629,31 +701,67 @@ impl Manager {
                 path: None,
             },
             None,
+            activation,
         )
     }
     /// Install an exact catalog release; manifest and dist hashes are verified.
     /// Missing dependencies come from the configured catalog.
     pub fn install_release(&self, release: &catalog::Release) -> Result<InstallResult> {
-        self.install_release_from(release, None)
+        self.install_release_from(release, None, Activation::Install { force: false })
     }
     fn install_release_from(
         &self,
         release: &catalog::Release,
         origin: Option<String>,
+        activation: Activation,
     ) -> Result<InstallResult> {
         catalog::validate_release(release, &release.manifest.id, &release.manifest.version)?;
-        self.install_checked(Fetch::release(release), origin)
+        self.install_checked(Fetch::release(release), origin, activation)
     }
     /// Look up `id` (latest if `version` is `None`) in the configured catalog and install
     /// it with its dependencies. The workspace works with one catalog: installing from
     /// another one than earlier catalog installs is refused.
     pub fn install_from_catalog(&self, id: &str, version: Option<&str>) -> Result<InstallResult> {
+        self.install_from_catalog_with(id, version, false)
+    }
+    /// [`Manager::install_from_catalog`]; `force` as in [`Manager::install_package_with`].
+    pub fn install_from_catalog_with(
+        &self,
+        id: &str,
+        version: Option<&str>,
+        force: bool,
+    ) -> Result<InstallResult> {
+        self.fetch_from_catalog(id, version, Activation::Install { force })
+    }
+    /// Like [`Manager::install_from_catalog`], but the package and its missing
+    /// dependencies are recorded disabled and nothing is deployed (see
+    /// [`Manager::download`]).
+    pub fn download_from_catalog(&self, id: &str, version: Option<&str>) -> Result<InstallResult> {
+        self.fetch_from_catalog(id, version, Activation::Download)
+    }
+    fn fetch_from_catalog(
+        &self,
+        id: &str,
+        version: Option<&str>,
+        activation: Activation,
+    ) -> Result<InstallResult> {
         let origin = catalog::canonical_location(self.catalog_location()?)?;
         ensure_single_catalog(&self.state()?, &origin)?;
         let release = self.catalog_release(id, version)?;
-        self.install_release_from(&release, Some(origin))
+        self.install_release_from(&release, Some(origin), activation)
     }
-    fn install_checked(&self, fetch: Fetch, origin: Option<String>) -> Result<InstallResult> {
+    /// Install or download one package with its missing dependencies. An install of a
+    /// package downloaded (disabled) from the same source enables it.
+    fn install_checked(
+        &self,
+        fetch: Fetch,
+        origin: Option<String>,
+        activation: Activation,
+    ) -> Result<InstallResult> {
+        let (enabled, force) = match activation {
+            Activation::Download => (false, false),
+            Activation::Install { force } => (true, force),
+        };
         ensure!(
             !fetch.source.starts_with('-'),
             InvalidArgument,
@@ -678,6 +786,46 @@ impl Manager {
             let m = cloned.manifest.clone();
             if let Some(installed) = state.packages.get(&m.id).filter(|p| p.source == source) {
                 let resolved = revision(&cloned.repo, &m)?;
+                // Only an explicit ref or the default branch asks for a mode.
+                let requested_mode = (matches!(
+                    fetch.target,
+                    FetchTarget::Ref(_) | FetchTarget::Dev
+                ) && cloned.mode != installed.mode)
+                    .then(|| cloned.mode.clone());
+                let available =
+                    (resolved.commit != installed.current.commit).then_some(resolved.clone());
+                if enabled && !installed.enabled {
+                    // Downloaded before: the install enables the recorded revision and mode.
+                    let mut warnings = Vec::new();
+                    if let Some(requested) = &requested_mode {
+                        warnings.push(format!(
+                            "{} is enabled in its recorded mode {}, not the requested {}; updating it with the same target moves it",
+                            m.id,
+                            mode_text(&installed.mode),
+                            mode_text(requested)
+                        ));
+                    }
+                    let result = InstallResult {
+                        id: m.id.clone(),
+                        source: source.clone(),
+                        current: installed.current.clone(),
+                        fork_of: installed.fork_of.clone(),
+                        skipped: cloned.skipped.clone(),
+                        warnings,
+                        already_installed: false,
+                        available,
+                        mode: installed.mode.clone(),
+                        requested_mode,
+                        enabled: true,
+                        dependencies: Vec::new(),
+                        dist: DistSync::default(),
+                    };
+                    if !force && !state.replacements.contains_key(&m.id) {
+                        deps::refuse_inactive_dependencies(state, &m.id, "install", true)?;
+                    }
+                    state.packages.get_mut(&m.id).unwrap().enabled = true;
+                    return Ok(result);
+                }
                 already = Some(InstallResult {
                     id: m.id.clone(),
                     source: source.clone(),
@@ -686,19 +834,18 @@ impl Manager {
                     skipped: cloned.skipped.clone(),
                     warnings: Vec::new(),
                     already_installed: true,
-                    available: (resolved.commit != installed.current.commit).then_some(resolved),
+                    available,
                     mode: installed.mode.clone(),
-                    // Only an explicit ref or the default branch asks for a mode.
-                    requested_mode: (matches!(
-                        fetch.target,
-                        FetchTarget::Ref(_) | FetchTarget::Dev
-                    ) && cloned.mode != installed.mode)
-                        .then(|| cloned.mode.clone()),
+                    requested_mode,
+                    enabled: installed.enabled,
+                    dependencies: Vec::new(),
                     dist: DistSync::default(),
                 });
             }
             check_new_id(txn.root(), state, &m)?;
             // Everything installed stays at its version; the new package is added on top.
+            // A download may take the versions of disabled packages as given; an install
+            // refuses them below, after the solve.
             let mut next = state.clone();
             next.packages.insert(m.id.clone(), Installed::default());
             next.packages.get_mut(&m.id).unwrap().current.version = m.version.clone();
@@ -712,10 +859,14 @@ impl Manager {
                 new.note = Some(format!("being installed at {}", m.version));
             }
             let missing = deps::solve(&fixed, &roots, self.options.catalog.as_deref())?;
-            self.install_missing(txn, state, &missing)?;
+            let dependencies = self.install_missing(txn, state, &missing, enabled)?;
             let skipped = cloned.skipped.clone();
-            let mut result = adopt(txn, state, cloned, source.clone(), origin.clone())?;
+            let mut result = adopt(txn, state, cloned, source.clone(), origin.clone(), enabled)?;
+            if enabled && !force && state.is_active(&m.id) {
+                deps::refuse_inactive_dependencies(state, &m.id, "install", true)?;
+            }
             result.skipped = skipped;
+            result.dependencies = dependencies;
             Ok(result)
         });
         match (installed, already) {
@@ -723,19 +874,22 @@ impl Manager {
             (installed, _) => installed.map(|(result, dist)| InstallResult { dist, ..result }),
         }
     }
-    /// Install catalog releases chosen by the solver (inside the current transaction).
+    /// Install catalog releases chosen by the solver (inside the current transaction),
+    /// recorded `enabled` or disabled (download).
     fn install_missing(
         &self,
         txn: &mut Txn,
         state: &mut State,
         missing: &BTreeMap<String, semver::Version>,
-    ) -> Result<()> {
+        enabled: bool,
+    ) -> Result<Vec<InstalledDependency>> {
         if missing.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
         let location = self.catalog_location()?;
         let origin = catalog::canonical_location(location)?;
         ensure_single_catalog(state, &origin)?;
+        let mut installed = Vec::new();
         for (number, (id, version)) in missing.iter().enumerate() {
             let release = catalog::lookup(location, id, Some(&version.to_string()))?;
             catalog::validate_release(&release, id, &release.manifest.version)?;
@@ -745,15 +899,23 @@ impl Manager {
                 &format!("dependency-{number}"),
             )?;
             check_new_id(txn.root(), state, &cloned.manifest)?;
-            adopt(
+            let result = adopt(
                 txn,
                 state,
                 cloned,
                 release.source.clone(),
                 Some(origin.clone()),
+                enabled,
             )?;
+            installed.push(InstalledDependency {
+                id: result.id,
+                source: result.source,
+                current: result.current,
+                enabled: result.enabled,
+                warnings: result.warnings,
+            });
         }
-        Ok(())
+        Ok(installed)
     }
     /// Check that `id` moving to manifest `m` keeps every working dependency working;
     /// with `fetch`, dependencies the new revision adds are installed from the catalog.
@@ -805,7 +967,9 @@ impl Manager {
                 None
             },
         )?;
-        self.install_missing(txn, state, &missing)
+        // Dependencies an inactive package pulls stay disabled with it.
+        let active = state.is_active(id);
+        self.install_missing(txn, state, &missing, active).map(drop)
     }
     /// Resolve all installed packages together, without changing installed files or state.
     /// Reads release tags from each origin; new dependencies come from the catalog.
@@ -1112,6 +1276,7 @@ impl Manager {
                     cloned,
                     release.source.clone(),
                     Some(origin),
+                    true,
                 )?);
             }
         }
@@ -1315,6 +1480,10 @@ impl Manager {
             entry.path = path.clone();
             entry.mode = mode.clone();
             entry.adopt(&m);
+            // Only active packages satisfy the dependencies of an active package.
+            if state.is_active(id) {
+                deps::refuse_inactive_dependencies(state, id, "update", false)?;
+            }
             txn.deploy(id, &relative, path.as_deref(), &next.commit)?;
             Ok(RevisionChange {
                 id: id.into(),
@@ -1375,6 +1544,9 @@ impl Manager {
             entry.mode = previous.mode.clone();
             entry.path = path.clone();
             entry.adopt(&m);
+            if state.is_active(id) {
+                deps::refuse_inactive_dependencies(state, id, "roll back", false)?;
+            }
             txn.deploy(id, &relative, path.as_deref(), &previous.commit)?;
             Ok(RevisionChange {
                 id: id.into(),
@@ -1396,12 +1568,19 @@ impl Manager {
     /// Disabling removes `dist/<id>`; enabling deploys it again from the clone at the
     /// installed commit (unless the package is replaced). Disabling a package others
     /// depend on, or one that replaces another (`dependents` then names the originals),
-    /// is refused with [`Error::HasDependents`] unless `force`. Returns the dist report.
+    /// is refused with [`Error::HasDependents`] unless `force`. Enabling a disabled
+    /// package whose dependencies are not all satisfied by active packages (missing,
+    /// disabled, replaced away or of a non-matching version) is refused with
+    /// [`Error::DependencyConflict`] unless `force`; dependencies are never enabled
+    /// along. Returns the dist report.
     pub fn set_enabled_with(&self, id: &str, enabled: bool, force: bool) -> Result<DistSync> {
         valid_id(id)?;
         self.transaction(|_, state| {
-            if !state.packages.contains_key(id) {
+            let Some(package) = state.packages.get(id) else {
                 return Err(Error::NotInstalled { id: id.into() });
+            };
+            if enabled && !force && !package.enabled && !state.replacements.contains_key(id) {
+                deps::refuse_inactive_dependencies(state, id, "enable", true)?;
             }
             if !enabled && !force {
                 refuse_dependents(state, id, "disable")?;
@@ -1428,8 +1607,14 @@ impl Manager {
         })
         .map(|((), dist)| dist)
     }
+    /// Enable `id`, refusing inactive dependencies (see [`Manager::set_enabled_with`]).
     pub fn enable(&self, id: &str) -> Result<DistSync> {
-        self.set_enabled(id, true)
+        self.enable_with(id, false)
+    }
+    /// Enable `id`; with `force` also when its dependencies are not active (it is then
+    /// reported broken by `list` and `check`).
+    pub fn enable_with(&self, id: &str, force: bool) -> Result<DistSync> {
+        self.set_enabled_with(id, true, force)
     }
     pub fn disable(&self, id: &str) -> Result<DistSync> {
         self.set_enabled(id, false)
@@ -1587,6 +1772,8 @@ impl Manager {
             available: None,
             mode: installed.mode.clone(),
             requested_mode: None,
+            enabled: installed.enabled,
+            dependencies: Vec::new(),
             dist: DistSync::default(),
         };
         let moved = commit != recorded;
@@ -1598,6 +1785,7 @@ impl Manager {
         }
         state.packages.get_mut(id).unwrap().adopt(&m);
         if state.is_active(id) {
+            deps::refuse_inactive_dependencies(state, id, "restore", false)?;
             txn.deploy(id, &relative, path.as_deref(), &commit)?;
         }
         Ok(result)
@@ -2058,23 +2246,27 @@ fn check_new_id(root: &Path, state: &State, m: &Manifest) -> Result<()> {
     Ok(())
 }
 
-/// Stage the verified clone as an installed package and register it.
+/// Stage the verified clone as an installed package and register it; a disabled one
+/// (download) is not deployed.
 fn adopt(
     txn: &mut Txn,
     state: &mut State,
     cloned: Cloned,
     source: String,
     catalog: Option<String>,
+    enabled: bool,
 ) -> Result<InstallResult> {
     let (staged, relative, key) = place_clone(txn, state, &cloned, &source)?;
     let m = &cloned.manifest;
     let current = revision(&staged, m)?;
-    txn.deploy(&m.id, &relative, cloned.path.as_deref(), &current.commit)?;
+    if enabled {
+        txn.deploy(&m.id, &relative, cloned.path.as_deref(), &current.commit)?;
+    }
     let mut installed = Installed {
         source: source.clone(),
         current: current.clone(),
         previous: None,
-        enabled: true,
+        enabled,
         mode: cloned.mode.clone(),
         catalog,
         clone: key,
@@ -2094,6 +2286,8 @@ fn adopt(
         available: None,
         mode: cloned.mode.clone(),
         requested_mode: None,
+        enabled,
+        dependencies: Vec::new(),
         dist: DistSync::default(),
     })
 }
@@ -3544,6 +3738,115 @@ mod tests {
         let removed = m.uninstall(id, false).unwrap();
         assert_eq!(removed.removed, [id]);
         assert_eq!(removed.skipped[0].id, "dan/other");
+        ws.no_leftovers();
+    }
+
+    #[test]
+    fn download_records_disabled_packages_and_dependencies() {
+        let ws = Ws::new("dan/app");
+        let lib = ws.other_author("lib", "dan/lib");
+        let location = ws.dir.join("catalog").to_str().unwrap().to_owned();
+        catalog::register(&location, lib.source(), "dan/lib@0.1.0").unwrap();
+        let mut app = make_manifest("dan/app", "0.2.0");
+        app.dependencies.insert("dan/lib".into(), "^0.1".into());
+        write_manifest(&ws.author.path, &app);
+        fixture_git(&ws.author.path, &["commit", "-q", "-am", "0.2.0"]);
+        ws.author.tag("0.2.0");
+        let m = Manager::open_with(
+            &ws.root,
+            Options {
+                catalog: Some(location),
+            },
+        )
+        .unwrap();
+        let downloaded = m
+            .download(ws.author.source(), None, InstallTarget::Release)
+            .unwrap();
+        assert_eq!(
+            (downloaded.id.as_str(), downloaded.current.version.as_str()),
+            ("dan/app", "0.2.0")
+        );
+        assert!(!downloaded.enabled && downloaded.mode == Mode::Release);
+        let dependencies: Vec<_> = downloaded
+            .dependencies
+            .iter()
+            .map(|d| (d.id.as_str(), d.current.version.as_str(), d.enabled))
+            .collect();
+        assert_eq!(dependencies, [("dan/lib", "0.1.0", false)]);
+        assert!(downloaded.dist.deployed.is_empty() && downloaded.dist.removed.is_empty());
+        let state = m.state().unwrap();
+        for id in ["dan/app", "dan/lib"] {
+            assert!(!state.packages[id].enabled, "{id}");
+            assert!(state.packages[id].mode.is_release(), "{id}");
+            assert!(
+                ws.root.join("packages").join(id).join(".git").is_dir(),
+                "{id}"
+            );
+            assert!(!ws.root.join("dist").join(id).exists(), "{id}");
+        }
+        // Downloading again changes nothing.
+        let again =
+            ws.refuses_nothing(|| m.download(ws.author.source(), None, InstallTarget::Release));
+        assert!(again.already_installed && !again.enabled);
+        // enable needs the dependency active; it works without the catalog (offline).
+        drop(m);
+        let m = ws.open();
+        let error = ws.refuses("dependency_conflict", || m.enable("dan/app"));
+        assert!(
+            error.to_string().contains("dan/lib is disabled; enable it"),
+            "{error}"
+        );
+        assert_eq!(m.enable("dan/lib").unwrap().deployed, ["dan/lib"]);
+        assert_eq!(m.enable("dan/app").unwrap().deployed, ["dan/app"]);
+        assert!(ws.root.join("dist/dan/app/index.js").is_file());
+        ws.no_leftovers();
+    }
+
+    #[test]
+    fn enable_refuses_inactive_dependencies_unless_forced() {
+        let ws = Ws::new("dan/app");
+        let lib = ws.other_author("lib", "dan/lib");
+        let mut app = make_manifest("dan/app", "0.2.0");
+        app.dependencies.insert("dan/lib".into(), "^0.1".into());
+        write_manifest(&ws.author.path, &app);
+        fixture_git(&ws.author.path, &["commit", "-q", "-am", "0.2.0"]);
+        ws.author.tag("0.2.0");
+        let m = ws.open();
+        m.download(lib.source(), None, InstallTarget::Release)
+            .unwrap();
+        m.download(ws.author.source(), None, InstallTarget::Release)
+            .unwrap();
+        // Both disabled: enable app names the disabled dependency and changes nothing.
+        let error = ws.refuses("dependency_conflict", || m.enable("dan/app"));
+        let text = error.to_string();
+        assert!(text.contains("dan/lib is disabled; enable it"), "{text}");
+        assert!(text.contains("force"), "{text}");
+        // Forced: app is enabled and deployed alone, and reported broken.
+        assert_eq!(
+            m.enable_with("dan/app", true).unwrap().deployed,
+            ["dan/app"]
+        );
+        let state = m.state().unwrap();
+        assert!(state.packages["dan/app"].enabled && !state.packages["dan/lib"].enabled);
+        assert!(!ws.root.join("dist/dan/lib").exists());
+        let listed = m.list().unwrap();
+        let row = &listed
+            .iter()
+            .find(|p| p.id == "dan/app")
+            .unwrap()
+            .dependencies[0];
+        assert!(!row.satisfied);
+        assert_eq!(row.problem.as_deref(), Some("dan/lib is disabled"));
+        // Enabling an enabled package changes nothing.
+        ws.refuses_nothing(|| m.enable("dan/app"));
+        // A missing dependency is named too.
+        m.disable("dan/app").unwrap();
+        m.uninstall_with("dan/lib", true, true).unwrap();
+        let error = ws.refuses("dependency_conflict", || m.enable("dan/app"));
+        assert!(
+            error.to_string().contains("dan/lib ^0.1: not installed"),
+            "{error}"
+        );
         ws.no_leftovers();
     }
 

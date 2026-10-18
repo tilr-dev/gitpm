@@ -89,6 +89,10 @@ fn hint(invocation: &Invocation, error: &PmError) -> Option<String> {
         {
             format!("{command} writes a local catalog folder; upload its files yourself")
         }
+        // The library refused to enable over an inactive dependency.
+        PmError::DependencyConflict(_) if command == "enable" => {
+            format!("`gitpm enable {id} --force` enables it anyway")
+        }
         PmError::NotDeployed { sync, .. } => {
             let first = &sync.skipped.first()?.id;
             format!(
@@ -235,7 +239,17 @@ fn warn_skipped(skipped: &[gitpm::releases::SkippedTag]) {
         );
     }
 }
-/// `installed ID@VERSION from SOURCE`, or `ID already installed (VERSION)` (with `; run
+/// `installed ID@VERSION from SOURCE`, or for a download `downloaded ID@VERSION from
+/// SOURCE (disabled)`.
+fn print_fetched(id: &str, version: &str, source: &str, enabled: bool) {
+    if enabled {
+        println!("installed {id}@{version} from {source}");
+    } else {
+        println!("downloaded {id}@{version} from {source} (disabled)");
+    }
+}
+/// `installed ID@VERSION from SOURCE` (one line per pulled dependency follows), or `ID
+/// already installed (VERSION)` (with `; run
 /// update` when the source has another revision, naming the requested `--ref`/`--dev`).
 fn print_installed(result: &gitpm::InstallResult, requested: Option<&str>) {
     warn_skipped(&result.skipped);
@@ -256,10 +270,21 @@ fn print_installed(result: &gitpm::InstallResult, requested: Option<&str>) {
             mode_note(&result.mode)
         );
     } else {
-        println!(
-            "installed {}@{} from {}",
-            result.id, result.current.version, result.source
+        print_fetched(
+            &result.id,
+            &result.current.version,
+            &result.source,
+            result.enabled,
         );
+        for dependency in &result.dependencies {
+            warn(&dependency.warnings);
+            print_fetched(
+                &dependency.id,
+                &dependency.current.version,
+                &dependency.source,
+                dependency.enabled,
+            );
+        }
     }
     warn_dist(&result.dist);
 }
@@ -633,6 +658,8 @@ const COMMANDS: &[&str] = &[
     "commit",
     "install-catalog",
     "install",
+    "download-catalog",
+    "download",
     "list",
     "check",
     "update",
@@ -667,11 +694,25 @@ Workspace (installed packages):",
                                    branch of the origin, --dev follows its default branch
                                    (the mode is recorded and update follows it). ID (or
                                    --package ID) picks a package of a repository with
-                                   gitpm.json (needed when it has several)",
+                                   gitpm.json (needed when it has several). Refused while
+                                   a dependency is only provided by a disabled package;
+    [--force]                      --force enables ID anyway (dependencies as usual).
+                                   Over a download from the same source it enables ID",
     },
     Help {
         commands: &["install-catalog"],
-        text: "  install-catalog ID [--version V]  install an exact catalog release (latest if omitted)",
+        text: "  install-catalog ID [--version V] [--force]  install an exact catalog release (latest
+                                   if omitted); --force as for install",
+    },
+    Help {
+        commands: &["download"],
+        text: "  download GIT_SOURCE [ID] [--package ID] [--ref REF | --dev]  like install, but record the package and
+                                   the dependencies it pulls disabled and deploy nothing;
+                                   enable ID later (works offline)",
+    },
+    Help {
+        commands: &["download-catalog"],
+        text: "  download-catalog ID [--version V]  like install-catalog, recorded disabled",
     },
     Help {
         commands: &["list"],
@@ -699,8 +740,10 @@ Workspace (installed packages):",
     },
     Help {
         commands: &["enable", "disable"],
-        text: "  enable ID | disable ID [--force]  deploy / remove dist/ID; disable refuses while other
-                                   installed packages depend on ID unless --force",
+        text: "  enable ID | disable ID [--force]  deploy / remove dist/ID; enable refuses while a
+                                   dependency of ID is not active (disabled, missing,
+                                   replaced away, other version), disable while other
+                                   installed packages depend on ID; --force does it anyway",
     },
     Help {
         commands: &["forget", "restore"],
@@ -800,7 +843,8 @@ Catalog (a local folder of static JSON files, or an HTTP(S) URL for reading):",
 Settings (flag, then environment, then default; there is no config file):
   --root DIR      GITPM_ROOT       workspace directory; default ./gitpm-workspace
   --catalog LOC   GITPM_CATALOG    catalog folder, catalog.json or URL; no default
-                                   (needed by catalog commands and install-catalog)
+                                   (needed by catalog commands, install-catalog and
+                                   download-catalog)
   --sources FILE  GITPM_SOURCES    Git sources list for catalog-update; default ./sources.txt
 
 Nothing is built or executed and nothing is pushed or uploaded: gitpm clones Git
@@ -887,8 +931,8 @@ fn run(invocation: &mut Invocation) -> Result<()> {
         "--sources requires catalog-update"
     );
     ensure!(
-        !dev || matches!(command, "install" | "update"),
-        "--dev requires install/update"
+        !dev || matches!(command, "install" | "download" | "update"),
+        "--dev requires install/download/update"
     );
     ensure!(!release || command == "update", "--release requires update");
     ensure!(!dev || reference.is_none(), "--dev conflicts with --ref");
@@ -902,22 +946,33 @@ fn run(invocation: &mut Invocation) -> Result<()> {
         "build options require register"
     );
     ensure!(
-        reference.is_none() || matches!(command, "install" | "update" | "register"),
+        reference.is_none() || matches!(command, "install" | "download" | "update" | "register"),
         "--ref is not valid for {command}"
     );
     ensure!(
-        version.is_none() || command == "install-catalog" || (command == "fork" && replace),
+        version.is_none()
+            || matches!(command, "install-catalog" | "download-catalog")
+            || (command == "fork" && replace),
         "--version is not valid for {command}"
     );
     ensure!(
         !force
-            || matches!(command, "uninstall" | "disable" | "forget" | "replace")
+            || matches!(
+                command,
+                "uninstall"
+                    | "disable"
+                    | "enable"
+                    | "install"
+                    | "install-catalog"
+                    | "forget"
+                    | "replace"
+            )
             || (command == "fork" && replace),
-        "--force is only valid with uninstall/disable/forget/replace/fork --replace"
+        "--force is only valid with uninstall/disable/enable/install/install-catalog/forget/replace/fork --replace"
     );
     ensure!(
-        package.is_none() || matches!(command, "install" | "commit" | "register"),
-        "--package requires install/commit/register"
+        package.is_none() || matches!(command, "install" | "download" | "commit" | "register"),
+        "--package requires install/download/commit/register"
     );
     ensure!(
         into.is_none() || matches!(command, "init" | "fork"),
@@ -949,7 +1004,7 @@ fn run(invocation: &mut Invocation) -> Result<()> {
         "fork" => args.len().max(2),
         "auth" | "commit" | "remote" => 3,
         // install SOURCE [ID]: a positional package ID instead of --package.
-        "install" if args.len() == 3 => 3,
+        "install" | "download" if args.len() == 3 => 3,
         _ => 2,
     };
     ensure!(
@@ -968,14 +1023,14 @@ fn run(invocation: &mut Invocation) -> Result<()> {
         into: into.clone(),
         multi,
     };
-    if command == "install" && args.len() == 3 {
+    if matches!(command, "install" | "download") && args.len() == 3 {
         ensure!(
             package.is_none(),
             "give the package ID either as an argument or with --package, not both"
         );
     }
     let package = match command {
-        "install" if args.len() == 3 => Some(args[2].clone()),
+        "install" | "download" if args.len() == 3 => Some(args[2].clone()),
         _ => package,
     };
     let update_all = command == "update" && id == "all";
@@ -1010,6 +1065,7 @@ fn run(invocation: &mut Invocation) -> Result<()> {
             | "restore"
             | "uninstall"
             | "install-catalog"
+            | "download-catalog"
             | "replace"
             | "fork"
     ) && !update_all
@@ -1195,7 +1251,7 @@ fn run(invocation: &mut Invocation) -> Result<()> {
             );
             return Ok(());
         }
-        "install-catalog" => {
+        "install-catalog" | "download-catalog" => {
             require_catalog()?;
         }
         _ => {}
@@ -1246,13 +1302,17 @@ fn run(invocation: &mut Invocation) -> Result<()> {
                 }
             }
         }
-        "install" => {
+        "install" | "download" => {
             let target = match (&reference, dev) {
                 (Some(reference), _) => gitpm::InstallTarget::Ref(reference.clone()),
                 (None, true) => gitpm::InstallTarget::Dev,
                 (None, false) => gitpm::InstallTarget::Release,
             };
-            let result = manager.install_package(id, package.as_deref(), target)?;
+            let result = if command == "install" {
+                manager.install_package_with(id, package.as_deref(), target, force)?
+            } else {
+                manager.download(id, package.as_deref(), target)?
+            };
             let requested = match (&reference, dev) {
                 (Some(reference), _) => Some(format!(
                     "--ref {}",
@@ -1271,7 +1331,16 @@ fn run(invocation: &mut Invocation) -> Result<()> {
             print_installed(&result, requested.as_deref());
         }
         "install-catalog" => {
-            print_installed(&manager.install_from_catalog(id, version.as_deref())?, None);
+            print_installed(
+                &manager.install_from_catalog_with(id, version.as_deref(), force)?,
+                None,
+            );
+        }
+        "download-catalog" => {
+            print_installed(
+                &manager.download_from_catalog(id, version.as_deref())?,
+                None,
+            );
         }
         "update" => {
             if update_all {
@@ -1293,7 +1362,7 @@ fn run(invocation: &mut Invocation) -> Result<()> {
         }
         "rollback" => print_change(&manager.rollback(id)?, "rolled back"),
         "enable" => {
-            let dist = manager.set_enabled(id, true)?;
+            let dist = manager.enable_with(id, force)?;
             println!("{id} enabled");
             warn_dist(&dist);
         }

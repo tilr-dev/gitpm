@@ -283,3 +283,108 @@ fn direct_install_without_catalog_names_the_missing_dependency() {
     assert!(stderr.contains("does not exist"), "{stderr}");
     assert!(stderr.contains("Error kind: invalid_argument"), "{stderr}");
 }
+
+/// `download-catalog` prints one line per package, `enable` refuses the disabled
+/// dependency with a hint, `enable --force` enables only the named package.
+#[test]
+fn download_then_enable_through_the_cli() {
+    let dir = TempDir::new("download-enable");
+    let catalog = dir.join("catalog");
+    for (id, deps) in [
+        ("lib/core", serde_json::json!({})),
+        ("app/a", serde_json::json!({"lib/core": "^1"})),
+    ] {
+        let repo = dir.join("authors").join(id);
+        fs::create_dir_all(repo.join("dist")).unwrap();
+        git(&dir, &repo, &["init", "-q", "-b", "main"]);
+        release(
+            &dir,
+            &repo,
+            serde_json::json!({"id": id, "version": "1.0.0", "dependencies": deps}),
+        );
+        gitpm::catalog::register(
+            catalog.to_str().unwrap(),
+            repo.to_str().unwrap(),
+            &format!("{id}@1.0.0"),
+        )
+        .unwrap();
+    }
+    let out = pm(&dir, &["download-catalog", "app/a"]);
+    assert!(out.status.success(), "{out:?}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 2, "{stdout}");
+    assert!(
+        lines[0].starts_with("downloaded app/a@1.0.0 from ") && lines[0].ends_with(" (disabled)"),
+        "{stdout}"
+    );
+    assert!(
+        lines[1].starts_with("downloaded lib/core@1.0.0 from ")
+            && lines[1].ends_with(" (disabled)"),
+        "{stdout}"
+    );
+    assert!(!dir.join("workspace/dist/app").exists());
+
+    let out = pm(&dir, &["enable", "app/a"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("lib/core is disabled; enable it"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("Error kind: dependency_conflict"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("Hint: `gitpm enable app/a --force` enables it anyway"),
+        "{stderr}"
+    );
+    assert!(!dir.join("workspace/dist/app/a").exists());
+
+    let out = pm(&dir, &["enable", "app/a", "--force"]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "app/a enabled\n");
+    assert!(dir.join("workspace/dist/app/a/index.js").is_file());
+    assert!(!dir.join("workspace/dist/lib/core").exists());
+
+    // install over the (disabled) download: refused like enable, --force enables it.
+    assert!(pm(&dir, &["disable", "app/a"]).status.success());
+    let out = pm(&dir, &["install-catalog", "app/a"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("lib/core is disabled; enable it"),
+        "{stderr}"
+    );
+    let out = pm(&dir, &["install-catalog", "app/a", "--force"]);
+    assert!(out.status.success(), "{out:?}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.starts_with("installed app/a@1.0.0 from "),
+        "{stdout}"
+    );
+    assert!(dir.join("workspace/dist/app/a/index.js").is_file());
+
+    // install-catalog --force of a new package next to the disabled lib/core.
+    let repo = dir.join("authors/app/b");
+    fs::create_dir_all(repo.join("dist")).unwrap();
+    git(&dir, &repo, &["init", "-q", "-b", "main"]);
+    release(
+        &dir,
+        &repo,
+        serde_json::json!({"id": "app/b", "version": "1.0.0", "dependencies": {"lib/core": "^1"}}),
+    );
+    gitpm::catalog::register(
+        catalog.to_str().unwrap(),
+        repo.to_str().unwrap(),
+        "app/b@1.0.0",
+    )
+    .unwrap();
+    assert!(!pm(&dir, &["install-catalog", "app/b"]).status.success());
+    let out = pm(&dir, &["install-catalog", "app/b", "--force"]);
+    assert!(out.status.success(), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stdout).starts_with("installed app/b@1.0.0 from "));
+    assert!(dir.join("workspace/dist/app/b/index.js").is_file());
+    assert!(!dir.join("workspace/dist/lib/core").exists());
+}

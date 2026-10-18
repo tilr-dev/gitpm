@@ -207,3 +207,122 @@ def direct_install_with_catalog(t: T):
     t.eq(t.package(CORE)["current"]["version"], "1.1.0", "lib/core version")
     row = resolved(t)["app/a"]["dependencies"][0]
     t.eq((row["provider"], row["satisfied"]), (CORE, True), "resolved")
+
+
+# ------------------------------------------------- 9. download, strict enable (D7, TILR-36)
+# Tags name the main-spec requirements that exist now; on archive of download-and-enable
+# they move to install-uninstall/download-without-enabling and
+# dependencies/enable-needs-active-dependencies.
+
+
+@case(fixture="g6_core_catalog", spec=["dist/inactive-packages-change-state-and-clone-only",
+                                       "dist/enable-and-disable-deploy-and-remove",
+                                       "dependencies/disabled-packages-and-dependencies"])
+def download_then_enable_in_dependency_order(t: T):
+    """9a. download-catalog app/a records app/a and the pulled lib/core disabled, deploys nothing and prints one
+    line per package; enable app/a is refused (lib/core disabled); enable lib/core then app/a works offline."""
+    r = t.gitpm_ok("download-catalog", "app/a")
+    lines = r.out.splitlines()
+    t.eq(len(lines), 2, "one line per package")
+    t.ok(lines[0].startswith("downloaded app/a@1.0.0 from ") and lines[0].endswith(" (disabled)"), lines[0])
+    t.ok(lines[1].startswith(f"downloaded {CORE}@1.1.0 from ") and lines[1].endswith(" (disabled)"), lines[1])
+    for id in ["app/a", CORE]:
+        t.eq(t.package(id)["enabled"], False, f"{id} disabled")
+        t.ok((t.clone(id) / ".git").is_dir(), f"{id} clone")
+        t.ok(not t.dist(id).exists(), f"no dist/{id}")
+    before = t.snap(t.ws)
+    r = t.gitpm_err("enable", "app/a", kind="dependency_conflict", contains=f"{CORE} is disabled; enable it")
+    t.has(r.err, "Hint: `gitpm enable app/a --force` enables it anyway")
+    t.same(before, "workspace")
+    t.gitpm_ok("enable", CORE, env=NO_CATALOG)
+    t.eq(t.gitpm_ok("enable", "app/a", env=NO_CATALOG).out, "app/a enabled\n", "enable line")
+    t.has((t.dist("app/a") / "index.js").read_text(), "app/a 1.0.0")
+    t.has((t.dist(CORE) / "index.js").read_text(), "lib/core 1.1.0")
+
+
+@case(fixture="g6_core_catalog", spec=["dependencies/broken-consumers-are-reported-not-enforced",
+                                       "dependencies/disabled-packages-and-dependencies#dependency-on-a-disabled-package-in-list"])
+def forced_enable_leaves_the_consumer_broken(t: T):
+    """9b. enable app/a --force enables only app/a; list and check report its dependency on the disabled lib/core."""
+    t.gitpm_ok("download-catalog", "app/a")
+    t.gitpm_ok("enable", "app/a", "--force")
+    t.ok((t.dist("app/a") / "index.js").is_file(), "dist/app/a deployed")
+    t.ok(not t.dist(CORE).exists(), "lib/core stays disabled")
+    t.eq(t.package(CORE)["enabled"], False, "lib/core disabled")
+    row = resolved(t)["app/a"]["dependencies"][0]
+    t.eq((row["provider"], row["satisfied"], row.get("problem")), (CORE, False, f"{CORE} is disabled"), "dependency")
+    t.has(t.gitpm_ok("check").out, f"Unsatisfied dependency: app/a → {CORE} ^1.0: {CORE} is disabled")
+
+
+@case(fixture="g6_core_catalog", spec=["dependencies/disabled-packages-and-dependencies",
+                                       "install-uninstall/refused-input-creates-nothing"])
+def install_next_to_a_disabled_dependency(t: T):
+    """9c. lib/core installed but disabled: install-catalog app/a and a direct install of app/a are refused
+    with dependency_conflict naming lib/core as disabled; the workspace is unchanged."""
+    t.gitpm_ok("install-catalog", CORE, "--version", "1.1.0")
+    t.gitpm_ok("disable", CORE)
+    before = t.snap(t.ws)
+    t.gitpm_err("install-catalog", "app/a", kind="dependency_conflict", contains=f"{CORE} is disabled; enable it")
+    t.gitpm_err("install", t.repo("app/a"), kind="dependency_conflict", contains=f"{CORE} is disabled; enable it")
+    t.same(before, "workspace")
+    t.ok("app/a" not in t.state()["packages"], "app/a not recorded")
+    # After enabling the dependency the install goes through.
+    t.gitpm_ok("enable", CORE)
+    t.gitpm_ok("install-catalog", "app/a")
+    t.ok((t.dist("app/a") / "index.js").is_file(), "dist/app/a deployed")
+
+
+@case(fixture="g6_core_catalog", spec=["dist/inactive-packages-change-state-and-clone-only"])
+def direct_download_deploys_nothing(t: T):
+    """9d. download GIT_SOURCE records the package disabled with its clone, prints `(disabled)` and creates no dist."""
+    r = t.gitpm_ok("download", t.repo("other/x"))
+    t.ok(r.out.startswith("downloaded other/x@1.0.0 from ") and r.out.endswith(" (disabled)\n"), r.out)
+    t.eq(t.package("other/x")["enabled"], False, "disabled")
+    t.ok((t.clone("other/x") / ".git").is_dir(), "clone")
+    t.ok(not t.dist("other/x").exists(), "no dist")
+
+
+@case(fixture="g6_core_catalog", spec=["dependencies/disabled-packages-and-dependencies",
+                                       "install-uninstall/install-is-idempotent-for-the-same-source"])
+def install_over_a_download_enables_it(t: T):
+    """9e. install-catalog over a download is refused while lib/core is disabled, `--force` enables only app/a
+    (an install line, not "already installed"); a second install is "already installed"."""
+    t.gitpm_ok("download-catalog", "app/a")
+    before = t.snap(t.ws)
+    t.gitpm_err("install-catalog", "app/a", kind="dependency_conflict", contains=f"{CORE} is disabled; enable it")
+    t.same(before, "workspace")
+    r = t.gitpm_ok("install-catalog", "app/a", "--force")
+    t.ok(r.out.startswith("installed app/a@1.0.0 from "), r.out)
+    t.eq((t.package("app/a")["enabled"], t.package(CORE)["enabled"]), (True, False), "only app/a enabled")
+    t.ok((t.dist("app/a") / "index.js").is_file(), "dist/app/a deployed")
+    t.has(t.gitpm_ok("install-catalog", "app/a").out, "app/a already installed (1.0.0)")
+
+
+@case(fixture="g6_core_catalog", spec=["dependencies/disabled-packages-and-dependencies"])
+def forced_install_next_to_a_disabled_dependency(t: T):
+    """9f. install --force of app/a and install-catalog --force of app/c next to the disabled lib/core enable
+    and deploy them only."""
+    t.gitpm_ok("install-catalog", CORE, "--version", "1.1.0")
+    t.gitpm_ok("disable", CORE)
+    t.gitpm_ok("install", t.repo("app/a"), "--force")
+    t.ok((t.dist("app/a") / "index.js").is_file(), "dist/app/a deployed")
+    t.ok(not t.dist(CORE).exists(), "lib/core stays disabled")
+    t.gitpm_err("install-catalog", "app/c", kind="dependency_conflict", contains=f"{CORE} is disabled; enable it")
+    t.gitpm_ok("install-catalog", "app/c", "--force")
+    t.ok((t.dist("app/c") / "index.js").is_file(), "dist/app/c deployed")
+
+
+@case(fixture="g6_core_catalog", spec=["dependencies/disabled-packages-and-dependencies"])
+def rollback_and_restore_refuse_a_disabled_dependency(t: T):
+    """9g. rollback of an active app/a and restore of its enabled record refuse the disabled lib/core."""
+    t.gitpm_ok("install-catalog", "app/a")
+    t.release("app/a", "1.1.0", deps={CORE: "^1.0"})
+    t.gitpm_ok("update", "app/a")
+    t.gitpm_ok("disable", CORE, "--force")
+    before = t.snap(t.ws)
+    t.gitpm_err("rollback", "app/a", kind="dependency_conflict", contains=f"{CORE} is disabled; enable it")
+    t.same(before, "workspace")
+    t.gitpm_ok("forget", "app/a")
+    before = t.snap(t.ws)
+    t.gitpm_err("restore", "app/a", kind="dependency_conflict", contains=f"{CORE} is disabled; enable it")
+    t.same(before, "workspace")

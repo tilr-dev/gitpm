@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Inactive packages change state and clone only
-`download`, and `install`, `update` and `rollback` of a replaced or disabled package, SHALL change state and clone only; the deployed folder SHALL appear only on `replace --back` or `enable`. Verified by `update_and_rollback_of_a_replaced_package_leave_dist_alone_until_back`, `installing_a_package_that_is_replaced_deploys_nothing` and `workspace::download_records_disabled_packages_and_dependencies`.
+`download`, and `install`, `update` and `rollback` of a replaced or disabled package, SHALL change state and clone only; its deployed folder SHALL appear only on `replace --back` or `enable`. Verified by `update_and_rollback_of_a_replaced_package_leave_dist_alone_until_back`, `installing_a_package_that_is_replaced_deploys_nothing` and `workspace::download_records_disabled_packages_and_dependencies`.
 
 #### Scenario: Update of a replaced package
 - **WHEN** a replaced `acme/greeter` is updated from 0.1.0 to 0.2.0
@@ -12,7 +12,7 @@
 - **THEN** `acme/greeter` is recorded disabled, its clone exists and `dist/acme/greeter/` does not
 
 ### Requirement: Enable and disable deploy and remove
-`disable ID` SHALL remove `dist/ID/` and `enable ID` SHALL deploy it again from the clone. The `has_dependents` guard on disabling a replacing package or a dependency, and the dependency check of `enable`, are specified in dependencies ("Dependents guard removal", "enable needs active dependencies"); this requirement covers only their effect on `dist/`. Verified by `disable_removes_and_enable_restores_also_around_a_replacement`.
+`disable ID` SHALL remove `dist/ID/` and `enable ID` SHALL deploy it again from the clone. The `has_dependents` guard on disabling a replacing package or a dependency is specified in dependencies ("Dependents guard removal"), the dependency check of `enable` in dependencies ("enable needs active dependencies"); this requirement covers only their effect on `dist/`. Verified by `disable_removes_and_enable_restores_also_around_a_replacement`.
 
 #### Scenario: Disable and enable
 - **WHEN** the user runs `disable acme/greeter` and then `enable acme/greeter`
@@ -30,9 +30,9 @@
 Every mutating command (install, `install-catalog`, `download`, `download-catalog`, update, `update all`, rollback, replace, `replace --back`, enable, disable, forget, restore, uninstall, `fork --replace`, `sync-dist`) SHALL, inside its transaction, deploy the missing deployed folders of active packages and remove those of inactive known packages. An existing deployed folder of an active package MUST NOT be rewritten. Verified by `any_mutating_command_reconciles_the_whole_dist`.
 
 #### Scenario: Repeated install
-- **WHEN** `install` finds the package already installed from the same source
-- **THEN** it changes nothing, is not a mutating command and does not reconcile `dist/`
+- **WHEN** `install` finds the package already installed and enabled from the same source
+- **THEN** it changes nothing, is not a mutating command and does not reconcile `dist/`; over a disabled record from the same source it enables the package and reconciles `dist/` (install-uninstall, "Install is idempotent for the same source")
 
 #### Scenario: Stale folder from gitpm 0.4
-- **WHEN** a workspace holds a deployed folder of a disabled package (as gitpm 0.4 left them) and the user installs an unrelated package
+- **WHEN** `dist/` holds the deployed folder of a disabled package (copied into `dist/` by hand) and the user installs an unrelated package
 - **THEN** the disabled package's `dist/` is removed in the same transaction

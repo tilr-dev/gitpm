@@ -101,6 +101,34 @@ still refused (`already_installed`). "Same source" means the same string as reco
 install, after a local path is canonicalized: a `file://` URL against a plain path, or a
 URL with and without `.git`, counts as another source.
 
+`download` takes the arguments of `install` (`download-catalog` those of
+`install-catalog`) and does the same clone, verification and recording, but records the
+package disabled and deploys nothing; missing dependencies are downloaded from the
+catalog the same way, disabled, so a later `enable` needs no network. `install` is a
+download plus enabling the package and the dependencies it downloaded, in one
+transaction. A disabled package satisfies no dependency: `install`, `enable` and `update
+ID` of an enabled consumer refuse with `dependency_conflict` ("lib/core is disabled;
+enable it") while a dependency resolves only to a disabled package, and `update all`,
+`list` and `check` report it unsatisfied. `enable ID` never enables dependencies itself;
+`enable ID --force` enables it anyway (it is then reported broken), and `install
+--force` (`install-catalog --force`) is a download plus that forced enable of the named
+package. `install` over a package downloaded from the same source enables it (with the
+same check) and prints the install line. `rollback` of an active package and `restore`
+of an enabled record refuse a disabled dependency as well:
+
+```console
+$ gitpm download-catalog acme/app
+downloaded acme/app@1.0.0 from /…/app (disabled)
+downloaded lib/core@1.2.0 from /…/core (disabled)
+$ gitpm enable acme/app
+Error: cannot enable acme/app: lib/core is disabled; enable it; force does it anyway
+Error kind: dependency_conflict
+Hint: `gitpm enable acme/app --force` enables it anyway
+$ gitpm enable lib/core && gitpm enable acme/app
+lib/core enabled
+acme/app enabled
+```
+
 ### Releases, pinned refs and branches
 
 Every installed package has a mode, recorded in `state.json` as `mode` (omitted in
@@ -504,17 +532,53 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   `RevisionChange` gains `unchangedReason` and `Unchanged` gains `reason`
   (`UnchangedReason`: `pinned(reference)`, `diverged(branch)`, `branchGone(branch)`), `CheckStatus` gains
   `pinned`. Migration: pass a target instead of `reference` and `channel`.
+- A disabled package satisfies no dependency of an active package in `install`,
+  `install-catalog`, `update ID`, `enable`, `rollback` and `restore` (direct dependencies
+  only): `install`/`install-catalog` and `update ID` of an enabled package fail with `dependency_conflict` ("DEP is disabled;
+  enable it") when a dependency resolves only to a disabled package (they used to accept
+  it; `update all`, `list` and `check` already counted it unsatisfied). Migration: enable
+  the dependency first, or use `download` and `enable --force`.
+- `enable ID` is strict: it refuses with `dependency_conflict` naming every dependency no
+  active package satisfies (disabled: "DEP is disabled; enable it"; missing, replaced
+  away or of another version: "DEP REQUIREMENT: problem") and never enables
+  dependencies itself; `enable ID --force` enables it anyway. An already enabled package
+  is not checked again. Migration: enable dependencies first, or pass `--force`.
+- `rollback` of an active package and `restore` of an enabled record refuse with
+  `dependency_conflict` ("DEP is disabled; enable it") while a dependency is disabled.
+- `install --force` and `install-catalog --force` enable the named package over a
+  disabled dependency (dependencies are pulled as usual); `install` over a package
+  downloaded (disabled) from the same source enables it and prints `installed …`
+  (`already installed` only for an enabled package). The `--force` usage error is now
+  `--force is only valid with uninstall/disable/enable/install/install-catalog/forget/replace/fork --replace`.
+- New `download SOURCE [ID] [--package ID] [--ref REF | --dev]` and `download-catalog
+  ID [--version V]`: clone, verify and record like `install`/`install-catalog`, but
+  disabled and without deploying; missing dependencies are downloaded disabled. Output
+  `downloaded ID@V from SOURCE (disabled)`, one line per package. `install` is download
+  plus enable in one transaction and now also prints one `installed …` line per
+  dependency it pulled from the catalog.
+- Library API: `Manager::download(source, package, InstallTarget)`,
+  `download_from_catalog(id, version)`, `enable_with(id, force)`,
+  `install_package_with(source, package, target, force)` and
+  `install_from_catalog_with(id, version, force)` are new;
+  `set_enabled_with(id, true, false)` and `enable` refuse inactive dependencies;
+  `InstallResult` gains `enabled` and `dependencies` (`InstalledDependency { id, source,
+  current, enabled, warnings }`, the packages pulled from the catalog).
+- FFI: `PackageManager.download(source, target, package)` and
+  `downloadFromCatalog(id, version)` are new; `install` and `installFromCatalog` gain
+  `force` (default false); `enable(id, force)` takes `force`
+  (default false); `InstallResult` gains `enabled` and `dependencies`
+  (`InstalledDependency`). Migration: pass `force` where needed, read the new fields.
 
 ## Working without a catalog
 
-A catalog is optional; the quickstart up to the catalog ran without one. `install GIT_SOURCE` records
+A catalog is optional; the quickstart up to the catalog ran without one. `install GIT_SOURCE` (and `download GIT_SOURCE`) records
 the source (a local path canonicalized) as `packages.<id>.source`, and `update ID` and
 `update all` fetch the release tags of that recorded origin directly. `list`, `rollback`,
 `enable`/`disable`, `forget`/`restore`, `uninstall`, `fork`, `replace` and `sync-dist`
 never read a catalog. One limit: dependencies are not fetched. A direct install, or an
 update whose new version adds a dependency, accepts only dependencies that are already
-installed and otherwise fails with `dependency_conflict` naming the missing one ("no
-catalog configured").
+installed (and enabled, unless downloading) and otherwise fails with
+`dependency_conflict` naming the missing one ("no catalog configured").
 
 `check` needs no catalog either. Every installed package gets one row: from the catalog
 when one is given and lists the package (column `SOURCE` `catalog`), otherwise from its
@@ -586,9 +650,11 @@ not derive it. `enabled` is not `active`: a replaced package stays `enabled: tru
   concern.
 - `disable X` removes `dist/X/`; `enable X` deploys it again the same way. Disabling a
   package that replaces another is refused (`has_dependents`, naming what it replaces)
-  unless `--force`, as for a package other packages depend on.
-- `install`, `update` and `rollback` of a replaced or disabled package change state and
-  clone only; its `dist/` appears on `replace --back` / `enable`. `fork … --replace` ends
+  unless `--force`, as for a package other packages depend on. `enable X` is refused
+  (`dependency_conflict`, `dist/X/` not created) while a dependency of X is not
+  satisfied by an active package, unless `--force`.
+- `download`, and `install`, `update` and `rollback` of a replaced or disabled package,
+  change state and clone only; its `dist/` appears on `replace --back` / `enable`. `fork … --replace` ends
   with the fork deployed and the original's `dist/` removed.
 - `forget X` removes `dist/X/` (the clone stays); `restore X` deploys it when it is
   active (a package forgotten while disabled stays disabled). Forgetting or
@@ -903,6 +969,9 @@ pm.install_package(src, None, InstallTarget::Ref("acme/demo1@0.2.0".into()))?; /
 pm.install_package(src, None, InstallTarget::Dev)?;    // follows the origin's default branch
 pm.install_package(src, Some("tilr/store"), InstallTarget::Release)?; // one package of a gitpm.json repo
 pm.install_from_catalog("acme/demo1", None)?;          // exact catalog release, hashes verified
+pm.download(src, None, InstallTarget::Release)?;       // recorded disabled, deps too, nothing deployed
+pm.download_from_catalog("acme/demo1", None)?;         // the same from the catalog
+pm.enable_with(id, /* force: enable over inactive dependencies */ false)?;
 pm.update("acme/demo1")?;                              // by the recorded mode (pinned: unchanged_reason)
 pm.update_to(id, Target::Release)?;  pm.update_to(id, Target::Ref("feature".into()))?;
 pm.rollback(id)?;  pm.enable(id)?;  pm.disable(id)?;  pm.forget(id)?;  pm.restore(id)?;
@@ -1005,7 +1074,10 @@ APT or implement `full-upgrade` removals.
 `dependencies` maps package IDs to Cargo-style requirements (`1.2` = `^1.2`, `~1.2`,
 `>=1.3, <2`, `=1.0.0`, `1.*`, `*`; no pre-releases). Install resolves them with PubGrub
 (`deps` module): installed packages stay at their versions, missing ones are installed
-from the configured catalog in the same transaction (a direct Git install without a
+from the configured catalog in the same transaction (`InstallResult.dependencies`);
+only active packages satisfy a dependency of an enabled package (a disabled one refuses
+install, `enable` and `update ID` with `dependency_conflict`, "DEP is disabled; enable
+it"), while `download` takes disabled ones as given (a direct Git install without a
 catalog only accepts already installed dependencies). Update and rollback are refused
 with `dependency_conflict` when the new version breaks a dependent; new dependencies of
 an update are installed. Conflicts carry the solver's explanation naming the packages.
@@ -1079,8 +1151,9 @@ if plan.lostWork.isEmpty || userConfirmed(plan.lostWork.map(describeLostWork)) {
 
 FFI surface: `PackageManager` (open, root, list, browseCatalog, catalogRelease,
 install(source, target: `InstallTarget`, package; defaults to nil), installFromCatalog,
+download(source, target, package), downloadFromCatalog,
 update(id, target: `Target`, `.recorded` follows the recorded mode), updateAllPlan,
-updateAll (`UpdateAllPlan` with `unchanged`, each with its `reason`, and `dist`), rollback, enable, disable(force),
+updateAll (`UpdateAllPlan` with `unchanged`, each with its `reason`, and `dist`), rollback, enable(force), disable(force),
 forget(force), restore, uninstallPlan, uninstall(confirm, force), fork
 (one package; `ForkResult`), forkAndReplace(version, confirm; returns a
 `ForkReplacement`: a failure after the fork exists is reported in `failedStep` (the

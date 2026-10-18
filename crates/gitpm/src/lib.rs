@@ -42,7 +42,7 @@ pub use model::{
 };
 pub use workspace::{
     DependencyRewrite, DistSync, ForkReplacement, ForkResume, ForkStep, ForkedPackage, HeldBack,
-    IncompatibleConsumer, InstallResult, InstallTarget, Manager, Options, PackageFork,
-    PackageForkReplacement, PendingReplacement, ReplacementPlan, ResumeFailure, RevisionChange,
-    SkippedDist, Target, Unchanged, UnchangedReason, UninstallPlan, UpdateAllPlan,
+    IncompatibleConsumer, InstallResult, InstallTarget, InstalledDependency, Manager, Options,
+    PackageFork, PackageForkReplacement, PendingReplacement, ReplacementPlan, ResumeFailure,
+    RevisionChange, SkippedDist, Target, Unchanged, UnchangedReason, UninstallPlan, UpdateAllPlan,
 };

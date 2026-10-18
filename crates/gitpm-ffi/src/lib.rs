@@ -490,8 +490,36 @@ pub struct InstallResult {
     pub skipped: Vec<SkippedTag>,
     /// Ignored wrong-typed metadata keys of the installed manifest; show them.
     pub warnings: Vec<String>,
+    /// Recorded enabled: false after a download (with `already_installed` or a restore:
+    /// the recorded flag).
+    pub enabled: bool,
+    /// Missing dependencies installed (or downloaded) from the catalog in the same
+    /// transaction, sorted by ID.
+    pub dependencies: Vec<InstalledDependency>,
     /// Reconciliation report of the transaction.
     pub dist: DistSync,
+}
+/// A dependency an install or download added from the catalog.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct InstalledDependency {
+    pub id: String,
+    pub source: String,
+    pub current: Revision,
+    /// Recorded enabled (false when downloaded).
+    pub enabled: bool,
+    /// Ignored wrong-typed metadata keys of its manifest.
+    pub warnings: Vec<String>,
+}
+impl From<pm::InstalledDependency> for InstalledDependency {
+    fn from(d: pm::InstalledDependency) -> Self {
+        Self {
+            id: d.id,
+            source: d.source,
+            current: d.current.into(),
+            enabled: d.enabled,
+            warnings: d.warnings,
+        }
+    }
 }
 impl From<pm::InstallResult> for InstallResult {
     fn from(r: pm::InstallResult) -> Self {
@@ -506,6 +534,8 @@ impl From<pm::InstallResult> for InstallResult {
             requested_mode: r.requested_mode.map(Into::into),
             skipped: r.skipped.into_iter().map(Into::into).collect(),
             warnings: r.warnings,
+            enabled: r.enabled,
+            dependencies: r.dependencies.into_iter().map(Into::into).collect(),
             dist: r.dist.into(),
         }
     }
@@ -1290,9 +1320,40 @@ impl PackageManager {
     /// Install `target` from a Git source (URL or local path) and record its mode.
     /// `package` picks a package of a repository with `gitpm.json` (needed when it lists
     /// several, unless the ref is an `ID@VERSION` tag); for a single-package repository
-    /// it must match.
-    #[uniffi::method(default(package = None))]
+    /// it must match. A dependency provided only by a disabled package refuses with
+    /// `DependencyConflict` unless `force` (which enables only this package); over a
+    /// download from the same source the install enables it.
+    #[uniffi::method(default(package = None, force = false))]
     pub fn install(
+        &self,
+        source: String,
+        target: InstallTarget,
+        package: Option<String>,
+        force: bool,
+    ) -> Result<InstallResult> {
+        Ok(self
+            .inner
+            .install_package_with(&source, package.as_deref(), target.into(), force)?
+            .into())
+    }
+    /// Install an exact catalog release (latest if `version` is `None`), verifying hashes;
+    /// `force` as for `install`.
+    #[uniffi::method(default(force = false))]
+    pub fn install_from_catalog(
+        &self,
+        id: String,
+        version: Option<String>,
+        force: bool,
+    ) -> Result<InstallResult> {
+        Ok(self
+            .inner
+            .install_from_catalog_with(&id, version.as_deref(), force)?
+            .into())
+    }
+    /// Like `install`, but the package and the dependencies it pulls are recorded
+    /// disabled and nothing is deployed; `enable` deploys them later (offline).
+    #[uniffi::method(default(package = None))]
+    pub fn download(
         &self,
         source: String,
         target: InstallTarget,
@@ -1300,18 +1361,18 @@ impl PackageManager {
     ) -> Result<InstallResult> {
         Ok(self
             .inner
-            .install_package(&source, package.as_deref(), target.into())?
+            .download(&source, package.as_deref(), target.into())?
             .into())
     }
-    /// Install an exact catalog release (latest if `version` is `None`), verifying hashes.
-    pub fn install_from_catalog(
+    /// Like `installFromCatalog`, recorded disabled and not deployed.
+    pub fn download_from_catalog(
         &self,
         id: String,
         version: Option<String>,
     ) -> Result<InstallResult> {
         Ok(self
             .inner
-            .install_from_catalog(&id, version.as_deref())?
+            .download_from_catalog(&id, version.as_deref())?
             .into())
     }
     /// Move `id` by `target`; `Recorded` follows the recorded mode.
@@ -1327,9 +1388,12 @@ impl PackageManager {
     pub fn rollback(&self, id: String) -> Result<RevisionChange> {
         Ok(self.inner.rollback(&id)?.into())
     }
-    /// Deploys `dist/<id>` again (unless the package is replaced). Returns the dist report.
-    pub fn enable(&self, id: String) -> Result<DistSync> {
-        Ok(self.inner.enable(&id)?.into())
+    /// Deploys `dist/<id>` again (unless the package is replaced). Refuses with
+    /// `DependencyConflict` while a dependency is not satisfied by an active package,
+    /// unless `force`. Returns the dist report.
+    #[uniffi::method(default(force = false))]
+    pub fn enable(&self, id: String, force: bool) -> Result<DistSync> {
+        Ok(self.inner.enable_with(&id, force)?.into())
     }
     /// Removes `dist/<id>`. Refuses with `HasDependents` if others depend on it, unless
     /// `force`.
@@ -1584,6 +1648,19 @@ mod tests {
         ));
         assert!(manager.update_all_plan().unwrap().updates.is_empty());
         assert!(manager.update_all().unwrap().installs.is_empty());
+        assert!(matches!(
+            manager.enable("a/b".into(), true),
+            Err(PmError::NotInstalled { .. })
+        ));
+        assert!(matches!(
+            manager.download_from_catalog("a/b".into(), None),
+            Err(PmError::InvalidArgument { .. })
+        ));
+        assert!(matches!(
+            manager.install_from_catalog("a/b".into(), None, true),
+            Err(PmError::InvalidArgument { .. })
+        ));
+        assert!(manager.list().unwrap().is_empty());
         drop(manager);
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -2019,9 +2096,37 @@ mod tests {
             available: Some(revision("1.1.0")),
             mode: pm::Mode::Branch("main".into()),
             requested_mode: Some(pm::Mode::Release),
+            enabled: false,
+            dependencies: vec![pm::InstalledDependency {
+                id: "me/lib".into(),
+                source: "lib-src".into(),
+                current: revision("2.0.0"),
+                enabled: false,
+                warnings: vec!["lib warning".into()],
+            }],
             dist: report(),
         });
         assert!(result.fork_of.is_none());
+        assert!(!result.enabled);
+        let dependency = &result.dependencies[0];
+        assert_eq!(
+            (
+                dependency.id.as_str(),
+                dependency.source.as_str(),
+                dependency.current.version.as_str(),
+                dependency.current.commit.as_str(),
+                dependency.enabled,
+                dependency.warnings.as_slice()
+            ),
+            (
+                "me/lib",
+                "lib-src",
+                "2.0.0",
+                "2.0.0-commit",
+                false,
+                ["lib warning".to_owned()].as_slice()
+            )
+        );
         assert_eq!(
             (result.mode.clone(), result.requested_mode.clone()),
             (
@@ -2275,6 +2380,14 @@ mod tests {
             ("disable", {
                 let _ = PackageManager::disable;
                 vec!["disable"]
+            }),
+            ("download", {
+                let _ = PackageManager::download;
+                vec!["download"]
+            }),
+            ("download-catalog", {
+                let _ = PackageManager::download_from_catalog;
+                vec!["downloadFromCatalog"]
             }),
             ("forget", {
                 let _ = PackageManager::forget;
@@ -2572,6 +2685,40 @@ mod tests {
     }
 
     #[test]
+    fn download_from_catalog_then_enable() {
+        let dir = std::env::temp_dir().join(format!("pm-ffi-download-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let repo = pm::scaffold::init(&dir.join("hello"), "dan", "hello")
+            .unwrap()
+            .repo;
+        let catalog = dir.join("catalog").to_string_lossy().into_owned();
+        pm::catalog::register(&catalog, repo.to_str().unwrap(), "dan/hello@0.1.0").unwrap();
+        let manager = PackageManager::open(
+            dir.join("workspace").to_string_lossy().into(),
+            ManagerOptions {
+                catalog: Some(catalog),
+            },
+        )
+        .unwrap();
+        let downloaded = manager
+            .download_from_catalog("dan/hello".into(), None)
+            .unwrap();
+        assert!(!downloaded.enabled && !downloaded.already_installed);
+        assert_eq!(downloaded.current.version, "0.1.0");
+        assert!(downloaded.dist.deployed.is_empty());
+        assert!(!dir.join("workspace/dist/dan/hello").exists());
+        let listed = manager.list().unwrap();
+        assert!(!listed[0].enabled);
+        assert_eq!(
+            manager.enable("dan/hello".into(), false).unwrap().deployed,
+            ["dan/hello"]
+        );
+        assert!(dir.join("workspace/dist/dan/hello").is_dir());
+        drop(manager);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn a_pinned_package_stays_with_its_reason() {
         let dir = std::env::temp_dir().join(format!("pm-ffi-pinned-{}", std::process::id()));
         let root = dir.join("workspace");
@@ -2654,14 +2801,14 @@ mod tests {
             Err(PmError::InvalidArgument { .. })
         ));
         assert!(matches!(
-            manager.enable("../x".into()),
+            manager.enable("../x".into(), false),
             Err(PmError::InvalidId { .. })
         ));
         assert!(
             matches!(manager.rollback("me/missing".into()), Err(PmError::NotInstalled { id, .. }) if id == "me/missing")
         );
         assert!(matches!(
-            manager.install("-x".into(), InstallTarget::Dev, None),
+            manager.install("-x".into(), InstallTarget::Dev, None, true),
             Err(PmError::InvalidArgument { .. })
         ));
         assert!(matches!(

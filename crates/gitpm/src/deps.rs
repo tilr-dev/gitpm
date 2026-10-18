@@ -191,6 +191,49 @@ pub(crate) fn dependents(state: &State, provider_id: &str) -> Vec<String> {
         .collect()
 }
 
+/// Refuse with [`Error::DependencyConflict`] when a direct dependency of `id` (about to
+/// be active) is not satisfied by an active package: disabled ("DEP is disabled; enable
+/// it"), missing, replaced away or of a non-matching version. Dependencies of the
+/// providers are theirs (a broken provider is reported, not enforced). `forceable` adds
+/// that forcing does it anyway.
+pub(crate) fn refuse_inactive_dependencies(
+    state: &State,
+    id: &str,
+    action: &str,
+    forceable: bool,
+) -> Result<()> {
+    let Some(package) = state.packages.get(id) else {
+        return Ok(());
+    };
+    let problems: Vec<String> = status(state, package)
+        .into_iter()
+        .filter(|row| !row.satisfied)
+        .map(|row| match &row.provider {
+            Some(provider) if state.packages.get(provider).is_some_and(|p| !p.enabled) => {
+                format!("{provider} is disabled; enable it")
+            }
+            _ => format!(
+                "{} {}: {}",
+                row.id,
+                row.requirement,
+                row.problem.as_deref().unwrap_or("not satisfied")
+            ),
+        })
+        .collect();
+    if problems.is_empty() {
+        return Ok(());
+    }
+    Err(Error::DependencyConflict(format!(
+        "cannot {action} {id}: {}{}",
+        problems.join("; "),
+        if forceable {
+            "; force does it anyway"
+        } else {
+            ""
+        }
+    )))
+}
+
 // ---- resolution -----------------------------------------------------------------------
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]

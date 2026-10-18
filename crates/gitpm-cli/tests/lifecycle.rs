@@ -1307,11 +1307,28 @@ fn usage_errors_name_the_problem_and_create_nothing() {
         ),
         (
             &["rollback", "qa/demo", "--dev"][..],
-            "--dev requires install/update",
+            "--dev requires install/download/update",
         ),
         (
             &["update", "all", "--dev"][..],
             "update all takes no --ref, --dev or --release; it follows each package's recorded mode",
+        ),
+        (
+            &["download", "./x", "--ref", "a", "--dev"][..],
+            "--dev conflicts with --ref",
+        ),
+        (
+            &["download", "./x", "--version", "1.0.0"][..],
+            "--version is not valid for download",
+        ),
+        (
+            &["download-catalog", "qa/demo", "--ref", "a"][..],
+            "--ref is not valid for download-catalog",
+        ),
+        (&["download-catalog", "Bad"][..], "invalid"),
+        (
+            &["list", "--force"][..],
+            "--force is only valid with uninstall/disable/enable/install/install-catalog/forget/replace/fork --replace",
         ),
     ] {
         let out = f
@@ -1339,6 +1356,7 @@ fn catalog_commands_name_the_missing_catalog_and_create_nothing() {
         &["catalog-update"][..],
         &["register", "x", "--ref", "HEAD"][..],
         &["install-catalog", "qa/demo"][..],
+        &["download-catalog", "qa/demo"][..],
     ] {
         let out = f
             .pm()
@@ -1714,6 +1732,15 @@ fn mutating_commands_print_one_line_per_package_and_no_ok_lines() {
     ] {
         assert_eq!(f.cli(args, true), expected, "{args:?}");
     }
+    let source = fs::canonicalize(&f.repo).unwrap();
+    let source = source.to_str().unwrap();
+    assert_eq!(
+        f.cli(&["download", source], true),
+        format!("downloaded dan/hello@1.1.0 from {source} (disabled)\n")
+    );
+    assert!(!f.root.join("dist/dan/hello").exists());
+    assert_eq!(f.cli(&["enable", "dan/hello"], true), "dan/hello enabled\n");
+    assert_eq!(f.content(), "hello v2");
 }
 
 #[test]

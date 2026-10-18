@@ -168,8 +168,17 @@ fn catalog_install_resolves_dependencies_and_records_edges() {
     let f = Fixture::new();
     let cat = core_catalog(&f);
     let m = f.open(&cat);
-    m.install_from_catalog("app/a", None).unwrap();
+    let installed = m.install_from_catalog("app/a", None).unwrap();
     assert_eq!(ids(&m), ["app/a", "lib/core"]);
+    // The pulled dependency is enabled and deployed in the same transaction.
+    assert!(installed.enabled);
+    let pulled: Vec<_> = installed
+        .dependencies
+        .iter()
+        .map(|d| (d.id.as_str(), d.current.version.as_str(), d.enabled))
+        .collect();
+    assert_eq!(pulled, [("lib/core", "1.1.0", true)]);
+    assert_eq!(installed.dist.deployed, ["app/a", "lib/core"]);
     let core = plugin(&m, "lib/core");
     assert_eq!(
         core.current.version, "1.1.0",
@@ -188,6 +197,7 @@ fn catalog_install_resolves_dependencies_and_records_edges() {
         (Some("lib/core".into()), true)
     );
     assert!(f.path("workspace/dist/lib/core/index.js").is_file());
+    assert!(core.enabled);
 
     // Missing dependency: refused with its name, nothing changes.
     f.publish(&cat, "app/lonely", "1.0.0", &[("lib/missing", "^1")]);
@@ -209,6 +219,284 @@ fn catalog_install_resolves_dependencies_and_records_edges() {
     assert_eq!(plugin(&m, "lib/core").dependents, ["app/a", "app/c"]);
     m.uninstall("app/a", false).unwrap();
     assert_eq!(ids(&m), ["app/c", "lib/core"]);
+}
+
+/// A disabled package satisfies no dependency: install, enable and single update of an
+/// enabled consumer refuse it, `update all`, `list` and `check` report it unsatisfied;
+/// only a download takes it as given.
+#[test]
+fn disabled_packages_satisfy_no_dependency() {
+    let f = Fixture::new();
+    let cat = f.catalog("catalog");
+    f.publish(&cat, "lib/core", "1.2.0", &[]);
+    f.publish(&cat, "app/a", "1.0.0", &[("lib/core", "^1")]);
+    let m = f.open(&cat);
+    m.install_from_catalog("lib/core", None).unwrap();
+    m.disable("lib/core").unwrap();
+    // Install next to a disabled dependency: refused, naming it; nothing changes.
+    let error = f.refuses("dependency_conflict", || {
+        m.install_from_catalog("app/a", None)
+    });
+    assert!(
+        error
+            .to_string()
+            .contains("lib/core is disabled; enable it"),
+        "{error}"
+    );
+    let app_repo = f.path("authors/app/a");
+    let error = f.refuses("dependency_conflict", || {
+        m.install(app_repo.to_str().unwrap())
+    });
+    assert!(
+        error
+            .to_string()
+            .contains("lib/core is disabled; enable it"),
+        "{error}"
+    );
+    // A download takes the disabled version as given and enables nothing.
+    let downloaded = m.download_from_catalog("app/a", None).unwrap();
+    assert!(!downloaded.enabled && downloaded.dependencies.is_empty());
+    assert!(!f.path("workspace/dist/app/a").exists());
+    // list and check report the dependency unsatisfied.
+    assert_eq!(
+        provider(&m, "app/a", "lib/core"),
+        (Some("lib/core".into()), false)
+    );
+    let row = plugin(&m, "app/a").dependencies[0].clone();
+    assert_eq!(row.problem.as_deref(), Some("lib/core is disabled"));
+    let report = gitpm::check::check(&f.path("workspace"), Some(&cat)).unwrap();
+    assert_eq!(report.unsatisfied.len(), 1);
+    assert_eq!(
+        (
+            report.unsatisfied[0].package.as_str(),
+            report.unsatisfied[0].dependency.as_str(),
+            report.unsatisfied[0].problem.as_deref()
+        ),
+        ("app/a", "lib/core", Some("lib/core is disabled"))
+    );
+    // enable refuses; enabling the dependency first works.
+    let error = f.refuses("dependency_conflict", || m.enable("app/a"));
+    assert!(
+        error.to_string().contains("lib/core is disabled"),
+        "{error}"
+    );
+    m.enable("lib/core").unwrap();
+    m.enable("app/a").unwrap();
+    assert!(f.path("workspace/dist/app/a/index.js").is_file());
+
+    // Single update of an enabled consumer whose dependency was disabled by force.
+    m.set_enabled_with("lib/core", false, true).unwrap();
+    f.publish(&cat, "app/a", "1.1.0", &[("lib/core", "^1")]);
+    let error = f.refuses("dependency_conflict", || m.update("app/a"));
+    assert!(
+        error
+            .to_string()
+            .contains("lib/core is disabled; enable it"),
+        "{error}"
+    );
+    // update all counts it unsatisfied as well.
+    let error = f.refuses("dependency_conflict", || m.update_all());
+    assert!(error.to_string().contains("lib/core"), "{error}");
+    // A disabled consumer may move: it does not become active.
+    m.disable("app/a").unwrap();
+    assert!(m.update("app/a").unwrap().changed);
+    assert!(!plugin(&m, "app/a").enabled);
+}
+
+/// `install --force` enables the named package over a disabled dependency; an install
+/// over a download from the same source enables it (with the same check).
+#[test]
+fn forced_install_and_install_over_a_download() {
+    let f = Fixture::new();
+    let cat = f.catalog("catalog");
+    f.publish(&cat, "lib/core", "1.2.0", &[]);
+    f.publish(&cat, "app/a", "1.0.0", &[("lib/core", "^1")]);
+    let m = f.open(&cat);
+    m.download_from_catalog("app/a", None).unwrap();
+    // Install over the download: refused while lib/core is disabled, nothing changes.
+    let error = f.refuses("dependency_conflict", || {
+        m.install_from_catalog("app/a", None)
+    });
+    assert!(
+        error
+            .to_string()
+            .contains("lib/core is disabled; enable it"),
+        "{error}"
+    );
+    // Forced: only app/a is enabled; it is no "already installed".
+    let forced = m.install_from_catalog_with("app/a", None, true).unwrap();
+    assert!(forced.enabled && !forced.already_installed, "{forced:?}");
+    assert_eq!(forced.dist.deployed, ["app/a"]);
+    assert!(!plugin(&m, "lib/core").enabled);
+    assert_eq!(
+        provider(&m, "app/a", "lib/core"),
+        (Some("lib/core".into()), false)
+    );
+    // Enabled now: installing again is "already installed".
+    assert!(
+        m.install_from_catalog("app/a", None)
+            .unwrap()
+            .already_installed
+    );
+    // An install over a download with active dependencies enables it.
+    f.publish(&cat, "app/b", "1.0.0", &[("lib/core", "^1")]);
+    m.enable("lib/core").unwrap();
+    m.download_from_catalog("app/b", None).unwrap();
+    let enabled = m.install_from_catalog("app/b", None).unwrap();
+    assert!(enabled.enabled && !enabled.already_installed);
+    assert!(f.path("workspace/dist/app/b/index.js").is_file());
+
+    // install --force of a new package next to a disabled dependency.
+    f.publish(&cat, "app/c", "1.0.0", &[("lib/core", "^1")]);
+    m.set_enabled_with("lib/core", false, true).unwrap();
+    f.refuses("dependency_conflict", || {
+        m.install_from_catalog("app/c", None)
+    });
+    let forced = m.install_from_catalog_with("app/c", None, true).unwrap();
+    assert!(forced.enabled && f.path("workspace/dist/app/c/index.js").is_file());
+    let app_repo = f.path("authors/app/c");
+    assert!(
+        m.install_package_with(
+            app_repo.to_str().unwrap(),
+            None,
+            gitpm::InstallTarget::Release,
+            true
+        )
+        .unwrap()
+        .already_installed
+    );
+}
+
+/// rollback of an active package and restore of an enabled record refuse a disabled
+/// dependency like install and update do.
+#[test]
+fn rollback_and_restore_refuse_disabled_dependencies() {
+    let f = Fixture::new();
+    let cat = f.catalog("catalog");
+    f.publish(&cat, "lib/core", "1.2.0", &[]);
+    f.publish(&cat, "app/a", "1.0.0", &[("lib/core", "^1")]);
+    let m = f.open(&cat);
+    m.install_from_catalog("app/a", None).unwrap();
+    f.publish(&cat, "app/a", "1.1.0", &[("lib/core", "^1")]);
+    m.update("app/a").unwrap();
+    m.set_enabled_with("lib/core", false, true).unwrap();
+    let error = f.refuses("dependency_conflict", || m.rollback("app/a"));
+    assert!(
+        error
+            .to_string()
+            .contains("lib/core is disabled; enable it"),
+        "{error}"
+    );
+    m.forget("app/a").unwrap();
+    let error = f.refuses("dependency_conflict", || m.restore("app/a"));
+    assert!(
+        error
+            .to_string()
+            .contains("lib/core is disabled; enable it"),
+        "{error}"
+    );
+    m.enable("lib/core").unwrap();
+    m.restore("app/a").unwrap();
+    m.rollback("app/a").unwrap();
+    assert_eq!(plugin(&m, "app/a").current.version, "1.0.0");
+}
+
+/// Only direct dependencies must be active: app → lib (enabled) → base (disabled by
+/// force) is no refusal for app in any operation; lib is reported broken.
+#[test]
+fn only_direct_dependencies_must_be_active() {
+    let f = Fixture::new();
+    let cat = f.catalog("catalog");
+    f.publish(&cat, "lib/base", "1.0.0", &[]);
+    f.publish(&cat, "lib/mid", "1.0.0", &[("lib/base", "^1")]);
+    f.publish(&cat, "app/a", "1.0.0", &[("lib/mid", "^1")]);
+    let m = f.open(&cat);
+    m.install_from_catalog("app/a", None).unwrap();
+    m.set_enabled_with("lib/base", false, true).unwrap();
+    assert_eq!(
+        provider(&m, "lib/mid", "lib/base"),
+        (Some("lib/base".into()), false)
+    );
+    m.disable("app/a").unwrap();
+    m.enable("app/a").unwrap();
+    f.publish(&cat, "app/a", "1.1.0", &[("lib/mid", "^1")]);
+    m.update("app/a").unwrap();
+    m.rollback("app/a").unwrap();
+    m.forget("app/a").unwrap();
+    m.restore("app/a").unwrap();
+    m.uninstall("app/a", false).unwrap();
+    let installed = m.install_from_catalog("app/a", None).unwrap();
+    assert!(installed.enabled);
+    assert!(f.path("workspace/dist/app/a/index.js").is_file());
+}
+
+/// An update of a disabled package records the dependencies it pulls disabled.
+#[test]
+fn update_of_a_disabled_package_pulls_disabled_dependencies() {
+    let f = Fixture::new();
+    let cat = f.catalog("catalog");
+    f.publish(&cat, "app/a", "1.0.0", &[]);
+    let m = f.open(&cat);
+    m.install_from_catalog("app/a", None).unwrap();
+    m.disable("app/a").unwrap();
+    f.publish(&cat, "lib/extra", "1.0.0", &[]);
+    f.publish(&cat, "app/a", "1.1.0", &[("lib/extra", "^1")]);
+    let change = m.update("app/a").unwrap();
+    assert!(
+        change.changed && change.dist.deployed.is_empty(),
+        "{change:?}"
+    );
+    assert!(!plugin(&m, "lib/extra").enabled);
+    assert!(!f.path("workspace/dist/lib/extra").exists());
+    // Enabled again: an update pulls enabled dependencies as before.
+    m.enable("lib/extra").unwrap();
+    m.enable("app/a").unwrap();
+    f.publish(&cat, "lib/more", "1.0.0", &[]);
+    f.publish(
+        &cat,
+        "app/a",
+        "1.2.0",
+        &[("lib/extra", "^1"), ("lib/more", "^1")],
+    );
+    m.update("app/a").unwrap();
+    assert!(plugin(&m, "lib/more").enabled);
+    assert!(f.path("workspace/dist/lib/more/index.js").is_file());
+}
+
+/// Install over a download fills `available`/`requested_mode` and warns that the
+/// recorded mode is kept.
+#[test]
+fn install_over_a_download_reports_the_requested_mode() {
+    let f = Fixture::new();
+    let cat = f.catalog("catalog");
+    f.publish(&cat, "app/a", "1.0.0", &[]);
+    let repo = f.path("authors/app/a");
+    let m = f.open(&cat);
+    m.download(repo.to_str().unwrap(), None, gitpm::InstallTarget::Release)
+        .unwrap();
+    f.release(&repo, "app/a", "1.1.0", &[]);
+    let result = m
+        .install_package(
+            repo.to_str().unwrap(),
+            None,
+            gitpm::InstallTarget::Ref("app/a@1.1.0".into()),
+        )
+        .unwrap();
+    assert!(result.enabled && !result.already_installed);
+    assert_eq!(result.current.version, "1.0.0");
+    assert!(result.mode.is_release());
+    assert_eq!(
+        result.requested_mode,
+        Some(gitpm::Mode::Pinned("app/a@1.1.0".into()))
+    );
+    assert_eq!(result.available.as_ref().unwrap().version, "1.1.0");
+    assert!(
+        result.warnings[0]
+            .contains("recorded mode release, not the requested pinned at app/a@1.1.0"),
+        "{:?}",
+        result.warnings
+    );
+    assert!(f.path("workspace/dist/app/a/index.js").is_file());
 }
 
 #[test]

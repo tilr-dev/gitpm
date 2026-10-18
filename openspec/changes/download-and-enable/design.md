@@ -17,7 +17,10 @@ Alternative: `enable` enables the disabled dependencies it needs in the same tra
 `install` stages the download and the enable of the package and the dependencies it downloaded together, so a failure leaves nothing (errors, "Failing operations leave the workspace unchanged"). An installed but disabled dependency is not enabled by `install`: the install fails with `dependency_conflict` ("lib is disabled; enable it").
 
 ### API
-`Manager::download(source, package, target) -> InstallResult` and `download_from_catalog(id, version) -> InstallResult` (results carry `enabled: false` records and the dist report, which deploys nothing); `Manager::enable_with(id, force) -> EnableResult`. FFI `download`, `downloadFromCatalog`, `enable(id, force)`.
+`Manager::download(source, package, target) -> InstallResult` and `download_from_catalog(id, version) -> InstallResult` (results carry `enabled: false` records and the dist report, which deploys nothing); `Manager::enable_with(id, force) -> DistSync` (the dist report, like `disable`); `install_package_with(source, package, target, force)` and `install_from_catalog_with(id, version, force)` -> `InstallResult` (`enabled`, `dependencies`). FFI `download`, `downloadFromCatalog`, `enable(id, force)`, `install(…, force)`, `installFromCatalog(…, force)`.
+
+### One active-dependency check
+Every operation that makes or keeps a package active (install, install over a download, `update ID`, `enable`, `rollback`, `restore`) runs one check in `deps.rs` (`refuse_inactive_dependencies`): each direct dependency must be satisfied by an active provider (the `list` status). Dependencies of providers are theirs to report (a broken provider is reported, not enforced); versions and missing packages are already the solver's job before the check. Dependencies an inactive package pulls (download, `update` of a disabled package) are recorded disabled.
 
 ## Transactions and crash recovery
 

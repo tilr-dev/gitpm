@@ -133,7 +133,7 @@ def targets_exclude_each_other(t: T):
     for args, needle in [(("update", ID, "--ref", f"{ID}@0.2.0", "--dev"), "--dev conflicts with --ref"),
                          (("update", ID, "--dev", "--release"), "--release conflicts with --dev"),
                          (("update", ID, "--ref", f"{ID}@0.2.0", "--release"), "--release conflicts with --ref"),
-                         (("rollback", ID, "--dev"), "--dev requires install/update")]:
+                         (("rollback", ID, "--dev"), "--dev requires install/download/update")]:
         r = t.gitpm(*args)
         t.ok(r.code != 0, f"gitpm {' '.join(args)} fails")
         t.has(r.err, needle)
