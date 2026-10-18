@@ -7,6 +7,10 @@ A catalog SHALL be a tree of JSON files holding only links and summaries: `catal
 - **WHEN** a directory file or catalog package index has a schema value this gitpm does not write (for example an index of `"schema": 2` from gitpm 0.5)
 - **THEN** reading it fails with `catalog` ("unsupported catalog schema", or "unsupported package schema" for the index; a `state.json` of another format is `unsupported` instead, see errors); the user regenerates the catalog with `catalog update`
 
+#### Scenario: v1 catalog
+- **WHEN** the catalog location is a monolithic v1 `catalog.json`
+- **THEN** every catalog read fails with `catalog` and nothing is written; the user regenerates the catalog with `catalog-update`
+
 #### Scenario: Too deep
 - **WHEN** the directory links of a catalog nest more than 8 levels
 - **THEN** `catalog show`/`browse` fail with `catalog` ("catalog nesting is too deep")

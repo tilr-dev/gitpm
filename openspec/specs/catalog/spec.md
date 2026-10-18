@@ -2,16 +2,20 @@
 
 ## Purpose
 
-Defines the static JSON catalog: its v2 folder tree (and readable v1 monolith), release records with exact commits and file hashes, generation from Git release tags, immutability of published versions, transport rules, the one-catalog-per-workspace policy, working without a catalog, and `check`.
+Defines the static JSON catalog: its single format, a tree of static files, release records with exact commits and file hashes, generation from Git release tags, immutability of published versions, transport rules, the one-catalog-per-workspace policy, working without a catalog, and `check`.
 
 ## Requirements
 
 ### Requirement: Catalog v2 is a tree of static files
-A v2 catalog SHALL be a tree of JSON files holding only links: `catalog.json` and directory files `{"schema": 2, "directories": {…}}`, a catalog plugin index `namespaces/<ns>/<name>/plugin.json` `{"schema": 2, "id", "source", "versions"}` per package (legacy unscoped IDs under `legacy/<id>/`), and one `versions/<V>/release.json` per version. Lookup by ID SHALL NOT walk the tree. Unknown schema values SHALL be refused with `catalog`.
+A catalog SHALL be a tree of JSON files holding only links: `catalog.json` and directory files `{"schema": 2, "directories": {…}}`, a catalog package index `namespaces/<ns>/<name>/plugin.json` `{"schema": 2, "id", "source", "versions"}` per package, and one `versions/<V>/release.json` per version. Lookup by ID SHALL NOT walk the tree. Any other schema value, a v1 monolithic `catalog.json` included, SHALL be refused with `catalog`.
 
 #### Scenario: Unknown schema
-- **WHEN** a directory file or catalog plugin index has `"schema": 3`
-- **THEN** reading it fails with `catalog` ("unsupported catalog schema", or "unsupported plugin schema" for the index; a newer `state.json` format is `unsupported` instead, see errors)
+- **WHEN** a directory file or catalog package index has `"schema": 3`
+- **THEN** reading it fails with `catalog` ("unsupported catalog schema", or "unsupported package schema" for the index; a `state.json` of another format is `unsupported` instead, see errors)
+
+#### Scenario: v1 catalog
+- **WHEN** the catalog location is a monolithic v1 `catalog.json`
+- **THEN** every catalog read fails with `catalog` and nothing is written; the user regenerates the catalog with `catalog-update`
 
 #### Scenario: Too deep
 - **WHEN** the directory links of a catalog nest more than 8 levels
@@ -23,30 +27,15 @@ A v2 catalog SHALL be a tree of JSON files holding only links: `catalog.json` an
 - **AND** this is covered by `catalog::v2_layout_links_directories_bottom_up` and `split_catalog_hashes_and_direct_lookup_are_independent_of_directory_indexes`
 
 ### Requirement: Release record
-Single source for the release record: a release SHALL record the whole `manifest`, `source`, `commit`, `reference`, `files` (SHA-256 and size of every file of the package dist), optional `build` `{url, sha256}` (format only; installs come from Git) and, for a package of a multi-package repository, `path`. Namespaced releases MUST have file hashes. Verified by `catalog::validate_release_checks_identity_commit_paths_and_build` and `workspace::release_with_empty_files_is_still_verified`.
+Single source for the release record: a release SHALL record the whole `manifest`, `source`, `commit`, `reference`, `files` (SHA-256 and size of every file of the package dist), optional `build` `{url, sha256}` (format only; installs come from Git) and, for a package of a multi-package repository, `path`. Every release MUST have file hashes. Verified by `catalog::validate_release_checks_identity_commit_paths_and_build` and `workspace::release_with_empty_files_is_still_verified`.
 
 #### Scenario: Legacy release without hashes
-- **WHEN** a legacy v1-era unscoped release has no `files`
-- **THEN** it is still read; only such releases may omit file hashes
+- **WHEN** a catalog holds an unscoped release of the v1 era without `files`
+- **THEN** reading it fails with `catalog`; no release may omit file hashes
 
 #### Scenario: Namespaced release without hashes
 - **WHEN** a namespaced release record has an empty `files` while its commit has `dist/index.js`
 - **THEN** the release is refused with `catalog` instead of skipping verification
-
-### Requirement: v1 catalogs stay readable
-A v1 monolithic `catalog.json` SHALL still be readable, and `migrate-catalog` SHALL split a local v1 catalog into the v2 tree without inventing hashes, keeping a backup, refusing invalid catalogs without writing, and printing `Catalog migrated: LOCATION (format v2, one folder per plugin)`. Verified by `migration_preserves_legacy_releases_and_backup` and `catalog::migrate_refuses_invalid_catalogs_without_writing`.
-
-#### Scenario: Migrate
-- **WHEN** the user runs `gitpm --catalog ./catalog migrate-catalog` on a v1 catalog
-- **THEN** the v2 tree is written and the old file is kept as a backup
-
-#### Scenario: Migrate a v2 catalog
-- **WHEN** `migrate-catalog` runs on a catalog that is already v2, or again after a migration
-- **THEN** it exits 0 and no catalog file or backup changes
-
-#### Scenario: Register into a v1 catalog
-- **WHEN** the user registers a release into a local v1 catalog
-- **THEN** the catalog is migrated first (backup kept, v2 tree, old releases unchanged) and the new release carries file hashes
 
 ### Requirement: Catalog generated from Git release tags
 `catalog-update [--sources FILE]` SHALL read the repositories listed in the sources file (one per line, relative to the file; blank and `#` lines skipped), discover every release tag, pin each tag's commit, hash its package dist and write the tree. For a multi-package repository it SHALL publish only the packages listed in `gitpm.json` at HEAD. Broken historical tags are skipped as in package-ids. It SHALL validate every source before writing anything and retain releases of removed sources.
@@ -69,7 +58,7 @@ A v1 monolithic `catalog.json` SHALL still be readable, and `migrate-catalog` SH
 - **THEN** `catalog-update` reads it once and indexes each release once
 
 ### Requirement: Published versions are immutable
-A published version SHALL NOT change; every version is checked before any write, so a rejected update writes nothing. `register` SHALL compare the whole release JSON except `reference` (and `files` of a legacy record without them) and fail with `version_conflict` ("version ID@V already exists and is immutable"). A package ID SHALL stay bound to the source that first registered it ("registered from a different source" → `catalog`). Verified by `catalog::published_versions_are_immutable`.
+A published version SHALL NOT change; every version is checked before any write, so a rejected update writes nothing. `register` SHALL compare the whole release JSON except `reference` and fail with `version_conflict` ("version ID@V already exists and is immutable"). A package ID SHALL stay bound to the source that first registered it ("registered from a different source" → `catalog`). Verified by `catalog::published_versions_are_immutable`.
 
 #### Scenario: Register with another build
 - **WHEN** a published version is registered again with different `--build-url`
@@ -117,12 +106,12 @@ Catalog writes SHALL hold an exclusive lock on `.<catalog name>.catalog.lock` be
 - **THEN** `info` shows 40 and the limit line
 
 #### Scenario: Overview lines
-- **WHEN** the user runs `gitpm --catalog ./catalog info` on a local v2 catalog
-- **THEN** it prints `Catalog: LOCATION`, `Type: local folder/JSON`, `Format: v2`, the directory tree and for each package `ID — latest: V, versions: N` followed by its `Git: SOURCE` line
+- **WHEN** the user runs `gitpm --catalog ./catalog info` on a local catalog
+- **THEN** it prints `Catalog: LOCATION`, `Type: local folder/JSON`, `Directories and packages:`, the directory tree and for each package `ID — latest: V, versions: N` followed by its `Git: SOURCE` line
 - **AND** it changes no file of the catalog or the workspace
 
 ### Requirement: One catalog per workspace
-`install_from_catalog`, and installing a missing dependency from the catalog (dependencies), SHALL record the canonical catalog location per package (`plugins.<id>.catalog`) and SHALL refuse with `catalog` ("this workspace uses catalog … mixing catalogs is not supported") to install from a different catalog while packages from another one are installed. There SHALL be no catalog merging, priorities or pinning, and no built-in default catalog. Verified by `one_catalog_per_workspace`.
+`install_from_catalog`, and installing a missing dependency from the catalog (dependencies), SHALL record the canonical catalog location per package (`packages.<id>.catalog`) and SHALL refuse with `catalog` ("this workspace uses catalog … mixing catalogs is not supported") to install from a different catalog while packages from another one are installed. There SHALL be no catalog merging, priorities or pinning, and no built-in default catalog. Verified by `one_catalog_per_workspace`.
 
 #### Scenario: Direct install
 - **WHEN** a package is installed with `install GIT_SOURCE`
@@ -145,7 +134,7 @@ Single source for working without a catalog: a direct install SHALL record its s
 - **AND** `browse_catalog`, `catalog_release` and `install_from_catalog` fail the same way
 
 ### Requirement: check compares installed with the catalog
-`check` SHALL be read-only (the CLI `check` and the library function `check::check` create and lock no workspace; FFI `PluginManager.check` opens one, see transactions-locking), read only the catalog entries of installed packages (latest and installed version) and of fork originals (latest), and report per package one status: a stable snake_case `CheckStatus` with a human message.
+`check` SHALL be read-only (the CLI `check` and the library function `check::check` create and lock no workspace; FFI `PackageManager.check` opens one, see transactions-locking), read only the catalog entries of installed packages (latest and installed version) and of fork originals (latest), and report per package one status: a stable snake_case `CheckStatus` with a human message.
 
 #### Scenario: Statuses
 - **WHEN** `check` reports a package

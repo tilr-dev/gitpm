@@ -7,7 +7,7 @@ Defines the `gitpm` command-line client (crate `gitpm-cli`): commands, settings 
 ## Requirements
 
 ### Requirement: Command set
-The CLI SHALL offer exactly the commands of its full usage (`gitpm --help`), each specified in the named capability: `init`/`create`, `commit`, `remote` (authoring); `fork`, `replace` (fork-replacement); `auth check` (git-safety); `info`, `catalog-update`, `migrate-catalog`, `register`, `check` (catalog); `catalog` (below); `install`, `install-catalog`, `forget`, `restore`, `uninstall` (install-uninstall); `enable`, `disable`, `sync-dist` (dist); `update`, `rollback` (updates); `list` (below).
+The CLI SHALL offer exactly the commands of its full usage (`gitpm --help`), each specified in the named capability: `init`, `commit`, `remote` (authoring); `fork`, `replace` (fork-replacement); `auth check` (git-safety); `info`, `catalog-update`, `register`, `check` (catalog); `catalog` (below); `install`, `install-catalog`, `forget`, `restore`, `uninstall` (install-uninstall); `enable`, `disable`, `sync-dist` (dist); `update`, `rollback` (updates); `list` (below), and no aliases.
 
 #### Scenario: Catalog links
 - **WHEN** the user runs `gitpm --catalog ./catalog catalog`
@@ -26,7 +26,7 @@ The CLI SHALL offer exactly the commands of its full usage (`gitpm --help`), eac
 - **THEN** each command of the CLI has a usage block
 
 #### Scenario: Removed command
-- **WHEN** the user runs a command that is not in the list
+- **WHEN** the user runs a command that is not in the list, including the former `create` and `migrate-catalog`
 - **THEN** it fails with `unknown command: X; use --help`
 
 ### Requirement: Settings come from flags, environment, defaults
@@ -41,7 +41,7 @@ The CLI SHALL resolve `--root DIR` / `GITPM_ROOT` (default `./gitpm-workspace`),
 - **THEN** the workspace is `./gitpm-workspace`
 
 ### Requirement: Commands that need a catalog say so
-Catalog commands (`info`, `catalog`, `catalog-update`, `migrate-catalog`, `register`), `install-catalog` and `check` on a non-empty workspace SHALL fail without a catalog with `COMMAND needs a catalog: pass --catalog DIR_OR_JSON_OR_URL or set GITPM_CATALOG` (a CLI usage error without `Error kind`) and create nothing. For a direct `install`, a local catalog path that does not exist SHALL count as no catalog. Verified by `catalog_commands_name_the_missing_catalog_and_create_nothing`.
+Catalog commands (`info`, `catalog`, `catalog-update`, `register`), `install-catalog` and `check` on a non-empty workspace SHALL fail without a catalog with `COMMAND needs a catalog: pass --catalog DIR_OR_JSON_OR_URL or set GITPM_CATALOG` (a CLI usage error without `Error kind`) and create nothing. For a direct `install`, a local catalog path that does not exist SHALL count as no catalog. Verified by `catalog_commands_name_the_missing_catalog_and_create_nothing`.
 
 #### Scenario: Catalog command without a catalog
 - **WHEN** neither `--catalog` nor `GITPM_CATALOG` is set and the user runs `gitpm info`
@@ -68,7 +68,7 @@ The CLI SHALL refuse unknown options, repeated options, options given to command
 Every workspace-mutating command (`install`, `install-catalog`, `update`, `update all`, `rollback`, `enable`, `disable`, `forget`, `restore`, `uninstall`, `replace`, `fork --replace`, `sync-dist`) and the author commands `fork` and `commit` SHALL print one line per affected package in the form `ID <verb> …` (detail lines such as `Fork created:` aside; the install line is `installed ID@V from SOURCE`) and SHALL NOT print `OK:` lines. The line formats are the table in README "Changed in 0.5".
 
 #### Scenario: Other author and catalog commands
-- **WHEN** the user runs `init`, `remote`, `catalog-update`, `migrate-catalog` or `register`
+- **WHEN** the user runs `init`, `remote`, `catalog-update` or `register`
 - **THEN** they print the output specified in their capability, not per-package lines
 
 #### Scenario: update all lines
@@ -89,7 +89,7 @@ Every workspace-mutating command (`install`, `install-catalog`, `update`, `updat
 
 #### Scenario: Filter by service
 - **WHEN** the user runs `gitpm list --provides theme`
-- **THEN** `plugins` and `resolved` are filtered as specified in plugin-metadata ("Filter by provided service")
+- **THEN** `packages` and `resolved` are filtered as specified in plugin-metadata ("Filter by provided service")
 
 #### Scenario: Absent optional fields
 - **WHEN** a package has no fork, replacement, catalog, folder, shared clone or dependencies
@@ -97,7 +97,7 @@ Every workspace-mutating command (`install`, `install-catalog`, `update`, `updat
 
 #### Scenario: list
 - **WHEN** one package is installed
-- **THEN** `gitpm list` prints a JSON object with `plugins` and a `resolved` array of one entry
+- **THEN** `gitpm list` prints a JSON object with `packages` and a `resolved` array of one entry
 
 ### Requirement: Warnings go to stderr
 Warnings SHALL be printed to stderr as `Warning: …` lines (ignored metadata keys, skipped release tags, unmanaged `dist/` paths, undeployed packages), and after every mutating command the CLI SHALL report `dist/` paths left alone. Verified by `any_mutating_command_reconciles_the_whole_dist`.
@@ -111,14 +111,14 @@ On failure the CLI SHALL print `Error: MESSAGE` to stderr, for a library error a
 
 #### Scenario: Unknown ID
 - **WHEN** the user runs `gitpm update acme/none`
-- **THEN** stderr has `Error: plugin acme/none is not installed` and `Error kind: not_installed`, and the exit status is 1
+- **THEN** stderr has `Error: package acme/none is not installed` and `Error kind: not_installed`, and the exit status is 1
 
 ### Requirement: Help
 `gitpm --help`, `-h`, `help` or no arguments SHALL print the full usage; `gitpm COMMAND --help` (or `-h`) SHALL print only that command's usage block; an unknown command SHALL fail with `unknown command: X; use --help`. Every command SHALL have a usage block. Verified by `command_help_prints_only_that_command`, `help_names_the_binary_and_removed_commands_are_unknown` and `tests::every_command_has_a_usage_block`.
 
 #### Scenario: Command help
 - **WHEN** the user runs `gitpm init --help`
-- **THEN** only the init/create usage block is printed and the exit status is 0
+- **THEN** only the init usage block is printed and the exit status is 0
 
 ### Requirement: Version string
 `gitpm --version` (or `-V`) SHALL print `gitpm VERSION`; a build from a Git checkout of this repository (one that tracks `crates/gitpm-cli/build.rs`) whose HEAD is not at a tag matching `v[0-9]*` SHALL print `gitpm VERSION-dev+SHORTHASH`. Packaged builds (crates.io, release binaries) SHALL print the plain version. Verified by `version_tests::version_starts_with_the_package_version` and the CI smoke test.

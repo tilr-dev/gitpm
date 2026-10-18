@@ -7,7 +7,7 @@ Defines the workspace folder `dist/`, the deployed output a host loads: which pa
 ## Requirements
 
 ### Requirement: dist holds exactly the active packages
-The deployed folder `dist/<namespace>/<name>/` (`dist/<id>/` for a legacy unscoped ID) SHALL exist exactly when the package is active: installed, enabled and not replaced by another package. A host SHALL be able to load every package folder under `dist/` without consulting gitpm state while no transaction is committing (see the scenario). Verified by `dist_active.rs` (CLI) tests.
+The deployed folder `dist/<namespace>/<name>/` SHALL exist exactly when the package is active: installed, enabled and not replaced by another package. A host SHALL be able to load every package folder under `dist/` without consulting gitpm state while no transaction is committing (see the scenario). Verified by `dist_active.rs` (CLI) tests.
 
 #### Scenario: Host reads during a commit
 - **WHEN** a host reads `dist/` while `.pm-txn/` exists in the workspace root
@@ -49,7 +49,7 @@ Single source for the missing package dist refusal: a revision whose package fol
 
 #### Scenario: Checked-out root package
 - **WHEN** a root package's checked-out folder has no `dist/`
-- **THEN** the error is "plugin must contain a ready dist/ directory"
+- **THEN** the error is "package must contain a ready dist/ directory"
 
 #### Scenario: Package folder of a multi-package repository
 - **WHEN** a folder listed by `gitpm.json` has no `dist/`
@@ -106,7 +106,7 @@ Every mutating command (install, `install-catalog`, update, `update all`, rollba
 - **THEN** it changes nothing, is not a mutating command and does not reconcile `dist/`
 
 #### Scenario: Stale folder from gitpm 0.4
-- **WHEN** a workspace written by gitpm 0.4 holds `dist/` of a disabled package and the user installs an unrelated package
+- **WHEN** `dist/` holds the deployed folder of a disabled package (copied into `dist/` by hand) and the user installs an unrelated package
 - **THEN** the disabled package's `dist/` is removed in the same transaction
 
 ### Requirement: Unknown paths are left alone
@@ -118,7 +118,7 @@ Folders under `dist/` that belong to no known package SHALL be left untouched an
 
 #### Scenario: Unknown folder
 - **WHEN** `dist/custom/` exists and belongs to no package
-- **THEN** a mutating command leaves it and the CLI prints `Warning: dist/custom belongs to no known plugin or is not a folder; left as it is`
+- **THEN** a mutating command leaves it and the CLI prints `Warning: dist/custom belongs to no known package or is not a folder; left as it is`
 
 ### Requirement: Undeployable packages do not block others
 An active package whose clone or installed commit is missing SHALL be skipped by reconciliation so it does not block an unrelated command; the CLI SHALL warn `Warning: ID: dist not deployed (clone missing); run \`gitpm sync-dist\``. Any other deploy error SHALL fail the command. Verified by `a_missing_clone_is_reported_and_blocks_only_its_own_dist`.
@@ -131,7 +131,7 @@ An active package whose clone or installed commit is missing SHALL be skipped by
 `list` and `check` SHALL NOT reconcile or deploy anything in `dist/`. `list` opens the workspace (transactions-locking, "Workspace lock"), so it completes an interrupted commit found there ("Crash recovery"); `check` opens nothing.
 
 #### Scenario: list on a 0.4 workspace
-- **WHEN** a workspace written by gitpm 0.4 is listed by gitpm 0.5
+- **WHEN** `dist/` holds the deployed folder of a disabled package (copied into `dist/` by hand) and the user runs `list`
 - **THEN** `dist/` is unchanged
 
 ### Requirement: sync-dist repairs dist explicitly
@@ -143,15 +143,15 @@ An active package whose clone or installed commit is missing SHALL be skipped by
 
 #### Scenario: Nothing to do
 - **WHEN** `dist/` already matches the active packages (unmanaged paths may exist; they are only warned about)
-- **THEN** `sync-dist` prints `dist/ already holds exactly the active plugins.` and exits 0
+- **THEN** `sync-dist` prints `dist/ already holds exactly the active packages.` and exits 0
 
 #### Scenario: Dry run
 - **WHEN** the user runs `sync-dist --dry-run` on a drifted workspace
 - **THEN** it prints the `would be deployed to` / `would be removed from` lines and `Nothing was changed (--dry-run).` and changes nothing
 
 ### Requirement: Empty parent folders are removed
-Removing a package SHALL also remove the folders it leaves empty (`dist/<namespace>`, `plugins/<namespace>`, `repos`). Verified by `removal_leaves_no_empty_namespace_or_clone_folders`.
+Removing a package SHALL also remove the folders it leaves empty (`dist/<namespace>`, `packages/<namespace>`, `repos`). Verified by `removal_leaves_no_empty_namespace_or_clone_folders`.
 
 #### Scenario: Last package of a namespace
 - **WHEN** the only package of namespace `acme` is uninstalled
-- **THEN** `dist/acme/` and `plugins/acme/` no longer exist
+- **THEN** `dist/acme/` and `packages/acme/` no longer exist

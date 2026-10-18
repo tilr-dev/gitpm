@@ -2,12 +2,12 @@
 
 ## Purpose
 
-Defines the author-side commands that create package repositories and releases: `init`/`create`, `commit` (version bump, commit, tag), `remote`, and the rules that keep releases immutable and author repositories intact. gitpm never pushes or uploads.
+Defines the author-side commands that create package repositories and releases: `init`, `commit` (version bump, commit, tag), `remote`, and the rules that keep releases immutable and author repositories intact. gitpm never pushes or uploads.
 
 ## Requirements
 
 ### Requirement: init creates a package with its first release
-`init NAMESPACE/NAME --into DIR` (alias `create`) SHALL scaffold a package with a manifest (`id`, `version` 0.1.0, `"title": "NAME"`), a demo `dist/index.js`, one commit and the tag `NAMESPACE/NAME@0.1.0`. A `DIR` that does not exist SHALL become a single-package repository. `--into` is required and nothing SHALL ever be overwritten. Verified by `scaffold::init_into_a_new_folder_makes_a_tagged_single_package_repository` and `scaffold::init_never_overwrites_and_validates_ids`.
+`init NAMESPACE/NAME --into DIR` SHALL scaffold a package with a manifest (`id`, `version` 0.1.0, `"title": "NAME"`), a demo `dist/index.js`, one commit and the tag `NAMESPACE/NAME@0.1.0`. A `DIR` that does not exist SHALL become a single-package repository. `--into` is required and nothing SHALL ever be overwritten. Verified by `scaffold::init_into_a_new_folder_makes_a_tagged_single_package_repository` and `scaffold::init_never_overwrites_and_validates_ids`.
 
 #### Scenario: Scaffold files and commit
 - **WHEN** `init acme/hello --into hello` creates a new single-package repository
@@ -20,6 +20,10 @@ Defines the author-side commands that create package repositories and releases: 
 #### Scenario: init without --into
 - **WHEN** the user runs `gitpm init acme/hello`
 - **THEN** it fails with `init needs --into DIR: …` and creates nothing
+
+#### Scenario: Former alias
+- **WHEN** the user runs `gitpm create acme/hello --into hello`
+- **THEN** it fails with `unknown command: create; use --help` and creates nothing
 
 ### Requirement: init into a multi-package repository
 For a `DIR` with `gitpm.json`, init SHALL add the package at `PREFIX/NAME` for the first `PREFIX/*` pattern (else `packages/NAME`, appended to `gitpm.json` as a literal folder), committing only `gitpm.json` and the new folder; `gitpm.json` MUST have no uncommitted changes. A repository without `gitpm.json` and without a root package SHALL get `{"packages": ["packages/*"]}`. Every refusal below SHALL be `invalid_argument` and change nothing.
@@ -71,7 +75,7 @@ For a `DIR` with `gitpm.json`, init SHALL add the package at `PREFIX/NAME` for t
 - **THEN** it fails with `invalid_manifest` (rule in plugin-metadata, "Lenient reading, strict authoring")
 
 #### Scenario: Release one package of a multi-package repository
-- **WHEN** the author runs `gitpm commit ./tilr-plugins 0.2.0 --package tilr/store`
+- **WHEN** the author runs `gitpm commit ./tilr-packages 0.2.0 --package tilr/store`
 - **THEN** it prints `tilr/store committed 0.2.0 (local commit and tag tilr/store@0.2.0)`
 
 ### Requirement: Existing tags are never moved
@@ -93,7 +97,7 @@ When `git commit` fails (hook, signing), gitpm SHALL restore `plugin.json` and t
 - **THEN** `plugin.json` keeps its old version and the index is unchanged
 
 ### Requirement: Git identity is never invented in existing repositories
-gitpm SHALL NOT write a Git identity into an existing repository; when git cannot determine an author and committer identity there, `commit`, `init` into an existing repository and adding packages to an existing fork SHALL be refused with `git`. Only a repository gitpm creates itself (a new `init` folder, a new fork) MAY get a local demo identity `Plugin Demo <demo@example.invalid>` when the user has none. Verified by `scaffold::create_package_refuses_uncommitted_config_and_a_missing_identity`.
+gitpm SHALL NOT write a Git identity into an existing repository; when git cannot determine an author and committer identity there, `commit`, `init` into an existing repository and adding packages to an existing fork SHALL be refused with `git`. Only a repository gitpm creates itself (a new `init` folder, a new fork) MAY get a local demo identity `Package Demo <demo@example.invalid>` when the user has none. Verified by `scaffold::create_package_refuses_uncommitted_config_and_a_missing_identity`.
 
 #### Scenario: Tag-only retry without identity
 - **WHEN** an existing repository has no identity and `commit` is retried after a failed tag
@@ -108,7 +112,7 @@ gitpm SHALL NOT write a Git identity into an existing repository; when git canno
 `remote REPO URL` SHALL add or replace `origin` (all configured URLs, fetch and push) of a package repository root without network access; URLs that are empty, start with `-` or contain control characters SHALL be refused with `invalid_argument`. Verified by `scaffold::set_remote_adds_or_replaces_origin_without_network`.
 
 #### Scenario: Not a package repository root
-- **WHEN** REPO is a subfolder (`invalid_argument`, "pass the plugin repository root") or a repository root without a manifest and without `gitpm.json`
+- **WHEN** REPO is a subfolder (`invalid_argument`, "pass the package repository root") or a repository root without a manifest and without `gitpm.json`
 - **THEN** the command fails (`invalid_manifest` for the latter) and nothing changes
 
 #### Scenario: Set origin

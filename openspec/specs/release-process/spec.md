@@ -38,11 +38,11 @@ Pull request titles SHALL be Conventional Commits (they become the squash commit
 - **THEN** the release PR proposes 0.6.0 with a CHANGELOG entry
 
 ### Requirement: Lockstep crates
-`gitpm` (the release-please package) and `gitpm-cli` SHALL share one version: release-please SHALL update `gitpm-cli`'s version, its `gitpm` dependency version and both `Cargo.lock` entries. `gitpm-ffi` SHALL keep its own version and is not released.
+`gitpm` (the release-please package), `gitpm-cli` and `gitpm-ffi` SHALL share one version: release-please SHALL update the versions of `gitpm-cli` and `gitpm-ffi`, their `gitpm` dependency versions and the `Cargo.lock` entries. `gitpm-ffi` is versioned but not released (ffi-bindings, "FFI is not published").
 
 #### Scenario: Release PR contents
 - **WHEN** the release PR for 0.6.0 is opened
-- **THEN** both `crates/gitpm/Cargo.toml` and `crates/gitpm-cli/Cargo.toml` say 0.6.0
+- **THEN** `crates/gitpm/Cargo.toml`, `crates/gitpm-cli/Cargo.toml` and `crates/gitpm-ffi/Cargo.toml` say 0.6.0
 
 ### Requirement: Merging the release PR is the release
 Merging the release PR SHALL create tag `vX.Y.Z` and a GitHub Release, then publish `gitpm` and then `gitpm-cli` to crates.io through Trusted Publishing (OIDC, environment `crates-io` restricted to `main`, no long-lived tokens), skipping a version already on crates.io, after re-running fmt, clippy and tests on the tag. Releasing SHALL be a separate explicit step by the owner.

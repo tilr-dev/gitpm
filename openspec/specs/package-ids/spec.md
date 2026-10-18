@@ -2,12 +2,12 @@
 
 ## Purpose
 
-Defines how packages are named and versioned: the `namespace/name` ID, legacy unscoped IDs, release tag names, how releases are discovered from tags (broken and moved tags), and the MAJOR.MINOR.PATCH version format shared by manifests, tags and catalogs.
+Defines how packages are named and versioned: the `namespace/name` ID (unscoped IDs are refused), release tag names, how releases are discovered from tags (broken and moved tags), and the MAJOR.MINOR.PATCH version format shared by manifests, tags and catalogs.
 
 ## Requirements
 
 ### Requirement: Package ID syntax
-A package ID SHALL be `namespace/name` or, for legacy packages only, a single unscoped `name`. Each component MUST be 1 to 80 ASCII letters, digits, `-` or `_` and MUST NOT start with `-`. Any other ID SHALL be refused with `invalid_id`. An installed ID SHALL NOT be the namespace of another installed ID (`workspace`, see the scenario). Verified by `identity::valid_part_accepts_1_to_80_safe_ascii_characters` and `model::valid_id_accepts_legacy_and_scoped_ids_only`.
+A package ID SHALL be `namespace/name`. Each component MUST be 1 to 80 ASCII letters, digits, `-` or `_` and MUST NOT start with `-`. Any other ID, an unscoped `name` included, SHALL be refused with `invalid_id`. Verified by `identity::valid_part_accepts_1_to_80_safe_ascii_characters` and `model::valid_id_accepts_scoped_ids_only`.
 
 #### Scenario: Valid scoped ID
 - **WHEN** a caller uses the ID `dan/demo1`
@@ -22,38 +22,42 @@ A package ID SHALL be `namespace/name` or, for legacy packages only, a single un
 - **THEN** the call fails with `invalid_id`
 
 #### Scenario: Legacy ID equal to an installed namespace
-- **WHEN** `dan/x` is installed and the user installs a repository whose manifest ID is the legacy `dan`
-- **THEN** the install fails with `workspace` ("plugin ID conflicts with an installed namespace path") and the workspace is unchanged
+- **WHEN** `dan/x` is installed and the user installs a repository whose manifest ID is the unscoped `dan`
+- **THEN** the install fails with `invalid_id`, because unscoped IDs are refused, and the workspace is unchanged
+
+#### Scenario: The word all
+- **WHEN** the user runs `gitpm update all`
+- **THEN** it is always the joint upgrade (updates), because no package ID can be the single word `all`
 
 ### Requirement: No default namespace
-gitpm SHALL NOT derive or default a namespace: every command that creates a package (`init`, `create`) MUST receive a full `NAMESPACE/NAME`, and `fork` MUST receive the target namespace explicitly. There SHALL be no namespace configuration file or command.
+gitpm SHALL NOT derive or default a namespace: every command that creates a package (`init`) MUST receive a full `NAMESPACE/NAME`, and `fork` MUST receive the target namespace explicitly. There SHALL be no namespace configuration file or command.
 
 #### Scenario: init without a namespace
 - **WHEN** the user runs `gitpm init hello --into hello`
-- **THEN** the command fails with `plugin id needs a namespace: use NAMESPACE/NAME, for example acme/hello` (a CLI usage error: no `Error kind` line, exit status 1) and creates nothing
+- **THEN** the command fails with `package id needs a namespace: use NAMESPACE/NAME, for example acme/hello` (a CLI usage error: no `Error kind` line, exit status 1) and creates nothing
 
 ### Requirement: Release tag names
-Single source for tag names: tags gitpm creates (`init`, `commit`, `fork --replace`) SHALL be `namespace/name@VERSION` for a scoped package and `vVERSION` for a legacy one. For the root package of a single-package repository, reading releases SHALL accept both `ID@VERSION` and `vVERSION` (multi-package repositories: see multi-package-repos). A tag SHALL count only when the manifest at its commit has that ID and version. Verified by `identity::release_tag_is_v_for_legacy_and_at_for_scoped_ids`.
+Single source for tag names: the release tag of a package SHALL be `namespace/name@VERSION`, both for tags gitpm creates (`init`, `commit`, `fork --replace`) and for tags it reads, in single- and multi-package repositories. Any other tag, `vVERSION` included, SHALL NOT be a release tag. A tag SHALL count only when the manifest at its commit has that ID and version. Verified by `identity::release_tag_is_id_at_version`.
 
 #### Scenario: Tag disagrees with the manifest
-- **WHEN** the legacy package `hello` at version 1.0.0 gets the newest tag `v8.0.0` on a commit whose manifest still says 1.0.0
-- **THEN** the tag is skipped ("tag v8.0.0 disagrees with manifest version 1.0.0") and, because it is the newest, `catalog-update` fails with `version_conflict` and writes nothing; this is covered by `release_manifest_must_match_tag_and_update_rejects_retagging`
+- **WHEN** `acme/hello` at version 1.0.0 gets the newest tag `acme/hello@8.0.0` on a commit whose manifest still says 1.0.0
+- **THEN** the tag is skipped ("tag acme/hello@8.0.0 disagrees with manifest version 1.0.0") and, because it is the newest, `catalog-update` fails with `version_conflict` and writes nothing
 
 #### Scenario: Two tags for one version
 - **WHEN** `v1.0.0` and `dan/demo1@1.0.0` point to different commits
-- **THEN** release discovery fails with `version_conflict` ("conflicting release tags for dan/demo1@1.0.0")
+- **THEN** only `dan/demo1@1.0.0` is a release of version 1.0.0 and discovery reports no conflict
 
 #### Scenario: Scoped tag
 - **WHEN** `dan/demo1` is released at `1.2.3`
 - **THEN** the release tag is `dan/demo1@1.2.3`
 
 #### Scenario: Legacy tag
-- **WHEN** the legacy package `demo1` is released at `1.2.3`
-- **THEN** the release tag is `v1.2.3`
+- **WHEN** `commit` releases `dan/demo1` at `1.2.3`
+- **THEN** it creates `dan/demo1@1.2.3` and never a `v1.2.3` tag
 
 #### Scenario: vVERSION tag of a scoped single-package repository
 - **WHEN** a single-package repository whose manifest ID is `dan/demo1` has only the tag `v1.0.0` on a commit with version `1.0.0`
-- **THEN** `install` finds the release `1.0.0`
+- **THEN** `install` fails with `no_releases` and the workspace is unchanged
 
 #### Scenario: Tags that are not release versions
 - **WHEN** a repository has tags `dan/demo1@2.0.0-beta`, `dan/demo1@2.0.0+b1` and `dan/demo1@latest` besides valid releases

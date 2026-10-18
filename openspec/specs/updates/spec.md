@@ -14,7 +14,7 @@ Defines how installed packages move between revisions: single-package `update` (
 - **THEN** the first prints `acme/greeter updated 0.1.0 → 0.2.0`, the second `acme/greeter up to date (0.2.0)`
 
 ### Requirement: Updates need no catalog
-`update ID` (stable, `--ref`, `--channel dev`) and `update all` SHALL read releases from the origin of the package's clone (set from `plugins.<id>.source` at install) and SHALL NOT read a catalog for installed packages, so they work without one. Verified by `workspace::update_and_rollback_swap_revisions_and_redeploy` (no catalog configured).
+`update ID` (stable, `--ref`, `--channel dev`) and `update all` SHALL read releases from the origin of the package's clone (set from `packages.<id>.source` at install) and SHALL NOT read a catalog for installed packages, so they work without one. Verified by `workspace::update_and_rollback_swap_revisions_and_redeploy` (no catalog configured).
 
 #### Scenario: New dependency without a catalog
 - **WHEN** no catalog is configured and the newest release of a package adds a dependency that is not installed

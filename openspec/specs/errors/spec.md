@@ -11,7 +11,7 @@ Every failure SHALL be a `gitpm::Error` whose `kind()` is one of: `not_installed
 
 #### Scenario: Where the less obvious kinds arise
 - **WHEN** a caller sees `http`, `auth`, `catalog` or `unsupported`
-- **THEN** `http` is a failed catalog request (catalog, "Catalog locations and transport"), `auth` a failing `auth check` (git-safety), `catalog` invalid catalog data including an unknown catalog schema, and `unsupported` for example a newer `state.json` format (workspace-layout) or a symlink in a package dist (dist)
+- **THEN** `http` is a failed catalog request (catalog, "Catalog locations and transport"), `auth` a failing `auth check` (git-safety), `catalog` invalid catalog data including an unknown catalog schema or a v1 catalog, and `unsupported` for example a `state.json` of another format (workspace-layout) or a symlink in a package dist (dist)
 
 #### Scenario: Failures without a kind
 - **WHEN** the CLI itself refuses a usage error, a missing catalog, a declined prompt or `sync-dist` leaving packages undeployed
@@ -23,7 +23,7 @@ Every failure SHALL be a `gitpm::Error` whose `kind()` is one of: `not_installed
 
 #### Scenario: Kind of a missing package
 - **WHEN** `update`, `rollback`, `enable`, `disable`, `forget` or `fork` names an ID that is not installed
-- **THEN** the error kind is `not_installed` ("plugin ID is not installed")
+- **THEN** the error kind is `not_installed` ("package ID is not installed")
 - **AND** this is covered by `error::every_variant_has_its_stable_kind` and `workspace::every_operation_on_a_missing_id_fails_without_changes`
 
 #### Scenario: Removal of an unknown package
