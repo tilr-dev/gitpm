@@ -136,6 +136,10 @@ pub(crate) fn provider<'a>(state: &'a State, id: &str) -> Option<(&'a str, &'a I
     }
 }
 
+/// [`DependencyStatus::problem`] of a dependency no installed package provides (and
+/// that no replacement redirects).
+pub(crate) const NOT_INSTALLED: &str = "not installed";
+
 pub(crate) fn status(state: &State, plugin: &Installed) -> Vec<DependencyStatus> {
     plugin
         .dependencies
@@ -153,7 +157,7 @@ pub(crate) fn status(state: &State, plugin: &Installed) -> Vec<DependencyStatus>
                 None => {
                     row.problem = Some(match state.replacements.get(id) {
                         Some(fork) => format!("replacement {fork} is not installed"),
-                        None => "not installed".into(),
+                        None => NOT_INSTALLED.into(),
                     });
                 }
                 Some((provider, installed, offered)) => {
@@ -454,6 +458,32 @@ pub(crate) fn healthy_roots(state: &State) -> Result<BTreeMap<String, Version>> 
         }
     }
     Ok(roots)
+}
+
+/// The direct dependencies of the installed package `id` that make it a broken consumer
+/// for `update all`: unsatisfied now (see [`status`]). A replaced original consumes
+/// nothing; an inactive package takes a disabled provider of a matching version as
+/// given (as `download` and the update of a disabled package do).
+pub(crate) fn broken_dependencies(state: &State, id: &str) -> Vec<DependencyStatus> {
+    let Some(package) = state.packages.get(id) else {
+        return Vec::new();
+    };
+    if state.replacements.contains_key(id) {
+        return Vec::new();
+    }
+    let active = state.is_active(id);
+    status(state, package)
+        .into_iter()
+        .filter(|row| {
+            !row.satisfied
+                && (active
+                    || row.provider.is_none()
+                    || !row
+                        .version
+                        .as_deref()
+                        .is_some_and(|v| matches(&row.requirement, v)))
+        })
+        .collect()
 }
 
 #[cfg(test)]

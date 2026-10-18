@@ -577,4 +577,19 @@ fn update_all_reports_kept_back_packages_and_replace_back_without_a_replacement(
             && error.contains("Error kind: invalid_argument"),
         "{error}"
     );
+    // A consumer whose dependency was removed with force is skipped with the reason from
+    // the plan, not a failure, and the dependency is not installed again.
+    f.ok(&["uninstall", "tilr/theme", "--force"]);
+    f.release("store", "1.0.2", r#","dependencies":{"tilr/theme":"~1.0"}"#);
+    let out = f.ok(&["update", "all"]);
+    assert!(
+        out.contains("tilr/store skipped at 1.0.1 (dependency tilr/theme is not installed)")
+            && out.contains("0 updates, 0 installs, 0 kept back."),
+        "{out}"
+    );
+    let list = f.ok(&["list"]);
+    assert!(
+        list.contains("\"tilr/store\": {") && !list.contains("\"tilr/theme\": {"),
+        "{list}"
+    );
 }

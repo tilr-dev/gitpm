@@ -5,7 +5,7 @@ Single source for what happens to a replacement binding when a package leaves or
 
 #### Scenario: Fork release without replaces
 - **WHEN** the fork's newer release no longer declares `replaces` for ORIGINAL
-- **THEN** `update FORK` (and `rollback` to such a revision) fails with `version_conflict` ("… no longer declares that it replaces ORIGINAL …"), and `update all` keeps the fork back with the reason `no longer replaces ORIGINAL`
+- **THEN** `update FORK` (and `rollback` to such a revision) fails with `version_conflict` ("… no longer declares that it replaces ORIGINAL …"), and `update all` keeps the fork back with the reason `no longer replaces ORIGINAL` (`HeldBack.reason` `no_longer_replaces`; `update_all_resolves_replacement_versions_together_with_consumers`)
 
 #### Scenario: Uninstall the fork
 - **WHEN** `me/greeter` replaces `acme/greeter` and the user uninstalls `me/greeter`
@@ -15,4 +15,3 @@ Single source for what happens to a replacement binding when a package leaves or
 #### Scenario: Reinstalled original stays replaced
 - **WHEN** the original `vendor/base` is uninstalled while replaced and later installed again
 - **THEN** it is still replaced by the fork until `replace vendor/base --back`
-

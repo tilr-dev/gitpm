@@ -97,3 +97,43 @@ def local_work_refuses_without_partial_deploy(t: T):
     before = t.snap(t.ws, git=True)
     t.gitpm_err("update", "all", kind="local_changes")
     t.same(before, "workspace")
+
+
+# The two cases below tag the existing requirements; on archive of update-all-skips-broken
+# they can name the new scenarios ("update all after forced removal", "Broken state does
+# not fail the run").
+@case(fixture="g6_core_deps_installed", spec=["dependencies/broken-consumers-are-reported-not-enforced",
+                                              "updates/update-all-never-removes-or-downgrades"])
+def forced_removal_skips_broken_consumers(t: T):
+    """lib/core uninstalled with --force: update all, with the catalog and without one, updates
+    other/x, skips app/a and app/c with their reason, exits 0 and never installs lib/core again;
+    list keeps reporting the dependency unsatisfied."""
+    t.gitpm_ok("uninstall", CORE, "--force")
+    skipped = [f"{id} skipped at 1.0.0 (dependency {CORE} is not installed)" for id in ["app/a", "app/c"]]
+    t.release("other/x", "1.1.0")
+    r = t.gitpm_ok("update", "all")
+    t.eq(lines(r.out), [*skipped, "other/x updated 1.0.0 → 1.1.0", "1 updates, 0 installs, 0 kept back."],
+         "output with a catalog")
+    t.release("other/x", "1.2.0")
+    r = t.gitpm_ok("update", "all", env={"GITPM_CATALOG": ""})
+    t.eq(lines(r.out), [*skipped, "other/x updated 1.1.0 → 1.2.0", "1 updates, 0 installs, 0 kept back."],
+         "output without a catalog")
+    t.eq(sorted(t.state()["packages"]), ["app/a", "app/c", "other/x"], "lib/core not installed again")
+    t.not_installed(CORE)
+    resolved = {p["id"]: p for p in t.gitpm_ok("list").json()["resolved"]}
+    t.eq([d["satisfied"] for d in resolved["app/a"]["dependencies"]], [False], "app/a still unsatisfied")
+    t.has(t.gitpm_ok("check").out, f"Unsatisfied dependency: app/a → {CORE} ^1.0: not installed",
+          f"Unsatisfied dependency: app/c → {CORE} 1: not installed")
+
+
+@case(fixture="g6_core_deps_installed", spec=["updates/update-all-never-removes-or-downgrades#kept-back"])
+def new_dependency_without_a_catalog_is_kept_back(t: T):
+    """Without a catalog, other/x 1.1.0 needs dep/none ^1 (not installed): update all keeps other/x
+    back with that reason and exits 0."""
+    t.release("other/x", "1.1.0", deps={"dep/none": "^1"})
+    r = t.gitpm_ok("update", "all", env={"GITPM_CATALOG": ""})
+    t.has(r.out, "other/x kept back at 1.0.0 (latest 1.1.0: needs dep/none ^1, which is not installed "
+                 "and no catalog is configured)")
+    t.has(r.out, KEPT)
+    t.has(r.out, "0 updates, 0 installs, 2 kept back.")
+    t.eq(t.package("other/x")["current"]["version"], "1.0.0", "other/x stays")

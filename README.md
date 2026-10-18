@@ -108,8 +108,9 @@ catalog the same way, disabled, so a later `enable` needs no network. `install` 
 download plus enabling the package and the dependencies it downloaded, in one
 transaction. A disabled package satisfies no dependency: `install`, `enable` and `update
 ID` of an enabled consumer refuse with `dependency_conflict` ("lib/core is disabled;
-enable it") while a dependency resolves only to a disabled package, and `update all`,
-`list` and `check` report it unsatisfied. `enable ID` never enables dependencies itself;
+enable it") while a dependency resolves only to a disabled package, `list` and `check`
+report it unsatisfied, and `update all` skips such a consumer (`dependency DEP: DEP is
+disabled`). `enable ID` never enables dependencies itself;
 `enable ID --force` enables it anyway (it is then reported broken), and `install
 --force` (`install-catalog --force`) is a download plus that forced enable of the named
 package. `install` over a package downloaded from the same source enables it (with the
@@ -311,7 +312,7 @@ Changed in 0.5:
   | Command | Line |
   | --- | --- |
   | `install`, `install-catalog` | `installed ID@VERSION from SOURCE`, or `ID already installed (VERSION)[; run update]` |
-  | `update ID`, `update all` | `ID updated A → B`, `ID up to date (A)` (`update all --dry-run`: `would be updated`) |
+  | `update ID`, `update all` | `ID updated A → B`, `ID up to date (A)` (`update all --dry-run`: `would be updated`); `update all` also `ID kept back at A (latest L: REASON)` and `ID skipped at A (dependency DEP is not installed)` |
   | `rollback` | `ID rolled back A → B` |
   | `enable`, `disable` | `ID enabled`, `ID disabled` |
   | `forget`, `restore` | `ID forgotten (clone kept; restore re-registers it)`, `ID restored VERSION` |
@@ -538,6 +539,19 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   enable it") when a dependency resolves only to a disabled package (they used to accept
   it; `update all`, `list` and `check` already counted it unsatisfied). Migration: enable
   the dependency first, or use `download` and `enable --force`.
+- `update all` follows the dnf model: a broken consumer (a dependency unsatisfied now,
+  for example after a forced uninstall) is skipped, outside the solve, and listed in
+  `unchanged` with `UnchangedReason::BrokenDependency { dependency, problem }` (CLI `ID
+  skipped at V (dependency DEP is not installed)`); the removed dependency is never
+  reinstalled for it and a broken state no longer fails the run with
+  `dependency_conflict`. A disabled consumer takes a disabled dependency as given.
+  `HeldBack` gains `reason` (`HeldBackReason`: `Constraints`, `MissingDependency {
+  dependency, requirement }`, `NoLongerReplaces { original }`; `Display` is the
+  message), and the CLI prints it: `ID kept back at V (latest L: REASON)` and `ID updated
+  A → B (latest L kept back: REASON)` (was `kept back by dependency constraints`). FFI:
+  `HeldBack` gains `reason` (`HeldBackReason` enum) and `message`, `Unchanged` gains
+  `message`, `UnchangedReason` gains `brokenDependency(dependency, problem)`. Migration:
+  read `unchanged[].reason` for skipped consumers and `keptBack[].reason`.
 - `enable ID` is strict: it refuses with `dependency_conflict` naming every dependency no
   active package satisfies (disabled: "DEP is disabled; enable it"; missing, replaced
   away or of another version: "DEP REQUIREMENT: problem") and never enables
@@ -1033,9 +1047,11 @@ gitpm update all                  # apply the compatible set atomically
 The library exposes `Manager::update_all_plan()` and `Manager::update_all()`;
 Swift/Kotlin bindings expose the same operations. Both return `UpdateAllPlan`
 with `updates`, new dependency `installs`, `kept_back` entries (selected and
-latest versions) and `unchanged` packages (`{id, version, reason}`; `reason` is
-`pinned`, `diverged` or `branch_gone` when the mode keeps a package), so every installed package
-is listed; `update_all` adds the `dist` report. Apply resolves again under the workspace lock; a preview is
+latest versions and a `reason`: `constraints`, `missing_dependency` or
+`no_longer_replaces`, whose `Display` is the message the CLI prints) and `unchanged`
+packages (`{id, version, reason}`; `reason` is `pinned`, `diverged` or `branch_gone`
+when the mode keeps a package, `broken_dependency` for a broken consumer), so every
+installed package is listed; `update_all` adds the `dist` report. Apply resolves again under the workspace lock; a preview is
 not a saved plan and upstream changes can change the result.
 
 The solver considers all installed packages together, using stable release tags
@@ -1049,8 +1065,32 @@ back. Existing single-package install/update behavior remains unchanged.
 
 No packages are removed or downgraded. Active fork replacements constrain consumers
 using each candidate's declared `replaces.version`; disabled flags are preserved
-and disabled packages cannot satisfy dependencies. If the existing state is broken
-and no compatible solution repairs it, resolution fails with an explanation.
+and disabled packages cannot satisfy dependencies of active packages (a disabled
+consumer takes them as given). Like dnf, `update all` updates what is healthy and never
+fails because of a broken state: a broken consumer (a dependency unsatisfied now, for
+example after `uninstall --force` of it) stays at its installed revision, outside the
+solve, and is reported in `unchanged` with reason `broken_dependency`; the removed
+dependency is never installed again for it, with or without a catalog (`list` and
+`check` keep reporting it unsatisfied; `update ID` of it still fails with
+`dependency_conflict` when the dependency cannot be installed). The broken-dependency
+reason takes precedence over `pinned`, `diverged` and `branch_gone`. A new dependency is
+installed enabled only when an active package pulls it; one only disabled packages pull
+is recorded disabled and takes disabled providers as given:
+
+```console
+$ gitpm uninstall acme/lib --force
+acme/lib uninstalled
+$ gitpm update all
+acme/app skipped at 1.0.0 (dependency acme/lib is not installed)
+acme/other updated 1.0.0 → 1.1.0
+acme/theme kept back at 1.0.0 (latest 2.0.0: dependency constraints)
+1 updates, 0 installs, 1 kept back.
+```
+
+A package whose newest release is not selected is kept back with a reason: `dependency
+constraints`; `needs DEP REQ, which is not installed and no catalog is configured`; or
+`no longer replaces ORIGINAL` (a replacing fork whose newest release or branch commit
+dropped `replaces`).
 Local changes, unpublished work and moved release tags block the operation.
 Each package follows its recorded mode: release-mode packages are solved over their
 release tags, a branch-mode package gets its branch HEAD as its only new candidate (its

@@ -318,6 +318,9 @@ pub enum UnchangedReason {
     Diverged { branch: String },
     /// Branch mode (`updateAll`): the origin no longer has the branch.
     BranchGone { branch: String },
+    /// A broken consumer (`updateAll`): `dependency` is not satisfied (`problem`, for
+    /// example `not installed` after a forced removal); it is never installed for it.
+    BrokenDependency { dependency: String, problem: String },
 }
 impl From<pm::UnchangedReason> for UnchangedReason {
     fn from(reason: pm::UnchangedReason) -> Self {
@@ -325,6 +328,46 @@ impl From<pm::UnchangedReason> for UnchangedReason {
             pm::UnchangedReason::Pinned { reference } => UnchangedReason::Pinned { reference },
             pm::UnchangedReason::Diverged { branch } => UnchangedReason::Diverged { branch },
             pm::UnchangedReason::BranchGone { branch } => UnchangedReason::BranchGone { branch },
+            pm::UnchangedReason::BrokenDependency {
+                dependency,
+                problem,
+            } => UnchangedReason::BrokenDependency {
+                dependency,
+                problem,
+            },
+        }
+    }
+}
+
+/// Why `updateAll` did not select the newest release of a package.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum HeldBackReason {
+    /// Other packages' requirements do not allow the newer release.
+    Constraints,
+    /// The newest release needs `dependency` `requirement`, which is not installed, and
+    /// no catalog is configured.
+    MissingDependency {
+        dependency: String,
+        requirement: String,
+    },
+    /// The newest release of a replacing package no longer declares that it replaces
+    /// `original`.
+    NoLongerReplaces { original: String },
+}
+impl From<pm::HeldBackReason> for HeldBackReason {
+    fn from(reason: pm::HeldBackReason) -> Self {
+        match reason {
+            pm::HeldBackReason::Constraints => HeldBackReason::Constraints,
+            pm::HeldBackReason::MissingDependency {
+                dependency,
+                requirement,
+            } => HeldBackReason::MissingDependency {
+                dependency,
+                requirement,
+            },
+            pm::HeldBackReason::NoLongerReplaces { original } => {
+                HeldBackReason::NoLongerReplaces { original }
+            }
         }
     }
 }
@@ -593,14 +636,21 @@ pub struct UpdateAllPlan {
 pub struct Unchanged {
     pub id: String,
     pub version: String,
-    /// Why it stays although it could move (pinned, diverged branch history).
+    /// Why it stays although it could move (pinned, diverged branch history, a broken
+    /// dependency).
     pub reason: Option<UnchangedReason>,
+    /// `reason` as the CLI prints it (`dependency acme/lib is not installed`).
+    pub message: Option<String>,
 }
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct HeldBack {
     pub id: String,
     pub selected: String,
     pub latest: String,
+    /// Why `latest` was not selected.
+    pub reason: HeldBackReason,
+    /// `reason` as the CLI prints it (`dependency constraints`, `no longer replaces …`).
+    pub message: String,
 }
 impl From<pm::UpdateAllPlan> for UpdateAllPlan {
     fn from(plan: pm::UpdateAllPlan) -> Self {
@@ -614,6 +664,8 @@ impl From<pm::UpdateAllPlan> for UpdateAllPlan {
                     id: p.id,
                     selected: p.selected,
                     latest: p.latest,
+                    message: p.reason.to_string(),
+                    reason: p.reason.into(),
                 })
                 .collect(),
             unchanged: plan
@@ -622,6 +674,7 @@ impl From<pm::UpdateAllPlan> for UpdateAllPlan {
                 .map(|u| Unchanged {
                     id: u.id,
                     version: u.version,
+                    message: u.reason.as_ref().map(ToString::to_string),
                     reason: u.reason.map(Into::into),
                 })
                 .collect(),
@@ -2190,14 +2243,31 @@ mod tests {
         let plan = UpdateAllPlan::from(pm::UpdateAllPlan {
             updates: vec![],
             installs: vec![],
-            kept_back: vec![],
-            unchanged: vec![pm::Unchanged {
-                id: "app/b".into(),
-                version: "2.0.0".into(),
-                reason: Some(pm::UnchangedReason::Diverged {
-                    branch: "main".into(),
-                }),
+            kept_back: vec![pm::HeldBack {
+                id: "me/fork".into(),
+                selected: "2.0.0".into(),
+                latest: "3.0.0".into(),
+                reason: pm::HeldBackReason::NoLongerReplaces {
+                    original: "vendor/base".into(),
+                },
             }],
+            unchanged: vec![
+                pm::Unchanged {
+                    id: "app/b".into(),
+                    version: "2.0.0".into(),
+                    reason: Some(pm::UnchangedReason::Diverged {
+                        branch: "main".into(),
+                    }),
+                },
+                pm::Unchanged {
+                    id: "app/c".into(),
+                    version: "1.0.0".into(),
+                    reason: Some(pm::UnchangedReason::BrokenDependency {
+                        dependency: "acme/lib".into(),
+                        problem: "not installed".into(),
+                    }),
+                },
+            ],
             skipped: skipped(),
             dist: report(),
         });
@@ -2213,6 +2283,33 @@ mod tests {
             Some(UnchangedReason::Diverged {
                 branch: "main".into()
             })
+        );
+        let held = &plan.kept_back[0];
+        assert_eq!(
+            (
+                held.id.as_str(),
+                held.selected.as_str(),
+                held.latest.as_str()
+            ),
+            ("me/fork", "2.0.0", "3.0.0")
+        );
+        assert_eq!(
+            held.reason,
+            HeldBackReason::NoLongerReplaces {
+                original: "vendor/base".into()
+            }
+        );
+        assert_eq!(held.message, "no longer replaces vendor/base");
+        assert_eq!(
+            plan.unchanged[1].reason,
+            Some(UnchangedReason::BrokenDependency {
+                dependency: "acme/lib".into(),
+                problem: "not installed".into()
+            })
+        );
+        assert_eq!(
+            plan.unchanged[1].message.as_deref(),
+            Some("dependency acme/lib is not installed")
         );
         check_report(&plan.dist);
         assert_eq!(plan.skipped[0].name, "me/x@0.5.0");

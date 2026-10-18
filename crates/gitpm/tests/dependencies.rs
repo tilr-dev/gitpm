@@ -294,9 +294,16 @@ fn disabled_packages_satisfy_no_dependency() {
             .contains("lib/core is disabled; enable it"),
         "{error}"
     );
-    // update all counts it unsatisfied as well.
-    let error = f.refuses("dependency_conflict", || m.update_all());
-    assert!(error.to_string().contains("lib/core"), "{error}");
+    // update all counts it unsatisfied as well: the consumer is skipped, not updated.
+    let plan = m.update_all().unwrap();
+    assert!(plan.updates.is_empty());
+    assert_eq!(
+        plan.unchanged[0].reason,
+        Some(gitpm::UnchangedReason::BrokenDependency {
+            dependency: "lib/core".into(),
+            problem: "lib/core is disabled".into(),
+        })
+    );
     // A disabled consumer may move: it does not become active.
     m.disable("app/a").unwrap();
     assert!(m.update("app/a").unwrap().changed);
@@ -975,9 +982,12 @@ fn update_all_backtracks_to_compatible_versions_and_keeps_current_fallback() {
     assert_eq!(
         plan.kept_back
             .iter()
-            .map(|p| p.id.as_str())
+            .map(|p| (p.id.as_str(), &p.reason))
             .collect::<Vec<_>>(),
-        ["app/a", "lib/core"]
+        [
+            ("app/a", &gitpm::HeldBackReason::Constraints),
+            ("lib/core", &gitpm::HeldBackReason::Constraints)
+        ]
     );
     // An unavailable new dependency makes this release unusable, not the whole upgrade.
     f.publish(&cat, "app/b", "2.0.0", &[("lib/missing", "^1")]);
@@ -1055,13 +1065,30 @@ fn update_all_reports_unsatisfiable_state_and_preserves_disabled_flags() {
     let m = f.open(&cat);
     m.install_from_catalog("app/a", None).unwrap();
     m.set_enabled_with("lib/core", false, true).unwrap();
-    let error = f.refuses("dependency_conflict", || m.update_all());
-    assert!(error.to_string().contains("lib/core"));
+    // The consumer of a disabled dependency is broken: skipped, not a failure.
+    f.publish(&cat, "lib/core", "1.1.0", &[]);
+    let plan = m.update_all().unwrap();
+    assert_eq!(plan.updates[0].id, "lib/core");
+    let skipped = plan.unchanged.iter().find(|u| u.id == "app/a").unwrap();
+    assert_eq!(
+        skipped.reason,
+        Some(gitpm::UnchangedReason::BrokenDependency {
+            dependency: "lib/core".into(),
+            problem: "lib/core is disabled".into(),
+        })
+    );
+    assert!(!plugin(&m, "lib/core").enabled);
     m.enable("lib/core").unwrap();
     m.disable("app/a").unwrap();
     f.publish(&cat, "app/a", "2.0.0", &[("lib/core", "^1")]);
     m.update_all().unwrap();
     assert!(!plugin(&m, "app/a").enabled);
+    // An inactive consumer takes a disabled dependency as given (as `update ID` does).
+    m.set_enabled_with("lib/core", false, true).unwrap();
+    f.publish(&cat, "app/a", "3.0.0", &[("lib/core", "^1")]);
+    let plan = m.update_all().unwrap();
+    assert_eq!(plan.updates[0].to.version, "3.0.0");
+    assert!(plan.unchanged.iter().all(|u| u.reason.is_none()));
 }
 
 #[test]
@@ -1080,7 +1107,19 @@ fn update_all_resolves_replacement_versions_together_with_consumers() {
     // A newer fork that drops its declaration is not an eligible replacement.
     f.release_manifest(&fork, json!({"id":"mine/base", "version":"3.0.0"}));
     f.publish(&cat, "app/a", "2.0.0", &[("vendor/base", "^2")]);
-    m.update_all().unwrap();
+    let plan = m.update_all().unwrap();
+    let held = plan.kept_back.iter().find(|h| h.id == "mine/base").unwrap();
+    assert_eq!(
+        (held.selected.as_str(), held.latest.as_str(), &held.reason),
+        (
+            "2.0.0",
+            "3.0.0",
+            &gitpm::HeldBackReason::NoLongerReplaces {
+                original: "vendor/base".into()
+            }
+        )
+    );
+    assert_eq!(held.reason.to_string(), "no longer replaces vendor/base");
     assert_eq!(plugin(&m, "mine/base").current.version, "2.0.0");
     assert_eq!(plugin(&m, "app/a").current.version, "2.0.0");
     assert_eq!(plugin(&m, "vendor/base").current.version, "1.0.0");
@@ -1251,4 +1290,171 @@ fn update_all_plan_lists_unchanged_packages() {
     let again = m.update_all().unwrap();
     assert_eq!(again.unchanged.len(), 2);
     assert!(again.updates.is_empty());
+}
+
+/// dnf model: a consumer whose dependency was removed with force is skipped with its
+/// reason, the others are updated, and the removed dependency is never installed again,
+/// with or without a catalog. `list` and `check` keep reporting it unsatisfied.
+#[test]
+fn update_all_skips_broken_consumers_and_never_reinstalls() {
+    let f = Fixture::new();
+    let cat = f.catalog("catalog");
+    f.publish(&cat, "lib/core", "1.0.0", &[]);
+    f.publish(&cat, "app/a", "1.0.0", &[("lib/core", "^1")]);
+    f.publish(&cat, "other/x", "1.0.0", &[]);
+    let m = f.open(&cat);
+    m.install_from_catalog("app/a", None).unwrap();
+    m.install_from_catalog("other/x", None).unwrap();
+    m.uninstall_with("lib/core", true, true).unwrap();
+    f.publish(&cat, "other/x", "1.1.0", &[]);
+    f.publish(&cat, "app/a", "1.1.0", &[("lib/core", "^1")]);
+    let broken = gitpm::Unchanged {
+        id: "app/a".into(),
+        version: "1.0.0".into(),
+        reason: Some(gitpm::UnchangedReason::BrokenDependency {
+            dependency: "lib/core".into(),
+            problem: "not installed".into(),
+        }),
+    };
+    let assert_skipped = |plan: &gitpm::UpdateAllPlan, other: &str| {
+        assert_eq!(
+            plan.updates
+                .iter()
+                .map(|c| (c.id.as_str(), c.to.version.as_str()))
+                .collect::<Vec<_>>(),
+            [("other/x", other)]
+        );
+        assert!(plan.installs.is_empty() && plan.kept_back.is_empty());
+        assert_eq!(plan.unchanged, std::slice::from_ref(&broken));
+        assert_eq!(
+            broken.reason.as_ref().unwrap().to_string(),
+            "dependency lib/core is not installed"
+        );
+    };
+    // With a catalog that has lib/core.
+    assert_skipped(&m.update_all_plan().unwrap(), "1.1.0");
+    assert_skipped(&m.update_all().unwrap(), "1.1.0");
+    assert!(!ids(&m).contains(&"lib/core".to_string()));
+    assert!(!f.path("workspace/dist/lib/core").exists());
+    assert_eq!(provider(&m, "app/a", "lib/core"), (None, false));
+    let report = gitpm::check::check(&f.path("workspace"), Some(&cat)).unwrap();
+    assert!(
+        report
+            .unsatisfied
+            .iter()
+            .any(|u| u.package == "app/a" && u.dependency == "lib/core"),
+        "{:?}",
+        report.unsatisfied
+    );
+    // Without a catalog the run does not fail either.
+    drop(m);
+    let m = Manager::open_with(f.path("workspace"), Options::default()).unwrap();
+    f.publish(&cat, "other/x", "1.2.0", &[]);
+    assert_skipped(&m.update_all().unwrap(), "1.2.0");
+    assert!(!ids(&m).contains(&"lib/core".to_string()));
+    // A single update of the broken consumer still fails.
+    f.refuses("dependency_conflict", || m.update("app/a"));
+}
+
+/// Without a catalog, a newer release that needs a package that is not installed is kept
+/// back with that reason, not a failure.
+#[test]
+fn update_all_keeps_back_a_release_needing_a_missing_dependency_without_a_catalog() {
+    let f = Fixture::new();
+    let a = f.author("app/a");
+    f.release(&a, "app/a", "1.0.0", &[]);
+    let m = Manager::open(f.path("workspace")).unwrap();
+    m.install(a.to_str().unwrap()).unwrap();
+    f.release(&a, "app/a", "1.1.0", &[]);
+    f.release(&a, "app/a", "2.0.0", &[("lib/new", "^1")]);
+    let plan = m.update_all().unwrap();
+    assert_eq!(plan.updates[0].to.version, "1.1.0");
+    let held = &plan.kept_back[0];
+    assert_eq!(
+        (
+            held.id.as_str(),
+            held.selected.as_str(),
+            held.latest.as_str()
+        ),
+        ("app/a", "1.1.0", "2.0.0")
+    );
+    assert_eq!(
+        held.reason,
+        gitpm::HeldBackReason::MissingDependency {
+            dependency: "lib/new".into(),
+            requirement: "^1".into(),
+        }
+    );
+    assert_eq!(
+        held.reason.to_string(),
+        "needs lib/new ^1, which is not installed and no catalog is configured"
+    );
+}
+
+/// Dependencies `update all` pulls for a disabled consumer are recorded disabled, and a
+/// new dependency only a disabled consumer pulls takes disabled providers as given (as
+/// `update ID` of a disabled package does).
+#[test]
+fn update_all_pulls_disabled_dependencies_for_a_disabled_consumer() {
+    let f = Fixture::new();
+    let cat = f.catalog("catalog");
+    f.publish(&cat, "lib/core", "1.0.0", &[]);
+    f.publish(&cat, "app/a", "1.0.0", &[("lib/core", "^1")]);
+    let m = f.open(&cat);
+    m.install_from_catalog("app/a", None).unwrap();
+    m.disable("app/a").unwrap();
+    f.publish(&cat, "lib/extra", "1.0.0", &[]);
+    f.publish(
+        &cat,
+        "app/a",
+        "1.1.0",
+        &[("lib/core", "^1"), ("lib/extra", "^1")],
+    );
+    let plan = m.update_all().unwrap();
+    assert_eq!(plan.updates[0].to.version, "1.1.0");
+    assert_eq!(plan.installs[0].id, "lib/extra");
+    assert!(!plan.installs[0].enabled && !plugin(&m, "lib/extra").enabled);
+    assert!(!f.path("workspace/dist/lib/extra").exists());
+    // A new lib/mid needs the disabled lib/core: app/a still moves, lib/mid disabled.
+    m.set_enabled_with("lib/core", false, true).unwrap();
+    f.publish(&cat, "lib/mid", "1.0.0", &[("lib/core", "^1")]);
+    f.publish(
+        &cat,
+        "app/a",
+        "1.2.0",
+        &[("lib/core", "^1"), ("lib/extra", "^1"), ("lib/mid", "^1")],
+    );
+    let plan = m.update_all().unwrap();
+    assert_eq!(plan.updates[0].to.version, "1.2.0");
+    assert!(plan.kept_back.is_empty(), "{:?}", plan.kept_back);
+    assert_eq!(plan.installs[0].id, "lib/mid");
+    assert!(!plugin(&m, "lib/mid").enabled);
+    assert!(!plugin(&m, "app/a").enabled);
+}
+
+/// A new dependency an active consumer pulls is enabled, and is not satisfied by a
+/// disabled provider.
+#[test]
+fn update_all_enables_dependencies_of_active_consumers_only() {
+    let f = Fixture::new();
+    let cat = f.catalog("catalog");
+    f.publish(&cat, "lib/core", "1.0.0", &[]);
+    f.publish(&cat, "app/a", "1.0.0", &[]);
+    f.publish(&cat, "app/b", "1.0.0", &[]);
+    let m = f.open(&cat);
+    m.install_from_catalog("app/a", None).unwrap();
+    m.install_from_catalog("app/b", None).unwrap();
+    m.install_from_catalog("lib/core", None).unwrap();
+    m.disable("lib/core").unwrap();
+    f.publish(&cat, "lib/mid", "1.0.0", &[("lib/core", "^1")]);
+    f.publish(&cat, "lib/new", "1.0.0", &[]);
+    f.publish(&cat, "app/a", "1.1.0", &[("lib/new", "^1")]);
+    f.publish(&cat, "app/b", "1.1.0", &[("lib/mid", "^1")]);
+    let plan = m.update_all().unwrap();
+    assert!(plugin(&m, "lib/new").enabled);
+    assert_eq!(plugin(&m, "app/a").current.version, "1.1.0");
+    // app/b is active: lib/mid would be active next to the disabled lib/core.
+    assert_eq!(plugin(&m, "app/b").current.version, "1.0.0");
+    assert!(plan.kept_back.iter().any(|h| h.id == "app/b"));
+    assert!(!ids(&m).contains(&"lib/mid".to_string()));
 }

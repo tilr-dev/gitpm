@@ -334,7 +334,7 @@ fn print_update_all(plan: &gitpm::UpdateAllPlan, dry_run: bool) {
                         "updated"
                     }
                 ),
-                held.map(|h| format!(" (latest {} kept back by dependency constraints)", h.latest))
+                held.map(|h| format!(" (latest {} kept back: {})", h.latest, h.reason))
                     .unwrap_or_default()
             ),
         ));
@@ -344,8 +344,8 @@ fn print_update_all(plan: &gitpm::UpdateAllPlan, dry_run: bool) {
             lines.push((
                 &held.id,
                 format!(
-                    "{} kept back at {} (latest {}: dependency constraints)",
-                    held.id, held.selected, held.latest
+                    "{} kept back at {} (latest {}: {})",
+                    held.id, held.selected, held.latest, held.reason
                 ),
             ));
         }
@@ -433,18 +433,21 @@ fn change_line(change: &gitpm::RevisionChange, verb: &str) -> String {
     }
 }
 /// `ID up to date (V)`, or why the package stayed: `ID pinned at V (REF)`, `ID kept at V
-/// (history of BRANCH diverged)`.
+/// (history of BRANCH diverged)`, `ID skipped at V (dependency DEP is not installed)`.
 fn unchanged_line(id: &str, version: &str, reason: Option<&gitpm::UnchangedReason>) -> String {
     match reason {
         None => format!("{id} up to date ({version})"),
         Some(gitpm::UnchangedReason::Pinned { reference }) => {
             format!("{id} pinned at {version} ({reference})")
         }
-        Some(gitpm::UnchangedReason::Diverged { branch }) => {
-            format!("{id} kept at {version} (history of {branch} diverged)")
+        Some(reason @ gitpm::UnchangedReason::Diverged { .. }) => {
+            format!("{id} kept at {version} ({reason})")
         }
-        Some(gitpm::UnchangedReason::BranchGone { branch }) => {
-            format!("{id} kept at {version} (branch {branch} is gone)")
+        Some(reason @ gitpm::UnchangedReason::BranchGone { .. }) => {
+            format!("{id} kept at {version} ({reason})")
+        }
+        Some(reason @ gitpm::UnchangedReason::BrokenDependency { .. }) => {
+            format!("{id} skipped at {version} ({reason})")
         }
     }
 }

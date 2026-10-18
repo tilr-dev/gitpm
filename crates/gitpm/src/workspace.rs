@@ -24,8 +24,8 @@ use crate::{
 };
 use serde::Serialize;
 use std::{
-    collections::BTreeMap,
-    fs,
+    collections::{BTreeMap, BTreeSet},
+    fmt, fs,
     path::{Path, PathBuf},
     sync::{Mutex, MutexGuard},
 };
@@ -111,6 +111,66 @@ pub enum UnchangedReason {
     /// Branch mode: the origin no longer has `branch` (`update all` only; `update ID`
     /// refuses with `version_conflict`).
     BranchGone { branch: String },
+    /// A broken consumer: its direct dependency `dependency` is not satisfied now
+    /// (`problem` as `list` reports it, for example `not installed` after a forced
+    /// removal). `update all` leaves it out of its solve and never installs the
+    /// dependency for it (`update all` only; `update ID` refuses with
+    /// `dependency_conflict`).
+    BrokenDependency { dependency: String, problem: String },
+}
+impl fmt::Display for UnchangedReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            UnchangedReason::Pinned { reference } => write!(f, "pinned to {reference}"),
+            UnchangedReason::Diverged { branch } => write!(f, "history of {branch} diverged"),
+            UnchangedReason::BranchGone { branch } => write!(f, "branch {branch} is gone"),
+            UnchangedReason::BrokenDependency {
+                dependency,
+                problem,
+            } if problem == deps::NOT_INSTALLED => {
+                write!(f, "dependency {dependency} is not installed")
+            }
+            UnchangedReason::BrokenDependency {
+                dependency,
+                problem,
+            } => write!(f, "dependency {dependency}: {problem}"),
+        }
+    }
+}
+/// Why `update all` selected an older release than the newest one of a package (see
+/// [`HeldBack`]). [`fmt::Display`] gives the message the CLI prints.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum HeldBackReason {
+    /// The requirements of other packages (or of its own newer releases) do not allow
+    /// the newer release.
+    Constraints,
+    /// The newest release needs `dependency` `requirement`, which is not installed, and
+    /// no catalog is configured to install it from.
+    MissingDependency {
+        dependency: String,
+        requirement: String,
+    },
+    /// The package replaces `original` and its newest release no longer declares
+    /// `replaces` for it.
+    NoLongerReplaces { original: String },
+}
+impl fmt::Display for HeldBackReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            HeldBackReason::Constraints => f.write_str("dependency constraints"),
+            HeldBackReason::MissingDependency {
+                dependency,
+                requirement,
+            } => write!(
+                f,
+                "needs {dependency} {requirement}, which is not installed and no catalog is configured"
+            ),
+            HeldBackReason::NoLongerReplaces { original } => {
+                write!(f, "no longer replaces {original}")
+            }
+        }
+    }
 }
 
 /// Result of an install.
@@ -201,6 +261,55 @@ pub struct RevisionChange {
     /// carries the report of its one transaction).
     pub dist: DistSync,
 }
+/// The original `id` replaces now when `manifest` (a newer revision of `id`) no longer
+/// declares that it replaces it.
+fn no_longer_replaces(state: &State, id: &str, manifest: &Manifest) -> Option<String> {
+    state
+        .replacements
+        .iter()
+        .find(|(original, fork)| {
+            *fork == id
+                && manifest
+                    .replaces
+                    .as_ref()
+                    .is_none_or(|r| r.id != **original)
+        })
+        .map(|(original, _)| original.clone())
+}
+/// The reason `update all` reports when it does not select `newest` of a package: the
+/// newest release no longer replaces the original it replaces now, or (without a catalog)
+/// it needs a dependency that is not installed. `None` means dependency constraints.
+fn held_back_reason(
+    state: &State,
+    catalog: Option<&str>,
+    newest: &semver::Version,
+    versions: &BTreeMap<semver::Version, catalog::Release>,
+    no_longer: Option<(semver::Version, String)>,
+) -> Option<HeldBackReason> {
+    if let Some((version, original)) = no_longer
+        && version == *newest
+    {
+        return Some(HeldBackReason::NoLongerReplaces { original });
+    }
+    if catalog.is_some() {
+        return None;
+    }
+    let release = versions.get(newest)?;
+    release
+        .manifest
+        .dependencies
+        .iter()
+        .find(|(dependency, _)| {
+            let provider = state.replacements.get(*dependency).unwrap_or(dependency);
+            !state.packages.contains_key(provider)
+        })
+        .map(
+            |(dependency, requirement)| HeldBackReason::MissingDependency {
+                dependency: dependency.clone(),
+                requirement: requirement.clone(),
+            },
+        )
+}
 /// `ID VERSION: plugin.json KEY must be …; ignored` for each wrong-typed metadata key.
 /// Installing is lenient about metadata (only authoring refuses it).
 pub(crate) fn metadata_warnings(m: &Manifest) -> Vec<String> {
@@ -243,6 +352,8 @@ pub struct HeldBack {
     pub id: String,
     pub selected: String,
     pub latest: String,
+    /// Why `latest` was not selected.
+    pub reason: HeldBackReason,
 }
 
 /// What [`Manager::sync_dist`] changes (or would change) so that `dist/` holds exactly
@@ -1002,6 +1113,27 @@ impl Manager {
         let mut repos: BTreeMap<String, PathBuf> = BTreeMap::new();
         // Packages that stay by their mode: pinned, or a diverged branch history.
         let mut reasons: BTreeMap<String, UnchangedReason> = BTreeMap::new();
+        // Broken consumers (after a forced removal, say) stay at their installed revision
+        // and their unsatisfied dependencies stay out of the solve, so a removed
+        // dependency is never installed again for them and never fails the run.
+        let mut broken: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for id in state.packages.keys() {
+            let rows = deps::broken_dependencies(state, id);
+            if let Some(first) = rows.first() {
+                reasons.insert(
+                    id.clone(),
+                    UnchangedReason::BrokenDependency {
+                        dependency: first.id.clone(),
+                        problem: first.problem.clone().unwrap_or_default(),
+                    },
+                );
+                broken.insert(id.clone(), rows.into_iter().map(|row| row.id).collect());
+            }
+        }
+        // Why a package whose newest release is not selected is kept back, when it is
+        // more than dependency constraints.
+        let mut held: BTreeMap<String, HeldBackReason> = BTreeMap::new();
+        let catalog = self.options.catalog.as_deref();
         // Broken release tags passed over, for every installed package.
         let mut skipped: Vec<releases::SkippedTag> = Vec::new();
         let installed_versions: Vec<(String, String)> = state
@@ -1081,6 +1213,14 @@ impl Manager {
                         path: installed.path.clone(),
                     },
                 );
+                if broken.contains_key(id) {
+                    latest.insert(id.clone(), newest.to_string());
+                    candidates.insert(id.clone(), versions);
+                    continue;
+                }
+                // The newest release dropped because it no longer declares that it
+                // replaces the original this package replaces now.
+                let mut no_longer: Option<(semver::Version, String)> = None;
                 // Only release mode reads release tags: a pinned package keeps its
                 // revision, a branch-mode package gets its branch HEAD as only candidate.
                 match &installed.mode {
@@ -1135,18 +1275,16 @@ impl Manager {
                                     Err(error) => return Err(error),
                                 };
                                 let version = deps::version(&found.manifest.version)?;
-                                let still_replaces =
-                                    state.replacements.iter().all(|(original, fork)| {
-                                        fork != id
-                                            || found
-                                                .manifest
-                                                .replaces
-                                                .as_ref()
-                                                .is_some_and(|r| r.id == *original)
-                                    });
+                                let dropped = no_longer_replaces(state, id, &found.manifest);
+                                if let Some(original) = dropped.clone()
+                                    && version > current
+                                {
+                                    newest = newest.max(version.clone());
+                                    no_longer = Some((version.clone(), original));
+                                }
                                 // The branch commit is the identity: at the installed
                                 // version it takes the installed revision's place.
-                                if version >= current && still_replaces {
+                                if version >= current && dropped.is_none() {
                                     deps::validate(&found.manifest)?;
                                     newest = newest.max(version.clone());
                                     versions.insert(
@@ -1163,6 +1301,11 @@ impl Manager {
                                     );
                                 }
                             }
+                        }
+                        if let Some(reason) =
+                            held_back_reason(state, catalog, &newest, &versions, no_longer)
+                        {
+                            held.insert(id.clone(), reason);
                         }
                         latest.insert(id.clone(), newest.to_string());
                         candidates.insert(id.clone(), versions);
@@ -1183,14 +1326,10 @@ impl Manager {
                     );
                     newest = newest.max(version.clone());
                     // An active replacement must continue providing the same original ID.
-                    if state.replacements.iter().any(|(original, fork)| {
-                        fork == id
-                            && tag
-                                .manifest
-                                .replaces
-                                .as_ref()
-                                .is_none_or(|r| r.id != *original)
-                    }) {
+                    if let Some(original) = no_longer_replaces(state, id, &tag.manifest) {
+                        if no_longer.as_ref().is_none_or(|(v, _)| *v < version) {
+                            no_longer = Some((version, original));
+                        }
                         continue;
                     }
                     deps::validate(&tag.manifest)?;
@@ -1207,12 +1346,20 @@ impl Manager {
                         },
                     );
                 }
+                if let Some(reason) =
+                    held_back_reason(state, catalog, &newest, &versions, no_longer)
+                {
+                    held.insert(id.clone(), reason);
+                }
                 latest.insert(id.clone(), newest.to_string());
                 candidates.insert(id.clone(), versions);
             }
             repos.insert(relative.clone(), repo);
         }
-        let selected = crate::upgrade::solve(state, candidates, self.options.catalog.as_deref())?;
+        let crate::upgrade::Solution {
+            selected,
+            active_new,
+        } = crate::upgrade::solve(state, &broken, candidates, catalog)?;
         let mut plan = UpdateAllPlan::default();
         for (number, (id, release)) in selected.iter().enumerate() {
             let m = &release.manifest;
@@ -1222,6 +1369,7 @@ impl Manager {
                         id: id.clone(),
                         selected: m.version.clone(),
                         latest: latest[id].clone(),
+                        reason: held.remove(id).unwrap_or(HeldBackReason::Constraints),
                     });
                 }
                 if release.commit == installed.current.commit {
@@ -1276,7 +1424,8 @@ impl Manager {
                     cloned,
                     release.source.clone(),
                     Some(origin),
-                    true,
+                    // Enabled only when an active package pulls it (as `update ID`).
+                    active_new.contains(id),
                 )?);
             }
         }
