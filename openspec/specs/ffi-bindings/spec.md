@@ -14,7 +14,7 @@ The FFI crate SHALL generate the Swift module `Gitpm` over the C module `GitpmFF
 - **THEN** it can `import Gitpm` and call `PackageManager.open(root:options:)`
 
 ### Requirement: Manager surface
-`PackageManager` SHALL be opened with `open(root, ManagerOptions)` and expose every workspace operation that takes the lock (catalog reads, install, updates, rollback, enable/disable, forget/restore, uninstall, fork, replace, switch back, sync-dist, with their plans); free functions SHALL be `list`, `check`, `readState`, `catalogLinks`, `authCheck`, `browseCatalog`, `catalogRelease`, `describeLostWork`. Author and catalog-writing commands are not exposed.
+`PackageManager` SHALL be opened with `open(root, ManagerOptions)` and expose every workspace operation that takes the lock (catalog reads, install, download, updates, rollback, enable/disable, forget/restore, uninstall, fork, replace, switch back, sync-dist, with their plans); free functions SHALL be `list`, `check`, `readState`, `catalogLinks`, `authCheck`, `browseCatalog`, `catalogRelease`, `describeLostWork`. Author and catalog-writing commands are not exposed.
 
 #### Scenario: Which calls open the workspace
 - **WHEN** a host calls a `PackageManager` method, or one of the free functions `list`, `check`, `readState`
@@ -25,8 +25,8 @@ The FFI crate SHALL generate the Swift module `Gitpm` over the C module `GitpmFF
 - **THEN** `PackageManager.browseCatalog`/`catalogRelease` read the catalog of `ManagerOptions.catalog`, and the free functions `browseCatalog`, `catalogRelease` and `catalogLinks` take an explicit location without opening a workspace
 
 #### Scenario: Install and update targets
-- **WHEN** a host calls `install(source, target, package)` or `update(id, target)`
-- **THEN** `install` takes the `InstallTarget` enum `Release`, `Ref(reference)` or `Dev`, and `update` the `Target` enum with the same cases plus `Recorded` (following the recorded mode); the former `Channel` enum is gone
+- **WHEN** a host calls `install(source, target, package, force)`, `download(source, target, package)` or `update(id, target)`
+- **THEN** `install` and `download` take the `InstallTarget` enum `Release`, `Ref(reference)` or `Dev`, and `update` the `Target` enum with the same cases plus `Recorded` (following the recorded mode); the former `Channel` enum is gone
 
 #### Scenario: Round trip
 - **WHEN** a host opens an empty workspace through the FFI and lists it
@@ -35,7 +35,7 @@ The FFI crate SHALL generate the Swift module `Gitpm` over the C module `GitpmFF
 
 #### Scenario: Method names
 - **WHEN** Swift bindings are generated
-- **THEN** `PackageManager` has `install` (optional `package`), `installFromCatalog`, `update`, `updateAllPlan`, `updateAll`, `rollback`, `enable`, `disable(force)`, `forget(force)`, `restore`, `uninstallPlan`, `uninstall(confirm, force)`, `fork`, `forkAndReplace`, `forkPackages`, `forkPackagesAndReplace`, `forkReplaceResume`, `replacePlan`, `replace`, `switchBackPlan`, `switchBack`, `syncDistPlan` and `syncDist`; `check` is a free function, not a method
+- **THEN** `PackageManager` has `install` (optional `package`, `force`), `installFromCatalog(force)`, `download`, `downloadFromCatalog`, `update`, `updateAllPlan`, `updateAll`, `rollback`, `enable(force)`, `disable(force)`, `forget(force)`, `restore`, `uninstallPlan`, `uninstall(confirm, force)`, `fork`, `forkAndReplace`, `forkPackages`, `forkPackagesAndReplace`, `forkReplaceResume`, `replacePlan`, `replace`, `switchBackPlan`, `switchBack`, `syncDistPlan` and `syncDist`; `check` is a free function, not a method
 
 #### Scenario: Catalog generation is not exposed
 - **WHEN** a host looks for `catalog-update`, `register`, `init` or `commit` in the bindings

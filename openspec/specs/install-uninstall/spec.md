@@ -17,6 +17,14 @@ Defines how packages enter and leave a workspace: installing from a Git source o
 - **WHEN** the source has no release tags
 - **THEN** install fails with `no_releases` and the workspace is unchanged
 
+#### Scenario: Install enables pulled dependencies
+- **WHEN** `install-catalog app` pulls the missing `lib` from the catalog
+- **THEN** both are recorded `enabled: true` and deployed in the same transaction: an install is a download plus enabling the package and the dependencies it downloaded
+
+#### Scenario: Forced install next to a disabled dependency
+- **WHEN** `lib` is installed but disabled and the user runs `install ./app --force` (`Manager::install_package_with` with `force`; `install-catalog app --force`, `install_from_catalog_with`), where `app` requires `lib ^1`
+- **THEN** `app` is recorded enabled and deployed although its dependency is not active (dependencies, "enable needs active dependencies"), `lib` stays disabled, missing dependencies are installed as usual, and `list` reports `app`'s dependency on `lib` unsatisfied (`forced_install_and_install_over_a_download`)
+
 ### Requirement: Install an explicit ref or a branch
 `install SOURCE --ref REF` SHALL resolve REF against the origin (tag, origin branch, commit) and record the mode (workspace-layout): a tag or commit pins the package, a branch makes it follow that branch; `--dev` SHALL follow the origin's default branch. Without either, the newest release is installed in release mode. A ref starting with `-` is refused as in git-safety. Verified by `workspace::install_records_the_ref_mode` and `model::resolve_ref_refuses_option_like_refs_and_resolves_commits`.
 
@@ -37,7 +45,7 @@ Defines how packages enter and leave a workspace: installing from a Git source o
 - **THEN** the HEAD of `origin/main` is installed and the record says branch mode `main`
 
 ### Requirement: Install is idempotent for the same source
-Installing an installed package again from the same source SHALL change nothing and succeed, reporting `ID already installed (VERSION)` (with a mode: `(VERSION, pinned at REF)`), with `; run update` when the source resolves to another revision or mode (`; requested --ref REF — run update ID --ref REF`). "Same source" SHALL mean the same string as recorded after canonicalizing a local path. `InstallResult` SHALL carry `already_installed`, `available`, the recorded `mode` and `requested_mode`.
+Installing an installed and enabled package again from the same source SHALL change nothing and succeed, reporting `ID already installed (VERSION)` (with a mode: `(VERSION, pinned at REF)`), with `; run update` when the source resolves to another revision or mode (`; requested --ref REF — run update ID --ref REF`). `InstallResult` SHALL carry `already_installed`, `available`, the recorded `mode`, `requested_mode` and `enabled`.
 
 #### Scenario: Repeat install
 - **WHEN** `acme/greeter` 0.2.0 is installed from `./greeter` and the user runs `gitpm install ./greeter`
@@ -47,6 +55,15 @@ Installing an installed package again from the same source SHALL change nothing 
 #### Scenario: Newer release available
 - **WHEN** the source has a newer release than the installed one
 - **THEN** it prints `acme/greeter already installed (0.2.0); run update` and changes nothing
+
+#### Scenario: Same source
+- **WHEN** the recorded source is `/…/greeter` and the user installs `./greeter`
+- **THEN** it is the same source: "same source" means the same string as recorded after canonicalizing a local path
+
+#### Scenario: Install over a download
+- **WHEN** `app` was downloaded from `./app` and the user runs `install ./app`
+- **THEN** it fails with `dependency_conflict` while a dependency is not active (dependencies, "enable needs active dependencies"); with every dependency active, or with `--force`, `app` is enabled and deployed at its recorded revision and mode, and the line is `installed app@V from SOURCE`; verified by `forced_install_and_install_over_a_download`
+- **AND** the result has `enabled` true and `already_installed` false, `available` and `requested_mode` as for an installed package, and a warning when the requested mode differs from the recorded one (`install_over_a_download_reports_the_requested_mode`)
 
 ### Requirement: Same ID from another source is refused
 Installing an ID that is installed from a different source (including a `file://` URL against a plain path, or a URL with and without `.git`) SHALL fail with `already_installed`. Installing an ID that is forgotten but retained SHALL be refused with `already_installed` until it is restored or uninstalled. Verified by `forgotten_repository_blocks_reinstall_until_restored`.
@@ -139,3 +156,14 @@ Uninstall SHALL delete only what the workspace owns (the clone inside the worksp
 #### Scenario: Uninstalling a fork
 - **WHEN** `me/hello` was installed from `./hello-fork` and is uninstalled
 - **THEN** `./hello-fork` still exists unchanged
+
+### Requirement: Download without enabling
+`download SOURCE [ID] [--package ID] [--ref REF | --dev]` (`Manager::download`) and `download-catalog ID [--version V]` (`Manager::download_from_catalog`) SHALL clone, verify and record a package exactly as `install`/`install-catalog` do, but with `enabled: false` and nothing deployed; missing dependencies SHALL be downloaded the same way, disabled. The CLI prints `downloaded ID@V from SOURCE (disabled)` per package. Verified by `workspace::download_records_disabled_packages_and_dependencies`.
+
+#### Scenario: Download with a missing dependency
+- **WHEN** `app` requires `lib ^1`, only the catalog has `lib`, and the user runs `gitpm download ./app`
+- **THEN** both are recorded with `enabled: false`, neither `dist/app/` nor `dist/lib/` exists, and the output has one `downloaded …` line per package
+
+#### Scenario: Enable after download
+- **WHEN** the user then runs `enable app`
+- **THEN** it fails with `dependency_conflict` naming `lib` as disabled (dependencies, "enable needs active dependencies"), while `enable lib` followed by `enable app` succeeds

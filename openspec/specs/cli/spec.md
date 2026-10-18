@@ -7,15 +7,19 @@ Defines the `gitpm` command-line client (crate `gitpm-cli`): commands, settings 
 ## Requirements
 
 ### Requirement: Command set
-The CLI SHALL offer exactly the commands of its full usage (`gitpm --help`), each specified in the named capability: `init`, `commit`, `remote` (authoring); `fork`, `replace` (fork-replacement); `auth check` (git-safety); `info`, `catalog-update`, `register`, `check` (catalog); `catalog` (below); `install`, `install-catalog`, `forget`, `restore`, `uninstall` (install-uninstall); `enable`, `disable`, `sync-dist` (dist); `update`, `rollback` (updates); `list` (below), and no aliases.
+The CLI SHALL offer exactly the commands of its full usage (`gitpm --help`), each specified in the capability named in the scenario "Command list", and no aliases.
+
+#### Scenario: Command list
+- **WHEN** the user reads `gitpm --help`
+- **THEN** the commands are `init`, `commit`, `remote` (authoring); `fork`, `replace` (fork-replacement); `auth check` (git-safety); `info`, `catalog-update`, `register`, `check` (catalog); `catalog` (below); `install`, `install-catalog`, `download`, `download-catalog`, `forget`, `restore`, `uninstall` (install-uninstall); `enable`, `disable`, `sync-dist` (dist); `update`, `rollback` (updates); `list` (below)
 
 #### Scenario: Catalog links
 - **WHEN** the user runs `gitpm --catalog ./catalog catalog`
 - **THEN** it prints the JSON links of the catalog root level ("JSON output for state and catalog")
 
 #### Scenario: Install forms
-- **WHEN** the user runs `install SOURCE [ID] [--package ID] [--ref REF | --dev]`
-- **THEN** the positional `ID` and `--package` select a package as in multi-package-repos, and `--ref`/`--dev` behave as in install-uninstall
+- **WHEN** the user runs `install SOURCE [ID] [--package ID] [--ref REF | --dev] [--force]`, or `download` with the same arguments except `--force`
+- **THEN** the positional `ID` and `--package` select a package as in multi-package-repos, and `--ref`/`--dev`/`--force` behave as in install-uninstall
 
 #### Scenario: Update forms
 - **WHEN** the user runs `update ID [--ref REF | --dev | --release]` or `update all [--dry-run]`
@@ -62,18 +66,18 @@ Before calling the library the CLI SHALL refuse only syntax: unknown or repeated
 #### Scenario: Ref, dev and release
 - **WHEN** the user runs `gitpm install SOURCE --ref x --dev`, `gitpm update ID --dev --release`, or passes `--channel`
 - **THEN** it fails with `--dev conflicts with --ref` (or `--release conflicts with --dev`), or `unknown option: --channel; use --help`, exit status 1, and creates nothing
-- **AND** `--version` outside `install-catalog`/`fork --replace` is refused by the CLI as a misplaced option
+- **AND** `--version` outside `install-catalog`/`download-catalog`/`fork --replace` is refused by the CLI as a misplaced option
 
 #### Scenario: Misplaced flag
 - **WHEN** the user runs `gitpm list --force`
-- **THEN** it fails with `--force is only valid with uninstall/disable/forget/replace/fork --replace`
+- **THEN** it fails with `--force is only valid with uninstall/disable/enable/install/install-catalog/forget/replace/fork --replace`
 
 #### Scenario: Flag position
 - **WHEN** the user runs `gitpm uninstall ID --force` or `gitpm uninstall --force ID`
 - **THEN** both behave the same: options may come before or after the positional arguments
 
 ### Requirement: One output line per affected package
-Every workspace-mutating command (`install`, `install-catalog`, `update`, `update all`, `rollback`, `enable`, `disable`, `forget`, `restore`, `uninstall`, `replace`, `fork --replace`, `sync-dist`) SHALL print one line per affected package in the form `ID <verb> …` (the install line is `installed ID@V from SOURCE`), built from the library result alone without reading state, and SHALL NOT print `OK:` lines. Other commands print what their capability specifies.
+Every workspace-mutating command (`install`, `install-catalog`, `download`, `download-catalog`, `update`, `update all`, `rollback`, `enable`, `disable`, `forget`, `restore`, `uninstall`, `replace`, `fork --replace`, `sync-dist`) SHALL print one line per affected package in the form `ID <verb> …` (scenario "Single-package verbs"), built from the library result alone without reading state, and SHALL NOT print `OK:` lines. Other commands print what their capability specifies.
 
 #### Scenario: Other author and catalog commands
 - **WHEN** the user runs `init`, `remote`, `fork`, `commit`, `catalog-update` or `register`
@@ -87,6 +91,7 @@ Every workspace-mutating command (`install`, `install-catalog`, `update`, `updat
 #### Scenario: Single-package verbs
 - **WHEN** the user installs, updates, rolls back, enables, disables, forgets, restores and uninstalls `acme/greeter`
 - **THEN** the lines are `installed acme/greeter@V from SOURCE` (or `acme/greeter already installed (V)`, optionally with `; run update`), `acme/greeter updated A → B` (or `acme/greeter up to date (V)`), `acme/greeter rolled back B → A`, `acme/greeter enabled`, `acme/greeter disabled`, `acme/greeter forgotten (clone kept; restore re-registers it)`, `acme/greeter restored V` and `acme/greeter uninstalled`
+- **AND** `download` prints `downloaded acme/greeter@V from SOURCE (disabled)`; install and download print one such line per package, including each dependency pulled from the catalog
 
 #### Scenario: Fork, replace and commit verbs
 - **WHEN** the user replaces, switches back or runs `fork --replace`

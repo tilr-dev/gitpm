@@ -1,18 +1,18 @@
 {
  "generated_from": {
   "specs": "openspec/specs",
-  "cases": 638,
+  "cases": 645,
   "last_run": {
-   "started": "2026-10-18T16:03:36.019247+00:00",
-   "commit": "75c1565+dirty",
+   "started": "2026-10-18T16:50:37.279101+00:00",
+   "commit": "9651fb2+dirty",
    "counts": {
-    "PASS": 1033,
+    "PASS": 1050,
     "FAIL": 0,
     "BLOCKED": 1,
     "XFAIL": 1,
     "XPASS": 0
    },
-   "path": "itests/results/20261018T180329-64904"
+   "path": "itests/results/20261018T185031-17612"
   }
  },
  "capabilities": [
@@ -1338,6 +1338,13 @@
      "cargo_tests": [],
      "scenarios": [
       {
+       "slug": "command-list",
+       "title": "Command list",
+       "tag": "cli/command-set#command-list",
+       "cases": [],
+       "covered": false
+      },
+      {
        "slug": "catalog-links",
        "title": "Catalog links",
        "tag": "cli/command-set#catalog-links",
@@ -2093,21 +2100,70 @@
      "title": "Disabled packages and dependencies",
      "tag": "dependencies/disabled-packages-and-dependencies",
      "cases": [],
-     "all_cases": [],
+     "all_cases": [
+      "uc_058:forced_enable_leaves_the_consumer_broken",
+      "uc_058:install_next_to_a_disabled_dependency",
+      "uc_058:rollback_and_restore_refuse_a_disabled_dependency"
+     ],
      "cargo_tests": [
-      "update_all_reports_unsatisfiable_state_and_preserves_disabled_flags"
+      "disabled_packages_satisfy_no_dependency"
      ],
      "scenarios": [
       {
        "slug": "dependency-on-a-disabled-package-in-list",
        "title": "Dependency on a disabled package in list",
        "tag": "dependencies/disabled-packages-and-dependencies#dependency-on-a-disabled-package-in-list",
+       "cases": [
+        "uc_058:forced_enable_leaves_the_consumer_broken"
+       ],
+       "covered": true
+      },
+      {
+       "slug": "install-next-to-a-disabled-dependency",
+       "title": "Install next to a disabled dependency",
+       "tag": "dependencies/disabled-packages-and-dependencies#install-next-to-a-disabled-dependency",
+       "cases": [
+        "uc_058:install_next_to_a_disabled_dependency"
+       ],
+       "covered": true
+      },
+      {
+       "slug": "rollback-and-restore-next-to-a-disabled-dependency",
+       "title": "Rollback and restore next to a disabled dependency",
+       "tag": "dependencies/disabled-packages-and-dependencies#rollback-and-restore-next-to-a-disabled-dependency",
+       "cases": [
+        "uc_058:rollback_and_restore_refuse_a_disabled_dependency"
+       ],
+       "covered": true
+      },
+      {
+       "slug": "inactive-packages-take-disabled-versions-as-given",
+       "title": "Inactive packages take disabled versions as given",
+       "tag": "dependencies/disabled-packages-and-dependencies#inactive-packages-take-disabled-versions-as-given",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "update-all",
+       "title": "update all",
+       "tag": "dependencies/disabled-packages-and-dependencies#update-all",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "only-direct-dependencies",
+       "title": "Only direct dependencies",
+       "tag": "dependencies/disabled-packages-and-dependencies#only-direct-dependencies",
        "cases": [],
        "covered": false
       }
      ],
      "covered": true,
-     "last_run": {}
+     "last_run": {
+      "uc_058:forced_enable_leaves_the_consumer_broken": "PASS",
+      "uc_058:install_next_to_a_disabled_dependency": "PASS",
+      "uc_058:rollback_and_restore_refuse_a_disabled_dependency": "PASS"
+     }
     },
     {
      "slug": "conflicts-are-explained",
@@ -2312,6 +2368,40 @@
       "uc_058:shared_dependency_single_copy": "PASS",
       "uc_058:valid_requirements_accepted": "PASS",
       "uc_059:unused_dependency_uninstalls_without_guard": "PASS"
+     }
+    },
+    {
+     "slug": "enable-needs-active-dependencies",
+     "title": "enable needs active dependencies",
+     "tag": "dependencies/enable-needs-active-dependencies",
+     "cases": [],
+     "all_cases": [
+      "uc_058:forced_enable_leaves_the_consumer_broken"
+     ],
+     "cargo_tests": [
+      "enable_refuses_inactive_dependencies_unless_forced"
+     ],
+     "scenarios": [
+      {
+       "slug": "disabled-dependency",
+       "title": "Disabled dependency",
+       "tag": "dependencies/enable-needs-active-dependencies#disabled-dependency",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "forced-enable",
+       "title": "Forced enable",
+       "tag": "dependencies/enable-needs-active-dependencies#forced-enable",
+       "cases": [
+        "uc_058:forced_enable_leaves_the_consumer_broken"
+       ],
+       "covered": true
+      }
+     ],
+     "covered": true,
+     "last_run": {
+      "uc_058:forced_enable_leaves_the_consumer_broken": "PASS"
      }
     }
    ]
@@ -2578,6 +2668,7 @@
       "uc_047:list_disable_enable_offline",
       "uc_048:fork_disabled_original_enabled",
       "uc_048:original_disabled_fork_enabled",
+      "uc_058:download_then_enable_in_dependency_order",
       "uc_059:disable_force_reports_broken_dependents",
       "uc_062:disable_disabled",
       "uc_062:enable_enabled",
@@ -2609,6 +2700,15 @@
         "uc_069:forced_disable_of_active_replacement"
        ],
        "covered": true
+      },
+      {
+       "slug": "refused-enable",
+       "title": "Refused enable",
+       "tag": "dist/enable-and-disable-deploy-and-remove#refused-enable",
+       "cases": [
+        "uc_058:download_then_enable_in_dependency_order"
+       ],
+       "covered": true
       }
      ],
      "covered": true,
@@ -2621,6 +2721,7 @@
       "uc_047:list_disable_enable_offline": "PASS",
       "uc_048:fork_disabled_original_enabled": "PASS",
       "uc_048:original_disabled_fork_enabled": "PASS",
+      "uc_058:download_then_enable_in_dependency_order": "PASS",
       "uc_059:disable_force_reports_broken_dependents": "PASS",
       "uc_062:disable_disabled": "PASS",
       "uc_062:enable_enabled": "PASS",
@@ -2643,11 +2744,13 @@
       "uc_020:update_of_disabled_plugin_keeps_it_disabled",
       "uc_048:disable_update_rollback",
       "uc_055:original_release_does_not_switch_back",
+      "uc_058:direct_download_deploys_nothing",
       "uc_069:update_of_replaced_package_deploys_nothing_until_back"
      ],
      "cargo_tests": [
       "update_and_rollback_of_a_replaced_package_leave_dist_alone_until_back",
-      "installing_a_package_that_is_replaced_deploys_nothing"
+      "installing_a_package_that_is_replaced_deploys_nothing",
+      "workspace::download_records_disabled_packages_and_dependencies"
      ],
      "scenarios": [
       {
@@ -2659,6 +2762,15 @@
         "uc_069:update_of_replaced_package_deploys_nothing_until_back"
        ],
        "covered": true
+      },
+      {
+       "slug": "download-deploys-nothing",
+       "title": "Download deploys nothing",
+       "tag": "dist/inactive-packages-change-state-and-clone-only#download-deploys-nothing",
+       "cases": [
+        "uc_058:direct_download_deploys_nothing"
+       ],
+       "covered": true
       }
      ],
      "covered": true,
@@ -2667,6 +2779,7 @@
       "uc_020:update_of_disabled_plugin_keeps_it_disabled": "PASS",
       "uc_048:disable_update_rollback": "PASS",
       "uc_055:original_release_does_not_switch_back": "PASS",
+      "uc_058:direct_download_deploys_nothing": "PASS",
       "uc_069:update_of_replaced_package_deploys_nothing_until_back": "PASS"
      }
     },
@@ -4796,6 +4909,7 @@
       "uc_011:repository_without_release_tags_fails",
       "uc_024:inherited_vendor_tags_are_not_fork_releases",
       "uc_024:newer_vendor_tag_is_ignored",
+      "uc_058:forced_install_next_to_a_disabled_dependency",
       "uc_061:bad_historical_tag_skipped_by_install"
      ],
      "cargo_tests": [
@@ -4822,6 +4936,22 @@
         "uc_024:inherited_vendor_tags_are_not_fork_releases"
        ],
        "covered": true
+      },
+      {
+       "slug": "install-enables-pulled-dependencies",
+       "title": "Install enables pulled dependencies",
+       "tag": "install-uninstall/install-the-latest-release-of-a-git-source#install-enables-pulled-dependencies",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "forced-install-next-to-a-disabled-dependency",
+       "title": "Forced install next to a disabled dependency",
+       "tag": "install-uninstall/install-the-latest-release-of-a-git-source#forced-install-next-to-a-disabled-dependency",
+       "cases": [
+        "uc_058:forced_install_next_to_a_disabled_dependency"
+       ],
+       "covered": true
       }
      ],
      "covered": true,
@@ -4832,6 +4962,7 @@
       "uc_011:repository_without_release_tags_fails": "PASS",
       "uc_024:inherited_vendor_tags_are_not_fork_releases": "PASS",
       "uc_024:newer_vendor_tag_is_ignored": "PASS",
+      "uc_058:forced_install_next_to_a_disabled_dependency": "PASS",
       "uc_061:bad_historical_tag_skipped_by_install": "PASS"
      }
     },
@@ -4916,6 +5047,7 @@
       "uc_010:repeated_install_from_the_same_source_is_a_noop",
       "uc_050:same_plugin_installed_concurrently_once",
       "uc_052:repeated_install_is_idempotent",
+      "uc_058:install_over_a_download_enables_it",
       "uc_062:install_installed",
       "uc_074:install_catalog_again_is_a_noop",
       "uc_074:newer_release_hints_update",
@@ -4924,7 +5056,12 @@
       "uc_075:single_package_verbs"
      ],
      "cargo_tests": [
-      "install_again_reports_already_installed_and_changes_nothing"
+      "install_again_reports_already_installed_and_changes_nothing",
+      "dependency_conflict",
+      "forced_install_and_install_over_a_download",
+      "already_installed",
+      "requested_mode",
+      "install_over_a_download_reports_the_requested_mode"
      ],
      "scenarios": [
       {
@@ -4949,6 +5086,22 @@
         "uc_074:newer_release_hints_update"
        ],
        "covered": true
+      },
+      {
+       "slug": "same-source",
+       "title": "Same source",
+       "tag": "install-uninstall/install-is-idempotent-for-the-same-source#same-source",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "install-over-a-download",
+       "title": "Install over a download",
+       "tag": "install-uninstall/install-is-idempotent-for-the-same-source#install-over-a-download",
+       "cases": [
+        "uc_058:install_over_a_download_enables_it"
+       ],
+       "covered": true
       }
      ],
      "covered": true,
@@ -4956,6 +5109,7 @@
       "uc_010:repeated_install_from_the_same_source_is_a_noop": "PASS",
       "uc_050:same_plugin_installed_concurrently_once": "PASS",
       "uc_052:repeated_install_is_idempotent": "PASS",
+      "uc_058:install_over_a_download_enables_it": "PASS",
       "uc_062:install_installed": "PASS",
       "uc_074:install_catalog_again_is_a_noop": "PASS",
       "uc_074:newer_release_hints_update": "PASS",
@@ -5536,6 +5690,46 @@
       "uc_056:remove_unused_clean_fork": "PASS",
       "uc_066:s8_uninstall_clean_fork": "PASS",
       "uc_068:whole_journey": "PASS"
+     }
+    },
+    {
+     "slug": "download-without-enabling",
+     "title": "Download without enabling",
+     "tag": "install-uninstall/download-without-enabling",
+     "cases": [
+      "uc_058:direct_download_deploys_nothing"
+     ],
+     "all_cases": [
+      "uc_058:direct_download_deploys_nothing",
+      "uc_058:download_then_enable_in_dependency_order"
+     ],
+     "cargo_tests": [
+      "workspace::download_records_disabled_packages_and_dependencies"
+     ],
+     "scenarios": [
+      {
+       "slug": "download-with-a-missing-dependency",
+       "title": "Download with a missing dependency",
+       "tag": "install-uninstall/download-without-enabling#download-with-a-missing-dependency",
+       "cases": [
+        "uc_058:download_then_enable_in_dependency_order"
+       ],
+       "covered": true
+      },
+      {
+       "slug": "enable-after-download",
+       "title": "Enable after download",
+       "tag": "install-uninstall/download-without-enabling#enable-after-download",
+       "cases": [
+        "uc_058:download_then_enable_in_dependency_order"
+       ],
+       "covered": true
+      }
+     ],
+     "covered": true,
+     "last_run": {
+      "uc_058:direct_download_deploys_nothing": "PASS",
+      "uc_058:download_then_enable_in_dependency_order": "PASS"
      }
     }
    ]
@@ -12278,6 +12472,66 @@
    "id": "uc_058:direct_install_with_catalog",
    "spec": [
     "dependencies/install-resolves-dependencies"
+   ],
+   "xfail": null,
+   "last_run": "PASS"
+  },
+  {
+   "id": "uc_058:download_then_enable_in_dependency_order",
+   "spec": [
+    "install-uninstall/download-without-enabling#download-with-a-missing-dependency",
+    "install-uninstall/download-without-enabling#enable-after-download",
+    "dist/enable-and-disable-deploy-and-remove#refused-enable"
+   ],
+   "xfail": null,
+   "last_run": "PASS"
+  },
+  {
+   "id": "uc_058:forced_enable_leaves_the_consumer_broken",
+   "spec": [
+    "dependencies/enable-needs-active-dependencies#forced-enable",
+    "dependencies/disabled-packages-and-dependencies#dependency-on-a-disabled-package-in-list"
+   ],
+   "xfail": null,
+   "last_run": "PASS"
+  },
+  {
+   "id": "uc_058:install_next_to_a_disabled_dependency",
+   "spec": [
+    "dependencies/disabled-packages-and-dependencies#install-next-to-a-disabled-dependency"
+   ],
+   "xfail": null,
+   "last_run": "PASS"
+  },
+  {
+   "id": "uc_058:direct_download_deploys_nothing",
+   "spec": [
+    "dist/inactive-packages-change-state-and-clone-only#download-deploys-nothing",
+    "install-uninstall/download-without-enabling"
+   ],
+   "xfail": null,
+   "last_run": "PASS"
+  },
+  {
+   "id": "uc_058:install_over_a_download_enables_it",
+   "spec": [
+    "install-uninstall/install-is-idempotent-for-the-same-source#install-over-a-download"
+   ],
+   "xfail": null,
+   "last_run": "PASS"
+  },
+  {
+   "id": "uc_058:forced_install_next_to_a_disabled_dependency",
+   "spec": [
+    "install-uninstall/install-the-latest-release-of-a-git-source#forced-install-next-to-a-disabled-dependency"
+   ],
+   "xfail": null,
+   "last_run": "PASS"
+  },
+  {
+   "id": "uc_058:rollback_and_restore_refuse_a_disabled_dependency",
+   "spec": [
+    "dependencies/disabled-packages-and-dependencies#rollback-and-restore-next-to-a-disabled-dependency"
    ],
    "xfail": null,
    "last_run": "PASS"

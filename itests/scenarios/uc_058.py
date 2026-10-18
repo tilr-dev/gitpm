@@ -210,14 +210,11 @@ def direct_install_with_catalog(t: T):
 
 
 # ------------------------------------------------- 9. download, strict enable (D7, TILR-36)
-# Tags name the main-spec requirements that exist now; on archive of download-and-enable
-# they move to install-uninstall/download-without-enabling and
-# dependencies/enable-needs-active-dependencies.
 
 
-@case(fixture="g6_core_catalog", spec=["dist/inactive-packages-change-state-and-clone-only",
-                                       "dist/enable-and-disable-deploy-and-remove",
-                                       "dependencies/disabled-packages-and-dependencies"])
+@case(fixture="g6_core_catalog", spec=["install-uninstall/download-without-enabling#download-with-a-missing-dependency",
+                                       "install-uninstall/download-without-enabling#enable-after-download",
+                                       "dist/enable-and-disable-deploy-and-remove#refused-enable"])
 def download_then_enable_in_dependency_order(t: T):
     """9a. download-catalog app/a records app/a and the pulled lib/core disabled, deploys nothing and prints one
     line per package; enable app/a is refused (lib/core disabled); enable lib/core then app/a works offline."""
@@ -240,7 +237,7 @@ def download_then_enable_in_dependency_order(t: T):
     t.has((t.dist(CORE) / "index.js").read_text(), "lib/core 1.1.0")
 
 
-@case(fixture="g6_core_catalog", spec=["dependencies/broken-consumers-are-reported-not-enforced",
+@case(fixture="g6_core_catalog", spec=["dependencies/enable-needs-active-dependencies#forced-enable",
                                        "dependencies/disabled-packages-and-dependencies#dependency-on-a-disabled-package-in-list"])
 def forced_enable_leaves_the_consumer_broken(t: T):
     """9b. enable app/a --force enables only app/a; list and check report its dependency on the disabled lib/core."""
@@ -254,8 +251,7 @@ def forced_enable_leaves_the_consumer_broken(t: T):
     t.has(t.gitpm_ok("check").out, f"Unsatisfied dependency: app/a → {CORE} ^1.0: {CORE} is disabled")
 
 
-@case(fixture="g6_core_catalog", spec=["dependencies/disabled-packages-and-dependencies",
-                                       "install-uninstall/refused-input-creates-nothing"])
+@case(fixture="g6_core_catalog", spec=["dependencies/disabled-packages-and-dependencies#install-next-to-a-disabled-dependency"])
 def install_next_to_a_disabled_dependency(t: T):
     """9c. lib/core installed but disabled: install-catalog app/a and a direct install of app/a are refused
     with dependency_conflict naming lib/core as disabled; the workspace is unchanged."""
@@ -272,7 +268,8 @@ def install_next_to_a_disabled_dependency(t: T):
     t.ok((t.dist("app/a") / "index.js").is_file(), "dist/app/a deployed")
 
 
-@case(fixture="g6_core_catalog", spec=["dist/inactive-packages-change-state-and-clone-only"])
+@case(fixture="g6_core_catalog", spec=["dist/inactive-packages-change-state-and-clone-only#download-deploys-nothing",
+                                       "install-uninstall/download-without-enabling"])
 def direct_download_deploys_nothing(t: T):
     """9d. download GIT_SOURCE records the package disabled with its clone, prints `(disabled)` and creates no dist."""
     r = t.gitpm_ok("download", t.repo("other/x"))
@@ -282,8 +279,7 @@ def direct_download_deploys_nothing(t: T):
     t.ok(not t.dist("other/x").exists(), "no dist")
 
 
-@case(fixture="g6_core_catalog", spec=["dependencies/disabled-packages-and-dependencies",
-                                       "install-uninstall/install-is-idempotent-for-the-same-source"])
+@case(fixture="g6_core_catalog", spec=["install-uninstall/install-is-idempotent-for-the-same-source#install-over-a-download"])
 def install_over_a_download_enables_it(t: T):
     """9e. install-catalog over a download is refused while lib/core is disabled, `--force` enables only app/a
     (an install line, not "already installed"); a second install is "already installed"."""
@@ -298,7 +294,7 @@ def install_over_a_download_enables_it(t: T):
     t.has(t.gitpm_ok("install-catalog", "app/a").out, "app/a already installed (1.0.0)")
 
 
-@case(fixture="g6_core_catalog", spec=["dependencies/disabled-packages-and-dependencies"])
+@case(fixture="g6_core_catalog", spec=["install-uninstall/install-the-latest-release-of-a-git-source#forced-install-next-to-a-disabled-dependency"])
 def forced_install_next_to_a_disabled_dependency(t: T):
     """9f. install --force of app/a and install-catalog --force of app/c next to the disabled lib/core enable
     and deploy them only."""
@@ -312,7 +308,7 @@ def forced_install_next_to_a_disabled_dependency(t: T):
     t.ok((t.dist("app/c") / "index.js").is_file(), "dist/app/c deployed")
 
 
-@case(fixture="g6_core_catalog", spec=["dependencies/disabled-packages-and-dependencies"])
+@case(fixture="g6_core_catalog", spec=["dependencies/disabled-packages-and-dependencies#rollback-and-restore-next-to-a-disabled-dependency"])
 def rollback_and_restore_refuse_a_disabled_dependency(t: T):
     """9g. rollback of an active app/a and restore of its enabled record refuse the disabled lib/core."""
     t.gitpm_ok("install-catalog", "app/a")

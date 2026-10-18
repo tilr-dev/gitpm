@@ -295,7 +295,7 @@ Spec references read `capability › Requirement › Scenario`; several scenario
 | 058.7 | shared dependency single copy; uninstall app/a keeps it | dependencies › Install resolves dependencies; dependencies › State keeps dependency edges | covered |  |
 | 058.8 | direct Git install with dependencies: no catalog refused; installed / catalog succeed | dependencies › Install resolves dependencies › No catalog | covered |  |
 | 059.1 | uninstall lib/core refused naming app/a, app/b | dependencies › Dependents guard removal › Uninstall a dependency | covered |  |
-| 059.2 | forget and disable guarded the same way | dependencies › Dependents guard removal | covered | `download-and-enable` (D7, TILR-36) revises disabled dependencies |
+| 059.2 | forget and disable guarded the same way | dependencies › Dependents guard removal | covered | disabled dependencies: dependencies › Disabled packages and dependencies (D7, TILR-36; `download-and-enable` archived) |
 | 059.3 | uninstall --force: dependents reported unsatisfied | dependencies › Broken consumers are reported, not enforced › Unrelated install after forced removal | covered |  |
 | 059.4 | unused dependency uninstalls without guard | dependencies › Dependents guard removal | covered |  |
 | 059.5 | dirty dependency: guard plus lost-work confirmation | dependencies › Dependents guard removal; install-uninstall › Uninstall is planned and confirmed | covered |  |

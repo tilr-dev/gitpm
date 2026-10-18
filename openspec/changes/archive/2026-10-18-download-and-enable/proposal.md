@@ -33,3 +33,5 @@ Depends on: `no-backward-compat`, `thin-cli-boundary`, `check-via-origin`, `sing
 ## Impact
 
 `workspace.rs` (download paths, enable check), `deps.rs` (only active providers satisfy), CLI commands and lines, FFI methods, README commands and "Changed in 0.6", Dagger cases for download/enable.
+
+Implemented in commit 5dc8df8 ("feat!: download without enabling; a disabled package satisfies no dependency").

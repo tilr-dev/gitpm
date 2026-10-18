@@ -102,7 +102,7 @@ Update and rollback SHALL refuse with `local_changes` when the clone has any los
 - **THEN** `update all` moves both in one transaction
 
 ### Requirement: update all never removes or downgrades
-`update all` SHALL NOT remove or downgrade packages, SHALL preserve replacement bindings and disabled flags (a disabled package satisfies no dependency here), SHALL report packages kept back with their latest version, and SHALL fail with `dependency_conflict` carrying the solver's explanation when no compatible solution repairs a broken state. Verified by `update_all_does_not_downgrade_or_accept_mutated_releases` and `update_all_reports_unsatisfiable_state_and_preserves_disabled_flags`.
+`update all` SHALL NOT remove or downgrade packages, SHALL preserve replacement bindings and disabled flags (a disabled package satisfies no dependency), SHALL report packages kept back with their latest version, and SHALL fail with `dependency_conflict` carrying the solver's explanation when no compatible solution repairs a broken state. Verified by `update_all_does_not_downgrade_or_accept_mutated_releases` and `update_all_reports_unsatisfiable_state_and_preserves_disabled_flags`.
 
 #### Scenario: Kept back
 - **WHEN** the newest release of a package does not fit a dependent's requirement
