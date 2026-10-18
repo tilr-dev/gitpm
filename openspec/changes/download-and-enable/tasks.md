@@ -2,7 +2,7 @@
 
 ## 1. Library
 
-- [ ] 1.1 Only active packages satisfy dependencies in install, enable and single update; `dependency_conflict` "DEP is disabled"; verify `disabled_packages_satisfy_no_dependency`
+- [ ] 1.1 Only active packages satisfy dependencies in install, enable and single update; `dependency_conflict` "DEP is disabled; enable it"; verify `disabled_packages_satisfy_no_dependency`
 - [ ] 1.2 `Manager::download`/`download_from_catalog`: record disabled, pull missing dependencies disabled, deploy nothing; `install` = download + enable in one transaction; verify `workspace::download_records_disabled_packages_and_dependencies` and `catalog_install_resolves_dependencies_and_records_edges`
 - [ ] 1.3 `enable_with(id, force)`: refuse inactive dependencies unless forced; verify `enable_refuses_inactive_dependencies_unless_forced`
 

@@ -19,7 +19,7 @@ Depends on: `no-backward-compat`, `thin-cli-boundary`, `check-via-origin`, `sing
 - `dependencies`: "Broken consumers are reported, not enforced".
 - `updates`: "update all never removes or downgrades".
 - `cli`: "One output line per affected package".
-- `ffi-bindings`: "Records mirror library results".
+- `ffi-bindings`: new "Kept-back reasons in records" (adds `keptBack[].reason`).
 - `fork-replacement`: "Active fork rules" (kept-back reason).
 
 ## Out of scope

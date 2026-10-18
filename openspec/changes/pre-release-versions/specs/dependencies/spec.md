@@ -9,7 +9,7 @@
 
 #### Scenario: Self-dependency
 - **WHEN** `acme/app`'s manifest lists `acme/app` in `dependencies`
-- **THEN** the manifest is refused with `invalid_manifest` ("plugin ID depends on itself")
+- **THEN** the manifest is refused with `invalid_manifest` ("package ID depends on itself")
 
 #### Scenario: Pre-release requirement
 - **WHEN** a dependency requires `^1.3.0-beta.1`

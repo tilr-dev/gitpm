@@ -44,18 +44,22 @@ Every `catalog` subcommand SHALL need a catalog location; without `--catalog` or
 ## MODIFIED Requirements
 
 ### Requirement: Command set
-The CLI SHALL offer exactly the commands of its full usage (`gitpm --help`), each specified in the named capability: `init`/`create`, `commit`, `remote` (authoring); `fork`, `replace` (fork-replacement); `auth check` (git-safety); `catalog show|links|update|register` (below, operations in catalog), `migrate-catalog`, `check` (catalog); `install`, `install-catalog`, `forget`, `restore`, `uninstall` (install-uninstall); `enable`, `disable`, `sync-dist` (dist); `update`, `rollback` (updates); `list` (below).
+The CLI SHALL offer exactly the commands of its full usage (`gitpm --help`), each specified in the capability named in the scenario "Command list", and no aliases.
+
+#### Scenario: Command list
+- **WHEN** the user reads `gitpm --help`
+- **THEN** the commands are `init`, `commit`, `remote` (authoring); `fork`, `replace` (fork-replacement); `auth check` (git-safety); `catalog show`, `catalog links`, `catalog update`, `catalog register` ("Catalog command group"; operations in catalog), `check` (catalog); `install`, `install-catalog`, `download`, `download-catalog`, `forget`, `restore`, `uninstall` (install-uninstall); `enable`, `disable`, `sync-dist` (dist); `update`, `rollback` (updates); `list` ("JSON output for state and catalog")
 
 #### Scenario: Catalog links
 - **WHEN** the user runs `gitpm --catalog ./catalog catalog links`
 - **THEN** it prints the JSON links of the catalog root level ("JSON output for state and catalog")
 
 #### Scenario: Install forms
-- **WHEN** the user runs `install SOURCE [ID] [--package ID] [--ref REF | --channel stable|dev]`
-- **THEN** the positional `ID` and `--package` select a package as in multi-package-repos, and `--ref`/`--channel` behave as in install-uninstall
+- **WHEN** the user runs `install SOURCE [ID] [--package ID] [--ref REF | --dev]`, or `download` with the same arguments
+- **THEN** the positional `ID` and `--package` select a package as in multi-package-repos, and `--ref`/`--dev` behave as in install-uninstall
 
 #### Scenario: Update forms
-- **WHEN** the user runs `update ID [--ref REF | --channel stable|dev]` or `update all [--dry-run]`
+- **WHEN** the user runs `update ID [--ref REF | --dev | --release] [--detach]` or `update all [--dry-run]`
 - **THEN** the behavior is the one in updates
 
 #### Scenario: Every command documented
@@ -67,24 +71,32 @@ The CLI SHALL offer exactly the commands of its full usage (`gitpm --help`), eac
 - **THEN** it fails with `unknown command: X; use --help`
 
 ### Requirement: Commands that need a catalog say so
-The `catalog` subcommands, `migrate-catalog`, `install-catalog` and `check` on a non-empty workspace SHALL fail without a catalog with `COMMAND needs a catalog: pass --catalog DIR_OR_JSON_OR_URL or set GITPM_CATALOG` (a CLI usage error without `Error kind`; COMMAND is the two-word name for a subcommand) and create nothing. For a direct `install`, a local catalog path that does not exist SHALL count as no catalog. Verified by `catalog_commands_name_the_missing_catalog_and_create_nothing`.
+The `catalog` subcommands, `install-catalog` and `download-catalog` SHALL fail without a catalog with `COMMAND needs a catalog: pass --catalog DIR_OR_JSON_OR_URL or set GITPM_CATALOG` (a CLI usage error without `Error kind`; COMMAND is the two-word name for a subcommand) and create nothing; `check` works without one. A given location SHALL be passed to the library unchanged, also for `install`. Verified by `catalog_commands_name_the_missing_catalog_and_create_nothing`.
 
 #### Scenario: Catalog command without a catalog
 - **WHEN** neither `--catalog` nor `GITPM_CATALOG` is set and the user runs `gitpm catalog show`
 - **THEN** it fails with `catalog show needs a catalog: pass --catalog DIR_OR_JSON_OR_URL or set GITPM_CATALOG`, exit status 1, and no file is created
 - **AND** which operations need a catalog is specified in catalog ("A catalog is optional")
 
+#### Scenario: Catalog path that does not exist
+- **WHEN** the user runs `gitpm --catalog ./missing install ./greeter`
+- **THEN** it fails with the library's `invalid_argument` (catalog, "A configured catalog location must exist"), prints `Error kind: invalid_argument`, exits with status 1 and creates nothing
+
+#### Scenario: check without a catalog
+- **WHEN** neither `--catalog` nor `GITPM_CATALOG` is set and the user runs `gitpm check` on a workspace with packages
+- **THEN** it prints the check table from each package's origin and exits 0
+
 ### Requirement: Option validation
-The CLI SHALL refuse unknown options, repeated options, options given to commands they do not apply to (for example `--force` outside uninstall/disable/forget/replace/`fork --replace`, `--dry-run` outside `update all`/`sync-dist`, `--sources` outside `catalog update`), invalid combinations and wrong argument counts, with a message ending `; use --help` where applicable, before opening the workspace (CLI usage errors without `Error kind`). Verified by `usage_errors_name_the_problem_and_create_nothing`.
+Before calling the library the CLI SHALL refuse only syntax: unknown or repeated options, misplaced options (for example `--dry-run` outside `update all`/`sync-dist`, `--sources` outside `catalog update`), exclusive options (`--ref`, `--dev`, `--release`), values outside a fixed set and wrong argument counts, with a message ending `; use --help` where applicable (usage errors without `Error kind`); a message about a catalog subcommand names the two-word command. Domain combinations are checked by the library. Verified by `usage_errors_name_the_problem_and_create_nothing`.
 
 #### Scenario: Channel and ref
-- **WHEN** the user runs `gitpm update ID --channel dev --ref x` or `gitpm install SOURCE --ref x --channel stable`, or `--channel` with a value other than `stable`/`dev`
-- **THEN** it fails with `--channel conflicts with --ref` (or `channel must be stable or dev`) and creates nothing
-- **AND** `--channel` of any value is refused together with `--ref`, and the exit status is 1; `--version` outside `install-catalog`/`fork --replace` is refused the same way
+- **WHEN** the user runs `gitpm install SOURCE --ref x --dev` or `gitpm update ID --dev --release`
+- **THEN** it fails with `--dev conflicts with --ref` (or `--release conflicts with --dev`), exit status 1, and creates nothing
+- **AND** `--version` outside `install-catalog`/`download-catalog`/`fork --replace` is refused by the CLI as a misplaced option
 
 #### Scenario: Misplaced flag
-- **WHEN** the user runs `gitpm list --force`
-- **THEN** it fails with `--force is only valid with uninstall/disable/forget/replace/fork --replace`
+- **WHEN** the user runs `gitpm list --force` or `gitpm catalog show --sources list.txt`
+- **THEN** it fails with `--force is only valid with uninstall/disable/enable/forget/replace/fork --replace`, or `--sources requires catalog update`
 
 #### Scenario: Flag position
 - **WHEN** the user runs `gitpm uninstall ID --force` or `gitpm uninstall --force ID`
@@ -95,11 +107,4 @@ The CLI SHALL refuse unknown options, repeated options, options given to command
 
 #### Scenario: Command help
 - **WHEN** the user runs `gitpm init --help`
-- **THEN** only the init/create usage block is printed and the exit status is 0
-
-### Requirement: Nothing is built, executed or uploaded
-The CLI SHALL only clone Git repositories, copy their package dist folders, write local catalogs and, for the author commands (`init`, `commit`, `remote`, `fork`), create local repositories, commits, tags and remote settings; it SHALL never build, execute package code, push or upload.
-
-#### Scenario: Catalog publishing
-- **WHEN** the user runs `catalog update` against an HTTPS catalog location
-- **THEN** the command fails with `invalid_argument`, because HTTP(S) catalogs are read-only, and nothing is uploaded
+- **THEN** only the init usage block is printed and the exit status is 0

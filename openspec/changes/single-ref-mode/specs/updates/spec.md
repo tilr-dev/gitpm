@@ -50,7 +50,7 @@
 - **THEN** the package moves to the fetched `origin/feature` commit, not the clone's stale local branch, and is recorded in branch mode `feature`
 
 ### Requirement: Updates need no catalog
-`update ID` (in any mode) and `update all` SHALL read releases and branches from the origin of the package's clone (set from `plugins.<id>.source` at install) and SHALL NOT read a catalog for installed packages, so they work without one; `check` reads the same origin for packages the catalog does not list (catalog, "check compares installed packages with their catalog or origin"). Verified by `workspace::update_and_rollback_swap_revisions_and_redeploy` (no catalog configured).
+`update ID` (in any mode) and `update all` SHALL read releases and branches from the origin of the package's clone (set from `packages.<id>.source` at install) and SHALL NOT read a catalog for installed packages, so they work without one; `check` reads the same origin for packages the catalog does not list (catalog, "check compares installed packages with their catalog or origin"). Verified by `workspace::update_and_rollback_swap_revisions_and_redeploy` (no catalog configured).
 
 #### Scenario: New dependency without a catalog
 - **WHEN** no catalog is configured and the newest release of a package adds a dependency that is not installed

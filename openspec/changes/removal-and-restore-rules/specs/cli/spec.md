@@ -5,7 +5,7 @@ On failure the CLI SHALL print `Error: MESSAGE` to stderr, for a library error a
 
 #### Scenario: Unknown ID
 - **WHEN** the user runs `gitpm update acme/none`
-- **THEN** stderr has `Error: plugin acme/none is not installed` and `Error kind: not_installed`, and the exit status is 1
+- **THEN** stderr has `Error: package acme/none is not installed` and `Error kind: not_installed`, and the exit status is 1
 
 #### Scenario: Command hint
 - **WHEN** the user installs `acme/greeter` again after forgetting it while its clone is retained

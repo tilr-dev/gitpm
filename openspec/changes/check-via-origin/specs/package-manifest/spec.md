@@ -13,7 +13,7 @@ The manifest SHALL require `id` (a valid package ID) and `version` (package-ids,
 
 #### Scenario: Self-replacement
 - **WHEN** `replaces.id` equals the manifest's own `id`
-- **THEN** the manifest is refused with `invalid_manifest` ("a plugin cannot replace itself")
+- **THEN** the manifest is refused with `invalid_manifest` ("a package cannot replace itself")
 
 #### Scenario: Fork manifest without source
 - **WHEN** a fork's manifest has `forkOf` without `source`

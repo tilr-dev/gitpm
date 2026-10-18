@@ -10,6 +10,8 @@ gitpm shells out to system `git` and `curl`, which on macOS requires the Command
 - Possibly behind a cargo feature first.
 - Order: after `catalog-streaming-size-limit` (TILR-12), which rewrites `exec::http_get` first; this change then replaces that function without changing the streaming limit it introduced.
 
+Depends on: `catalog-streaming-size-limit` (and through it `robustness-fixes`, whose git-safety "One subprocess boundary" and single SSH policy this change keeps). Research: task 0.1 decides whether it proceeds.
+
 ## Capabilities
 
 ### Modified Capabilities

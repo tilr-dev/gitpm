@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Git never waits for input
-Every git command on a repository and the `auth check` ls-remote SHALL run with closed stdin, `GIT_TERMINAL_PROMPT=0`, empty `GIT_ASKPASS`, `credential.interactive=never`, `http.lowSpeedLimit=1`/`http.lowSpeedTime=20` and one batch SSH command ("Batch SSH command") unless `Options.custom_ssh` is set or Git config defines `core.sshCommand`; one still running after 10 minutes SHALL be killed and reported as `git` ("timed out after 600s"). Verified by `exec::git_never_reads_stdin_or_prompts`.
+Every git command (on a repository, the `auth check` ls-remote and the `core.sshCommand` probe) SHALL run with closed stdin, `GIT_TERMINAL_PROMPT=0`, empty `GIT_ASKPASS`, `credential.interactive=never`, `http.lowSpeedLimit=1`/`http.lowSpeedTime=20` and one batch SSH command ("Batch SSH command") unless `Options.custom_ssh` is set or Git config defines `core.sshCommand`; one still running after 10 minutes SHALL be killed and reported as `git` ("timed out after 600s"). Verified by `exec::git_never_reads_stdin_or_prompts`.
 
 #### Scenario: Wedged git
 - **WHEN** a git subprocess hangs for 10 minutes
@@ -17,12 +17,12 @@ Every git command on a repository and the `auth check` ls-remote SHALL run with 
 - **THEN** clones, fetches and `auth check` alike get `ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o StrictHostKeyChecking=accept-new`
 
 #### Scenario: Access check ls-remote
-- **WHEN** `auth check` runs `git ls-remote`
-- **THEN** it runs under the same rules as every other git command, the same SSH command and the 10-minute kill included
+- **WHEN** `auth check` runs `git ls-remote` against a server that accepts the connection and then sends nothing
+- **THEN** it runs under the same rules as every other git command: the batch SSH command with its keepalives ends a dead SSH connection, and the 10-minute kill ends anything else with `git` ("timed out after 600s")
 
 #### Scenario: Probe of the user's SSH setting
 - **WHEN** gitpm checks whether `core.sshCommand` is configured
-- **THEN** `git config --get core.sshCommand` runs without a timeout
+- **THEN** `git config --get core.sshCommand` runs with closed stdin and the same 10-minute kill as every other git command
 
 #### Scenario: Catalog download
 - **WHEN** a remote catalog file is fetched

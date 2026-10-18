@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Forking packages of one repository
-`fork ID [ID...]` SHALL accept only IDs of one repository: all installed from the same source, or all packages of the `--from SOURCE` repository (else `invalid_argument` listing each ID with its source). A new fork SHALL start at the newest installed revision of the forked packages (with `--from`: the resolved release or ref), SHALL remove the folders of unforked packages and list exactly the forked folders in `gitpm.json`, in one commit `Fork A, B as me/A, me/B` made without running hooks. A root package SHALL stay the root package of its fork.
+`fork ID [ID...]` SHALL accept only IDs of one repository: all installed from the same source, or all packages of the `--from SOURCE` repository (else `invalid_argument` listing each ID with its source). A new fork SHALL start at the newest installed revision of the forked packages (with `--from`: the resolved release or ref), SHALL remove the folders of unforked packages and list exactly the forked folders in `gitpm.json`, in one commit `Fork A, B as me/A, me/B` made without running hooks; local edits of an installed clone stay uncommitted. A root package SHALL stay the root package of its fork.
 
 #### Scenario: Revisions on diverged histories
 - **WHEN** the installed revisions of the forked packages are not ancestors of the newest one

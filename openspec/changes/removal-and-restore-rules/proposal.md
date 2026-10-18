@@ -16,7 +16,7 @@ Depends on: `no-backward-compat`, `thin-cli-boundary`, `check-via-origin`, `sing
 ## Capabilities
 
 ### Modified Capabilities
-- `dependencies` ("Dependents guard removal"), `fork-replacement` ("Active fork rules", "Replacement is explicit and global", "Switching back"), `dist` ("Enable and disable deploy and remove", "Undeployable packages do not block others"), `install-uninstall` (new "Removing a package whose clone is gone"; "Uninstall is planned and confirmed", "CLI confirmation flow for uninstall"), `errors`, `ffi-bindings`, `cli` ("Errors and exit codes").
+- `dependencies` ("Dependents guard removal"), `fork-replacement` ("Active fork rules", "Replacement is explicit and global", "Switching back"), `dist` ("Enable and disable deploy and remove", "Undeployable packages do not block others"), `install-uninstall` (new "Removing a package whose clone is gone"; "Uninstall is planned and confirmed", "CLI confirmation flow for uninstall"), `errors` ("Display is the complete message": `HasDependents.lost_work`; no new error kind), `ffi-bindings` ("Manager surface", "Errors keep kind and message"), `cli` ("Errors and exit codes").
 
 ## Out of scope
 

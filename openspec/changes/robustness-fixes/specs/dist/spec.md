@@ -9,18 +9,18 @@ Folders under `dist/` that belong to no known package SHALL be left untouched an
 
 #### Scenario: sync-dist with a blocked namespace
 - **WHEN** `dist/acme` is a file, `acme/greeter` is active and the user runs `sync-dist`
-- **THEN** `acme/greeter` is in `skipped` ("dist/acme is not a folder") and `sync-dist` fails with `not_deployed` instead of printing `dist/ already holds exactly the active plugins.`
+- **THEN** `acme/greeter` is in `skipped` ("dist/acme is not a folder") and `sync-dist` fails with `not_deployed` instead of printing `dist/ already holds exactly the active packages.`
 
 #### Scenario: Unknown folder
 - **WHEN** `dist/custom/` exists and belongs to no package
-- **THEN** a mutating command leaves it and the CLI prints `Warning: dist/custom belongs to no known plugin or is not a folder; left as it is`
+- **THEN** a mutating command leaves it and the CLI prints `Warning: dist/custom belongs to no known package or is not a folder; left as it is`
 
 ### Requirement: Deploys copy the committed tree
-Every deploy (install, update, rollback, restore, `replace --back`, enable, reconcile) SHALL copy the package dist `<path>/dist` of the resolved commit from the clone's Git objects, never from the working tree, unchanged by Git attributes. Nested folders and the executable bit SHALL be kept; symlinks SHALL be refused with `unsupported`, while a submodule comes out as an empty folder. Verified by `every_deploy_copies_the_committed_tree_with_nested_files_and_exec_bits`.
+Every deploy (install, update, rollback, restore, `replace --back`, enable, reconcile) SHALL copy the package dist `<path>/dist` of the resolved commit from the clone's Git objects, never from the working tree, unchanged by Git attributes. Nested folders and the executable bit SHALL be kept; symlinks and submodules (gitlinks) SHALL be refused with `unsupported` before anything is deployed. Verified by `every_deploy_copies_the_committed_tree_with_nested_files_and_exec_bits` and `a_submodule_in_dist_is_refused`.
 
 #### Scenario: Symlink inside dist
 - **WHEN** a release's package dist contains a symlink
-- **THEN** the deploy fails with `unsupported` ("symlinks and submodules are not supported: PATH"; the message also names submodules, which are not refused)
+- **THEN** the deploy fails with `unsupported` ("symlinks and submodules are not supported: PATH")
 
 #### Scenario: Uncommitted edits are not deployed
 - **WHEN** a clone has uncommitted changes in `dist/` and the package is re-deployed by `enable`
@@ -28,7 +28,7 @@ Every deploy (install, update, rollback, restore, `replace --back`, enable, reco
 
 #### Scenario: Submodule inside dist
 - **WHEN** a release's `dist/vendor` is a submodule
-- **THEN** the deploy succeeds and `dist/<id>/vendor/` is an empty folder
+- **THEN** install (and every other deploy) fails with `unsupported` ("symlinks and submodules are not supported: dist/vendor") and the workspace is unchanged, instead of deploying an empty `vendor/` folder
 
 #### Scenario: Executable file
 - **WHEN** a release's `dist/bin/run` has the executable bit

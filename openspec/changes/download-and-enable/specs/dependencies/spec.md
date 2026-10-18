@@ -5,7 +5,7 @@
 
 #### Scenario: Disabled dependency
 - **WHEN** `app` requires `lib ^1`, both are installed and disabled, and the user runs `enable app`
-- **THEN** it fails with `dependency_conflict` ("lib is disabled") and nothing changes
+- **THEN** it fails with `dependency_conflict` ("lib is disabled; enable it") and nothing changes
 
 #### Scenario: Forced enable
 - **WHEN** the user runs `enable app --force` in the same workspace
@@ -14,7 +14,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Disabled packages and dependencies
-A disabled package SHALL NOT satisfy a dependency anywhere: `install`, `enable` and single-package `update` of an enabled package SHALL fail with `dependency_conflict` ("DEP is disabled") when a dependency resolves only to a disabled package, and `update all`, `list` and `check` SHALL report it unsatisfied. Only `download`, whose packages stay disabled, MAY take the versions of disabled packages as given. Verified by `disabled_packages_satisfy_no_dependency`.
+A disabled package SHALL NOT satisfy a dependency anywhere: `install`, `enable` and single-package `update` of an enabled package SHALL fail with `dependency_conflict` ("DEP is disabled; enable it") when a dependency resolves only to a disabled package, and `update all`, `list` and `check` SHALL report it unsatisfied. Only `download`, whose packages stay disabled, MAY take the versions of disabled packages as given. Verified by `disabled_packages_satisfy_no_dependency`.
 
 #### Scenario: Dependency on a disabled package in list
 - **WHEN** `app` requires `lib ^1` and `lib` 1.2.0 is installed but disabled

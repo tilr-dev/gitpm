@@ -18,7 +18,7 @@ A catalog whose top-level `catalog.json` has `"verified": true` (set by its owne
 ## MODIFIED Requirements
 
 ### Requirement: One catalog per workspace
-A package installed from a verified catalog, and each dependency pulled from it, SHALL record the catalog's canonical location (`plugins.<id>.catalog`) and is protected (updates). Installing from a second verified catalog SHALL be refused with `catalog` ("… mixing verified catalogs is not supported"); unverified catalogs record nothing and are exempt. There SHALL be no catalog merging, priorities, pinning or default catalog. Verified by `one_catalog_per_workspace`.
+A package installed from a verified catalog, and each dependency pulled from it, SHALL record the catalog's canonical location (`packages.<id>.catalog`) and is protected (updates). Installing from a second verified catalog SHALL be refused with `catalog` ("… mixing verified catalogs is not supported"); unverified catalogs record nothing and are exempt. There SHALL be no catalog merging, priorities, pinning or default catalog. Verified by `one_catalog_per_workspace`.
 
 #### Scenario: Direct install
 - **WHEN** a package is installed with `install GIT_SOURCE`

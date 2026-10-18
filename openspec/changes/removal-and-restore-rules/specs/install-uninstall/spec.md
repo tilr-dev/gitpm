@@ -4,7 +4,7 @@
 `uninstall ID` and `forget ID` of a package recorded in state whose clone no longer exists SHALL succeed without confirmation (there is no lost work): they drop the record and its deployed folder, keep no `forgotten` record, and are still guarded by dependents (dependencies). Verified by `workspace::uninstall_and_forget_of_a_package_without_clone_drop_the_record`.
 
 #### Scenario: Clone deleted by hand
-- **WHEN** `plugins/acme/greeter` was deleted by hand while `acme/greeter` is recorded and active, and the user runs `uninstall acme/greeter`
+- **WHEN** `packages/acme/greeter` was deleted by hand while `acme/greeter` is recorded and active, and the user runs `uninstall acme/greeter`
 - **THEN** it prints `acme/greeter uninstalled`, the record and `dist/acme/greeter/` are gone, and later commands warn no more
 
 #### Scenario: Forget without a clone

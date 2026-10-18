@@ -44,7 +44,7 @@ Installing an installed package again from the same source SHALL change nothing 
 - **THEN** state records the forgotten revisions, `catalog`, `enabled: false` and mode unchanged, and nothing is deployed because it is disabled
 
 #### Scenario: Dirty retained clone
-- **WHEN** `acme/greeter` was forgotten, a file in `plugins/acme/greeter` was edited and the user runs `restore acme/greeter`
+- **WHEN** `acme/greeter` was forgotten, a file in `packages/acme/greeter` was edited and the user runs `restore acme/greeter`
 - **THEN** the command fails with `local_changes` and the package stays out of state
 
 #### Scenario: Unpublished commit in a retained clone
@@ -56,7 +56,7 @@ Installing an installed package again from the same source SHALL change nothing 
 - **THEN** `restore` records that HEAD as `current` and keeps branch mode `main`
 
 ### Requirement: Three removal levels
-gitpm SHALL offer three removal levels: `disable` (keep everything, set `enabled: false`, remove `dist/<id>`), `forget` (drop the package from `plugins` in state, keep the clone and a `forgotten` record, remove `dist/<id>`) and `uninstall` (remove the state entry, the clone and `dist/<id>`). `restore ID` SHALL record a forgotten package in state again. All three removals are guarded as in dependencies ("Dependents guard removal"). Verified by `lifecycle_and_three_removal_levels`.
+gitpm SHALL offer three removal levels: `disable` (keep everything, set `enabled: false`, remove `dist/<id>`), `forget` (drop the package from `packages` in state, keep the clone and a `forgotten` record, remove `dist/<id>`) and `uninstall` (remove the state entry, the clone and `dist/<id>`). `restore ID` SHALL record a forgotten package in state again. All three removals are guarded as in dependencies ("Dependents guard removal"). Verified by `lifecycle_and_three_removal_levels`.
 
 #### Scenario: Uninstall one package of a shared clone
 - **WHEN** another package still uses the shared clone of the package being uninstalled

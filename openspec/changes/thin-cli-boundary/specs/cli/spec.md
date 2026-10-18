@@ -53,7 +53,7 @@ Every workspace-mutating command (`install`, `install-catalog`, `update`, `updat
 
 #### Scenario: Filter by service
 - **WHEN** the user runs `gitpm list --provides theme`
-- **THEN** the library filters `plugins` and `resolved` as specified in plugin-metadata ("Filter by provided service"); the CLI only prints the result
+- **THEN** the library filters `packages` and `resolved` as specified in plugin-metadata ("Filter by provided service"); the CLI only prints the result
 
 #### Scenario: Absent optional fields
 - **WHEN** a package has no fork, replacement, catalog, folder, shared clone or dependencies
@@ -61,7 +61,7 @@ Every workspace-mutating command (`install`, `install-catalog`, `update`, `updat
 
 #### Scenario: list
 - **WHEN** one package is installed
-- **THEN** `gitpm list` prints a JSON object with `plugins` and a `resolved` array of one entry, without locking or creating the workspace (transactions-locking, "Workspace lock")
+- **THEN** `gitpm list` prints a JSON object with `packages` and a `resolved` array of one entry, without locking or creating the workspace (transactions-locking, "Workspace lock")
 
 ### Requirement: Warnings go to stderr
 The CLI SHALL print every warning a library result carries (ignored metadata keys, skipped release tags, and the dist report's `unmanaged` paths and `skipped` packages, dist "Mutating results carry the dist report") to stderr as `Warning: …` lines; it SHALL NOT derive warnings from anything but the result. Verified by `any_mutating_command_reconciles_the_whole_dist`.
@@ -70,12 +70,16 @@ The CLI SHALL print every warning a library result carries (ignored metadata key
 - **WHEN** an install skips a broken historical tag
 - **THEN** stderr contains `Warning: skipped release tag NAME: reason`, taken from `InstallResult.skipped`
 
+#### Scenario: Skipped tag on update
+- **WHEN** `update ID` or `update all` skips a broken historical tag
+- **THEN** stderr contains the same `Warning: skipped release tag NAME: reason` line, taken from `RevisionChange.skipped`
+
 ### Requirement: Errors and exit codes
 On failure the CLI SHALL print `Error: MESSAGE` to stderr, for a library error also `Error kind: KIND` (and for `local_changes` one `  - item` line per lost item) and, for kinds where a gitpm command helps, one `Hint: …` line naming that command; CLI usage errors print no kind. It SHALL exit with status 1 on failure and 0 on success. Verified by `uninstall_without_tty_refuses_and_lists_lost_work_including_stash`.
 
 #### Scenario: Unknown ID
 - **WHEN** the user runs `gitpm update acme/none`
-- **THEN** stderr has `Error: plugin acme/none is not installed` and `Error kind: not_installed`, and the exit status is 1
+- **THEN** stderr has `Error: package acme/none is not installed` and `Error kind: not_installed`, and the exit status is 1
 
 #### Scenario: Command hint
 - **WHEN** the user installs `acme/greeter` again after forgetting it while its clone is retained

@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Installed package record
-Single source for the record format: each `state.json` `plugins.<id>` record SHALL hold `source`, `current`/`previous` revisions (`version`, `commit`), `enabled`, `mode` (omitted in release mode, else `{"pinned": REF}` or `{"branch": NAME}`), and when present `forkOf`, `dependencies`, `replaces`, `catalog` (protecting verified catalog), `clone` (shared-clone key), `path` and `metadata`. At most one previous revision SHALL be kept. Verified by `model::state_round_trips_byte_for_byte`.
+Single source for the record format: each `state.json` `packages.<id>` record SHALL hold `source`, `current`/`previous` revisions (`version`, `commit`), `enabled`, `mode` (omitted in release mode, else `{"pinned": REF}` or `{"branch": NAME}`), and when present `forkOf`, `dependencies`, `replaces`, `catalog` (protecting verified catalog), `clone` (shared-clone key), `path` and `metadata`. At most one previous revision SHALL be kept. Verified by `model::state_round_trips_byte_for_byte`.
 
 #### Scenario: Fresh install has no previous revision
 - **WHEN** a package was just installed

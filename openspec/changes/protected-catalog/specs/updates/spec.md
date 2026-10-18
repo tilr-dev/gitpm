@@ -18,7 +18,7 @@ A protected package (recorded `catalog`) SHALL update only to versions its verif
 ## MODIFIED Requirements
 
 ### Requirement: Updates need no catalog
-`update ID` (any mode) and `update all` SHALL read releases and branches from the origin of the package's clone (set from `plugins.<id>.source`) and SHALL NOT read a catalog for unprotected packages, so they work without one (protected ones: "Protected packages update through their catalog"); `check` reads the same origin for packages the catalog does not list (catalog). Verified by `workspace::update_and_rollback_swap_revisions_and_redeploy` (no catalog configured).
+`update ID` (any mode) and `update all` SHALL read releases and branches from the origin of the package's clone (set from `packages.<id>.source`) and SHALL NOT read a catalog for unprotected packages, so they work without one (protected ones: "Protected packages update through their catalog"); `check` reads the same origin for packages the catalog does not list (catalog). Verified by `workspace::update_and_rollback_swap_revisions_and_redeploy` (no catalog configured).
 
 #### Scenario: New dependency without a catalog
 - **WHEN** no catalog is configured and the newest release of a package adds a dependency that is not installed

@@ -9,6 +9,8 @@
 - Cap the bytes read from curl's stdout at 16 MiB regardless of headers (stream the child's stdout and kill curl when the cap is exceeded), reporting `http`.
 - Keep the existing timeouts, protocol and redirect rules.
 
+Depends on: `robustness-fixes` (the last change of the 2026-10-18 chain). `cli-catalog-commands` and `embedded-git-and-http` build on this change.
+
 ## Capabilities
 
 ### Modified Capabilities

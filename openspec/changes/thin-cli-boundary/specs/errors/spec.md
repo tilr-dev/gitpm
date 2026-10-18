@@ -17,7 +17,7 @@ Every failure SHALL be a `gitpm::Error` whose `kind()` is one of: not_installed,
 
 #### Scenario: Kind of a missing package
 - **WHEN** `update`, `rollback`, `enable`, `disable`, `forget` or `fork` names an ID that is not installed
-- **THEN** the error kind is `not_installed` ("plugin ID is not installed")
+- **THEN** the error kind is `not_installed` ("package ID is not installed")
 - **AND** this is covered by `error::every_variant_has_its_stable_kind` and `workspace::every_operation_on_a_missing_id_fails_without_changes`
 
 #### Scenario: Removal of an unknown package

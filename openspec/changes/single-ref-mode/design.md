@@ -7,18 +7,18 @@
 ## State field shape
 
 ```json
-"plugins": {
+"packages": {
   "acme/a": { "source": "…", "current": {…}, "enabled": true },
   "acme/b": { "…": "…", "mode": { "pinned": "acme/b@1.0.0" } },
   "acme/c": { "…": "…", "mode": { "branch": "main" } }
 }
 ```
 
-- `mode` is omitted in release mode (the common case keeps records short; omission is not a compatibility shim because format 2 files are refused).
+- `mode` is omitted in release mode (the common case keeps records short; omission is not a compatibility shim because older formats are refused).
 - `pinned` holds the ref as the user gave it (tag name or full commit); `current.commit` is the truth, the ref is for display and `check`.
 - `branch` holds the branch name. `--dev` resolves the origin's default branch at install (`git remote set-head origin --auto`) and records its name, so a later rename of the default branch does not silently switch what the package follows.
 - Rust: `enum Mode { Release, Pinned(String), Branch(String) }` with `#[serde(skip_serializing_if = "Mode::is_release")]`; FFI `enum Target { Release, Ref(String), Dev, Recorded }` (install rejects `Recorded` at the type level by taking `InstallTarget` without it).
-- `state.json` `"format": 3`.
+- `state.json` stays `"format": 3`: `no-backward-compat` introduces it in the same release 0.6.0, so no released gitpm wrote format 3 without `mode`; no extra bump.
 
 ## Decisions
 
@@ -30,8 +30,8 @@
 
 ## Transactions and crash recovery
 
-Mode changes are part of the same state.json write as the revision change; no new staged paths. Restore stages the record move from `forgotten` to `plugins` and the deploy in one transaction, as today for shared clones. A crash before commit leaves the forgotten record; after commit the journal rolls forward.
+Mode changes are part of the same state.json write as the revision change; no new staged paths. Restore stages the record move from `forgotten` to `packages` and the deploy in one transaction, as today for shared clones. A crash before commit leaves the forgotten record; after commit the journal rolls forward.
 
 ## Risks
 
-- Every existing workspace must be re-created (format 3). Documented in README "Changed in 0.6".
+- Every existing workspace must be re-created (format 3 of 0.6.0). Documented in README "Changed in 0.6".

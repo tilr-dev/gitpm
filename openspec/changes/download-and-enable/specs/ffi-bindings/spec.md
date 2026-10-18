@@ -1,15 +1,15 @@
 ## MODIFIED Requirements
 
 ### Requirement: Manager surface
-`PluginManager` SHALL be opened with `open(root, ManagerOptions)` and expose every workspace operation that takes the lock (catalog reads, install, updates, rollback, enable/disable, forget/restore, uninstall, fork, replace, switch back, sync-dist, with their plans); free functions SHALL be `list`, `check`, `readState`, `readInstalled`, `catalogLinks`, `authCheck`, `browseCatalog`, `catalogRelease`, `describeLostWork`. Author and catalog-writing commands are not exposed.
+`PackageManager` SHALL be opened with `open(root, ManagerOptions)` and expose every workspace operation that takes the lock (catalog reads, install, updates, rollback, enable/disable, forget/restore, uninstall, fork, replace, switch back, sync-dist, with their plans); free functions SHALL be `list`, `check`, `readState`, `catalogLinks`, `authCheck`, `browseCatalog`, `catalogRelease`, `describeLostWork`. Author and catalog-writing commands are not exposed.
 
 #### Scenario: Which calls open the workspace
-- **WHEN** a host calls a `PluginManager` method, or one of the free functions `list`, `check`, `readState`, `readInstalled`
+- **WHEN** a host calls a `PackageManager` method, or one of the free functions `list`, `check`, `readState`
 - **THEN** the method works on the opened (locked) workspace, while the free functions read `state.json` without opening, locking or creating it (transactions-locking, "Workspace lock"); `authCheck(source, customSsh)` takes the SSH setting explicitly
 
 #### Scenario: Catalog reads with and without a workspace
 - **WHEN** a host needs the catalog overview or the links of one catalog level
-- **THEN** `PluginManager.browseCatalog`/`catalogRelease` read the catalog of `ManagerOptions.catalog`, and the free functions `browseCatalog`, `catalogRelease` and `catalogLinks` take an explicit location without opening a workspace
+- **THEN** `PackageManager.browseCatalog`/`catalogRelease` read the catalog of `ManagerOptions.catalog`, and the free functions `browseCatalog`, `catalogRelease` and `catalogLinks` take an explicit location without opening a workspace
 
 #### Scenario: Update channel
 - **WHEN** a host calls `install(source, package, target)` or `update(id, target)`
@@ -22,7 +22,7 @@
 
 #### Scenario: Method names
 - **WHEN** Swift bindings are generated
-- **THEN** `PluginManager` has `install` (optional `package`), `installFromCatalog`, `download`, `downloadFromCatalog`, `update`, `updateAllPlan`, `updateAll`, `rollback`, `enable(force)`, `disable(force)`, `forget(force)`, `restore`, `uninstallPlan`, `uninstall(confirm, force)`, `fork`, `forkAndReplace`, `forkPackages`, `forkPackagesAndReplace`, `forkReplaceResume`, `replacePlan`, `replace`, `switchBackPlan`, `switchBack`, `syncDistPlan` and `syncDist`; `check` is a free function, not a method
+- **THEN** `PackageManager` has `install` (optional `package`), `installFromCatalog`, `download`, `downloadFromCatalog`, `update`, `updateAllPlan`, `updateAll`, `rollback`, `enable(force)`, `disable(force)`, `forget(force)`, `restore`, `uninstallPlan`, `uninstall(confirm, force)`, `fork`, `forkAndReplace`, `forkPackages`, `forkPackagesAndReplace`, `forkReplaceResume`, `replacePlan`, `replace`, `switchBackPlan`, `switchBack`, `syncDistPlan` and `syncDist`; `check` is a free function, not a method
 
 #### Scenario: Catalog generation is not exposed
 - **WHEN** a host looks for `catalog-update`, `register`, `init` or `commit` in the bindings

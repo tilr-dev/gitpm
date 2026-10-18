@@ -1,11 +1,11 @@
 ## MODIFIED Requirements
 
 ### Requirement: Catalog v2 is a tree of static files
-A catalog SHALL be a tree of JSON files holding only links: `catalog.json` and directory files `{"schema": 2, "directories": {…}}`, a catalog plugin index `namespaces/<ns>/<name>/plugin.json` `{"schema": 2, "id", "source", "versions"}` per package, and one `versions/<V>/release.json` per version. Lookup by ID SHALL NOT walk the tree. Any other schema value, a v1 monolithic `catalog.json` included, SHALL be refused with `catalog`.
+A catalog SHALL be a tree of JSON files holding only links: `catalog.json` and directory files `{"schema": 2, "directories": {…}}`, a catalog package index `namespaces/<ns>/<name>/plugin.json` `{"schema": 2, "id", "source", "versions"}` per package, and one `versions/<V>/release.json` per version. Lookup by ID SHALL NOT walk the tree. Any other schema value, a v1 monolithic `catalog.json` included, SHALL be refused with `catalog`.
 
 #### Scenario: Unknown schema
-- **WHEN** a directory file or catalog plugin index has `"schema": 3`
-- **THEN** reading it fails with `catalog` ("unsupported catalog schema", or "unsupported plugin schema" for the index; a `state.json` of another format is `unsupported` instead, see errors)
+- **WHEN** a directory file or catalog package index has `"schema": 3`
+- **THEN** reading it fails with `catalog` ("unsupported catalog schema", or "unsupported package schema" for the index; a `state.json` of another format is `unsupported` instead, see errors)
 
 #### Scenario: v1 catalog
 - **WHEN** the catalog location is a monolithic v1 `catalog.json`

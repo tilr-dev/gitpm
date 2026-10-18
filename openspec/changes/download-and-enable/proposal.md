@@ -8,8 +8,8 @@ The owner decided on 2026-10-18 (decision D7, TILR-36) that a disabled package d
 
 - New `download SOURCE [ID] [--package ID] [--ref REF | --dev]` and `download-catalog ID [--version V]` (library `Manager::download`, `download_from_catalog`; FFI `download`, `downloadFromCatalog`): clone, verify and record with `enabled: false`; missing dependencies are downloaded disabled; nothing is deployed.
 - `install`/`install-catalog` = download + enable of the package and the dependencies it pulled, in one transaction.
-- **BREAKING** A disabled package never satisfies a dependency: install/enable/update of an enabled consumer fails with `dependency_conflict` ("DEP is disabled").
-- **BREAKING** `enable ID` refuses with `dependency_conflict` when a dependency is not satisfied by an active package; `enable --force` (FFI `enable(force)`) enables anyway and leaves the consumer reported broken. `enable` never enables dependencies itself.
+- **BREAKING** A disabled package never satisfies a dependency: install/enable/update of an enabled consumer fails with `dependency_conflict` ("DEP is disabled; enable it").
+- **BREAKING** `enable ID` refuses with `dependency_conflict` when a dependency is not satisfied by an active package (for a disabled one: "DEP is disabled; enable it"); `enable --force` (FFI `enable(force)`) enables anyway and leaves the consumer reported broken. `enable` never enables dependencies itself.
 
 Depends on: `no-backward-compat`, `thin-cli-boundary`, `check-via-origin`, `single-ref-mode`.
 
@@ -24,7 +24,7 @@ Depends on: `no-backward-compat`, `thin-cli-boundary`, `check-via-origin`, `sing
 
 ## Out of scope
 
-- Automatic enabling of dependencies by `enable` (see design.md).
+- Automatic enabling of dependencies by `enable` (rejected by the owner; see design.md).
 - Host activation policies (which provider of a service is enabled): host concern.
 
 ## Impact

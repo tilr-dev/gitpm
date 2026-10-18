@@ -32,7 +32,7 @@ The CLI SHALL offer exactly the commands of its full usage (`gitpm --help`), eac
 
 #### Scenario: Filter by service
 - **WHEN** the user runs `gitpm list --provides theme`
-- **THEN** the library filters `plugins` and `resolved` as specified in plugin-metadata ("Filter by provided service"); the CLI only prints the result
+- **THEN** the library filters `packages` and `resolved` as specified in plugin-metadata ("Filter by provided service"); the CLI only prints the result
 
 #### Scenario: Absent optional fields
 - **WHEN** a package has no fork, replacement, catalog, folder, shared clone or dependencies
@@ -40,7 +40,7 @@ The CLI SHALL offer exactly the commands of its full usage (`gitpm --help`), eac
 
 #### Scenario: list
 - **WHEN** one package is installed
-- **THEN** `gitpm list` prints a JSON object with `plugins` and a `resolved` array of one entry, without locking or creating the workspace (transactions-locking, "Workspace lock")
+- **THEN** `gitpm list` prints a JSON object with `packages` and a `resolved` array of one entry, without locking or creating the workspace (transactions-locking, "Workspace lock")
 
 #### Scenario: Protected package in list
 - **WHEN** a package is protected by a verified catalog

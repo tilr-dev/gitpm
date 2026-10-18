@@ -5,6 +5,29 @@
 
 ## MODIFIED Requirements
 
+### Requirement: Local work blocks update and rollback
+Update and rollback SHALL refuse with `local_changes` when the clone has any lost-work item (list in install-uninstall, "Uninstall is planned and confirmed"), staged files included. Both SHALL classify tags the same way: a tag that the origin had with the same object at the last fetch is published, not `UnpublishedTag`; rollback stays offline and uses the tags of that last fetch. Verified by `local_work_blocks_update_and_rollback`, `update_and_rollback_refuse_hidden_local_work` and `rollback_of_a_fork_treats_fetched_upstream_tags_as_published`.
+
+#### Scenario: Moved HEAD blocks rollback
+- **WHEN** the clone's HEAD was moved away from the installed commit and the user runs `rollback ID`
+- **THEN** rollback fails with `local_changes` listing `HeadMoved`
+
+#### Scenario: Fork, update, rollback
+- **WHEN** `me/hello`, a fork whose repository also holds its upstream's tags (for example `acme/hello@1.0.0`), is installed at 1.0.0, updated to 1.1.0, and the user runs `rollback me/hello`
+- **THEN** the upstream tags fetched from the fork's origin count as published, as they did for the update, and rollback prints `me/hello rolled back 1.1.0 → 1.0.0` without a network access
+
+#### Scenario: Retained upstream tag on rollback
+- **WHEN** the clone of a fork keeps a tag of its upstream that no remote branch contains, and the fork's origin had that tag with the same object at the last fetch, and the user runs `rollback`
+- **THEN** rollback works offline and counts the tag as published, as `update` does, so it does not fail with `local_changes` because of it
+
+#### Scenario: Tag created locally
+- **WHEN** a tag was created in the clone by hand and no fetch from the origin brought it
+- **THEN** update and rollback alike fail with `local_changes` listing `UnpublishedTag`
+
+#### Scenario: Stash blocks update
+- **WHEN** the clone has a stash entry and the user runs `update ID`
+- **THEN** update fails with `local_changes` and nothing changes
+
 ### Requirement: Stable update never downgrades
 A stable update SHALL compare versions only and SHALL never downgrade. When the installed release was retracted (tag deleted on the origin) and only older ones remain, the package SHALL stay and be reported up to date with the warning `installed release ID@V no longer exists on the origin`; when the tag of the installed version moved, it SHALL stay up to date with the warning `release tag ID@V now points to COMMIT; the installed commit is kept`. Verified by `stable_update_never_downgrades`.
 

@@ -6,7 +6,7 @@ The owner decided on 2026-10-18 (decision D10, TILR-42) that a package declares 
 
 ## What Changes
 
-- Manifest key `host` `{"<name>": "<range>"}` (ranges in the dependency syntax of `pre-release-versions`), validated with `invalid_manifest`, written back unchanged; reported in `list`, catalog summaries and FFI records (`{}` when absent).
+- Manifest key `host` `{"<name>": "<range>"}` (ranges in the dependency syntax of `pre-release-versions`), validated with `invalid_manifest`, written back unchanged; reported in `list`, catalog summaries and FFI records (`{}` when absent). Catalog summaries (`browse`, `PackageSummary`) read `host` from the latest release record, as they read the other metadata today; `catalog-metadata-index` later moves it into the catalog package index.
 - `Options.host` `{name, version}` (CLI `--host NAME@VERSION` / `GITPM_HOST`; FFI `ManagerOptions.host`). Without it nothing is filtered.
 - Install, `install-catalog`, `download`, update and `update all` pick the newest compatible release; none, or an explicit ref/version that does not fit, fails with the new error kind `incompatible_host`; `update all` keeps the package back with reason `needs NAME RANGE`.
 - `check` notes `V needs NAME RANGE` for a newer release that does not fit, instead of offering it; the catalog release record carries `host` inside its manifest.
@@ -21,7 +21,7 @@ Depends on: `no-backward-compat`, `thin-cli-boundary`, `check-via-origin`, `sing
 - `updates`: new "Releases are chosen for the host".
 - `install-uninstall`: new "Install respects the host".
 - `catalog`: new "Host ranges in the catalog".
-- `errors`: "Stable error kinds" (`incompatible_host`).
+- `errors`: "Stable error kinds" adds `incompatible_host`; the rest of the list and its scenarios are as `thin-cli-boundary` left them (no other change of the chain touches it), so this delta is the complete list.
 - `cli`: "Settings come from flags, environment, defaults" (`--host`, `GITPM_HOST`).
 - `ffi-bindings`: new "Host in ManagerOptions".
 
@@ -29,7 +29,6 @@ Depends on: `no-backward-compat`, `thin-cli-boundary`, `check-via-origin`, `sing
 
 - Any host-specific name or semantics in the library (Tilr chooses its own name and version).
 - Compatibility between packages beyond `dependencies`.
-- Indexing host ranges in the catalog plugin index (`catalog-metadata-index`).
 
 ## Impact
 

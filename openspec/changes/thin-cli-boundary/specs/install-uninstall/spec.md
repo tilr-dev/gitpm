@@ -19,7 +19,7 @@ Installing an ID that is installed from a different source (including a `file://
 - **THEN** the command fails with `already_installed`
 
 #### Scenario: Forgotten but retained
-- **WHEN** `acme/greeter` was forgotten and its clone `plugins/acme/greeter` is retained, and the user installs it again
+- **WHEN** `acme/greeter` was forgotten and its clone `packages/acme/greeter` is retained, and the user installs it again
 - **THEN** the command fails with `already_installed` ("acme/greeter was forgotten and its clone is kept") and the workspace is unchanged
 - **AND** the message names no command; the CLI adds a `Hint:` line naming `gitpm restore ID` and `gitpm uninstall ID` (the same holds for a forgotten package of a shared clone)
 

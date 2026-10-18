@@ -2,7 +2,7 @@
 
 ## Context
 
-Today every `install-catalog` verifies the release against the catalog and records `plugins.<id>.catalog`; afterwards updates read only the origin (`updates` "Updates need no catalog"), so the hash check protects the first install only. Decision D4 (TILR-34) ties protection to a verified catalog and keeps unverified catalogs as discovery.
+Today every `install-catalog` verifies the release against the catalog and records `packages.<id>.catalog`; afterwards updates read only the origin (`updates` "Updates need no catalog"), so the hash check protects the first install only. Decision D4 (TILR-34) ties protection to a verified catalog and keeps unverified catalogs as discovery.
 
 ## Open points, resolved
 

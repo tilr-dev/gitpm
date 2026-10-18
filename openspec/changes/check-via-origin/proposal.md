@@ -22,7 +22,7 @@ Depends on: `no-backward-compat`, `thin-cli-boundary` (FFI free `check`, neutral
 - `package-manifest`: "Known manifest keys" (`forkOf.source`).
 - `fork-replacement`: "Fork metadata", "check shows fork upstream".
 - `cli`: "Commands that need a catalog say so".
-- `ffi-bindings`: "Records mirror library results".
+- `ffi-bindings`: new "Check report record" (adds the `CheckReport` record to the records of `thin-cli-boundary`).
 
 ## Out of scope
 

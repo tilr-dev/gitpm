@@ -16,14 +16,14 @@ Today versions are `MAJOR.MINOR.PATCH` only (`catalog::version_key` refuses anyt
 ## Capabilities
 
 ### Modified Capabilities
-- `package-ids`: "Version format" (pre-releases, SemVer order, build metadata refused).
+- `package-ids`: "Version format" (pre-releases, SemVer order, build metadata refused); "Release tag names" (`ID@1.3.0-beta.1` is a release tag).
 - `dependencies`: "Requirement syntax" (npm ranges, bare version exact, pre-release matching).
 - `updates`: new "Major updates are marked", "Pre-releases are opt-in"; "Stable update moves to the newest release", "Joint upgrade of all packages".
 - `install-uninstall`: "Install the latest release of a Git source" (pre-releases not picked).
 - `authoring`: "commit releases a version" (pre-release versions, build metadata refused).
 - `catalog`: new "Catalog versions follow SemVer and show pre-releases" (ordering, latest excludes pre-releases, `check` marks `(major)`).
 - `cli`: "One output line per affected package" (`(major)`).
-- `ffi-bindings`: "Records mirror library results" (`major`, `prerelease`).
+- `ffi-bindings`: new "Major and pre-release flags in records" (adds `major`, `prerelease`).
 
 `fork-replacement` and `multi-package-repos` need no delta: fork rewrites already write `^V`.
 
@@ -38,4 +38,4 @@ Depends on: `no-backward-compat`, `thin-cli-boundary`, `check-via-origin`, `sing
 
 ## Impact
 
-`crates/gitpm/src/deps.rs` (requirement parser, solver ranges), `catalog.rs` (`version_key`, ordering), release discovery, `upgrade.rs`/update selection, `check.rs`, scaffold/fork dependency writing, CLI output and `--version` validation, FFI records unchanged, README "Changed in". Tracker: TILR-41.
+`crates/gitpm/src/deps.rs` (requirement parser, solver ranges), `catalog.rs` (`version_key`, ordering), release discovery, `upgrade.rs`/update selection, `check.rs`, scaffold/fork dependency writing, CLI output and `--version` validation, FFI records (`major`, `prerelease`), README "Changed in 0.6". Tracker: TILR-41.

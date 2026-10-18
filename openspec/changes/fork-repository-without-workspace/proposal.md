@@ -19,6 +19,8 @@
 - `multi-package-repos`: "Forking packages of one repository" (the same repository: the installed source or `--from`).
 - `cli`: "Option validation" (`--from` and `--ref` are valid for `fork`; `--ref` without `--from` and `--replace` with `--from` are refused).
 
+The existing contracts this change widens are modified, not left contradicting it: fork-replacement "Only installed IDs are accepted" (now: without `--from`), multi-package-repos "accept only IDs installed from the same repository" (now: or all of the `--from` repository), cli "Option validation" (today `--ref` is a misplaced option for `fork`; now it is valid only with `--from`).
+
 ## Out of scope
 
 - `--replace` together with `--from`.
@@ -27,4 +29,6 @@
 
 ## Impact
 
-`crates/gitpm/src/workspace/fork.rs` (shared fork logic, new free function), `crates/gitpm-ffi/src/lib.rs` (`forkSource`), `crates/gitpm-cli/src/main.rs` (option parsing), README fork section and `crates/gitpm-cli/README.md`. Tracker: TILR-14. The `cli` delta touches "Option validation", which `cli-catalog-commands` also modifies; whichever is archived second rebases its block on the first.
+`crates/gitpm/src/workspace/fork.rs` (shared fork logic, new free function), `crates/gitpm-ffi/src/lib.rs` (`forkSource`), `crates/gitpm-cli/src/main.rs` (option parsing), README fork section and `crates/gitpm-cli/README.md`. Tracker: TILR-14.
+
+Depends on: `catalog-metadata-index` (and through it `cli-catalog-commands`, `catalog-streaming-size-limit` and the whole 2026-10-18 chain); its cli "Option validation" is the block `cli-catalog-commands` leaves, plus the `--from` rules.

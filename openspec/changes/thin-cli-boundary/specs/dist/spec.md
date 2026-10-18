@@ -5,7 +5,7 @@ Every mutating library operation SHALL return, inside its result, the reconcilia
 
 #### Scenario: Unknown folder in an install result
 - **WHEN** `dist/custom/` belongs to no package and the user installs `acme/greeter`
-- **THEN** the `InstallResult` lists `dist/custom` in its dist report's `unmanaged`, and the CLI prints `Warning: dist/custom belongs to no known plugin or is not a folder; left as it is`
+- **THEN** the `InstallResult` lists `dist/custom` in its dist report's `unmanaged`, and the CLI prints `Warning: dist/custom belongs to no known package or is not a folder; left as it is`
 
 #### Scenario: Skipped package in an enable result
 - **WHEN** the clone of an active package is missing and the user enables another package
@@ -22,7 +22,7 @@ Every mutating library operation SHALL return, inside its result, the reconcilia
 
 #### Scenario: Nothing to do
 - **WHEN** `dist/` already matches the active packages (unmanaged paths may exist; they are only warned about)
-- **THEN** `sync-dist` prints `dist/ already holds exactly the active plugins.` and exits 0
+- **THEN** `sync-dist` prints `dist/ already holds exactly the active packages.` and exits 0
 
 #### Scenario: Dry run
 - **WHEN** the user runs `sync-dist --dry-run` on a drifted workspace
