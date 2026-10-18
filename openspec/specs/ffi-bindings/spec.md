@@ -25,7 +25,7 @@ The FFI crate SHALL generate the Swift module `Gitpm` over the C module `GitpmFF
 - **THEN** `PackageManager.browseCatalog`/`catalogRelease` read the catalog of `ManagerOptions.catalog`, and the free functions `browseCatalog`, `catalogRelease` and `catalogLinks` take an explicit location without opening a workspace
 
 #### Scenario: Install and update targets
-- **WHEN** a host calls `install(source, target, package, force)`, `download(source, target, package)` or `update(id, target)`
+- **WHEN** a host calls `install(source, target, package, force)`, `download(source, target, package)` or `update(id, target, detach)`
 - **THEN** `install` and `download` take the `InstallTarget` enum `Release`, `Ref(reference)` or `Dev`, and `update` the `Target` enum with the same cases plus `Recorded` (following the recorded mode); the former `Channel` enum is gone
 
 #### Scenario: Round trip
@@ -129,3 +129,14 @@ The warnings of moved and retracted release tags SHALL reach the host: `Revision
 #### Scenario: Retracted release from Swift
 - **WHEN** the origin deleted the tag of the installed release and a host calls `updateAll`
 - **THEN** the package is in `unchanged` with the warning `installed release ID@V no longer exists on the origin`
+
+### Requirement: Catalog verification in records
+FFI records SHALL carry every field protected catalogs add: `CheckReport.catalogVerified`, the status `upstreamNotInCatalog` with `CheckRow.originLatest`, `CatalogOverview.verified`, `RevisionChange.detached`, `UnchangedReason.notInCatalog(version)` and `UnchangedReason.catalogUnavailable(reason)`; `update(id, target, detach)` SHALL take the detach flag (default `false`). Verified by `records_convert_field_by_field`.
+
+#### Scenario: Verified catalog from Swift
+- **WHEN** a host calls `check(root, location)` with a catalog whose `catalog.json` has `"verified": true`
+- **THEN** the report has `catalogVerified` true, and a protected package whose origin has a release the catalog lacks has status `upstreamNotInCatalog`, `originLatest` that version and `statusMessage` `upstream V not in catalog`
+
+#### Scenario: Detach from Swift
+- **WHEN** a host calls `update(id, .recorded, detach: true)` on a protected package
+- **THEN** the returned `RevisionChange.detached` names the catalog location, and a later `update(id, .recorded)` without a detach on a protected package that stays returns `unchangedReason` `notInCatalog(version)` when the origin is ahead of the catalog

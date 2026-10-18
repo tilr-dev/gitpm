@@ -35,3 +35,7 @@ Depends on: `no-backward-compat`, `thin-cli-boundary`, `check-via-origin`, `sing
 ## Impact
 
 `catalog.rs` (flag, writer refusal), `workspace.rs` (install records, protected update path, detach), `upgrade.rs` (catalog candidates), `check.rs`, CLI `--detach` and check header, FFI, README catalog section and "Changed in 0.6".
+
+## Implementation
+
+Implemented in commit ae7afda (`feat!: verified catalogs protect the packages installed from them`).

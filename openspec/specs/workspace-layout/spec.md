@@ -44,7 +44,7 @@ Opening a non-empty directory that has no `state.json` SHALL fail with `workspac
 - **THEN** opening the state fails with `unsupported`
 
 ### Requirement: Installed package record
-Each `state.json` `packages.<id>` record (the single source for its format) SHALL hold `source`, `current` and `previous` revisions (`version`, `commit`; `previous` its `mode`), `enabled`, `mode` (`{"pinned": REF}`, `{"branch": NAME}`, omitted for releases), and when present `forkOf`, `dependencies`, `replaces`, `catalog` (canonical location), `clone` (shared-clone key), `path` and `metadata`. At most one previous revision SHALL be kept. Verified by `model::state_round_trips_byte_for_byte`.
+Each `state.json` `packages.<id>` record (single source for its format) SHALL hold `source`, `current` and `previous` revisions (`version`, `commit`; `previous` also `mode`), `enabled`, `mode` (`{"pinned": REF}`, `{"branch": NAME}`, omitted for releases), and when present `forkOf`, `dependencies`, `replaces`, `catalog` (protecting verified catalog), `clone` (shared-clone key), `path` and `metadata`. At most one `previous` SHALL be kept. Verified by `model::state_round_trips_byte_for_byte`.
 
 #### Scenario: Fresh install has no previous revision
 - **WHEN** a package was just installed

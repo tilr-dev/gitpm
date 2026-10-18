@@ -19,5 +19,5 @@
 
 - [x] 4.1 Dagger: verified catalog install → update to catalog-only versions → detach; tampered release refused on update; verify `./itests/dt --only scenarios` (`uc_057`: `update_keeps_original_source`, `protected_update_check_and_detach`, `tampered_release_refused_on_update`, `unverified_catalog_is_exempt`, `catalog_update_refused_for_a_verified_catalog`; fixtures `g4_two_catalogs` and `g6_journey` verified)
 - [x] 4.2 README catalog section (verified vs discovery, register-only, detach) and "Changed in 0.6" (BREAKING: unverified catalogs no longer bind packages; catalog-update refused for verified); verify by reading against the specs
-- [ ] 4.4 At archive: re-anchor the protected-catalog cases of `itests/scenarios/uc_057.py` at `catalog/verified-catalogs` and `updates/protected-packages-update-through-their-catalog`; verify `./itests/dt --only scenarios --filter uc_057` (registry check)
+- [x] 4.4 At archive: re-anchor the protected-catalog cases of `itests/scenarios/uc_057.py` at `catalog/verified-catalogs` and `updates/protected-packages-update-through-their-catalog`; verify `./itests/dt --only scenarios --filter uc_057` (registry check)
 - [x] 4.3 Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace`

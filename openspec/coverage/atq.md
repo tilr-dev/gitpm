@@ -164,7 +164,7 @@ Spec references read `capability › Requirement › Scenario`; several scenario
 | 028.2 | manifest, source, commit, reference, file digests and sizes match Git | catalog › Release record | covered |  |
 | 028.3 | adding a release preserves previous records and other plugins | catalog › Published versions are immutable | covered |  |
 | 029.1 | install exact and numeric latest at the registered commit | install-uninstall › Install from the catalog | covered |  |
-| 029.2 | tampered manifest, size, hash, commit refused before any change | install-uninstall › Install from the catalog › Tampered dist | covered | `protected-catalog` (D4, TILR-34) limits hash checks to verified catalogs |
+| 029.2 | tampered manifest, size, hash, commit refused before any change | install-uninstall › Install from the catalog › Tampered dist | covered | `protected-catalog` (archived 2026-10-18, D4, TILR-34): every `install-catalog` checks hashes; updates check them only for packages protected by a verified catalog |
 | 029.3 | unknown ID / version fail cleanly | install-uninstall › Install from the catalog; errors › Errors name the package | covered |  |
 | 030.1 | paired HTTPS build URL + SHA-256 stored | catalog › Register one version | covered |  |
 | 030.2 | single field, malformed hash, non-HTTPS rejected | catalog › Register one version › Invalid build metadata | covered |  |

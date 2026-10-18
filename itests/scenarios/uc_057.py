@@ -3,10 +3,6 @@
 Fixture g4_two_catalogs: A=/fx/catA (x/p 1.0.0 from /fx/repos/x/p, z/r 1.0.0) and
 B=/fx/catB (x/p 1.0.0 + 1.1.0 from /fx/mirror/x/p - a different source, y/q 1.0.0,
 z/r 1.0.0 identical to A). Both are verified; B is also served over loopback HTTP where noted.
-
-Spec anchors of the protected-catalog cases point at existing main requirements until the
-change protected-catalog is archived (then: catalog/verified-catalogs and
-updates/protected-packages-update-through-their-catalog).
 """
 
 import json
@@ -59,7 +55,7 @@ def check_against_b_reports_different_source(t: T):
         t.has(out, "Updates: 0.")
 
 
-@case(fixture="g4_two_catalogs", spec=["catalog/one-catalog-per-workspace", "updates/stable-update-moves-to-the-newest-release"])
+@case(fixture="g4_two_catalogs", spec=["catalog/one-catalog-per-workspace", "updates/protected-packages-update-through-their-catalog#newer-tag-not-in-the-catalog"])
 def update_keeps_original_source(t: T):
     """3. update x/p (no --ref) with GITPM_CATALOG=B reads x/p's own verified catalog A, never B:
     its origin's 1.1.0 is not in A, so it stays; once A lists 1.1.0 it moves there from its own
@@ -111,7 +107,7 @@ def info_shows_the_selected_catalog_only(t: T):
     t.lacks(out, "y/q", b)
 
 
-@case(fixture="g4_two_catalogs", spec=["catalog/one-catalog-per-workspace#second-catalog"])
+@case(fixture="g4_two_catalogs", spec=["catalog/one-catalog-per-workspace#second-catalog", "install-uninstall/install-from-the-catalog#install-from-an-unverified-catalog", "catalog/check-compares-installed-packages-with-their-catalog-or-origin#verified-or-not"])
 def unverified_catalog_is_exempt(t: T):
     """7. B without the flag serves discovery only: y/q installs beside x/p from A, records no
     catalog and updates from its origin; check says the catalog is unverified."""
@@ -126,7 +122,7 @@ def unverified_catalog_is_exempt(t: T):
     t.eq(t.package(YQ)["current"]["version"], "1.1.0", "unprotected: follows the origin")
 
 
-@case(fixture="g4_two_catalogs", spec=["catalog/catalog-generated-from-git-release-tags", "catalog/published-versions-are-immutable"])
+@case(fixture="g4_two_catalogs", spec=["catalog/verified-catalogs#bulk-generation-refused", "catalog/verified-catalogs#register-into-a-verified-catalog", "catalog/verified-catalogs#overview-shows-the-flag"])
 def catalog_update_refused_for_a_verified_catalog(t: T):
     """8. catalog-update into verified A is refused (versions enter only through register) and
     changes no file; register keeps the flag."""
@@ -141,7 +137,7 @@ def catalog_update_refused_for_a_verified_catalog(t: T):
     t.has(t.gitpm_ok("--catalog", a, "info").out, "Verified: yes")
 
 
-@case(fixture="g4_two_catalogs", spec=["install-uninstall/install-from-the-catalog#tampered-dist", "catalog/one-catalog-per-workspace"])
+@case(fixture="g4_two_catalogs", spec=["updates/protected-packages-update-through-their-catalog#detach", "updates/protected-packages-update-through-their-catalog#newer-tag-not-in-the-catalog", "catalog/check-compares-installed-packages-with-their-catalog-or-origin#protected-package-with-a-newer-upstream", "catalog/check-compares-installed-packages-with-their-catalog-or-origin#verified-or-not"])
 def protected_update_check_and_detach(t: T):
     """9. Protected x/p: update all keeps it (upstream 1.1.0 not in catalog), check names it
     against A (verified); --detach drops the catalog and takes the origin's 1.1.0."""
@@ -160,7 +156,7 @@ def protected_update_check_and_detach(t: T):
     t.eq(p["current"], {"version": "1.1.0", "commit": t.rev(XP, "x/p@1.1.0")}, "origin release")
 
 
-@case(fixture="g4_two_catalogs", spec=["install-uninstall/install-from-the-catalog#tampered-dist"])
+@case(fixture="g4_two_catalogs", spec=["updates/protected-packages-update-through-their-catalog#hash-mismatch-on-update"])
 def tampered_release_refused_on_update(t: T):
     """10. A lists x/p 1.1.0 with file hashes that do not match the tagged dist: update and
     update all fail with `catalog` and the workspace is unchanged."""

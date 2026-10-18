@@ -22,12 +22,12 @@ Defines package-to-package dependencies: the requirement syntax, PubGrub resolut
 - **THEN** the manifest is refused with `invalid_manifest` ("pre-release versions are not supported")
 
 ### Requirement: Install resolves dependencies
-Install and single-package update SHALL resolve dependencies with PubGrub: installed packages stay at their versions; missing ones SHALL be installed from the configured catalog in the same transaction, each recorded with that catalog's canonical location (`packages.<id>.catalog`; one catalog per workspace as in catalog). Single source for the no-catalog case: without a catalog only installed packages SHALL satisfy dependencies, and a missing one SHALL fail with `dependency_conflict` naming it.
+Install and `update ID` SHALL resolve dependencies with PubGrub: installed packages stay at their versions; missing ones SHALL be installed from the configured catalog in the same transaction, recorded with its location only when it is verified (catalog); a protected package takes them from its own verified catalog (updates). Without a catalog (single source for that case) only installed packages SHALL satisfy dependencies, and a missing one SHALL fail with `dependency_conflict` naming it.
 
 #### Scenario: Dependency pulled from the catalog
 - **WHEN** `app` requires `lib ^1` and only the catalog has `lib`
 - **THEN** `install-catalog app` installs `lib` and `app` in one transaction
-- **AND** `lib` is recorded with the catalog's location; this is covered by `catalog_install_resolves_dependencies_and_records_edges` and `direct_git_install_uses_installed_plugins_or_the_catalog`
+- **AND** `lib` is recorded with the catalog's location when the catalog is verified, and without one otherwise; this is covered by `catalog_install_resolves_dependencies_and_records_edges` and `direct_git_install_uses_installed_plugins_or_the_catalog`
 
 #### Scenario: No catalog
 - **WHEN** a direct Git install (or an update to a release) needs `lib`, which is not installed, and no catalog is configured
