@@ -30,11 +30,11 @@ A package ID SHALL be `namespace/name`. Each component MUST be 1 to 80 ASCII let
 - **THEN** it is always the joint upgrade (updates), because no package ID can be the single word `all`
 
 ### Requirement: No default namespace
-gitpm SHALL NOT derive or default a namespace: every command that creates a package (`init`) MUST receive a full `NAMESPACE/NAME`, and `fork` MUST receive the target namespace explicitly. There SHALL be no namespace configuration file or command.
+gitpm SHALL NOT derive or default a namespace: every operation that creates a package (`init`) MUST receive a full `NAMESPACE/NAME`, and `fork` MUST receive the target namespace explicitly. The library SHALL refuse a name without a namespace with `invalid_id`. There SHALL be no namespace configuration file or command.
 
 #### Scenario: init without a namespace
 - **WHEN** the user runs `gitpm init hello --into hello`
-- **THEN** the command fails with `package id needs a namespace: use NAMESPACE/NAME, for example acme/hello` (a CLI usage error: no `Error kind` line, exit status 1) and creates nothing
+- **THEN** the library fails with `invalid_id` ("package ID needs a namespace: use NAMESPACE/NAME, for example acme/hello"), the CLI prints `Error kind: invalid_id`, the exit status is 1 and nothing is created
 
 ### Requirement: Release tag names
 Single source for tag names: the release tag of a package SHALL be `namespace/name@VERSION`, both for tags gitpm creates (`init`, `commit`, `fork --replace`) and for tags it reads, in single- and multi-package repositories. Any other tag, `vVERSION` included, SHALL NOT be a release tag. A tag SHALL count only when the manifest at its commit has that ID and version. Verified by `identity::release_tag_is_id_at_version`.
@@ -64,7 +64,7 @@ Single source for tag names: the release tag of a package SHALL be `namespace/na
 - **THEN** those tags are not releases: install, update and `catalog-update` never select them and do not warn about them
 
 ### Requirement: Broken historical tags are skipped
-Single source for broken release tags: a broken historical release tag (an invalid manifest at its commit, a tag that disagrees with the manifest, a tag whose commit lacks its package) SHALL be skipped and reported as a warning, not fail discovery; selecting the latest release (install, update, `catalog-update`) SHALL still fail with `version_conflict` ("latest release tag is broken: …") when a skipped tag is newer than every valid release.
+Single source for broken release tags: a broken historical release tag (invalid manifest, manifest mismatch, package missing at the commit) SHALL be skipped, not fail discovery; install, `update ID` and `update all` SHALL return it (`InstallResult.skipped`, `RevisionChange.skipped`, `UpdateAllPlan.skipped`). A skipped tag newer than every valid release SHALL still fail selection ("Bad newest tag"). Verified by `releases::bad_historical_tag_does_not_hide_valid_releases`.
 
 #### Scenario: Bad newest tag
 - **WHEN** the newest tag is broken and an older one is valid
@@ -73,7 +73,11 @@ Single source for broken release tags: a broken historical release tag (an inval
 #### Scenario: One bad old tag
 - **WHEN** tag 0.1.0's manifest is invalid but 0.2.0 is valid
 - **THEN** `catalog-update` publishes 0.2.0 and warns about 0.1.0
-- **AND** `catalog-update` warns `Warning: SOURCE: reason`, install and update warn `Warning: skipped release tag NAME: reason`; this is covered by `releases::bad_historical_tag_does_not_hide_valid_releases` and `catalog::update_sources_skips_and_reports_a_broken_historical_tag`
+- **AND** `catalog-update` warns `Warning: SOURCE: reason`; this is covered by `catalog::update_sources_skips_and_reports_a_broken_historical_tag`
+
+#### Scenario: Update past a broken old tag
+- **WHEN** `acme/greeter` 0.1.0 is installed, the origin adds a tag `acme/greeter@0.1.5` whose manifest is invalid and a valid `acme/greeter@0.2.0`, and the user runs `update acme/greeter` or `update all`
+- **THEN** the package moves to 0.2.0, the result's `skipped` names `acme/greeter@0.1.5` with its reason, and the CLI prints `Warning: skipped release tag acme/greeter@0.1.5: reason`, as install does
 
 ### Requirement: Moved release tags are refused
 Single source for moved release tags: a single-package update of a package with its own clone SHALL refuse with `version_conflict` when a release tag it observed before now points at another commit. Fetching into a shared clone SHALL take the origin's tags as they are but SHALL refuse with `version_conflict`, naming the tag, when the release tag of an installed revision of any package of that clone would move. `catalog-update` SHALL refuse a moved tag of a published version.

@@ -21,8 +21,8 @@ Defines how packages enter and leave a workspace: installing from a Git source o
 `install SOURCE --ref REF` SHALL install the given tag, branch or commit; `--channel dev` SHALL follow the default branch HEAD and `--channel stable` SHALL mean the default. Library rule: an explicit ref together with the dev channel SHALL be refused with `invalid_argument`. A ref starting with `-` is refused as in git-safety ("No option injection"). Verified by `workspace::install_channels_and_explicit_refs` and `model::resolve_ref_refuses_option_like_refs_and_resolves_commits`.
 
 #### Scenario: Ref and dev channel in the library
-- **WHEN** a caller passes a ref and the dev channel to `install_package`
-- **THEN** it fails with `invalid_argument` ("the dev channel conflicts with an explicit ref"); the CLI refuses `--channel` of any value with `--ref` earlier (cli, "Option validation")
+- **WHEN** a caller passes a ref and the dev channel to `install_package`, or the user runs `gitpm install SOURCE --ref x --channel dev`
+- **THEN** it fails with `invalid_argument` ("the dev channel conflicts with an explicit ref"); the CLI does not check the combination itself, and `--channel stable --ref x` installs `x`
 
 #### Scenario: Install by exact commit
 - **WHEN** the user runs `install SOURCE --ref <40-hex commit>`
@@ -49,8 +49,8 @@ Installing an ID that is installed from a different source (including a `file://
 
 #### Scenario: Forgotten but retained
 - **WHEN** `acme/greeter` was forgotten and its clone `packages/acme/greeter` is retained, and the user installs it again
-- **THEN** the command fails with `already_installed` ("repository already exists: acme/greeter; use restore") and the workspace is unchanged
-- **AND** for a forgotten package of a shared clone the message is `ID was forgotten and its files are kept; use restore, or uninstall it first`
+- **THEN** the command fails with `already_installed` ("acme/greeter was forgotten and its clone is kept") and the workspace is unchanged
+- **AND** the message names no command; the CLI adds a `Hint:` line naming `gitpm restore ID` and `gitpm uninstall ID` (the same holds for a forgotten package of a shared clone)
 
 ### Requirement: Install from the catalog
 `install-catalog ID [--version V]` (`Manager::install_from_catalog`) SHALL install the exact catalog release (latest if omitted): clone its source, check out the recorded commit, and verify that the manifest and the package dist file hashes equal the catalog's before any workspace change. A mismatch SHALL fail with `catalog`. Verified by `catalog_manifest_is_verified_before_install` and `workspace::install_from_catalog_verifies_and_check_compares`.
@@ -61,7 +61,7 @@ Installing an ID that is installed from a different source (including a `file://
 - **AND** installing from a second catalog is refused as specified in catalog ("One catalog per workspace")
 
 ### Requirement: Refused input creates nothing
-CLI arguments (IDs, versions, option combinations, unknown options, missing values) SHALL be validated before the workspace is opened or created, and a refused install SHALL leave no clone, no `dist/<id>`, no state entry and no `.pm-txn` (general rule in errors, "Failing operations leave the workspace unchanged"). Verified by `usage_errors_name_the_problem_and_create_nothing` and `workspace::install_refusals_leave_the_workspace_unchanged`.
+Input SHALL be validated before anything is created: the CLI checks argv syntax and parses IDs and versions with the library's parsers before opening, and `open_with` validates Options first (workspace-layout). A refused install SHALL leave no clone, no `dist/<id>`, no state entry and no `.pm-txn` (errors). Verified by `usage_errors_name_the_problem_and_create_nothing` and `workspace::install_refusals_leave_the_workspace_unchanged`.
 
 #### Scenario: Invalid ID on a fresh root
 - **WHEN** the user runs `gitpm --root new-ws update ../evil`
@@ -110,7 +110,7 @@ gitpm SHALL offer three removal levels: `disable` (keep everything, set `enabled
 - **THEN** the clone, `dist/<id>` and the state entry are deleted
 
 ### Requirement: CLI confirmation flow for uninstall
-Without `--force`, the CLI SHALL ask `Delete anyway? [y/N]` on a TTY after listing the deleted paths, the state entry and the lost work; anything but `y`/`yes` (including EOF) SHALL change nothing and fail with `uninstall cancelled; nothing was changed`. Without a TTY it SHALL refuse and list the lost work. `--force` SHALL delete without asking and ignore dependents. Verified by `uninstall_on_tty_asks_before_losing_work` and `uninstall_without_tty_refuses_and_lists_lost_work_including_stash`.
+Without `--force`, the CLI SHALL list what `uninstall_plan` reports and ask `Delete anyway? [y/N]` on stderr on a TTY; anything but `y`/`yes` (EOF included) SHALL change nothing and fail with `uninstall cancelled; nothing was changed`. Without a TTY it calls the library unconfirmed, which refuses. `--force` deletes without asking and ignores dependents. Verified by `uninstall_on_tty_asks_before_losing_work` and `uninstall_without_tty_refuses_and_lists_lost_work_including_stash`.
 
 #### Scenario: No TTY
 - **WHEN** a clone has modified files and `gitpm uninstall ID` runs with stdin not a terminal

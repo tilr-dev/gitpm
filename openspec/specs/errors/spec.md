@@ -7,14 +7,14 @@ Defines the error contract shared by the library, CLI and FFI: one typed error w
 ## Requirements
 
 ### Requirement: Stable error kinds
-Every failure SHALL be a `gitpm::Error` whose `kind()` is one of: `not_installed`, `already_installed`, `local_changes`, `locked`, `invalid_id`, `invalid_manifest`, `invalid_version`, `invalid_argument`, `version_conflict`, `no_previous_version`, `no_releases`, `repository_not_found`, `workspace`, `catalog`, `git`, `http`, `auth`, `unsupported`, `dependency_conflict`, `has_dependents`, `incompatible_replacement`, `invalid_data`, `io`. A kind MUST never change for an existing variant.
+Every failure SHALL be a `gitpm::Error` whose `kind()` is one of: not_installed, already_installed, local_changes, locked, invalid_id, invalid_manifest, invalid_version, invalid_argument, version_conflict, no_previous_version, no_releases, repository_not_found, workspace, catalog, git, http, auth, unsupported, dependency_conflict, has_dependents, incompatible_replacement, not_deployed, invalid_data, io. A kind MUST never change for an existing variant.
 
 #### Scenario: Where the less obvious kinds arise
-- **WHEN** a caller sees `http`, `auth`, `catalog` or `unsupported`
-- **THEN** `http` is a failed catalog request (catalog, "Catalog locations and transport"), `auth` a failing `auth check` (git-safety), `catalog` invalid catalog data including an unknown catalog schema or a v1 catalog, and `unsupported` for example a `state.json` of another format (workspace-layout) or a symlink in a package dist (dist)
+- **WHEN** a caller sees `http`, `auth`, `catalog`, `unsupported` or `not_deployed`
+- **THEN** `http` is a failed catalog request (catalog, "Catalog locations and transport"), `auth` a failing `auth check` (git-safety), `catalog` invalid catalog data including an unknown catalog schema or a v1 catalog, `unsupported` for example a `state.json` of another format (workspace-layout) or a symlink in a package dist (dist), and `not_deployed` a `sync-dist` that left active packages undeployed (dist)
 
 #### Scenario: Failures without a kind
-- **WHEN** the CLI itself refuses a usage error, a missing catalog, a declined prompt or `sync-dist` leaving packages undeployed
+- **WHEN** the CLI itself refuses a usage error, a missing catalog or a declined prompt
 - **THEN** these are not library errors and print no `Error kind` (cli, "Errors and exit codes")
 
 #### Scenario: Future variants
@@ -39,11 +39,15 @@ README "Error kinds" SHALL list exactly the kinds the library defines. Verified 
 - **THEN** the unit test fails
 
 ### Requirement: Display is the complete message
-`Display` of an error SHALL be the complete human message in English. Library messages MAY name a gitpm command as advice (for example `init --multi` in scaffold refusals, `replace ORIGINAL --back` when disabling an active replacing package). Structured variants SHALL carry their data: `LocalChanges.items`, `HasDependents.dependents`, `IncompatibleReplacement.consumers`. Verified by `error::display_is_the_complete_message`.
+`Display` of an error SHALL be the complete human message in English. Library messages SHALL be neutral (no CLI command, flag or hosting service; the CLI adds hints, cli). Structured variants SHALL carry their data: `LocalChanges.items`, `HasDependents.dependents` and `.replacing`, `IncompatibleReplacement.consumers`, `NotDeployed.sync`. Verified by `error::display_is_the_complete_message` and `error::messages_name_no_cli_command`.
 
 #### Scenario: Has dependents
 - **WHEN** disabling `lib` is refused because `app` depends on it
 - **THEN** the error is `has_dependents`, its message names `app` and `dependents` is `["app"]`
+
+#### Scenario: Neutral advice
+- **WHEN** `init` is refused because the repository root is a package, or `disable` because the package is an active replacement
+- **THEN** the library message states the problem only (for example "the repository root is a package; a multi-package repository needs gitpm.json") and the CLI prints the command as a `Hint:` line
 
 ### Requirement: Conversions choose documented kinds
 I/O errors (and `StripPrefixError`, `SystemTimeError`) SHALL map to `io`, JSON and UTF-8 errors to `invalid_data`, integer parse errors to `invalid_version`. Verified by `error::conversions_choose_the_documented_kind`.
@@ -64,11 +68,11 @@ Every failing `Manager` operation, update and rollback included, SHALL leave the
 
 #### Scenario: Fresh workspace root
 - **WHEN** an operation fails on a workspace root that did not exist
-- **THEN** the root that opening created (workspace-layout) stays
+- **THEN** a refusal of the Options creates nothing (workspace-layout, "Options are validated before anything is created"), while a failure after opening leaves the empty workspace that opening created
 
 #### Scenario: Partial fork --replace
 - **WHEN** a step of `fork --replace` fails
-- **THEN** the steps that succeeded stay (fork-replacement, "Fork folder is never removed after a partial failure")
+- **THEN** the steps that succeeded stay (fork-replacement, "Fork folder is never removed after a partial failure"); likewise `sync-dist` keeps what it synced when it fails with `not_deployed` (dist)
 
 #### Scenario: Invalid ID everywhere
 - **WHEN** each operation is called with `../x`

@@ -51,7 +51,7 @@ Install and update SHALL store the installed revision's metadata in `packages.<i
 - **THEN** `list` and every other operation on the workspace fail with `invalid_data` ("missing field `metadata`") and `state.json` keeps its bytes
 
 ### Requirement: Filter by provided service
-`list --provides SERVICE` SHALL keep only the packages whose `provides` contains `SERVICE` in `packages` and `resolved`; `replacements` and `forgotten` SHALL be printed unfiltered, and inactive (replaced, disabled) providers SHALL be kept because `list` is a status view.
+`list --provides SERVICE` (library `list_with`, FFI `list`) SHALL keep only the packages whose `provides` contains `SERVICE` in `packages` and `resolved`; `replacements` and `forgotten` SHALL be printed unfiltered, and inactive (replaced, disabled) providers SHALL be kept because `list` is a status view. The filter SHALL be applied by the library.
 
 #### Scenario: Replaced original still listed
 - **WHEN** `me/theme` replaces `tilr/theme`, both providing `theme`
