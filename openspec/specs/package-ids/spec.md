@@ -55,6 +55,10 @@ Single source for tag names: tags gitpm creates (`init`, `commit`, `fork --repla
 - **WHEN** a single-package repository whose manifest ID is `dan/demo1` has only the tag `v1.0.0` on a commit with version `1.0.0`
 - **THEN** `install` finds the release `1.0.0`
 
+#### Scenario: Tags that are not release versions
+- **WHEN** a repository has tags `dan/demo1@2.0.0-beta`, `dan/demo1@2.0.0+b1` and `dan/demo1@latest` besides valid releases
+- **THEN** those tags are not releases: install, update and `catalog-update` never select them and do not warn about them
+
 ### Requirement: Broken historical tags are skipped
 Single source for broken release tags: a broken historical release tag (an invalid manifest at its commit, a tag that disagrees with the manifest, a tag whose commit lacks its package) SHALL be skipped and reported as a warning, not fail discovery; selecting the latest release (install, update, `catalog-update`) SHALL still fail with `version_conflict` ("latest release tag is broken: …") when a skipped tag is newer than every valid release.
 

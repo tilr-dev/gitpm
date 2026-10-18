@@ -114,3 +114,7 @@ gitpm SHALL NOT write a Git identity into an existing repository; when git canno
 #### Scenario: Set origin
 - **WHEN** the user runs `gitpm remote ./hello git@github.com:me/hello.git`
 - **THEN** it prints `Origin for ./hello set to git@github.com:me/hello.git (fetch and push).`
+
+#### Scenario: Other remotes are kept
+- **WHEN** `origin` has a separate push URL, the repository has another remote `backup`, and the user runs `gitpm remote REPO URL`
+- **THEN** the fetch and push URLs of `origin` are both `URL`, `backup` is unchanged and nothing is pushed to any remote

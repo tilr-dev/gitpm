@@ -6,3 +6,8 @@
 #### Scenario: Large catalog
 - **WHEN** the catalog has more than 40 packages
 - **THEN** `catalog show` shows 40 and the limit line
+
+#### Scenario: Overview lines
+- **WHEN** the user runs `gitpm --catalog ./catalog catalog show` on a local v2 catalog
+- **THEN** it prints `Catalog: LOCATION`, `Type: local folder/JSON`, `Format: v2`, the directory tree and for each package `ID — latest: V, versions: N` followed by its `Git: SOURCE` line
+- **AND** it changes no file of the catalog or the workspace

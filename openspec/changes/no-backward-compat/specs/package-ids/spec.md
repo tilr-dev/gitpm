@@ -45,3 +45,7 @@ Single source for tag names: the release tag of a package SHALL be `namespace/na
 #### Scenario: vVERSION tag of a scoped single-package repository
 - **WHEN** a single-package repository whose manifest ID is `dan/demo1` has only the tag `v1.0.0` on a commit with version `1.0.0`
 - **THEN** `install` fails with `no_releases` and the workspace is unchanged
+
+#### Scenario: Tags that are not release versions
+- **WHEN** a repository has tags `dan/demo1@2.0.0-beta`, `dan/demo1@2.0.0+b1` and `dan/demo1@latest` besides valid releases
+- **THEN** those tags are not releases: install, update and `catalog-update` never select them and do not warn about them

@@ -35,6 +35,10 @@
 - **THEN** its row is `update_available` with latest `0.2.0` and source `origin`
 - **AND** the origin's release tags are read with `git ls-remote` without fetching or changing the clone; the newest `ID@VERSION` tag counts by name, and its manifest is verified only when updating
 
+#### Scenario: Exit status
+- **WHEN** `gitpm check` finds an update available, or finds none
+- **THEN** the exit status is 0 in both cases; only a failed `check` exits 1
+
 ### Requirement: A catalog is optional
 Single source for working without a catalog: a direct install SHALL record its source, and updates and `check` SHALL query that origin (updates). Only catalog commands, `install-catalog` and installing missing dependencies SHALL need a catalog; without one the library's catalog reads fail with `invalid_argument` ("no catalog configured"; CLI message: cli). Verified by `workspace::catalog_operations_need_a_configured_catalog` and `lifecycle_and_three_removal_levels`.
 

@@ -40,6 +40,14 @@ A v1 monolithic `catalog.json` SHALL still be readable, and `migrate-catalog` SH
 - **WHEN** the user runs `gitpm --catalog ./catalog migrate-catalog` on a v1 catalog
 - **THEN** the v2 tree is written and the old file is kept as a backup
 
+#### Scenario: Migrate a v2 catalog
+- **WHEN** `migrate-catalog` runs on a catalog that is already v2, or again after a migration
+- **THEN** it exits 0 and no catalog file or backup changes
+
+#### Scenario: Register into a v1 catalog
+- **WHEN** the user registers a release into a local v1 catalog
+- **THEN** the catalog is migrated first (backup kept, v2 tree, old releases unchanged) and the new release carries file hashes
+
 ### Requirement: Catalog generated from Git release tags
 `catalog-update [--sources FILE]` SHALL read the repositories listed in the sources file (one per line, relative to the file; blank and `#` lines skipped), discover every release tag, pin each tag's commit, hash its package dist and write the tree. For a multi-package repository it SHALL publish only the packages listed in `gitpm.json` at HEAD. Broken historical tags are skipped as in package-ids. It SHALL validate every source before writing anything and retain releases of removed sources.
 
@@ -55,6 +63,10 @@ A v1 monolithic `catalog.json` SHALL still be readable, and `migrate-catalog` SH
 #### Scenario: Package removed from gitpm.json at HEAD
 - **WHEN** a multi-package repository tagged `tilr/old@0.1.0` but no longer lists `packages/old` in `gitpm.json` at HEAD, and the catalog has no `tilr/old` yet
 - **THEN** `catalog-update` publishes the releases of the packages listed at HEAD and no release of `tilr/old`
+
+#### Scenario: Duplicate source lines
+- **WHEN** the sources file lists the same repository twice, also in another spelling of its path
+- **THEN** `catalog-update` reads it once and indexes each release once
 
 ### Requirement: Published versions are immutable
 A published version SHALL NOT change; every version is checked before any write, so a rejected update writes nothing. `register` SHALL compare the whole release JSON except `reference` (and `files` of a legacy record without them) and fail with `version_conflict` ("version ID@V already exists and is immutable"). A package ID SHALL stay bound to the source that first registered it ("registered from a different source" → `catalog`). Verified by `catalog::published_versions_are_immutable`.
@@ -104,6 +116,11 @@ Catalog writes SHALL hold an exclusive lock on `.<catalog name>.catalog.lock` be
 - **WHEN** the catalog has more than 40 packages
 - **THEN** `info` shows 40 and the limit line
 
+#### Scenario: Overview lines
+- **WHEN** the user runs `gitpm --catalog ./catalog info` on a local v2 catalog
+- **THEN** it prints `Catalog: LOCATION`, `Type: local folder/JSON`, `Format: v2`, the directory tree and for each package `ID — latest: V, versions: N` followed by its `Git: SOURCE` line
+- **AND** it changes no file of the catalog or the workspace
+
 ### Requirement: One catalog per workspace
 `install_from_catalog`, and installing a missing dependency from the catalog (dependencies), SHALL record the canonical catalog location per package (`plugins.<id>.catalog`) and SHALL refuse with `catalog` ("this workspace uses catalog … mixing catalogs is not supported") to install from a different catalog while packages from another one are installed. There SHALL be no catalog merging, priorities or pinning, and no built-in default catalog. Verified by `one_catalog_per_workspace`.
 
@@ -150,3 +167,7 @@ Single source for working without a catalog: a direct install SHALL record its s
 - **WHEN** a package was installed from another catalog than the selected one
 - **THEN** its row says `installed from another catalog` and offers no update, unless this catalog has a different source for it or exactly its installed release
 - **AND** this is covered by `check_shows_fork_upstream_and_other_catalogs`; the read-only and partial-failure rules by `check::read_state_never_creates_or_locks_a_workspace` and `check::check_reports_invalid_release_without_hiding_healthy_plugins`
+
+#### Scenario: Exit status
+- **WHEN** `gitpm check` finds an update available, or finds none
+- **THEN** the exit status is 0 in both cases; only a failed `check` exits 1

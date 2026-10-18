@@ -85,7 +85,7 @@ def catalog_update_unchanged_sources(t: T):
     t.has(t.catalog_index("dan/hello").read_text(), '"0.2.0"')
 
 
-@case(fixture="catalog", spec=["catalog/v1-catalogs-stay-readable#migrate"])
+@case(fixture="catalog", spec=["catalog/v1-catalogs-stay-readable#migrate", "catalog/v1-catalogs-stay-readable#migrate-a-v2-catalog"])
 def migrate_v2_catalog(t: T):
     """migrate-catalog on a v2 catalog changes nothing (exit code recorded)."""
     before = everything(t)

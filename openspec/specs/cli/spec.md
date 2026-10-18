@@ -60,6 +60,10 @@ The CLI SHALL refuse unknown options, repeated options, options given to command
 - **WHEN** the user runs `gitpm list --force`
 - **THEN** it fails with `--force is only valid with uninstall/disable/forget/replace/fork --replace`
 
+#### Scenario: Flag position
+- **WHEN** the user runs `gitpm uninstall ID --force` or `gitpm uninstall --force ID`
+- **THEN** both behave the same: options may come before or after the positional arguments
+
 ### Requirement: One output line per affected package
 Every workspace-mutating command (`install`, `install-catalog`, `update`, `update all`, `rollback`, `enable`, `disable`, `forget`, `restore`, `uninstall`, `replace`, `fork --replace`, `sync-dist`) and the author commands `fork` and `commit` SHALL print one line per affected package in the form `ID <verb> …` (detail lines such as `Fork created:` aside; the install line is `installed ID@V from SOURCE`) and SHALL NOT print `OK:` lines. The line formats are the table in README "Changed in 0.5".
 

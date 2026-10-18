@@ -20,7 +20,7 @@ def config(t: T, repo, key: str) -> list[str]:
     return t.git(repo, "config", "--get-all", key, check=False).splitlines()
 
 
-@case(fixture="hello_installed", spec=["authoring/remote-sets-origin-without-network#set-origin"])
+@case(fixture="hello_installed", spec=["authoring/remote-sets-origin-without-network#set-origin", "authoring/remote-sets-origin-without-network#other-remotes-are-kept"])
 def set_then_replace_origin(t: T):
     """Set origin, add a push URL and another remote, replace origin: both URLs replaced, others kept."""
     repo = t.repo(ID)

@@ -38,7 +38,7 @@ def generate(t: T):
 
 
 @case(fixture="g4_sources", spec=["catalog/catalog-generated-from-git-release-tags#two-releases",
-                                 "catalog/release-record"])
+                                 "catalog/release-record", "catalog/catalog-generated-from-git-release-tags#duplicate-source-lines"])
 def all_releases_indexed_once(t: T):
     """Every valid release tag of both sources is indexed exactly once at its tag commit
     (annotated tags peeled), with committed hashes; untagged HEADs are not releases; paths

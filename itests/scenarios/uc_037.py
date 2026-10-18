@@ -77,7 +77,7 @@ def migrate_keeps_backup_and_releases(t: T):
     t.eq(t.plugin(OLD)["current"]["commit"], t.rev(OLD, "v0.1.0"), "legacy exact version after migration")
 
 
-@case(fixture="g4_v1", spec=["catalog/v1-catalogs-stay-readable#migrate"])
+@case(fixture="g4_v1", spec=["catalog/v1-catalogs-stay-readable#migrate", "catalog/v1-catalogs-stay-readable#migrate-a-v2-catalog"])
 def repeated_migration_is_safe(t: T):
     """A second migrate-catalog changes nothing (backup included)."""
     t.gitpm_ok("--catalog", v1(t), "migrate-catalog")
@@ -103,7 +103,7 @@ def registrations_after_migration(t: T):
     t.ok(json.loads(release_path(t, OLD, "0.3.0").read_text()).get("files"), "new legacy release has hashes")
 
 
-@case(fixture="g4_v1", spec=["catalog/v1-catalogs-stay-readable", "catalog/register-one-version"])
+@case(fixture="g4_v1", spec=["catalog/v1-catalogs-stay-readable", "catalog/register-one-version", "catalog/v1-catalogs-stay-readable#register-into-a-v1-catalog"])
 def register_auto_migrates(t: T):
     """register into an untouched v1 copy migrates it first: backup, v2 tree, old releases
     kept; the new release carries hashes."""

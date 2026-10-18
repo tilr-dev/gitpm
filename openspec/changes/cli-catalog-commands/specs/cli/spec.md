@@ -86,6 +86,10 @@ The CLI SHALL refuse unknown options, repeated options, options given to command
 - **WHEN** the user runs `gitpm list --force`
 - **THEN** it fails with `--force is only valid with uninstall/disable/forget/replace/fork --replace`
 
+#### Scenario: Flag position
+- **WHEN** the user runs `gitpm uninstall ID --force` or `gitpm uninstall --force ID`
+- **THEN** both behave the same: options may come before or after the positional arguments
+
 ### Requirement: Help
 `gitpm --help`, `-h`, `help` or no arguments SHALL print the full usage, with the catalog subcommands in a `Catalog` section; `gitpm COMMAND --help` (or `-h`) SHALL print only that command's usage block, and `gitpm catalog SUB --help` only that subcommand's; an unknown command SHALL fail with `unknown command: X; use --help`. Every command SHALL have a usage block. Verified by `command_help_prints_only_that_command`, `help_names_the_binary_and_removed_commands_are_unknown` and `tests::every_command_has_a_usage_block`.
 

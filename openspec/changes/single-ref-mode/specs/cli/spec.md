@@ -34,3 +34,7 @@ Before calling the library the CLI SHALL refuse only syntax: unknown or repeated
 #### Scenario: Misplaced flag
 - **WHEN** the user runs `gitpm list --force`
 - **THEN** it fails with `--force is only valid with uninstall/disable/forget/replace/fork --replace`
+
+#### Scenario: Flag position
+- **WHEN** the user runs `gitpm uninstall ID --force` or `gitpm uninstall --force ID`
+- **THEN** both behave the same: options may come before or after the positional arguments

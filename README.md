@@ -498,6 +498,12 @@ Publishing a catalog is up to you: it is a folder of static files, so any static
 works (`catalog-update` and `register` write only to a local folder; HTTP(S) catalogs are
 read-only).
 
+When you upload an updated catalog, go in an order that never shows readers a half-updated
+tree: new `versions/<V>/release.json` files first, then each package's
+`namespaces/<ns>/<name>/plugin.json` index, then the directory files from the deepest level
+up, and the root `catalog.json` last. Never overwrite a `release.json` that is already
+published, never drop versions from an index, and do not delete objects as part of an update.
+
 ## Plugin metadata
 
 `plugin.json` may describe the package with four optional keys:

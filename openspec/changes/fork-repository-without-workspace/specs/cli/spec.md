@@ -15,3 +15,7 @@ The CLI SHALL refuse unknown options, repeated options, options given to command
 #### Scenario: Fork from a source
 - **WHEN** the user runs `gitpm fork tilr/theme --from ./tilr-plugins --ns me --into x --ref tilr/theme@0.1.0`
 - **THEN** the options are accepted, while `gitpm fork tilr/theme --ns me --into x --ref y` fails naming `--ref` and creates nothing
+
+#### Scenario: Flag position
+- **WHEN** the user runs `gitpm uninstall ID --force` or `gitpm uninstall --force ID`
+- **THEN** both behave the same: options may come before or after the positional arguments

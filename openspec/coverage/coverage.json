@@ -399,6 +399,15 @@
         "uc_062:remote_same_url"
        ],
        "covered": true
+      },
+      {
+       "slug": "other-remotes-are-kept",
+       "title": "Other remotes are kept",
+       "tag": "authoring/remote-sets-origin-without-network#other-remotes-are-kept",
+       "cases": [
+        "uc_007:set_then_replace_origin"
+       ],
+       "covered": true
       }
      ],
      "covered": true,
@@ -593,6 +602,25 @@
         "uc_062:migrate_v2_catalog"
        ],
        "covered": true
+      },
+      {
+       "slug": "migrate-a-v2-catalog",
+       "title": "Migrate a v2 catalog",
+       "tag": "catalog/v1-catalogs-stay-readable#migrate-a-v2-catalog",
+       "cases": [
+        "uc_037:repeated_migration_is_safe",
+        "uc_062:migrate_v2_catalog"
+       ],
+       "covered": true
+      },
+      {
+       "slug": "register-into-a-v1-catalog",
+       "title": "Register into a v1 catalog",
+       "tag": "catalog/v1-catalogs-stay-readable#register-into-a-v1-catalog",
+       "cases": [
+        "uc_037:register_auto_migrates"
+       ],
+       "covered": true
       }
      ],
      "covered": true,
@@ -659,6 +687,15 @@
        "tag": "catalog/catalog-generated-from-git-release-tags#package-removed-from-gitpm-json-at-head",
        "cases": [],
        "covered": false
+      },
+      {
+       "slug": "duplicate-source-lines",
+       "title": "Duplicate source lines",
+       "tag": "catalog/catalog-generated-from-git-release-tags#duplicate-source-lines",
+       "cases": [
+        "uc_031:all_releases_indexed_once"
+       ],
+       "covered": true
       }
      ],
      "covered": true,
@@ -978,6 +1015,7 @@
       "uc_063:info_v2_more_than_40_entries"
      ],
      "all_cases": [
+      "uc_034:info_local_root",
       "uc_034:overview_limit_v1",
       "uc_034:overview_limit_v2",
       "uc_061:two_hundred_versions",
@@ -997,10 +1035,20 @@
         "uc_034:overview_limit_v2"
        ],
        "covered": true
+      },
+      {
+       "slug": "overview-lines",
+       "title": "Overview lines",
+       "tag": "catalog/bounded-overview#overview-lines",
+       "cases": [
+        "uc_034:info_local_root"
+       ],
+       "covered": true
       }
      ],
      "covered": true,
      "last_run": {
+      "uc_034:info_local_root": "PASS",
       "uc_034:overview_limit_v1": "PASS",
       "uc_034:overview_limit_v2": "PASS",
       "uc_061:two_hundred_versions": "PASS",
@@ -1169,6 +1217,15 @@
         "uc_035:installed_from_other_catalog",
         "uc_057:check_against_b_reports_different_source",
         "uc_057:same_commit_same_source_is_up_to_date"
+       ],
+       "covered": true
+      },
+      {
+       "slug": "exit-status",
+       "title": "Exit status",
+       "tag": "catalog/check-compares-installed-with-the-catalog#exit-status",
+       "cases": [
+        "uc_063:check_exit_code_without_updates"
        ],
        "covered": true
       }
@@ -1475,6 +1532,15 @@
         "uc_063:sources_with_check",
         "uc_063:version_with_install",
         "uc_063:with_without_replace"
+       ],
+       "covered": true
+      },
+      {
+       "slug": "flag-position",
+       "title": "Flag position",
+       "tag": "cli/option-validation#flag-position",
+       "cases": [
+        "uc_063:uninstall_flag_order_is_irrelevant"
        ],
        "covered": true
       }
@@ -4188,6 +4254,13 @@
         "uc_009:rejects_ssh_password"
        ],
        "covered": true
+      },
+      {
+       "slug": "query-or-fragment-in-an-http-url",
+       "title": "Query or fragment in an HTTP URL",
+       "tag": "git-safety/credentials-in-urls-are-the-user-s-responsibility#query-or-fragment-in-an-http-url",
+       "cases": [],
+       "covered": false
       }
      ],
      "covered": true,
@@ -5869,6 +5942,15 @@
        "tag": "package-ids/release-tag-names#vversion-tag-of-a-scoped-single-package-repository",
        "cases": [
         "uc_061:scoped_id_with_v_tags"
+       ],
+       "covered": true
+      },
+      {
+       "slug": "tags-that-are-not-release-versions",
+       "title": "Tags that are not release versions",
+       "tag": "package-ids/release-tag-names#tags-that-are-not-release-versions",
+       "cases": [
+        "uc_033:prerelease_build_and_named_tags_ignored"
        ],
        "covered": true
       }
@@ -8178,7 +8260,8 @@
   {
    "id": "uc_007:set_then_replace_origin",
    "spec": [
-    "authoring/remote-sets-origin-without-network#set-origin"
+    "authoring/remote-sets-origin-without-network#set-origin",
+    "authoring/remote-sets-origin-without-network#other-remotes-are-kept"
    ],
    "xfail": null,
    "last_run": "PASS"
@@ -9785,7 +9868,8 @@
    "id": "uc_031:all_releases_indexed_once",
    "spec": [
     "catalog/catalog-generated-from-git-release-tags#two-releases",
-    "catalog/release-record"
+    "catalog/release-record",
+    "catalog/catalog-generated-from-git-release-tags#duplicate-source-lines"
    ],
    "xfail": null,
    "last_run": "PASS"
@@ -9906,7 +9990,8 @@
    "id": "uc_033:prerelease_build_and_named_tags_ignored",
    "spec": [
     "package-ids/version-format#pre-release-suffix-is-refused",
-    "package-ids/release-tag-names"
+    "package-ids/release-tag-names",
+    "package-ids/release-tag-names#tags-that-are-not-release-versions"
    ],
    "xfail": null,
    "last_run": "PASS"
@@ -9923,7 +10008,8 @@
    "id": "uc_034:info_local_root",
    "spec": [
     "catalog/catalog-v2-is-a-tree-of-static-files",
-    "cli/settings-come-from-flags-environment-defaults"
+    "cli/settings-come-from-flags-environment-defaults",
+    "catalog/bounded-overview#overview-lines"
    ],
    "xfail": null,
    "last_run": "PASS"
@@ -10194,7 +10280,8 @@
   {
    "id": "uc_037:repeated_migration_is_safe",
    "spec": [
-    "catalog/v1-catalogs-stay-readable#migrate"
+    "catalog/v1-catalogs-stay-readable#migrate",
+    "catalog/v1-catalogs-stay-readable#migrate-a-v2-catalog"
    ],
    "xfail": null,
    "last_run": "PASS"
@@ -10212,7 +10299,8 @@
    "id": "uc_037:register_auto_migrates",
    "spec": [
     "catalog/v1-catalogs-stay-readable",
-    "catalog/register-one-version"
+    "catalog/register-one-version",
+    "catalog/v1-catalogs-stay-readable#register-into-a-v1-catalog"
    ],
    "xfail": null,
    "last_run": "PASS"
@@ -11995,7 +12083,8 @@
   {
    "id": "uc_062:migrate_v2_catalog",
    "spec": [
-    "catalog/v1-catalogs-stay-readable#migrate"
+    "catalog/v1-catalogs-stay-readable#migrate",
+    "catalog/v1-catalogs-stay-readable#migrate-a-v2-catalog"
    ],
    "xfail": null,
    "last_run": "PASS"
@@ -12212,7 +12301,8 @@
    "id": "uc_063:uninstall_flag_order_is_irrelevant",
    "spec": [
     "cli/option-validation",
-    "install-uninstall/uninstall-is-planned-and-confirmed"
+    "install-uninstall/uninstall-is-planned-and-confirmed",
+    "cli/option-validation#flag-position"
    ],
    "xfail": null,
    "last_run": "PASS"
@@ -12276,7 +12366,8 @@
   {
    "id": "uc_063:check_exit_code_without_updates",
    "spec": [
-    "catalog/check-compares-installed-with-the-catalog"
+    "catalog/check-compares-installed-with-the-catalog",
+    "catalog/check-compares-installed-with-the-catalog#exit-status"
    ],
    "xfail": null,
    "last_run": "PASS"

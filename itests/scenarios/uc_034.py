@@ -42,7 +42,7 @@ def assert_plugins(t: T, out: str):
 
 
 @case(fixture="g4_tree_catalog", spec=["catalog/catalog-v2-is-a-tree-of-static-files",
-                                      "cli/settings-come-from-flags-environment-defaults"])
+                                      "cli/settings-come-from-flags-environment-defaults", "catalog/bounded-overview#overview-lines"])
 def info_local_root(t: T):
     """`info` on the local v2 root (from GITPM_CATALOG): catalog address, local type, format
     v2, directories, each plugin's ID, latest, version count and Git source."""

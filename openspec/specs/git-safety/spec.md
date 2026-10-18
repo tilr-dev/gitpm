@@ -74,6 +74,10 @@ gitpm SHALL rely on the user's Git credentials (SSH keys, agents, credential hel
 - **THEN** it fails with `invalid_argument` advising a credential helper, and git is not started
 - **AND** a user name in an HTTP(S) URL or a password in an SSH URL (`ssh://user:pw@host/repo.git`) is refused the same way
 
+#### Scenario: Query or fragment in an HTTP URL
+- **WHEN** the user runs `gitpm auth check` with an HTTP(S) URL that has a query string or a fragment, for example `https://host/repo.git?token=X`
+- **THEN** it fails with `invalid_argument` like "Token in URL", git is not started and the value is not printed
+
 ### Requirement: Read-only repository access check
 `auth check SOURCE` (`auth::check`, FFI `authCheck`) SHALL verify read access with `git ls-remote` only, without cloning or opening a workspace; an empty repository SHALL count as accessible; a failing check SHALL fail with `auth`, its message the diagnosis of one category (host key, SSH denied, DNS, unreachable, TLS, not found, authentication) without echoing raw git output, and host key verification SHALL never be disabled.
 

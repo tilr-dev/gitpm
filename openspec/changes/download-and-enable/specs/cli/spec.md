@@ -39,6 +39,10 @@ Before calling the library the CLI SHALL refuse only syntax: unknown or repeated
 - **WHEN** the user runs `gitpm list --force`
 - **THEN** it fails with `--force is only valid with uninstall/disable/enable/forget/replace/fork --replace`
 
+#### Scenario: Flag position
+- **WHEN** the user runs `gitpm uninstall ID --force` or `gitpm uninstall --force ID`
+- **THEN** both behave the same: options may come before or after the positional arguments
+
 ### Requirement: One output line per affected package
 Every workspace-mutating command (`install`, `install-catalog`, `download`, `download-catalog`, `update`, `update all`, `rollback`, `enable`, `disable`, `forget`, `restore`, `uninstall`, `replace`, `fork --replace`, `sync-dist`) SHALL print one line per affected package in the form `ID <verb> …` (install lines are `installed ID@V from SOURCE`), built from the library result alone, and SHALL NOT print `OK:` lines. Other commands print what their capability specifies.
 

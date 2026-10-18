@@ -119,7 +119,7 @@ def wrong_argument_count(t: T):
     t.eq(failures, [], "argument-count failures")
 
 
-@case(fixture="hello", spec=[OPT, "install-uninstall/uninstall-is-planned-and-confirmed"])
+@case(fixture="hello", spec=[OPT, "install-uninstall/uninstall-is-planned-and-confirmed", "cli/option-validation#flag-position"])
 def uninstall_flag_order_is_irrelevant(t: T):
     """4. `uninstall ID --force` and `uninstall --force ID` both remove a dirty clone the same way."""
     results = []
@@ -220,7 +220,7 @@ def check_tty_term_dumb(t: T):
     t.lacks(r.out, ESC)
 
 
-@case(fixture="g1_ws_catalog", spec=["catalog/check-compares-installed-with-the-catalog"])
+@case(fixture="g1_ws_catalog", spec=["catalog/check-compares-installed-with-the-catalog", "catalog/check-compares-installed-with-the-catalog#exit-status"])
 def check_exit_code_without_updates(t: T):
     """7. The exit code is 0 with and without updates (README: updates do not change it)."""
     t.eq(t.gitpm("check").code, 0, "with an update")
