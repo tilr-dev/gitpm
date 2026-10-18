@@ -317,8 +317,8 @@ def invalid_version_case(name: str, version: str, tag: str):
 
 for _name, _version, _tag in [("two_parts", "1.0", "package-ids/version-format"),
                               ("dash", "-x", "package-ids/version-format"),
-                              ("prerelease", "1.0.0-beta.01", "package-ids/version-format#pre-release-suffix-is-refused"),
-                              ("build", "1.0.0+build", "package-ids/version-format#pre-release-suffix-is-refused")]:
+                              ("prerelease", "1.0.0-beta.01", "package-ids/version-format#malformed-version-is-refused"),
+                              ("build", "1.0.0+build", "package-ids/version-format#malformed-version-is-refused")]:
     invalid_version_case(_name, _version, _tag)
 
 

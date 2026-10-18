@@ -38,9 +38,7 @@ def valid_requirements_accepted(t: T):
         t.eq(t.package(id)["dependencies"], {CORE: req}, f"{id} dependency edge")
 
 
-# Anchor: the scenario "Bare version is exact" arrives with change pre-release-versions; until
-# it is archived the case points at the requirement.
-@case(fixture="g6_core", spec=["dependencies/requirement-syntax"])
+@case(fixture="g6_core", spec=["dependencies/requirement-syntax#bare-version-is-exact"])
 def bare_version_is_exact(t: T):
     """1f. A bare version is exact: lib/core 1.1.0 installed does not satisfy "1.0.0"."""
     t.gitpm_ok("install", t.repo(CORE), "--ref", f"{CORE}@1.1.0")
@@ -68,9 +66,7 @@ def banana_requirement_refused(t: T):
     refused(t, "bad/banana", {CORE: "banana"}, "invalid_manifest", "banana")
 
 
-# Anchor: the scenario "Old Cargo syntax" arrives with change pre-release-versions; until it is
-# archived the case points at the requirement.
-@case(fixture="g6_core", spec=["dependencies/requirement-syntax"])
+@case(fixture="g6_core", spec=["dependencies/requirement-syntax#old-cargo-syntax"])
 def cargo_syntax_refused(t: T):
     """1c. Cargo commas, wildcards, bare partial versions, || and hyphen ranges are refused."""
     for i, req in enumerate([">=1.0, <2", "1.*", "1.1", "^1 || ^2", "1.0.0 - 2.0.0"]):

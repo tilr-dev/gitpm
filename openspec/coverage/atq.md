@@ -69,7 +69,7 @@ Spec references read `capability › Requirement › Scenario`; several scenario
 | 006.1 | version, commit and scoped tag agree; all non-ignored changes committed | authoring › commit releases a version | covered |  |
 | 006.2 | no build, push or catalog mutation | authoring › commit releases a version; cli › Nothing is built, executed or uploaded | covered |  |
 | 006.3 | existing version/tag rejected without partial mutation | authoring › Existing tags are never moved | covered |  |
-| 006.4 | malformed, pre-release, build-metadata versions rejected | authoring › commit releases a version › Invalid version; package-ids › Version format | covered | `pre-release-versions` (active) would accept pre-release |
+| 006.4 | malformed, pre-release, build-metadata versions rejected | authoring › commit releases a version › Invalid version; package-ids › Version format | covered | `pre-release-versions` (archived): pre-releases accepted, malformed ones and build metadata refused |
 | 007.1 | origin fetch and push URLs replaced | authoring › remote sets origin without network › Set origin | covered |  |
 | 007.2 | other remotes survive, nothing pushed | authoring › remote sets origin without network › Other remotes are kept | missing → added | tagged `uc_007:set_then_replace_origin` |
 | 007.3 | non-repository / repository without plugin.json fails | authoring › remote sets origin without network › Not a package repository root | covered |  |
@@ -182,7 +182,7 @@ Spec references read `capability › Requirement › Scenario`; several scenario
 | 033.2 | old mismatched tag skipped with a warning naming it | package-ids › Broken historical tags are skipped › One bad old tag | covered | install and catalog-update warn; update does not — Defect D1 |
 | 033.3 | broken tag newer than every valid release fails, nothing written | package-ids › Broken historical tags are skipped › Bad newest tag | covered |  |
 | 033.4 | fork releases only by the fork ID's tags | package-ids › Release tag names | covered |  |
-| 033.5 | pre-release, build and non-numeric tags ignored | package-ids › Release tag names › Tags that are not release versions | missing → added | tagged `uc_033:prerelease_build_and_named_tags_ignored`; `pre-release-versions` (active) would make `-beta` tags releases |
+| 033.5 | pre-release, build and non-numeric tags ignored | package-ids › Release tag names › Tags that are not release versions | missing → added | tagged `uc_033:prerelease_build_and_named_tags_ignored`; `pre-release-versions` (archived): `-beta` tags are releases, never picked implicitly |
 | 033.6 | manifest version "1.0" via --ref refused | package-ids › Version format › Pre-release suffix is refused | covered |  |
 | 034.1 | info prints address, format, per-plugin ID, latest, version count, source; read-only | catalog › Bounded overview › Overview lines | missing → added | tagged `uc_034:info_local_root`; mirrored into `cli-catalog-commands` (`catalog show`) |
 | 034.2 | info shows install/check catalog separately; PM_REMOTE_CATALOG / PM_PUBLIC_URL selection; Russian text | — | obsolete | one catalog setting, no default/remote/public catalog (`2026-10-16-gitpm-cli`; catalog › One catalog per workspace) |
@@ -286,7 +286,7 @@ Spec references read `capability › Requirement › Scenario`; several scenario
 | 057.5 | same commit in A and B: up to date | catalog › check compares installed with the catalog › Other catalog | covered |  |
 | 057.6 | info prints both addresses, PM_PUBLIC_URL fallback | — | obsolete | one catalog setting, no default/remote/public catalog (`2026-10-16-gitpm-cli`; catalog › One catalog per workspace) |
 | 057.7 | --catalog does not change the R2 publish destination | — | obsolete | gitpm never uploads (cli › Nothing is built, executed or uploaded); `sync`/R2 dropped in `2026-10-18-dagger-integration-tests` |
-| 058.1 | dependency validation: banana, pre-release, self, invalid ID | dependencies › Requirement syntax › Self-dependency / Pre-release requirement | covered | `pre-release-versions` (active) changes requirement syntax |
+| 058.1 | dependency validation: banana, pre-release, self, invalid ID | dependencies › Requirement syntax › Self-dependency / Pre-release requirement | covered | `pre-release-versions` (archived): npm syntax, Cargo forms refused |
 | 058.2 | install-catalog pulls lib/core 1.1.0; edges in state; list resolved | dependencies › Install resolves dependencies › Dependency pulled from the catalog; dependencies › State keeps dependency edges › list after install | covered |  |
 | 058.3 | missing dependency refused naming it | dependencies › Conflicts are explained | covered |  |
 | 058.4 | version conflict names both consumers | dependencies › Conflicts are explained › Two consumers disagree | covered |  |

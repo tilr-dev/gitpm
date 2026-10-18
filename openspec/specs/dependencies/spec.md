@@ -7,19 +7,39 @@ Defines package-to-package dependencies: the requirement syntax, PubGrub resolut
 ## Requirements
 
 ### Requirement: Requirement syntax
-`dependencies` in the manifest SHALL map package IDs to Cargo-style requirements: `1.2` (= `^1.2`), `^1.2.3`, `~1.2`, `>=1.3, <2`, `=1.0.0`, `1.*`, `*`. Pre-release comparators and unknown operators SHALL be refused with `invalid_manifest`. Every key MUST be a valid package ID (`invalid_id` otherwise) and a package MUST NOT depend on itself (`invalid_manifest`, "package ID depends on itself"). Verified by `deps::requirements_follow_cargo_semantics`.
+`dependencies` SHALL map package IDs to npm-style ranges: a bare full version `1.2.3` (or `=1.2.3`) is exact; `^`, `~`, the comparators `>`, `>=`, `<`, `<=` (space-separated: AND) and `*` work as in npm. A pre-release satisfies a range only when a comparator names a pre-release of its MAJOR.MINOR.PATCH. Other syntax SHALL be refused with `invalid_manifest`. Keys MUST be valid IDs (`invalid_id`) other than the own ID (`invalid_manifest`). Verified by `deps::requirements_follow_npm_semantics`.
+
+#### Scenario: Range forms
+- **WHEN** dependencies require `^1.2.3`, `^1.2`, `~1.2.3`, `>=1.3.0 <2.0.0` and `<2`
+- **THEN** they mean `>=1.2.3 <2.0.0`, `>=1.2.0 <2.0.0`, `>=1.2.3 <1.3.0`, both comparators at once, and `<2.0.0`
 
 #### Scenario: Caret on 0.x
 - **WHEN** a dependency requires `^0.2`
 - **THEN** 0.2.5 satisfies it and 0.3.0 does not
+
+#### Scenario: Caret on 0.0.x
+- **WHEN** a dependency requires `^0.0.3`
+- **THEN** only 0.0.3 satisfies it
+
+#### Scenario: Bare version is exact
+- **WHEN** a dependency requires `1.2.3`
+- **THEN** only 1.2.3 satisfies it; `1.2.4` does not
 
 #### Scenario: Self-dependency
 - **WHEN** `acme/app`'s manifest lists `acme/app` in `dependencies`
 - **THEN** the manifest is refused with `invalid_manifest`
 
 #### Scenario: Pre-release requirement
-- **WHEN** a dependency requires `>=1.0.0-beta`
-- **THEN** the manifest is refused with `invalid_manifest` ("pre-release versions are not supported")
+- **WHEN** a dependency requires `^1.3.0-beta.1`
+- **THEN** `1.3.0-beta.2`, `1.3.0` and `1.4.0` satisfy it, while `1.4.0-beta.1` does not
+
+#### Scenario: Range does not match pre-releases
+- **WHEN** a dependency requires `^1.2.0` and `1.3.0-beta.1` is the newest version
+- **THEN** `1.3.0-beta.1` does not satisfy it
+
+#### Scenario: Old Cargo syntax
+- **WHEN** a dependency requires `>=1.3, <2`, `1.*`, `1.2.0 - 1.4.0` or `^1 || ^2`
+- **THEN** the manifest is refused with `invalid_manifest`; the author writes `>=1.3.0 <2.0.0` or `^1`
 
 ### Requirement: Install resolves dependencies
 Install and `update ID` SHALL resolve dependencies with PubGrub: installed packages stay at their versions; missing ones SHALL be installed from the configured catalog in the same transaction, recorded with its location only when it is verified (catalog); a protected package takes them from its own verified catalog (updates). Without a catalog (single source for that case) only installed packages SHALL satisfy dependencies, and a missing one SHALL fail with `dependency_conflict` naming it.

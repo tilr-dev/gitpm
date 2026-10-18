@@ -37,7 +37,7 @@ gitpm SHALL NOT derive or default a namespace: every operation that creates a pa
 - **THEN** the library fails with `invalid_id` ("package ID needs a namespace: use NAMESPACE/NAME, for example acme/hello"), the CLI prints `Error kind: invalid_id`, the exit status is 1 and nothing is created
 
 ### Requirement: Release tag names
-Single source for tag names: the release tag of a package SHALL be `namespace/name@VERSION`, both for tags gitpm creates (`init`, `commit`, `fork --replace`) and for tags it reads, in single- and multi-package repositories. Any other tag, `vVERSION` included, SHALL NOT be a release tag. A tag SHALL count only when the manifest at its commit has that ID and version. Verified by `identity::release_tag_is_id_at_version`.
+The release tag of a package SHALL be `namespace/name@VERSION` with VERSION as in "Version format" (a pre-release included), for tags gitpm creates (`init`, `commit`, `fork --replace`) and for tags it reads, in single- and multi-package repositories. Any other tag, `vVERSION` and versions with build metadata included, SHALL NOT be a release tag. A tag SHALL count only when the manifest at its commit has that ID and version. Verified by `identity::release_tag_is_id_at_version`.
 
 #### Scenario: Tag disagrees with the manifest
 - **WHEN** `acme/hello` at version 1.0.0 gets the newest tag `acme/hello@8.0.0` on a commit whose manifest still says 1.0.0
@@ -59,8 +59,12 @@ Single source for tag names: the release tag of a package SHALL be `namespace/na
 - **WHEN** a single-package repository whose manifest ID is `dan/demo1` has only the tag `v1.0.0` on a commit with version `1.0.0`
 - **THEN** `install` fails with `no_releases` and the workspace is unchanged
 
+#### Scenario: Pre-release tag
+- **WHEN** a repository has the tag `dan/demo1@2.0.0-beta.1` on a commit whose manifest has version `2.0.0-beta.1`
+- **THEN** it is a release tag of version `2.0.0-beta.1`; install, update and `update all` pick it only when asked for (updates, "Pre-releases are opt-in"), and `catalog-update` publishes it
+
 #### Scenario: Tags that are not release versions
-- **WHEN** a repository has tags `dan/demo1@2.0.0-beta`, `dan/demo1@2.0.0+b1` and `dan/demo1@latest` besides valid releases
+- **WHEN** a repository has tags `dan/demo1@2.0.0+b1` and `dan/demo1@latest` besides valid releases
 - **THEN** those tags are not releases: install, update and `catalog-update` never select them and do not warn about them
 
 ### Requirement: Broken historical tags are skipped
@@ -80,15 +84,19 @@ Single source for broken release tags: a broken historical release tag (invalid 
 - **THEN** the package moves to 0.2.0, the result's `skipped` names `acme/greeter@0.1.5` with its reason, and the CLI prints `Warning: skipped release tag acme/greeter@0.1.5: reason`, as install does
 
 ### Requirement: Version format
-Every package version (manifest `version`, `forkOf.version`, `replaces.version`, `--version` arguments, catalog versions) MUST be `MAJOR.MINOR.PATCH` of decimal numbers without leading zeros; anything else, including pre-release and build suffixes, SHALL be refused with `invalid_version`, except that an empty `version` or `forkOf.version` inside a manifest is refused with `invalid_manifest`. Versions SHALL be ordered numerically. Verified by `catalog::version_key_rejects_everything_else`.
+Every package version (manifest, `forkOf`, `replaces`, `--version`, catalog, release tag) MUST be SemVer `MAJOR.MINOR.PATCH` without leading zeros, with an optional pre-release `-PRE` (SemVer identifiers); anything else, build metadata included, SHALL be refused with `invalid_version` (an empty manifest version: `invalid_manifest`). Versions SHALL be ordered by SemVer precedence. Verified by `catalog::version_key_follows_semver_precedence`, `catalog::version_key_rejects_everything_else`.
 
 #### Scenario: Numeric ordering
 - **WHEN** releases `1.9.0` and `1.10.0` exist
 - **THEN** `1.10.0` is the newer release
 
-#### Scenario: Pre-release suffix is refused
-- **WHEN** a manifest declares version `1.0.0-beta.1` or `01.0.0` or `1.0`
-- **THEN** reading it fails with `invalid_version` (an empty `version` fails with `invalid_manifest`)
+#### Scenario: Malformed version is refused
+- **WHEN** a manifest declares version `01.0.0`, `1.0`, a malformed pre-release suffix `1.0.0-01` or the build suffix `1.0.0+build.5`
+- **THEN** reading it fails with `invalid_version` (an empty `version` fails with `invalid_manifest`), while the pre-release `1.0.0-beta.1` is accepted
+
+#### Scenario: Pre-release ordering
+- **WHEN** `1.0.0-alpha`, `1.0.0-beta`, `1.0.0-beta.2` and `1.0.0` exist
+- **THEN** they are ordered `1.0.0-alpha < 1.0.0-beta < 1.0.0-beta.2 < 1.0.0`
 
 ### Requirement: IDs are matched exactly
 Operations on an installed package SHALL match the ID exactly as recorded in `state.json`; an ID that differs only in letter case MUST NOT resolve to the installed package, even on a case-insensitive file system. Verified by `uninstall::case_variant_id_never_touches_the_installed_plugin`.

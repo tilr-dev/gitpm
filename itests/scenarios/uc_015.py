@@ -79,10 +79,7 @@ def installed_release_retagged(t: T):
     t.eq(t.rev(t.clone(ID), f"{ID}@0.1.0"), moved, "the clone took the moved tag")
 
 
-# Anchors: the requirements "Major updates are marked" and "Pre-releases are opt-in" arrive
-# with change pre-release-versions; until it is archived these cases point at the stable
-# update requirement.
-@case(fixture="hello_installed", spec=["updates/stable-update-moves-to-the-newest-release"])
+@case(fixture="hello_installed", spec=["updates/major-updates-are-marked#major-line"])
 def major_update_is_marked(t: T):
     """7. 0.1.0 → 0.1.1 is a plain line; across a breaking boundary (0.x minor, then 2.0.0) the line ends with (major)."""
     t.release(ID, "0.1.1")
@@ -94,7 +91,7 @@ def major_update_is_marked(t: T):
     t.eq(t.package(ID)["current"]["version"], "2.0.0", "moved across the major version")
 
 
-@case(fixture="hello_installed", spec=["updates/stable-update-moves-to-the-newest-release"])
+@case(fixture="hello_installed", spec=["updates/pre-releases-are-opt-in#newest-tag-is-a-pre-release", "updates/pre-releases-are-opt-in#a-ref-install-is-pinned"])
 def pre_releases_are_opt_in(t: T):
     """8. A newer pre-release is shown by check, skipped by update and update all, installed by --ref,
     and then followed (back in release mode) to newer pre-releases of the same version and the release."""

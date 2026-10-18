@@ -67,7 +67,7 @@ For a `DIR` with `gitpm.json`, init SHALL add the package at `PREFIX/NAME` for t
 `commit REPO VERSION [--package ID]` SHALL set `version` in the package's manifest, stage ALL changes of the repository, commit `Release ID VERSION` and create the release tag (package-ids, "Release tag names"), printing `ID committed VERSION (local commit and tag TAG)`. It SHALL never push. REPO MUST be the repository root and a given `--package` MUST match a package (both `invalid_argument`). Verified by `scaffold::commit_bumps_version_commits_everything_and_tags`.
 
 #### Scenario: Invalid version
-- **WHEN** the author runs `gitpm commit REPO 1.0`
+- **WHEN** the author runs `gitpm commit REPO 1.0` or `gitpm commit REPO 1.0.0+build`
 - **THEN** it fails with `invalid_version` (format in package-ids) and nothing changes
 
 #### Scenario: Wrong-typed metadata
@@ -77,6 +77,10 @@ For a `DIR` with `gitpm.json`, init SHALL add the package at `PREFIX/NAME` for t
 #### Scenario: Release one package of a multi-package repository
 - **WHEN** the author runs `gitpm commit ./tilr-packages 0.2.0 --package tilr/store`
 - **THEN** it prints `tilr/store committed 0.2.0 (local commit and tag tilr/store@0.2.0)`
+
+#### Scenario: Release a pre-release
+- **WHEN** the author runs `gitpm commit ./hello 1.3.0-beta.1`
+- **THEN** it creates the tag `acme/hello@1.3.0-beta.1`; consumers get it only when they ask for it (updates, "Pre-releases are opt-in")
 
 ### Requirement: Existing tags are never moved
 `commit` SHALL refuse with `version_conflict` ("tag already exists: TAG") when the tag exists, and SHALL refuse reusing the current version (`version_conflict`, "choose a new version") unless it is a retry: the working tree is clean, the manifest at HEAD already has VERSION and HEAD is the commit that set it; then only the tag is created. Verified by `scaffold::commit_can_be_retried_after_a_failed_tag` and `scaffold::commit_refusals_leave_the_repository_untouched`.

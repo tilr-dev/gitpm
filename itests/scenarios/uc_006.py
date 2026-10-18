@@ -104,9 +104,7 @@ for _name, _version in [("two_parts", "0.2"), ("prerelease", "1.0.0-01"), ("buil
                  f"Malformed version {_version!r} is refused.")
 
 
-# Anchor: the scenario "Release a pre-release" arrives with change pre-release-versions;
-# until it is archived the case points at the requirement.
-@case(spec=["authoring/commit-releases-a-version"])
+@case(spec=["authoring/commit-releases-a-version#release-a-pre-release"])
 def prerelease_is_released_but_not_installed_by_default(t: T):
     """A pre-release version gets its ID@VERSION tag; a plain install still takes the release."""
     repo, bare = author(t)

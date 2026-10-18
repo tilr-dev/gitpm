@@ -40,3 +40,5 @@ Depends on: `no-backward-compat`, `thin-cli-boundary`, `check-via-origin`, `sing
 ## Impact
 
 `crates/gitpm/src/deps.rs` (requirement parser, solver ranges), `catalog.rs` (`version_key`, ordering), release discovery, `upgrade.rs`/update selection, `check.rs`, scaffold/fork dependency writing, CLI output and `--version` validation, FFI records (`major`, `prerelease`), README "Changed in 0.6". Tracker: TILR-41.
+
+Implemented in commit 0443fda (feat!: npm-style version ranges, major marks and opt-in pre-releases).

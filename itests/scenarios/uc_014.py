@@ -82,7 +82,7 @@ def invalid_id(t: T):
         t.ok(not escaped.exists(), f"{escaped} not created")
 
 
-@case(fixture="hello_installed", spec=["package-ids/version-format#pre-release-suffix-is-refused"])
+@case(fixture="hello_installed", spec=["package-ids/version-format#malformed-version-is-refused"])
 def invalid_version(t: T):
     """Versions that are not MAJOR.MINOR.PATCH[-PRE]: invalid_version (build metadata included)."""
     for name, version in [("short", "1.0"), ("prefixed", "v1.0.0"), ("zero", "01.0.0"), ("pre", "1.0.0-01"),

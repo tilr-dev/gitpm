@@ -86,9 +86,7 @@ def fork_ignores_original_tags(t: T):
     t.lacks(r.err, f"{ID}@1.9.0", f"{ID}@1.10.0")
 
 
-# Anchor: the scenario "Pre-release tag" arrives with change pre-release-versions; until it
-# is archived the case points at the requirement.
-@case(fixture="numeric", spec=["package-ids/release-tag-names", "package-ids/release-tag-names#tags-that-are-not-release-versions"])
+@case(fixture="numeric", spec=["package-ids/release-tag-names#pre-release-tag", "package-ids/release-tag-names#tags-that-are-not-release-versions"])
 def prerelease_build_and_named_tags_ignored(t: T):
     """5. dan/num@2.0.0-beta is a release (a pre-release); dan/num@2.0.0+b1 and dan/num@latest
     are not: install picks 1.10.0 (never a pre-release), the catalog has 1.9.0, 1.10.0 and

@@ -7,7 +7,7 @@ Defines how packages enter and leave a workspace: installing from a Git source o
 ## Requirements
 
 ### Requirement: Install the latest release of a Git source
-`install SOURCE` (`Manager::install`) SHALL clone the Git source (path or URL), select the numerically newest valid release tag (see package-ids), check it out detached, verify the manifest and deploy its package dist; missing dependencies are installed as in dependencies. Untagged commits SHALL be ignored; a source without release tags SHALL fail with `no_releases`. Verified by `stable_install_and_update_ignore_untagged_head_and_sort_versions`.
+`install SOURCE` (`Manager::install`) SHALL clone the Git source (path or URL), select the newest valid release tag that is not a pre-release (package-ids), check it out detached, verify the manifest and deploy its package dist; missing dependencies are installed as in dependencies. Untagged commits SHALL be ignored; a source without release tags, or with pre-release tags only, SHALL fail with `no_releases`. Verified by `stable_install_and_update_ignore_untagged_head_and_sort_versions`.
 
 #### Scenario: Newest numeric tag wins
 - **WHEN** a repository has tags `acme/greeter@0.9.0` and `acme/greeter@0.10.0` and a newer untagged commit
@@ -24,6 +24,10 @@ Defines how packages enter and leave a workspace: installing from a Git source o
 #### Scenario: Forced install next to a disabled dependency
 - **WHEN** `lib` is installed but disabled and the user runs `install ./app --force` (`Manager::install_package_with` with `force`; `install-catalog app --force`, `install_from_catalog_with`), where `app` requires `lib ^1`
 - **THEN** `app` is recorded enabled and deployed although its dependency is not active (dependencies, "enable needs active dependencies"), `lib` stays disabled, missing dependencies are installed as usual, and `list` reports `app`'s dependency on `lib` unsatisfied (`forced_install_and_install_over_a_download`)
+
+#### Scenario: Pre-release tag is not picked
+- **WHEN** a repository has `acme/greeter@1.2.0` and the newer `acme/greeter@1.3.0-beta.1`
+- **THEN** `install` installs 1.2.0; `install SOURCE --ref acme/greeter@1.3.0-beta.1` installs the beta (pinned, as every `--ref` tag)
 
 ### Requirement: Install an explicit ref or a branch
 `install SOURCE --ref REF` SHALL resolve REF against the origin (tag, origin branch, commit) and record the mode (workspace-layout): a tag or commit pins the package, a branch makes it follow that branch; `--dev` SHALL follow the origin's default branch. Without either, the newest release is installed in release mode. A ref starting with `-` is refused as in git-safety. Verified by `workspace::install_records_the_ref_mode` and `model::resolve_ref_refuses_option_like_refs_and_resolves_commits`.
