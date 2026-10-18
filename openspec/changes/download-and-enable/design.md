@@ -1,0 +1,24 @@
+# Design
+
+## Context
+
+`deps.rs` builds the fixed set for install/update from state without looking at `enabled`, `upgrade.rs` skips disabled providers, and `list`/`check` report them unsatisfied. Decision D7 makes "active" the only thing that satisfies a dependency and adds `download`.
+
+## Decisions
+
+### Enable of an app whose library is disabled: refuse (chosen)
+`enable app` with `lib` disabled fails with `dependency_conflict` naming `lib`; the user enables `lib` first, or forces. Rationale: enabling is the user's choice per package (a host may keep a provider disabled on purpose, for example one of two themes); silently enabling `lib` would change what the host loads beyond the request.
+Alternative: `enable` enables the disabled dependencies it needs in the same transaction (like `install` does for what it downloaded). Rejected for now; it can be added later as an explicit `enable --with-dependencies` without breaking the refuse default.
+
+### Download resolves like install, activates nothing
+`download` runs the same solve as `install` (installed packages fixed at their versions, missing ones from the catalog) but records every new package with `enabled: false`. Disabled installed packages may fix versions during a download, because nothing becomes active; the check that matters happens at `enable`.
+
+### install = download + enable in one transaction
+`install` stages the download and the enable of the package and the dependencies it downloaded together, so a failure leaves nothing (errors, "Failing operations leave the workspace unchanged"). An installed but disabled dependency is not enabled by `install`: the install fails with `dependency_conflict` ("lib is disabled").
+
+### API
+`Manager::download(source, package, target) -> InstallResult` and `download_from_catalog(id, version) -> InstallResult` (results carry `enabled: false` records and the dist report, which deploys nothing); `Manager::enable_with(id, force) -> EnableResult`. FFI `download`, `downloadFromCatalog`, `enable(id, force)`.
+
+## Transactions and crash recovery
+
+`download` uses the install transaction without the deploy step: clones and state are staged in `.pm-txn` and committed by the journal; a crash before commit leaves nothing, after commit the journal rolls forward. `enable` stays a state + dist transaction; the dependency check runs under the lock before staging.

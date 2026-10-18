@@ -7,11 +7,21 @@ Defines how gitpm itself is developed and released: the dev/main branch flow, re
 ## Requirements
 
 ### Requirement: Branch flow
-Work SHALL happen on `dev` or feature branches off `dev`; changes SHALL reach `main` only through a pull request on the owner's explicit instruction. `main` SHALL be protected (PR only, squash merges, linear history, required checks, no deletion or force-push), and tags `v*` SHALL NOT be deleted or moved. These rules live in the GitHub rulesets of the repository (`main` and `release tags`, readable with `gh api repos/OWNER/REPO/rulesets`), not in repository files.
+Work SHALL happen on `dev` or feature branches off `dev`; changes SHALL reach `main` only through a pull request (from `dev`, or the release PR) on the owner's explicit instruction; Dependabot SHALL target `dev`. `main` SHALL be protected (PR only, squash merges, linear history, required checks, no deletion or force-push), and tags `v*` SHALL NOT be deleted or moved. These rules live in the GitHub rulesets (`main`, `release tags`; `gh api repos/OWNER/REPO/rulesets`) and `.github/dependabot.yml`.
 
 #### Scenario: Merge without a target
 - **WHEN** an agent is told to "merge" without naming a branch
 - **THEN** it merges into `dev`, not `main`
+
+#### Scenario: Dependabot update
+- **WHEN** Dependabot proposes a cargo or GitHub Actions update
+- **THEN** the pull request's base branch is `dev`
+- **AND** every update block of `.github/dependabot.yml` sets `target-branch: dev`
+
+#### Scenario: After a release merge
+- **WHEN** the release PR `chore(main): release X.Y.Z` is squash-merged into `main`
+- **THEN** `dev` is reset or fast-forwarded to `main` before the next change lands on it
+- **AND** so the next pull request from `dev` carries only new commits
 
 ### Requirement: Required CI checks
 Every pull request and every push to `main` SHALL run `fmt + clippy` (`cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`), `test` (`cargo test --workspace --locked` plus a `gitpm --version`/`--help` smoke test), `msrv (core crate)` (Rust 1.92, `cargo check -p gitpm -p gitpm-cli --all-targets --locked`), `cargo-deny` and `gitleaks`, with tools pinned by version and SHA-256 and actions pinned by commit.

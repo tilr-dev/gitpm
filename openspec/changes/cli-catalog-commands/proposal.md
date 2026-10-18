@@ -2,20 +2,21 @@
 
 ## Why
 
-The Dagger integration suite (`~/projects/tilr/pm-dagger`) drives the stand CLI `pm` (`~/projects/tilr/temp-plugin-manager/manager/src/main.rs`), and the owner decided not to port that adapter: every scenario must run against the real `gitpm` binary (decision recorded in the task brief of 2026-10-18, change `dagger-integration-tests`). A comparison of the stand's command table with `crates/gitpm-cli/src/main.rs` (`COMMANDS`, 0.5.0-dev at `0b146cf`) shows that the generic stand commands already exist in gitpm under the same flat names: `catalog-update`, `migrate-catalog`, `register`, `info`, `catalog`, `auth check`, `remote`, `commit`, `init`/`create`. What is left is the shape the owner asked for: the catalog commands as one group, `gitpm catalog update|migrate|register|show`, so the suite (and users) address catalog work with one noun instead of four unrelated verbs. The stand-only commands are either Tilr infrastructure (`sync`, `catalog-update --publish`) or were removed from gitpm on purpose (`namespace`, default namespace config: change `2026-10-16-gitpm-cli`, "He did not want a config file or a namespace command"; spec `package-ids` "No default namespace").
+The catalog operations are four unrelated top-level verbs today (`info`, `catalog`, `catalog-update`, `register`, plus `migrate-catalog`), checked against `crates/gitpm-cli/src/main.rs` (0.5.0-dev at `0b146cf`). The owner asked for one noun, `gitpm catalog show|links|update|register`, when the Dagger suite was moved into this repository (2026-10-18, change `2026-10-18-dagger-integration-tests`; tracker TILR-8). The owner also decided that gitpm keeps no backward compatibility before 1.0 (decision D1 of 2026-10-18, TILR-38): no CLI aliases, so the old names are removed in the same change. The stand-only commands stay out: `sync`/`catalog-update --publish` are Tilr hosting, `namespace` was removed on purpose (change `2026-10-16-gitpm-cli`; spec `package-ids` "No default namespace").
 
 ## What Changes
 
-- New command group `gitpm catalog SUBCOMMAND`:
-  - `catalog show` — the bounded text overview (today `info`);
-  - `catalog links` — the JSON directory links of one catalog level (today bare `catalog`);
-  - `catalog update [--sources FILE]` — generate/refresh a local catalog from Git release tags (today `catalog-update`);
-  - `catalog migrate` — split a local v1 catalog into the v2 tree (today `migrate-catalog`);
-  - `catalog register GIT_SOURCE --ref REF [--package ID] [--build-url HTTPS_URL --build-sha256 SHA256]` — add one committed version (today `register`).
-- `info`, `catalog` (without a subcommand), `catalog-update`, `migrate-catalog` and `register` stay as deprecated aliases: same behavior, same stdout, plus one `Warning: … is deprecated; use gitpm catalog …` line on stderr. Not breaking in this change; their removal is a later change marked **BREAKING**.
+- **BREAKING** New command group `gitpm catalog SUBCOMMAND`, replacing the flat names (no aliases; migration: the rename table in README "Changed in 0.6"):
+  - `catalog show` — the bounded text overview (was `info`);
+  - `catalog links` — the JSON directory links of one catalog level (was bare `catalog`);
+  - `catalog update [--sources FILE]` — generate/refresh a local catalog from Git release tags (was `catalog-update`);
+  - `catalog register GIT_SOURCE --ref REF [--package ID] [--build-url HTTPS_URL --build-sha256 SHA256]` — add one committed version (was `register`).
+- **BREAKING** `info`, `catalog-update` and `register` become unknown commands; bare `gitpm catalog` without a subcommand fails naming the subcommands.
+- `migrate-catalog` is not moved into the group: it goes away with v1 catalog support (TILR-38); until then it keeps its name.
 - Help: a `Catalog` section listing the subcommands; `gitpm catalog --help` prints the whole group, `gitpm catalog SUB --help` one block.
-- `auth check GIT_URL` and `remote REPO URL` are kept unchanged (already generic, already in gitpm, already specified in `git-safety` and `authoring`).
-- README: command table and a "Changed in 0.6" entry for the new names and the deprecations.
+- Thin CLI (decision D2, TILR-29..33): the library message for writing to an HTTP(S) catalog stops naming a command ("catalog-update requires a local output catalog" becomes neutral); the CLI adds the command hint.
+- Dagger suite: `uc_076` (catalog group, unknown subcommand, old names unknown) and the `gitpmtest.COMMANDS` remap to the new spellings, carried over from `2026-10-18-dagger-integration-tests` (its tasks 0.1 and 5.5).
+- README: command table and a "Changed in 0.6" entry with the renames.
 
 ## Capabilities
 
@@ -23,17 +24,18 @@ The Dagger integration suite (`~/projects/tilr/pm-dagger`) drives the stand CLI 
 - None.
 
 ### Modified Capabilities
-- `cli`: adds the `catalog` command group, the deprecated aliases and the group's help and error messages.
-- `catalog`: the overview limit line names `gitpm catalog show` instead of `info`.
+- `cli`: the `catalog` command group, its help and errors; MODIFIED "Command set", "Commands that need a catalog say so", "Option validation", "Help", "Nothing is built, executed or uploaded".
+- `catalog`: MODIFIED "Bounded overview" (the limit line names `gitpm catalog show`).
+- `plugin-metadata`: MODIFIED "Metadata in the catalog" (`catalog show` instead of `info`).
 
 ## Out of scope
 
-- `sync` / `catalog-update --publish` (R2 upload and Cloudflare purge, default `pkg.tilr.dev`): Tilr hosting infrastructure; gitpm is host-agnostic and only writes local catalog folders (spec `cli` "Nothing is built, executed or uploaded").
-- A `namespace` command, a default namespace, `GITPM_NAMESPACE` or a config file: removed on purpose in 0.3/0.4 (see Why); `init` keeps `NAMESPACE/NAME` and `fork` keeps `--ns`.
-- The stand's `info` defaults (`PM_REMOTE_CATALOG`, `PM_PUBLIC_URL`, fallback `https://pkg.tilr.dev`): gitpm has no built-in catalog (spec `catalog` "One catalog per workspace").
-- `create` as a separate command: it already is an alias of `init` in gitpm.
-- Removing the deprecated names, any library or FFI API change, any change to catalog formats.
+- Deprecated aliases or a transition window (D1: no backward compatibility before 1.0).
+- `sync` / `catalog-update --publish` (R2 upload and Cloudflare purge): Tilr hosting infrastructure; gitpm only writes local catalog folders (spec `cli` "Nothing is built, executed or uploaded").
+- A `namespace` command, a default namespace, `GITPM_NAMESPACE` or a config file (see Why).
+- Removing `migrate-catalog` and v1 catalogs (TILR-38).
+- Library or FFI API changes beyond the neutral message; catalog format changes.
 
 ## Impact
 
-`crates/gitpm-cli/src/main.rs` (dispatch, option validation, help), `crates/gitpm-cli/tests/` (new tests for the group and the aliases), `README.md`. No library, FFI or file-format change. The `dagger-integration-tests` change depends on this one: its scenarios use the new names.
+`crates/gitpm-cli/src/main.rs` (dispatch, option validation, help, error hints), `crates/gitpm/src/catalog.rs` (one message), `crates/gitpm-cli/tests/`, `itests/` (`gitpmtest.COMMANDS`, `uc_001`/`uc_063` help assertions, new `uc_076`), README. Spec requirements that still name the old commands in examples (catalog, cli, plugin-metadata) get MODIFIED deltas before archive (task 3.2).

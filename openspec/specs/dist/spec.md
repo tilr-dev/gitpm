@@ -2,23 +2,31 @@
 
 ## Purpose
 
-Defines `dist/`, the deployed output a host loads: which packages have a `dist/<id>` folder (exactly the active ones), how folders are deployed from Git objects, how every mutating command and `sync-dist` reconcile the tree, and what gitpm leaves alone.
+Defines the workspace folder `dist/`, the deployed output a host loads: which packages have a deployed folder `dist/<id>` (exactly the active ones), how deployed folders are copied from the package dist in Git objects, how every mutating command and `sync-dist` reconcile the tree, and what gitpm leaves alone.
 
 ## Requirements
 
 ### Requirement: dist holds exactly the active packages
-`dist/<namespace>/<name>/` (`dist/<id>/` for a legacy unscoped ID) SHALL exist exactly when the package is installed, enabled and not replaced by another package (`State::is_active`). A host SHALL be able to load every package folder under `dist/` without consulting gitpm state. Verified by `dist_active.rs` (CLI) tests.
+The deployed folder `dist/<namespace>/<name>/` (`dist/<id>/` for a legacy unscoped ID) SHALL exist exactly when the package is active: installed, enabled and not replaced by another package. A host SHALL be able to load every package folder under `dist/` without consulting gitpm state while no transaction is committing (see the scenario). Verified by `dist_active.rs` (CLI) tests.
+
+#### Scenario: Host reads during a commit
+- **WHEN** a host reads `dist/` while `.pm-txn/` exists in the workspace root
+- **THEN** it may miss a package, because a commit moves deployed folders one by one; hosts read `dist/` after the gitpm call returned
 
 #### Scenario: Installed and enabled
 - **WHEN** `acme/greeter` is installed, enabled and not replaced
-- **THEN** `dist/acme/greeter/` holds the files of its release's `dist/`
+- **THEN** `dist/acme/greeter/` holds the files of its release's package dist
 
 #### Scenario: Enabled but replaced
 - **WHEN** `acme/greeter` is replaced by `me/greeter`
 - **THEN** `dist/acme/greeter/` does not exist, `dist/me/greeter/` does, and `acme/greeter` stays `enabled: true` with `active: false` in `list`
 
 ### Requirement: Deploys copy the committed tree
-Every deploy (install, update, rollback, restore, `replace --back`, enable, reconcile) SHALL copy `<path>/dist` of the resolved commit from the clone's Git objects, never from the working tree. Nested folders and the executable bit SHALL be kept; symlinks SHALL be refused (`unsupported`, "symlinks and submodules are not supported: PATH"), while a submodule comes out as an empty folder. Verified by `every_deploy_copies_the_committed_tree_with_nested_files_and_exec_bits`.
+Every deploy (install, update, rollback, restore, `replace --back`, enable, reconcile) SHALL copy the package dist `<path>/dist` of the resolved commit from the clone's Git objects, never from the working tree. Nested folders and the executable bit SHALL be kept; symlinks SHALL be refused with `unsupported`, while a submodule comes out as an empty folder. Verified by `every_deploy_copies_the_committed_tree_with_nested_files_and_exec_bits`.
+
+#### Scenario: Symlink inside dist
+- **WHEN** a release's package dist contains a symlink
+- **THEN** the deploy fails with `unsupported` ("symlinks and submodules are not supported: PATH"; the message also names submodules, which are not refused)
 
 #### Scenario: Uncommitted edits are not deployed
 - **WHEN** a clone has uncommitted changes in `dist/` and the package is re-deployed by `enable`
@@ -33,7 +41,7 @@ Every deploy (install, update, rollback, restore, `replace --back`, enable, reco
 - **THEN** the deployed `dist/<id>/bin/run` is executable
 
 ### Requirement: A revision without dist is refused
-Single source for the missing-`dist/` refusal: a revision whose package folder has no `dist/` SHALL be refused with `invalid_manifest` and SHALL NOT be deployed as an empty folder. The message names where it was detected (see the scenarios). Verified by `workspace::a_revision_without_dist_is_never_deployed_empty` and `packages::invalid_package_sets_are_refused`.
+Single source for the missing package dist refusal: a revision whose package folder has no `dist/` SHALL be refused with `invalid_manifest` and SHALL NOT be deployed as an empty folder. The message names where it was detected (see the scenarios). Verified by `workspace::a_revision_without_dist_is_never_deployed_empty` and `packages::invalid_package_sets_are_refused`.
 
 #### Scenario: Deploy from Git objects
 - **WHEN** the commit being deployed has no `[PATH/]dist` tree
@@ -52,21 +60,21 @@ Single source for the missing-`dist/` refusal: a revision whose package folder h
 - **THEN** install fails with `invalid_manifest` and the workspace is unchanged
 
 ### Requirement: Replace removes the original's dist
-`replace X --with Y` SHALL remove `dist/X/` and SHALL NOT copy anything of `Y` into it; `dist/Y/` stays. `Y` MUST be enabled, otherwise the replace is refused with `invalid_argument` ("Y is disabled; enable it first"). Verified by `replace_removes_the_original_dist_and_back_restores_it_from_the_clone`.
+`replace ORIGINAL --with FORK` SHALL remove `dist/ORIGINAL/` and SHALL NOT copy anything of FORK into it; `dist/FORK/` stays. Its preconditions (FORK installed, enabled and declaring `replaces`) are specified in fork-replacement ("Replacement is explicit and global"). Verified by `replace_removes_the_original_dist_and_back_restores_it_from_the_clone`.
 
-#### Scenario: Replace with a disabled fork
-- **WHEN** `me/greeter` is disabled and the user runs `replace acme/greeter --with me/greeter`
-- **THEN** the command fails with `invalid_argument` and `dist/acme/greeter/` stays
+#### Scenario: Replace
+- **WHEN** the user runs `replace acme/greeter --with me/greeter`
+- **THEN** `dist/acme/greeter/` is removed and `dist/me/greeter/` still holds the fork's files
 
 ### Requirement: Switching back redeploys the original
-`replace X --back` SHALL deploy `dist/X/` again from `X`'s clone at its installed commit (and package folder), without a checkout of a shared clone; the former replacement stays deployed while it is installed and enabled.
+`replace ORIGINAL --back` SHALL deploy `dist/ORIGINAL/` again from ORIGINAL's clone at its installed commit (and package folder), without a checkout of a shared clone; the former replacing package stays deployed while it is installed and enabled.
 
 #### Scenario: Back to the original
 - **WHEN** `acme/greeter` was replaced by `me/greeter` and the user runs `replace acme/greeter --back`
 - **THEN** `dist/acme/greeter/` is deployed again and `dist/me/greeter/` remains
 
 ### Requirement: Enable and disable deploy and remove
-`disable X` SHALL remove `dist/X/` and `enable X` SHALL deploy it again from the clone. The `has_dependents` guard on disabling a replacer or a dependency is specified in dependencies ("Dependents guard removal"); this requirement covers only its effect on `dist/`. Verified by `disable_removes_and_enable_restores_also_around_a_replacement`.
+`disable ID` SHALL remove `dist/ID/` and `enable ID` SHALL deploy it again from the clone. The `has_dependents` guard on disabling a replacing package or a dependency is specified in dependencies ("Dependents guard removal"); this requirement covers only its effect on `dist/`. Verified by `disable_removes_and_enable_restores_also_around_a_replacement`.
 
 #### Scenario: Disable and enable
 - **WHEN** the user runs `disable acme/greeter` and then `enable acme/greeter`
@@ -77,28 +85,36 @@ Single source for the missing-`dist/` refusal: a revision whose package folder h
 - **THEN** `dist/me/greeter/` is removed and, because `acme/greeter` stays replaced, `dist/acme/greeter/` is not deployed
 
 ### Requirement: Inactive packages change state and clone only
-`install`, `update` and `rollback` of a replaced or disabled package SHALL change state and clone only; its `dist/` SHALL appear only on `replace --back` or `enable`. Verified by `update_and_rollback_of_a_replaced_package_leave_dist_alone_until_back` and `installing_a_package_that_is_replaced_deploys_nothing`.
+`install`, `update` and `rollback` of a replaced or disabled package SHALL change state and clone only; its deployed folder SHALL appear only on `replace --back` or `enable`. Verified by `update_and_rollback_of_a_replaced_package_leave_dist_alone_until_back` and `installing_a_package_that_is_replaced_deploys_nothing`.
 
 #### Scenario: Update of a replaced package
 - **WHEN** a replaced `acme/greeter` is updated from 0.1.0 to 0.2.0
 - **THEN** its state shows 0.2.0, `dist/acme/greeter/` still does not exist, and a later `replace acme/greeter --back` deploys 0.2.0
 
 ### Requirement: Forget, restore and uninstall settle dist
-`forget X` SHALL remove `dist/X/` (the clone stays) and `restore X` SHALL deploy it. When uninstalling or forgetting drops a replacement binding (rule in fork-replacement, "Active fork rules"), each original it replaced SHALL be deployed again in the same transaction. Verified by `uninstalling_or_forgetting_the_replacement_deploys_the_original_again`.
+`forget ID` and `uninstall ID` SHALL remove `dist/ID/` (forget keeps the clone) and `restore ID` SHALL deploy it. When uninstalling or forgetting drops a replacement binding, the original is deployed again in the same transaction (rule in fork-replacement, "Active fork rules"). Verified by `lifecycle_and_three_removal_levels`.
 
-#### Scenario: Uninstall the fork
-- **WHEN** `me/greeter` replaces `acme/greeter` and the user uninstalls `me/greeter`
-- **THEN** the replacement is dropped and `dist/acme/greeter/` is deployed again
+#### Scenario: Forget removes and restore deploys
+- **WHEN** the user runs `forget acme/greeter` and then `restore acme/greeter`
+- **THEN** `dist/acme/greeter/` is removed by the first and deployed again by the second
 
 ### Requirement: Every mutating command reconciles all of dist
-Every mutating command (install, update, rollback, replace, enable, disable, forget, restore, uninstall, `fork --replace`) SHALL, inside its transaction, deploy missing folders of active packages and remove folders of inactive known packages. An existing folder of an active package MUST NOT be rewritten. Verified by `any_mutating_command_reconciles_the_whole_dist`.
+Every mutating command (install, `install-catalog`, update, `update all`, rollback, replace, `replace --back`, enable, disable, forget, restore, uninstall, `fork --replace`, `sync-dist`) SHALL, inside its transaction, deploy the missing deployed folders of active packages and remove those of inactive known packages. An existing deployed folder of an active package MUST NOT be rewritten. Verified by `any_mutating_command_reconciles_the_whole_dist`.
+
+#### Scenario: Repeated install
+- **WHEN** `install` finds the package already installed from the same source
+- **THEN** it changes nothing, is not a mutating command and does not reconcile `dist/`
 
 #### Scenario: Stale folder from gitpm 0.4
 - **WHEN** a workspace written by gitpm 0.4 holds `dist/` of a disabled package and the user installs an unrelated package
 - **THEN** the disabled package's `dist/` is removed in the same transaction
 
 ### Requirement: Unknown paths are left alone
-Folders under `dist/` that belong to no known package SHALL be left untouched and reported (the CLI warns on stderr). A namespace path under `dist/` that is a symlink or a file SHALL be reported the same way (in `unmanaged`) and nothing SHALL be written below it; the active packages of that namespace are then not deployed, without failing the command. Verified by `a_namespace_path_that_is_not_a_folder_blocks_nothing_else`.
+Folders under `dist/` that belong to no known package SHALL be left untouched and reported (the CLI warns on stderr). A namespace path under `dist/` that is a symlink or a file SHALL be reported the same way (in `unmanaged`) and nothing SHALL be written below it. Verified by `a_namespace_path_that_is_not_a_folder_blocks_nothing_else`.
+
+#### Scenario: Namespace path that is a file
+- **WHEN** `dist/acme` is a file and `acme/greeter` is active
+- **THEN** a command on an unrelated package succeeds and leaves `acme/greeter` undeployed, while an operation that deploys or removes `acme/greeter` fails with `workspace` (transactions-locking, "Managed paths are never followed through symlinks")
 
 #### Scenario: Unknown folder
 - **WHEN** `dist/custom/` exists and belongs to no package
@@ -112,14 +128,18 @@ An active package whose clone or installed commit is missing SHALL be skipped by
 - **THEN** the enable succeeds and a warning names the package whose dist was not deployed
 
 ### Requirement: Read-only commands never change dist
-`list` and `check` SHALL NOT change `dist/`.
+`list` and `check` SHALL NOT reconcile or deploy anything in `dist/`. `list` opens the workspace (transactions-locking, "Workspace lock"), so it completes an interrupted commit found there ("Crash recovery"); `check` opens nothing.
 
 #### Scenario: list on a 0.4 workspace
 - **WHEN** a workspace written by gitpm 0.4 is listed by gitpm 0.5
 - **THEN** `dist/` is unchanged
 
 ### Requirement: sync-dist repairs dist explicitly
-`gitpm sync-dist [--dry-run]` (`Manager::sync_dist`, `sync_dist_plan`, FFI `syncDist`/`syncDistPlan`) SHALL perform only the reconciliation, report each package deployed (`ID deployed to dist/ID`) or removed (`ID removed from dist/ID`; `would be …` with `--dry-run`), sync every package it can, then exit non-zero naming the packages it could not deploy (`sync-dist: N package(s) not deployed: IDS`, a CLI error without `Error kind`). Verified by `sync_dist_repairs_a_tree_written_by_an_older_gitpm`.
+`gitpm sync-dist [--dry-run]` (`Manager::sync_dist`, `sync_dist_plan`, FFI `syncDist`/`syncDistPlan`) SHALL perform only the reconciliation, report each package deployed (`ID deployed to dist/ID`) or removed (`ID removed from dist/ID`; `would be …` with `--dry-run`), sync every package it can, then fail with exit status 1 naming those it could not deploy. Verified by `sync_dist_repairs_a_tree_written_by_an_older_gitpm`.
+
+#### Scenario: Package that cannot be deployed
+- **WHEN** the clone of an active package is missing and the user runs `sync-dist`
+- **THEN** it syncs the others and fails with `sync-dist: N package(s) not deployed: IDS`, a CLI error without `Error kind`
 
 #### Scenario: Nothing to do
 - **WHEN** `dist/` already matches the active packages (unmanaged paths may exist; they are only warned about)

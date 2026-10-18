@@ -7,7 +7,7 @@ Defines the author-side commands that create package repositories and releases: 
 ## Requirements
 
 ### Requirement: init creates a package with its first release
-`init NAMESPACE/NAME --into DIR` (alias `create`) SHALL scaffold a package with `plugin.json` (`id`, `version` 0.1.0, `"title": "NAME"`), a demo `dist/index.js`, one commit and the tag `NAMESPACE/NAME@0.1.0`. A `DIR` that does not exist SHALL become a single-package repository. `--into` is required and nothing SHALL ever be overwritten. Verified by `scaffold::init_into_a_new_folder_makes_a_tagged_single_package_repository` and `scaffold::init_never_overwrites_and_validates_ids`.
+`init NAMESPACE/NAME --into DIR` (alias `create`) SHALL scaffold a package with a manifest (`id`, `version` 0.1.0, `"title": "NAME"`), a demo `dist/index.js`, one commit and the tag `NAMESPACE/NAME@0.1.0`. A `DIR` that does not exist SHALL become a single-package repository. `--into` is required and nothing SHALL ever be overwritten. Verified by `scaffold::init_into_a_new_folder_makes_a_tagged_single_package_repository` and `scaffold::init_never_overwrites_and_validates_ids`.
 
 #### Scenario: Scaffold files and commit
 - **WHEN** `init acme/hello --into hello` creates a new single-package repository
@@ -25,7 +25,7 @@ Defines the author-side commands that create package repositories and releases: 
 For a `DIR` with `gitpm.json`, init SHALL add the package at `PREFIX/NAME` for the first `PREFIX/*` pattern (else `packages/NAME`, appended to `gitpm.json` as a literal folder), committing only `gitpm.json` and the new folder; `gitpm.json` MUST have no uncommitted changes. A repository without `gitpm.json` and without a root package SHALL get `{"packages": ["packages/*"]}`. Every refusal below SHALL be `invalid_argument` and change nothing.
 
 #### Scenario: Root is a package
-- **WHEN** the repository root has `plugin.json` and no `gitpm.json`
+- **WHEN** the repository root has a manifest and no `gitpm.json`
 - **THEN** init is refused
 
 #### Scenario: Existing folder that is not a repository
@@ -36,14 +36,11 @@ For a `DIR` with `gitpm.json`, init SHALL add the package at `PREFIX/NAME` for t
 - **WHEN** `DIR` is a subfolder of a repository
 - **THEN** init is refused with `pass the repository root`
 
-#### Scenario: ID differing only in case
-- **WHEN** the repository has `a/ui` and the user runs `init A/ui --into REPO`
-- **THEN** init is refused (`package a/ui already exists in this repository`)
-
 #### Scenario: Second package with the same name
 - **WHEN** `a/ui` exists in the repository and the user runs `init b/ui --into REPO`
 - **THEN** it is refused with `invalid_argument` naming the package that has the folder
 - **AND** this is covered by `scaffold::packages_are_added_to_a_multi_package_repository_and_released_by_id` and `scaffold::new_packages_follow_the_first_folder_pattern`
+- **AND** an ID differing only in letter case from an existing package is refused as in package-ids ("Case-colliding IDs are refused")
 
 ### Requirement: init options
 `init --multi` SHALL make a new or empty folder a multi-package repository (`gitpm.json` and `packages/NAME`); `init --no-release` SHALL commit without the release tag and print the `gitpm commit … 0.1.0` command to release later. When gitpm adds a package to an existing repository and only the tag fails, the commit SHALL stay and the `git` error SHALL name the tag. A repository gitpm created itself SHALL be removed again on any failure, including the tag.
@@ -52,7 +49,7 @@ For a `DIR` with `gitpm.json`, init SHALL add the package at `PREFIX/NAME` for t
 - **WHEN** the tag fails during a single-package `init` or `init --multi` into a new or empty folder
 - **THEN** the new repository is removed (an adopted empty folder is left empty) and the error is returned
 
-#### Scenario: Start a monorepo from nothing
+#### Scenario: Start a multi-package repository from nothing
 - **WHEN** the user runs `gitpm init tilr/runtime --into repos/p --multi --no-release`
 - **THEN** `repos/p` has `gitpm.json` and `packages/runtime`, one commit and no tag
 - **AND** this is covered by `init_multi_creates_a_multi_package_repository_that_takes_more_packages` and `init_no_release_commits_without_a_tag`
@@ -63,7 +60,7 @@ For a `DIR` with `gitpm.json`, init SHALL add the package at `PREFIX/NAME` for t
 - **AND** this is covered by `scaffold::create_package_keeps_the_commit_when_only_the_tag_fails`
 
 ### Requirement: commit releases a version
-`commit REPO VERSION [--package ID]` SHALL set `version` in the package's manifest, stage ALL changes of the repository, commit `Release ID VERSION` and tag `ID@VERSION` (`vVERSION` for legacy), printing `ID committed VERSION (local commit and tag TAG)`. It SHALL never push. REPO MUST be the repository root (`invalid_argument`) and a given `--package` MUST match a package. Verified by `scaffold::commit_bumps_version_commits_everything_and_tags`.
+`commit REPO VERSION [--package ID]` SHALL set `version` in the package's manifest, stage ALL changes of the repository, commit `Release ID VERSION` and create the release tag (package-ids, "Release tag names"), printing `ID committed VERSION (local commit and tag TAG)`. It SHALL never push. REPO MUST be the repository root and a given `--package` MUST match a package (both `invalid_argument`). Verified by `scaffold::commit_bumps_version_commits_everything_and_tags`.
 
 #### Scenario: Invalid version
 - **WHEN** the author runs `gitpm commit REPO 1.0`
@@ -73,7 +70,7 @@ For a `DIR` with `gitpm.json`, init SHALL add the package at `PREFIX/NAME` for t
 - **WHEN** the manifest has `"tags": "ui"`
 - **THEN** it fails with `invalid_manifest` (rule in plugin-metadata, "Lenient reading, strict authoring")
 
-#### Scenario: Release one package of a monorepo
+#### Scenario: Release one package of a multi-package repository
 - **WHEN** the author runs `gitpm commit ./tilr-plugins 0.2.0 --package tilr/store`
 - **THEN** it prints `tilr/store committed 0.2.0 (local commit and tag tilr/store@0.2.0)`
 
@@ -96,21 +93,22 @@ When `git commit` fails (hook, signing), gitpm SHALL restore `plugin.json` and t
 - **THEN** `plugin.json` keeps its old version and the index is unchanged
 
 ### Requirement: Git identity is never invented in existing repositories
-gitpm SHALL NOT write a Git identity into an existing repository; without a configured identity `commit` and adding packages SHALL be refused. Only a repository gitpm creates itself (a new `init` folder, a new fork) MAY get a local demo identity `Plugin Demo <demo@example.invalid>` when the user has none. Verified by `scaffold::create_package_refuses_uncommitted_config_and_a_missing_identity`.
+gitpm SHALL NOT write a Git identity into an existing repository; when git cannot determine an author and committer identity there, `commit`, `init` into an existing repository and adding packages to an existing fork SHALL be refused with `git`. Only a repository gitpm creates itself (a new `init` folder, a new fork) MAY get a local demo identity `Plugin Demo <demo@example.invalid>` when the user has none. Verified by `scaffold::create_package_refuses_uncommitted_config_and_a_missing_identity`.
 
 #### Scenario: Tag-only retry without identity
 - **WHEN** an existing repository has no identity and `commit` is retried after a failed tag
 - **THEN** the identity is not checked and the lightweight tag is created
 
 #### Scenario: No identity
-- **WHEN** an existing repository has no user identity configured and the author runs `gitpm commit REPO 0.2.0`
-- **THEN** the command fails and the repository is unchanged
+- **WHEN** git cannot determine a user identity for an existing repository and the author runs `gitpm commit REPO 0.2.0`
+- **THEN** the command fails with `git` and the repository is unchanged
+- **AND** the refusal is the error of `git var GIT_AUTHOR_IDENT` / `GIT_COMMITTER_IDENT`, so an identity git can derive on its own is accepted
 
 ### Requirement: remote sets origin without network
 `remote REPO URL` SHALL add or replace `origin` (all configured URLs, fetch and push) of a package repository root without network access; URLs that are empty, start with `-` or contain control characters SHALL be refused with `invalid_argument`. Verified by `scaffold::set_remote_adds_or_replaces_origin_without_network`.
 
 #### Scenario: Not a package repository root
-- **WHEN** REPO is a subfolder (`invalid_argument`, "pass the plugin repository root") or a root without `plugin.json` and `gitpm.json`
+- **WHEN** REPO is a subfolder (`invalid_argument`, "pass the plugin repository root") or a repository root without a manifest and without `gitpm.json`
 - **THEN** the command fails (`invalid_manifest` for the latter) and nothing changes
 
 #### Scenario: Set origin

@@ -14,7 +14,11 @@ The FFI crate SHALL generate the Swift module `Gitpm` over the C module `GitpmFF
 - **THEN** it can `import Gitpm` and call `PluginManager.open(root:options:)`
 
 ### Requirement: Manager surface
-`PluginManager` SHALL be opened with `open(root, ManagerOptions)` and SHALL expose every workspace operation of the library (list, check, catalog reads, install, update and update all, rollback, enable/disable, forget/restore, uninstall plan and uninstall, fork variants, replace and switch back with plans, sync-dist with plan), plus free functions authCheck, browseCatalog, catalogRelease, readInstalled and describeLostWork. Author and catalog-generation commands SHALL NOT be exposed.
+`PluginManager` SHALL be opened with `open(root, ManagerOptions)` and SHALL expose every workspace operation of the library (list, check, catalog reads, install, update and update all, rollback, enable/disable, forget/restore, uninstall plan and uninstall, fork variants, replace and switch back with plans, sync-dist with plan), plus free functions `authCheck`, `browseCatalog`, `catalogRelease`, `readInstalled` and `describeLostWork`. Author and catalog-generation commands SHALL NOT be exposed.
+
+#### Scenario: Which calls open the workspace
+- **WHEN** a host calls a `PluginManager` method, `check` included, or `readInstalled`
+- **THEN** the method works on the opened (locked) workspace, while `readInstalled` reads `state.json` without opening it (transactions-locking, "Workspace lock"); `authCheck(source, customSsh)` takes the SSH setting explicitly
 
 #### Scenario: Catalog reads with and without a workspace
 - **WHEN** a host needs the catalog overview

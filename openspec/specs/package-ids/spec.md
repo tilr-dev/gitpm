@@ -2,12 +2,12 @@
 
 ## Purpose
 
-Defines how packages are named and versioned: the `namespace/name` ID, legacy unscoped IDs, release tag names and the MAJOR.MINOR.PATCH version format shared by manifests, tags and catalogs.
+Defines how packages are named and versioned: the `namespace/name` ID, legacy unscoped IDs, release tag names, how releases are discovered from tags (broken and moved tags), and the MAJOR.MINOR.PATCH version format shared by manifests, tags and catalogs.
 
 ## Requirements
 
 ### Requirement: Package ID syntax
-A package ID SHALL be `namespace/name` or, for legacy packages only, a single unscoped `name`. Each component MUST be 1 to 80 ASCII letters, digits, `-` or `_` and MUST NOT start with `-`. Any other ID SHALL be refused with `invalid_id`. Verified by `identity::valid_part_accepts_1_to_80_safe_ascii_characters` and `model::valid_id_accepts_legacy_and_scoped_ids_only`.
+A package ID SHALL be `namespace/name` or, for legacy packages only, a single unscoped `name`. Each component MUST be 1 to 80 ASCII letters, digits, `-` or `_` and MUST NOT start with `-`. Any other ID SHALL be refused with `invalid_id`. An installed ID SHALL NOT be the namespace of another installed ID (`workspace`, see the scenario). Verified by `identity::valid_part_accepts_1_to_80_safe_ascii_characters` and `model::valid_id_accepts_legacy_and_scoped_ids_only`.
 
 #### Scenario: Valid scoped ID
 - **WHEN** a caller uses the ID `dan/demo1`
@@ -21,19 +21,23 @@ A package ID SHALL be `namespace/name` or, for legacy packages only, a single un
 - **WHEN** a caller qualifies an empty namespace with a name
 - **THEN** the call fails with `invalid_id`
 
+#### Scenario: Legacy ID equal to an installed namespace
+- **WHEN** `dan/x` is installed and the user installs a repository whose manifest ID is the legacy `dan`
+- **THEN** the install fails with `workspace` ("plugin ID conflicts with an installed namespace path") and the workspace is unchanged
+
 ### Requirement: No default namespace
 gitpm SHALL NOT derive or default a namespace: every command that creates a package (`init`, `create`) MUST receive a full `NAMESPACE/NAME`, and `fork` MUST receive the target namespace explicitly. There SHALL be no namespace configuration file or command.
 
 #### Scenario: init without a namespace
 - **WHEN** the user runs `gitpm init hello --into hello`
-- **THEN** the command fails with `plugin id needs a namespace: use NAMESPACE/NAME, for example acme/hello` and creates nothing
+- **THEN** the command fails with `plugin id needs a namespace: use NAMESPACE/NAME, for example acme/hello` (a CLI usage error: no `Error kind` line, exit status 1) and creates nothing
 
 ### Requirement: Release tag names
 Single source for tag names: tags gitpm creates (`init`, `commit`, `fork --replace`) SHALL be `namespace/name@VERSION` for a scoped package and `vVERSION` for a legacy one. For the root package of a single-package repository, reading releases SHALL accept both `ID@VERSION` and `vVERSION` (multi-package repositories: see multi-package-repos). A tag SHALL count only when the manifest at its commit has that ID and version. Verified by `identity::release_tag_is_v_for_legacy_and_at_for_scoped_ids`.
 
 #### Scenario: Tag disagrees with the manifest
 - **WHEN** the legacy package `hello` at version 1.0.0 gets the newest tag `v8.0.0` on a commit whose manifest still says 1.0.0
-- **THEN** the tag is skipped ("tag v8.0.0 disagrees with manifest version 1.0.0") and, because it is the newest, `catalog-update` fails and writes nothing; this is covered by `release_manifest_must_match_tag_and_update_rejects_retagging`
+- **THEN** the tag is skipped ("tag v8.0.0 disagrees with manifest version 1.0.0") and, because it is the newest, `catalog-update` fails with `version_conflict` and writes nothing; this is covered by `release_manifest_must_match_tag_and_update_rejects_retagging`
 
 #### Scenario: Two tags for one version
 - **WHEN** `v1.0.0` and `dan/demo1@1.0.0` point to different commits
@@ -51,8 +55,42 @@ Single source for tag names: tags gitpm creates (`init`, `commit`, `fork --repla
 - **WHEN** a single-package repository whose manifest ID is `dan/demo1` has only the tag `v1.0.0` on a commit with version `1.0.0`
 - **THEN** `install` finds the release `1.0.0`
 
+### Requirement: Broken historical tags are skipped
+Single source for broken release tags: a broken historical release tag (an invalid manifest at its commit, a tag that disagrees with the manifest, a tag whose commit lacks its package) SHALL be skipped and reported as a warning, not fail discovery; selecting the latest release (install, update, `catalog-update`) SHALL still fail with `version_conflict` ("latest release tag is broken: …") when a skipped tag is newer than every valid release.
+
+#### Scenario: Bad newest tag
+- **WHEN** the newest tag is broken and an older one is valid
+- **THEN** install, update and `catalog-update` fail with `version_conflict` ("latest release tag is broken: …")
+
+#### Scenario: One bad old tag
+- **WHEN** tag 0.1.0's manifest is invalid but 0.2.0 is valid
+- **THEN** `catalog-update` publishes 0.2.0 and warns about 0.1.0
+- **AND** `catalog-update` warns `Warning: SOURCE: reason`, install and update warn `Warning: skipped release tag NAME: reason`; this is covered by `releases::bad_historical_tag_does_not_hide_valid_releases` and `catalog::update_sources_skips_and_reports_a_broken_historical_tag`
+
+### Requirement: Moved release tags are refused
+Single source for moved release tags: a single-package update of a package with its own clone SHALL refuse with `version_conflict` when a release tag it observed before now points at another commit. Fetching into a shared clone SHALL take the origin's tags as they are but SHALL refuse with `version_conflict`, naming the tag, when the release tag of an installed revision of any package of that clone would move. `catalog-update` SHALL refuse a moved tag of a published version.
+
+#### Scenario: Other moved tag in a shared clone
+- **WHEN** a tag of a release that no package of the shared clone has installed moved on the origin
+- **THEN** fetching into that clone accepts the moved tag
+
+#### Scenario: Retagged release
+- **WHEN** the tag of an already seen release `acme/greeter@0.2.0` is moved to another commit on the origin
+- **THEN** `update acme/greeter` fails with `version_conflict` ("release tag acme/greeter@0.2.0 changed commit") and the workspace is unchanged
+- **AND** `update all` refuses a moved release tag in any clone the same way (updates); the separate check of the installed version's release commit is in updates ("Stable update never downgrades or accepts mutated releases"); this is covered by `release_manifest_must_match_tag_and_update_rejects_retagging`
+
+#### Scenario: Moved tag of a sibling
+- **WHEN** the tag of installed `tilr/theme@0.1.0` moved on the origin and the user updates `tilr/store` from the same shared clone
+- **THEN** the update fails with `version_conflict` naming `tilr/theme@0.1.0`
+- **AND** this is covered by `a_moved_tag_of_an_installed_package_refuses_install_and_update_of_a_sibling`
+
+#### Scenario: Moved tag on regenerate
+- **WHEN** a published tag was moved to another commit and the user runs `catalog-update`
+- **THEN** it fails with `version_conflict` and no catalog file changes
+- **AND** this is covered by `catalog_update_generates_all_tags_and_rejects_moved_releases_without_partial_write`
+
 ### Requirement: Version format
-Every package version (manifest `version`, `forkOf.version`, `replaces.version`, `--version` arguments, catalog versions) MUST be `MAJOR.MINOR.PATCH` of decimal numbers without leading zeros; anything else, including pre-release and build suffixes, SHALL be refused with `invalid_version`. Versions SHALL be ordered numerically. Verified by `catalog::version_key_rejects_everything_else`.
+Every package version (manifest `version`, `forkOf.version`, `replaces.version`, `--version` arguments, catalog versions) MUST be `MAJOR.MINOR.PATCH` of decimal numbers without leading zeros; anything else, including pre-release and build suffixes, SHALL be refused with `invalid_version`, except that an empty `version` or `forkOf.version` inside a manifest is refused with `invalid_manifest`. Versions SHALL be ordered numerically. Verified by `catalog::version_key_rejects_everything_else`.
 
 #### Scenario: Numeric ordering
 - **WHEN** releases `1.9.0` and `1.10.0` exist
@@ -60,7 +98,7 @@ Every package version (manifest `version`, `forkOf.version`, `replaces.version`,
 
 #### Scenario: Pre-release suffix is refused
 - **WHEN** a manifest declares version `1.0.0-beta.1` or `01.0.0` or `1.0`
-- **THEN** reading it fails with `invalid_version` (or `invalid_manifest` for a manifest file)
+- **THEN** reading it fails with `invalid_version` (an empty `version` fails with `invalid_manifest`)
 
 ### Requirement: IDs are matched exactly
 Operations on an installed package SHALL match the ID exactly as recorded in `state.json`; an ID that differs only in letter case MUST NOT resolve to the installed package, even on a case-insensitive file system. Verified by `uninstall::case_variant_id_never_touches_the_installed_plugin`.
@@ -70,8 +108,17 @@ Operations on an installed package SHALL match the ID exactly as recorded in `st
 - **THEN** the command fails with `repository_not_found` and `vendor/module` is untouched
 
 ### Requirement: Case-colliding IDs are refused
-Installing, restoring or forking a package whose ID differs from an installed or retained package (or an existing workspace path) only in letter case SHALL be refused, independent of the file system's case sensitivity: install with `workspace` ("… differs only in letter case from installed …"), fork with `invalid_argument`. Verified by `workspace::ids_differing_only_in_case_are_refused`.
+Single source for IDs that differ only in letter case, refused independent of the file system's case sensitivity: installing or restoring a package whose ID differs only in case from an installed or retained package, or from an existing workspace path, SHALL fail with `workspace`; `fork`, `init` into a multi-package repository and adding packages to an existing fork SHALL fail with `invalid_argument`. Verified by `workspace::ids_differing_only_in_case_are_refused`.
+
+#### Scenario: Case variants inside one repository
+- **WHEN** a multi-package repository lists two packages whose IDs differ only in letter case
+- **THEN** both folders are defective (multi-package-repos, "Package validity is per package")
 
 #### Scenario: Install after forget of a case variant
 - **WHEN** `dan/p` is retained in the workspace and the user installs a repository whose manifest ID is `Dan/p`
 - **THEN** the install fails with `workspace` and the workspace is unchanged
+- **AND** the message says `… differs only in letter case from installed …` (or, for a colliding workspace path, `… collides with an existing path that differs only in letter case`)
+
+#### Scenario: ID differing only in case
+- **WHEN** the repository has `a/ui` and the user runs `init A/ui --into REPO`
+- **THEN** init fails with `invalid_argument` (`package a/ui already exists in this repository`) and the repository is unchanged

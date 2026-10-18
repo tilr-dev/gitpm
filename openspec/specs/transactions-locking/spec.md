@@ -7,7 +7,15 @@ Defines how workspace changes stay atomic and serialized: journaled transactions
 ## Requirements
 
 ### Requirement: Transactions stage only touched paths
-Every mutating operation SHALL prepare new clones, `dist/` folders and the next `state.json` inside `<root>/.pm-txn`, leaving the live workspace untouched until commit (the mechanism behind errors, "Failing operations leave the workspace unchanged"). Commit SHALL write a journal, then move each staged path into place (replaced ones go to `.pm-txn/old`), with `state.json` last via an atomic rename. Enable, disable and forget SHALL rewrite only `state.json` and the affected `dist/`.
+Every mutating operation SHALL prepare new clones, deployed folders and the next `state.json` inside `<workspace root>/.pm-txn`, leaving the live workspace untouched until commit (mechanism of errors, "Failing operations leave the workspace unchanged"). Commit SHALL write a journal, then move each staged path into place (replaced ones go to `.pm-txn/old`), with `state.json` last via an atomic rename. A clone that an operation does not replace SHALL NOT be rewritten, except as in the scenarios.
+
+#### Scenario: Keep-alive refs after commit
+- **WHEN** a transaction changes a package of a shared clone
+- **THEN** after commit its keep-alive refs are written in the live clone (multi-package-repos, "Keep-alive refs")
+
+#### Scenario: Deployed folders
+- **WHEN** any mutating operation commits
+- **THEN** the deployed folders it adds or removes are those of dist ("Every mutating command reconciles all of dist")
 
 #### Scenario: Forget in a shared clone
 - **WHEN** forgetting a package whose shared clone's HEAD is at its revision
@@ -29,17 +37,21 @@ On open and at the start of a transaction, a committed journal SHALL be rolled f
 - **THEN** the next open completes the commit and state and `dist/` are consistent
 
 ### Requirement: Neighbouring folders are never touched
-Recovery SHALL only touch `.pm-txn` inside the root, never folders beside the workspace named like old stage folders. Verified by `workspace::neighbours_named_like_old_stage_folders_are_never_touched`.
+Recovery SHALL only touch `.pm-txn` inside the workspace root, never folders beside the workspace named like old stage folders. Verified by `workspace::neighbours_named_like_old_stage_folders_are_never_touched`.
 
 #### Scenario: Look-alike folder
 - **WHEN** a folder `.ws.stage` exists beside workspace `ws`
 - **THEN** opening `ws` leaves it alone
 
 ### Requirement: Workspace lock
-A Manager SHALL hold an exclusive lock on `.<root name>.lock` beside the workspace for its lifetime, keyed by the real (canonical) path so a symlinked spelling takes the same lock. A second Manager on the same workspace SHALL fail with `locked` ("workspace is already in use"). Verified by `recovery_and_lock` and `workspace::symlinked_workspace_root_shares_the_lock`.
+Single source for which commands open a workspace: a Manager SHALL hold an exclusive lock on `.<workspace root name>.lock` beside the workspace root for its lifetime, keyed by the real (canonical) path so a symlinked spelling takes the same lock. A second Manager on the same workspace SHALL fail with `locked` ("workspace is already in use"). Verified by `recovery_and_lock` and `workspace::symlinked_workspace_root_shares_the_lock`.
+
+#### Scenario: Who opens a workspace
+- **WHEN** a CLI workspace command runs (the read-only `list` included) or an FFI `PluginManager` method is called (`check` included)
+- **THEN** it opens a Manager: it takes the lock, creates a missing workspace root (workspace-layout) and runs crash recovery; only the CLI `check` and the FFI free function `readInstalled` read `state.json` without opening the workspace
 
 #### Scenario: Two CLI processes
-- **WHEN** one `gitpm` process is installing and another runs `gitpm list` on the same root
+- **WHEN** one `gitpm` process is installing and another runs `gitpm list` on the same workspace root
 - **THEN** the second fails with `locked`
 
 ### Requirement: Locks are process-owned and survive crashes
@@ -61,4 +73,4 @@ Every directory between the root and a managed path (`plugins`, `plugins/<ns>`, 
 
 #### Scenario: Symlinked namespace
 - **WHEN** `plugins/dan` is a symlink to a folder outside the workspace
-- **THEN** install and `uninstall --force` of `dan/x` refuse and nothing outside the root changes
+- **THEN** install and `uninstall --force` of `dan/x` refuse and nothing outside the workspace root changes
