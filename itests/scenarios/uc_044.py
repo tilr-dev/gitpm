@@ -1,0 +1,111 @@
+"""UC-044: Fork local HEAD, staged changes and fork of fork (P0).
+
+The spec's vendor/module is played by vendor/demo (g3_vendor_installed). In the installed
+clone: a local commit that bumps plugin.json to 0.1.5 and edits dist, then a staged
+unrelated file, an unstaged tracked edit, an untracked and an ignored file.
+"""
+
+import json
+
+from gitpmtest import T, case
+
+ID, MINE, THIRD = "vendor/demo", "mine/demo", "third/demo"
+
+
+def prepare(t: T):
+    """Local work in the installed clone, then fork to /fx/repos/mine/demo."""
+    clone = t.clone(ID)
+    t.write(clone, {"plugin.json": json.dumps({"id": ID, "version": "0.1.5"}, indent=2) + "\n",
+                    "dist/index.js": "export const greeting = 'local commit';\n"})
+    local_head = t.commit(clone, "local commit")
+    t.write(clone, {"staged.txt": "staged\n"})
+    t.git(clone, "add", "staged.txt")
+    t.write(clone, {"dist/index.js": "export const greeting = 'unstaged';\n",
+                    "untracked.txt": "untracked\n", "node_modules/x.js": "ignored\n"})
+    before = t.snap(t.ws, t.repo(ID), git=True)
+    dest = t.repo(MINE)
+    t.gitpm_ok("fork", ID, "--ns", "mine", "--into", dest)
+    return dest, local_head, before
+
+
+@case(fixture="g3_vendor_installed", spec=["fork-replacement/fork-metadata"])
+def fork_of_local_head(t: T):
+    """forkOf.commit is the local HEAD, forkOf.version its manifest version (0.1.5, not the
+    installed 0.1.0); the identity commit contains only plugin.json; source untouched."""
+    installed = t.plugin(ID)["current"]
+    dest, local_head, before = prepare(t)
+    m = json.loads((dest / "plugin.json").read_text())
+    t.eq(m["forkOf"], {"id": ID, "version": "0.1.5", "commit": local_head}, "forkOf")
+    t.eq(m["version"], "0.1.5", "fork version")
+    t.eq(m["replaces"], {"id": ID, "version": "0.1.5"}, "replaces")
+    t.ok(local_head != installed["commit"], "local HEAD differs from the installed commit")
+    t.eq(t.rev(dest, "HEAD~1"), local_head, "identity commit parent")
+    t.eq(t.git(dest, "show", "--name-only", "--format=", "HEAD"), "plugin.json", "identity commit files")
+    t.eq(t.git(dest, "config", "--local", "pm.forkBase"), local_head, "pm.forkBase")
+    t.eq(t.git(dest, "config", "--local", "pm.forkVersion"), "0.1.5", "pm.forkVersion")
+    t.same(before, "installed clone, dist, state and author repository")
+    t.eq(t.plugin(ID)["current"], installed, "original state")
+
+
+@case(fixture="g3_vendor_installed", spec=["fork-replacement/fork-copies-an-installed-package"])
+def staged_unstaged_untracked_ignored_survive(t: T):
+    dest, _, _ = prepare(t)
+    t.eq(t.git(dest, "diff", "--cached", "--name-only"), "staged.txt", "staged in fork")
+    t.eq(t.git(dest, "diff", "--name-only"), "dist/index.js", "unstaged in fork")
+    t.eq((dest / "dist/index.js").read_text(), "export const greeting = 'unstaged';\n", "unstaged bytes")
+    t.eq((dest / "untracked.txt").read_text(), "untracked\n", "untracked")
+    t.eq((dest / "node_modules/x.js").read_text(), "ignored\n", "ignored")
+    status = t.run("git", "-C", dest, "status", "--porcelain", "--untracked-files=all").out
+    t.has(status, "A  staged.txt\n", " M dist/index.js\n", "?? untracked.txt\n")
+
+
+@case(fixture="g3_vendor_installed", spec=["fork-replacement/fork-metadata"])
+def fork_of_fork_records_immediate_parent(t: T):
+    """Install the fork by explicit HEAD, fork it again: third/demo forkOf is mine/demo."""
+    dest, _, _ = prepare(t)
+    fork_head = t.rev(dest)
+    t.gitpm_ok("install", dest, "--ref", "HEAD")
+    p = t.plugin(MINE)
+    t.eq(p["current"], {"version": "0.1.5", "commit": fork_head}, "fork installed at its HEAD")
+    third = t.root / "authors/third"
+    t.gitpm_ok("fork", MINE, "--ns", "third", "--into", third)
+    m = json.loads((third / "plugin.json").read_text())
+    t.eq(m["id"], THIRD, "id")
+    t.eq(m["forkOf"], {"id": MINE, "version": "0.1.5", "commit": fork_head}, "immediate parent")
+    t.eq(m["replaces"], {"id": MINE, "version": "0.1.5"}, "replaces the immediate parent")
+    t.eq(t.git(third, "remote", "get-url", "upstream"), str(dest), "upstream is the mine/demo source")
+
+
+@case(fixture="g3_vendor_installed", spec=["fork-replacement/fork-metadata", "catalog/register-one-version"])
+def catalog_round_trip_keeps_provenance(t: T):
+    """Fork release registered in the catalog keeps forkOf; install-catalog restores it."""
+    dest, local_head, _ = prepare(t)
+    t.gitpm_ok("commit", dest, "0.2.0")
+    t.gitpm_ok("register", dest, "--ref", f"{MINE}@0.2.0")
+    release = json.loads(t.catalog_release(MINE, "0.2.0").read_text())
+    forkof = {"id": ID, "version": "0.1.5", "commit": local_head}
+    t.eq(release["manifest"]["forkOf"], forkof, "catalog manifest forkOf")
+    t.gitpm_ok("--root", t.root / "ws2", "install-catalog", MINE)
+    state = json.loads((t.root / "ws2/state.json").read_text())
+    t.eq(state["plugins"][MINE]["forkOf"], forkof, "installed forkOf")
+
+
+@case(fixture="g3_vendor_installed", spec=["fork-replacement/active-fork-rules", "updates/rollback-swaps-current-and-previous"])
+def update_and_rollback_keep_provenance(t: T):
+    dest, local_head, _ = prepare(t)
+    forkof = {"id": ID, "version": "0.1.5", "commit": local_head}
+    first = (t.gitpm_ok("commit", dest, "0.2.0"), t.rev(dest))[1]
+    t.gitpm_ok("install", dest)
+    t.eq(t.plugin(MINE)["current"], {"version": "0.2.0", "commit": first}, "installed 0.2.0")
+    t.write(dest, {"dist/index.js": "export const greeting = 'fork 0.3.0';\n"})
+    t.gitpm_ok("commit", dest, "0.3.0")
+    second = t.rev(dest)
+    t.gitpm_ok("update", MINE)
+    p = t.plugin(MINE)
+    t.eq((p["current"], p["previous"], p["forkOf"]),
+         ({"version": "0.3.0", "commit": second}, {"version": "0.2.0", "commit": first}, forkof), "after update")
+    t.gitpm_ok("rollback", MINE)
+    p = t.plugin(MINE)
+    t.eq((p["current"], p["previous"], p["forkOf"]),
+         ({"version": "0.2.0", "commit": first}, {"version": "0.3.0", "commit": second}, forkof), "after rollback")
+    t.eq(t.plugin(ID)["current"]["version"], "0.1.0", "original untouched")

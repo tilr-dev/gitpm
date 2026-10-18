@@ -1,0 +1,109 @@
+#!/bin/sh
+# Run the gitpm integration tests in Dagger, on the pb engine by default (see itests/README.md).
+#
+#   ./itests/dt [test] [--only rust,lint,scenarios] [--filter TEXT] [--jobs N] [--cached] [--open]
+#                                 --open: show report.html in the browser afterwards
+#   ./itests/dt fixtures          fixture graph
+#   ./itests/dt fixture NAME      export one fixture snapshot to itests/results/fixture-NAME
+#   ./itests/dt call FUNCTION [ARGS]  any module function, e.g. ./itests/dt call gitpm export --path ./gitpm
+#   ./itests/dt coverage          write openspec/coverage/ (no Dagger)
+#   ./itests/dt history           open itests/results/index.html (all runs)
+#   ./itests/dt clear [--keep N]  delete local run reports (all, or all but the N newest)
+#
+# DT_ENGINE=dagger runs on the local engine instead of dagger-pb. With a 1Password SSH
+# agent run `env -u SSH_AUTH_SOCK ./itests/dt`.
+set -eu
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+REPO=$(dirname -- "$HERE")
+ENGINE=${DT_ENGINE:-dagger-pb}
+DAGGER_VERSION=v0.21.10
+export DAGGER_NO_NAG=1
+
+cmd=test
+case "${1:-}" in
+  test|fixtures|fixture|call|history|clear|coverage) cmd=$1; shift ;;
+  -h|--help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+esac
+
+coverage() {
+  uv run --no-project --quiet python "$HERE/tools/coverage.py" "$@"
+}
+
+preflight() {
+  # Dagger parses any .env above a module as dotenv: refuse instead of guessing.
+  dir=$HERE
+  while :; do
+    if [ -e "$dir/.env" ]; then
+      echo "dt: refusing to run: $dir/.env exists (Dagger would parse it as the module's dotenv); move it away" >&2
+      exit 1
+    fi
+    [ "$dir" = / ] && break
+    dir=$(dirname -- "$dir")
+  done
+  version=$(dagger version 2>/dev/null | awk '{print $2}') || true
+  if [ "$version" != "$DAGGER_VERSION" ]; then
+    echo "dt: the Dagger CLI must be $DAGGER_VERSION (the pb engine's version); found ${version:-none}" >&2
+    exit 1
+  fi
+  COMMIT=$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo worktree)
+  if [ -n "$(git -C "$REPO" status --porcelain 2>/dev/null | head -1)" ]; then COMMIT="$COMMIT+dirty"; fi
+}
+
+call() { "$ENGINE" -m "$HERE" call --commit "$COMMIT" "$@"; }
+
+case "$cmd" in
+  test)
+    preflight
+    # --open is ours; everything else goes to the module's test function.
+    open_report=0
+    for arg do
+      shift
+      if [ "$arg" = --open ]; then open_report=1; else set -- "$@" "$arg"; fi
+    done
+    out="$HERE/results/$(date +%Y%m%dT%H%M%S)-$$"
+    mkdir -p "$HERE/results"
+    call test "$@" export --path "$out" >/dev/null
+    echo "$*" > "$out/args.txt"
+    # Flip latest only after the run is complete: an interrupted run keeps the previous one.
+    ln -sfn "$out" "$HERE/results/latest"
+    uv run --no-project --quiet python "$HERE/tools/report.py" "$out" \
+      || echo "warning: report.html not generated" >&2
+    uv run --no-project --quiet python "$HERE/tools/history.py" "$HERE/results" \
+      || echo "warning: results/index.html not updated" >&2
+    cat "$out/summary.txt"
+    echo "Report:  $out/report.html"
+    echo "History: $HERE/results/index.html"
+    [ "$open_report" = 0 ] || [ ! -f "$out/report.html" ] || open "$out/report.html"
+    [ "$(cat "$out/status")" = ok ]
+    ;;
+  fixtures) preflight; call fixtures ;;
+  fixture)
+    [ $# -eq 1 ] || { echo "usage: ./itests/dt fixture NAME" >&2; exit 2; }
+    preflight
+    out="$HERE/results/fixture-$1"
+    rm -rf "$out"
+    call fixture --name "$1" export --path "$out" >/dev/null
+    echo "Snapshot: $out"
+    ;;
+  call) preflight; call "$@" ;;
+  coverage) coverage "$@" ;;
+  clear)
+    keep=0
+    case "${1:-}" in
+      --keep) keep=${2:?usage: ./itests/dt clear [--keep N]} ;;
+      "") ;;
+      *) echo "usage: ./itests/dt clear [--keep N]" >&2; exit 2 ;;
+    esac
+    # Local reports only; the Dagger cache on the engine is not touched.
+    runs=$(ls -1d "$HERE"/results/[0-9]* 2>/dev/null | sort -r | tail -n +"$((keep + 1))")
+    [ -n "$runs" ] && echo "$runs" | while read -r d; do rm -rf "$d"; done
+    if [ "$keep" = 0 ]; then rm -rf "$HERE"/results/fixture-* "$HERE/results/latest" "$HERE/results/index.html"; fi
+    left=$(ls -1d "$HERE"/results/[0-9]* 2>/dev/null | wc -l | tr -d ' ')
+    [ "$left" = 0 ] || uv run --no-project --quiet python "$HERE/tools/history.py" "$HERE/results"
+    echo "Removed $(printf '%s' "$runs" | grep -c . || true) run(s); $left left."
+    ;;
+  history)
+    uv run --no-project --quiet python "$HERE/tools/history.py" "$HERE/results"
+    open "$HERE/results/index.html"
+    ;;
+esac

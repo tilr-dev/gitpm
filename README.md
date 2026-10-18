@@ -1,7 +1,7 @@
 # gitpm
 
 Embeddable package manager where packages are folders in Git repositories: releases as
-tags, a catalog, dependency resolution, forks and transactional installs. A Rust library
+tags, an optional catalog, dependency resolution, forks and transactional installs. A Rust library
 (no CLI, no UI) with a UniFFI wrapper for native apps; the separate `gitpm-cli` crate is a
 command-line client over it. Its first host is the Tilr macOS app.
 
@@ -21,7 +21,8 @@ lists ([multi-package repositories](#multi-package-repositories)). Installing cl
 repository into a workspace and copies the package's `dist/`; nothing is built or executed.
 Releases are Git tags (`vVERSION` or `namespace/name@VERSION`).
 The catalog is a tree of static JSON files (local folder or HTTP) with exact commits and
-file hashes.
+file hashes. It is optional: without one, packages are installed and updated straight
+from their Git sources ([working without a catalog](#working-without-a-catalog)).
 
 ## Install
 
@@ -243,6 +244,27 @@ Changed in 0.5:
   there: the first mutating command fixes it; until then (only read-only commands since
   upgrading) run `gitpm sync-dist` (FFI `syncDist`) once.
 
+## Working without a catalog
+
+A catalog is optional; the quickstart up to the catalog ran without one. `install GIT_SOURCE` records
+the source (a local path canonicalized) as `plugins.<id>.source`, and `update ID` and
+`update all` fetch the release tags of that recorded origin directly. `list`, `rollback`,
+`enable`/`disable`, `forget`/`restore`, `uninstall`, `fork`, `replace` and `sync-dist`
+never read a catalog. Two limits:
+
+- Dependencies are not fetched: a direct install, or an update whose new version adds a
+  dependency, accepts only dependencies that are already installed and otherwise fails
+  with `dependency_conflict` naming the missing one ("no catalog configured").
+- `check` compares with a catalog only: with plugins installed it fails without one
+  (`check needs a catalog`), and with one it reports a plugin the catalog does not list
+  as `not in catalog`.
+  To see which newer releases the origins have, run `gitpm update all --dry-run` (it
+  changes nothing), or `gitpm install SOURCE` again (`; run update` when the source has
+  another revision).
+
+Catalog commands (`info`, `catalog`, `catalog-update`, `migrate-catalog`, `register`) and
+`install-catalog` need a catalog.
+
 ## Workspace layout and `dist/`
 
 ```text
@@ -297,11 +319,11 @@ file is reported the same way and nothing is written below it. An active package
 clone or installed commit is gone is skipped, so it does not block an unrelated command;
 the CLI warns `Warning: ID: dist not deployed (clone missing); run \`gitpm sync-dist\``
 (`DistSync.skipped` from `sync_dist_plan`). Any other deploy error fails the command.
-Read-only commands such as `list` and `check` never change `dist/`.
+Read-only commands such as `list` and `check` never reconcile `dist/`; `list` does open (lock, and create if missing) the workspace, so it completes an interrupted commit it finds, while `check` opens nothing.
 `gitpm sync-dist [--dry-run]` (`Manager::sync_dist`, FFI `syncDist`) does only the
 reconcile: for a workspace written by gitpm 0.4 or earlier (which deployed every
 installed package) that has only seen read-only commands since upgrading, or as an
-explicit repair. It syncs every package it can, then exits non-zero naming the ones it
+explicit repair. It syncs every package it can, then exits with status 1 naming the ones it
 could not deploy.
 
 ## Multi-package repositories
@@ -430,7 +452,7 @@ packages/theme/dist/…
     created) and replaces its original. If the release fails, nothing is installed. A
     failed install or replace of one package does not stop the others; the fork is never
     removed, the command prints per package what failed and how to finish or undo, and
-    exits non-zero with the first error's kind.
+    exits with status 1 and the first error's kind.
 
 ```console
 $ gitpm fork tilr/theme tilr/panel --ns me --into forks/me-plugins
@@ -469,7 +491,7 @@ all commands, `gitpm COMMAND --help` one). There is no config file; the old `PM_
 | Flag | Variable | Default |
 | --- | --- | --- |
 | `--root DIR` | `GITPM_ROOT` | `./gitpm-workspace` |
-| `--catalog LOC` (folder, `catalog.json` or HTTP(S) URL) | `GITPM_CATALOG` | none: catalog commands, `install-catalog` and `check` ask for it |
+| `--catalog LOC` (folder, `catalog.json` or HTTP(S) URL) | `GITPM_CATALOG` | none (optional, see [working without a catalog](#working-without-a-catalog)): catalog commands, `install-catalog` and `check` ask for it |
 | `--sources FILE` | `GITPM_SOURCES` | `./sources.txt` |
 
 Publishing a catalog is up to you: it is a folder of static files, so any static host
@@ -604,7 +626,7 @@ Modules with free functions (no workspace lock needed):
 | --- | --- |
 | `catalog` | `browse`, `list`, `lookup`, `selected`, `register`, `register_build`, `register_package`, `update_sources` (progress callback), `migrate`, `hash_files`, `version_key`, `ensure_publishable` |
 | `check` | `read_state` (does not create/lock), `compare`, `check`; `CheckStatus::message()` |
-| `auth` | `check(source, &AuthOptions)` — `git ls-remote` only, credentials never stored |
+| `auth` | `check(source, &AuthOptions)` — `git ls-remote` only; refuses credentials in the URL, stores nothing; failures are `auth` |
 | `scaffold` | `init(dir, namespace, name)` (the `init --into` rule; the only way to create a package besides `create_package`), `init_with` (`InitOptions { multi, release }`), `create_package` (into a multi-package repo), `commit`, `commit_package` (version tag), `release_current`, `set_remote`, `shell_quote` |
 | `packages` | `config_at`, `layout_at` (packages and defective folders of a commit), `packages_at` (strict), `find_at` (one package of a commit), `read_config`, `packages_in` (working tree), `matches`, `validate_pattern` |
 | `identity` | `valid_part`, `qualified`, `release_tag` (no default namespace, no namespace config) |
@@ -695,7 +717,9 @@ active fork needs `force`. A replaced original has no `dist/` (see
 
 ### Catalog
 
-A workspace uses one catalog. `install_from_catalog` records the canonical catalog
+A catalog is optional ([working without a catalog](#working-without-a-catalog)):
+without one, `check`, `browse_catalog` and `catalog_release` fail with `invalid_argument`
+("no catalog configured"). A workspace uses one catalog. `install_from_catalog` records the canonical catalog
 location per plugin (`plugins.<id>.catalog`) and refuses to install from a different
 catalog while plugins from another one are installed. `check` reports plugins from
 another catalog as `other_catalog` instead of comparing them, and for a fork adds
@@ -726,8 +750,9 @@ if plan.lostWork.isEmpty || userConfirmed(plan.lostWork.map(describeLostWork)) {
 }
 ```
 
-FFI surface: `PluginManager` (open, list, check, browseCatalog, catalogRelease,
-install(package; defaults to nil), installFromCatalog, update, rollback, enable,
+FFI surface: `PluginManager` (open, root, list, check, browseCatalog, catalogRelease,
+install(package; defaults to nil), installFromCatalog, update, updateAllPlan, updateAll
+(`UpdateAllPlan`), rollback, enable,
 disable(force), forget(force), restore, uninstallPlan, uninstall(confirm, force), fork
 (one package; `ForkResult`), forkAndReplace(version, confirm; returns a
 `ForkReplacement`: a failure after the fork exists is reported in `failedStep` (the
@@ -739,9 +764,12 @@ defaults to false; `InstalledPlugin.path` and `CatalogRelease.path` name the pac
 folder; `InstalledPlugin.clone` names the shared clone; `InstalledPlugin`,
 `PluginSummary` and `CatalogRelease` carry the [metadata](#plugin-metadata); the fork records have the names of the library types `gitpm::ForkReplacement`,
 `PackageFork`, `PackageForkReplacement`, `ForkedPackage`, `DependencyRewrite`,
-`ForkStep`), free functions `authCheck`, `browseCatalog`, `catalogRelease`,
-`readInstalled`, `describeLostWork`; errors are the `PmError` enum (one case per kind,
-each with `message`; `LocalChanges` carries `items`). Author/catalog-generation commands
+`ForkStep`), free functions `authCheck(source, customSsh)`, `browseCatalog`, `catalogRelease`,
+`readInstalled` (reads `state.json` without opening or locking the workspace; every
+`PluginManager` method, `check` included, opens it), `describeLostWork`; errors are the
+`PmError` enum (one case per kind, each with `message`; `id` where the library error has
+one, `LocalChanges.items`, `HasDependents.dependents`, `IncompatibleReplacement.consumers`,
+and `Other { kind, message }` for kinds added later). Author/catalog-generation commands
 are not exposed.
 
 ## Hosts
@@ -760,7 +788,7 @@ crates/gitpm/src/*.rs                    unit tests in each module's #[cfg(test)
 crates/gitpm/src/test_support.rs         shared fixtures (temp dirs, hermetic git,
                                          plugin repos, tree hash), compiled only for tests
 crates/gitpm/tests/                      integration tests of the public API
-                                         (robustness, uninstall, no_env)
+                                         (robustness, uninstall, no_env, dependencies)
 crates/gitpm-ffi/src/lib.rs              FFI conversion tests (errors, records, free functions)
 crates/gitpm-cli/tests/                  end-to-end tests of the `gitpm` binary
                                          (lifecycle, requirements, monorepo, metadata,
@@ -790,12 +818,31 @@ directory). CLI tests run the binary with a cleared environment, a fixture
 `HOME`/`TMPDIR` and Git config, and every `GITPM_*` path inside their temp directory.
 Unit-test fixtures additionally pass identity/signing settings with
 `git -c`, so they do not depend on the developer's Git config. Temp directories are
-removed unless `GITPM_KEEP_TEST_ARTIFACTS` is set (the stand's `verify.command` keeps them
-for its report).
+removed unless `GITPM_KEEP_TEST_ARTIFACTS` is set (to inspect fixtures after a run).
 
 `#[ignore = "known defect: …"]` tests assert the intended contract and currently fail;
 they keep known defects visible (`cargo test -- --ignored` lists them). Remove the
 attribute together with the fix.
+
+### Integration tests (Dagger)
+
+`itests/` holds a black-box suite in a Dagger module (engine and CLI v0.21.10): every
+libtest of the workspace, clippy, and 638 scenario cases driving the `gitpm` binary built
+from the working tree (only `GITPM_*`, loopback HTTP, local Git repositories), each in its
+own container. It is an additional, slower suite; `cargo test --workspace` stays the CI gate.
+
+```sh
+./itests/dt                                   # everything, on the pb engine (dagger-pb)
+./itests/dt --only scenarios --filter uc_015  # one use case
+DT_ENGINE=dagger ./itests/dt                  # the same on a local engine (Docker)
+./itests/dt coverage                          # spec coverage report, no Dagger
+```
+
+With the 1Password SSH agent run `env -u SSH_AUTH_SOCK ./itests/dt`. Results land in
+`itests/results/<timestamp>/` (`summary.txt`, `report.html`, logs). Every case is tagged
+with the spec requirement it verifies; `./itests/dt coverage` writes
+`openspec/coverage/coverage.md` and `coverage.json`. Details, statuses (`XFAIL` for known
+defects) and how to write cases: [itests/README.md](itests/README.md).
 
 ## Build
 
