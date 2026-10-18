@@ -34,3 +34,5 @@ Depends on: `no-backward-compat`, `thin-cli-boundary`, `check-via-origin`, `sing
 ## Impact
 
 `deps.rs` (`broken_dependencies`), `upgrade.rs` (broken consumers out of the solve, inactive consumers), `workspace.rs` (`HeldBack.reason`, `HeldBackReason`, `UnchangedReason::BrokenDependency`, reasons in `prepare_update_all`), CLI `update all` printing, FFI `HeldBack`/`Unchanged`/`UnchangedReason`, README `update all` section and "Changed in 0.6", Dagger cases in `uc_071` for forced removal followed by `update all` and a new dependency without a catalog.
+
+Implemented in commit 704289e ("feat!: update all skips broken consumers and names every kept-back reason").

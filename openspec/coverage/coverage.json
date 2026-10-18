@@ -1,18 +1,18 @@
 {
  "generated_from": {
   "specs": "openspec/specs",
-  "cases": 645,
+  "cases": 647,
   "last_run": {
-   "started": "2026-10-18T16:50:37.279101+00:00",
-   "commit": "9651fb2+dirty",
+   "started": "2026-10-18T17:25:10.640014+00:00",
+   "commit": "c3d0a00+dirty",
    "counts": {
-    "PASS": 1050,
+    "PASS": 1056,
     "FAIL": 0,
     "BLOCKED": 1,
     "XFAIL": 1,
     "XPASS": 0
    },
-   "path": "itests/results/20261018T185031-17612"
+   "path": "itests/results/20261018T192503-38307"
   }
  },
  "capabilities": [
@@ -1681,7 +1681,8 @@
       "uc_075:update_all_lines"
      ],
      "cargo_tests": [
-      "mutating_commands_print_one_line_per_package_and_no_ok_lines"
+      "mutating_commands_print_one_line_per_package_and_no_ok_lines",
+      "update_all_reports_kept_back_packages_and_replace_back_without_a_replacement"
      ],
      "scenarios": [
       {
@@ -2312,9 +2313,12 @@
      ],
      "all_cases": [
       "uc_059:disable_force_reports_broken_dependents",
-      "uc_059:uninstall_force_reports_unsatisfied"
+      "uc_059:uninstall_force_reports_unsatisfied",
+      "uc_071:forced_removal_skips_broken_consumers"
      ],
-     "cargo_tests": [],
+     "cargo_tests": [
+      "update_all_skips_broken_consumers_and_never_reinstalls"
+     ],
      "scenarios": [
       {
        "slug": "unrelated-install-after-forced-removal",
@@ -2324,12 +2328,22 @@
         "uc_059:uninstall_force_reports_unsatisfied"
        ],
        "covered": true
+      },
+      {
+       "slug": "update-all-after-forced-removal",
+       "title": "update all after forced removal",
+       "tag": "dependencies/broken-consumers-are-reported-not-enforced#update-all-after-forced-removal",
+       "cases": [
+        "uc_071:forced_removal_skips_broken_consumers"
+       ],
+       "covered": true
       }
      ],
      "covered": true,
      "last_run": {
       "uc_059:disable_force_reports_broken_dependents": "PASS",
-      "uc_059:uninstall_force_reports_unsatisfied": "PASS"
+      "uc_059:uninstall_force_reports_unsatisfied": "PASS",
+      "uc_071:forced_removal_skips_broken_consumers": "PASS"
      }
     },
     {
@@ -3720,6 +3734,34 @@
        "slug": "pinned-package-from-swift",
        "title": "Pinned package from Swift",
        "tag": "ffi-bindings/records-carry-the-recorded-mode#pinned-package-from-swift",
+       "cases": [],
+       "covered": false
+      }
+     ],
+     "covered": true,
+     "last_run": {}
+    },
+    {
+     "slug": "kept-back-reasons-in-records",
+     "title": "Kept-back reasons in records",
+     "tag": "ffi-bindings/kept-back-reasons-in-records",
+     "cases": [],
+     "all_cases": [],
+     "cargo_tests": [
+      "records_convert_field_by_field"
+     ],
+     "scenarios": [
+      {
+       "slug": "broken-consumer-from-swift",
+       "title": "Broken consumer from Swift",
+       "tag": "ffi-bindings/kept-back-reasons-in-records#broken-consumer-from-swift",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "fork-kept-back-from-swift",
+       "title": "Fork kept back from Swift",
+       "tag": "ffi-bindings/kept-back-reasons-in-records#fork-kept-back-from-swift",
        "cases": [],
        "covered": false
       }
@@ -8098,11 +8140,18 @@
      "cases": [],
      "all_cases": [
       "uc_071:apply_updates_and_keeps_back",
-      "uc_071:dry_run_previews_and_changes_nothing"
+      "uc_071:dry_run_previews_and_changes_nothing",
+      "uc_071:forced_removal_skips_broken_consumers",
+      "uc_071:new_dependency_without_a_catalog_is_kept_back"
      ],
      "cargo_tests": [
       "update_all_does_not_downgrade_or_accept_mutated_releases",
-      "update_all_reports_unsatisfiable_state_and_preserves_disabled_flags"
+      "update_all_skips_broken_consumers_and_never_reinstalls",
+      "update_all_reports_unsatisfiable_state_and_preserves_disabled_flags",
+      "broken_dependency",
+      "branch_gone",
+      "update_all_pulls_disabled_dependencies_for_a_disabled_consumer",
+      "update_all_enables_dependencies_of_active_consumers_only"
      ],
      "scenarios": [
       {
@@ -8111,15 +8160,43 @@
        "tag": "updates/update-all-never-removes-or-downgrades#kept-back",
        "cases": [
         "uc_071:apply_updates_and_keeps_back",
-        "uc_071:dry_run_previews_and_changes_nothing"
+        "uc_071:dry_run_previews_and_changes_nothing",
+        "uc_071:new_dependency_without_a_catalog_is_kept_back"
        ],
        "covered": true
+      },
+      {
+       "slug": "reasons",
+       "title": "Reasons",
+       "tag": "updates/update-all-never-removes-or-downgrades#reasons",
+       "cases": [
+        "uc_071:new_dependency_without_a_catalog_is_kept_back"
+       ],
+       "covered": true
+      },
+      {
+       "slug": "broken-state-does-not-fail-the-run",
+       "title": "Broken state does not fail the run",
+       "tag": "updates/update-all-never-removes-or-downgrades#broken-state-does-not-fail-the-run",
+       "cases": [
+        "uc_071:forced_removal_skips_broken_consumers"
+       ],
+       "covered": true
+      },
+      {
+       "slug": "dependencies-pulled-for-a-disabled-consumer",
+       "title": "Dependencies pulled for a disabled consumer",
+       "tag": "updates/update-all-never-removes-or-downgrades#dependencies-pulled-for-a-disabled-consumer",
+       "cases": [],
+       "covered": false
       }
      ],
      "covered": true,
      "last_run": {
       "uc_071:apply_updates_and_keeps_back": "PASS",
-      "uc_071:dry_run_previews_and_changes_nothing": "PASS"
+      "uc_071:dry_run_previews_and_changes_nothing": "PASS",
+      "uc_071:forced_removal_skips_broken_consumers": "PASS",
+      "uc_071:new_dependency_without_a_catalog_is_kept_back": "PASS"
      }
     },
     {
@@ -13721,6 +13798,24 @@
    "id": "uc_071:local_work_refuses_without_partial_deploy",
    "spec": [
     "updates/update-all-honors-each-package-s-mode-and-refuses-local-work"
+   ],
+   "xfail": null,
+   "last_run": "PASS"
+  },
+  {
+   "id": "uc_071:forced_removal_skips_broken_consumers",
+   "spec": [
+    "dependencies/broken-consumers-are-reported-not-enforced#update-all-after-forced-removal",
+    "updates/update-all-never-removes-or-downgrades#broken-state-does-not-fail-the-run"
+   ],
+   "xfail": null,
+   "last_run": "PASS"
+  },
+  {
+   "id": "uc_071:new_dependency_without_a_catalog_is_kept_back",
+   "spec": [
+    "updates/update-all-never-removes-or-downgrades#kept-back",
+    "updates/update-all-never-removes-or-downgrades#reasons"
    ],
    "xfail": null,
    "last_run": "PASS"

@@ -86,7 +86,8 @@ Every workspace-mutating command (`install`, `install-catalog`, `download`, `dow
 #### Scenario: update all lines
 - **WHEN** `update all` updates one package and finds another current
 - **THEN** it prints `a updated 1.0.0 → 1.1.0`, `b up to date (2.0.0)` and `1 updates, 0 installs, 0 kept back.`, the second line taken from the plan's `unchanged` list (updates)
-- **AND** this is covered by `mutating_commands_print_one_line_per_package_and_no_ok_lines`
+- **AND** a kept-back package prints `c kept back at V (latest L: REASON)` with the message of the plan's `HeldBack.reason`, and a broken consumer `d skipped at V (dependency DEP is not installed)` from its `unchanged` reason
+- **AND** this is covered by `mutating_commands_print_one_line_per_package_and_no_ok_lines` and `update_all_reports_kept_back_packages_and_replace_back_without_a_replacement`
 
 #### Scenario: Single-package verbs
 - **WHEN** the user installs, updates, rolls back, enables, disables, forgets, restores and uninstalls `acme/greeter`

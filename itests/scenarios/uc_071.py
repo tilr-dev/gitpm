@@ -99,11 +99,9 @@ def local_work_refuses_without_partial_deploy(t: T):
     t.same(before, "workspace")
 
 
-# The two cases below tag the existing requirements; on archive of update-all-skips-broken
-# they can name the new scenarios ("update all after forced removal", "Broken state does
-# not fail the run").
-@case(fixture="g6_core_deps_installed", spec=["dependencies/broken-consumers-are-reported-not-enforced",
-                                              "updates/update-all-never-removes-or-downgrades"])
+@case(fixture="g6_core_deps_installed",
+      spec=["dependencies/broken-consumers-are-reported-not-enforced#update-all-after-forced-removal",
+            "updates/update-all-never-removes-or-downgrades#broken-state-does-not-fail-the-run"])
 def forced_removal_skips_broken_consumers(t: T):
     """lib/core uninstalled with --force: update all, with the catalog and without one, updates
     other/x, skips app/a and app/c with their reason, exits 0 and never installs lib/core again;
@@ -126,7 +124,8 @@ def forced_removal_skips_broken_consumers(t: T):
           f"Unsatisfied dependency: app/c → {CORE} 1: not installed")
 
 
-@case(fixture="g6_core_deps_installed", spec=["updates/update-all-never-removes-or-downgrades#kept-back"])
+@case(fixture="g6_core_deps_installed", spec=["updates/update-all-never-removes-or-downgrades#kept-back",
+                                              "updates/update-all-never-removes-or-downgrades#reasons"])
 def new_dependency_without_a_catalog_is_kept_back(t: T):
     """Without a catalog, other/x 1.1.0 needs dep/none ^1 (not installed): update all keeps other/x
     back with that reason and exits 0."""
