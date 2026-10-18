@@ -44,22 +44,34 @@ Opening a non-empty directory that has no `state.json` SHALL fail with `workspac
 - **THEN** opening the state fails with `unsupported`
 
 ### Requirement: Installed package record
-Single source for the record format: each `state.json` `packages.<id>` record SHALL hold `source`, `current` and `previous` revisions (`version`, `commit`), `enabled`, `metadata` (required; a record without it is `invalid_data`), and when present `forkOf`, `dependencies`, `replaces`, `catalog` (canonical catalog location), `clone` (shared-clone key) and `path` (package folder). At most one previous revision SHALL be kept. Verified by `model::state_round_trips_byte_for_byte`.
+Each `state.json` `packages.<id>` record (the single source for its format) SHALL hold `source`, `current` and `previous` revisions (`version`, `commit`; `previous` its `mode`), `enabled`, `mode` (`{"pinned": REF}`, `{"branch": NAME}`, omitted for releases), and when present `forkOf`, `dependencies`, `replaces`, `catalog` (canonical location), `clone` (shared-clone key), `path` and `metadata`. At most one previous revision SHALL be kept. Verified by `model::state_round_trips_byte_for_byte`.
 
 #### Scenario: Fresh install has no previous revision
-- **WHEN** a package was just installed or restored
+- **WHEN** a package was just installed
 - **THEN** its record has no `previous` revision
 
 #### Scenario: Update keeps one previous revision
 - **WHEN** a package goes from 0.1.0 to 0.2.0 to 0.3.0
 - **THEN** `current` is 0.3.0 and `previous` is 0.2.0 only
 
+#### Scenario: Recorded modes
+- **WHEN** packages were installed without a ref, with `--ref acme/a@1.0.0`, and with `--ref feature`
+- **THEN** the first record has no `mode`, the second `"mode": {"pinned": "acme/a@1.0.0"}`, the third `"mode": {"branch": "feature"}`
+
+#### Scenario: Previous revision keeps its mode
+- **WHEN** a package in branch mode `main` is updated with `--release`
+- **THEN** `previous` is `{"version": …, "commit": …, "mode": {"branch": "main"}}` (a `previous` in release mode has no `mode`), so `rollback` restores both
+
 ### Requirement: Replacements and forgotten records
-`state.json` SHALL keep `replacements` (the replacement bindings ORIGINAL → FORK, global for the workspace; rules in fork-replacement) and `forgotten` (records of forgotten packages of shared clones, same format as `packages.<id>`; their lifecycle is in multi-package-repos). A forgotten package with its own clone needs no record: its clone `packages/<id>` stays and marks it retained.
+`state.json` SHALL keep `replacements` (the replacement bindings ORIGINAL → FORK, global for the workspace; rules in fork-replacement) and `forgotten` (records of every forgotten package, same format as `packages.<id>`, own clone or shared clone alike; lifecycle in install-uninstall and multi-package-repos).
 
 #### Scenario: Forgetting a package of a shared clone
 - **WHEN** `tilr/store` (installed from a multi-package repository) is forgotten
 - **THEN** `packages.tilr/store` is removed and `forgotten.tilr/store` keeps its revision and clone key
+
+#### Scenario: Forgetting a package with its own clone
+- **WHEN** `acme/greeter` (own clone `packages/acme/greeter`) is forgotten
+- **THEN** `forgotten.acme/greeter` keeps its record, including `catalog`, `enabled` and mode, and the clone stays
 
 ### Requirement: Downgrade is not protected
 A workspace SHALL be usable only by a gitpm that writes its state format, in either direction. README SHALL list the state format of each release and say that a workspace of another format is re-created (its packages installed again), never migrated.

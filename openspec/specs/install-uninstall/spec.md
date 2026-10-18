@@ -17,19 +17,27 @@ Defines how packages enter and leave a workspace: installing from a Git source o
 - **WHEN** the source has no release tags
 - **THEN** install fails with `no_releases` and the workspace is unchanged
 
-### Requirement: Install an explicit ref or the dev channel
-`install SOURCE --ref REF` SHALL install the given tag, branch or commit; `--channel dev` SHALL follow the default branch HEAD and `--channel stable` SHALL mean the default. Library rule: an explicit ref together with the dev channel SHALL be refused with `invalid_argument`. A ref starting with `-` is refused as in git-safety ("No option injection"). Verified by `workspace::install_channels_and_explicit_refs` and `model::resolve_ref_refuses_option_like_refs_and_resolves_commits`.
+### Requirement: Install an explicit ref or a branch
+`install SOURCE --ref REF` SHALL resolve REF against the origin (tag, origin branch, commit) and record the mode (workspace-layout): a tag or commit pins the package, a branch makes it follow that branch; `--dev` SHALL follow the origin's default branch. Without either, the newest release is installed in release mode. A ref starting with `-` is refused as in git-safety. Verified by `workspace::install_records_the_ref_mode` and `model::resolve_ref_refuses_option_like_refs_and_resolves_commits`.
 
-#### Scenario: Ref and dev channel in the library
-- **WHEN** a caller passes a ref and the dev channel to `install_package`, or the user runs `gitpm install SOURCE --ref x --channel dev`
-- **THEN** it fails with `invalid_argument` ("the dev channel conflicts with an explicit ref"); the CLI does not check the combination itself, and `--channel stable --ref x` installs `x`
+#### Scenario: One install target in the library
+- **WHEN** the user runs `gitpm install SOURCE --ref x --dev`, or `--channel dev`
+- **THEN** the first is a CLI usage error (`--dev conflicts with --ref`) and `--channel` is an unknown option; the library takes one install target, so the combination cannot reach it
 
 #### Scenario: Install by exact commit
 - **WHEN** the user runs `install SOURCE --ref <40-hex commit>`
-- **THEN** that commit is installed and recorded as `current.commit`
+- **THEN** that commit is installed, recorded as `current.commit`, and the record says the package is pinned to that commit
+
+#### Scenario: Install a branch
+- **WHEN** the origin has the branch `feature` and the user runs `install SOURCE --ref feature`
+- **THEN** the fresh clone resolves the fetched `origin/feature`, installs its HEAD and records branch mode `feature`
+
+#### Scenario: Install the default branch
+- **WHEN** the origin's default branch is `main` and the user runs `install SOURCE --dev`
+- **THEN** the HEAD of `origin/main` is installed and the record says branch mode `main`
 
 ### Requirement: Install is idempotent for the same source
-Installing an installed package again from the same source SHALL change nothing and succeed, reporting `ID already installed (VERSION)`, with `; run update` when the source resolves to another revision (with `--ref`/`--channel dev`: `; requested --ref REF — run update ID --ref REF`). "Same source" SHALL mean the same string as recorded after canonicalizing a local path. `InstallResult` SHALL carry `already_installed` and `available`.
+Installing an installed package again from the same source SHALL change nothing and succeed, reporting `ID already installed (VERSION)` (with a mode: `(VERSION, pinned at REF)`), with `; run update` when the source resolves to another revision or mode (`; requested --ref REF — run update ID --ref REF`). "Same source" SHALL mean the same string as recorded after canonicalizing a local path. `InstallResult` SHALL carry `already_installed`, `available`, the recorded `mode` and `requested_mode`.
 
 #### Scenario: Repeat install
 - **WHEN** `acme/greeter` 0.2.0 is installed from `./greeter` and the user runs `gitpm install ./greeter`
@@ -68,7 +76,7 @@ Input SHALL be validated before anything is created: the CLI checks argv syntax 
 - **THEN** the command fails with `invalid_id` and `new-ws` is not created
 
 ### Requirement: Three removal levels
-gitpm SHALL offer three removal levels: `disable` (keep everything, set `enabled: false`, remove `dist/<id>`), `forget` (drop the package from `packages` in state, keep the clone, remove `dist/<id>`) and `uninstall` (remove the state entry, the clone and `dist/<id>`). `restore ID` SHALL record a retained clone in state again. All three removals are guarded as in dependencies ("Dependents guard removal"). Verified by `lifecycle_and_three_removal_levels`.
+gitpm SHALL offer three removal levels: `disable` (keep everything, set `enabled: false`, remove `dist/<id>`), `forget` (drop the package from `packages` in state, keep the clone and a `forgotten` record, remove `dist/<id>`) and `uninstall` (remove the state entry, the clone and `dist/<id>`). `restore ID` SHALL record a forgotten package in state again. All three removals are guarded as in dependencies ("Dependents guard removal"). Verified by `lifecycle_and_three_removal_levels`.
 
 #### Scenario: Uninstall one package of a shared clone
 - **WHEN** another package still uses the shared clone of the package being uninstalled
@@ -79,19 +87,27 @@ gitpm SHALL offer three removal levels: `disable` (keep everything, set `enabled
 - **THEN** the first prints `acme/greeter forgotten (clone kept; restore re-registers it)`, the second `acme/greeter restored 0.2.0`, and `dist/acme/greeter/` is back
 
 #### Scenario: Restore without a clone
-- **WHEN** the user restores an ID whose own clone does not exist
-- **THEN** the command fails with `repository_not_found` (a forgotten package whose shared clone is gone fails with `workspace`, see multi-package-repos)
+- **WHEN** the user restores an ID that has no `forgotten` record
+- **THEN** the command fails with `repository_not_found`, as does a forgotten package whose clone (own or shared) is gone (multi-package-repos, "Forgotten packages of shared clones")
 
 ### Requirement: Restore preconditions
-`restore ID` of an own clone (`packages/<id>`) SHALL refuse with `already_installed` ("package ID is already registered") when the ID is still recorded in state, with `local_changes` when the clone has modified, untracked or ignored files, and with `invalid_manifest` ("package id mismatch") when the manifest at HEAD has another ID. It SHALL print `ID restored V`. Shared-clone restore: see multi-package-repos.
+`restore ID` SHALL record the package again from its `forgotten` record (own or shared clone) as it was; branch mode takes HEAD when it moved on along the origin's branch (dependencies checked). It SHALL refuse with `local_changes` on lost work and with `already_installed` when the ID is recorded, and print `ID restored V`. Verified by `workspace::restore_keeps_the_forgotten_record`, `restore_in_a_shared_clone_ignores_another_branch_s_revision` and `branch_mode_restore_checks_dependencies`.
 
 #### Scenario: Restored record
-- **WHEN** a clean retained own clone is restored
-- **THEN** state records its HEAD as `current` (whatever commit it is) with no `previous`, `source` taken from the clone's `origin` URL (`git` when it has none), no `catalog` and `enabled: true`
+- **WHEN** a clean retained own clone of `acme/greeter`, forgotten while disabled and bound to a catalog, is restored
+- **THEN** state records the forgotten revisions, `catalog`, `enabled: false` and mode unchanged, and nothing is deployed because it is disabled
 
 #### Scenario: Dirty retained clone
 - **WHEN** `acme/greeter` was forgotten, a file in `packages/acme/greeter` was edited and the user runs `restore acme/greeter`
 - **THEN** the command fails with `local_changes` and the package stays out of state
+
+#### Scenario: Unpublished commit in a retained clone
+- **WHEN** a commit was made in the retained clone that no remote branch contains, and the user restores it
+- **THEN** restore fails with `local_changes` listing `UnpublishedCommit`, also in branch mode
+
+#### Scenario: Branch mode restore
+- **WHEN** a package in branch mode `main` was forgotten and its clone's HEAD is a published commit newer than the recorded one
+- **THEN** `restore` records that HEAD as `current` and keeps branch mode `main`
 
 ### Requirement: Uninstall is planned and confirmed
 `uninstall_plan(id)` SHALL be read-only and list `deletes` (paths), `registered`, `dependents` and `lost_work`. Single source for the lost-work items: `Modified`, `Untracked`, `Ignored`, `HeadMoved`, `UnpublishedCommit`, `UnpublishedBranch`, `UnpublishedTag`, `Stash`. `uninstall_with(id, confirm, force)` (FFI `uninstall(confirm, force)`) SHALL refuse with `local_changes` (listing the items) when work would be lost unless `confirm`. A clean clone SHALL be removed without confirmation.

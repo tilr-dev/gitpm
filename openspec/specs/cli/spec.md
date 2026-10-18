@@ -14,12 +14,12 @@ The CLI SHALL offer exactly the commands of its full usage (`gitpm --help`), eac
 - **THEN** it prints the JSON links of the catalog root level ("JSON output for state and catalog")
 
 #### Scenario: Install forms
-- **WHEN** the user runs `install SOURCE [ID] [--package ID] [--ref REF | --channel stable|dev]`
-- **THEN** the positional `ID` and `--package` select a package as in multi-package-repos, and `--ref`/`--channel` behave as in install-uninstall
+- **WHEN** the user runs `install SOURCE [ID] [--package ID] [--ref REF | --dev]`
+- **THEN** the positional `ID` and `--package` select a package as in multi-package-repos, and `--ref`/`--dev` behave as in install-uninstall
 
 #### Scenario: Update forms
-- **WHEN** the user runs `update ID [--ref REF | --channel stable|dev]` or `update all [--dry-run]`
-- **THEN** the behavior is the one in updates
+- **WHEN** the user runs `update ID [--ref REF | --dev | --release]` or `update all [--dry-run]`
+- **THEN** the behavior is the one in updates; `--channel` is an unknown option
 
 #### Scenario: Every command documented
 - **WHEN** the unit test `tests::every_command_has_a_usage_block` runs
@@ -57,11 +57,11 @@ Catalog commands (`info`, `catalog`, `catalog-update`, `register`) and `install-
 - **THEN** it prints the check table from each package's origin and exits 0
 
 ### Requirement: Option validation
-Before calling the library the CLI SHALL refuse only syntax: unknown or repeated options, options on commands they do not apply to (for example `--dry-run` outside `update all`/`sync-dist`), values outside a fixed set and wrong argument counts, with a message ending `; use --help` where applicable (usage errors without `Error kind`). Domain combinations are checked by the library. Verified by `usage_errors_name_the_problem_and_create_nothing`.
+Before calling the library the CLI SHALL refuse only syntax: unknown or repeated options, misplaced options (for example `--dry-run` outside `update all`/`sync-dist`), exclusive options (`--ref`, `--dev`, `--release`), values outside a fixed set and wrong argument counts, with a message ending `; use --help` where applicable (usage errors without `Error kind`). Domain combinations are checked by the library. Verified by `usage_errors_name_the_problem_and_create_nothing`.
 
-#### Scenario: Channel and ref
-- **WHEN** the user runs `gitpm install SOURCE --ref x --channel dev`
-- **THEN** the CLI passes both and prints the library's refusal (`invalid_argument`, install-uninstall), exit status 1; `--channel` with a value other than `stable`/`dev` is a CLI usage error (`channel must be stable or dev`)
+#### Scenario: Ref, dev and release
+- **WHEN** the user runs `gitpm install SOURCE --ref x --dev`, `gitpm update ID --dev --release`, or passes `--channel`
+- **THEN** it fails with `--dev conflicts with --ref` (or `--release conflicts with --dev`), or `unknown option: --channel; use --help`, exit status 1, and creates nothing
 - **AND** `--version` outside `install-catalog`/`fork --replace` is refused by the CLI as a misplaced option
 
 #### Scenario: Misplaced flag

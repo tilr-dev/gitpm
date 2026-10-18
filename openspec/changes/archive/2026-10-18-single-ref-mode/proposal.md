@@ -29,3 +29,5 @@ Depends on: `no-backward-compat`, `thin-cli-boundary`, `check-via-origin`. `cli-
 ## Impact
 
 `model.rs` (`Mode`, `State` record shape (format 3), forgotten records for own clones), `workspace.rs` (install/update targets, restore), `upgrade.rs` (modes in `update all`), `check.rs`, CLI option parsing and lines (`pinned at`), FFI `Target`, README "Changed in 0.6", Dagger cases using `--channel`.
+
+Implemented in commit 5a9ddbf ("feat!: one --ref parameter with a recorded mode instead of --channel").

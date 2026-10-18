@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Defines how installed packages move between revisions: single-package `update` (stable, `--ref`, dev channel), `rollback`, the joint `update all` upgrade, and the rules that protect local work and published releases.
+Defines how installed packages move between revisions: single-package `update` (by the recorded mode, `--ref`, `--dev`, `--release`), `rollback`, the joint `update all` upgrade, and the rules that protect local work and published releases.
 
 ## Requirements
 
@@ -14,7 +14,7 @@ Defines how installed packages move between revisions: single-package `update` (
 - **THEN** the first prints `acme/greeter updated 0.1.0 → 0.2.0`, the second `acme/greeter up to date (0.2.0)`
 
 ### Requirement: Updates need no catalog
-`update ID` (stable, `--ref`, `--channel dev`) and `update all` SHALL read releases from the origin of the package's clone (set from `packages.<id>.source` at install) and SHALL NOT read a catalog for installed packages, so they work without one; `check` reads the same origin for packages the catalog does not list (catalog, "check compares installed packages with their catalog or origin"). Verified by `workspace::update_and_rollback_swap_revisions_and_redeploy` (no catalog configured).
+`update ID` (in any mode) and `update all` SHALL read releases and branches from the origin of the package's clone (set from `packages.<id>.source` at install) and SHALL NOT read a catalog for installed packages, so they work without one; `check` reads the same origin for packages the catalog does not list (catalog, "check compares installed packages with their catalog or origin"). Verified by `workspace::update_and_rollback_swap_revisions_and_redeploy` (no catalog configured).
 
 #### Scenario: New dependency without a catalog
 - **WHEN** no catalog is configured and the newest release of a package adds a dependency that is not installed
@@ -33,7 +33,7 @@ Defines how installed packages move between revisions: single-package `update` (
 - **THEN** the row of `acme/greeter` says `update available` with `0.2.0` from the origin, and nothing in the workspace changes
 
 ### Requirement: Stable update never downgrades or accepts mutated releases
-A stable update SHALL refuse with `version_conflict` when the newest release is older than the installed one ("downgrading requires an explicit ref"), when the installed version's release commit changed, when an observed release tag moved to another commit (rule in package-ids, "Moved release tags are refused"), or when the origin changed without a version bump. Verified by `stable_update_never_downgrades` and `stable_update_refuses_a_release_whose_commit_changed`.
+An update that follows releases SHALL refuse with `version_conflict` when the newest release is older than the installed one ("downgrading requires an explicit ref"), when the installed version's release commit changed, when an observed release tag moved (package-ids, "Moved release tags are refused"), or when the origin changed without a version bump. Verified by `stable_update_never_downgrades` and `stable_update_refuses_a_release_whose_commit_changed`.
 
 #### Scenario: Release commit of the installed version moved
 - **WHEN** the tag of the installed version is moved to another commit on the origin
@@ -47,22 +47,26 @@ A single-package update of a package with its own clone SHALL mirror the origin'
 - **THEN** the tag disappears from the clone and `update ID` fails with `version_conflict` ("… downgrading requires an explicit ref")
 
 ### Requirement: Explicit ref resolves against the origin
-`update ID --ref REF` SHALL resolve REF in order: tag, fetched origin branch `refs/remotes/origin/REF`, commit ID; `HEAD` SHALL mean the origin's HEAD (after `git remote set-head origin --auto`). Local branches of the installed clone (`refs/heads/*`) SHALL be refused as stale (`invalid_argument`). An explicit ref MAY move to an older version but MUST change the version. A ref with the dev channel is refused (install-uninstall). Verified by `update_to_a_branch_uses_the_fetched_upstream_branch`.
+`update ID --ref REF` (and install) SHALL resolve REF by exact name: tag, fetched origin branch, commit ID (7 to 64 lowercase hex digits); `HEAD` SHALL mean the origin's default branch, recorded by name. Revision expressions and local branches (`refs/heads/*`, stale) SHALL be refused with `invalid_argument`. A tag or commit MAY go to an older version but MUST change it (unless leaving branch mode). Verified by `update_to_a_branch_uses_the_fetched_upstream_branch`.
 
 #### Scenario: Same version on another commit
 - **WHEN** `update ID --ref COMMIT` names a commit whose manifest has the installed version
-- **THEN** it fails with `version_conflict` ("… changed without a version bump")
+- **THEN** it fails with `version_conflict` ("… changed without a version bump"), unless the package was in branch mode
+
+#### Scenario: Revision expression
+- **WHEN** the user runs `install SOURCE --ref HEAD~1` or `update ID --ref main~1`
+- **THEN** it fails with `invalid_argument` ("unknown ref …: not a tag, origin branch or commit") and nothing changes
 
 #### Scenario: Branch name
 - **WHEN** the origin's branch `feature` moved after install and the user runs `update ID --ref feature`
-- **THEN** the package moves to the fetched `origin/feature` commit, not the clone's stale local branch
+- **THEN** the package moves to the fetched `origin/feature` commit, not the clone's stale local branch, and is recorded in branch mode `feature`
 
-### Requirement: Dev channel follows the origin HEAD by commit
-`update ID --channel dev` SHALL move to the origin's HEAD of the default branch; a new commit SHALL count as an update even without a version bump. It SHALL refuse with `version_conflict` when the origin's history diverged from the installed commit ("upstream history diverged; automatic dev update refused"). Verified by `dev_channel_follows_origin_head_and_refuses_diverged_history`.
+### Requirement: Branch mode follows the branch HEAD by commit
+`update ID` in branch mode SHALL move to the HEAD of the recorded origin branch, by commit (no version bump needed), and refuse with `version_conflict` when its history diverged ("history of BRANCH diverged; automatic update refused") or the branch is gone. An explicit `--ref BRANCH` SHALL skip the ancestor check (the way back after a force-push). Verified by `branch_mode_follows_origin_head_and_refuses_diverged_history` and `a_branch_gone_from_the_origin_is_reported_not_fatal`.
 
 #### Scenario: Rewritten upstream
-- **WHEN** the origin was force-pushed so the installed commit is not an ancestor of its HEAD
-- **THEN** `update --channel dev` fails with `version_conflict`
+- **WHEN** the origin's branch was force-pushed so the installed commit is not an ancestor of its HEAD
+- **THEN** `update ID` (and `update ID --dev`) fails with `version_conflict` and the workspace is unchanged, while `update ID --ref BRANCH` moves to the new HEAD
 
 ### Requirement: Local work blocks update and rollback
 Update and rollback SHALL refuse with `local_changes` when the clone has any lost-work item (list in install-uninstall, "Uninstall is planned and confirmed"), staged files included. Only `update`, which fetches anyway, SHALL treat a tag that exists on the origin with the same object as published. Verified by `local_work_blocks_update_and_rollback` and `update_and_rollback_refuse_hidden_local_work`.
@@ -91,7 +95,7 @@ Update and rollback SHALL refuse with `local_changes` when the clone has any los
 - **THEN** it prints `acme/greeter rolled back 0.2.0 → 0.1.0` and `previous` becomes 0.2.0
 
 ### Requirement: Joint upgrade of all packages
-`update all` (`Manager::update_all`) SHALL resolve all installed packages together with PubGrub over stable release tags of each origin, the installed revision as fallback and missing dependencies from the configured catalog (installed and recorded as in dependencies); it SHALL prefer newer versions with installed packages prioritized in lexical ID order, and apply the whole result as one recoverable transaction. Verified by `update_all_coordinates_versions_and_adds_dependencies_atomically`.
+`update all` (`Manager::update_all`) SHALL resolve all installed packages together with PubGrub over the candidates of each package's mode, the installed revision as fallback and missing dependencies from the configured catalog (installed and recorded as in dependencies); it SHALL prefer newer versions with installed packages prioritized in lexical ID order, and apply the whole result as one recoverable transaction. Verified by `update_all_coordinates_versions_and_adds_dependencies_atomically`.
 
 #### Scenario: App and dependency cross a major boundary together
 - **WHEN** app 2.0 requires lib ^2 and lib 2.0 exists, while app 1.x is installed with lib 1.x
@@ -105,12 +109,20 @@ Update and rollback SHALL refuse with `local_changes` when the clone has any los
 - **THEN** the CLI prints `ID kept back at V (latest L: dependency constraints)`, or, when it advances to an intermediate compatible release, `ID updated A → B (latest L kept back by dependency constraints)`
 - **AND** a package whose newer release needs a dependency that is not installed, with no catalog configured, is kept back the same way
 
-### Requirement: update all is stable-only and refuses local work
-`update all` SHALL support stable releases only (`--ref` and `--channel dev` are refused) and SHALL refuse lost work (`local_changes`) and moved release tags (package-ids, "Moved release tags are refused") in any clone without partially deploying. Verified by `update_all_preserves_local_work_and_never_partially_deploys` and `update_all_previews_applies_and_rejects_unsupported_options`.
+### Requirement: update all honors each package's mode and refuses local work
+`update all` SHALL take no target: it SHALL solve release-mode packages over their release tags, offer each branch-mode package its branch HEAD as only candidate, list the others in `unchanged` with a reason (`pinned`, `diverged`, `branch_gone`), and refuse lost work (`local_changes`) and moved release tags (package-ids) in any clone without partially deploying. Verified by `update_all_preserves_local_work_and_never_partially_deploys` and `update_all_follows_each_mode`.
 
 #### Scenario: update all with --ref
 - **WHEN** the user runs `gitpm update all --ref x`
-- **THEN** it fails with `update all supports stable releases only; --ref and --channel dev are not supported`
+- **THEN** it fails with `update all takes no --ref, --dev or --release; it follows each package's recorded mode` and changes nothing
+
+#### Scenario: Mixed modes
+- **WHEN** one package is in release mode with a newer release, one in branch mode whose branch moved, and one pinned
+- **THEN** `update all` updates the first two and prints `C pinned at V (REF)` for the third
+
+#### Scenario: Branch gone or diverged
+- **WHEN** the branch a package follows was deleted on the origin, or force-pushed
+- **THEN** `update all` updates the other packages and lists it in `unchanged` with reason `branch_gone` or `diverged`
 
 ### Requirement: update all dry run
 `update all --dry-run` (`update_all_plan`) SHALL resolve and stage payloads to validate them but SHALL NOT commit; output SHALL use `would be updated` / `would be installed` and end with `Nothing was changed.` Apply SHALL resolve again under the lock, so a preview is not a saved plan.
@@ -125,3 +137,35 @@ Update and rollback SHALL refuse with `local_changes` when the clone has any los
 #### Scenario: One update, one current
 - **WHEN** `a` has a newer release and `b` is current, and the user runs `update all`
 - **THEN** the plan has `a` in `updates` and `b` with `2.0.0` in `unchanged`, and the CLI prints `b up to date (2.0.0)` from it
+
+### Requirement: update follows the recorded mode
+`update ID` without a target SHALL follow the package's recorded mode: release mode moves to the newest release, branch mode to the branch HEAD, and a pinned package SHALL stay unchanged with reason `pinned` (CLI: `ID pinned at V (REF)`). `--ref REF` and `--dev` SHALL move the package and record the new mode as at install (install-uninstall); `--release` SHALL return it to release mode at the newest release. Verified by `workspace::update_follows_and_switches_the_recorded_mode`.
+
+#### Scenario: Pinned package
+- **WHEN** `acme/greeter` was installed with `--ref acme/greeter@0.1.0`, 0.2.0 is released and the user runs `update acme/greeter`
+- **THEN** it prints `acme/greeter pinned at 0.1.0 (acme/greeter@0.1.0)` and nothing changes
+
+#### Scenario: Back to releases
+- **WHEN** the user then runs `update acme/greeter --release`
+- **THEN** it prints `acme/greeter updated 0.1.0 → 0.2.0` and the record has no `mode`
+
+### Requirement: An explicit return to releases may go down
+`update ID --release` SHALL move to the newest release also when it is below the installed version; following releases (`update ID` in release mode) never goes down. Verified by `workspace::stable_update_never_downgrades`.
+
+#### Scenario: Back to releases from above
+- **WHEN** a package follows `main` at 0.4.0, the newest release is 0.3.0 and the user runs `update ID --release`
+- **THEN** it moves down to 0.3.0 in release mode; a plain `update` of a release-mode package whose newest release is below the installed version fails with `version_conflict` ("latest release is older …")
+
+### Requirement: A change of mode alone is a change
+An update whose target resolves to the installed commit but records another mode SHALL write the new mode and report a change (`RevisionChange.changed`, `from` and `to` at the same commit; CLI `ID pinned at V (REF)`, `ID follows branch B at V`, `ID follows releases at V`). Verified by `workspace::update_follows_and_switches_the_recorded_mode`.
+
+#### Scenario: Pin at the installed commit
+- **WHEN** `acme/greeter` follows releases at 0.2.0 and the user runs `update acme/greeter --ref acme/greeter@0.2.0`
+- **THEN** it prints `acme/greeter pinned at 0.2.0 (acme/greeter@0.2.0)` and the record says `{"pinned": "acme/greeter@0.2.0"}`
+
+### Requirement: Rollback restores revision and mode together
+`rollback ID` SHALL swap `current` with `previous` and the recorded mode with the mode `previous` carries (`previous.mode`, written by every update), so a rollback after `update ID --release` of a branch-mode package follows the branch again. This adds to "Rollback swaps current and previous". Verified by `workspace::update_follows_and_switches_the_recorded_mode`.
+
+#### Scenario: Branch, release, rollback
+- **WHEN** a package follows `main`, the user runs `update ID --release` and then `rollback ID`
+- **THEN** it is back at the branch commit in branch mode `main`, and `previous` is the release with no `mode`

@@ -40,7 +40,7 @@ def install_scaffold(t: T, repo: Path, plugin_id: str):
 SCAFFOLD = "authoring/init-creates-a-package-with-its-first-release"
 
 
-@case(spec=[f"{SCAFFOLD}#scaffold-files-and-commit", "install-uninstall/install-an-explicit-ref-or-the-dev-channel"])
+@case(spec=[f"{SCAFFOLD}#scaffold-files-and-commit", "install-uninstall/install-an-explicit-ref-or-a-branch"])
 def init_nested_relative_path(t: T):
     """init into a new nested relative path: parents created, ID local/demo1, installable."""
     t.gitpm_ok("init", "local/demo1", "--into", "deep/nested dir/demo1")

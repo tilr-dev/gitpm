@@ -121,10 +121,10 @@ The Rust tests run by `cargo test` SHALL NOT inherit the developer's `GITPM_*`/`
 - **THEN** `cargo test` in this repository is unaffected
 
 ### Requirement: Origin tag lookup is bounded and restricted
-The repository-less `git ls-remote --tags -- SOURCE` of `check` SHALL run in `exec.rs` with the bounds of every repository command plus `LC_ALL=C`, the OS temp dir as working directory and a transport allowlist (file, git, http, https, ssh), and only on a source that passes `auth::validate_recorded`; nothing is fetched or written. Verified by `exec::ls_remote_tags_lists_tags_with_peeled_commits_and_fails_as_git`.
+The repository-less `git ls-remote --tags --heads -- SOURCE` of `check` SHALL run in `exec.rs` with the bounds of every repository command plus `LC_ALL=C`, the OS temp dir as working directory and a transport allowlist (file, git, http, https, ssh), and only on a source that passes `auth::validate_recorded`; nothing is fetched or written. Verified by `exec::ls_remote_refs_lists_tags_with_peeled_commits_and_branches_and_fails_as_git`.
 
 #### Scenario: Bounds
-- **WHEN** `check` reads an origin's tags
+- **WHEN** `check` reads an origin's tags and branches
 - **THEN** git runs with closed stdin, `GIT_TERMINAL_PROMPT=0`, `http.lowSpeedLimit=1`/`http.lowSpeedTime=20`, the batch `core.sshCommand` unless the user configured one, the 10-minute kill, `--` before the source, `LC_ALL=C`, the temp dir as cwd (a bare word is never a remote of the caller's repository) and `protocol.allow=never` with `protocol.{file,git,http,https,ssh}.allow=always`
 
 #### Scenario: Source rule
@@ -138,4 +138,4 @@ The repository-less `git ls-remote --tags -- SOURCE` of `check` SHALL run in `ex
 
 #### Scenario: Local paths stay allowed
 - **WHEN** the recorded source is an absolute local path (Git 2.38.1 and later default `protocol.file.allow` to `user`)
-- **THEN** the lookup still reads its tags, because the allowlist sets `protocol.file.allow=always` instead of `GIT_PROTOCOL_FROM_USER=0`
+- **THEN** the lookup still reads its tags and branches, because the allowlist sets `protocol.file.allow=always` instead of `GIT_PROTOCOL_FROM_USER=0`

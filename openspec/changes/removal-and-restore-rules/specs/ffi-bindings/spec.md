@@ -11,9 +11,9 @@
 - **WHEN** a host needs the catalog overview or the links of one catalog level
 - **THEN** `PackageManager.browseCatalog`/`catalogRelease` read the catalog of `ManagerOptions.catalog`, and the free functions `browseCatalog`, `catalogRelease` and `catalogLinks` take an explicit location without opening a workspace
 
-#### Scenario: Update channel
-- **WHEN** a host calls `install(source, package, target)` or `update(id, target)`
-- **THEN** `target` is the `Target` enum `Release`, `Ref(reference)` or `Dev` (for `update` also `Recorded`, following the recorded mode); the former `Channel` enum is gone
+#### Scenario: Install and update targets
+- **WHEN** a host calls `install(source, target, package)` or `update(id, target)`
+- **THEN** `install` takes the `InstallTarget` enum `Release`, `Ref(reference)` or `Dev`, and `update` the `Target` enum with the same cases plus `Recorded` (following the recorded mode); the former `Channel` enum is gone
 
 #### Scenario: Round trip
 - **WHEN** a host opens an empty workspace through the FFI and lists it

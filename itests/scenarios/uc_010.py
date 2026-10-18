@@ -40,7 +40,7 @@ def check_installed(t: T, root, tag: str):
          dist_files(t, ID, tag), "dist file set")
 
 
-@case(fixture="hello_releases", spec=["cli/option-validation#channel-and-ref"])
+@case(fixture="hello_releases", spec=["cli/option-validation#ref-dev-and-release"])
 def install_by_scoped_tag(t: T):
     """Install --ref dan/hello@0.1.1: state, list, clone HEAD and dist match the tag; source repo unchanged."""
     source = t.snap(t.repo(ID), git=True)
@@ -50,7 +50,7 @@ def install_by_scoped_tag(t: T):
     t.same(source, "author repository")
 
 
-@case(fixture="hello_releases", spec=["install-uninstall/install-an-explicit-ref-or-the-dev-channel#install-by-exact-commit"])
+@case(fixture="hello_releases", spec=["install-uninstall/install-an-explicit-ref-or-a-branch#install-by-exact-commit"])
 def install_by_commit_into_second_workspace(t: T):
     """Tag 0.2.0 into the default workspace, exact SHA of 0.1.0 into another --root: independent."""
     source = t.snap(t.repo(ID), git=True)

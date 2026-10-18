@@ -15,7 +15,7 @@ def dist(t: T) -> str:
     return (t.dist(ID) / "index.js").read_text()
 
 
-@case(fixture="hello", spec=["install-uninstall/install-an-explicit-ref-or-the-dev-channel"])
+@case(fixture="hello", spec=["install-uninstall/install-an-explicit-ref-or-a-branch"])
 def install_dev_installs_default_branch_head(t: T):
     """install --dev takes the untagged HEAD with its new manifest version and records branch mode main."""
     head = t.release(ID, "0.2.0", tag=False)
@@ -28,7 +28,7 @@ def install_dev_installs_default_branch_head(t: T):
     t.lacks((t.ws / "state.json").read_text(), "channel")
 
 
-@case(fixture="hello", spec=["updates/dev-channel-follows-the-origin-head-by-commit"])
+@case(fixture="hello", spec=["updates/branch-mode-follows-the-branch-head-by-commit"])
 def update_follows_the_recorded_branch(t: T):
     """Plain update of a --dev install moves to origin main HEAD, ignores other branches, needs no version bump."""
     first = t.release(ID, "0.2.0", tag=False)
@@ -49,7 +49,7 @@ def update_follows_the_recorded_branch(t: T):
     t.eq(dist(t), "export const greeting = 'dev';\n", "dist")
 
 
-@case(fixture="hello", spec=["updates/dev-channel-follows-the-origin-head-by-commit"])
+@case(fixture="hello", spec=["updates/branch-mode-follows-the-branch-head-by-commit"])
 def mode_is_recorded_and_switched(t: T):
     """A --dev install keeps following main; --ref pins (update then says pinned); --release returns."""
     t.release(ID, "0.2.0", tag=False)
@@ -78,7 +78,7 @@ def mode_is_recorded_and_switched(t: T):
     t.ok("mode" not in t.package(ID), "release mode records no mode")
 
 
-@case(fixture="hello", spec=["install-uninstall/install-an-explicit-ref-or-the-dev-channel", "updates/explicit-ref-resolves-against-the-origin#branch-name"])
+@case(fixture="hello", spec=["install-uninstall/install-an-explicit-ref-or-a-branch", "updates/explicit-ref-resolves-against-the-origin#branch-name"])
 def explicit_ref_selects_its_revision(t: T):
     """--ref tag / branch on install, --ref tag on update select exactly that revision and record the mode."""
     tagged = t.rev(ID, f"{ID}@0.1.0")
@@ -99,7 +99,7 @@ def explicit_ref_selects_its_revision(t: T):
     t.has((other / "state.json").read_text(), head, '"branch": "main"')
 
 
-@case(fixture="hello", spec=["install-uninstall/install-an-explicit-ref-or-the-dev-channel"])
+@case(fixture="hello", spec=["install-uninstall/install-an-explicit-ref-or-a-branch"])
 def install_a_branch_only_the_origin_has(t: T):
     """install --ref feature: the fresh clone resolves origin/feature (no local branch), branch mode feature."""
     t.git(ID, "checkout", "-q", "-b", "feature")
@@ -116,7 +116,7 @@ def install_a_branch_only_the_origin_has(t: T):
     t.eq(t.package(ID)["current"], {"version": "0.3.0", "commit": newer}, "update follows origin/feature")
 
 
-@case(fixture="hello", spec=["cli/option-validation#channel-and-ref"])
+@case(fixture="hello", spec=["cli/option-validation#ref-dev-and-release"])
 def targets_exclude_each_other(t: T):
     """--ref, --dev and --release exclude each other, --channel is gone: usage errors, nothing created."""
     for args, needle in [(("install", t.repo(ID), "--ref", f"{ID}@0.1.0", "--dev"), "--dev conflicts with --ref"),

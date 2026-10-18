@@ -77,7 +77,7 @@ def app_and_dependency_cross_a_major_boundary_together(t: T):
 
 
 @case(fixture="g6_core_deps_installed",
-      spec=["updates/update-all-is-stable-only-and-refuses-local-work#update-all-with-ref"])
+      spec=["updates/update-all-honors-each-package-s-mode-and-refuses-local-work#update-all-with-ref"])
 def ref_dev_and_release_are_refused(t: T):
     """update all --ref / --dev / --release: refused, it follows each recorded mode; nothing changes."""
     before = t.snap(t.ws, git=True)
@@ -88,7 +88,7 @@ def ref_dev_and_release_are_refused(t: T):
         t.same(before, "workspace")
 
 
-@case(fixture="g6_core_deps_installed", spec=["updates/update-all-is-stable-only-and-refuses-local-work"])
+@case(fixture="g6_core_deps_installed", spec=["updates/update-all-honors-each-package-s-mode-and-refuses-local-work"])
 def local_work_refuses_without_partial_deploy(t: T):
     """A dirty other/x clone blocks update all (local_changes) even for the other packages."""
     t.release("other/x", "1.1.0")

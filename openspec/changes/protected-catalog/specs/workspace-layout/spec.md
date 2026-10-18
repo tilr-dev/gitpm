@@ -15,3 +15,7 @@ Single source for the record format: each `state.json` `packages.<id>` record SH
 - **WHEN** packages were installed without a ref, with `--ref acme/a@1.0.0`, and with `--ref feature`
 - **THEN** the first record has no `mode`, the second `"mode": {"pinned": "acme/a@1.0.0"}`, the third `"mode": {"branch": "feature"}`
 
+#### Scenario: Previous revision keeps its mode
+- **WHEN** a package in branch mode `main` is updated with `--release`
+- **THEN** `previous` is `{"version": …, "commit": …, "mode": {"branch": "main"}}` (a `previous` in release mode has no `mode`), so `rollback` restores both
+

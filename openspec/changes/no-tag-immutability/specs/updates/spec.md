@@ -57,6 +57,10 @@ A single-package update of a package with its own clone SHALL mirror the origin'
 - **WHEN** one package is in release mode with a newer release, one in branch mode whose branch moved, and one pinned
 - **THEN** `update all` updates the first two and prints `C pinned at V (REF)` for the third
 
+#### Scenario: Branch gone or diverged
+- **WHEN** the branch a package follows was deleted on the origin, or force-pushed
+- **THEN** `update all` updates the other packages and lists it in `unchanged` with reason `branch_gone` or `diverged`
+
 ### Requirement: Rollback swaps current and previous
 `rollback ID` SHALL swap `current` and `previous` offline (no fetch) and redeploy; without a previous revision it SHALL fail with `no_previous_version`, also when the previous commit is no longer in the clone (pruned after the origin deleted or moved its tag), naming ID and the commit. It SHALL print `ID rolled back A → B`. Like update, it is refused with `dependency_conflict` when the target version breaks an installed dependent (dependencies, "Updates keep dependents working").
 

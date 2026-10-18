@@ -131,8 +131,8 @@ An active package whose clone or installed commit is missing SHALL be skipped by
 `list` and `check` SHALL NOT reconcile or deploy anything in `dist/`, and neither opens the workspace (no lock, no crash recovery; transactions-locking, "Workspace lock"), so an interrupted commit is completed only by the next command that opens it.
 
 #### Scenario: list on a 0.4 workspace
-- **WHEN** a workspace written by gitpm 0.4 (state format 2) is listed by a later gitpm
-- **THEN** `list` fails with `unsupported` (workspace-layout) and `dist/` and `state.json` are unchanged
+- **WHEN** a workspace written by gitpm 0.4 or 0.5 (state format 2) is listed
+- **THEN** `list` fails with `unsupported` (workspace-layout, "State format versions") and `dist/` is unchanged
 
 #### Scenario: list of a state edited by hand
 - **WHEN** a package record in `state.json` was set to `"enabled": false` by hand while its `dist/<id>` still exists, and the user runs `gitpm list`

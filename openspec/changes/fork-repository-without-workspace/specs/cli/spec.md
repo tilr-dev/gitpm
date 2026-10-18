@@ -3,9 +3,9 @@
 ### Requirement: Option validation
 Before calling the library the CLI SHALL refuse only syntax: unknown or repeated options, misplaced options (for example `--dry-run` outside `update all`/`sync-dist`, `--sources` outside `catalog update`, `--from` outside `fork`, `--ref` with `fork` but without `--from`), exclusive options (`--ref`, `--dev`, `--release`; `--replace` with `--from`), values outside a fixed set and wrong argument counts, with a message ending `; use --help` where applicable (usage errors without `Error kind`); a message about a catalog subcommand names the two-word command. Domain combinations are checked by the library. Verified by `usage_errors_name_the_problem_and_create_nothing`.
 
-#### Scenario: Channel and ref
-- **WHEN** the user runs `gitpm install SOURCE --ref x --dev` or `gitpm update ID --dev --release`
-- **THEN** it fails with `--dev conflicts with --ref` (or `--release conflicts with --dev`), exit status 1, and creates nothing
+#### Scenario: Ref, dev and release
+- **WHEN** the user runs `gitpm install SOURCE --ref x --dev`, `gitpm update ID --dev --release`, or passes `--channel`
+- **THEN** it fails with `--dev conflicts with --ref` (or `--release conflicts with --dev`), or `unknown option: --channel; use --help`, exit status 1, and creates nothing
 - **AND** `--version` outside `install-catalog`/`download-catalog`/`fork --replace` is refused by the CLI as a misplaced option
 
 #### Scenario: Misplaced flag

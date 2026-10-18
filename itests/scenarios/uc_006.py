@@ -104,7 +104,7 @@ for _name, _version in [("two_parts", "0.2"), ("prerelease", "1.0.0-beta"), ("bu
                  f"Malformed version {_version!r} is refused.")
 
 
-@case(spec=["authoring/commit-releases-a-version", "install-uninstall/install-an-explicit-ref-or-the-dev-channel"])
+@case(spec=["authoring/commit-releases-a-version", "install-uninstall/install-an-explicit-ref-or-a-branch"])
 def released_version_is_installable(t: T):
     """The new release is what a direct install of the tag gets."""
     repo, _ = author(t)

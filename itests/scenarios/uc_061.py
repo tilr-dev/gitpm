@@ -260,7 +260,7 @@ def off_branch(t: T):
     return sha
 
 
-@case(spec=["install-uninstall/install-an-explicit-ref-or-the-dev-channel"])
+@case(spec=["install-uninstall/install-an-explicit-ref-or-a-branch"])
 def tag_off_default_branch_install(t: T):
     """6. install --ref of a tag not on main installs that commit."""
     sha = off_branch(t)

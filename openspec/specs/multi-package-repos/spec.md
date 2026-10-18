@@ -77,7 +77,7 @@ Shared clones SHALL keep `refs/gitpm/<namespace>/<name>/current` and `.../previo
 - **THEN** `rollback` of each package still finds its previous revision
 
 ### Requirement: Forgotten packages of shared clones
-Forgetting a package of a shared clone SHALL keep a `forgotten` record (format in workspace-layout) that still holds the clone; `restore` SHALL record it in state again at its recorded revision (checking the clone out there; `local_changes` when the clone has lost work) and deploy it; `uninstall` of the forgotten package SHALL remove the record and, if last, the clone. Verified by `a_forgotten_shared_package_keeps_its_clone_until_uninstalled`.
+Forgetting a package of a shared clone SHALL keep a `forgotten` record (format in workspace-layout) that still holds the clone; `restore` SHALL record it again under the rules of install-uninstall ("Restore preconditions") and deploy it when active; `uninstall` of the forgotten package SHALL remove the record and, if last, the clone. Verified by `a_forgotten_shared_package_keeps_its_clone_until_uninstalled`.
 
 #### Scenario: Shared clone gone
 - **WHEN** the shared clone of a forgotten package was deleted
@@ -86,7 +86,7 @@ Forgetting a package of a shared clone SHALL keep a `forgotten` record (format i
 
 #### Scenario: Restore from shared clone
 - **WHEN** `tilr/store` was forgotten and the user runs `restore tilr/store`
-- **THEN** it is recorded in state at its recorded revision and `dist/tilr/store/` is deployed
+- **THEN** it is recorded in state at its recorded revision with its recorded `enabled` flag, and `dist/tilr/store/` is deployed when it is enabled
 
 ### Requirement: Root package that moved into a folder
 A root package SHALL keep its own `packages/<id>` clone when a later release moves it into a package folder (`path` set, `clone` absent) and SHALL keep updating and forking. Verified by `a_root_package_moved_into_a_folder_keeps_updating_and_forks`.

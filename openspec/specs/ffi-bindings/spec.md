@@ -24,9 +24,9 @@ The FFI crate SHALL generate the Swift module `Gitpm` over the C module `GitpmFF
 - **WHEN** a host needs the catalog overview or the links of one catalog level
 - **THEN** `PackageManager.browseCatalog`/`catalogRelease` read the catalog of `ManagerOptions.catalog`, and the free functions `browseCatalog`, `catalogRelease` and `catalogLinks` take an explicit location without opening a workspace
 
-#### Scenario: Update channel
-- **WHEN** a host calls `update(id, reference, channel)`
-- **THEN** `channel` is the `Channel` enum `Stable` or `Dev`
+#### Scenario: Install and update targets
+- **WHEN** a host calls `install(source, target, package)` or `update(id, target)`
+- **THEN** `install` takes the `InstallTarget` enum `Release`, `Ref(reference)` or `Dev`, and `update` the `Target` enum with the same cases plus `Recorded` (following the recorded mode); the former `Channel` enum is gone
 
 #### Scenario: Round trip
 - **WHEN** a host opens an empty workspace through the FFI and lists it
@@ -100,3 +100,14 @@ The free function `check(root, catalog)` SHALL return a `CheckReport` record tha
 #### Scenario: check without a catalog from Swift
 - **WHEN** a host calls `check(root, nil)` on a workspace with packages installed from Git
 - **THEN** it receives a `CheckReport` whose rows have `source` `origin`, plus the replacement bindings and unsatisfied dependencies the CLI prints
+
+### Requirement: Records carry the recorded mode
+FFI records SHALL carry every field the recorded modes add to library results, as the `Mode` and `UnchangedReason` enums. This adds to "Records mirror library results". Verified by `records_convert_field_by_field`.
+
+#### Scenario: Mode fields
+- **WHEN** Swift bindings are generated
+- **THEN** `InstalledPackage`, `PackageRecord`, `CheckRow`, `RevisionChange` and `InstallResult` have `mode` (`release`, `pinned(reference)`, `branch(name)`), `Revision.mode` is the mode of a `previous` revision, `InstallResult` has `requestedMode`, and `RevisionChange.unchangedReason` and `Unchanged.reason` are `pinned(reference)`, `diverged(branch)` or `branchGone(branch)`
+
+#### Scenario: Pinned package from Swift
+- **WHEN** a host lists a workspace where `acme/greeter` was installed with `--ref acme/greeter@0.1.0` and then calls `update(id, .recorded)`
+- **THEN** the listed `InstalledPackage.mode` is pinned to `acme/greeter@0.1.0`, and the returned `RevisionChange` is unchanged with `unchangedReason` `pinned`
