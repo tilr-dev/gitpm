@@ -195,6 +195,31 @@ pub(crate) fn dependents(state: &State, provider_id: &str) -> Vec<String> {
         .collect()
 }
 
+/// Consumers that break when `provider_id` stops providing (`after` is the state once
+/// it is disabled or removed and the bindings it provides are dropped), sorted: every
+/// installed package (other than `provider_id`) with a dependency that resolves to
+/// `provider_id` in `before` and is not satisfied in `after`. A dependency resolving to
+/// it directly always breaks; one resolving to it through a replacement breaks unless
+/// the original takes it over (installed, enabled, matching version).
+pub(crate) fn breaking_dependents(before: &State, provider_id: &str, after: &State) -> Vec<String> {
+    before
+        .packages
+        .iter()
+        .filter(|(id, plugin)| {
+            id.as_str() != provider_id
+                && plugin.dependencies.keys().any(|dep| {
+                    provider(before, dep).is_some_and(|(p, _, _)| p == provider_id)
+                        && after.packages.get(id.as_str()).is_none_or(|consumer| {
+                            status(after, consumer)
+                                .iter()
+                                .any(|row| row.id == *dep && !row.satisfied)
+                        })
+                })
+        })
+        .map(|(id, _)| id.clone())
+        .collect()
+}
+
 /// Refuse with [`Error::DependencyConflict`] when a direct dependency of `id` (about to
 /// be active) is not satisfied by an active package: disabled ("DEP is disabled; enable
 /// it"), missing, replaced away or of a non-matching version. Dependencies of the

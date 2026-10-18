@@ -1195,6 +1195,34 @@ fn uninstall_without_tty_refuses_and_lists_lost_work_including_stash() {
     assert!(!String::from_utf8_lossy(&out.stdout).contains("[y/N]"));
     assert_eq!(f.state(), before);
     assert!(repo.join(".git").is_dir());
+
+    // One refusal tells everything: a consumer and the lost work, from the plan.
+    let app = f.dir.join("app");
+    f.cli(&["init", "app/a", "--into", app.to_str().unwrap()], true);
+    let manifest = app.join("plugin.json");
+    let mut json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&manifest).unwrap()).unwrap();
+    json["dependencies"] = serde_json::json!({"dan/hello": "^1"});
+    fs::write(&manifest, serde_json::to_string_pretty(&json).unwrap()).unwrap();
+    f.cli(&["commit", app.to_str().unwrap(), "0.1.1"], true);
+    f.cli(&["install", app.to_str().unwrap()], true);
+    let out = f
+        .pm()
+        .arg("--root")
+        .arg(&f.root)
+        .args(["uninstall", "dan/hello"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("Error: cannot uninstall dan/hello: required by app/a")
+            && stderr.contains("  - stash: stash@{0}")
+            && stderr.contains("Error kind: has_dependents"),
+        "{stderr}"
+    );
+    assert!(repo.join(".git").is_dir());
     f.cli(&["uninstall", "dan/hello", "--force"], true);
     assert!(!repo.exists());
 }
@@ -1221,12 +1249,13 @@ fn uninstall_on_tty_asks_before_losing_work() {
         "script -q /dev/null sh -c \"exec '$0' --root '$1' uninstall dan/hello 2>'$2'\""
     };
     let stderr_file = f.dir.join("uninstall.stderr");
-    let ask = |answer: &str| {
+    // `before` runs while the prompt waits, before the answer is typed.
+    let ask_after = |before: &str, answer: &str| {
         let out = f
             .command("sh")
             .arg("-c")
             .arg(format!(
-                "(sleep 1; printf '{answer}\\n'; sleep 1) | {script}"
+                "(sleep 1; {before}printf '{answer}\\n'; sleep 1) | {script}"
             ))
             .arg(env!("CARGO_BIN_EXE_gitpm"))
             .arg(&f.root)
@@ -1238,6 +1267,7 @@ fn uninstall_on_tty_asks_before_losing_work() {
             fs::read_to_string(&stderr_file).unwrap_or_default(),
         )
     };
+    let ask = |answer: &str| ask_after("", answer);
     let (output, stderr) = ask("n");
     assert!(stderr.contains("Delete anyway? [y/N]"), "{stderr}");
     assert!(stderr.contains("untracked: notes.txt"), "{stderr}");
@@ -1249,6 +1279,19 @@ fn uninstall_on_tty_asks_before_losing_work() {
     assert!(!output.contains("Delete anyway"), "{output}");
     assert!(repo.join("notes.txt").exists());
     assert_eq!(f.state()["packages"]["dan/hello"]["enabled"], true);
+    // Work that appears while the prompt waits is not covered by the answer.
+    let later = repo.join("later.txt");
+    let (output, stderr) = ask_after(&format!("touch '{}'; ", later.display()), "y");
+    assert!(stderr.contains("Delete anyway? [y/N]"), "{stderr}");
+    assert!(
+        stderr.contains("  - untracked: later.txt") && stderr.contains("Error kind: local_changes"),
+        "{stderr}"
+    );
+    let refusal = &stderr[stderr.find("Error:").unwrap()..];
+    assert!(!refusal.contains("notes.txt"), "{stderr}");
+    assert!(!output.contains("uninstalled"), "{output}");
+    assert!(repo.join("notes.txt").exists() && later.exists());
+    fs::remove_file(&later).unwrap();
     let (output, stderr) = ask("y");
     assert!(stderr.contains("Delete anyway? [y/N]"), "{stderr}");
     assert!(output.contains("dan/hello uninstalled"), "{output}");

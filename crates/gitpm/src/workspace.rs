@@ -378,11 +378,24 @@ pub struct DistSync {
 pub struct SkippedDist {
     pub id: String,
     pub reason: String,
+    /// The package's clone is gone (`reason` "clone missing"): only uninstalling or
+    /// forgetting it (which drops the record without confirmation) ends the skip.
+    pub clone_missing: bool,
 }
 impl DistSync {
     pub fn is_empty(&self) -> bool {
         self.deployed.is_empty() && self.removed.is_empty()
     }
+}
+
+/// What `forget` did.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct ForgetResult {
+    /// The clone stays and a `forgotten` record is kept (`restore` records it again);
+    /// false when the clone was gone, so only the record and `dist/` were removed.
+    pub clone_kept: bool,
+    /// Reconciliation report.
+    pub dist: DistSync,
 }
 
 /// What `uninstall` would delete and which local work would be lost.
@@ -395,8 +408,33 @@ pub struct UninstallPlan {
     pub deletes: Vec<String>,
     /// Empty for a clean clone: then uninstall needs no confirmation.
     pub lost_work: Vec<LostWork>,
-    /// Installed packages that depend on this one: uninstall refuses unless forced.
+    /// Installed packages that would break (their dependency resolves to this one, or
+    /// to it through a replacement the original does not take over): uninstall refuses
+    /// unless forced.
     pub dependents: Vec<String>,
+    /// The `dependency_conflict` message uninstall raises without force when it would
+    /// reactivate an original (this package replaces it) whose dependencies are not
+    /// active.
+    pub dependency_conflict: Option<String>,
+}
+impl UninstallPlan {
+    /// The refusal `uninstall` raises without force, or `None`: [`Error::HasDependents`]
+    /// (carrying `lost_work`) when consumers would break, else
+    /// [`Error::DependencyConflict`] for a reactivated original. A caller reports it
+    /// before asking about lost work, without calling `uninstall`.
+    pub fn refusal(&self) -> Option<Error> {
+        if !self.dependents.is_empty() {
+            return Some(has_dependents(
+                &self.id,
+                "uninstall",
+                self.dependents.clone(),
+                self.lost_work.clone(),
+            ));
+        }
+        self.dependency_conflict
+            .clone()
+            .map(Error::DependencyConflict)
+    }
 }
 
 pub struct Manager {
@@ -1715,9 +1753,12 @@ impl Manager {
         self.set_enabled_with(id, enabled, false)
     }
     /// Disabling removes `dist/<id>`; enabling deploys it again from the clone at the
-    /// installed commit (unless the package is replaced). Disabling a package others
-    /// depend on, or one that replaces another (`dependents` then names the originals),
-    /// is refused with [`Error::HasDependents`] unless `force`. Enabling a disabled
+    /// installed commit (unless the package is replaced). Disabling drops the
+    /// replacements the package provides (their originals are deployed again when
+    /// active). Disabling is refused with [`Error::HasDependents`] unless `force` when a
+    /// consumer would break (see [`UninstallPlan::dependents`]), and with
+    /// [`Error::DependencyConflict`] when a reactivated original has inactive
+    /// dependencies. Enabling a disabled
     /// package whose dependencies are not all satisfied by active packages (missing,
     /// disabled, replaced away or of a non-matching version) is refused with
     /// [`Error::DependencyConflict`] unless `force`; dependencies are never enabled
@@ -1731,25 +1772,12 @@ impl Manager {
             if enabled && !force && !package.enabled && !state.replacements.contains_key(id) {
                 deps::refuse_inactive_dependencies(state, id, "enable", true)?;
             }
-            if !enabled && !force {
-                refuse_dependents(state, id, "disable")?;
-                let replaced: Vec<String> = state
-                    .replacements
-                    .iter()
-                    .filter(|(_, fork)| *fork == id)
-                    .map(|(original, _)| original.clone())
-                    .collect();
-                if !replaced.is_empty() {
-                    return Err(Error::HasDependents {
-                        message: format!(
-                            "cannot disable {id}: it replaces {} for every consumer, so nothing would be loaded for it; switching back first, or force, is required",
-                            replaced.join(", ")
-                        ),
-                        id: id.into(),
-                        dependents: replaced,
-                        replacing: true,
-                    });
+            if !enabled {
+                if !force {
+                    let after = without_provider(state, id, false);
+                    guard_removal(state, &after, id, "disable", &[])?;
                 }
+                state.replacements.retain(|_, fork| fork != id);
             }
             state.packages.get_mut(id).unwrap().enabled = enabled;
             Ok(())
@@ -1770,35 +1798,46 @@ impl Manager {
     }
     /// Forget registration but retain the repository; `dist/<id>` is removed (a
     /// forgotten package is not installed) and `restore` deploys it again.
-    pub fn forget(&self, id: &str) -> Result<DistSync> {
+    pub fn forget(&self, id: &str) -> Result<ForgetResult> {
         self.forget_with(id, false)
     }
-    /// Like [`Manager::forget`]; dependents refuse unless `force`. Replacements this
-    /// package provides are dropped (their consumers go back to the original, whose
-    /// `dist/` is deployed again). The whole record is kept in `State::forgotten` (own
-    /// or shared clone), so `restore` records it again as it was and `uninstall` finds
-    /// it; a shared clone's HEAD moves to a registered package's revision if it was
-    /// this package's.
-    pub fn forget_with(&self, id: &str, force: bool) -> Result<DistSync> {
+    /// Like [`Manager::forget`]; consumers that would break refuse unless `force` (the
+    /// guard of [`Manager::set_enabled_with`]). Replacements this package provides are
+    /// dropped (their consumers go back to the original, whose `dist/` is deployed
+    /// again). The whole record is kept in `State::forgotten` (own or shared clone), so
+    /// `restore` records it again as it was and `uninstall` finds it; a shared clone's
+    /// HEAD moves to a registered package's revision if it was this package's. A package
+    /// whose clone is gone keeps no `forgotten` record: there is nothing to restore.
+    pub fn forget_with(&self, id: &str, force: bool) -> Result<ForgetResult> {
         valid_id(id)?;
         self.transaction(|txn, state| {
             if !state.packages.contains_key(id) {
                 return Err(Error::NotInstalled { id: id.into() });
             }
             if !force {
-                refuse_dependents(state, id, "forget")?;
+                let after = without_provider(state, id, true);
+                guard_removal(state, &after, id, "forget", &[])?;
             }
             let installed = state.packages.remove(id).unwrap();
             state.replacements.retain(|_, fork| fork != id);
+            match installed_repo(txn.root(), id, &installed) {
+                // Nothing to restore: only the record (and dist) are dropped.
+                Err(Error::RepositoryNotFound { .. }) => {
+                    txn.delete_dist(id)?;
+                    return Ok(false);
+                }
+                Err(error) => return Err(error),
+                Ok(_) => {}
+            }
             let shared = installed.clone.clone();
             let relative = installed.clone_folder(id);
             state.forgotten.insert(id.to_owned(), installed);
             if let Some(key) = shared {
                 settle_head(txn, state, &key, id, &relative)?;
             }
-            Ok(())
+            Ok(true)
         })
-        .map(|((), dist)| dist)
+        .map(|(clone_kept, dist)| ForgetResult { clone_kept, dist })
     }
     /// Record a forgotten package again from its `forgotten` record (own or shared
     /// clone): revisions, `catalog`, `enabled` and mode are kept. Release and pinned mode
@@ -1955,12 +1994,15 @@ impl Manager {
         if dist.exists() {
             deletes.push(dist.to_string_lossy().into_owned());
         }
+        let after = without_provider(&state, id, true);
         Ok(UninstallPlan {
             id: id.into(),
             registered: state.packages.contains_key(id),
             deletes,
+            dependents: deps::breaking_dependents(&state, id, &after),
+            dependency_conflict: reactivation_conflict(&state, &after, id, "uninstall")
+                .map(|error| error.to_string()),
             lost_work: removal.lost_work,
-            dependents: deps::dependents(&state, id),
         })
     }
     /// Remove state entry, repository and dist; replacements this package provides are
@@ -1968,24 +2010,30 @@ impl Manager {
     /// package of a shared clone the clone
     /// stays while other packages (registered or forgotten) use it, and its HEAD moves to
     /// one of theirs. A forgotten package is uninstalled the same way (its `dist/`, its
-    /// record and the clone if it was the last user). With `confirm == false` any local work
-    /// (changes, untracked/ignored files, unpublished commits/branches/tags, stash)
-    /// refuses with [`Error::LocalChanges`]; `confirm == true` deletes it anyway.
-    /// Dependents refuse with [`Error::HasDependents`]; see [`Manager::uninstall_with`].
-    pub fn uninstall(&self, id: &str, confirm: bool) -> Result<DistSync> {
-        self.uninstall_with(id, confirm, false)
-    }
-    /// [`Manager::uninstall`] that removes a package others depend on when `force`; the
-    /// dependents then report an unsatisfied dependency.
-    pub fn uninstall_with(&self, id: &str, confirm: bool, force: bool) -> Result<DistSync> {
+    /// record and the clone if it was the last user); so is a recorded package whose
+    /// clone is gone (only its record and `dist/` remain, nothing is lost). Local work
+    /// (changes, untracked/ignored files, unpublished commits/branches/tags, stash) not
+    /// in `confirmed` (the [`UninstallPlan::lost_work`] the user saw) refuses with
+    /// [`Error::LocalChanges`] listing the unconfirmed items, so work that appeared
+    /// after the plan is never deleted unseen. Consumers that would break refuse with
+    /// [`Error::HasDependents`] (carrying the lost work, see [`UninstallPlan::refusal`])
+    /// unless `force`; they then report an unsatisfied dependency.
+    pub fn uninstall(&self, id: &str, confirmed: &[LostWork], force: bool) -> Result<DistSync> {
         valid_id(id)?;
         self.transaction(|txn, state| {
             let removal = removal(txn.root(), state, id)?;
             if !force {
-                refuse_dependents(state, id, "uninstall")?;
+                let after = without_provider(state, id, true);
+                guard_removal(state, &after, id, "uninstall", &removal.lost_work)?;
             }
-            if !confirm && !removal.lost_work.is_empty() {
-                return Err(lost_work::refusal(id, removal.lost_work));
+            let unconfirmed: Vec<LostWork> = removal
+                .lost_work
+                .iter()
+                .filter(|item| !confirmed.contains(item))
+                .cloned()
+                .collect();
+            if !unconfirmed.is_empty() {
+                return Err(lost_work::refusal(id, unconfirmed));
             }
             state.packages.remove(id);
             state.forgotten.remove(id);
@@ -2037,13 +2085,44 @@ impl Manager {
         replacement_plan(&self.state()?, original, None)
     }
     /// Drop the replacement of `original`: every consumer uses the installed original
-    /// again. The original must be installed; unsatisfied consumers refuse unless
-    /// `confirm`. The fork stays installed. `dist/<original>` is deployed again from its
-    /// clone at the installed commit (if the original is enabled).
-    pub fn switch_back(&self, original: &str, confirm: bool) -> Result<ReplacementPlan> {
+    /// again; consumers whose requirement the original's version does not meet refuse
+    /// unless `confirm`. Consumers that break because the original is not installed (only
+    /// the binding is dropped then) or disabled refuse with [`Error::HasDependents`]
+    /// unless `force`, as for removals. The fork stays installed.
+    /// `dist/<original>` is deployed again from its clone at the installed commit (if
+    /// the original is enabled; its dependencies must then be active).
+    pub fn switch_back(
+        &self,
+        original: &str,
+        confirm: bool,
+        force: bool,
+    ) -> Result<ReplacementPlan> {
         let (plan, dist) = self.transaction(|_, state| {
             let plan = replacement_plan(state, original, None)?;
             plan.refuse_unless(confirm)?;
+            if !force {
+                // The one rule of removals: consumers the original does not serve once
+                // the binding is dropped (missing or disabled original; a version
+                // mismatch is the confirmation above).
+                let mut next = state.clone();
+                next.replacements.remove(original);
+                let fork = plan.current.as_deref().unwrap_or_default();
+                let broken: Vec<String> = deps::breaking_dependents(state, fork, &next)
+                    .into_iter()
+                    .filter(|id| !plan.incompatible.iter().any(|c| c.id == *id))
+                    .collect();
+                if !broken.is_empty() {
+                    return Err(Error::HasDependents {
+                        message: format!(
+                            "cannot switch {original} back: it would leave {} without a working {original}; doing it anyway requires force",
+                            broken.join(", ")
+                        ),
+                        id: original.into(),
+                        dependents: broken,
+                        lost_work: Vec::new(),
+                    });
+                }
+            }
             state.replacements.remove(original);
             Ok(plan)
         })?;
@@ -2076,6 +2155,7 @@ impl Manager {
                         txn.delete_dist(&id)?;
                         plan.skipped.push(SkippedDist {
                             id,
+                            clone_missing: matches!(error, Error::RepositoryNotFound { .. }),
                             reason: error.to_string(),
                         });
                     }
@@ -2208,16 +2288,17 @@ fn dist_drift(root: &Path, state: &State) -> Result<DistSync> {
         }
         let commit = format!("{}^{{commit}}", p.current.commit);
         let reason = match installed_repo(root, id, p) {
-            Err(Error::RepositoryNotFound { .. }) => Some("clone missing".to_owned()),
+            Err(Error::RepositoryNotFound { .. }) => Some(("clone missing", true)),
             Err(error) => return Err(error),
             Ok(repo) => git(&repo, &["cat-file", "-e", &commit])
                 .is_err()
-                .then(|| "installed commit missing from its clone".to_owned()),
+                .then_some(("installed commit missing from its clone", false)),
         };
         match reason {
-            Some(reason) => plan.skipped.push(SkippedDist {
+            Some((reason, clone_missing)) => plan.skipped.push(SkippedDist {
                 id: id.clone(),
-                reason,
+                reason: reason.to_owned(),
+                clone_missing,
             }),
             None => plan.deployed.push(id.clone()),
         }
@@ -2457,20 +2538,81 @@ fn ensure_single_catalog(state: &State, origin: &str) -> Result<()> {
     Ok(())
 }
 
-fn refuse_dependents(state: &State, id: &str, action: &str) -> Result<()> {
-    let dependents = deps::dependents(state, id);
-    if dependents.is_empty() {
-        return Ok(());
+/// The state once `id` provides nothing any more: disabled (`remove == false`) or
+/// removed from `packages`, with the replacement bindings it provides dropped.
+fn without_provider(state: &State, id: &str, remove: bool) -> State {
+    let mut after = state.clone();
+    if remove {
+        after.packages.remove(id);
+    } else if let Some(package) = after.packages.get_mut(id) {
+        package.enabled = false;
     }
-    Err(Error::HasDependents {
+    after.replacements.retain(|_, fork| fork != id);
+    after
+}
+
+/// The `has_dependents` refusal of `action` on `id` (one message for the guard and
+/// [`UninstallPlan::refusal`]).
+fn has_dependents(
+    id: &str,
+    action: &str,
+    dependents: Vec<String>,
+    lost_work: Vec<LostWork>,
+) -> Error {
+    Error::HasDependents {
         message: format!(
-            "cannot {action} {id}: required by {}; doing it anyway requires force",
-            dependents.join(", ")
+            "cannot {action} {id}: required by {}; doing it anyway requires force{}",
+            dependents.join(", "),
+            if lost_work.is_empty() {
+                ""
+            } else {
+                "; the clone also has local work that would be lost"
+            }
         ),
         id: id.into(),
         dependents,
-        replacing: false,
-    })
+        lost_work,
+    }
+}
+
+/// Single guard of disable, forget and uninstall (unforced): consumers that break once
+/// `id` stops providing (`after`, see [`deps::breaking_dependents`]) refuse with
+/// [`Error::HasDependents`] carrying `lost_work`; an original that becomes active again
+/// because a binding `id` provided is dropped needs its own direct dependencies active
+/// ([`deps::refuse_inactive_dependencies`], as `enable`).
+fn guard_removal(
+    before: &State,
+    after: &State,
+    id: &str,
+    action: &str,
+    lost_work: &[LostWork],
+) -> Result<()> {
+    let dependents = deps::breaking_dependents(before, id, after);
+    if !dependents.is_empty() {
+        return Err(has_dependents(id, action, dependents, lost_work.to_vec()));
+    }
+    match reactivation_conflict(before, after, id, action) {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+/// The [`Error::DependencyConflict`] of an original that becomes active again because
+/// a binding `id` provided is dropped while its own direct dependencies are not active.
+fn reactivation_conflict(before: &State, after: &State, id: &str, action: &str) -> Option<Error> {
+    before
+        .replacements
+        .iter()
+        .filter(|(original, fork)| *fork == id && after.is_active(original))
+        .find_map(|(original, _)| {
+            deps::refuse_inactive_dependencies(
+                after,
+                original,
+                &format!("{action} {id}, which would reactivate"),
+                true,
+            )
+            .err()
+        })
 }
 
 /// A consumer whose requirement the new provider's version does not satisfy.
@@ -2485,7 +2627,8 @@ pub struct ReplacementPlan {
     pub original: String,
     /// Package that provides `original` afterwards (the original itself when switching back).
     pub provider: String,
-    /// Version consumers see: the fork's declared `replaces.version`, or the original's.
+    /// Version consumers see: the fork's declared `replaces.version`, or the original's
+    /// (empty when switching back to an original that is not installed).
     pub version: String,
     /// Current provider if `original` is replaced now.
     pub current: Option<String>,
@@ -2496,9 +2639,6 @@ pub struct ReplacementPlan {
     /// Installed version of `provider` (the fork; the original when switching back),
     /// which can differ from `version`, the one consumers see.
     pub installed_version: Option<String>,
-    /// The fork (`provider` when replacing, `current` when switching back) is installed
-    /// and enabled.
-    pub fork_enabled: bool,
     /// Reconciliation report of `replace`/`switch_back` (empty for a plan).
     pub dist: DistSync,
 }
@@ -2577,6 +2717,12 @@ fn replacement_plan(
                 InvalidArgument,
                 "cyclic replacement: {fork} depends on {original}"
             );
+            // A replacement takes over an installed original.
+            if !state.packages.contains_key(original) {
+                return Err(Error::NotInstalled {
+                    id: original.into(),
+                });
+            }
             (fork.to_owned(), declared.version.clone())
         }
         None => {
@@ -2584,13 +2730,14 @@ fn replacement_plan(
                 Error::InvalidArgument,
                 format!("{original} is not replaced"),
             )?;
-            let installed = state
+            // Switching back to an original that is not installed only drops the
+            // binding: no version, its consumers break (`switch_back` guards them).
+            let version = state
                 .packages
                 .get(original)
-                .ok_or_else(|| Error::NotInstalled {
-                    id: original.into(),
-                })?;
-            (original.to_owned(), installed.current.version.clone())
+                .map(|p| p.current.version.clone())
+                .unwrap_or_default();
+            (original.to_owned(), version)
         }
     };
     let consumers: Vec<String> = state
@@ -2601,6 +2748,7 @@ fn replacement_plan(
         .collect();
     let incompatible = consumers
         .iter()
+        .filter(|_| state.packages.contains_key(&provider))
         .filter_map(|id| {
             let requirement = &state.packages[id].dependencies[original];
             (!deps::matches(requirement, &version)).then(|| IncompatibleConsumer {
@@ -2619,35 +2767,37 @@ fn replacement_plan(
             next.replacements.remove(original);
         }
     }
-    let broken: Vec<String> = deps::status(&next, &next.packages[&provider])
-        .into_iter()
-        .filter(|s| !s.satisfied)
-        .map(|s| {
-            format!(
-                "{} {} ({})",
-                s.id,
-                s.requirement,
-                s.problem.unwrap_or_default()
-            )
-        })
-        .collect();
-    ensure!(
-        broken.is_empty(),
-        DependencyConflict,
-        "{provider} has unsatisfied dependencies: {}",
-        broken.join(", ")
-    );
+    match replacement {
+        Some(_) => {
+            let broken: Vec<String> = deps::status(&next, &next.packages[&provider])
+                .into_iter()
+                .filter(|s| !s.satisfied)
+                .map(|s| {
+                    format!(
+                        "{} {} ({})",
+                        s.id,
+                        s.requirement,
+                        s.problem.unwrap_or_default()
+                    )
+                })
+                .collect();
+            ensure!(
+                broken.is_empty(),
+                DependencyConflict,
+                "{provider} has unsatisfied dependencies: {}",
+                broken.join(", ")
+            );
+        }
+        // The original becomes active again: its dependencies are checked as by enable.
+        None if next.is_active(original) => {
+            deps::refuse_inactive_dependencies(&next, original, "switch back to", false)?;
+        }
+        None => {}
+    }
     let installed_version = state
         .packages
         .get(&provider)
         .map(|p| p.current.version.clone());
-    let fork = match replacement {
-        Some(_) => Some(provider.as_str()),
-        None => current.as_deref(),
-    };
-    let fork_enabled = fork
-        .and_then(|fork| state.packages.get(fork))
-        .is_some_and(|p| p.enabled);
     Ok(ReplacementPlan {
         original: original.into(),
         provider,
@@ -2656,7 +2806,6 @@ fn replacement_plan(
         consumers,
         incompatible,
         installed_version,
-        fork_enabled,
         dist: DistSync::default(),
     })
 }
@@ -3114,7 +3263,7 @@ mod tests {
             ws.refuses("invalid_id", || m.forget(id));
             ws.refuses("invalid_id", || m.restore(id));
             ws.refuses("invalid_id", || m.uninstall_plan(id));
-            ws.refuses("invalid_id", || m.uninstall(id, true));
+            ws.refuses("invalid_id", || m.uninstall(id, &[], false));
             ws.refuses("invalid_id", || m.fork_in_namespace(id, &dest, "me"));
         }
         assert!(!dest.exists());
@@ -3146,13 +3295,15 @@ mod tests {
         }
         for error in [
             ws.refuses("repository_not_found", || m.uninstall_plan(id)),
-            ws.refuses("repository_not_found", || m.uninstall(id, false)),
-            ws.refuses("repository_not_found", || m.uninstall(id, true)),
+            ws.refuses("repository_not_found", || m.uninstall(id, &[], false)),
+            ws.refuses("repository_not_found", || {
+                m.uninstall(id, &[LostWork::Untracked { path: "x".into() }], true)
+            }),
         ] {
             assert!(matches!(error, Error::RepositoryNotFound { .. }));
         }
         // A namespace is not a package ID.
-        ws.refuses("invalid_id", || m.uninstall("dan", true));
+        ws.refuses("invalid_id", || m.uninstall("dan", &[], false));
         // Restore of an unknown ID fails too (see the ignored test for its kind).
         let before = tree_hash(&ws.root);
         assert!(m.restore(id).is_err());
@@ -3182,7 +3333,7 @@ mod tests {
         ws.refuses("invalid_data", || m.forget(id));
         ws.refuses("invalid_data", || m.restore(id));
         ws.refuses("invalid_data", || m.uninstall_plan(id));
-        ws.refuses("invalid_data", || m.uninstall(id, true));
+        ws.refuses("invalid_data", || m.uninstall(id, &[], false));
         ws.refuses("invalid_data", || {
             m.fork_in_namespace(id, &ws.dir.join("f"), "me")
         });
@@ -3255,7 +3406,7 @@ mod tests {
         );
         assert!(ws.root.join("packages/dan/demo1/.git").is_dir());
         assert!(ws.root.join("dist/dan/demo1/index.js").is_file());
-        m.uninstall("dan/demo1", false).unwrap();
+        m.uninstall("dan/demo1", &[], false).unwrap();
         let r = m
             .install_package(ws.author.source(), None, InstallTarget::Dev)
             .unwrap();
@@ -3412,7 +3563,7 @@ mod tests {
         // A forgotten own clone that is gone: the record is all that is left.
         fs::remove_dir_all(ws.repo()).unwrap();
         ws.refuses("repository_not_found", || m.restore("dan/demo1"));
-        m.uninstall("dan/demo1", false).unwrap();
+        m.uninstall("dan/demo1", &[], false).unwrap();
         assert!(m.state().unwrap().forgotten.is_empty());
     }
 
@@ -3869,7 +4020,9 @@ mod tests {
         assert_eq!(updated.dist.deployed, [id]);
         assert_eq!(updated.dist.unmanaged, ["dist/custom"]);
         assert_eq!(m.rollback(id).unwrap().dist.deployed, [id]);
-        assert_eq!(m.forget(id).unwrap().removed, [id]);
+        let forgotten = m.forget(id).unwrap();
+        assert!(forgotten.clone_kept);
+        assert_eq!(forgotten.dist.removed, [id]);
         assert_eq!(m.restore(id).unwrap().dist.deployed, [id]);
         // An active package whose clone and deployed folder are gone is skipped, and every
         // other mutating result says so.
@@ -3881,10 +4034,11 @@ mod tests {
             [SkippedDist {
                 id: "dan/other".into(),
                 reason: "clone missing".into(),
+                clone_missing: true,
             }]
         );
         assert_eq!(m.enable(id).unwrap().skipped.len(), 1);
-        let removed = m.uninstall(id, false).unwrap();
+        let removed = m.uninstall(id, &[], false).unwrap();
         assert_eq!(removed.removed, [id]);
         assert_eq!(removed.skipped[0].id, "dan/other");
         ws.no_leftovers();
@@ -3990,7 +4144,7 @@ mod tests {
         ws.refuses_nothing(|| m.enable("dan/app"));
         // A missing dependency is named too.
         m.disable("dan/app").unwrap();
-        m.uninstall_with("dan/lib", true, true).unwrap();
+        m.uninstall("dan/lib", &[], true).unwrap();
         let error = ws.refuses("dependency_conflict", || m.enable("dan/app"));
         assert!(
             error.to_string().contains("dan/lib ^0.1: not installed"),
@@ -4027,7 +4181,7 @@ mod tests {
         // then there is nothing left to deploy.
         let plan = m.uninstall_plan("dan/other").unwrap();
         assert!(plan.registered && plan.lost_work.is_empty());
-        m.uninstall("dan/other", false).unwrap();
+        m.uninstall("dan/other", &[], false).unwrap();
         assert!(!m.state().unwrap().packages.contains_key("dan/other"));
         assert_eq!(m.sync_dist().unwrap(), DistSync::default());
     }
@@ -4051,7 +4205,7 @@ mod tests {
         let plan = m.uninstall_plan("dan/demo1").unwrap();
         assert!(!plan.registered);
         assert_eq!(plan.deletes, [ws.repo().to_string_lossy().into_owned()]);
-        m.uninstall("dan/demo1", false).unwrap();
+        m.uninstall("dan/demo1", &[], false).unwrap();
         assert!(!ws.repo().exists() && !ws.dist().exists());
         assert!(m.list().unwrap().is_empty());
         ws.no_leftovers();
@@ -4063,7 +4217,7 @@ mod tests {
         let other = ws.other_author("other", "dan/other");
         m.install(other.source()).unwrap();
         let other_repo = tree_hash(&ws.root.join("packages/dan/other"));
-        m.uninstall("dan/demo1", false).unwrap();
+        m.uninstall("dan/demo1", &[], false).unwrap();
         assert_eq!(tree_hash(&ws.root.join("packages/dan/other")), other_repo);
         assert!(ws.root.join("dist/dan/other/index.js").is_file());
         assert_eq!(m.list().unwrap().len(), 1);
@@ -4350,7 +4504,7 @@ mod tests {
         fs::create_dir_all(&outside).unwrap();
         fs::rename(ws.root.join("packages/dan"), outside.join("dan")).unwrap();
         std::os::unix::fs::symlink(outside.join("dan"), ws.root.join("packages/dan")).unwrap();
-        ws.refuses("workspace", || m.uninstall_with("dan/demo1", true, true));
+        ws.refuses("workspace", || m.uninstall("dan/demo1", &[], true));
         assert!(outside.join("dan/demo1/.git").is_dir());
         ws.author.release("0.2.0");
         ws.refuses("workspace", || m.update("dan/demo1"));
@@ -4360,7 +4514,7 @@ mod tests {
         fs::create_dir_all(&outside).unwrap();
         fs::rename(ws.root.join("dist/dan"), outside.join("dan")).unwrap();
         std::os::unix::fs::symlink(outside.join("dan"), ws.root.join("dist/dan")).unwrap();
-        ws.refuses("workspace", || m.uninstall_with("dan/demo1", true, true));
+        ws.refuses("workspace", || m.uninstall("dan/demo1", &[], true));
         assert!(outside.join("dan/demo1").is_dir());
     }
 
@@ -4623,7 +4777,7 @@ mod tests {
         let plan = m.uninstall_plan("tilr/store").unwrap();
         assert_eq!(plan.deletes.len(), 1, "{:?}", plan.deletes);
         assert!(plan.deletes[0].ends_with("dist/tilr/store"));
-        m.uninstall("tilr/store", false).unwrap();
+        m.uninstall("tilr/store", &[], false).unwrap();
         assert!(!mono.root.join("dist/tilr/store").exists());
         assert_eq!(mono.clones().len(), 1);
         mono.release("theme", "1.1.0");
@@ -4633,7 +4787,7 @@ mod tests {
         m.install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
             .unwrap();
         assert_eq!(mono.clones().len(), 1);
-        m.uninstall("tilr/store", false).unwrap();
+        m.uninstall("tilr/store", &[], false).unwrap();
         // The last package takes the clone with it; local work there is guarded.
         let clone = mono.root.join("repos").join(&mono.clones()[0]);
         fs::write(clone.join("scratch.txt"), "mine").unwrap();
@@ -4641,8 +4795,13 @@ mod tests {
         let plan = m.uninstall_plan("tilr/theme").unwrap();
         assert_eq!(plan.deletes.len(), 2);
         assert!(!plan.lost_work.is_empty());
-        mono.refuses("local_changes", || m.uninstall("tilr/theme", false));
-        m.uninstall("tilr/theme", true).unwrap();
+        mono.refuses("local_changes", || m.uninstall("tilr/theme", &[], false));
+        m.uninstall(
+            "tilr/theme",
+            &m.uninstall_plan("tilr/theme").unwrap().lost_work,
+            false,
+        )
+        .unwrap();
         assert!(mono.clones().is_empty());
         assert!(m.state().unwrap().packages.is_empty());
     }
@@ -4879,7 +5038,7 @@ mod tests {
                 json,
                 "{target:?}"
             );
-            m.uninstall(id, false).unwrap();
+            m.uninstall(id, &[], false).unwrap();
         }
         // HEAD is the origin's default branch, by its name.
         for head in ["HEAD", "refs/remotes/origin/HEAD"] {
@@ -4890,7 +5049,7 @@ mod tests {
                 Mode::Branch("main".into()),
                 "{head}"
             );
-            m.uninstall(id, false).unwrap();
+            m.uninstall(id, &[], false).unwrap();
         }
         // Only exact refs: no stale local branch, no revision expressions, no short hex.
         for bad in [
@@ -5334,7 +5493,7 @@ mod tests {
         // The last registered user goes; the forgotten one still holds the clone.
         let plan = m.uninstall_plan("tilr/theme").unwrap();
         assert_eq!(plan.deletes.len(), 1, "{:?}", plan.deletes);
-        m.uninstall("tilr/theme", false).unwrap();
+        m.uninstall("tilr/theme", &[], false).unwrap();
         assert_eq!(mono.clones().len(), 1);
         let restored = m.restore("tilr/store").unwrap();
         assert_eq!(restored.current.version, "1.0.0");
@@ -5354,12 +5513,14 @@ mod tests {
         let plan = m.uninstall_plan("tilr/store").unwrap();
         assert!(!plan.registered);
         assert_eq!(plan.deletes.len(), 1, "{:?}", plan.deletes);
-        m.uninstall("tilr/store", false).unwrap();
+        m.uninstall("tilr/store", &[], false).unwrap();
         assert!(mono.clones().is_empty());
         assert!(!mono.root.join("dist/tilr/store").exists());
         let state = m.state().unwrap();
         assert!(state.packages.is_empty() && state.forgotten.is_empty());
-        mono.refuses("repository_not_found", || m.uninstall("tilr/store", true));
+        mono.refuses("repository_not_found", || {
+            m.uninstall("tilr/store", &[], false)
+        });
     }
 
     #[test]
@@ -5386,7 +5547,7 @@ mod tests {
         assert_eq!(head_of(&mono.clone_dir()), dev);
         // uninstall with local work in the clone: HEAD moves, the file stays.
         fs::write(mono.clone_dir().join("scratch.txt"), "mine").unwrap();
-        m.uninstall("tilr/theme", false).unwrap();
+        m.uninstall("tilr/theme", &[], false).unwrap();
         assert_eq!(head_of(&mono.clone_dir()), store);
         assert_eq!(read(&mono.clone_dir().join("scratch.txt")), "mine");
         fs::remove_file(mono.clone_dir().join("scratch.txt")).unwrap();
@@ -5404,7 +5565,7 @@ mod tests {
             "edit",
         )
         .unwrap();
-        let error = mono.refuses("local_changes", || m.uninstall("tilr/theme", true));
+        let error = mono.refuses("local_changes", || m.uninstall("tilr/theme", &[], false));
         assert!(
             error
                 .to_string()
@@ -5720,7 +5881,7 @@ mod tests {
         // Records that go take their refs with them.
         m.forget("tilr/store").unwrap();
         assert!(keep_refs(&clone).contains(&"refs/gitpm/tilr/store/current".to_owned()));
-        m.uninstall("tilr/store", false).unwrap();
+        m.uninstall("tilr/store", &[], false).unwrap();
         assert_eq!(
             keep_refs(&clone),
             [
@@ -5729,7 +5890,12 @@ mod tests {
             ]
         );
         // Upstream dropped theme's revisions: they are local work now.
-        m.uninstall("tilr/theme", true).unwrap();
+        m.uninstall(
+            "tilr/theme",
+            &m.uninstall_plan("tilr/theme").unwrap().lost_work,
+            false,
+        )
+        .unwrap();
         assert!(mono.clones().is_empty());
     }
 
@@ -5798,7 +5964,7 @@ mod tests {
                 .unwrap();
         }
         m.forget("tilr/store").unwrap();
-        m.uninstall("tilr/theme", false).unwrap();
+        m.uninstall("tilr/theme", &[], false).unwrap();
         fs::remove_dir_all(mono.clone_dir()).unwrap();
         // Like a restore without a clone: the clone is what restore needs.
         let error = mono.refuses("repository_not_found", || m.restore("tilr/store"));
@@ -5806,7 +5972,7 @@ mod tests {
         let plan = m.uninstall_plan("tilr/store").unwrap();
         assert!(!plan.registered && plan.lost_work.is_empty());
         assert!(plan.deletes.is_empty(), "{:?}", plan.deletes);
-        m.uninstall("tilr/store", false).unwrap();
+        m.uninstall("tilr/store", &[], false).unwrap();
         let state = m.state().unwrap();
         assert!(state.forgotten.is_empty() && state.packages.is_empty());
         assert!(!mono.root.join("dist/tilr/store").exists());
@@ -5851,5 +6017,81 @@ mod tests {
             fixture_git(&destination, &["config", "--local", "user.name"]),
             ""
         );
+    }
+
+    /// A recorded package whose clone was deleted by hand: uninstall and forget drop the
+    /// record and dist without confirmation, and forget keeps no `forgotten` record
+    /// (own clone and shared clone alike).
+    #[test]
+    fn uninstall_and_forget_of_a_package_without_clone_drop_the_record() {
+        let id = "dan/demo1";
+        for forget in [false, true] {
+            let (ws, m) = Ws::installed(id);
+            fs::remove_dir_all(ws.repo()).unwrap();
+            let plan = m.uninstall_plan(id).unwrap();
+            assert!(plan.lost_work.is_empty() && plan.refusal().is_none());
+            let dist = if forget {
+                let forgotten = m.forget(id).unwrap();
+                assert!(!forgotten.clone_kept);
+                forgotten.dist
+            } else {
+                m.uninstall(id, &[], false).unwrap()
+            };
+            assert_eq!(dist.removed, [id]);
+            assert!(dist.skipped.is_empty(), "{:?}", dist.skipped);
+            let state = m.state().unwrap();
+            assert!(!state.packages.contains_key(id) && !state.forgotten.contains_key(id));
+            assert!(!ws.dist().exists());
+            ws.refuses("repository_not_found", || m.restore(id));
+            ws.no_leftovers();
+        }
+        // A package of a shared clone that is gone.
+        for forget in [false, true] {
+            let mono = Mono::new();
+            let m = mono.open();
+            m.install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
+                .unwrap();
+            m.install_package(mono.source(), Some("tilr/theme"), InstallTarget::Release)
+                .unwrap();
+            fs::remove_dir_all(mono.clone_dir()).unwrap();
+            let dist = if forget {
+                let forgotten = m.forget("tilr/store").unwrap();
+                assert!(!forgotten.clone_kept);
+                forgotten.dist
+            } else {
+                m.uninstall("tilr/store", &[], false).unwrap()
+            };
+            assert_eq!(dist.removed, ["tilr/store"]);
+            let state = m.state().unwrap();
+            assert!(!state.packages.contains_key("tilr/store"));
+            assert!(!state.forgotten.contains_key("tilr/store"));
+            assert!(state.packages.contains_key("tilr/theme"));
+        }
+    }
+
+    /// Only a missing clone is flagged `clone_missing` (the CLI's advice to uninstall or
+    /// forget depends on it); a missing installed commit is not.
+    #[test]
+    fn skipped_dists_say_structurally_whether_the_clone_is_missing() {
+        let id = "dan/demo1";
+        let (ws, m) = Ws::installed(id);
+        let path = ws.root.join("state.json");
+        let mut state: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        state["packages"][id]["current"]["commit"] = "0".repeat(40).into();
+        fs::write(&path, serde_json::to_vec_pretty(&state).unwrap()).unwrap();
+        fs::remove_dir_all(ws.dist()).unwrap();
+        let plan = m.sync_dist_plan().unwrap();
+        assert_eq!(
+            plan.skipped,
+            [SkippedDist {
+                id: id.into(),
+                reason: "installed commit missing from its clone".into(),
+                clone_missing: false,
+            }]
+        );
+        fs::remove_dir_all(ws.repo()).unwrap();
+        let plan = m.sync_dist_plan().unwrap();
+        assert!(plan.skipped[0].clone_missing);
     }
 }

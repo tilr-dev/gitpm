@@ -306,6 +306,15 @@ impl State {
                 );
             }
         }
+        // Disabling a replacing package drops its binding, so a binding to a disabled
+        // package comes from gitpm <= 0.5 (`disable --force` kept it) or a hand edit.
+        for (original, fork) in &state.replacements {
+            ensure!(
+                state.packages.get(fork).is_none_or(|p| p.enabled),
+                InvalidData,
+                "state.json replaces {original} by the disabled package {fork} (written by gitpm 0.5 or earlier, or edited by hand); a replacing package is always enabled: remove the entry {original} from replacements"
+            );
+        }
         for id in state.forgotten.keys() {
             ensure!(
                 !state.packages.contains_key(id),

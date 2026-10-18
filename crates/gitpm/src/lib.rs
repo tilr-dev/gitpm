@@ -41,9 +41,9 @@ pub use model::{
     STATE_FORMAT, State, valid_id,
 };
 pub use workspace::{
-    DependencyRewrite, DistSync, ForkReplacement, ForkResume, ForkStep, ForkedPackage, HeldBack,
-    HeldBackReason, IncompatibleConsumer, InstallResult, InstallTarget, InstalledDependency,
-    Manager, Options, PackageFork, PackageForkReplacement, PendingReplacement, ReplacementPlan,
-    ResumeFailure, RevisionChange, SkippedDist, Target, Unchanged, UnchangedReason, UninstallPlan,
-    UpdateAllPlan,
+    DependencyRewrite, DistSync, ForgetResult, ForkReplacement, ForkResume, ForkStep,
+    ForkedPackage, HeldBack, HeldBackReason, IncompatibleConsumer, InstallResult, InstallTarget,
+    InstalledDependency, Manager, Options, PackageFork, PackageForkReplacement, PendingReplacement,
+    ReplacementPlan, ResumeFailure, RevisionChange, SkippedDist, Target, Unchanged,
+    UnchangedReason, UninstallPlan, UpdateAllPlan,
 };

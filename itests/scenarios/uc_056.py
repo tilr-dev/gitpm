@@ -64,7 +64,9 @@ def gitpm_tty(t: T, *args: str, answer: bytes, timeout: int = 60) -> R:
 
 @case(fixture="g6_replaced", spec=["dependencies/dependents-guard-removal", "fork-replacement/active-fork-rules"])
 def active_provider_guarded(t: T):
-    """disable / forget / uninstall of the active fork refuse naming both consumers; nothing changes."""
+    """With vendor/base disabled (it cannot take the consumers over), disable / forget /
+    uninstall of the active fork refuse naming both consumers; nothing changes."""
+    t.gitpm_ok("disable", ORIGINAL)
     before = t.snap(t.ws)
     for action in ["disable", "forget", "uninstall"]:
         t.gitpm_err(action, FORK, kind="has_dependents",
@@ -179,16 +181,22 @@ def switch_back_incompatible_answer_yes(t: T):
 
 @case(fixture="g6_replaced", spec=["fork-replacement/switching-back", "fork-replacement/active-fork-rules#reinstalled-original-stays-replaced"])
 def switch_back_to_unavailable_original(t: T):
-    """Original uninstalled (no dependents while replaced) and its origin unreachable: --back fails
-    (also with --force) and the fork binding is kept for every consumer."""
+    """Original uninstalled (no dependents while replaced) and its origin unreachable: --back
+    refuses with has_dependents (app/a, app/b would break) and keeps the binding; --force drops
+    only the binding, leaving the consumers broken, and installs nothing."""
+    # "Back with the original absent" is a new scenario of removal-and-restore-rules.
     t.gitpm_ok("uninstall", ORIGINAL)
     t.not_installed(ORIGINAL)
     t.repo(ORIGINAL).rename(t.root / "unreachable")
     before = t.snap(t.ws)
-    t.gitpm_err("replace", ORIGINAL, "--back", kind="not_installed", contains="package vendor/base is not installed")
-    t.gitpm_err("replace", ORIGINAL, "--back", "--force", kind="not_installed", contains="vendor/base")
+    t.gitpm_err("replace", ORIGINAL, "--back", kind="has_dependents", contains="app/a, app/b")
     t.same(before, "workspace")
     on_fork(t)
+    r = t.gitpm_ok("replace", ORIGINAL, "--back", "--force")
+    t.has(r.out, f"{ORIGINAL} switched back from {FORK} ({ORIGINAL} is not installed; broken: app/a, app/b)")
+    t.ok(not t.state().get("replacements"), "binding dropped")
+    t.not_installed(ORIGINAL)
+    t.eq(resolution(t), {c: (None, False) for c in CONSUMERS}, "consumers broken")
 
 
 # ------------------------------------------------------------- removing the fork

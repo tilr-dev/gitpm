@@ -217,7 +217,7 @@ fn catalog_install_resolves_dependencies_and_records_edges() {
     m.install_from_catalog("app/c", None).unwrap();
     assert_eq!(ids(&m), ["app/a", "app/c", "lib/core"]);
     assert_eq!(plugin(&m, "lib/core").dependents, ["app/a", "app/c"]);
-    m.uninstall("app/a", false).unwrap();
+    m.uninstall("app/a", &[], false).unwrap();
     assert_eq!(ids(&m), ["app/c", "lib/core"]);
 }
 
@@ -431,7 +431,7 @@ fn only_direct_dependencies_must_be_active() {
     m.rollback("app/a").unwrap();
     m.forget("app/a").unwrap();
     m.restore("app/a").unwrap();
-    m.uninstall("app/a", false).unwrap();
+    m.uninstall("app/a", &[], false).unwrap();
     let installed = m.install_from_catalog("app/a", None).unwrap();
     assert!(installed.enabled);
     assert!(f.path("workspace/dist/app/a/index.js").is_file());
@@ -578,7 +578,7 @@ fn dependents_guard_disable_forget_and_uninstall() {
     m.install_from_catalog("other/x", None).unwrap();
 
     for error in [
-        f.refuses("has_dependents", || m.uninstall("lib/core", true)),
+        f.refuses("has_dependents", || m.uninstall("lib/core", &[], false)),
         f.refuses("has_dependents", || m.forget("lib/core")),
         f.refuses("has_dependents", || m.disable("lib/core")),
     ] {
@@ -592,8 +592,24 @@ fn dependents_guard_disable_forget_and_uninstall() {
     assert_eq!(plan.dependents, ["app/a", "app/c"]);
     m.disable("other/x").unwrap();
 
+    // One refusal tells everything: the dependents and the work uninstall would lose.
+    fs::write(f.path("workspace/packages/lib/core/notes.txt"), "mine").unwrap();
+    let error = f.refuses("has_dependents", || m.uninstall("lib/core", &[], false));
+    let Error::HasDependents { lost_work, .. } = &error else {
+        panic!("{error:?}")
+    };
+    assert_eq!(
+        lost_work,
+        &[gitpm::LostWork::Untracked {
+            path: "notes.txt".into()
+        }]
+    );
+    assert!(error.to_string().contains("local work"), "{error}");
+    let plan = m.uninstall_plan("lib/core").unwrap();
+    assert_eq!(plan.refusal().unwrap().to_string(), error.to_string());
+
     // Forced: removed; consumers report the unsatisfied dependency.
-    m.uninstall_with("lib/core", false, true).unwrap();
+    m.uninstall("lib/core", &plan.lost_work, true).unwrap();
     let (provider_id, satisfied) = provider(&m, "app/a", "lib/core");
     assert_eq!((provider_id, satisfied), (None, false));
     let status = plugin(&m, "app/a").dependencies[0].clone();
@@ -602,9 +618,9 @@ fn dependents_guard_disable_forget_and_uninstall() {
     m.enable("other/x").unwrap();
     // Reinstall it; once its consumers are gone it is removable without a guard.
     m.install_from_catalog("lib/core", Some("1.1.0")).unwrap();
-    m.uninstall("app/a", false).unwrap();
-    m.uninstall("app/c", false).unwrap();
-    m.uninstall("lib/core", false).unwrap();
+    m.uninstall("app/a", &[], false).unwrap();
+    m.uninstall("app/c", &[], false).unwrap();
+    m.uninstall("lib/core", &[], false).unwrap();
 }
 
 /// vendor/base 1.0.0; app/a and app/b need ^1.0 (UC-066 main scenario).
@@ -709,12 +725,11 @@ fn fork_replacement_main_scenario() {
         Some("mine/base")
     );
 
-    // The active provider is guarded.
-    f.refuses("has_dependents", || m.disable("mine/base"));
-    f.refuses("has_dependents", || m.uninstall("mine/base", true));
+    // The installed original would take every consumer over: nothing guards the fork.
+    assert!(m.uninstall_plan("mine/base").unwrap().dependents.is_empty());
 
     // Switch back: everyone uses the original; the fork keeps its work.
-    m.switch_back("vendor/base", false).unwrap();
+    m.switch_back("vendor/base", false, false).unwrap();
     for consumer in ["app/a", "app/b", "app/c"] {
         assert_eq!(
             provider(&m, consumer, "vendor/base"),
@@ -723,7 +738,7 @@ fn fork_replacement_main_scenario() {
     }
     assert!(m.state().unwrap().replacements.is_empty());
     assert!(plugin(&m, "mine/base").dependents.is_empty());
-    m.uninstall("mine/base", false).unwrap();
+    m.uninstall("mine/base", &[], false).unwrap();
 }
 
 /// UC-054: compatibility by declared versions, confirmation, two forks, update rules.
@@ -789,7 +804,7 @@ fn replacement_compatibility_needs_confirmation() {
     assert!(plugin(&m, "old/base").replacing.is_empty());
 
     // An unused fork is removable; the active one cannot drop its declaration.
-    m.uninstall("old/base", false).unwrap();
+    m.uninstall("old/base", &[], false).unwrap();
     let _ = old;
     let mine = f.path("authors/mine/base");
     f.release_manifest(&mine, json!({"id": "mine/base", "version": "0.2.0"}));
@@ -802,10 +817,15 @@ fn replacement_compatibility_needs_confirmation() {
     );
     f.refuses("dependency_conflict", || m.update("mine/base"));
 
-    // Switching back to an original that is not installed fails and keeps the fork.
-    f.refuses("has_dependents", || m.uninstall("mine/base", false));
-    m.uninstall("vendor/base", false).unwrap();
-    f.refuses("not_installed", || m.switch_back("vendor/base", true));
+    // The installed original would satisfy every consumer; once it is gone, the
+    // consumers of the fork break and guard it.
+    assert!(m.uninstall_plan("mine/base").unwrap().dependents.is_empty());
+    m.uninstall("vendor/base", &[], false).unwrap();
+    let error = f.refuses("has_dependents", || m.uninstall("mine/base", &[], false));
+    let Error::HasDependents { dependents, .. } = &error else {
+        panic!("{error:?}")
+    };
+    assert_eq!(dependents, &["app/a", "app/b", "lib/mid"]);
     assert_eq!(m.state().unwrap().replacements["vendor/base"], "mine/base");
 }
 
@@ -1131,7 +1151,7 @@ fn update_all_resolves_replacement_versions_together_with_consumers() {
 
 /// The replace and switch-back lines are built from the plan alone.
 #[test]
-fn replacement_plan_carries_installed_version_and_fork_enabled() {
+fn replacement_plan_carries_installed_version() {
     let f = Fixture::new();
     let cat = f.catalog("catalog");
     f.publish(&cat, "vendor/base", "1.4.0", &[]);
@@ -1149,37 +1169,67 @@ fn replacement_plan_carries_installed_version_and_fork_enabled() {
         (plan.version.as_str(), plan.installed_version.as_deref()),
         ("1.4.0", Some("0.3.0"))
     );
-    assert!(plan.fork_enabled);
     assert!(plan.dist.deployed.is_empty() && plan.dist.removed.is_empty());
     let applied = m.replace("vendor/base", "mine/base", false).unwrap();
     assert_eq!(applied.installed_version.as_deref(), Some("0.3.0"));
     assert_eq!(applied.dist.removed, ["vendor/base"]);
-    // Without consumers left, the active replacement still refuses to be disabled, and
-    // the error says that it is because of the replacement.
-    m.uninstall_with("app/a", true, true).unwrap();
-    let error = f.refuses("has_dependents", || m.disable("mine/base"));
-    let Error::HasDependents {
-        dependents,
-        replacing,
-        ..
-    } = &error
-    else {
-        panic!("{error:?}");
-    };
+    // Without consumers left, disabling the fork drops the binding and deploys the
+    // original again; a later enable does not bring the binding back.
+    m.uninstall("app/a", &[], true).unwrap();
+    let dist = m.disable("mine/base").unwrap();
     assert_eq!(
-        (dependents.as_slice(), *replacing),
-        (["vendor/base".to_owned()].as_slice(), true)
+        (dist.deployed.as_slice(), dist.removed.as_slice()),
+        (
+            ["vendor/base".to_owned()].as_slice(),
+            ["mine/base".to_owned()].as_slice()
+        )
     );
-    assert!(!error.to_string().contains("--back"), "{error}");
-    m.set_enabled_with("mine/base", false, true).unwrap();
-    // Switching back to a disabled fork: the plan says so.
+    assert!(m.state().unwrap().replacements.is_empty());
+    m.enable("mine/base").unwrap();
+    assert!(m.state().unwrap().replacements.is_empty());
+    // Switching back: the plan names the fork and the original's installed version.
+    m.replace("vendor/base", "mine/base", false).unwrap();
     let plan = m.switch_back_plan("vendor/base").unwrap();
     assert_eq!(plan.current.as_deref(), Some("mine/base"));
     assert_eq!(plan.installed_version.as_deref(), Some("1.4.0"));
-    assert!(!plan.fork_enabled);
-    let back = m.switch_back("vendor/base", false).unwrap();
-    assert!(!back.fork_enabled);
+    let back = m.switch_back("vendor/base", false, false).unwrap();
     assert_eq!(back.dist.deployed, ["vendor/base"]);
+}
+
+/// A replacing package is always enabled (disabling it drops the binding): a state that
+/// binds an original to a disabled package was edited by hand and is refused.
+#[test]
+fn a_binding_to_a_disabled_fork_is_invalid_state() {
+    let f = Fixture::new();
+    let cat = f.catalog("catalog");
+    f.publish(&cat, "vendor/base", "1.0.0", &[]);
+    let m = f.open(&cat);
+    m.install_from_catalog("vendor/base", None).unwrap();
+    let repo = f.author("mine/base");
+    f.release_manifest(
+        &repo,
+        json!({"id": "mine/base", "version": "1.0.0", "replaces": {"id": "vendor/base", "version": "1.0.0"}}),
+    );
+    m.install(repo.to_str().unwrap()).unwrap();
+    m.disable("mine/base").unwrap();
+    let path = f.path("workspace/state.json");
+    let mut state: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    state["replacements"] = json!({"vendor/base": "mine/base"});
+    fs::write(&path, serde_json::to_vec_pretty(&state).unwrap()).unwrap();
+    let error = m.state().unwrap_err();
+    assert_eq!(error.kind(), "invalid_data");
+    assert!(
+        error
+            .to_string()
+            .contains("vendor/base by the disabled package mine/base"),
+        "{error}"
+    );
+    assert_eq!(
+        m.switch_back("vendor/base", true, true).unwrap_err().kind(),
+        "invalid_data"
+    );
+    let error = gitpm::list_with(&f.path("workspace"), &Default::default()).unwrap_err();
+    assert_eq!(error.kind(), "invalid_data");
 }
 
 /// `fork --replace` stops before an incompatible replacement and resumes once confirmed.
@@ -1195,7 +1245,7 @@ fn fork_replace_pending_replacement_is_resumed_after_confirmation() {
     m.install(hello.to_str().unwrap()).unwrap();
     m.install(app.to_str().unwrap()).unwrap();
     // acme/hello goes back to 1.0.0, so app's requirement ^2 is not met by a fork of it.
-    m.uninstall_with("acme/hello", true, true).unwrap();
+    m.uninstall("acme/hello", &[], true).unwrap();
     m.install_package(
         hello.to_str().unwrap(),
         None,
@@ -1305,7 +1355,7 @@ fn update_all_skips_broken_consumers_and_never_reinstalls() {
     let m = f.open(&cat);
     m.install_from_catalog("app/a", None).unwrap();
     m.install_from_catalog("other/x", None).unwrap();
-    m.uninstall_with("lib/core", true, true).unwrap();
+    m.uninstall("lib/core", &[], true).unwrap();
     f.publish(&cat, "other/x", "1.1.0", &[]);
     f.publish(&cat, "app/a", "1.1.0", &[("lib/core", "^1")]);
     let broken = gitpm::Unchanged {
@@ -1457,4 +1507,233 @@ fn update_all_enables_dependencies_of_active_consumers_only() {
     assert_eq!(plugin(&m, "app/b").current.version, "1.0.0");
     assert!(plan.kept_back.iter().any(|h| h.id == "app/b"));
     assert!(!ids(&m).contains(&"lib/mid".to_string()));
+}
+
+/// mine/base declares vendor/base 2.0.0 and replaces the installed vendor/base 1.4.0;
+/// app/a (`>=1`) is satisfied by both, app/b (`^2`) only by the fork.
+fn fork_over_installed_original(f: &Fixture) -> Manager {
+    let cat = f.catalog("catalog");
+    f.publish(&cat, "vendor/base", "1.4.0", &[]);
+    f.publish(&cat, "app/a", "1.0.0", &[("vendor/base", ">=1")]);
+    f.publish(&cat, "app/b", "1.0.0", &[("vendor/base", "^2")]);
+    let m = f.open(&cat);
+    m.install_from_catalog("app/a", None).unwrap();
+    let fork = f.author("mine/base");
+    f.release_manifest(
+        &fork,
+        json!({"id": "mine/base", "version": "0.1.0", "replaces": {"id": "vendor/base", "version": "2.0.0"}}),
+    );
+    m.install(fork.to_str().unwrap()).unwrap();
+    m.replace("vendor/base", "mine/base", false).unwrap();
+    m.install_from_catalog("app/b", None).unwrap();
+    m
+}
+
+#[test]
+fn removing_an_active_fork_guards_only_consumers_the_original_breaks() {
+    let f = Fixture::new();
+    let m = fork_over_installed_original(&f);
+    // app/a is taken over by vendor/base 1.4.0; only app/b breaks.
+    for error in [
+        f.refuses("has_dependents", || m.disable("mine/base")),
+        f.refuses("has_dependents", || m.forget("mine/base")),
+        f.refuses("has_dependents", || m.uninstall("mine/base", &[], false)),
+    ] {
+        let Error::HasDependents {
+            dependents,
+            lost_work,
+            ..
+        } = &error
+        else {
+            panic!("{error:?}")
+        };
+        assert_eq!(dependents, &["app/b"]);
+        assert!(lost_work.is_empty());
+        assert!(!error.to_string().contains("app/a"), "{error}");
+    }
+    let plan = m.uninstall_plan("mine/base").unwrap();
+    assert_eq!(plan.dependents, ["app/b"]);
+    let refusal = plan.refusal().unwrap();
+    assert_eq!(refusal.kind(), "has_dependents");
+    assert_eq!(
+        refusal.to_string(),
+        "cannot uninstall mine/base: required by app/b; doing it anyway requires force"
+    );
+
+    // Without app/b nothing breaks: the binding is dropped and the original deployed.
+    m.uninstall("app/b", &[], false).unwrap();
+    assert!(m.uninstall_plan("mine/base").unwrap().refusal().is_none());
+    let dist = m.disable("mine/base").unwrap();
+    assert_eq!(dist.deployed, ["vendor/base"]);
+    assert!(m.state().unwrap().replacements.is_empty());
+    assert_eq!(
+        provider(&m, "app/a", "vendor/base"),
+        (Some("vendor/base".into()), true)
+    );
+    assert!(f.path("workspace/dist/vendor/base").is_dir());
+
+    // A disabled original takes nothing over: the fork is guarded again ...
+    m.enable("mine/base").unwrap();
+    m.replace("vendor/base", "mine/base", false).unwrap();
+    m.disable("vendor/base").unwrap();
+    let error = f.refuses("has_dependents", || m.forget("mine/base"));
+    let Error::HasDependents { dependents, .. } = &error else {
+        panic!("{error:?}")
+    };
+    assert_eq!(dependents, &["app/a"]);
+    // ... unless forced: the binding is dropped and app/a is reported broken.
+    m.forget_with("mine/base", true).unwrap();
+    assert!(m.state().unwrap().replacements.is_empty());
+    assert_eq!(
+        provider(&m, "app/a", "vendor/base"),
+        (Some("vendor/base".into()), false)
+    );
+}
+
+#[test]
+fn dropping_a_binding_checks_the_original_s_dependencies() {
+    let f = Fixture::new();
+    let cat = f.catalog("catalog");
+    f.publish(&cat, "lib/x", "1.0.0", &[]);
+    f.publish(&cat, "vendor/base", "1.0.0", &[("lib/x", "^1")]);
+    f.publish(&cat, "app/a", "1.0.0", &[("vendor/base", "^1")]);
+    let m = f.open(&cat);
+    m.install_from_catalog("app/a", None).unwrap();
+    let fork = f.author("mine/base");
+    f.release_manifest(
+        &fork,
+        json!({"id": "mine/base", "version": "1.0.0", "replaces": {"id": "vendor/base", "version": "1.0.0"}}),
+    );
+    m.install(fork.to_str().unwrap()).unwrap();
+    m.replace("vendor/base", "mine/base", false).unwrap();
+    // vendor/base (replaced, but installed) still depends on lib/x.
+    f.refuses("has_dependents", || m.disable("lib/x"));
+    m.set_enabled_with("lib/x", false, true).unwrap();
+
+    // Each way of reactivating vendor/base refuses its disabled dependency.
+    for error in [
+        f.refuses("dependency_conflict", || m.disable("mine/base")),
+        f.refuses("dependency_conflict", || m.forget("mine/base")),
+        f.refuses("dependency_conflict", || {
+            m.uninstall("mine/base", &[], false)
+        }),
+        f.refuses("dependency_conflict", || {
+            m.switch_back("vendor/base", true, true)
+        }),
+    ] {
+        assert!(
+            error.to_string().contains("lib/x is disabled; enable it"),
+            "{error}"
+        );
+    }
+    // The uninstall plan carries that refusal, so nothing asks about lost work first.
+    let plan = m.uninstall_plan("mine/base").unwrap();
+    assert!(plan.dependents.is_empty());
+    let refusal = plan.refusal().unwrap();
+    assert_eq!(refusal.kind(), "dependency_conflict");
+    assert_eq!(
+        refusal.to_string(),
+        "cannot uninstall mine/base, which would reactivate vendor/base: lib/x is disabled; enable it; force does it anyway"
+    );
+    let error = m.disable("mine/base").unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "cannot disable mine/base, which would reactivate vendor/base: lib/x is disabled; enable it; force does it anyway"
+    );
+    // Forced: the original is active again and reported broken.
+    m.set_enabled_with("mine/base", false, true).unwrap();
+    assert!(m.state().unwrap().replacements.is_empty());
+    assert!(f.path("workspace/dist/vendor/base").is_dir());
+    let status = plugin(&m, "vendor/base").dependencies[0].clone();
+    assert_eq!(
+        (status.satisfied, status.problem.as_deref()),
+        (false, Some("lib/x is disabled"))
+    );
+}
+
+#[test]
+fn replace_requires_the_original_and_back_drops_an_absent_one() {
+    let f = Fixture::new();
+    let cat = f.catalog("catalog");
+    f.publish(&cat, "vendor/base", "1.0.0", &[]);
+    f.publish(&cat, "app/a", "1.0.0", &[("vendor/base", "^1")]);
+    let m = f.open(&cat);
+    m.install_from_catalog("app/a", None).unwrap();
+    let fork = f.author("mine/base");
+    f.release_manifest(
+        &fork,
+        json!({"id": "mine/base", "version": "1.0.0", "replaces": {"id": "vendor/base", "version": "1.0.0"}}),
+    );
+    m.install(fork.to_str().unwrap()).unwrap();
+
+    // replace --with needs the original installed.
+    m.uninstall("vendor/base", &[], true).unwrap();
+    let error = f.refuses("not_installed", || {
+        m.replace("vendor/base", "mine/base", true)
+    });
+    assert_eq!(error.to_string(), "package vendor/base is not installed");
+    f.refuses("not_installed", || {
+        m.replace_plan("vendor/base", "mine/base")
+    });
+
+    // Replaced, then the original is uninstalled: the binding stays.
+    m.install_from_catalog("vendor/base", None).unwrap();
+    m.replace("vendor/base", "mine/base", false).unwrap();
+    m.uninstall("vendor/base", &[], false).unwrap();
+    assert_eq!(m.state().unwrap().replacements["vendor/base"], "mine/base");
+
+    // --back with the original absent: the consumers would break.
+    let plan = m.switch_back_plan("vendor/base").unwrap();
+    assert_eq!(
+        (
+            plan.provider.as_str(),
+            plan.version.as_str(),
+            plan.installed_version.as_deref(),
+            plan.current.as_deref()
+        ),
+        ("vendor/base", "", None, Some("mine/base"))
+    );
+    assert_eq!(plan.consumers, ["app/a"]);
+    assert!(plan.incompatible.is_empty());
+    let error = f.refuses("has_dependents", || {
+        m.switch_back("vendor/base", false, false)
+    });
+    let Error::HasDependents { dependents, .. } = &error else {
+        panic!("{error:?}")
+    };
+    assert_eq!(dependents, &["app/a"]);
+    // Confirmed: only the binding is dropped; app/a is reported broken.
+    let back = m.switch_back("vendor/base", true, true).unwrap();
+    assert_eq!(back.installed_version, None);
+    assert!(m.state().unwrap().replacements.is_empty());
+    assert_eq!(provider(&m, "app/a", "vendor/base"), (None, false));
+    assert!(ids(&m).contains(&"mine/base".to_owned()));
+}
+
+/// `replace --back` follows the one rule of removals: an installed but disabled
+/// original serves no consumer, so they guard the binding unless forced.
+#[test]
+fn switch_back_to_a_disabled_original_is_guarded() {
+    let f = Fixture::new();
+    let m = fork_over_installed_original(&f);
+    m.uninstall("app/b", &[], false).unwrap();
+    m.disable("vendor/base").unwrap();
+    // A confirmation covers incompatible versions, not a disabled original.
+    let error = f.refuses("has_dependents", || {
+        m.switch_back("vendor/base", true, false)
+    });
+    let Error::HasDependents { dependents, .. } = &error else {
+        panic!("{error:?}")
+    };
+    assert_eq!(dependents, &["app/a"]);
+    assert_eq!(
+        error.to_string(),
+        "cannot switch vendor/base back: it would leave app/a without a working vendor/base; doing it anyway requires force"
+    );
+    m.switch_back("vendor/base", false, true).unwrap();
+    assert!(m.state().unwrap().replacements.is_empty());
+    assert_eq!(
+        provider(&m, "app/a", "vendor/base"),
+        (Some("vendor/base".into()), false)
+    );
 }

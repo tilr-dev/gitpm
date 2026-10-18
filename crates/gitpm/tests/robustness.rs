@@ -85,7 +85,7 @@ fn ignored_work_survives_rejected_operations_and_fork() {
     let payload = fs::read(f.root.join("dist/vendor/module/index.js")).unwrap();
     assert!(m.update("vendor/module").is_err());
     assert!(m.rollback("vendor/module").is_err());
-    assert!(m.uninstall("vendor/module", false).is_err());
+    assert!(m.uninstall("vendor/module", &[], false).is_err());
     assert_eq!(state(&m), before);
     assert_eq!(git(&repo, &["rev-parse", "HEAD"]), head);
     assert_eq!(
@@ -185,7 +185,7 @@ fn disabled_update_rollback_and_offline_restore() {
         "0.1.1"
     );
     assert!(!f.root.join("dist/vendor/module").exists());
-    m.uninstall("vendor/module", false).unwrap();
+    m.uninstall("vendor/module", &[], false).unwrap();
     assert!(m.state().unwrap().packages.is_empty());
 }
 

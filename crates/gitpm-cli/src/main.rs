@@ -26,7 +26,11 @@ fn main() {
     if let Err(error) = run(&mut invocation) {
         eprintln!("Error: {error:#}");
         if let Some(pm_error) = error.downcast_ref::<PmError>() {
-            if let PmError::LocalChanges { items, .. } = pm_error {
+            if let PmError::LocalChanges { items, .. }
+            | PmError::HasDependents {
+                lost_work: items, ..
+            } = pm_error
+            {
                 for item in items {
                     eprintln!("  - {}", item.describe());
                 }
@@ -54,14 +58,9 @@ fn hint(invocation: &Invocation, error: &PmError) -> Option<String> {
         PmError::AlreadyInstalled { id, .. } => format!(
             "if {id} was forgotten, `gitpm restore {id}` records it again and `gitpm uninstall {id}` removes its clone"
         ),
-        PmError::HasDependents {
-            dependents,
-            replacing: true,
-            ..
-        } => format!(
-            "switch back first: gitpm replace {} --back",
-            dependents.first()?
-        ),
+        PmError::HasDependents { id, .. } if command == "replace" => {
+            format!("`gitpm replace {id} --back --force` does it anyway")
+        }
         PmError::HasDependents { id, .. } => {
             format!("`gitpm {command} {id} --force` does it anyway")
         }
@@ -96,7 +95,7 @@ fn hint(invocation: &Invocation, error: &PmError) -> Option<String> {
         PmError::NotDeployed { sync, .. } => {
             let first = &sync.skipped.first()?.id;
             format!(
-                "`gitpm uninstall {first}` drops a package whose clone is gone; install it again to deploy it"
+                "`gitpm uninstall {first}` or `gitpm forget {first}` drops a package whose clone is gone; install it again to deploy it"
             )
         }
         _ => return None,
@@ -290,20 +289,22 @@ fn print_installed(result: &gitpm::InstallResult, requested: Option<&str>) {
 }
 /// `replace ORIGINAL --back`: which replacement was dropped and who uses the original now.
 fn print_switch_back(plan: &ReplacementPlan) {
-    let installed = plan.installed_version.as_deref().unwrap_or(&plan.version);
-    let consumers = if plan.consumers.is_empty() {
-        "no installed consumers".to_owned()
-    } else {
-        format!("for: {}", plan.consumers.join(", "))
+    let consumers = match (&plan.installed_version, plan.consumers.is_empty()) {
+        (_, true) => "no installed consumers".to_owned(),
+        (Some(_), false) => format!("for: {}", plan.consumers.join(", ")),
+        (None, false) => format!("broken: {}", plan.consumers.join(", ")),
     };
-    // switch_back refuses when nothing is replaced, so `current` names the fork; the fork
-    // is not touched: say what is left of it.
+    // The installed original's version, or (switching back to one that is not installed)
+    // that it is missing.
+    let installed = match &plan.installed_version {
+        Some(version) => version.clone(),
+        None => "is not installed;".to_owned(),
+    };
+    // switch_back refuses when nothing is replaced, so `current` names the fork, which is
+    // enabled (a replacing package always is) and not touched.
     let fork = plan.current.as_deref().unwrap_or_default();
-    let remains = if plan.fork_enabled {
-        format!("; {fork} stays installed and enabled (disable or uninstall it if not wanted)")
-    } else {
-        format!("; {fork} stays installed (disabled)")
-    };
+    let remains =
+        format!("; {fork} stays installed and enabled (disable or uninstall it if not wanted)");
     println!(
         "{} switched back from {fork} ({} {installed} {consumers}){remains}",
         plan.original, plan.original
@@ -408,10 +409,17 @@ fn warn_dist(sync: &DistSync) {
         eprintln!("Warning: {path} belongs to no known package or is not a folder; left as it is");
     }
     for skipped in &sync.skipped {
-        eprintln!(
-            "Warning: {}: dist not deployed ({}); run `gitpm sync-dist`",
-            skipped.id, skipped.reason
-        );
+        if skipped.clone_missing {
+            eprintln!(
+                "Warning: {}: dist not deployed ({}); uninstall or forget {} to drop its record",
+                skipped.id, skipped.reason, skipped.id
+            );
+        } else {
+            eprintln!(
+                "Warning: {}: dist not deployed ({})",
+                skipped.id, skipped.reason
+            );
+        }
     }
 }
 /// `ID VERB A → B` (or `ID VERB V (COMMIT → COMMIT)` when the version stays).
@@ -746,7 +754,8 @@ Workspace (installed packages):",
         text: "  enable ID | disable ID [--force]  deploy / remove dist/ID; enable refuses while a
                                    dependency of ID is not active (disabled, missing,
                                    replaced away, other version), disable while other
-                                   installed packages depend on ID; --force does it anyway",
+                                   installed packages would break; disabling a fork
+                                   drops its replacement; --force does it anyway",
     },
     Help {
         commands: &["forget", "restore"],
@@ -757,7 +766,9 @@ Workspace (installed packages):",
         commands: &["uninstall"],
         text: "  uninstall ID [--force]            remove state, repository and dist; asks on a TTY
                                    before losing local work and refuses while others
-                                   depend on ID; --force skips both",
+                                   would break; --force confirms what the plan lists
+                                   and ignores dependents; a package whose clone is
+                                   gone is removed without asking",
     },
     Help {
         commands: &["fork"],
@@ -774,13 +785,16 @@ Workspace (installed packages):",
     Help {
         commands: &["replace"],
         text: "  replace ORIGINAL --with FORK [--force]  make FORK provide ORIGINAL for every consumer;
-                                   removes dist/ORIGINAL (FORK keeps its own dist/)",
+                                   ORIGINAL must be installed; removes dist/ORIGINAL
+                                   (FORK keeps its own dist/)",
     },
     Help {
         commands: &["replace"],
         text: "  replace ORIGINAL --back [--force]  switch every consumer back to the installed ORIGINAL
                                    and deploy dist/ORIGINAL again
-                                   (incompatible consumers: asks on a TTY, else --force)",
+                                   (incompatible consumers: asks on a TTY, else --force);
+                                   without an installed ORIGINAL only drops the
+                                   replacement (consumers that break: --force)",
     },
     Help {
         commands: &["sync-dist"],
@@ -1375,9 +1389,13 @@ fn run(invocation: &mut Invocation) -> Result<()> {
             warn_dist(&dist);
         }
         "forget" => {
-            let dist = manager.forget_with(id, force)?;
-            println!("{id} forgotten (clone kept; restore re-registers it)");
-            warn_dist(&dist);
+            let forgotten = manager.forget_with(id, force)?;
+            if forgotten.clone_kept {
+                println!("{id} forgotten (clone kept; restore re-registers it)");
+            } else {
+                println!("{id} forgotten (no clone; record and dist removed)");
+            }
+            warn_dist(&forgotten.dist);
         }
         "replace" => {
             let plan = match &with {
@@ -1392,7 +1410,7 @@ fn run(invocation: &mut Invocation) -> Result<()> {
                     done
                 }
                 None => {
-                    let done = manager.switch_back(id, confirm)?;
+                    let done = manager.switch_back(id, confirm, force)?;
                     print_switch_back(&done);
                     done
                 }
@@ -1422,28 +1440,21 @@ fn run(invocation: &mut Invocation) -> Result<()> {
             }
         }
         "uninstall" => {
+            let plan = manager.uninstall_plan(id)?;
+            // The confirmation covers exactly the items shown (or, forced, planned): the
+            // library refuses work that appeared since.
             let dist = if force {
-                manager.uninstall_with(id, true, true)?
+                manager.uninstall(id, &plan.lost_work, true)?
+            } else if let Some(refusal) = plan.refusal() {
+                // Dependents and the local work, in one refusal.
+                return Err(refusal.into());
+            } else if plan.lost_work.is_empty() || !io::stdin().is_terminal() {
+                // Nothing confirmed: without a TTY the library lists the local work.
+                manager.uninstall(id, &[], false)?
+            } else if confirm_lost_work(&plan)? {
+                manager.uninstall(id, &plan.lost_work, false)?
             } else {
-                let plan = manager.uninstall_plan(id)?;
-                if !plan.dependents.is_empty() {
-                    // Report local work too, so one refusal tells everything.
-                    for item in &plan.lost_work {
-                        eprintln!("Local work that would be lost: {}", item.describe());
-                    }
-                }
-                if !plan.dependents.is_empty()
-                    || plan.lost_work.is_empty()
-                    || !io::stdin().is_terminal()
-                {
-                    // Unconfirmed: the library refuses dependents and, without a TTY,
-                    // lists the local work.
-                    manager.uninstall(id, false)?
-                } else if confirm_lost_work(&plan)? {
-                    manager.uninstall(id, true)?
-                } else {
-                    bail!("uninstall cancelled; nothing was changed");
-                }
+                bail!("uninstall cancelled; nothing was changed");
             };
             println!("{id} uninstalled");
             warn_dist(&dist);

@@ -73,8 +73,9 @@ impl LostWork {
     }
 }
 
-const DIRTY: &str =
-    "package has local changes (including untracked/ignored files); keep or remove them first";
+const DIRTY: &str = "package has local changes (including untracked/ignored files); commit or discard the local changes first";
+/// [`refusal`]: an uninstall removes the listed lost work once it is confirmed.
+const CONFIRM: &str = "confirm the listed lost work to remove it";
 
 /// Modified, untracked and ignored files (`git status`, without taking optional locks).
 fn status(repo: &Path) -> Result<Vec<LostWork>> {
@@ -324,27 +325,27 @@ pub(crate) fn unreferenced_head_commits(repo: &Path, keep: &[&str]) -> Result<Ve
 /// `LocalChanges` with the message of the most important category (as before the split).
 pub(crate) fn refusal(id: &str, items: Vec<LostWork>) -> Error {
     let message = if items.iter().any(LostWork::is_file_change) {
-        DIRTY
+        "package has local changes (including untracked/ignored files)"
     } else if items.iter().any(|i| {
         matches!(
             i,
             LostWork::HeadMoved { .. } | LostWork::UnpublishedCommit { .. }
         )
     }) {
-        "local commits detected; discarding them requires force"
+        "local commits detected"
     } else if items.iter().any(|i| {
         matches!(
             i,
             LostWork::UnpublishedBranch { .. } | LostWork::UnpublishedTag { .. }
         )
     }) {
-        "local branches/tags contain unpublished commits; discarding them requires force"
+        "local branches/tags contain unpublished commits"
     } else {
-        "stash contains local work; discarding it requires force"
+        "stash contains local work"
     };
     Error::LocalChanges {
         id: id.into(),
-        message: message.into(),
+        message: format!("{message}; {CONFIRM}"),
         items,
     }
 }
@@ -464,27 +465,27 @@ mod tests {
         };
         assert_eq!(
             message(vec![stash.clone(), tag.clone(), commit.clone(), file]),
-            DIRTY
+            "package has local changes (including untracked/ignored files); confirm the listed lost work to remove it"
         );
         assert_eq!(
             message(vec![stash.clone(), branch.clone(), commit]),
-            "local commits detected; discarding them requires force"
+            "local commits detected; confirm the listed lost work to remove it"
         );
         assert_eq!(
             message(vec![head]),
-            "local commits detected; discarding them requires force"
+            "local commits detected; confirm the listed lost work to remove it"
         );
         assert_eq!(
             message(vec![stash.clone(), tag]),
-            "local branches/tags contain unpublished commits; discarding them requires force"
+            "local branches/tags contain unpublished commits; confirm the listed lost work to remove it"
         );
         assert_eq!(
             message(vec![branch]),
-            "local branches/tags contain unpublished commits; discarding them requires force"
+            "local branches/tags contain unpublished commits; confirm the listed lost work to remove it"
         );
         assert_eq!(
             message(vec![stash]),
-            "stash contains local work; discarding it requires force"
+            "stash contains local work; confirm the listed lost work to remove it"
         );
     }
 

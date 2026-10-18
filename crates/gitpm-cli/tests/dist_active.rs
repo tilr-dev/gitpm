@@ -120,6 +120,19 @@ impl Fixture {
         assert_eq!(self.dist("dan/demo").as_deref(), Some("fork"));
     }
 }
+impl Fixture {
+    /// `app/a` (needs `vendor/demo >=0.1`) released from `app/a` and installed.
+    fn consumer(&self) {
+        self.ok(&["init", "app/a", "--into", "app/a"]);
+        let manifest = self.path("app/a/plugin.json");
+        let mut json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&manifest).unwrap()).unwrap();
+        json["dependencies"] = serde_json::json!({"vendor/demo": ">=0.1"});
+        fs::write(&manifest, serde_json::to_string_pretty(&json).unwrap()).unwrap();
+        self.release("app/a", "app", "0.1.1");
+        self.ok(&["install", self.path("app/a").to_str().unwrap()]);
+    }
+}
 impl Drop for Fixture {
     fn drop(&mut self) {
         if std::env::var_os("GITPM_KEEP_TEST_ARTIFACTS").is_none() {
@@ -187,24 +200,36 @@ fn disable_removes_and_enable_restores_also_around_a_replacement() {
     assert_eq!(f.dist("vendor/demo"), None);
     f.ok(&["enable", "vendor/demo"]);
     assert_eq!(f.dist("vendor/demo").as_deref(), Some("vendor 1"));
-    // Disabling the replacement would leave nothing loaded: refused without --force.
+    // Disabling the replacement drops it: the installed original takes over and is
+    // deployed again; a later enable does not bring the binding back.
     f.ok(&["replace", "vendor/demo", "--with", "dan/demo"]);
+    f.ok(&["disable", "dan/demo"]);
+    assert_eq!(f.dist("dan/demo"), None);
+    assert_eq!(f.dist("vendor/demo").as_deref(), Some("vendor 1"));
+    assert!(f.state().get("replacements").is_none());
+    f.ok(&["enable", "dan/demo"]);
+    assert_eq!(f.dist("dan/demo").as_deref(), Some("fork"));
+    assert!(f.state().get("replacements").is_none());
+    // A consumer the original cannot serve (it is uninstalled) guards the fork.
+    f.consumer();
+    f.ok(&["replace", "vendor/demo", "--with", "dan/demo"]);
+    f.ok(&["uninstall", "vendor/demo"]);
     let error = f.fails(&["disable", "dan/demo"]);
     assert!(
-        error.contains("cannot disable dan/demo: it replaces vendor/demo"),
+        error.contains("cannot disable dan/demo: required by app/a")
+            && error.contains("Error kind: has_dependents")
+            && error.contains("Hint: `gitpm disable dan/demo --force` does it anyway"),
         "{error}"
     );
     assert_eq!(f.dist("dan/demo").as_deref(), Some("fork"));
-    // Forced: the original stays replaced, so neither is deployed.
+    // Forced: the binding is dropped and nothing is deployed for the original.
     f.ok(&["disable", "dan/demo", "--force"]);
     assert_eq!(f.dist("dan/demo"), None);
     assert_eq!(f.dist("vendor/demo"), None);
     assert!(!f.root().join("dist/dan").exists());
-    f.ok(&["enable", "dan/demo"]);
-    assert_eq!(f.dist("dan/demo").as_deref(), Some("fork"));
+    assert!(f.state().get("replacements").is_none());
     // A disabled package cannot become a replacement.
-    f.ok(&["replace", "vendor/demo", "--back"]);
-    f.ok(&["disable", "dan/demo"]);
+    f.ok(&["install", f.path("vendor/demo").to_str().unwrap()]);
     let error = f.fails(&["replace", "vendor/demo", "--with", "dan/demo"]);
     assert!(
         error.contains("dan/demo is disabled; enable it first"),
@@ -532,7 +557,7 @@ fn a_missing_clone_is_reported_and_blocks_only_its_own_dist() {
     assert!(out.status.success(), "{stderr}");
     assert!(
         stderr.contains(
-            "Warning: vendor/demo: dist not deployed (clone missing); run `gitpm sync-dist`"
+            "Warning: vendor/demo: dist not deployed (clone missing); uninstall or forget vendor/demo to drop its record"
         ),
         "{stderr}"
     );
@@ -550,12 +575,18 @@ fn a_missing_clone_is_reported_and_blocks_only_its_own_dist() {
     // A library error now: the kind and the command that helps.
     assert!(stderr.contains("Error kind: not_deployed"), "{stderr}");
     assert!(
-        stderr.contains("Hint: `gitpm uninstall vendor/demo` drops a package whose clone is gone"),
+        stderr.contains("Hint: `gitpm uninstall vendor/demo` or `gitpm forget vendor/demo` drops a package whose clone is gone"),
         "{stderr}"
     );
-    // The hint works: uninstall drops the record of the package without a clone.
-    f.ok(&["uninstall", "vendor/demo", "--force"]);
-    f.ok(&["sync-dist"]);
+    // The way out works without confirmation: uninstall drops the record and dist.
+    let out = f.ok(&["uninstall", "vendor/demo"]);
+    assert_eq!(out, "vendor/demo uninstalled\n");
+    let out = f.run(&["sync-dist"]);
+    assert!(out.status.success());
+    assert!(
+        !String::from_utf8_lossy(&out.stderr).contains("Warning"),
+        "later commands warn no more"
+    );
     assert_eq!(f.dist("other/pkg"), None);
     assert_eq!(f.dist("dan/demo").as_deref(), Some("fork"));
 }
@@ -610,4 +641,108 @@ fn every_deploy_copies_the_committed_tree_with_nested_files_and_exec_bits() {
     f.ok(&["rollback", "vendor/demo"]);
     assert_eq!(f.dist("vendor/demo").as_deref(), Some("vendor 1"));
     assert!(!f.root().join("dist/vendor/demo/bin").exists());
+}
+
+#[test]
+fn replace_back_with_the_original_absent_drops_only_the_binding() {
+    let f = Fixture::new();
+    f.original_and_fork();
+    f.consumer();
+    f.ok(&["replace", "vendor/demo", "--with", "dan/demo"]);
+    f.ok(&["uninstall", "vendor/demo"]);
+    // --with needs the original installed.
+    let error = f.fails(&["replace", "vendor/demo", "--with", "dan/demo"]);
+    assert!(
+        error.contains("Error: package vendor/demo is not installed")
+            && error.contains("Error kind: not_installed"),
+        "{error}"
+    );
+    // --back would leave app/a without vendor/demo: refused unless forced.
+    let error = f.fails(&["replace", "vendor/demo", "--back"]);
+    assert!(
+        error.contains("app/a")
+            && error.contains("Error kind: has_dependents")
+            && error.contains("Hint: `gitpm replace vendor/demo --back --force` does it anyway"),
+        "{error}"
+    );
+    assert_eq!(f.state()["replacements"]["vendor/demo"], "dan/demo");
+    let out = f.ok(&["replace", "vendor/demo", "--back", "--force"]);
+    assert_eq!(
+        out,
+        "vendor/demo switched back from dan/demo (vendor/demo is not installed; broken: app/a); dan/demo stays installed and enabled (disable or uninstall it if not wanted)\n"
+    );
+    assert!(f.state().get("replacements").is_none());
+    assert_eq!(f.dist("dan/demo").as_deref(), Some("fork"));
+    assert_eq!(f.dist("vendor/demo"), None);
+}
+
+#[test]
+fn forget_says_whether_the_clone_was_kept() {
+    let f = Fixture::new();
+    f.original_and_fork();
+    let out = f.ok(&["forget", "dan/demo"]);
+    assert_eq!(
+        out,
+        "dan/demo forgotten (clone kept; restore re-registers it)\n"
+    );
+    fs::remove_dir_all(f.root().join("packages/vendor/demo")).unwrap();
+    let out = f.ok(&["forget", "vendor/demo"]);
+    assert_eq!(
+        out,
+        "vendor/demo forgotten (no clone; record and dist removed)\n"
+    );
+    assert_eq!(f.dist("vendor/demo"), None);
+    assert!(f.state()["forgotten"].get("vendor/demo").is_none());
+}
+
+/// Uninstalling a fork that would reactivate an original with a disabled dependency is
+/// refused from the plan, before any question about lost work (also on a TTY).
+#[test]
+fn uninstall_refusal_of_a_reactivation_comes_before_the_prompt() {
+    if !Path::new("/usr/bin/script").exists() {
+        return;
+    }
+    let f = Fixture::new();
+    f.original_and_fork();
+    f.ok(&["init", "lib/x", "--into", "lib/x"]);
+    f.ok(&["install", f.path("lib/x").to_str().unwrap()]);
+    let manifest = f.path("vendor/demo/plugin.json");
+    let mut json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&manifest).unwrap()).unwrap();
+    json["dependencies"] = serde_json::json!({"lib/x": ">=0.1"});
+    fs::write(&manifest, serde_json::to_string_pretty(&json).unwrap()).unwrap();
+    f.release("vendor/demo", "vendor 2", "0.1.2");
+    f.ok(&["update", "vendor/demo"]);
+    f.ok(&["replace", "vendor/demo", "--with", "dan/demo"]);
+    f.ok(&["disable", "lib/x", "--force"]);
+    fs::write(f.root().join("packages/dan/demo/notes.txt"), "work").unwrap();
+    let util_linux = Command::new("script")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success());
+    let script = if util_linux {
+        "script -qec \"'$0' --root '$1' --catalog '$2' uninstall dan/demo 2>'$3'\" /dev/null"
+    } else {
+        "script -q /dev/null sh -c \"exec '$0' --root '$1' --catalog '$2' uninstall dan/demo 2>'$3'\""
+    };
+    let stderr_file = f.path("uninstall.stderr");
+    let out = f
+        .command("sh")
+        .arg("-c")
+        .arg(format!("(sleep 1; printf 'y\\n'; sleep 1) | {script}"))
+        .arg(env!("CARGO_BIN_EXE_gitpm"))
+        .arg(f.root())
+        .arg(f.path("catalog"))
+        .arg(&stderr_file)
+        .output()
+        .unwrap();
+    let stderr = fs::read_to_string(&stderr_file).unwrap_or_default();
+    assert!(!stderr.contains("Delete anyway"), "{stderr}");
+    assert!(
+        stderr.contains("would reactivate vendor/demo: lib/x is disabled; enable it")
+            && stderr.contains("Error kind: dependency_conflict"),
+        "{stderr}"
+    );
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("uninstalled"));
+    assert!(f.root().join("packages/dan/demo/notes.txt").exists());
 }

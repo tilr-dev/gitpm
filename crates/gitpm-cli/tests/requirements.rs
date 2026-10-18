@@ -228,10 +228,13 @@ fn required_global_fork_replacement_through_the_cli() {
     );
     assert!(String::from_utf8_lossy(&out.stderr).contains("Warning"));
     assert_eq!(list(&dir)["replacements"]["vendor/base"], "old/base");
-    // The active provider is guarded; switching back frees it.
+    // The active provider is guarded while the original cannot take its consumers
+    // over (here: disabled); switching back frees it.
+    assert!(pm(&dir, &["disable", "vendor/base"]).status.success());
     let out = pm(&dir, &["disable", "old/base"]);
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("app/a, app/b"));
+    assert!(pm(&dir, &["enable", "vendor/base"]).status.success());
     let out = pm(&dir, &["replace", "vendor/base", "--back"]);
     assert!(
         out.status.success(),

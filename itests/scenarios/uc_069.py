@@ -102,9 +102,38 @@ def missing_clone_blocks_only_its_own_dist(t: T):
     shutil.rmtree(t.clone(A))
     shutil.rmtree(t.dist(A))
     r = t.gitpm_ok("disable", B)
-    t.has(r.err, f"Warning: {A}: dist not deployed (clone missing); run `gitpm sync-dist`")
+    t.has(r.err, f"Warning: {A}: dist not deployed (clone missing); uninstall or forget {A} to drop its record")
     t.ok(not t.dist(B).exists(), "dist/B removed")
     t.ok(not t.dist(A).exists(), "dist/A not fabricated")
+
+
+# Anchored on the existing dist requirement until removal-and-restore-rules is archived
+# (its install-uninstall "Removing a package whose clone is gone" is new).
+@case(fixture="g2_demos_installed", spec=["dist/undeployable-packages-do-not-block-others#clone-deleted-by-hand"])
+def uninstall_of_a_package_whose_clone_is_gone(t: T):
+    """A's clone deleted by hand: `uninstall A` (no --force, no TTY) drops the record and dist/A,
+    and later commands warn no more."""
+    shutil.rmtree(t.clone(A))
+    r = t.gitpm_ok("uninstall", A)
+    t.eq(r.out, f"{A} uninstalled\n", "result line")
+    t.not_installed(A)
+    t.ok(A not in t.state().get("forgotten", {}), "no forgotten record")
+    t.ok(not t.dist(A).exists(), "dist/A removed")
+    r = t.gitpm_ok("disable", B)
+    t.lacks(r.err, "dist not deployed")
+
+
+@case(fixture="g2_demos_installed", spec=["dist/undeployable-packages-do-not-block-others#clone-deleted-by-hand"])
+def forget_of_a_package_whose_clone_is_gone(t: T):
+    """A's clone deleted by hand: `forget A` drops the record and dist/A and keeps no forgotten
+    record (nothing to restore)."""
+    shutil.rmtree(t.clone(A))
+    r = t.gitpm_ok("forget", A)
+    t.eq(r.out, f"{A} forgotten (no clone; record and dist removed)\n", "result line")
+    t.not_installed(A)
+    t.ok(A not in t.state().get("forgotten", {}), "no forgotten record")
+    t.ok(not t.dist(A).exists(), "dist/A removed")
+    t.gitpm_err("restore", A, kind="repository_not_found")
 
 
 @case(fixture="g6_forked", spec=["dist/dist-holds-exactly-the-active-packages#enabled-but-replaced",
@@ -152,11 +181,11 @@ def update_of_replaced_package_deploys_nothing_until_back(t: T):
 
 @case(fixture="g6_replaced", spec=["fork-replacement/active-fork-rules#uninstall-the-fork"])
 def uninstalling_the_fork_redeploys_the_original(t: T):
-    """uninstall mine/base (the active replacement) needs --force (app/a, app/b use it); it drops
-    the binding and deploys dist/vendor/base again in the same command."""
+    """uninstall mine/base (the active replacement) needs no --force while the installed
+    vendor/base 1.0.0 satisfies app/a and app/b; it drops the binding and deploys
+    dist/vendor/base again in the same command."""
     t.ok(not t.dist(ORIGINAL).exists(), "precondition: original not deployed")
-    t.gitpm_err("uninstall", FORK, kind="has_dependents", contains="required by app/a, app/b")
-    t.gitpm_ok("uninstall", FORK, "--force")
+    t.gitpm_ok("uninstall", FORK)
     t.not_installed(FORK)
     t.ok(not t.state().get("replacements"), "binding dropped")
     deployed(t, ORIGINAL)
@@ -164,9 +193,30 @@ def uninstalling_the_fork_redeploys_the_original(t: T):
 
 @case(fixture="g6_replaced", spec=["dist/enable-and-disable-deploy-and-remove#forced-disable-of-an-active-replacement"])
 def forced_disable_of_active_replacement(t: T):
-    """disable mine/base --force removes dist/mine/base; vendor/base stays replaced and undeployed."""
-    t.gitpm_err("disable", FORK, kind="has_dependents")
+    """vendor/base uninstalled while replaced: disable mine/base refuses (app/a, app/b would
+    break); --force removes dist/mine/base and drops the binding, nothing is deployed for
+    vendor/base and the consumers are reported broken."""
+    t.gitpm_ok("uninstall", ORIGINAL)
+    t.gitpm_err("disable", FORK, kind="has_dependents", contains="required by app/a, app/b")
     t.gitpm_ok("disable", FORK, "--force")
     t.ok(not t.dist(FORK).exists(), "dist/mine/base removed")
     t.ok(not t.dist(ORIGINAL).exists(), "dist/vendor/base not deployed")
-    t.eq(t.state().get("replacements"), {ORIGINAL: FORK}, "binding kept")
+    t.ok(not t.state().get("replacements"), "binding dropped")
+    for consumer in ["app/a", "app/b"]:
+        row = next(r for r in resolved(t)[consumer]["dependencies"] if r["id"] == ORIGINAL)
+        t.eq(row["satisfied"], False, f"{consumer} broken")
+
+
+# "Disable the fork" is a new scenario of removal-and-restore-rules: anchored on the
+# requirement until the change is archived.
+@case(fixture="g6_replaced", spec=["fork-replacement/active-fork-rules", "dependencies/dependents-guard-removal"])
+def disabling_the_fork_drops_the_binding_when_the_original_serves(t: T):
+    """The installed vendor/base satisfies app/a and app/b: disable mine/base needs no --force,
+    drops the binding and deploys dist/vendor/base; enabling the fork again keeps it unbound."""
+    t.gitpm_ok("disable", FORK)
+    t.ok(not t.dist(FORK).exists(), "dist/mine/base removed")
+    deployed(t, ORIGINAL)
+    t.ok(not t.state().get("replacements"), "binding dropped")
+    t.gitpm_ok("enable", FORK)
+    t.ok(not t.state().get("replacements"), "enable does not restore the binding")
+    t.ok(t.dist(FORK).exists() and t.dist(ORIGINAL).exists(), "both deployed")

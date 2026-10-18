@@ -280,7 +280,7 @@ commands, JSON for `list`, `catalog` and `register`); everything else goes to st
 `Warning: …` lines taken from the result (ignored metadata keys, skipped release tags,
 the dist report), `[y/N]` prompts with what they list, and failures. A failure prints
 `Error: MESSAGE`, for a library error also `Error kind: KIND` (and one `  - item` line
-per lost item for `local_changes`) and, where a gitpm command helps, one `Hint: …` line
+per lost item for `local_changes`, and for an uninstall's `has_dependents`) and, where a gitpm command helps, one `Hint: …` line
 naming it; the exit status is 1. The CLI checks only the command line (unknown, repeated
 or misplaced options, value sets, argument counts); domain rules and option
 combinations are the library's, which also returns everything the CLI prints, so a host
@@ -405,8 +405,10 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
 - `gitpm catalog` prints the library's typed directory links `{"schema": 2,
   "directories": {…}}` (`catalog::links`, the same as FFI `catalogLinks`) instead of the
   raw `catalog.json`; a v1 or otherwise invalid root fails with `catalog`.
-- `uninstall` of a recorded package whose clone is gone drops its record and `dist/` (was
-  `repository_not_found`); `restore` of a forgotten package whose shared clone is gone fails
+- `uninstall` and `forget` of a recorded package whose clone is gone drop its record and
+  `dist/` without confirmation (was `repository_not_found`; `forget` keeps no `forgotten`
+  record then); the CLI warning for such a package says `uninstall or forget ID to drop
+  its record` (was `run \`gitpm sync-dist\``, which could not deploy it); `restore` of a forgotten package whose shared clone is gone fails
   with `repository_not_found` (was `workspace`), like any restore without a clone.
 - `sync-dist` leaving active packages undeployed is the library error `not_deployed` (new
   kind; `Manager::sync_dist` returns `Err(Error::NotDeployed { sync, .. })` after
@@ -426,16 +428,16 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   ends the command with "replacement cancelled; nothing was changed": the fork stays
   released and installed, the replacement pending, and the CLI says how to finish.
 - Library API: `Manager::set_enabled`/`set_enabled_with`/`enable`/`disable`/`forget`/
-  `forget_with`/`uninstall`/`uninstall_with` return the `DistSync` report (were `()`);
+  `forget_with`/`uninstall` return the `DistSync` report (were `()`);
   `InstallResult`, `RevisionChange`, `ReplacementPlan` and `UpdateAllPlan` gain `dist`;
   `RevisionChange` gains `skipped`; `UpdateAllPlan` gains `unchanged` (`{id, version}`:
   every installed package is in `updates`, `kept_back` or `unchanged`);
-  `ReplacementPlan` gains `installed_version` (the provider's installed version) and
-  `fork_enabled`; `ForkReplacement` gains `pending` (a replacement that needs
+  `ReplacementPlan` gains `installed_version` (the provider's installed version);
+  `ForkReplacement` gains `pending` (a replacement that needs
   confirmation; apply it with `Manager::fork_replace_resume`, see
   `PackageForkReplacement::pending`, which returns `ForkResume { applied, failed }`:
   the plans applied, each with its dist report, and the first failure);
-  `UpdateAllPlan` gains `skipped`; `Error::HasDependents` gains `replacing`;
+  `UpdateAllPlan` gains `skipped`;
   `scaffold::commit`/`commit_package` return `Commit { package, version, tag }` (were the
   tag); `check::check(root, catalog: Option<&str>)` returns `CheckReport { rows,
   replacements, unsatisfied }` (was the rows; an empty workspace needs no catalog).
@@ -447,12 +449,12 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   `PackageManager.check` are removed; `enable`/`disable`/`forget`/`uninstall` return
   `DistSync`; `InstallResult` gains `skipped`, `warnings`, `dist`; `RevisionChange` gains
   `warnings`, `skipped`, `dist`; `UpdateAllPlan` gains `unchanged`, `dist`;
-  `ReplacementPlan` gains `installedVersion`, `forkEnabled`, `dist`; `ForkReplacement`
+  `ReplacementPlan` gains `installedVersion`, `dist`; `ForkReplacement`
   gains `pending` and `PackageForkReplacement` gains `pending` (`PendingReplacement`
   list for the new `PackageManager.forkReplaceResume(pending, confirm)`, which returns
   `ForkResume { applied, failed }`); `UpdateAllPlan` also gains `skipped`;
-  `PmError.NotDeployed { message, sync }` (the whole `DistSync` report) is new and
-  `PmError.HasDependents` gains `replacing`. Migration: call the free functions, read the new fields.
+  `PmError.NotDeployed { message, sync }` (the whole `DistSync` report) is new.
+  Migration: call the free functions, read the new fields.
 - `check` works without a catalog: a package the catalog does not list, or every package
   when no catalog is given, gets an origin row from `git ls-remote --tags` of its recorded
   source. `CheckStatus::NotInCatalog` (`not_in_catalog`, "not in catalog") is removed; new
@@ -582,6 +584,44 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   `force` (default false); `enable(id, force)` takes `force`
   (default false); `InstallResult` gains `enabled` and `dependencies`
   (`InstalledDependency`). Migration: pass `force` where needed, read the new fields.
+- One rule for removing an active fork ([Removing a replacement](#removing-a-replacement)):
+  `disable`, `forget` and `uninstall` of it drop the binding and deploy the original
+  again; `has_dependents` only when a consumer would break afterwards (the original
+  missing, disabled or of another version), and `dependents` names only those consumers
+  (disabling an active fork used to be refused always, naming the originals). The
+  reactivated original's dependencies are checked like `enable` (`dependency_conflict`;
+  forceable for the removals, not for `replace --back`). Migration: `disable --force` of
+  a fork is no longer needed when the original serves its consumers.
+- `replace ORIGINAL --with FORK` requires ORIGINAL to be installed (`not_installed`);
+  `replace ORIGINAL --back` with ORIGINAL not installed drops the binding (was
+  `not_installed`), refusing with `has_dependents` unless `--force` when consumers would
+  break, and prints `ORIGINAL switched back from FORK (ORIGINAL is not installed; broken:
+  …)`; its `ReplacementPlan` has `installed_version: None` and an empty `version`.
+  `Manager::switch_back(original, confirm, force)` (FFI `switchBack(original, confirm,
+  force)`): consumers a missing or disabled original does not serve refuse with
+  `has_dependents` unless `force`. Migration: install the original before replacing it;
+  pass `force` to switch back anyway.
+- Uninstall is bound to its plan: `Manager::uninstall(id, confirmed: &[LostWork], force)`
+  replaces `uninstall(id, confirm)` and `uninstall_with(id, confirm, force)` (both
+  removed) and refuses with `local_changes` listing the work not in `confirmed`;
+  `Error::HasDependents` gains `lost_work` (the plan's, for uninstall; empty otherwise)
+  and `UninstallPlan::refusal()` returns that error (or, via the new
+  `UninstallPlan.dependency_conflict`, the `dependency_conflict` of a reactivated
+  original, before any lost-work question), so the CLI prints dependents and
+  lost work (`  - item` lines) in one refusal without calling `uninstall`. CLI `--force`
+  confirms the plan's items. FFI: `uninstall(id, confirmed, force)` (was `confirm`),
+  `PmError.HasDependents.lostWork`, new free function `uninstallRefusal(plan)`.
+  Migration: pass `plan.lost_work` (FFI `plan.lostWork`) as `confirmed` after the user
+  agreed. The `local_changes` messages of uninstall end `; confirm the listed lost work to
+  remove it` (was `…; discarding them requires force`), the other refusals `; commit or
+  discard the local changes first` (was `keep or remove them first`).
+- `Manager::forget`/`forget_with` return `ForgetResult { clone_kept, dist }` (was
+  `DistSync`; FFI `forget` the same record with `cloneKept`); the CLI prints `ID forgotten
+  (no clone; record and dist removed)` when the clone was gone. Migration: read `.dist`.
+- A replacing package is always enabled: a `state.json` binding an original to a disabled
+  package (produced by gitpm ≤0.5 `disable --force` or a hand edit) is refused with
+  `invalid_data`, and the `replace --back` line always ends `; FORK stays installed and
+  enabled (…)`. Migration: remove the entry from `replacements` in `state.json`.
 
 ## Working without a catalog
 
@@ -656,23 +696,24 @@ not derive it. `enabled` is not `active`: a replaced package stays `enabled: tru
   without that folder is refused (`invalid_manifest`, "release … has no dist/ folder")
   instead of deploying an empty folder.
 - `replace X --with Y` removes `dist/X/`; nothing of `Y` is copied there; `dist/Y/` stays.
-  `Y` must be enabled (`invalid_argument`: "Y is disabled; enable it first"), so a
-  replacement never leaves nothing loaded. `replace X --back` deploys `dist/X/` again from
+  `X` must be installed (`not_installed`) and `Y` enabled (`invalid_argument`: "Y is
+  disabled; enable it first"), so a replacement never leaves nothing loaded. `replace X --back` deploys `dist/X/` again from
   `X`'s clone at its installed commit (`packages.X.current.commit`, folder `path` of a
   multi-package clone), so a shared clone whose HEAD is another package's revision needs
   no checkout. `Y` stays deployed: two packages providing the same service is the host's
   concern.
 - `disable X` removes `dist/X/`; `enable X` deploys it again the same way. Disabling a
-  package that replaces another is refused (`has_dependents`, naming what it replaces)
-  unless `--force`, as for a package other packages depend on. `enable X` is refused
+  package that replaces another drops the binding and deploys the original again when
+  it is active (a later `enable` does not bring the binding back); see [Removing a
+  replacement](#removing-a-replacement) for when it is refused. `enable X` is refused
   (`dependency_conflict`, `dist/X/` not created) while a dependency of X is not
   satisfied by an active package, unless `--force`.
 - `download`, and `install`, `update` and `rollback` of a replaced or disabled package,
   change state and clone only; its `dist/` appears on `replace --back` / `enable`. `fork … --replace` ends
   with the fork deployed and the original's `dist/` removed.
 - `forget X` removes `dist/X/` (the clone stays); `restore X` deploys it when it is
-  active (a package forgotten while disabled stays disabled). Forgetting or
-  uninstalling a replacement drops its bindings, so each original it replaced is
+  active (a package forgotten while disabled stays disabled). Disabling, forgetting or
+  uninstalling a replacement drops its bindings, so each active original it replaced is
   deployed again. Uninstalling or forgetting the original `X` keeps the binding `X → Y`:
   installing `X` again leaves it replaced (no `dist/X/`) until `replace X --back`.
 - Every change goes through the same transaction as the state, so a crash leaves state
@@ -686,7 +727,10 @@ package are left alone (the CLI warns about them on stderr), an existing folder 
 active package is not rewritten. A namespace path under `dist/` that is a symlink or a
 file is reported the same way and nothing is written below it. An active package whose
 clone or installed commit is gone is skipped, so it does not block an unrelated command;
-the CLI warns `Warning: ID: dist not deployed (clone missing); run \`gitpm sync-dist\``.
+the CLI warns `Warning: ID: dist not deployed (clone missing); uninstall or forget ID to
+drop its record` (both drop a record whose clone is gone without asking; `sync-dist` never
+re-clones), decided by `SkippedDist.clone_missing`; a missing installed commit gets only
+`Warning: ID: dist not deployed (installed commit missing from its clone)`.
 Any other deploy error fails the command. Every mutating result carries this report as
 `dist` (`DistSync`: `deployed`, `removed`, `unmanaged`, `skipped`; `enable`, `disable`,
 `forget` and `uninstall` return it directly); the CLI prints its warnings from there and
@@ -989,8 +1033,10 @@ pm.enable_with(id, /* force: enable over inactive dependencies */ false)?;
 pm.update("acme/demo1")?;                              // by the recorded mode (pinned: unchanged_reason)
 pm.update_to(id, Target::Release)?;  pm.update_to(id, Target::Ref("feature".into()))?;
 pm.rollback(id)?;  pm.enable(id)?;  pm.disable(id)?;  pm.forget(id)?;  pm.restore(id)?;
-let plan = pm.uninstall_plan(id)?;                    // deletes + lost_work
-let dist = pm.uninstall(id, /* confirm */ !plan.lost_work.is_empty() && user_said_yes)?;
+let plan = pm.uninstall_plan(id)?;                    // deletes + lost_work + dependents
+if let Some(refusal) = plan.refusal() { return Err(refusal) } // has_dependents with lost_work
+let confirmed = if user_said_yes { plan.lost_work.clone() } else { Vec::new() };
+let dist = pm.uninstall(id, &confirmed, /* force: ignore dependents */ false)?;
 // Every mutating result carries its dist report (`dist`, or the returned `DistSync`).
 // Forks: the fork repository is always explicit (new folder, or a repo with gitpm.json).
 pm.fork_in_namespace(id, Path::new("/work/demo1-fork"), "me")?;   // sets forkOf + replaces
@@ -1004,8 +1050,7 @@ let pending = done.pending();   // replacements that need confirmation (incompat
 pm.fork_replace_resume(&pending, /* confirm */ user_said_yes)?;
 let plan = pm.replace_plan("vendor/base", "mine/base")?;       // consumers + incompatible
 pm.replace("vendor/base", "mine/base", /* confirm */ !plan.incompatible.is_empty() && yes)?;
-pm.switch_back("vendor/base", confirm)?;                       // back to the original
-pm.uninstall_with(id, confirm, /* force: ignore dependents */ false)?;
+pm.switch_back("vendor/base", confirm, /* force: consumers left broken */ false)?;
 pm.set_enabled_with(id, false, force)?;  pm.forget_with(id, force)?;
 let sync = pm.sync_dist()?;   // dist/ = active packages; Err(NotDeployed) if some cannot be
 pm.list()?;  pm.state()?;  pm.check()?;  pm.browse_catalog()?;  pm.catalog_release(id, None)?;
@@ -1030,11 +1075,17 @@ Modules with free functions (no workspace lock needed):
 ### Uninstall: confirmation by plan
 
 `uninstall_plan(id)` is read-only and returns `UninstallPlan { id, registered, deletes,
-lost_work }`. `lost_work` lists `LostWork` items: `Modified`, `Untracked`, `Ignored`,
-`HeadMoved` (HEAD is not the installed revision), `UnpublishedCommit`,
-`UnpublishedBranch`, `UnpublishedTag`, `Stash`. `uninstall(id, false)` refuses with
-`Error::LocalChanges { items, .. }` when anything would be lost; `uninstall(id, true)`
-deletes anyway. The caller decides how to ask the user. IDs match exactly: on a
+lost_work, dependents }`. `lost_work` lists `LostWork` items: `Modified`, `Untracked`,
+`Ignored`, `HeadMoved` (HEAD is not the installed revision), `UnpublishedCommit`,
+`UnpublishedBranch`, `UnpublishedTag`, `Stash`. `uninstall(id, confirmed, force)`
+deletes the work listed in `confirmed` (the plan's items the user saw) and refuses with
+`Error::LocalChanges { items, .. }` listing any other item, so work created while the
+user was asked is never deleted unseen. `dependents` are the consumers that would break
+(see [Dependencies](#dependencies)); they refuse with `Error::HasDependents {
+dependents, lost_work, .. }` unless `force`, and `plan.refusal()` returns that same error
+without calling `uninstall`. A recorded package whose clone is gone has no lost work:
+`uninstall` and `forget` drop its record and `dist/` without confirmation (`forget`
+keeps no `forgotten` record then). The caller decides how to ask the user. IDs match exactly: on a
 case-insensitive file system `Vendor/Module` never resolves to `vendor/module`.
 
 ### Joint upgrades
@@ -1123,9 +1174,11 @@ with `dependency_conflict` when the new version breaks a dependent; new dependen
 an update are installed. Conflicts carry the solver's explanation naming the packages.
 State keeps the edges (`packages.<id>.dependencies`); `list()` reports for each
 dependency its provider, version and whether it is satisfied, plus each package's
-`dependents`. Disable, forget and uninstall of a package others depend on refuse with
-`has_dependents` (names in `dependents`) unless `force`; `UninstallPlan.dependents`
-lists them up front. Already broken consumers (after a forced removal) are reported,
+`dependents`. Disable, forget and uninstall of a package refuse with `has_dependents`
+(names in `dependents`) unless `force` when a consumer would break: one whose dependency
+resolves to the package, or, for an active fork, one the original does not satisfy once
+the binding is dropped (see [Removing a replacement](#removing-a-replacement));
+`UninstallPlan.dependents` lists them up front. Already broken consumers (after a forced removal) are reported,
 not enforced, so they do not block unrelated operations.
 
 ### Replacement by a fork
@@ -1139,12 +1192,28 @@ only: consumers whose requirement the declared version does not satisfy are list
 `ReplacementPlan.incompatible` and refuse with `incompatible_replacement` unless
 confirmed. Self-replacement and cycles are always refused. Replacing again switches the
 binding; `switch_back` returns all consumers to the installed original (same
-confirmation rule). The active fork is guarded like any provider; a fork update must
-keep declaring `replaces`. Uninstalling or forgetting the fork drops its binding;
-uninstalling or forgetting the original keeps it (a reinstalled original stays replaced
-until `switch_back`). The fork must be enabled to become the provider, and disabling an
-active fork needs `force`. A replaced original has no `dist/` (see
+confirmation rule). The original must be installed to be replaced (`not_installed`)
+and the fork enabled to become the provider; a fork update must keep declaring
+`replaces`. Uninstalling or forgetting the original keeps the binding (a reinstalled
+original stays replaced until `switch_back`). A replaced original has no `dist/` (see
 [Workspace layout](#workspace-layout-and-dist)).
+
+#### Removing a replacement
+
+One rule for `disable`, `forget` and `uninstall` of an active fork: each drops the
+binding and deploys the original again when it is active (a later `enable` of the fork
+does not restore the binding). They refuse with `has_dependents` unless `force` only
+when a consumer would break afterwards: the original is not installed, disabled, or of a
+version the consumer does not accept. `dependents` names exactly those consumers; when
+the installed original satisfies everyone, no force is needed. The reactivated original
+is checked like `enable`: a direct dependency of it that no active package satisfies
+refuses with `dependency_conflict` unless `force`. `switch_back` (`replace ORIGINAL
+--back`) follows the same rule: consumers a missing or disabled original does not serve
+refuse with `has_dependents` unless `force` (CLI `--force`; `confirm` covers only
+incompatible versions). For an original that is not installed only the binding is
+dropped, and its
+`ReplacementPlan` has no `installed_version` and an empty `version` (CLI: `ORIGINAL
+switched back from FORK (ORIGINAL is not installed; broken: consumers)`).
 
 ### Catalog
 
@@ -1184,8 +1253,9 @@ import Gitpm
 
 let pm = try PackageManager.open(root: workspace, options: ManagerOptions(catalog: catalogURL))
 let plan = try pm.uninstallPlan(id: "acme/demo1")
+try uninstallRefusal(plan: plan)   // throws HasDependents (with lostWork) when consumers would break
 if plan.lostWork.isEmpty || userConfirmed(plan.lostWork.map(describeLostWork)) {
-    try pm.uninstall(id: "acme/demo1", confirm: !plan.lostWork.isEmpty)
+    try pm.uninstall(id: "acme/demo1", confirmed: plan.lostWork)
 }
 ```
 
@@ -1194,17 +1264,18 @@ install(source, target: `InstallTarget`, package; defaults to nil), installFromC
 download(source, target, package), downloadFromCatalog,
 update(id, target: `Target`, `.recorded` follows the recorded mode), updateAllPlan,
 updateAll (`UpdateAllPlan` with `unchanged`, each with its `reason`, and `dist`), rollback, enable(force), disable(force),
-forget(force), restore, uninstallPlan, uninstall(confirm, force), fork
+forget(force), restore, uninstallPlan, uninstall(confirmed, force), fork
 (one package; `ForkResult`), forkAndReplace(version, confirm; returns a
 `ForkReplacement`: a failure after the fork exists is reported in `failedStep` (the
 `ForkStep` enum: release, install, replace), `errorKind`, `errorMessage`, and a
 replacement that needs confirmation in `pending`), forkPackages
 (`PackageFork`), forkPackagesAndReplace (`PackageForkReplacement`: the fork plus one
 `ForkReplacement` per package and the `pending` list), forkReplaceResume(pending,
-confirm; `ForkResume`: `applied` plans and the first `failed` one), replacePlan, replace, switchBackPlan, switchBack (`ReplacementPlan` with
-`installedVersion`, `forkEnabled`, `dist`), syncDistPlan, syncDist (`DistSync`: deployed,
+confirm; `ForkResume`: `applied` plans and the first `failed` one), replacePlan, replace, switchBackPlan, switchBack(confirm, force) (`ReplacementPlan` with
+`installedVersion`, `dist`), syncDistPlan, syncDist (`DistSync`: deployed,
 removed, unmanaged, skipped)); every mutating call returns its `DistSync` report
-(`enable`/`disable`/`forget`/`uninstall` return it, `InstallResult`, `RevisionChange`,
+(`enable`/`disable`/`uninstall` return it, `forget` returns `ForgetResult { cloneKept,
+dist }`, `InstallResult`, `RevisionChange`,
 `ReplacementPlan` and `UpdateAllPlan` carry it as `dist`); `InstallResult` and
 `RevisionChange` carry `skipped` (broken release tags) and `warnings`, as the CLI prints
 them; `RevisionChange.unchangedReason` says why an update left a package (`pinned`);
@@ -1219,12 +1290,13 @@ workspace: `list(root, provides)` and `readState(root)` (`ListView`: `format`,
 `packages`, `replacements`, `forgotten`, `resolved`), `check(root, catalog)`
 (`CheckReport`: rows with `source` `.catalog`/`.origin` and `problem`, fork `upstream`
 with its `source`, replacements, unsatisfied dependencies; `catalog` may be `nil`), `catalogLinks(location)`,
-`authCheck(source, customSsh)`, `browseCatalog`, `catalogRelease`, `describeLostWork`.
+`authCheck(source, customSsh)`, `browseCatalog`, `catalogRelease`, `describeLostWork`,
+`uninstallRefusal(plan)`.
 Every CLI command that reads or changes a workspace, reads a catalog or checks access has
 its FFI call; `init`, `commit`, `remote`, `catalog-update` and `register` stay library and
 CLI functions. Errors are the `PmError` enum (one case per kind, each with `message`;
 `id` where the library error has one, `LocalChanges.items`, `HasDependents.dependents`
-and `.replacing`, `IncompatibleReplacement.consumers`, `NotDeployed.sync` (the dist report), and
+and `.lostWork`, `IncompatibleReplacement.consumers`, `NotDeployed.sync` (the dist report), and
 `Other { kind, message }` for kinds added later). `gitpm-ffi` carries the library's
 version; before 1.0 its bindings promise no stability (renames are listed under
 "Changed in X.Y").

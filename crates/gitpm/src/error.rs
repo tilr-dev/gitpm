@@ -61,15 +61,16 @@ pub enum Error {
     /// Dependencies cannot be satisfied; the message explains why (solver report).
     #[error("{0}")]
     DependencyConflict(String),
-    /// Other installed packages depend on this one; pass `force` to proceed anyway.
-    /// With `replacing`, `dependents` are the originals `id` replaces for every consumer
-    /// (disabling it would leave nothing loaded for them) instead of its consumers.
+    /// Other installed packages would break (their dependency resolves to `id`, or to
+    /// it through a replacement the original does not take over); pass `force` to
+    /// proceed anyway. `lost_work` is the local work an uninstall would also lose (the
+    /// plan's), so one refusal tells everything; empty for other operations.
     #[error("{message}")]
     HasDependents {
         id: String,
         message: String,
         dependents: Vec<String>,
-        replacing: bool,
+        lost_work: Vec<LostWork>,
     },
     /// Some consumers do not accept the version the new provider declares; confirm
     /// to replace anyway. `consumers` are the unsatisfied ones.
@@ -243,7 +244,7 @@ mod tests {
                     id: "a/b".into(),
                     message: s(),
                     dependents: vec![],
-                    replacing: false,
+                    lost_work: vec![],
                 },
                 "has_dependents",
             ),

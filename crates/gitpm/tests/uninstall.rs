@@ -116,7 +116,7 @@ fn clean_clone_plan_is_empty_and_uninstall_needs_no_confirmation() {
     assert_eq!(plan.deletes.len(), 2);
     assert!(plan.deletes[0].ends_with("packages/vendor/module"));
     assert!(plan.deletes[1].ends_with("dist/vendor/module"));
-    m.uninstall("vendor/module", false).unwrap();
+    m.uninstall("vendor/module", &[], false).unwrap();
     assert!(!f.repo().exists());
     assert!(!f.root.join("dist/vendor/module").exists());
     assert!(m.state().unwrap().packages.is_empty());
@@ -172,7 +172,7 @@ fn uninstall_without_confirmation_refuses_and_changes_nothing() {
     let (f, m) = Fixture::installed();
     make_all_lost_work(&f);
     let before = f.snapshot();
-    let error = m.uninstall("vendor/module", false).unwrap_err();
+    let error = m.uninstall("vendor/module", &[], false).unwrap_err();
     assert_eq!(error.kind(), "local_changes");
     let Error::LocalChanges { id, items, message } = &error else {
         panic!("{error:?}");
@@ -192,7 +192,7 @@ fn stash_alone_blocks_unconfirmed_uninstall() {
     git(&f.repo(), &["stash", "push", "-m", "only stash"]);
     let plan = m.uninstall_plan("vendor/module").unwrap();
     assert_eq!(kinds(&plan.lost_work), BTreeSet::from(["stash"]));
-    let error = m.uninstall("vendor/module", false).unwrap_err();
+    let error = m.uninstall("vendor/module", &[], false).unwrap_err();
     assert_eq!(error.kind(), "local_changes");
     assert!(error.to_string().contains("stash"), "{error}");
     assert!(f.repo().exists());
@@ -205,10 +205,10 @@ fn local_commit_message_is_unchanged() {
     fs::write(f.repo().join("local.txt"), "local").unwrap();
     git(&f.repo(), &["add", "local.txt"]);
     git(&f.repo(), &["commit", "-m", "local"]);
-    let error = m.uninstall("vendor/module", false).unwrap_err();
+    let error = m.uninstall("vendor/module", &[], false).unwrap_err();
     assert_eq!(
         error.to_string(),
-        "local commits detected; discarding them requires force"
+        "local commits detected; confirm the listed lost work to remove it"
     );
 }
 
@@ -216,10 +216,53 @@ fn local_commit_message_is_unchanged() {
 fn confirmed_uninstall_deletes_lost_work() {
     let (f, m) = Fixture::installed();
     make_all_lost_work(&f);
-    m.uninstall("vendor/module", true).unwrap();
+    let plan = m.uninstall_plan("vendor/module").unwrap();
+    m.uninstall("vendor/module", &plan.lost_work, false)
+        .unwrap();
     assert!(!f.repo().exists());
     assert!(!f.root.join("dist/vendor/module").exists());
     assert!(m.state().unwrap().packages.is_empty());
+}
+
+/// The confirmation covers exactly the items the plan showed: work that appears after
+/// the plan (while a prompt waits) refuses and nothing is deleted.
+#[test]
+fn confirmation_is_bound_to_the_planned_lost_work() {
+    let (f, m) = Fixture::installed();
+    fs::write(f.repo().join("seen.txt"), "seen").unwrap();
+    let plan = m.uninstall_plan("vendor/module").unwrap();
+    assert_eq!(
+        plan.lost_work,
+        [LostWork::Untracked {
+            path: "seen.txt".into()
+        }]
+    );
+    fs::write(f.repo().join("later.txt"), "later").unwrap();
+    let before = f.snapshot();
+    let error = m
+        .uninstall("vendor/module", &plan.lost_work, false)
+        .unwrap_err();
+    let Error::LocalChanges { items, .. } = &error else {
+        panic!("{error:?}");
+    };
+    assert_eq!(
+        items,
+        &[LostWork::Untracked {
+            path: "later.txt".into()
+        }]
+    );
+    assert_eq!(f.snapshot(), before);
+    // Force ignores dependents, not unconfirmed work.
+    let error = m
+        .uninstall("vendor/module", &plan.lost_work, true)
+        .unwrap_err();
+    assert_eq!(error.kind(), "local_changes");
+    assert_eq!(f.snapshot(), before);
+    // Confirming what is there now deletes it.
+    let plan = m.uninstall_plan("vendor/module").unwrap();
+    m.uninstall("vendor/module", &plan.lost_work, false)
+        .unwrap();
+    assert!(!f.repo().exists());
 }
 
 #[test]
@@ -229,7 +272,7 @@ fn case_variant_id_never_touches_the_installed_plugin() {
     for id in ["Vendor/Module", "vendor/MODULE", "VENDOR/module"] {
         let plan = m.uninstall_plan(id).unwrap_err();
         assert_eq!(plan.kind(), "repository_not_found", "{id}");
-        let error = m.uninstall(id, true).unwrap_err();
+        let error = m.uninstall(id, &[], false).unwrap_err();
         assert_eq!(error.kind(), "repository_not_found", "{id}");
         assert_eq!(f.snapshot(), before);
         assert!(f.repo().join(".git").is_dir());
@@ -244,7 +287,7 @@ fn forgotten_repository_can_be_planned_and_removed() {
     let plan = m.uninstall_plan("vendor/module").unwrap();
     assert!(!plan.registered);
     assert!(plan.lost_work.is_empty(), "{:?}", plan.lost_work);
-    m.uninstall("vendor/module", false).unwrap();
+    m.uninstall("vendor/module", &[], false).unwrap();
     assert!(!f.repo().exists());
 }
 

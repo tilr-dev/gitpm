@@ -61,14 +61,15 @@ pub enum PmError {
     /// Dependencies cannot be satisfied; `message` is the solver's explanation.
     #[error("{message}")]
     DependencyConflict { message: String },
-    /// Other installed packages depend on `id`; retry with `force` to proceed anyway.
-    /// With `replacing`, `dependents` are the originals `id` replaces for every consumer.
+    /// Installed packages that would break (`dependents`); retry with `force` to
+    /// proceed anyway. `lost_work` is the local work an uninstall would also lose (empty
+    /// for other operations), so one refusal tells everything.
     #[error("{message}")]
     HasDependents {
         id: String,
         message: String,
         dependents: Vec<String>,
-        replacing: bool,
+        lost_work: Vec<LostWork>,
     },
     /// `consumers` do not accept the new provider's version; retry with `confirm`.
     #[error("{message}")]
@@ -120,13 +121,13 @@ impl From<pm::Error> for PmError {
             pm::Error::HasDependents {
                 id,
                 dependents,
-                replacing,
+                lost_work,
                 ..
             } => PmError::HasDependents {
                 id,
                 message,
                 dependents,
-                replacing,
+                lost_work: lost_work.into_iter().map(Into::into).collect(),
             },
             pm::Error::NotDeployed { sync, .. } => PmError::NotDeployed {
                 message,
@@ -389,8 +390,6 @@ pub struct ReplacementPlan {
     pub incompatible: Vec<IncompatibleConsumer>,
     /// Installed version of `provider` (the fork; the original when switching back).
     pub installed_version: Option<String>,
-    /// The fork (`provider` when replacing, `current` when switching back) is enabled.
-    pub fork_enabled: bool,
     /// Reconciliation report of `replace`/`switchBack` (empty for a plan).
     pub dist: DistSync,
 }
@@ -411,7 +410,6 @@ impl From<pm::ReplacementPlan> for ReplacementPlan {
                 })
                 .collect(),
             installed_version: p.installed_version,
-            fork_enabled: p.fork_enabled,
             dist: p.dist.into(),
         }
     }
@@ -433,7 +431,6 @@ impl From<ReplacementPlan> for pm::ReplacementPlan {
                 })
                 .collect(),
             installed_version: p.installed_version,
-            fork_enabled: p.fork_enabled,
             dist: p.dist.into(),
         }
     }
@@ -739,6 +736,23 @@ pub fn describe_lost_work(item: LostWork) -> String {
     pm::LostWork::from(item).describe()
 }
 
+/// What `forget` did.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ForgetResult {
+    /// The clone stays with a `forgotten` record; false when it was gone (only the record
+    /// and `dist/` were removed).
+    pub clone_kept: bool,
+    pub dist: DistSync,
+}
+impl From<pm::ForgetResult> for ForgetResult {
+    fn from(r: pm::ForgetResult) -> Self {
+        Self {
+            clone_kept: r.clone_kept,
+            dist: r.dist.into(),
+        }
+    }
+}
+
 /// What `syncDist` changes (or would change) so that `dist/` holds exactly the active
 /// packages (installed, enabled, not replaced). IDs are sorted.
 #[derive(Debug, Clone, uniffi::Record)]
@@ -757,6 +771,8 @@ pub struct DistSync {
 pub struct SkippedDist {
     pub id: String,
     pub reason: String,
+    /// The clone is gone: uninstall or forget drops the record.
+    pub clone_missing: bool,
 }
 impl From<pm::DistSync> for DistSync {
     fn from(s: pm::DistSync) -> Self {
@@ -770,6 +786,7 @@ impl From<pm::DistSync> for DistSync {
                 .map(|s| SkippedDist {
                     id: s.id,
                     reason: s.reason,
+                    clone_missing: s.clone_missing,
                 })
                 .collect(),
         }
@@ -787,6 +804,7 @@ impl From<DistSync> for pm::DistSync {
                 .map(|s| pm::SkippedDist {
                     id: s.id,
                     reason: s.reason,
+                    clone_missing: s.clone_missing,
                 })
                 .collect(),
         }
@@ -799,11 +817,38 @@ pub struct UninstallPlan {
     /// False for a forgotten repository that is still on disk.
     pub registered: bool,
     pub deletes: Vec<String>,
-    /// Empty: uninstall without asking. Otherwise show it and call `uninstall(id, true)`
-    /// only after the user confirmed.
+    /// Empty: uninstall without asking. Otherwise show it and, once the user confirmed,
+    /// pass exactly these items as `uninstall(id, confirmed)`; work that appeared since
+    /// is refused.
     pub lost_work: Vec<LostWork>,
-    /// Installed packages that depend on it: uninstall refuses unless `force`.
+    /// Installed packages that would break: uninstall refuses unless `force`
+    /// (`uninstallRefusal` gives that refusal without calling `uninstall`).
     pub dependents: Vec<String>,
+    /// Uninstall would reactivate an original whose dependencies are not active: the
+    /// `DependencyConflict` message (also thrown by `uninstallRefusal`).
+    pub dependency_conflict: Option<String>,
+}
+impl From<UninstallPlan> for pm::UninstallPlan {
+    fn from(p: UninstallPlan) -> Self {
+        Self {
+            id: p.id,
+            registered: p.registered,
+            deletes: p.deletes,
+            lost_work: p.lost_work.into_iter().map(Into::into).collect(),
+            dependents: p.dependents,
+            dependency_conflict: p.dependency_conflict,
+        }
+    }
+}
+
+/// Throws the refusal `uninstall` raises for `plan` without force (`HasDependents` with
+/// dependents and lost work, or `DependencyConflict`); returns normally when there is none.
+#[uniffi::export]
+pub fn uninstall_refusal(plan: UninstallPlan) -> Result<()> {
+    match pm::UninstallPlan::from(plan).refusal() {
+        Some(error) => Err(error.into()),
+        None => Ok(()),
+    }
 }
 impl From<pm::UninstallPlan> for UninstallPlan {
     fn from(p: pm::UninstallPlan) -> Self {
@@ -813,6 +858,7 @@ impl From<pm::UninstallPlan> for UninstallPlan {
             deletes: p.deletes,
             lost_work: p.lost_work.into_iter().map(Into::into).collect(),
             dependents: p.dependents,
+            dependency_conflict: p.dependency_conflict,
         }
     }
 }
@@ -1448,16 +1494,19 @@ impl PackageManager {
     pub fn enable(&self, id: String, force: bool) -> Result<DistSync> {
         Ok(self.inner.enable_with(&id, force)?.into())
     }
-    /// Removes `dist/<id>`. Refuses with `HasDependents` if others depend on it, unless
-    /// `force`.
+    /// Removes `dist/<id>`; a replacing package also drops its replacement (the original
+    /// is deployed again when active). Refuses with `HasDependents` when consumers would
+    /// break, and with `DependencyConflict` when a reactivated original has inactive
+    /// dependencies, unless `force`.
     #[uniffi::method(default(force = false))]
     pub fn disable(&self, id: String, force: bool) -> Result<DistSync> {
         Ok(self.inner.set_enabled_with(&id, false, force)?.into())
     }
     /// Unregister; the repository stays on disk, `dist/<id>` is removed (`restore`
-    /// deploys it again). Dependents refuse unless `force`.
+    /// deploys it again). Dependents refuse unless `force`. A package whose clone is gone
+    /// keeps no record (`cloneKept` false).
     #[uniffi::method(default(force = false))]
-    pub fn forget(&self, id: String, force: bool) -> Result<DistSync> {
+    pub fn forget(&self, id: String, force: bool) -> Result<ForgetResult> {
         Ok(self.inner.forget_with(&id, force)?.into())
     }
     /// Record a forgotten package again as it was recorded (revisions, catalog, enabled
@@ -1479,11 +1528,14 @@ impl PackageManager {
     pub fn uninstall_plan(&self, id: String) -> Result<UninstallPlan> {
         Ok(self.inner.uninstall_plan(&id)?.into())
     }
-    /// `confirm = false` refuses with `LocalChanges` if anything would be lost;
-    /// dependents refuse with `HasDependents` unless `force`.
+    /// Local work not in `confirmed` (the plan's `lostWork` the user saw) refuses with
+    /// `LocalChanges` listing it; dependents that would break refuse with
+    /// `HasDependents` unless `force`. A package whose clone is gone is removed with
+    /// nothing confirmed.
     #[uniffi::method(default(force = false))]
-    pub fn uninstall(&self, id: String, confirm: bool, force: bool) -> Result<DistSync> {
-        Ok(self.inner.uninstall_with(&id, confirm, force)?.into())
+    pub fn uninstall(&self, id: String, confirmed: Vec<LostWork>, force: bool) -> Result<DistSync> {
+        let confirmed: Vec<pm::LostWork> = confirmed.into_iter().map(Into::into).collect();
+        Ok(self.inner.uninstall(&id, &confirmed, force)?.into())
     }
     /// Read-only: what replacing `original` by `replacement` would change.
     pub fn replace_plan(&self, original: String, replacement: String) -> Result<ReplacementPlan> {
@@ -1504,9 +1556,16 @@ impl PackageManager {
         Ok(self.inner.switch_back_plan(&original)?.into())
     }
     /// Every consumer uses the installed original again (same confirmation rule);
-    /// `dist/<original>` is deployed again.
-    pub fn switch_back(&self, original: String, confirm: bool) -> Result<ReplacementPlan> {
-        Ok(self.inner.switch_back(&original, confirm)?.into())
+    /// `dist/<original>` is deployed again. Consumers the original does not serve (not
+    /// installed, disabled) refuse with `HasDependents` unless `force`.
+    #[uniffi::method(default(force = false))]
+    pub fn switch_back(
+        &self,
+        original: String,
+        confirm: bool,
+        force: bool,
+    ) -> Result<ReplacementPlan> {
+        Ok(self.inner.switch_back(&original, confirm, force)?.into())
     }
     /// Fork an installed package as `namespace/<same name>` into the fork repository
     /// `destination` (outside the workspace): a new folder, or an existing repository with
@@ -1752,7 +1811,7 @@ mod tests {
                 id: "x/one".into(),
                 message: m(),
                 dependents: vec!["app/a".into()],
-                replacing: false,
+                lost_work: vec![],
             },
             pm::Error::IncompatibleReplacement {
                 id: "x/one".into(),
@@ -1765,6 +1824,7 @@ mod tests {
                     skipped: vec![pm::SkippedDist {
                         id: "x/one".into(),
                         reason: "clone missing".into(),
+                        clone_missing: true,
                     }],
                     ..Default::default()
                 }),
@@ -1889,6 +1949,60 @@ mod tests {
         );
         let back: Vec<pm::LostWork> = mapped.into_iter().map(Into::into).collect();
         assert_eq!(back, items, "order and content are kept");
+        // The dependents refusal of uninstall carries the lost work too.
+        let error = PmError::from(pm::Error::HasDependents {
+            id: "x/one".into(),
+            message: "m".into(),
+            dependents: vec!["app/a".into()],
+            lost_work: items.clone(),
+        });
+        let PmError::HasDependents {
+            id,
+            dependents,
+            lost_work,
+            ..
+        } = error
+        else {
+            panic!()
+        };
+        assert_eq!(
+            (id.as_str(), dependents.as_slice()),
+            ("x/one", ["app/a".to_owned()].as_slice())
+        );
+        let back: Vec<pm::LostWork> = lost_work.into_iter().map(Into::into).collect();
+        assert_eq!(back, items);
+        // uninstallRefusal throws exactly the library's refusal of the plan.
+        let plan = pm::UninstallPlan {
+            id: "x/one".into(),
+            registered: true,
+            deletes: vec![],
+            lost_work: items.clone(),
+            dependents: vec!["app/a".into()],
+            dependency_conflict: None,
+        };
+        let expected = plan.refusal().unwrap().to_string();
+        match uninstall_refusal(plan.clone().into()) {
+            Err(PmError::HasDependents {
+                message, lost_work, ..
+            }) => {
+                assert_eq!(message, expected);
+                assert_eq!(lost_work.len(), items.len());
+            }
+            other => panic!("{other:?}"),
+        }
+        let clean = pm::UninstallPlan {
+            dependents: vec![],
+            ..plan
+        };
+        assert!(uninstall_refusal(clean.clone().into()).is_ok());
+        let conflict = pm::UninstallPlan {
+            dependency_conflict: Some("m".into()),
+            ..clean
+        };
+        assert!(matches!(
+            uninstall_refusal(conflict.into()),
+            Err(PmError::DependencyConflict { message }) if message == "m"
+        ));
     }
 
     fn all_lost_work() -> Vec<pm::LostWork> {
@@ -2122,6 +2236,7 @@ mod tests {
             skipped: vec![pm::SkippedDist {
                 id: "me/y".into(),
                 reason: "clone missing".into(),
+                clone_missing: true,
             }],
         };
         let check_report = |dist: &DistSync| {
@@ -2137,6 +2252,7 @@ mod tests {
                 (dist.skipped[0].id.as_str(), dist.skipped[0].reason.as_str()),
                 ("me/y", "clone missing")
             );
+            assert!(dist.skipped[0].clone_missing);
         };
         let result = InstallResult::from(pm::InstallResult {
             id: "me/x".into(),
@@ -2325,12 +2441,10 @@ mod tests {
                 requirement: "^2".into(),
             }],
             installed_version: Some("0.3.0".into()),
-            fork_enabled: true,
             dist: report(),
         };
         let ffi = ReplacementPlan::from(replacement.clone());
         assert_eq!(ffi.installed_version.as_deref(), Some("0.3.0"));
-        assert!(ffi.fork_enabled);
         assert_eq!(ffi.incompatible[0].requirement, "^2");
         check_report(&ffi.dist);
         // Back to the library for forkReplaceResume: nothing is lost.
@@ -2392,19 +2506,6 @@ mod tests {
             (failed.error_kind.as_str(), failed.error_message.as_str()),
             ("incompatible_replacement", "changed")
         );
-        let error = PmError::from(pm::Error::HasDependents {
-            id: "me/x".into(),
-            message: "m".into(),
-            dependents: vec!["vendor/x".into()],
-            replacing: true,
-        });
-        assert!(matches!(
-            error,
-            PmError::HasDependents {
-                replacing: true,
-                ..
-            }
-        ));
 
         let plan = UninstallPlan::from(pm::UninstallPlan {
             id: "me/x".into(),
@@ -2412,8 +2513,13 @@ mod tests {
             deletes: vec!["/w/packages/me/x".into(), "/w/dist/me/x".into()],
             lost_work: all_lost_work(),
             dependents: vec![],
+            dependency_conflict: Some("cannot uninstall me/x, which would reactivate vendor/x: lib is disabled; enable it".into()),
         });
         assert!(!plan.registered);
+        assert!(
+            plan.dependency_conflict.is_some(),
+            "dependencyConflict is mirrored"
+        );
         assert_eq!(plan.deletes, ["/w/packages/me/x", "/w/dist/me/x"]);
         assert_eq!(plan.lost_work.len(), 8);
         assert!(matches!(
@@ -2498,7 +2604,8 @@ mod tests {
                 let _ = PackageManager::uninstall_plan;
                 let _ = PackageManager::uninstall;
                 let _ = describe_lost_work;
-                vec!["uninstallPlan", "uninstall"]
+                let _ = uninstall_refusal;
+                vec!["uninstallPlan", "uninstall", "uninstallRefusal"]
             }),
             ("fork", {
                 let _ = PackageManager::fork_packages;
