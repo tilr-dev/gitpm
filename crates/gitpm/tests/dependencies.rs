@@ -166,7 +166,7 @@ fn core_catalog(f: &Fixture) -> String {
     }
     f.publish(&cat, "app/a", "1.0.0", &[("lib/core", "^1.0")]);
     f.publish(&cat, "app/b", "1.0.0", &[("lib/core", "^2.0")]);
-    f.publish(&cat, "app/c", "1.0.0", &[("lib/core", "1")]);
+    f.publish(&cat, "app/c", "1.0.0", &[("lib/core", "^1")]);
     cat
 }
 
@@ -554,7 +554,7 @@ fn cycles_resolve_and_updates_keep_dependents_working() {
         &app,
         "app/a",
         "1.1.0",
-        &[("lib/core", "^1.0"), ("lib/extra", "1")],
+        &[("lib/core", "^1.0"), ("lib/extra", "^1")],
     );
     m.update("app/a").unwrap();
     assert!(ids(&m).contains(&"lib/extra".to_string()));
@@ -988,6 +988,8 @@ fn update_all_coordinates_versions_and_adds_dependencies_atomically() {
         "planning must not change refs, files or state"
     );
     assert_eq!(plan.updates.len(), 2);
+    // Both cross a major version, which is marked, not refused.
+    assert!(plan.updates.iter().all(|c| c.major), "{plan:?}");
     assert_eq!(plan.installs[0].id, "lib/extra");
     assert!(plan.kept_back.is_empty());
     let applied = m.update_all().unwrap();
@@ -1792,5 +1794,43 @@ fn switch_back_to_a_disabled_original_is_guarded() {
     assert_eq!(
         provider(&m, "app/a", "vendor/base"),
         (Some("vendor/base".into()), false)
+    );
+}
+
+#[test]
+fn dependency_ranges_pick_pre_releases_only_when_named() {
+    let f = Fixture::new();
+    let cat = f.catalog("catalog");
+    f.publish(&cat, "lib/core", "1.2.0", &[]);
+    f.publish(&cat, "lib/core", "1.3.0-beta.1", &[]);
+    f.publish(&cat, "app/a", "1.0.0", &[("lib/core", "^1.2.0")]);
+    f.publish(&cat, "app/b", "1.0.0", &[("lib/core", "^1.3.0-beta.1")]);
+    f.publish(&cat, "app/c", "1.0.0", &[("lib/core", "1.2.0")]);
+    let m = f.open(&cat);
+    // A plain range never takes the newer pre-release.
+    m.install_from_catalog("app/a", None).unwrap();
+    assert_eq!(plugin(&m, "lib/core").current.version, "1.2.0");
+    // The bare version is exact and satisfied.
+    m.install_from_catalog("app/c", None).unwrap();
+    // A range naming the pre-release needs it; 1.2.0 is installed and fixed.
+    let error = f.refuses("dependency_conflict", || {
+        m.install_from_catalog("app/b", None)
+    });
+    assert!(error.to_string().contains("lib/core"), "{error}");
+    // update all keeps lib/core at its release: no consumer opts into the beta.
+    let plan = m.update_all_plan().unwrap();
+    assert!(plan.updates.is_empty(), "{plan:?}");
+    // In another workspace the named pre-release is pulled for app/b.
+    let other = Manager::open_with(
+        f.path("other"),
+        Options {
+            catalog: Some(cat.clone()),
+        },
+    )
+    .unwrap();
+    other.install_from_catalog("app/b", None).unwrap();
+    assert_eq!(
+        other.state().unwrap().packages["lib/core"].current.version,
+        "1.3.0-beta.1"
     );
 }

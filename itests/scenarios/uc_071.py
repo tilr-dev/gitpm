@@ -1,6 +1,6 @@
 """UC-071: update all — joint upgrade of every installed package.
 
-Fixture g6_core_deps_installed: app/a (lib/core ^1.0), app/c (lib/core "1"), lib/core 1.1.0
+Fixture g6_core_deps_installed: app/a (lib/core ^1.0), app/c (lib/core ^1), lib/core 1.1.0
 pulled in from the catalog, and other/x 1.0.0. lib/core 2.0.0 exists upstream and in the
 catalog, so lib/core is kept back by its dependents' constraints. `update all` prints one
 line per installed package (state order) and a totals line; `--dry-run` changes nothing.
@@ -52,7 +52,7 @@ def new_dependency_is_installed_from_the_catalog(t: T):
     """app/c 1.1.0 needs dep/new ^1 (only in the catalog): update all installs it as a new dependency."""
     t.new_package("dep/new", "1.0.0")
     t.gitpm_ok("register", t.repo("dep/new"), "--ref", "dep/new@1.0.0")
-    t.release("app/c", "1.1.0", deps={CORE: "1", "dep/new": "^1"})
+    t.release("app/c", "1.1.0", deps={CORE: "^1", "dep/new": "^1"})
     r = t.gitpm_ok("update", "all")
     t.eq(lines(r.out), ["app/a up to date (1.0.0)", "app/c updated 1.0.0 → 1.1.0", KEPT,
                         "other/x up to date (1.0.0)", "dep/new installed 1.0.0 (new dependency)",
@@ -64,12 +64,12 @@ def new_dependency_is_installed_from_the_catalog(t: T):
 @case(fixture="g6_core_deps_installed",
       spec=["updates/joint-upgrade-of-all-packages#app-and-dependency-cross-a-major-boundary-together"])
 def app_and_dependency_cross_a_major_boundary_together(t: T):
-    """app/a 2.0.0 and app/c 2.0.0 require lib/core ^2: update all moves all three in one command."""
+    """app/a 2.0.0 and app/c 2.0.0 require lib/core ^2: update all moves all three in one command, each line marked (major)."""
     t.release("app/a", "2.0.0", deps={CORE: "^2.0"})
     t.release("app/c", "2.0.0", deps={CORE: "^2.0"})
     r = t.gitpm_ok("update", "all")
-    t.eq(lines(r.out), ["app/a updated 1.0.0 → 2.0.0", "app/c updated 1.0.0 → 2.0.0",
-                        f"{CORE} updated 1.1.0 → 2.0.0", "other/x up to date (1.0.0)",
+    t.eq(lines(r.out), ["app/a updated 1.0.0 → 2.0.0 (major)", "app/c updated 1.0.0 → 2.0.0 (major)",
+                        f"{CORE} updated 1.1.0 → 2.0.0 (major)", "other/x up to date (1.0.0)",
                         "3 updates, 0 installs, 0 kept back."], "output")
     for id, v in [("app/a", "2.0.0"), ("app/c", "2.0.0"), (CORE, "2.0.0")]:
         t.eq(t.package(id)["current"]["version"], v, f"{id} version")
@@ -121,7 +121,7 @@ def forced_removal_skips_broken_consumers(t: T):
     resolved = {p["id"]: p for p in t.gitpm_ok("list").json()["resolved"]}
     t.eq([d["satisfied"] for d in resolved["app/a"]["dependencies"]], [False], "app/a still unsatisfied")
     t.has(t.gitpm_ok("check").out, f"Unsatisfied dependency: app/a → {CORE} ^1.0: not installed",
-          f"Unsatisfied dependency: app/c → {CORE} 1: not installed")
+          f"Unsatisfied dependency: app/c → {CORE} ^1: not installed")
 
 
 @case(fixture="g6_core_deps_installed", spec=["updates/update-all-never-removes-or-downgrades#kept-back",

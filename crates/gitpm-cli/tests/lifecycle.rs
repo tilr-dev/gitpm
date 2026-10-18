@@ -199,7 +199,7 @@ fn lifecycle_and_check_without_a_catalog() {
     let out = f.cli_without_catalog(&["check"], true);
     assert_eq!(
         row(&out),
-        "dan/hello 1.0.0 2.0.0 yes origin update available"
+        "dan/hello 1.0.0 2.0.0 (major) yes origin update available"
     );
     assert!(out.contains("dan/hello: 1.0.0 → 2.0.0"), "{out}");
     assert_eq!(fs::read(f.root.join("state.json")).unwrap(), state);
@@ -375,9 +375,10 @@ fn explicit_same_commit_and_numeric_versions_sort_correctly() {
     assert!(f.state()["packages"]["dan/hello"].get("pinned").is_none());
     use gitpm::catalog::version_key;
     assert!(version_key("1.10.0").unwrap() > version_key("1.9.0").unwrap());
-    for invalid in ["01.0.0", "dan/hello@1.0.0", "1.0", "1.0.0-dev", "-1.0.0"] {
+    for invalid in ["01.0.0", "dan/hello@1.0.0", "1.0", "1.0.0+dev", "-1.0.0"] {
         assert!(version_key(invalid).is_err());
     }
+    assert!(version_key("1.0.0-dev").unwrap() < version_key("1.0.0").unwrap());
 }
 
 /// Every `.gitpm.json` / `pm.json` under `dir`: the CLI has no config file.
@@ -1996,7 +1997,7 @@ fn update_past_a_broken_historical_tag_warns_about_it() {
     f.release("2.0.0", "hello v2");
     let (ok, stdout, stderr) = f.output(&["update", "dan/hello"]);
     assert!(ok, "{stderr}");
-    assert_eq!(stdout, "dan/hello updated 1.0.0 → 2.0.0\n");
+    assert_eq!(stdout, "dan/hello updated 1.0.0 → 2.0.0 (major)\n");
     assert!(
         stderr.contains("Warning: skipped release tag dan/hello@1.5.0: invalid manifest"),
         "{stderr}"
@@ -2114,4 +2115,146 @@ fn verified_catalog_protects_updates_and_detach_drops_it() {
     assert!(f.state()["resolved"][0].get("catalog").is_none());
     assert_eq!(f.content(), "hello v2");
     f.cli(&["update", "dan/hello", "--detach"], false);
+}
+
+/// `update` marks a major update, passes over pre-releases (`check` names them) and
+/// `install-catalog --version` takes one by name; `update` then follows its track.
+#[test]
+fn update_lines_mark_major_updates() {
+    let f = Fixture::new();
+    let row = |out: &str| {
+        out.lines()
+            .find(|l| l.starts_with("dan/hello "))
+            .unwrap_or_else(|| panic!("no row: {out}"))
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    f.cli_without_catalog(&["install", f.repo.to_str().unwrap()], true);
+    f.release("1.1.0", "hello v1.1");
+    assert_eq!(
+        f.cli_without_catalog(&["update", "dan/hello"], true),
+        "dan/hello updated 1.0.0 → 1.1.0\n"
+    );
+    f.release("2.0.0-beta.1", "hello v2 beta");
+    assert_eq!(
+        f.cli_without_catalog(&["update", "dan/hello"], true),
+        "dan/hello up to date (1.1.0)\n"
+    );
+    let out = f.cli_without_catalog(&["check"], true);
+    assert_eq!(
+        row(&out),
+        "dan/hello 1.1.0 1.1.0 yes origin up to date; pre-release 2.0.0-beta.1"
+    );
+    f.release("2.0.0", "hello v2");
+    let out = f.cli_without_catalog(&["check"], true);
+    assert_eq!(
+        row(&out),
+        "dan/hello 1.1.0 2.0.0 (major) yes origin update available"
+    );
+    assert_eq!(
+        f.cli_without_catalog(&["update", "all"], true),
+        "dan/hello updated 1.1.0 → 2.0.0 (major)\n1 updates, 0 installs, 0 kept back.\n"
+    );
+
+    // A catalog pre-release is installed by name and then followed to its release.
+    let other = Fixture::new();
+    let location = other.dir.join("cat");
+    let location = location.to_str().unwrap();
+    other.release("1.1.0-rc.1", "hello rc1");
+    other.release("1.1.0-rc.2", "hello rc2");
+    let repo = other.repo.to_str().unwrap();
+    for tag in [
+        "dan/hello@1.0.0",
+        "dan/hello@1.1.0-rc.1",
+        "dan/hello@1.1.0-rc.2",
+    ] {
+        other.cli(
+            &["--catalog", location, "register", repo, "--ref", tag],
+            true,
+        );
+    }
+    let out = other.cli(
+        &["--catalog", location, "install-catalog", "dan/hello"],
+        true,
+    );
+    assert!(out.contains("installed dan/hello@1.0.0 from"), "{out}");
+    other.cli(&["--catalog", location, "uninstall", "dan/hello"], true);
+    let out = other.cli(
+        &[
+            "--catalog",
+            location,
+            "install-catalog",
+            "dan/hello",
+            "--version",
+            "1.1.0-rc.1",
+        ],
+        true,
+    );
+    assert!(out.contains("installed dan/hello@1.1.0-rc.1 from"), "{out}");
+    assert_eq!(
+        other.cli(&["--catalog", location, "update", "dan/hello"], true),
+        "dan/hello updated 1.1.0-rc.1 → 1.1.0-rc.2\n"
+    );
+    other.cli(
+        &[
+            "--catalog",
+            location,
+            "install-catalog",
+            "dan/hello",
+            "--version",
+            "1.1.0+build",
+        ],
+        false,
+    );
+}
+
+/// A catalog package with pre-releases only: `info` says so, an install without
+/// `--version` is refused with `catalog`, `--version` installs the pre-release.
+#[test]
+fn catalog_package_with_pre_releases_only() {
+    let f = Fixture::new();
+    f.git(&["tag", "-d", "dan/hello@1.0.0"]);
+    f.release("2.0.0-beta.1", "hello beta");
+    let location = f.dir.join("cat");
+    let location = location.to_str().unwrap();
+    let repo = f.repo.to_str().unwrap();
+    f.cli(
+        &[
+            "--catalog",
+            location,
+            "register",
+            repo,
+            "--ref",
+            "dan/hello@2.0.0-beta.1",
+        ],
+        true,
+    );
+    let info = f.cli(&["--catalog", location, "info"], true);
+    assert!(info.contains("latest: pre-releases only"), "{info}");
+    let out = f
+        .pm()
+        .current_dir(&f.dir)
+        .args(["--root", f.root.to_str().unwrap(), "--catalog", location])
+        .args(["install-catalog", "dan/hello"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("only pre-release versions"), "{stderr}");
+    let out = f.cli(
+        &[
+            "--catalog",
+            location,
+            "install-catalog",
+            "dan/hello",
+            "--version",
+            "2.0.0-beta.1",
+        ],
+        true,
+    );
+    assert!(
+        out.contains("installed dan/hello@2.0.0-beta.1 from"),
+        "{out}"
+    );
 }

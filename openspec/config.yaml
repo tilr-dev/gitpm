@@ -78,7 +78,8 @@ context: |
     workspace folder `dist/<id>` gitpm copies it to.
   - enabled: the `enabled` flag in state. active: installed, enabled and not replaced.
     deployed: its deployed folder exists (exactly the active packages when dist/ is in sync).
-  - version: MAJOR.MINOR.PATCH. release: a valid release tag (a version at a commit).
+  - version: SemVer MAJOR.MINOR.PATCH with an optional pre-release `-PRE` (no build
+    metadata). release: a valid release tag (a version at a commit).
     revision: the `{version, commit}` pair state records (`current`, `previous`). ref: a
     tag, branch or commit the user names (`--ref`; FFI parameter `reference`). catalog
     `reference`: the tag a catalog release record was generated from.

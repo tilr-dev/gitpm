@@ -438,8 +438,11 @@ fn change_line(change: &gitpm::RevisionChange, verb: &str) -> String {
         )
     } else {
         format!(
-            "{} {verb} {} → {}",
-            change.id, change.from.version, change.to.version
+            "{} {verb} {} → {}{}",
+            change.id,
+            change.from.version,
+            change.to.version,
+            if change.major { " (major)" } else { "" }
         )
     }
 }

@@ -108,6 +108,13 @@ pub struct CheckRow {
     /// For a fork: the original's latest release against the fork base.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub upstream: Option<Upstream>,
+    /// The available update crosses a breaking boundary (see
+    /// [`crate::deps::is_major`]); `false` without an update.
+    pub major: bool,
+    /// A pre-release newer than `latest` that is not offered (pre-releases are
+    /// opt-in); the CLI notes it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prerelease: Option<String>,
 }
 
 impl CheckRow {
@@ -162,15 +169,19 @@ pub fn compare(state: &State, catalog: &Catalog) -> Vec<CheckRow> {
     compare_in(state, catalog, None)
 }
 
-fn latest_version(catalog: &Catalog, id: &str) -> Option<String> {
-    catalog
-        .packages
-        .get(id)?
-        .versions
-        .keys()
-        .filter_map(|v| Some((version_key(v).ok()?, v)))
-        .max()
-        .map(|(_, v)| v.clone())
+/// The newest version of `id` in `catalog` offered to a package at `installed` (no
+/// pre-release unless on the installed pre-release's track).
+fn latest_version(catalog: &Catalog, id: &str, installed: &str) -> Option<String> {
+    crate::catalog::newest_eligible(
+        catalog
+            .packages
+            .get(id)?
+            .versions
+            .keys()
+            .map(String::as_str),
+        Some(installed),
+    )
+    .map(str::to_owned)
 }
 
 /// Rows for `state` against the catalog snapshot `catalog` read from `location`
@@ -261,6 +272,8 @@ fn new_row(id: &str, installed: &Installed, source: CheckSource) -> CheckRow {
         problem: None,
         origin_latest: None,
         upstream: None,
+        major: false,
+        prerelease: None,
     }
 }
 
@@ -277,8 +290,10 @@ fn protected_row(
         return row;
     }
     let top = row.latest.as_deref().unwrap_or(&row.installed);
-    if let (Ok(Some(newest)), Ok(top)) = (origins.latest(&installed.source, id), version_key(top))
-        && version_key(&newest).is_ok_and(|newest| newest > top)
+    if let (Ok(Some(newest)), Ok(top)) = (
+        origins.latest(&installed.source, id, &installed.current.version),
+        version_key(top),
+    ) && version_key(&newest).is_ok_and(|newest| newest > top)
     {
         row.status = CheckStatus::UpstreamNotInCatalog;
         row.origin_latest = Some(newest);
@@ -297,6 +312,7 @@ fn versus(row: &mut CheckRow, latest: &str, newer: CheckStatus) {
         std::cmp::Ordering::Greater => {
             row.update_available = true;
             row.status = CheckStatus::UpdateAvailable;
+            row.major = crate::deps::is_major(&current_key, &latest_key);
         }
         std::cmp::Ordering::Equal => row.status = CheckStatus::UpToDate,
         std::cmp::Ordering::Less => row.status = newer,
@@ -307,11 +323,11 @@ fn upstream(base: &ForkOf, catalog: Option<&Catalog>, origins: &mut Origins) -> 
     let mut problem = None;
     let (latest, source) = match catalog.filter(|c| c.packages.contains_key(&base.id)) {
         Some(catalog) => (
-            latest_version(catalog, &base.id),
+            latest_version(catalog, &base.id, &base.version),
             Some(CheckSource::Catalog),
         ),
         None => match &base.source {
-            Some(source) => match origins.latest(source, &base.id) {
+            Some(source) => match origins.latest(source, &base.id, &base.version) {
                 Ok(latest) => (latest, Some(CheckSource::Origin)),
                 Err(reason) => {
                     problem = Some(reason);
@@ -358,33 +374,56 @@ impl Origins {
             .as_ref()
             .map_err(Clone::clone)
     }
-    /// Newest `ID@VERSION` tag version on `source` by name (its manifest is verified
-    /// only when updating); `Err` is the classified reason the origin was unreadable.
-    fn latest(&mut self, source: &str, id: &str) -> std::result::Result<Option<String>, String> {
+    /// The versions of the `ID@VERSION` tags on `source` by name (their manifests are
+    /// verified only when updating); `Err` is the classified reason the origin was
+    /// unreadable.
+    fn versions(&mut self, source: &str, id: &str) -> std::result::Result<Vec<String>, String> {
         let tags = &self.refs(source)?.tags;
         let prefix = format!("{id}@");
         Ok(tags
             .keys()
-            .filter_map(|name| {
-                let version = name.strip_prefix(&prefix)?;
-                Some((version_key(version).ok()?, version))
-            })
-            .max()
-            .map(|(_, version)| version.to_owned()))
+            .filter_map(|name| name.strip_prefix(&prefix))
+            .filter(|version| version_key(version).is_ok())
+            .map(str::to_owned)
+            .collect())
+    }
+    /// Newest of [`Origins::versions`] offered to a package at `installed`.
+    fn latest(
+        &mut self,
+        source: &str,
+        id: &str,
+        installed: &str,
+    ) -> std::result::Result<Option<String>, String> {
+        let versions = self.versions(source, id)?;
+        Ok(
+            crate::catalog::newest_eligible(versions.iter().map(String::as_str), Some(installed))
+                .map(str::to_owned),
+        )
     }
 }
 
 fn origin_row(id: &str, installed: &Installed, origins: &mut Origins) -> CheckRow {
     let mut row = new_row(id, installed, CheckSource::Origin);
-    match origins.latest(&installed.source, id) {
+    let installed_version = installed.current.version.as_str();
+    match origins.versions(&installed.source, id) {
         Err(problem) => {
             row.status = CheckStatus::OriginUnreachable;
             row.problem = Some(problem);
         }
-        Ok(None) => row.status = CheckStatus::NoReleases,
-        Ok(Some(latest)) => {
-            versus(&mut row, &latest, CheckStatus::NewerThanOrigin);
-            row.latest = Some(latest);
+        Ok(versions) => {
+            let all = || versions.iter().map(String::as_str);
+            match crate::catalog::newest_eligible(all(), Some(installed_version)) {
+                // No release tags, or pre-releases the package does not follow only.
+                None => row.status = CheckStatus::NoReleases,
+                Some(latest) => {
+                    versus(&mut row, latest, CheckStatus::NewerThanOrigin);
+                    row.latest = Some(latest.to_owned());
+                }
+            }
+            let than = row.latest.as_deref().unwrap_or(installed_version);
+            row.prerelease =
+                crate::catalog::newest_prerelease(all(), Some(installed_version), than)
+                    .map(str::to_owned);
         }
     }
     row
@@ -477,11 +516,25 @@ fn compare_listed(
         row.status = CheckStatus::InvalidCatalogData;
         return;
     };
-    let Some((_, latest)) = versions.into_iter().max_by_key(|(key, _)| *key) else {
+    if versions.is_empty() {
         row.status = CheckStatus::NoVersions;
         return;
+    }
+    let all = || plugin.versions.keys().map(String::as_str);
+    let installed_version = installed.current.version.as_str();
+    let Some(latest) = crate::catalog::newest_eligible(all(), Some(installed_version)) else {
+        // Only pre-releases the package is not following.
+        row.status = CheckStatus::NoVersions;
+        row.prerelease =
+            crate::catalog::newest_prerelease(all(), Some(installed_version), installed_version)
+                .map(str::to_owned);
+        return;
     };
+    let latest = &plugin.versions[latest];
     row.latest = Some(latest.manifest.version.clone());
+    row.prerelease =
+        crate::catalog::newest_prerelease(all(), Some(installed_version), &latest.manifest.version)
+            .map(str::to_owned);
     if version_key(&installed.current.version).is_ok()
         && let Some(current) = plugin.versions.get(&installed.current.version)
         && current.commit != installed.current.commit
@@ -874,7 +927,7 @@ mod tests {
             serde_json::json!({
                 "id": "vendor/demo", "installed": "1.9.0", "latest": "1.10.0",
                 "enabled": false, "update_available": true, "status": "update_available",
-                "source": "catalog"
+                "source": "catalog", "major": false
             })
         );
         assert_eq!(serde_json::to_value(CheckSource::Origin).unwrap(), "origin");

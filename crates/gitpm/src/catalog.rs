@@ -204,17 +204,93 @@ fn validate_release_payload(release: &Release, id: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn version_key(version: &str) -> Result<(u64, u64, u64)> {
-    let parts: Vec<_> = version.split('.').collect();
-    ensure!(
-        parts.len() == 3
-            && parts.iter().all(|p| !p.is_empty()
-                && p.bytes().all(|c| c.is_ascii_digit())
-                && (p.len() == 1 || !p.starts_with('0'))),
-        InvalidVersion,
-        "version must be MAJOR.MINOR.PATCH without leading zeros"
-    );
-    Ok((parts[0].parse()?, parts[1].parse()?, parts[2].parse()?))
+/// Parse a package version: SemVer `MAJOR.MINOR.PATCH` with an optional pre-release
+/// `-PRE` (dot-separated identifiers of ASCII letters, digits and hyphens; numbers
+/// without leading zeros), never build metadata. The result orders by SemVer
+/// precedence (`1.0.0-alpha < 1.0.0-beta < 1.0.0`).
+pub fn version_key(version: &str) -> Result<semver::Version> {
+    let invalid = || {
+        Error::InvalidVersion(
+            "version must be MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-PRE without leading zeros or build metadata"
+                .into(),
+        )
+    };
+    let number = |part: &str| {
+        !part.is_empty()
+            && part.bytes().all(|c| c.is_ascii_digit())
+            && (part.len() == 1 || !part.starts_with('0'))
+    };
+    let (core, pre) = match version.split_once('-') {
+        Some((core, pre)) => (core, Some(pre)),
+        None => (version, None),
+    };
+    let parts: Vec<_> = core.split('.').collect();
+    if parts.len() != 3 || !parts.iter().all(|p| number(p)) {
+        return Err(invalid());
+    }
+    let pre = match pre {
+        None => semver::Prerelease::EMPTY,
+        Some(pre) => {
+            let valid = pre.split('.').all(|identifier| {
+                !identifier.is_empty()
+                    && identifier
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || c == b'-')
+                    && (!identifier.bytes().all(|c| c.is_ascii_digit()) || number(identifier))
+            });
+            if !valid {
+                return Err(invalid());
+            }
+            semver::Prerelease::new(pre).map_err(|_| invalid())?
+        }
+    };
+    let parse = |part: &str| part.parse::<u64>().map_err(|_| invalid());
+    Ok(semver::Version {
+        major: parse(parts[0])?,
+        minor: parse(parts[1])?,
+        patch: parse(parts[2])?,
+        pre,
+        build: semver::BuildMetadata::EMPTY,
+    })
+}
+
+/// The version `latest` stands for among `versions` (unparsable ones ignored): the
+/// newest release that is not a pre-release, or, when `installed` is a pre-release,
+/// also a newer pre-release of the same `MAJOR.MINOR.PATCH` (see
+/// [`crate::deps::follows`]).
+pub fn newest_eligible<'a>(
+    versions: impl IntoIterator<Item = &'a str>,
+    installed: Option<&str>,
+) -> Option<&'a str> {
+    let installed = installed.and_then(|v| version_key(v).ok());
+    versions
+        .into_iter()
+        .filter_map(|v| Some((version_key(v).ok()?, v)))
+        .filter(|(key, _)| crate::deps::follows(installed.as_ref(), key))
+        .max()
+        .map(|(_, v)| v)
+}
+
+/// The newest pre-release among `versions` that is newer than `than` and `installed`
+/// and not eligible for `installed` (see [`newest_eligible`]): shown, never offered.
+pub fn newest_prerelease<'a>(
+    versions: impl IntoIterator<Item = &'a str>,
+    installed: Option<&str>,
+    than: &str,
+) -> Option<&'a str> {
+    let installed = installed.and_then(|v| version_key(v).ok());
+    let than = version_key(than).ok()?;
+    versions
+        .into_iter()
+        .filter_map(|v| Some((version_key(v).ok()?, v)))
+        .filter(|(key, _)| {
+            !key.pre.is_empty()
+                && *key > than
+                && installed.as_ref().is_none_or(|installed| key > installed)
+                && !crate::deps::follows(installed.as_ref(), key)
+        })
+        .max()
+        .map(|(_, v)| v)
 }
 
 /// Refusal of a catalog write to an HTTP(S) location (catalogs are written only locally).
@@ -392,12 +468,18 @@ fn selected_impl(location: &str, state: &crate::State, diagnostic: bool) -> Resu
     for (id, current) in wanted {
         if let Some(index) = package_index(location, id)? {
             let mut versions = BTreeMap::new();
-            let latest = index
-                .versions
-                .keys()
-                .max_by_key(|v| version_key(v).unwrap());
+            // `check` compares with the newest version offered to the installed one and
+            // notes the newest pre-release.
+            let all = || index.versions.keys().map(String::as_str);
+            let latest = newest_eligible(all(), current);
+            let prerelease =
+                newest_prerelease(all(), current, latest.or(current).unwrap_or("0.0.0"));
+            let latest = latest.and_then(|v| index.versions.get_key_value(v).map(|(v, _)| v));
+            let prerelease =
+                prerelease.and_then(|v| index.versions.get_key_value(v).map(|(v, _)| v));
             for version in latest
                 .into_iter()
+                .chain(prerelease)
                 .chain(current.and_then(|c| index.versions.get_key_value(c).map(|(v, _)| v)))
             {
                 if !versions.contains_key(version) {
@@ -661,11 +743,15 @@ pub fn lookup(location: &str, id: &str, version: Option<&str>) -> Result<Release
     if let Some(index) = package_index(location, id)? {
         let version = match version {
             Some(v) => v,
-            None => index
-                .versions
-                .keys()
-                .max_by_key(|v| version_key(v).unwrap())
-                .require(Error::Catalog, "package has no versions")?,
+            // The latest is the newest release; a pre-release is taken only by name.
+            None => match newest_eligible(index.versions.keys().map(String::as_str), None) {
+                Some(v) => v,
+                None if index.versions.is_empty() => fail!(Catalog, "package has no versions"),
+                None => fail!(
+                    Catalog,
+                    "{id} has only pre-release versions in the catalog; name one with a version"
+                ),
+            },
         };
         return read_release(location, id, version, &index);
     }
@@ -1000,8 +1086,10 @@ pub fn update_sources(
 pub struct PackageSummary {
     pub id: String,
     pub source: String,
-    /// Versions in ascending numeric order.
+    /// Versions in ascending SemVer order, pre-releases included.
     pub versions: Vec<String>,
+    /// The newest version that is not a pre-release (what `install-catalog` without a
+    /// version installs); `None` when there is none.
     pub latest: Option<String>,
     /// Descriptive metadata of the latest release's manifest (`plugin.json`).
     pub title: Option<String>,
@@ -1051,17 +1139,20 @@ fn summary(
         .collect::<Result<Vec<_>>>()?;
     versions.sort();
     let versions: Vec<String> = versions.into_iter().map(|(_, v)| v).collect();
+    let newest = newest_eligible(versions.iter().map(String::as_str), None).map(str::to_owned);
     // Display only: a missing or broken latest release gives no metadata (install
-    // verifies releases); the overview never fails because of it.
-    let metadata = versions
-        .last()
+    // verifies releases); the overview never fails because of it. A package with
+    // pre-releases only shows the newest one's metadata.
+    let metadata = newest
+        .as_ref()
+        .or(versions.last())
         .and_then(|version| latest(version).ok())
         .map(|release| release.metadata())
         .unwrap_or_default();
     Ok(PackageSummary {
         id: id.into(),
         source: source.into(),
-        latest: versions.last().cloned(),
+        latest: newest,
         versions,
         title: metadata.title,
         description: metadata.description,
@@ -1199,14 +1290,33 @@ pub(crate) mod tests {
     // ---- versions, IDs, hashes ------------------------------------------------------
 
     #[test]
-    fn version_key_is_numeric_major_minor_patch() {
-        assert_eq!(version_key("0.0.0").unwrap(), (0, 0, 0));
-        assert_eq!(version_key("1.10.0").unwrap(), (1, 10, 0));
-        assert!(version_key("1.10.0").unwrap() > version_key("1.9.0").unwrap());
-        assert!(version_key("2.0.0").unwrap() > version_key("1.99.99").unwrap());
-        assert!(version_key("0.1.10").unwrap() > version_key("0.1.9").unwrap());
+    fn version_key_follows_semver_precedence() {
+        let v = |text: &str| version_key(text).unwrap();
+        assert_eq!(v("0.0.0"), semver::Version::new(0, 0, 0));
+        assert_eq!(v("1.10.0"), semver::Version::new(1, 10, 0));
+        assert!(v("1.10.0") > v("1.9.0"));
+        assert!(v("2.0.0") > v("1.99.99"));
+        assert!(v("0.1.10") > v("0.1.9"));
         let max = format!("{0}.{0}.{0}", u64::MAX);
-        assert_eq!(version_key(&max).unwrap(), (u64::MAX, u64::MAX, u64::MAX));
+        assert_eq!(v(&max), semver::Version::new(u64::MAX, u64::MAX, u64::MAX));
+        // Pre-releases come before their release, ordered by identifiers.
+        let ordered = [
+            "1.0.0-0",
+            "1.0.0-alpha",
+            "1.0.0-alpha.1",
+            "1.0.0-alpha.beta",
+            "1.0.0-beta",
+            "1.0.0-beta.2",
+            "1.0.0-beta.11",
+            "1.0.0-rc.1",
+            "1.0.0",
+            "1.0.1-x-y",
+            "1.0.1",
+        ];
+        for pair in ordered.windows(2) {
+            assert!(v(pair[0]) < v(pair[1]), "{} < {}", pair[0], pair[1]);
+        }
+        assert_eq!(v("1.3.0-beta.1").to_string(), "1.3.0-beta.1");
     }
 
     #[test]
@@ -1217,9 +1327,15 @@ pub(crate) mod tests {
             "1.0",
             "1.0.0.0",
             "v1.0.0",
-            "1.0.0-beta",
-            "1.0.0-rc.1",
             "1.0.0+build.5",
+            "1.0.0-beta+build",
+            "1.0.0-",
+            "1.0.0-beta.",
+            "1.0.0-.beta",
+            "1.0.0-01",
+            "1.0.0-beta.01",
+            "1.0.0-beta_1",
+            "1.0.0-bêta",
             "01.0.0",
             "1.00.0",
             "1.0.01",
@@ -1237,6 +1353,15 @@ pub(crate) mod tests {
                 "invalid_version",
                 "{bad:?}"
             );
+        }
+        for good in [
+            "1.0.0-beta",
+            "1.0.0-rc.1",
+            "1.0.0-0",
+            "1.0.0-x-y.7",
+            "1.0.0--",
+        ] {
+            assert!(version_key(good).is_ok(), "{good:?}");
         }
     }
 
@@ -1828,6 +1953,83 @@ pub(crate) mod tests {
                 .unwrap()
                 .packages
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn latest_skips_pre_releases_and_check_marks_major() {
+        let dir = TempDir::new("catalog");
+        let cat = dir.join("catalog");
+        for (v, c) in [
+            ("1.2.0", 'a'),
+            ("1.3.0-beta.1", 'b'),
+            ("2.0.0", 'c'),
+            ("2.1.0-rc.1", 'd'),
+        ] {
+            save(&cat, &release("dan/demo1", v, SOURCE, c));
+        }
+        // SemVer order; latest is the newest release; a pre-release is taken by name.
+        let summary = browse(loc(&cat)).unwrap();
+        let package = summary
+            .items
+            .iter()
+            .find_map(|item| match item {
+                OverviewItem::Package { package, .. } => Some(package),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            package.versions,
+            ["1.2.0", "1.3.0-beta.1", "2.0.0", "2.1.0-rc.1"]
+        );
+        assert_eq!(package.latest.as_deref(), Some("2.0.0"));
+        assert_eq!(
+            lookup(loc(&cat), "dan/demo1", None)
+                .unwrap()
+                .manifest
+                .version,
+            "2.0.0"
+        );
+        assert_eq!(
+            lookup(loc(&cat), "dan/demo1", Some("1.3.0-beta.1"))
+                .unwrap()
+                .commit,
+            "b".repeat(40)
+        );
+        // check: 2.0.0 is a major update; the newer 2.1.0-rc.1 is named, not offered.
+        let state = state_with("dan/demo1", SOURCE, "1.2.0", &"a".repeat(40));
+        let snapshot = selected(loc(&cat), &state).unwrap();
+        let row = crate::check::compare(&state, &snapshot).remove(0);
+        assert_eq!(
+            (
+                row.status,
+                row.latest.as_deref(),
+                row.major,
+                row.prerelease.as_deref()
+            ),
+            (
+                crate::check::CheckStatus::UpdateAvailable,
+                Some("2.0.0"),
+                true,
+                Some("2.1.0-rc.1")
+            )
+        );
+        // An installed pre-release follows its own track to the release.
+        let state = state_with("dan/demo1", SOURCE, "1.3.0-beta.1", &"b".repeat(40));
+        let row = crate::check::compare(&state, &selected(loc(&cat), &state).unwrap()).remove(0);
+        assert_eq!((row.latest.as_deref(), row.major), (Some("2.0.0"), true));
+        // Only pre-releases: nothing to install without a version.
+        save(&cat, &release("dan/beta", "1.0.0-beta.1", SOURCE, 'e'));
+        let error = lookup(loc(&cat), "dan/beta", None).unwrap_err();
+        assert_eq!(error.kind(), "catalog");
+        assert!(error.to_string().contains("only pre-release"), "{error}");
+        assert_eq!(newest_eligible(["1.0.0-beta.1"], None), None);
+        assert_eq!(
+            newest_eligible(
+                ["1.0.0-beta.1", "1.0.0-beta.2", "1.1.0-beta"],
+                Some("1.0.0-beta.1")
+            ),
+            Some("1.0.0-beta.2")
         );
     }
 

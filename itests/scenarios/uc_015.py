@@ -77,3 +77,39 @@ def installed_release_retagged(t: T):
         t.same(before, "workspace")
     t.eq(t.package(ID)["current"], installed, "installed revision kept by commit")
     t.eq(t.rev(t.clone(ID), f"{ID}@0.1.0"), moved, "the clone took the moved tag")
+
+
+# Anchors: the requirements "Major updates are marked" and "Pre-releases are opt-in" arrive
+# with change pre-release-versions; until it is archived these cases point at the stable
+# update requirement.
+@case(fixture="hello_installed", spec=["updates/stable-update-moves-to-the-newest-release"])
+def major_update_is_marked(t: T):
+    """7. 0.1.0 → 0.1.1 is a plain line; across a breaking boundary (0.x minor, then 2.0.0) the line ends with (major)."""
+    t.release(ID, "0.1.1")
+    t.eq(t.gitpm_ok("update", ID).out.strip(), f"{ID} updated 0.1.0 → 0.1.1", "compatible update")
+    t.release(ID, "1.0.0")
+    t.release(ID, "2.0.0")
+    t.has(t.gitpm_ok("check", env={"GITPM_CATALOG": ""}).out, "2.0.0 (major)")
+    t.eq(t.gitpm_ok("update", ID).out.strip(), f"{ID} updated 0.1.1 → 2.0.0 (major)", "major update")
+    t.eq(t.package(ID)["current"]["version"], "2.0.0", "moved across the major version")
+
+
+@case(fixture="hello_installed", spec=["updates/stable-update-moves-to-the-newest-release"])
+def pre_releases_are_opt_in(t: T):
+    """8. A newer pre-release is shown by check, skipped by update and update all, installed by --ref,
+    and then followed (back in release mode) to newer pre-releases of the same version and the release."""
+    t.release(ID, "0.2.0-beta.1")
+    before = t.snap(t.ws)
+    t.eq(t.gitpm_ok("update", ID).out.strip(), f"{ID} up to date (0.1.0)", "update skips the pre-release")
+    t.has(t.gitpm_ok("update", "all").out, f"{ID} up to date (0.1.0)")
+    t.same(before, "workspace")
+    t.has(t.gitpm_ok("check", env={"GITPM_CATALOG": ""}).out, "pre-release 0.2.0-beta.1")
+    t.gitpm_ok("update", ID, "--ref", f"{ID}@0.2.0-beta.1")
+    t.eq(t.package(ID)["current"]["version"], "0.2.0-beta.1", "installed by name")
+    t.release(ID, "0.2.0-beta.2")
+    t.release(ID, "0.3.0-beta.1")
+    t.gitpm_ok("update", ID, "--release")
+    t.eq(t.package(ID)["current"]["version"], "0.2.0-beta.2", "follows its own track")
+    t.release(ID, "0.2.0")
+    t.eq(t.gitpm_ok("update", ID).out.strip(), f"{ID} updated 0.2.0-beta.2 → 0.2.0", "to the release, not major")
+    t.eq(t.gitpm_ok("update", ID).out.strip(), f"{ID} up to date (0.2.0)", "never another version's pre-release")

@@ -12,7 +12,7 @@
 - **THEN** it fails with `invalid_manifest` (rule in plugin-metadata, "Lenient reading, strict authoring")
 
 #### Scenario: Release one package of a multi-package repository
-- **WHEN** the author runs `gitpm commit ./tilr-plugins 0.2.0 --package tilr/store`
+- **WHEN** the author runs `gitpm commit ./tilr-packages 0.2.0 --package tilr/store`
 - **THEN** it prints `tilr/store committed 0.2.0 (local commit and tag tilr/store@0.2.0)`
 
 #### Scenario: Release a pre-release

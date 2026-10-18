@@ -41,7 +41,14 @@ pub mod catalog {
         let mut text = format!(
             "{} — latest: {}, versions: {}\n    Git: {}",
             package.id,
-            package.latest.as_deref().unwrap_or("no releases"),
+            package
+                .latest
+                .as_deref()
+                .unwrap_or(if package.versions.is_empty() {
+                    "no releases"
+                } else {
+                    "pre-releases only"
+                }),
             package.versions.len(),
             package.source
         );
@@ -122,6 +129,7 @@ pub mod check {
         };
         // A branch row compares commits: its latest is the branch HEAD.
         let latest = |row: &CheckRow| match (&row.latest, &row.mode) {
+            (Some(latest), _) if row.major => format!("{latest} (major)"),
             (Some(latest), _) => latest.clone(),
             (None, Mode::Branch(branch)) => format!("{branch} HEAD"),
             (None, _) => "—".into(),
@@ -139,6 +147,10 @@ pub mod check {
                 Mode::Release => {}
                 Mode::Pinned(reference) => status.push_str(&format!(" ({reference})")),
                 Mode::Branch(branch) => status.push_str(&format!(" (branch {branch})")),
+            }
+            // A newer pre-release is named, never offered.
+            if let Some(prerelease) = &row.prerelease {
+                status.push_str(&format!("; pre-release {prerelease}"));
             }
             output.push_str(&format!(
                 "{:<24} {:<14} {} {:<8} {:<8} {}\n",
@@ -232,7 +244,25 @@ pub mod check {
                 } else {
                     CheckStatus::UpToDate
                 },
+                major: false,
+                prerelease: None,
             }
+        }
+        #[test]
+        fn table_marks_major_updates_and_names_pre_releases() {
+            let mut major = row(true);
+            major.installed = "1.2.0".into();
+            major.latest = Some("2.0.0".into());
+            major.major = true;
+            major.prerelease = Some("2.1.0-rc.1".into());
+            let text = display(&[major]);
+            assert!(text.contains("2.0.0 (major)"), "{text}");
+            assert!(
+                text.contains("update available; pre-release 2.1.0-rc.1"),
+                "{text}"
+            );
+            assert!(text.contains("demo: 1.2.0 → 2.0.0 (major)"), "{text}");
+            assert!(!display(&[row(true)]).contains("(major)"));
         }
         #[test]
         fn table_lists_updates_and_colors_only_on_request() {

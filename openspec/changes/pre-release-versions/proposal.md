@@ -12,6 +12,7 @@ Today versions are `MAJOR.MINOR.PATCH` only (`catalog::version_key` refuses anyt
 - Authors mark a breaking release only by its version number (major; minor for 0.x); no extra manifest field.
 - Pre-releases `MAJOR.MINOR.PATCH-PRE` as npm: valid in manifests, tags and catalogs, ordered by SemVer, shown by the catalog and `check`, never picked implicitly by `install`/`update`/`update all`; installable explicitly (`--version 1.3.0-beta.1`, `--ref` of its tag); once installed, `update` follows pre-releases of the same `1.3.0` and the final `1.3.0`. A range like `^1.2.0` does not match pre-releases unless it names one of the same version (`^1.3.0-beta`).
 - Build metadata (`+build`) stays refused.
+- **BREAKING** Library API: `catalog::version_key` returns `semver::Version` (was a `(u64, u64, u64)` tuple); `deps::Range` becomes gitpm's own pre-release-aware version set (was `pubgrub::Ranges<Version>`); `RevisionChange.major`, `CheckRow.major`, `CheckRow.prerelease` are new fields (FFI too); `PackageSummary.latest` is the newest version that is not a pre-release. Migration: compare `version_key` results as versions; read the new fields.
 
 ## Capabilities
 

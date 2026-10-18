@@ -97,11 +97,26 @@ refused_case("existing_version_refused", "0.1.0", "version_conflict",
              "The current version (tag exists) is refused.")
 refused_case("existing_future_tag_refused", "0.3.0", "version_conflict",
              "A version whose scoped tag already exists (made by hand) is refused.", _future_tag)
-for _name, _version in [("two_parts", "0.2"), ("prerelease", "1.0.0-beta"), ("build_metadata", "1.0.0+build.1"),
+for _name, _version in [("two_parts", "0.2"), ("prerelease", "1.0.0-01"), ("build_metadata", "1.0.0+build.1"),
                         ("leading_zero", "01.0.0"), ("v_prefix", "v1.0.0"), ("four_parts", "1.0.0.0"),
                         ("text", "latest")]:
     refused_case(f"malformed_version_{_name}", _version, "invalid_version",
                  f"Malformed version {_version!r} is refused.")
+
+
+# Anchor: the scenario "Release a pre-release" arrives with change pre-release-versions;
+# until it is archived the case points at the requirement.
+@case(spec=["authoring/commit-releases-a-version"])
+def prerelease_is_released_but_not_installed_by_default(t: T):
+    """A pre-release version gets its ID@VERSION tag; a plain install still takes the release."""
+    repo, bare = author(t)
+    t.write(repo, {"dist/index.js": "export const greeting = 'beta';\n"})
+    r = t.gitpm_ok("commit", repo, "0.2.0-beta.1")
+    t.has(r.out, f"{ID} committed 0.2.0-beta.1 (local commit and tag {ID}@0.2.0-beta.1)")
+    t.eq(t.rev(repo, f"{ID}@0.2.0-beta.1"), t.rev(repo), "tag at HEAD")
+    no_side_effects(t, bare)
+    t.gitpm_ok("install", repo)
+    t.ok(t.package(ID)["current"]["version"] != "0.2.0-beta.1", "the pre-release is not picked")
 
 
 @case(spec=["authoring/commit-releases-a-version", "install-uninstall/install-an-explicit-ref-or-a-branch"])

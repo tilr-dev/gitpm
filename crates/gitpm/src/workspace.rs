@@ -262,6 +262,9 @@ pub struct RevisionChange {
     pub from: Revision,
     pub to: Revision,
     pub changed: bool,
+    /// `to` is a newer version outside the caret range of `from` (a new MAJOR; for 0.x
+    /// a new MINOR; see [`crate::deps::is_major`]): a breaking update.
+    pub major: bool,
     /// Metadata keys of the new manifest with the wrong type, ignored; for a package
     /// that stays in release mode, a moved (`release tag ID@V now points to COMMIT; the
     /// installed commit is kept`) or deleted (`installed release ID@V no longer exists
@@ -1479,6 +1482,9 @@ impl Manager {
                 if let Some(warning) = release_tag_warning(&repo, id, &installed.current, &found) {
                     tag_warnings.insert(id.clone(), warning);
                 }
+                // Pre-releases only on the installed pre-release's track.
+                let mut found = found;
+                found.offered(Some(&current));
                 skipped.extend(found.skipped);
                 for tag in found.tags {
                     let version = deps::version(&tag.manifest.version)?;
@@ -1574,6 +1580,7 @@ impl Manager {
                     from: installed.current.clone(),
                     to: next.clone(),
                     changed: true,
+                    major: deps::is_major_text(&installed.current.version, &next.version),
                     warnings: metadata_warnings(m),
                     skipped: Vec::new(),
                     unchanged_reason: None,
@@ -1693,6 +1700,7 @@ impl Manager {
                 from: p.current.clone(),
                 to: p.current.clone(),
                 changed: false,
+                major: false,
                 warnings: Vec::new(),
                 skipped,
                 unchanged_reason: reason,
@@ -1772,12 +1780,15 @@ impl Manager {
                         Err(Error::NoReleases(_)) if following => releases::Discovery::default(),
                         other => other?,
                     };
+                    let current_version = catalog::version_key(&p.current.version)?;
+                    // The installed release tag is looked up among all of them.
+                    let tag_warning = release_tag_warning(&repo, id, &p.current, &found);
+                    // Pre-releases only on the installed pre-release's track.
+                    found.offered(Some(&current_version));
                     if !found.tags.is_empty() {
                         found.ensure_latest_is_valid()?;
                     }
-                    let tag_warning = release_tag_warning(&repo, id, &p.current, &found);
                     skipped = std::mem::take(&mut found.skipped);
-                    let current_version = catalog::version_key(&p.current.version)?;
                     let latest = found.tags.pop();
                     let latest_version = latest
                         .as_ref()
@@ -1896,6 +1907,7 @@ impl Manager {
             txn.deploy(id, &relative, path.as_deref(), &next.commit)?;
             Ok(RevisionChange {
                 id: id.into(),
+                major: deps::is_major_text(&p.current.version, &next.version),
                 from: p.current.clone(),
                 to: next,
                 changed: true,
@@ -1975,6 +1987,7 @@ impl Manager {
                 from: p.current,
                 to: previous.without_mode(),
                 changed: true,
+                major: false,
                 warnings: Vec::new(),
                 skipped: Vec::new(),
                 unchanged_reason: None,
@@ -2621,6 +2634,30 @@ fn clone_revision(txn: &Txn, fetch: &Fetch, name: &str) -> Result<Cloned> {
                 }
                 other => other?,
             };
+            // Pre-releases are installed only by name.
+            let id = found
+                .tags
+                .first()
+                .map(|tag| tag.manifest.id.clone())
+                .or_else(|| fetch.package.map(str::to_owned))
+                .unwrap_or_default();
+            if found.offered(None) && found.tags.is_empty() {
+                if found.skipped.is_empty() {
+                    fail!(
+                        NoReleases,
+                        "{id} has only pre-release tags; install one by ref ({id}@VERSION)"
+                    );
+                }
+                fail!(
+                    NoReleases,
+                    "no usable release tags for {id} (pre-release tags are installed only by ref){}",
+                    found
+                        .skipped
+                        .iter()
+                        .map(|s| format!("; skipped {}", s.reason))
+                        .collect::<String>()
+                );
+            }
             found.ensure_latest_is_valid()?;
             skipped = std::mem::take(&mut found.skipped);
             let latest = found.tags.pop().require(Error::NoReleases, "no releases")?;
@@ -2786,16 +2823,22 @@ fn catalog_candidates(
         "catalog {location} that protects {id} is no longer verified; detach {id} to update it from its origin"
     );
     let current = catalog::version_key(&installed.current.version)?;
+    // Pre-releases only on the installed pre-release's track (opt-in).
     let mut listed = catalog::versions(location, id)?
         .into_iter()
         .map(|version| Ok((catalog::version_key(&version)?, version)))
+        .filter(|found| {
+            found
+                .as_ref()
+                .map_or(true, |(key, _)| deps::follows(Some(&current), key))
+        })
         .collect::<Result<Vec<_>>>()?;
     listed.sort();
     let top = listed
         .last()
-        .map(|(key, _)| *key)
-        .unwrap_or(current)
-        .max(current);
+        .map(|(key, _)| key.clone())
+        .unwrap_or_else(|| current.clone())
+        .max(current.clone());
     let mut releases = Vec::new();
     for (key, version) in listed {
         if key <= current {
@@ -2822,7 +2865,7 @@ fn catalog_candidates(
                     &tag.manifest.version,
                 ))
             })
-            .filter(|(key, _)| *key > top)
+            .filter(|(key, _)| *key > top && deps::follows(Some(&current), key))
             .max()
             .map(|(_, version)| version.clone()),
         Err(_) => None,
@@ -4105,6 +4148,150 @@ mod tests {
         assert_eq!(forward.to.commit, v2);
         // Fetching from the missing origin fails without changes.
         ws.refuses("git", || m.update(id));
+    }
+
+    #[test]
+    fn major_updates_are_marked() {
+        let (ws, m) = Ws::installed("dan/demo1");
+        let id = "dan/demo1";
+        // 0.x: a new PATCH is compatible, a new MINOR is major.
+        ws.author.release("0.1.1");
+        let change = m.update(id).unwrap();
+        assert!(change.changed && !change.major, "{change:?}");
+        ws.author.release("0.2.0");
+        assert!(m.update(id).unwrap().major);
+        // Across a major version, not held back by itself.
+        ws.author.release("1.0.0");
+        ws.author.release("1.1.0");
+        ws.author.release("2.0.0");
+        let change = m.update(id).unwrap();
+        assert_eq!(
+            (change.from.version.as_str(), change.to.version.as_str()),
+            ("0.2.0", "2.0.0")
+        );
+        assert!(change.major);
+        assert_eq!(
+            serde_json::to_value(&change).unwrap()["major"],
+            serde_json::json!(true)
+        );
+        // A rollback is never major.
+        assert!(!m.rollback(id).unwrap().major);
+        m.rollback(id).unwrap();
+        ws.author.release("2.1.0");
+        let plan = m.update_all().unwrap();
+        assert_eq!(
+            plan.updates
+                .iter()
+                .map(|c| (c.to.version.as_str(), c.major))
+                .collect::<Vec<_>>(),
+            [("2.1.0", false)]
+        );
+        ws.author.release("3.0.0");
+        let plan = m.update_all_plan().unwrap();
+        assert!(plan.updates[0].major, "{plan:?}");
+        assert!(!m.update(id).unwrap().to.version.is_empty());
+        assert!(
+            !m.update(id).unwrap().major,
+            "an unchanged update is not major"
+        );
+    }
+
+    #[test]
+    fn pre_releases_are_opt_in() {
+        let id = "dan/demo1";
+        let (ws, m) = Ws::installed(id);
+        // A newer pre-release is never picked implicitly, nor reported as broken.
+        ws.author.release("1.3.0-beta.1");
+        let noop = m.update(id).unwrap();
+        assert!(!noop.changed, "{noop:?}");
+        assert_eq!(noop.to.version, "0.1.0");
+        let plan = m.update_all_plan().unwrap();
+        assert!(
+            plan.updates.is_empty() && plan.kept_back.is_empty(),
+            "{plan:?}"
+        );
+        let rows = m.check().unwrap();
+        assert_eq!(
+            (
+                rows[0].status,
+                rows[0].latest.as_deref(),
+                rows[0].prerelease.as_deref()
+            ),
+            (
+                check::CheckStatus::UpToDate,
+                Some("0.1.0"),
+                Some("1.3.0-beta.1")
+            )
+        );
+        // A fresh install takes the newest release too.
+        let other = Manager::open(ws.dir.join("other")).unwrap();
+        assert_eq!(
+            other.install(ws.author.source()).unwrap().current.version,
+            "0.1.0"
+        );
+        // Named explicitly, it is installed (a tag ref pins).
+        let tag = identity::release_tag(id, "1.3.0-beta.1");
+        let change = m.update_to(id, Target::Ref(tag.clone())).unwrap();
+        assert_eq!(change.to.version, "1.3.0-beta.1");
+        assert!(
+            change.major,
+            "0.1.0 → 1.3.0-beta.1 crosses a breaking boundary"
+        );
+        // Back in release mode it follows its own track: newer pre-releases of 1.3.0
+        // and the release, never another version's pre-release.
+        ws.author.release("1.3.0-beta.2");
+        ws.author.release("1.4.0-beta.1");
+        let change = m.update_to(id, Target::Release).unwrap();
+        assert_eq!(change.to.version, "1.3.0-beta.2");
+        assert_eq!(change.mode, Mode::Release);
+        assert!(!m.update(id).unwrap().changed);
+        assert!(m.update_all_plan().unwrap().updates.is_empty());
+        ws.author.release("1.3.0");
+        let change = m.update(id).unwrap();
+        assert_eq!((change.to.version.as_str(), change.major), ("1.3.0", false));
+        let noop = m.update(id).unwrap();
+        assert!(!noop.changed, "{noop:?}");
+        // The track ends at the newest release, which may be past its own version.
+        let (ws, m) = Ws::installed(id);
+        ws.author.release("1.3.0-beta.1");
+        m.update_to(id, Target::Ref(identity::release_tag(id, "1.3.0-beta.1")))
+            .unwrap();
+        ws.author.release("1.3.0-beta.2");
+        m.update_to(id, Target::Release).unwrap();
+        ws.author.release("1.4.0");
+        let change = m.update(id).unwrap();
+        assert_eq!(
+            (
+                change.from.version.as_str(),
+                change.to.version.as_str(),
+                change.major
+            ),
+            ("1.3.0-beta.2", "1.4.0", false)
+        );
+        // update all follows the track of an installed pre-release as well.
+        let (ws, m) = Ws::installed(id);
+        ws.author.release("2.0.0-rc.1");
+        m.update_to(id, Target::Ref(identity::release_tag(id, "2.0.0-rc.1")))
+            .unwrap();
+        m.update_to(id, Target::Release).unwrap();
+        ws.author.release("2.0.0-rc.2");
+        ws.author.release("2.1.0-rc.1");
+        let plan = m.update_all().unwrap();
+        assert_eq!(plan.updates[0].to.version, "2.0.0-rc.2", "{plan:?}");
+        // A repository with pre-release tags only has nothing to install implicitly.
+        let beta = ws.other_author("beta", "dan/beta");
+        fixture_git(&beta.path, &["tag", "-d", "dan/beta@0.1.0"]);
+        beta.release("1.0.0-beta.1");
+        let error = ws.refuses("no_releases", || m.install(beta.source()));
+        assert!(error.to_string().contains("only pre-release"), "{error}");
+        let installed = m
+            .install_package(
+                beta.source(),
+                None,
+                InstallTarget::Ref(identity::release_tag("dan/beta", "1.0.0-beta.1")),
+            )
+            .unwrap();
+        assert_eq!(installed.current.version, "1.0.0-beta.1");
     }
 
     #[test]

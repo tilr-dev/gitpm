@@ -804,6 +804,22 @@ mod tests {
             fs::read_to_string(repo.join("plugin.json")).unwrap(),
             "{\n  \"id\": \"dan/demo1\",\n  \"version\": \"0.2.0\",\n  \"dependencies\": {},\n  \"title\": \"demo1\"\n}\n"
         );
+        // A pre-release is released like any version and is a release tag, but not
+        // the latest release.
+        fs::write(repo.join("dist/index.js"), "v3 beta").unwrap();
+        assert_eq!(
+            commit(&repo, "0.3.0-beta.1").unwrap().tag,
+            "dan/demo1@0.3.0-beta.1"
+        );
+        let found = crate::releases::discover(&repo, None).unwrap();
+        assert_eq!(found.last().unwrap().manifest.version, "0.3.0-beta.1");
+        assert_eq!(
+            crate::releases::latest(&repo, None)
+                .unwrap()
+                .manifest
+                .version,
+            "0.2.0"
+        );
     }
 
     #[test]
@@ -818,7 +834,7 @@ mod tests {
             ("0.1.0", "version_conflict"),
             ("0.3.0", "version_conflict"),
             ("0.2", "invalid_version"),
-            ("1.0.0-beta", "invalid_version"),
+            ("1.0.0+build", "invalid_version"),
         ];
         for (version, kind) in cases {
             assert_eq!(

@@ -609,6 +609,9 @@ pub struct RevisionChange {
     pub to: Revision,
     /// False when the package was already at the target revision.
     pub changed: bool,
+    /// A breaking update: `to` is newer and outside the caret range of `from` (a new
+    /// MAJOR; for 0.x a new MINOR). The CLI line ends with ` (major)`.
+    pub major: bool,
     /// Ignored wrong-typed metadata keys of the new manifest.
     pub warnings: Vec<String>,
     /// Broken release tags passed over while choosing the latest release.
@@ -630,6 +633,7 @@ impl From<pm::RevisionChange> for RevisionChange {
             from: c.from.into(),
             to: c.to.into(),
             changed: c.changed,
+            major: c.major,
             warnings: c.warnings,
             skipped: c.skipped.into_iter().map(Into::into).collect(),
             unchanged_reason: c.unchanged_reason.map(Into::into),
@@ -965,6 +969,10 @@ pub struct CheckRow {
     pub origin_latest: Option<String>,
     /// For a fork: where its original stands in the catalog or at its origin.
     pub upstream: Option<Upstream>,
+    /// The available update is a major one (`check` shows `LATEST (major)`).
+    pub major: bool,
+    /// A newer pre-release that is not offered (pre-releases are opt-in).
+    pub prerelease: Option<String>,
 }
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct Upstream {
@@ -993,6 +1001,8 @@ impl From<pm::check::CheckRow> for CheckRow {
             mode: r.mode.into(),
             problem: r.problem,
             origin_latest: r.origin_latest,
+            major: r.major,
+            prerelease: r.prerelease,
             upstream: r.upstream.map(|u| Upstream {
                 id: u.id,
                 base: u.base,
@@ -1121,6 +1131,8 @@ pub struct PackageSummary {
     pub id: String,
     pub source: String,
     pub versions: Vec<String>,
+    /// The newest version that is not a pre-release (what `install-catalog` without a
+    /// version installs); `None` when there is none.
     pub latest: Option<String>,
     /// Descriptive metadata of the latest release.
     pub title: Option<String>,
@@ -2214,6 +2226,8 @@ mod tests {
                 mode: pm::Mode::Pinned("me/x@1.0.0".into()),
                 problem: Some("unreachable".into()),
                 origin_latest: Some("1.2.0".into()),
+                major: true,
+                prerelease: Some("2.1.0-rc.1".into()),
                 upstream: Some(pm::check::Upstream {
                     id: "vendor/x".into(),
                     base: "0.9.0".into(),
@@ -2234,6 +2248,8 @@ mod tests {
         assert!(check.catalog_verified);
         let row = &check.rows[0];
         assert_eq!(row.origin_latest.as_deref(), Some("1.2.0"));
+        assert!(row.major);
+        assert_eq!(row.prerelease.as_deref(), Some("2.1.0-rc.1"));
         assert_eq!(
             (
                 row.id.as_str(),
@@ -2388,8 +2404,9 @@ mod tests {
         let change = RevisionChange::from(pm::RevisionChange {
             id: "me/x".into(),
             from: revision("1.0.0"),
-            to: revision("1.1.0"),
+            to: revision("2.0.0"),
             changed: true,
+            major: true,
             warnings: vec!["w".into()],
             skipped: skipped(),
             unchanged_reason: Some(pm::UnchangedReason::Pinned {
@@ -2399,7 +2416,7 @@ mod tests {
             detached: Some("/catalogs/a".into()),
             dist: report(),
         });
-        assert!(change.changed);
+        assert!(change.changed && change.major);
         assert_eq!(change.detached.as_deref(), Some("/catalogs/a"));
         assert_eq!(
             UnchangedReason::from(pm::UnchangedReason::NotInCatalog {
@@ -2431,7 +2448,7 @@ mod tests {
         );
         assert_eq!(
             (change.from.version.as_str(), change.to.version.as_str()),
-            ("1.0.0", "1.1.0")
+            ("1.0.0", "2.0.0")
         );
         assert_eq!(change.warnings, ["w"]);
         assert_eq!(change.skipped[0].name, "me/x@0.5.0");
@@ -2778,6 +2795,8 @@ mod tests {
                 problem: None,
                 origin_latest: (status == S::UpstreamNotInCatalog).then(|| "1.2.0".into()),
                 upstream: None,
+                major: false,
+                prerelease: None,
             });
             assert_eq!(format!("{:?}", row.status), name);
             if status == S::UpstreamNotInCatalog {

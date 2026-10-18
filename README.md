@@ -78,7 +78,7 @@ $ echo 'export const greeting = "greeter v2";' > greeter/dist/index.js
 $ echo '{"id": "acme/greeter", "version": "0.2.0"}' > greeter/plugin.json
 $ git -C greeter commit -qam "greeter 0.2.0" && git -C greeter tag acme/greeter@0.2.0
 $ gitpm update acme/greeter
-acme/greeter updated 0.1.0 → 0.2.0
+acme/greeter updated 0.1.0 → 0.2.0 (major)
 $ cat gitpm-workspace/dist/acme/greeter/index.js
 export const greeting = "greeter v2";
 $ gitpm rollback acme/greeter
@@ -86,7 +86,7 @@ acme/greeter rolled back 0.2.0 → 0.1.0
 $ cat gitpm-workspace/dist/acme/greeter/index.js
 export const greeting = "greeter v1";
 $ gitpm update acme/greeter
-acme/greeter updated 0.1.0 → 0.2.0
+acme/greeter updated 0.1.0 → 0.2.0 (major)
 $ gitpm update acme/greeter
 acme/greeter up to date (0.2.0)
 $ gitpm install ./greeter         # installed already: nothing changes, exit 0
@@ -183,7 +183,7 @@ installed acme/greeter@0.1.0 from /…/greeter
 $ gitpm update acme/greeter
 acme/greeter pinned at 0.1.0 (acme/greeter@0.1.0)
 $ gitpm update acme/greeter --release
-acme/greeter updated 0.1.0 → 0.2.0
+acme/greeter updated 0.1.0 → 0.2.0 (major)
 ```
 
 `forget ID` keeps the whole record in `state.json` under `forgotten` (own clone or shared
@@ -297,7 +297,7 @@ $ gitpm update acme/hello                     # the origin also has 0.2.0, not r
 acme/hello kept at 0.1.1 (upstream 0.2.0 not in catalog)
 $ gitpm update acme/hello --detach
 acme/hello detached from catalog /…/catalog/catalog.json; it now follows its origin
-acme/hello updated 0.1.1 → 0.2.0
+acme/hello updated 0.1.1 → 0.2.0 (major)
 ```
 
 `gitpm fork ID --ns NAMESPACE --into DIR` copies an installed package (with its Git
@@ -731,6 +731,29 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   a record that names an unverified catalog (written by an earlier gitpm) is still
   protected and its updates fail with `catalog` ("… is no longer verified") until you run
   `update ID --detach` (or verify that catalog).
+- Dependency requirements follow npm, not Cargo ([Dependencies](#dependencies)): a bare
+  version `1.2.3` means exactly 1.2.3 (was `^1.2.3`); `^`, `~`, `*` and space-separated
+  comparators (`>=1.3.0 <2.0.0`, AND) remain; commas (`>=1.3, <2`), bare partial versions
+  (`1.2`), wildcards (`1.*`), `||` and hyphen ranges are refused with
+  `invalid_manifest`. Migration: write `^1.2.3` where a bare `1.2.3` meant "compatible",
+  `^1.2` for `1.2`, `>=1.3.0 <2.0.0` for `>=1.3, <2`. `fork` keeps writing rewritten
+  requirements as `^V`; `init` writes no dependencies.
+- Versions may carry a pre-release (`1.3.0-beta.1`, SemVer order: `1.0.0-alpha <
+  1.0.0-beta < 1.0.0`) in manifests, `--version`, catalogs and release tags
+  (`ID@1.3.0-beta.1`); build metadata (`+build`) stays `invalid_version`. Pre-releases
+  are opt-in ([Versions and pre-releases](#versions-and-pre-releases)). Library:
+  `catalog::version_key` returns a `semver::Version` (was a `(u64, u64, u64)` tuple);
+  `deps::Range` is gitpm's own pre-release-aware version set (was `pubgrub::Ranges`);
+  new `deps::follows`, `deps::is_major`, `deps::is_major_text`,
+  `catalog::newest_eligible`, `catalog::newest_prerelease`,
+  `releases::Discovery::offered`; `PackageSummary.latest` is the newest version that is
+  not a pre-release.
+- `update ID` and `update all` cross major versions and mark them: `RevisionChange.major`
+  (also on each `UpdateAllPlan.updates` entry) and the CLI line `ID updated 1.2.3 → 2.0.0
+  (major)`; `check` rows gain `major` (LATEST shown as `2.0.0 (major)`) and `prerelease`
+  (a newer pre-release that is not offered; the status ends with `; pre-release V`).
+  FFI: `RevisionChange.major`, `CheckRow.major`, `CheckRow.prerelease`. Migration: hosts
+  that parse these lines accept the ` (major)` suffix.
 
 ## Working without a catalog
 
@@ -765,12 +788,12 @@ Workspace: gitpm-workspace
 Catalog: none (each package's origin)
 
 PACKAGE                  INSTALLED      LATEST         ENABLED  SOURCE   STATUS
-acme/greeter             0.1.0          0.2.0          yes      origin   update available
+acme/greeter             0.1.0          0.2.0 (major)  yes      origin   update available
 
 Updates: 1. Nothing was changed.
 
 Available updates:
-  acme/greeter: 0.1.0 → 0.2.0
+  acme/greeter: 0.1.0 → 0.2.0 (major)
 ```
 
 A fork records the original's source in `forkOf.source`, so `check` shows the original's
@@ -1009,7 +1032,7 @@ $ echo 'export const v = 2;' > tilr-packages/packages/store/dist/index.js
 $ gitpm commit ./tilr-packages 0.2.0 --package tilr/store
 tilr/store committed 0.2.0 (local commit and tag tilr/store@0.2.0)
 $ gitpm update tilr/store       # tilr/theme stays at 0.1.0
-tilr/store updated 0.1.0 → 0.2.0
+tilr/store updated 0.1.0 → 0.2.0 (major)
 ```
 
 Settings: each has a flag, an environment variable and a default (`gitpm --help` lists
@@ -1197,6 +1220,33 @@ without calling `uninstall`. A recorded package whose clone is gone has no lost 
 keeps no `forgotten` record then). The caller decides how to ask the user. IDs match exactly: on a
 case-insensitive file system `Vendor/Module` never resolves to `vendor/module`.
 
+### Versions and pre-releases
+
+A version is SemVer `MAJOR.MINOR.PATCH` with an optional pre-release `-PRE`
+(`1.3.0-beta.1`); build metadata is refused. Versions are ordered by SemVer precedence
+(`1.0.0-alpha < 1.0.0-beta < 1.0.0-beta.2 < 1.0.0`), and `ID@1.3.0-beta.1` is a release
+tag like any other (`gitpm commit REPO 1.3.0-beta.1` creates it, `catalog-update`
+publishes it). Pre-releases are opt-in, as in npm:
+
+- `install`, `install-catalog` without `--version`, `update` and `update all` never pick
+  one; `check` and `info` show it (`check`: `up to date; pre-release 1.3.0-beta.1`).
+- Install one by name: `install-catalog ID --version 1.3.0-beta.1` (release mode), or
+  `install SRC --ref ID@1.3.0-beta.1` (pinned; `update ID --release` returns it to
+  release mode).
+- An installed pre-release follows its track: `update` moves to newer pre-releases of
+  the same `1.3.0` or to the newest release (`1.3.0`, or `1.4.0` when that is out),
+  never to `1.4.0-beta.1`.
+
+`update` goes to the newest release across a major version, as plugin managers do, and
+marks it; the author marks a breaking release only by its number (a new MAJOR; for 0.x a
+new MINOR; for 0.0.x any new version). Dependents stay protected by their own ranges: an
+update that breaks one is refused with `dependency_conflict`.
+
+```console
+$ gitpm update acme/greeter
+acme/greeter updated 1.2.3 → 2.0.0 (major)
+```
+
 ### Joint upgrades
 
 ```sh
@@ -1214,8 +1264,8 @@ when the mode keeps a package, `broken_dependency` for a broken consumer), so ev
 installed package is listed; `update_all` adds the `dist` report. Apply resolves again under the workspace lock; a preview is
 not a saved plan and upstream changes can change the result.
 
-The solver considers all installed packages together, using stable release tags
-from each repository's origin and the installed revision as a fallback. Missing
+The solver considers all installed packages together, using the release tags
+from each repository's origin (pre-releases only on an installed pre-release's track) and the installed revision as a fallback. Missing
 dependencies are resolved from the configured catalog. It prefers newer versions,
 prioritizes installed packages in lexical ID order, and backtracks when a choice
 cannot satisfy the whole graph. This is a deterministic compatible solution,
@@ -1272,8 +1322,22 @@ APT or implement `full-upgrade` removals.
 
 ### Dependencies
 
-`dependencies` maps package IDs to Cargo-style requirements (`1.2` = `^1.2`, `~1.2`,
-`>=1.3, <2`, `=1.0.0`, `1.*`, `*`; no pre-releases). Install resolves them with PubGrub
+`dependencies` maps package IDs to npm-style ranges:
+
+| Requirement | Means |
+| --- | --- |
+| `1.2.3` (or `=1.2.3`) | exactly 1.2.3 |
+| `^1.2.3` | `>=1.2.3 <2.0.0` (compatible); 0.x: `^0.2.3` = `>=0.2.3 <0.3.0`, `^0.0.3` = only 0.0.3 |
+| `^1.2`, `^1` | `>=1.2.0 <2.0.0`, `>=1.0.0 <2.0.0` |
+| `~1.2.3`, `~1.2` | `>=1.2.3 <1.3.0`, `>=1.2.0 <1.3.0` (patch-level) |
+| `>=1.3.0 <2.0.0` | comparators (`>`, `>=`, `<`, `<=`) separated by spaces: AND |
+| `*` | any release |
+| `^1.3.0-beta.1` | `>=1.3.0-beta.1 <2.0.0`, the only way a range admits pre-releases (those of 1.3.0) |
+
+As in npm, a pre-release satisfies a range only when one of its comparators names a
+pre-release of the same `MAJOR.MINOR.PATCH`: `^1.2.0` never matches `1.3.0-beta.1`.
+Commas, `||`, hyphen ranges (`1.0.0 - 2.0.0`), wildcards other than `*` and bare partial
+versions (`1.2`) are refused with `invalid_manifest`. Install resolves them with PubGrub
 (`deps` module): installed packages stay at their versions, missing ones are installed
 from the configured catalog in the same transaction (`InstallResult.dependencies`);
 only active packages satisfy a dependency of an enabled package (a disabled one refuses

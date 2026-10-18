@@ -19,7 +19,7 @@ CORE = {
     "lib/core": [("1.0.0", {}), ("1.1.0", {}), ("2.0.0", {})],
     "app/a": [("1.0.0", {"lib/core": "^1.0"})],
     "app/b": [("1.0.0", {"lib/core": "^2.0"})],
-    "app/c": [("1.0.0", {"lib/core": "1"})],
+    "app/c": [("1.0.0", {"lib/core": "^1"})],
     "app/lonely": [("1.0.0", {"lib/missing": "^1"})],
     "x/a": [("1.0.0", {"x/b": "^1"})],
     "x/b": [("1.0.0", {"x/a": "^1"})],
@@ -29,7 +29,7 @@ CORE = {
 
 @fixture()
 def g6_core(t: T):
-    """Author repos: lib/core 1.0.0, 1.1.0, 2.0.0; app/a (lib/core ^1.0), app/b (^2.0), app/c ("1"),
+    """Author repos: lib/core 1.0.0, 1.1.0, 2.0.0; app/a (lib/core ^1.0), app/b (^2.0), app/c (^1),
     app/lonely (lib/missing ^1), the cycle x/a ↔ x/b, and other/x without dependencies."""
     for id, releases in CORE.items():
         first, deps = releases[0]

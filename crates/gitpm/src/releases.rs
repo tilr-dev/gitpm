@@ -168,6 +168,20 @@ pub fn discover_all(repo: &Path, expected_id: Option<&str>) -> Result<Discovery>
 }
 
 impl Discovery {
+    /// Keep only the releases (and skipped tags) a selection offers to a package at
+    /// `installed` (`None`: a new install): no pre-release, unless it is on the track of
+    /// an installed pre-release (see [`crate::deps::follows`]). Returns whether
+    /// pre-release tags were dropped.
+    pub fn offered(&mut self, installed: Option<&semver::Version>) -> bool {
+        let before = self.tags.len();
+        self.tags.retain(|tag| {
+            version_key(&tag.manifest.version).is_ok_and(|v| crate::deps::follows(installed, &v))
+        });
+        self.skipped.retain(|skipped| {
+            version_key(&skipped.version).is_ok_and(|v| crate::deps::follows(installed, &v))
+        });
+        self.tags.len() != before
+    }
     /// Fails if a skipped tag is newer than every valid release: that broken tag is the
     /// one a caller would select, so it must not silently fall back to an older version.
     pub fn ensure_latest_is_valid(&self) -> Result<()> {
@@ -190,9 +204,11 @@ impl Discovery {
     }
 }
 
-/// The newest release; see [`Discovery::ensure_latest_is_valid`].
+/// The newest release that is not a pre-release; see
+/// [`Discovery::ensure_latest_is_valid`].
 pub fn latest(repo: &Path, expected_id: Option<&str>) -> Result<Tag> {
     let mut found = discover_all(repo, expected_id)?;
+    found.offered(None);
     found.ensure_latest_is_valid()?;
     found
         .tags
@@ -270,6 +286,9 @@ mod tests {
             "release-2.0.0",
             "me/demo1@2.0",
             "me/demo1@latest",
+            "me/demo1@2.0.0+b1",
+            "me/demo1@2.0.0-beta+b1",
+            "me/demo1@2.0.0-01",
             "vendor/demo1@9.0.0",
             "me/demo10@9.0.0",
         ] {
@@ -278,6 +297,42 @@ mod tests {
         assert_eq!(
             names(&discover(&author.path, None).unwrap()),
             ["me/demo1@0.1.0"]
+        );
+    }
+
+    #[test]
+    fn pre_release_tags_are_releases_in_semver_order_but_not_the_latest() {
+        let dir = TempDir::new("releases");
+        let author = Author::new(dir.join("repo"), "me/demo1");
+        author.release("1.0.0-beta");
+        author.release("1.0.0-alpha");
+        author.release("1.0.0");
+        author.release("1.0.0-beta.2");
+        author.release("2.0.0-rc.1");
+        let mut found = discover_all(&author.path, None).unwrap();
+        assert_eq!(
+            names(&found.tags),
+            [
+                "me/demo1@0.1.0",
+                "me/demo1@1.0.0-alpha",
+                "me/demo1@1.0.0-beta",
+                "me/demo1@1.0.0-beta.2",
+                "me/demo1@1.0.0",
+                "me/demo1@2.0.0-rc.1"
+            ]
+        );
+        assert_eq!(latest(&author.path, None).unwrap().name, "me/demo1@1.0.0");
+        // An installed pre-release sees its own track only.
+        assert!(found.offered(Some(&version_key("1.0.0-alpha").unwrap())));
+        assert_eq!(
+            names(&found.tags),
+            [
+                "me/demo1@0.1.0",
+                "me/demo1@1.0.0-alpha",
+                "me/demo1@1.0.0-beta",
+                "me/demo1@1.0.0-beta.2",
+                "me/demo1@1.0.0"
+            ]
         );
     }
 

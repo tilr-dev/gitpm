@@ -101,5 +101,15 @@ mod tests {
     #[test]
     fn release_tag_is_id_at_version() {
         assert_eq!(release_tag("dan/demo1", "1.2.3"), "dan/demo1@1.2.3");
+        assert_eq!(
+            release_tag("dan/demo1", "2.0.0-beta.1"),
+            "dan/demo1@2.0.0-beta.1"
+        );
+        assert_eq!(
+            crate::packages::tag_id("dan/demo1@2.0.0-beta.1"),
+            Some("dan/demo1")
+        );
+        assert_eq!(crate::packages::tag_id("dan/demo1@2.0.0+b1"), None);
+        assert_eq!(crate::packages::tag_id("dan/demo1@latest"), None);
     }
 }

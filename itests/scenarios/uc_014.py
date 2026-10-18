@@ -84,8 +84,9 @@ def invalid_id(t: T):
 
 @case(fixture="hello_installed", spec=["package-ids/version-format#pre-release-suffix-is-refused"])
 def invalid_version(t: T):
-    """Versions that are not MAJOR.MINOR.PATCH: invalid_version."""
-    for name, version in [("short", "1.0"), ("prefixed", "v1.0.0"), ("zero", "01.0.0"), ("pre", "1.0.0-beta")]:
+    """Versions that are not MAJOR.MINOR.PATCH[-PRE]: invalid_version (build metadata included)."""
+    for name, version in [("short", "1.0"), ("prefixed", "v1.0.0"), ("zero", "01.0.0"), ("pre", "1.0.0-01"),
+                          ("build", "1.0.0+build.5")]:
         repo, sha = bad_repo(t, name, {"plugin.json": manifest(id=f"bad/{name}", version=version), **DIST})
         refused(t, repo, "--ref", sha, kind="invalid_version", contains="MAJOR.MINOR.PATCH")
         t.not_installed(f"bad/{name}")

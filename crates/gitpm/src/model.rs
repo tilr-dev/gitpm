@@ -10,7 +10,7 @@ use std::{collections::BTreeMap, fs, path::Path};
 pub struct Manifest {
     pub id: String,
     pub version: String,
-    /// Other packages by ID with a Cargo-style version requirement.
+    /// Other packages by ID with an npm-style version range (see [`crate::deps::requirement`]).
     #[serde(default)]
     pub dependencies: BTreeMap<String, String>,
     #[serde(default, rename = "forkOf", skip_serializing_if = "Option::is_none")]
@@ -996,7 +996,7 @@ mod tests {
     #[test]
     fn manifest_rejects_non_numeric_versions() {
         let dir = TempDir::new("model");
-        for version in ["1.0", "1.0.0-beta", "1.0.0+build", "banana", "01.0.0"] {
+        for version in ["1.0", "1.0.0-01", "1.0.0+build", "banana", "01.0.0"] {
             let _ = fs::remove_dir_all(dir.join("repo"));
             let repo = repo_with(
                 &dir,
@@ -1005,6 +1005,9 @@ mod tests {
             );
             assert!(manifest(&repo).is_err(), "{version} must be rejected");
         }
+        let _ = fs::remove_dir_all(dir.join("repo"));
+        let repo = repo_with(&dir, r#"{"id":"dan/demo1","version":"1.0.0-beta.1"}"#, true);
+        assert_eq!(manifest(&repo).unwrap().version, "1.0.0-beta.1");
     }
 
     #[test]

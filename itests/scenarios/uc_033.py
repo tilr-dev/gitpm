@@ -86,20 +86,27 @@ def fork_ignores_original_tags(t: T):
     t.lacks(r.err, f"{ID}@1.9.0", f"{ID}@1.10.0")
 
 
-@case(fixture="numeric", spec=["package-ids/version-format#pre-release-suffix-is-refused", "package-ids/release-tag-names", "package-ids/release-tag-names#tags-that-are-not-release-versions"])
+# Anchor: the scenario "Pre-release tag" arrives with change pre-release-versions; until it
+# is archived the case points at the requirement.
+@case(fixture="numeric", spec=["package-ids/release-tag-names", "package-ids/release-tag-names#tags-that-are-not-release-versions"])
 def prerelease_build_and_named_tags_ignored(t: T):
-    """5. dan/num@2.0.0-beta, dan/num@2.0.0+b1 (manifests saying so) and dan/num@latest
-    are not releases: stable install picks 1.10.0, catalog has only 1.9.0/1.10.0."""
+    """5. dan/num@2.0.0-beta is a release (a pre-release); dan/num@2.0.0+b1 and dan/num@latest
+    are not: install picks 1.10.0 (never a pre-release), the catalog has 1.9.0, 1.10.0 and
+    2.0.0-beta."""
     side_commit(t, "2.0.0-beta", f"{ID}@2.0.0-beta", f"{ID}@1.10.0")
     side_commit(t, "2.0.0+b1", f"{ID}@2.0.0+b1", f"{ID}@1.10.0")
     side_commit(t, "3.0.0", f"{ID}@latest", f"{ID}@1.10.0")
     r = t.gitpm_ok("install", t.repo(ID))
     t.eq(t.package(ID)["current"]["version"], "1.10.0", "installed")
     r2 = t.gitpm_ok("catalog-update", "--sources", sources(t, t.repo(ID)))
-    t.has(r2.out, "Catalog ready: 2 release(s)")
-    t.eq(versions(t), ["1.10.0", "1.9.0"], "catalog versions")
+    t.has(r2.out, "Catalog ready: 3 release(s)")
+    t.eq(versions(t), ["1.10.0", "1.9.0", "2.0.0-beta"], "catalog versions")
     for text in [r.err, r2.err]:
-        t.lacks(text, "2.0.0-beta", "2.0.0+b1", "@latest")
+        t.lacks(text, "2.0.0+b1", "@latest")
+    # The pre-release is installed only by name.
+    t.gitpm_ok("--root", t.root / "ws-beta", "install-catalog", ID, "--version", "2.0.0-beta")
+    t.eq(t.gitpm_ok("--root", t.root / "ws-beta", "list").json()["packages"][ID]["current"]["version"],
+         "2.0.0-beta", "explicit pre-release")
 
 
 @case(fixture="numeric", spec=["package-ids/version-format"])

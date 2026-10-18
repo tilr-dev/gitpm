@@ -1,6 +1,6 @@
 """UC-059: Required dependent guards on disable, forget and uninstall (P0, mandatory).
 
-Fixture g6_core_deps_installed: app/a (lib/core ^1.0) and app/c (lib/core "1") installed
+Fixture g6_core_deps_installed: app/a (lib/core ^1.0) and app/c (lib/core ^1) installed
 from the catalog with lib/core 1.1.0 pulled in, plus the unrelated other/x. app/c plays
 the role of the spec's second dependent "app/b" (in the shared g6_core catalog app/b is
 the ^2.0 conflict consumer of UC-058).
@@ -86,7 +86,7 @@ def disable_force_reports_broken_dependents(t: T):
              f"{consumer} dependency")
     check = t.gitpm_ok("--catalog", t.catalog, "check").out
     t.has(check, f"Unsatisfied dependency: app/a → {CORE} ^1.0: {CORE} is disabled",
-          f"Unsatisfied dependency: app/c → {CORE} 1: {CORE} is disabled")
+          f"Unsatisfied dependency: app/c → {CORE} ^1: {CORE} is disabled")
 
 
 @case(fixture="g6_core_deps_installed", spec=["dependencies/broken-consumers-are-reported-not-enforced#unrelated-install-after-forced-removal"])
@@ -100,7 +100,7 @@ def uninstall_force_reports_unsatisfied(t: T):
              f"{consumer} dependency")
     check = t.gitpm_ok("check").out
     t.has(check, f"Unsatisfied dependency: app/a → {CORE} ^1.0: not installed",
-          f"Unsatisfied dependency: app/c → {CORE} 1: not installed")
+          f"Unsatisfied dependency: app/c → {CORE} ^1: not installed")
     # A broken consumer does not block unrelated operations.
     t.gitpm_ok("disable", "other/x")
     t.gitpm_ok("enable", "other/x")

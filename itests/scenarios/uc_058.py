@@ -1,7 +1,7 @@
 """UC-058: Required package dependencies without replacement (P0, mandatory).
 
 Fixtures g6_core / g6_core_catalog: lib/core 1.0.0, 1.1.0, 2.0.0; app/a (lib/core ^1.0),
-app/b (^2.0), app/c ("1"), app/lonely (lib/missing ^1, not in the catalog), the cycle
+app/b (^2.0), app/c (^1), app/lonely (lib/missing ^1, not in the catalog), the cycle
 x/a ↔ x/b, other/x — all registered in /fx/catalog (GITPM_CATALOG).
 """
 
@@ -29,13 +29,24 @@ def registered(t: T, id: str, version: str) -> dict:
 
 @case(fixture="g6_core", spec=["dependencies/requirement-syntax", "dependencies/state-keeps-dependency-edges"])
 def valid_requirements_accepted(t: T):
-    """1a. Cargo-style requirements are accepted (direct install with lib/core installed)."""
+    """1a. npm-style ranges lib/core 1.1.0 satisfies are accepted (direct install with lib/core installed)."""
     t.gitpm_ok("install", t.repo(CORE), "--ref", f"{CORE}@1.1.0")
-    for i, req in enumerate(["^1.0", "1.1", "~1.1", ">=1.0, <2", "=1.1.0", "1.*", "*"]):
+    for i, req in enumerate(["^1.0", "1.1.0", "~1.1", ">=1.0.0 <2.0.0", "=1.1.0", ">= 1.1", "*", "^1.1.0-beta"]):
         id = f"ok/r{i}"
         t.new_package(id, "1.0.0", deps={CORE: req})
         t.gitpm_ok("install", t.repo(id))
         t.eq(t.package(id)["dependencies"], {CORE: req}, f"{id} dependency edge")
+
+
+# Anchor: the scenario "Bare version is exact" arrives with change pre-release-versions; until
+# it is archived the case points at the requirement.
+@case(fixture="g6_core", spec=["dependencies/requirement-syntax"])
+def bare_version_is_exact(t: T):
+    """1f. A bare version is exact: lib/core 1.1.0 installed does not satisfy "1.0.0"."""
+    t.gitpm_ok("install", t.repo(CORE), "--ref", f"{CORE}@1.1.0")
+    t.new_package("ok/exact", "1.0.0", deps={CORE: "1.0.0"})
+    t.gitpm_err("install", t.repo("ok/exact"), kind="dependency_conflict", contains=CORE)
+    t.not_installed("ok/exact")
 
 
 def refused(t: T, id: str, deps: dict, kind: str, *needles: str):
@@ -57,10 +68,13 @@ def banana_requirement_refused(t: T):
     refused(t, "bad/banana", {CORE: "banana"}, "invalid_manifest", "banana")
 
 
-@case(fixture="g6_core", spec=["dependencies/requirement-syntax#pre-release-requirement"])
-def prerelease_requirement_refused(t: T):
-    """1c. A pre-release requirement is refused."""
-    refused(t, "bad/pre", {CORE: "^1.0.0-beta"}, "invalid_manifest", "pre-release")
+# Anchor: the scenario "Old Cargo syntax" arrives with change pre-release-versions; until it is
+# archived the case points at the requirement.
+@case(fixture="g6_core", spec=["dependencies/requirement-syntax"])
+def cargo_syntax_refused(t: T):
+    """1c. Cargo commas, wildcards, bare partial versions, || and hyphen ranges are refused."""
+    for i, req in enumerate([">=1.0, <2", "1.*", "1.1", "^1 || ^2", "1.0.0 - 2.0.0"]):
+        refused(t, f"bad/cargo{i}", {CORE: req}, "invalid_manifest", "invalid version requirement")
 
 
 @case(fixture="g6_core", spec=["dependencies/requirement-syntax#self-dependency"])
