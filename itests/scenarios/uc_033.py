@@ -65,7 +65,7 @@ def broken_tag_newer_than_valid(t: T):
     t.not_installed(ID)
     t.gitpm_err("catalog-update", "--sources", sources(t, t.repo(ID)),
              kind="version_conflict", contains="latest release tag is broken")
-    t.ok(not t.catalog.exists(), "fresh catalog not created")
+    t.ok(t.catalog_empty(), "fresh catalog not created")
 
 
 @case(fixture="numeric", spec=["catalog/catalog-generated-from-git-release-tags", "package-ids/release-tag-names#scoped-tag"])

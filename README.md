@@ -124,7 +124,8 @@ Directories and packages:
         acme/greeter — latest: 0.2.0, versions: 2
             Git: /…/greeter
 $ gitpm init hello --into hello
-Error: package id needs a namespace: use NAMESPACE/NAME, for example acme/hello
+Error: package ID needs a namespace: use NAMESPACE/NAME, for example acme/hello
+Error kind: invalid_id
 $ gitpm init acme/hello --into hello
 
 Created: /…/hello
@@ -190,7 +191,28 @@ release, install or replace step fails, the command says per package what is lef
 to finish or undo (for example `gitpm install … me/hello` then `gitpm replace …`, or
 `gitpm uninstall me/hello` and delete the folder). `replace` prints the installed version
 of the provider and, when it differs, the version it stands in as (`acme/hello replaced by
-me/hello 1.5.0 (as acme/hello 1.0.0) for: …`).
+me/hello 1.5.0 (as acme/hello 1.0.0) for: …`). When the replace step needs confirmation,
+the library returns the replacement as pending; the CLI shows its warning, asks on a TTY
+and applies it with the library's resume call.
+
+Output: stdout carries the result lines (one per affected package for workspace-mutating
+commands, JSON for `list`, `catalog` and `register`); everything else goes to stderr:
+`Warning: …` lines taken from the result (ignored metadata keys, skipped release tags,
+the dist report), `[y/N]` prompts with what they list, and failures. A failure prints
+`Error: MESSAGE`, for a library error also `Error kind: KIND` (and one `  - item` line
+per lost item for `local_changes`) and, where a gitpm command helps, one `Hint: …` line
+naming it; the exit status is 1. The CLI checks only the command line (unknown, repeated
+or misplaced options, value sets, argument counts); domain rules and option
+combinations are the library's, which also returns everything the CLI prints, so a host
+gets the same through the FFI.
+
+```console
+$ gitpm forget acme/hello && gitpm install ./hello
+acme/hello forgotten (clone kept; restore re-registers it)
+Error: acme/hello was forgotten and its clone is kept
+Error kind: already_installed
+Hint: if acme/hello was forgotten, `gitpm restore acme/hello` records it again and `gitpm uninstall acme/hello` removes its clone
+```
 
 Changed in 0.4: the form `fork ID NAMESPACE/NAME [--into DIR]` (fork folder
 `DIR/NAMESPACE/NAME`, default `./NAMESPACE/NAME`) and `init NAMESPACE/NAME` without a
@@ -293,6 +315,65 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   read them); `forkOf` in the manifest is the only fork provenance.
 - `gitpm-ffi` carries the library version (0.6.0 with this release) and promises no
   stability before 1.0.
+- A local catalog location that does not exist (`--catalog ./catlog`, `GITPM_CATALOG`,
+  `Options.catalog`) is refused with `invalid_argument` ("catalog location PATH does not
+  exist") before anything is created; it no longer counts as "no catalog" for `install`.
+  `Manager::open_with` validates its Options first. The free catalog readers do the same:
+  `check`, `info`/`browse`, `catalog`, `catalog_release`/`lookup` on a missing local
+  location fail with `invalid_argument` (was `catalog` "catalog not found"). Migration:
+  create the catalog folder (`catalog-update`/`register` create it) or drop the setting.
+- `gitpm catalog` prints the library's typed directory links `{"schema": 2,
+  "directories": {…}}` (`catalog::links`, the same as FFI `catalogLinks`) instead of the
+  raw `catalog.json`; a v1 or otherwise invalid root fails with `catalog`.
+- `uninstall` of a recorded package whose clone is gone drops its record and `dist/` (was
+  `repository_not_found`); `restore` of a forgotten package whose shared clone is gone fails
+  with `repository_not_found` (was `workspace`), like any restore without a clone.
+- `sync-dist` leaving active packages undeployed is the library error `not_deployed` (new
+  kind; `Manager::sync_dist` returns `Err(Error::NotDeployed { sync, .. })` after
+  committing what it could) instead of `Ok` with `skipped` that the CLI turned into a
+  failure. Migration: match the kind.
+- `list` no longer opens the workspace (no lock, no creation, no crash recovery); it is
+  the library's `list_with(root, &ListOptions { provides })`, `--provides` included.
+- Library messages name no CLI command or hosting service; the CLI adds a `Hint:` line
+  per error kind (for example after `already_installed`: `gitpm restore ID` /
+  `gitpm uninstall ID`). `init NAME` without a namespace is the library's `invalid_id`
+  ("package ID needs a namespace: …", now with `Error kind`). The CLI no longer checks
+  `--channel dev --ref` itself (the library refuses it; `--channel stable --ref X`
+  installs `X`). Prompts (`[y/N]` and what they list) go to stderr.
+- `update ID` returns the broken release tags it passed over in `RevisionChange.skipped`,
+  `update all` in `UpdateAllPlan.skipped` (for every installed package, updated or not),
+  and the CLI warns `Warning: skipped release tag NAME: reason` as install does.
+- A refused confirmation of a `fork --replace` replacement (`n` on the TTY) no longer
+  ends the command with "replacement cancelled; nothing was changed": the fork stays
+  released and installed, the replacement pending, and the CLI says how to finish.
+- Library API: `Manager::set_enabled`/`set_enabled_with`/`enable`/`disable`/`forget`/
+  `forget_with`/`uninstall`/`uninstall_with` return the `DistSync` report (were `()`);
+  `InstallResult`, `RevisionChange`, `ReplacementPlan` and `UpdateAllPlan` gain `dist`;
+  `RevisionChange` gains `skipped`; `UpdateAllPlan` gains `unchanged` (`{id, version}`:
+  every installed package is in `updates`, `kept_back` or `unchanged`);
+  `ReplacementPlan` gains `installed_version` (the provider's installed version) and
+  `fork_enabled`; `ForkReplacement` gains `pending` (a replacement that needs
+  confirmation; apply it with `Manager::fork_replace_resume`, see
+  `PackageForkReplacement::pending`, which returns `ForkResume { applied, failed }`:
+  the plans applied, each with its dist report, and the first failure);
+  `UpdateAllPlan` gains `skipped`; `Error::HasDependents` gains `replacing`;
+  `scaffold::commit`/`commit_package` return `Commit { package, version, tag }` (were the
+  tag); `check::check(root, catalog: Option<&str>)` returns `CheckReport { rows,
+  replacements, unsatisfied }` (was the rows; an empty workspace needs no catalog).
+  New: `list::list_with`, `catalog::links`, `catalog::validate_location`,
+  `identity::split`, `scaffold::suggests_multi`.
+- FFI: free functions `list(root, provides)` and `readState(root)` (both `ListView`: the
+  raw state with `packages`, `replacements`, `forgotten`, plus `resolved`), `check(root,
+  catalog)` (`CheckReport`) and `catalogLinks(location)`; `readInstalled` and
+  `PackageManager.check` are removed; `enable`/`disable`/`forget`/`uninstall` return
+  `DistSync`; `InstallResult` gains `skipped`, `warnings`, `dist`; `RevisionChange` gains
+  `warnings`, `skipped`, `dist`; `UpdateAllPlan` gains `unchanged`, `dist`;
+  `ReplacementPlan` gains `installedVersion`, `forkEnabled`, `dist`; `ForkReplacement`
+  gains `pending` and `PackageForkReplacement` gains `pending` (`PendingReplacement`
+  list for the new `PackageManager.forkReplaceResume(pending, confirm)`, which returns
+  `ForkResume { applied, failed }`); `UpdateAllPlan` also gains `skipped`;
+  `PmError.NotDeployed { message, sync }` (the whole `DistSync` report) is new and
+  `PmError.HasDependents` gains `replacing`. Migration: call the free functions, read the new fields.
 
 ## Working without a catalog
 
@@ -367,12 +448,19 @@ package are left alone (the CLI warns about them on stderr), an existing folder 
 active package is not rewritten. A namespace path under `dist/` that is a symlink or a
 file is reported the same way and nothing is written below it. An active package whose
 clone or installed commit is gone is skipped, so it does not block an unrelated command;
-the CLI warns `Warning: ID: dist not deployed (clone missing); run \`gitpm sync-dist\``
-(`DistSync.skipped` from `sync_dist_plan`). Any other deploy error fails the command.
-Read-only commands such as `list` and `check` never reconcile `dist/`; `list` does open (lock, and create if missing) the workspace, so it completes an interrupted commit it finds, while `check` opens nothing.
+the CLI warns `Warning: ID: dist not deployed (clone missing); run \`gitpm sync-dist\``.
+Any other deploy error fails the command. Every mutating result carries this report as
+`dist` (`DistSync`: `deployed`, `removed`, `unmanaged`, `skipped`; `enable`, `disable`,
+`forget` and `uninstall` return it directly); the CLI prints its warnings from there and
+an FFI host reads the same fields.
+Read-only commands, `list` and `check`, never reconcile `dist/` and open nothing: they
+read `state.json` without taking the lock, creating the workspace or completing an
+interrupted commit (the next command that opens the workspace does), so `list` works
+while another process holds the workspace.
 `gitpm sync-dist [--dry-run]` (`Manager::sync_dist`, FFI `syncDist`) does only the
-reconcile, as an explicit repair. It syncs every package it can, then exits with status 1 naming the ones it
-could not deploy.
+reconcile, as an explicit repair. It syncs and commits every package it can; when an
+active package stays undeployed it then fails with `not_deployed` ("N package(s) not
+deployed: IDS", the report in `Error::NotDeployed.sync`), exit status 1.
 
 ## Multi-package repositories
 
@@ -656,7 +744,8 @@ pm.install_from_catalog("acme/demo1", None)?;          // exact catalog release,
 pm.update("acme/demo1")?;  pm.update_channel(id, None, true)?;
 pm.rollback(id)?;  pm.enable(id)?;  pm.disable(id)?;  pm.forget(id)?;  pm.restore(id)?;
 let plan = pm.uninstall_plan(id)?;                    // deletes + lost_work
-pm.uninstall(id, /* confirm */ !plan.lost_work.is_empty() && user_said_yes)?;
+let dist = pm.uninstall(id, /* confirm */ !plan.lost_work.is_empty() && user_said_yes)?;
+// Every mutating result carries its dist report (`dist`, or the returned `DistSync`).
 // Forks: the fork repository is always explicit (new folder, or a repo with gitpm.json).
 pm.fork_in_namespace(id, Path::new("/work/demo1-fork"), "me")?;   // sets forkOf + replaces
 let done = pm.fork_replace(id, Path::new("/work/demo1-fork"), "me", None, confirm)?; // + release, install, replace
@@ -665,26 +754,32 @@ let repo = Path::new("/work/forks/me-packages");               // created, or ad
 let fork = pm.fork_packages(&["tilr/theme", "tilr/panel"], repo, "me")?; // one repo, deps rewritten
 let done = pm.fork_packages_replace(&ids, repo, "me", Some("2.0.0"), confirm)?; // per-package results
 if let Some(error) = done.error() { /* fork kept; done.packages[i].failed says where */ }
+let pending = done.pending();   // replacements that need confirmation (incompatible consumers)
+pm.fork_replace_resume(&pending, /* confirm */ user_said_yes)?;
 let plan = pm.replace_plan("vendor/base", "mine/base")?;       // consumers + incompatible
 pm.replace("vendor/base", "mine/base", /* confirm */ !plan.incompatible.is_empty() && yes)?;
 pm.switch_back("vendor/base", confirm)?;                       // back to the original
 pm.uninstall_with(id, confirm, /* force: ignore dependents */ false)?;
 pm.set_enabled_with(id, false, force)?;  pm.forget_with(id, force)?;
-let sync = pm.sync_dist()?;   // dist/ = active packages (sync_dist_plan: read-only preview)
+let sync = pm.sync_dist()?;   // dist/ = active packages; Err(NotDeployed) if some cannot be
 pm.list()?;  pm.state()?;  pm.check()?;  pm.browse_catalog()?;  pm.catalog_release(id, None)?;
+// Read-only views without a Manager (no lock, nothing created):
+gitpm::list_with(root, &gitpm::ListOptions { provides: Some("theme".into()) })?;
+gitpm::check::check(root, Some(catalog))?;
 ```
 
 Modules with free functions (no workspace lock needed):
 
 | Module | Functions |
 | --- | --- |
-| `catalog` | `browse`, `list`, `lookup`, `selected`, `register`, `register_build`, `register_package`, `update_sources` (progress callback), `hash_files`, `version_key`, `ensure_publishable` |
-| `check` | `read_state` (does not create/lock), `compare`, `check`; `CheckStatus::message()` |
+| `list` | `list_with(root, &ListOptions)` → `ListView` (raw state + `resolved`; `provides` filter) |
+| `catalog` | `browse`, `list`, `links`, `lookup`, `selected`, `register`, `register_build`, `register_package`, `update_sources` (progress callback), `hash_files`, `version_key`, `validate_location`, `ensure_publishable` |
+| `check` | `read_state` (does not create/lock), `compare`, `check(root, catalog)` → `CheckReport`; `CheckStatus::message()` |
 | `auth` | `check(source, &AuthOptions)` — `git ls-remote` only; refuses credentials in the URL, stores nothing; failures are `auth` |
-| `scaffold` | `init(dir, namespace, name)` (the `init --into` rule; the only way to create a package besides `create_package`), `init_with` (`InitOptions { multi, release }`), `create_package` (into a multi-package repo), `commit`, `commit_package` (version tag), `release_current`, `set_remote`, `shell_quote` |
+| `scaffold` | `init(dir, namespace, name)` (the `init --into` rule; the only way to create a package besides `create_package`), `init_with` (`InitOptions { multi, release }`), `create_package` (into a multi-package repo), `commit`, `commit_package` (`Commit { package, version, tag }`), `release_current`, `set_remote`, `shell_quote` |
 | `packages` | `config_at`, `layout_at` (packages and defective folders of a commit), `packages_at` (strict), `find_at` (one package of a commit), `read_config`, `packages_in` (working tree), `matches`, `validate_pattern` |
-| `identity` | `valid_part`, `qualified`, `release_tag` (no default namespace, no namespace config) |
-| `releases` | `discover`, `latest` |
+| `identity` | `valid_part`, `qualified`, `split` (`NAMESPACE/NAME`, else `invalid_id`), `release_tag` (no default namespace, no namespace config) |
+| `releases` | `discover`, `discover_all` (with the skipped broken tags), `latest` |
 
 ### Uninstall: confirmation by plan
 
@@ -705,8 +800,9 @@ gitpm update all                  # apply the compatible set atomically
 
 The library exposes `Manager::update_all_plan()` and `Manager::update_all()`;
 Swift/Kotlin bindings expose the same operations. Both return `UpdateAllPlan`
-with `updates`, new dependency `installs`, and `kept_back` entries (selected and
-latest versions). Apply resolves again under the workspace lock; a preview is
+with `updates`, new dependency `installs`, `kept_back` entries (selected and
+latest versions) and `unchanged` packages (`{id, version}`), so every installed package
+is listed; `update_all` adds the `dist` report. Apply resolves again under the workspace lock; a preview is
 not a saved plan and upstream changes can change the result.
 
 The solver considers all installed packages together, using stable release tags
@@ -772,8 +868,11 @@ active fork needs `force`. A replaced original has no `dist/` (see
 ### Catalog
 
 A catalog is optional ([working without a catalog](#working-without-a-catalog)):
-without one, `check`, `browse_catalog` and `catalog_release` fail with `invalid_argument`
-("no catalog configured"). A workspace uses one catalog. `install_from_catalog` records the canonical catalog
+without one, `check` (of a non-empty workspace), `browse_catalog` and `catalog_release`
+fail with `invalid_argument` ("no catalog configured"). A configured local location that
+does not exist is not "no catalog": `Manager::open_with` and every catalog reader refuse
+it with `invalid_argument` ("catalog location PATH does not exist") before anything is
+created; only `catalog-update` and `register` create a missing local catalog. A workspace uses one catalog. `install_from_catalog` records the canonical catalog
 location per package (`packages.<id>.catalog`) and refuses to install from a different
 catalog while packages from another one are installed. `check` reports packages from
 another catalog as `other_catalog` instead of comparing them, and for a fork adds
@@ -786,7 +885,7 @@ the version the fork started from.
 `invalid_manifest`, `invalid_version`, `invalid_argument`, `version_conflict`,
 `no_previous_version`, `no_releases`, `repository_not_found`, `workspace`, `catalog`,
 `git`, `http`, `auth`, `unsupported`, `dependency_conflict`, `has_dependents`,
-`incompatible_replacement`, `invalid_data`, `io`.
+`incompatible_replacement`, `not_deployed`, `invalid_data`, `io`.
 
 ## Swift bindings
 
@@ -804,28 +903,40 @@ if plan.lostWork.isEmpty || userConfirmed(plan.lostWork.map(describeLostWork)) {
 }
 ```
 
-FFI surface: `PackageManager` (open, root, list, check, browseCatalog, catalogRelease,
+FFI surface: `PackageManager` (open, root, list, browseCatalog, catalogRelease,
 install(package; defaults to nil), installFromCatalog, update, updateAllPlan, updateAll
-(`UpdateAllPlan`), rollback, enable,
-disable(force), forget(force), restore, uninstallPlan, uninstall(confirm, force), fork
+(`UpdateAllPlan` with `unchanged` and `dist`), rollback, enable, disable(force),
+forget(force), restore, uninstallPlan, uninstall(confirm, force), fork
 (one package; `ForkResult`), forkAndReplace(version, confirm; returns a
 `ForkReplacement`: a failure after the fork exists is reported in `failedStep` (the
-`ForkStep` enum: release, install, replace), `errorKind`, `errorMessage`), forkPackages
+`ForkStep` enum: release, install, replace), `errorKind`, `errorMessage`, and a
+replacement that needs confirmation in `pending`), forkPackages
 (`PackageFork`), forkPackagesAndReplace (`PackageForkReplacement`: the fork plus one
-`ForkReplacement` per package), replacePlan, replace, switchBackPlan, switchBack,
-syncDistPlan, syncDist (`DistSync`: deployed, removed, unmanaged, skipped); `force`
-defaults to false; `InstalledPackage.path` and `CatalogRelease.path` name the package
-folder; `InstalledPackage.clone` names the shared clone; `InstalledPackage`,
-`PackageSummary` and `CatalogRelease` carry the [metadata](#package-metadata); the fork records have the names of the library types `gitpm::ForkReplacement`,
-`PackageFork`, `PackageForkReplacement`, `ForkedPackage`, `DependencyRewrite`,
-`ForkStep`), free functions `authCheck(source, customSsh)`, `browseCatalog`, `catalogRelease`,
-`readInstalled` (reads `state.json` without opening or locking the workspace; every
-`PackageManager` method, `check` included, opens it), `describeLostWork`; errors are the
-`PmError` enum (one case per kind, each with `message`; `id` where the library error has
-one, `LocalChanges.items`, `HasDependents.dependents`, `IncompatibleReplacement.consumers`,
-and `Other { kind, message }` for kinds added later). Author/catalog-generation commands
-are not exposed. `gitpm-ffi` carries the library's version; before 1.0 its bindings
-promise no stability (renames are listed under "Changed in X.Y").
+`ForkReplacement` per package and the `pending` list), forkReplaceResume(pending,
+confirm; `ForkResume`: `applied` plans and the first `failed` one), replacePlan, replace, switchBackPlan, switchBack (`ReplacementPlan` with
+`installedVersion`, `forkEnabled`, `dist`), syncDistPlan, syncDist (`DistSync`: deployed,
+removed, unmanaged, skipped)); every mutating call returns its `DistSync` report
+(`enable`/`disable`/`forget`/`uninstall` return it, `InstallResult`, `RevisionChange`,
+`ReplacementPlan` and `UpdateAllPlan` carry it as `dist`); `InstallResult` and
+`RevisionChange` carry `skipped` (broken release tags) and `warnings`, as the CLI prints
+them; `force` defaults to false; `InstalledPackage.path` and `CatalogRelease.path` name
+the package folder; `InstalledPackage.clone` names the shared clone; `InstalledPackage`,
+`PackageSummary` and `CatalogRelease` carry the [metadata](#package-metadata); the fork
+records have the names of the library types `gitpm::ForkReplacement`, `PackageFork`,
+`PackageForkReplacement`, `PendingReplacement`, `ForkedPackage`, `DependencyRewrite`,
+`ForkStep`. Free functions, which read without opening, locking or creating the
+workspace: `list(root, provides)` and `readState(root)` (`ListView`: `format`,
+`packages`, `replacements`, `forgotten`, `resolved`), `check(root, catalog)`
+(`CheckReport`: rows, replacements, unsatisfied dependencies), `catalogLinks(location)`,
+`authCheck(source, customSsh)`, `browseCatalog`, `catalogRelease`, `describeLostWork`.
+Every CLI command that reads or changes a workspace, reads a catalog or checks access has
+its FFI call; `init`, `commit`, `remote`, `catalog-update` and `register` stay library and
+CLI functions. Errors are the `PmError` enum (one case per kind, each with `message`;
+`id` where the library error has one, `LocalChanges.items`, `HasDependents.dependents`
+and `.replacing`, `IncompatibleReplacement.consumers`, `NotDeployed.sync` (the dist report), and
+`Other { kind, message }` for kinds added later). `gitpm-ffi` carries the library's
+version; before 1.0 its bindings promise no stability (renames are listed under
+"Changed in X.Y").
 
 ## Hosts
 

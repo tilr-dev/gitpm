@@ -128,7 +128,8 @@ def activation_failure_at_first_move_rolls_forward(t: T):
     before = activation_failure(t, "dist/dan")
     t.eq((t.dist(ID) / "index.js").read_bytes(), before["dist"], "previous dist still active")
     t.eq(t.rev(t.clone(ID)), before["head"], "previous clone still active")
-    t.eq(gitpm_nobody(t, "list").code, 0, "next open succeeds")
+    # list only reads; the next command that opens the workspace finishes the commit.
+    t.eq(gitpm_nobody(t, "sync-dist").code, 0, "next open succeeds")
     updated(t)
 
 
@@ -179,7 +180,7 @@ def update_killed_after_staging_is_discarded(t: T):
     t.eq(journal(t), None, "no journal: the commit was never decided")
     t.eq(t.package(ID)["current"]["version"], "0.1.0", "previous version still installed")
     t.has((t.dist(ID) / "index.js").read_text(), "dan/hello 0.1.0")
-    t.gitpm_ok("list")
+    t.gitpm_ok("sync-dist")  # the next open (list only reads)
     t.same(before, "workspace after the next open")
     t.gitpm_ok("update", ID)
     updated(t)
@@ -187,14 +188,16 @@ def update_killed_after_staging_is_discarded(t: T):
 
 @case(fixture="hello", spec=["transactions-locking/crash-recovery"])
 def install_killed_after_clone_is_discarded(t: T):
-    t.gitpm_ok("list")
+    t.gitpm_ok("sync-dist")  # opens (creates) the empty workspace; list would not
     before = t.snap(t.ws)
     r = t.gitpm("install", t.repo(ID), env=killer(t))
     t.eq(r.code, -9, "gitpm was killed")
     t.ok((t.ws / ".pm-txn/scratch/incoming/.git").is_dir(), "the scratch clone was left behind")
     t.eq(journal(t), None, "no journal")
     t.eq(t.state().get("packages"), {}, "nothing registered")
-    t.gitpm_ok("list")
+    # list is read-only: it leaves the scratch area to the next command that opens.
+    t.ok((t.ws / ".pm-txn/scratch/incoming/.git").is_dir(), "list left the scratch clone alone")
+    t.gitpm_ok("sync-dist")
     t.same(before, "workspace after the next open")
     t.not_installed(ID)
     t.gitpm_ok("install", t.repo(ID))

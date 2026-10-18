@@ -47,7 +47,7 @@ fn garbage_pm_environment_is_ignored() {
     assert_eq!(m.list().unwrap().len(), 1);
     let rows = m.check().unwrap();
     assert_eq!(rows[0].status, check::CheckStatus::UpToDate);
-    assert_eq!(check::check(&root, &catalog).unwrap().len(), 1);
+    assert_eq!(check::check(&root, Some(&catalog)).unwrap().rows.len(), 1);
     assert!(m.browse_catalog().unwrap().items.len() >= 2);
     drop(m);
     assert!(!garbage.exists());

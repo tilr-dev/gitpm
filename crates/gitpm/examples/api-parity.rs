@@ -15,8 +15,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "rollback" => {
             manager.rollback(id)?;
         }
-        "disable" => manager.disable(id)?,
-        "enable" => manager.enable(id)?,
+        "disable" => {
+            manager.disable(id)?;
+        }
+        "enable" => {
+            manager.enable(id)?;
+        }
         "forget" => {
             manager.forget(id)?;
         }

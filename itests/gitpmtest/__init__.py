@@ -5,7 +5,7 @@ Layout of every container (see src/gitpm_itests/main.py):
     /fx            the fixture snapshot; the case's working directory
     /fx/repos/ID   author repositories (git), e.g. /fx/repos/dan/hello
     /fx/ws         GITPM_ROOT (workspace)
-    /fx/catalog    GITPM_CATALOG (local catalog)
+    /fx/catalog    GITPM_CATALOG (local catalog; an empty folder until a case fills it)
     /fx/sources.txt  GITPM_SOURCES
     gitpm          the CLI under test, on PATH (gitpm-api: crates/gitpm/examples/api-parity.rs)
 
@@ -157,6 +157,11 @@ class T:
         self.root = root
         self.ws = root / "ws"
         self.catalog = root / "catalog"
+
+    def catalog_empty(self) -> bool:
+        """Nothing was written to /fx/catalog (it starts as an empty folder, see
+        `__main__.ready_catalog`)."""
+        return not self.catalog.exists() or not any(self.catalog.iterdir())
 
     # ---------------------------------------------------------------- processes
 

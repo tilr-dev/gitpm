@@ -116,6 +116,14 @@ def materialize(root: Path):
     copy.rmdir()
 
 
+def ready_catalog(t) -> None:
+    """GITPM_CATALOG points at /fx/catalog, and a configured local catalog location must
+    exist (gitpm refuses a missing one with invalid_argument): it starts as an empty
+    folder that catalog-update/register fill. A case about a missing catalog removes it
+    or passes another --catalog."""
+    t.catalog.mkdir(exist_ok=True)
+
+
 def run(label: str, fn, t) -> int:
     print(f"== {label}")
     try:
@@ -142,6 +150,7 @@ def main(argv: list[str]) -> int:
         t = pmtest.T()
         t.root.mkdir(exist_ok=True)
         materialize(t.root)
+        ready_catalog(t)
         code = run(f"fixture {name}: build", f.build, t)
         if code == 0:
             code = run(f"fixture {name}: check", f.check, t)
@@ -153,6 +162,7 @@ def main(argv: list[str]) -> int:
         t = pmtest.T()
         t.root.mkdir(exist_ok=True)
         materialize(t.root)
+        ready_catalog(t)
         return run(f"{c.id} {c.title}".strip(), c.fn, t)
     print(__doc__, file=sys.stderr)
     return 2

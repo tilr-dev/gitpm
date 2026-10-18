@@ -44,7 +44,7 @@ def set_then_replace_origin(t: T):
         t.eq(t.git(b, "for-each-ref"), "", f"nothing pushed to {b.name}")
     t.same(ws_before, "workspace (installed source, clone, dist)")
     t.eq(t.package(ID)["source"], str(repo), "installed source unchanged")
-    t.ok(not t.catalog.exists(), "no catalog written")
+    t.ok(t.catalog_empty(), "no catalog written")
 
 
 @case(fixture="hello", spec=["authoring/remote-sets-origin-without-network#set-origin"])

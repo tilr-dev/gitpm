@@ -62,11 +62,14 @@ pub enum Error {
     #[error("{0}")]
     DependencyConflict(String),
     /// Other installed packages depend on this one; pass `force` to proceed anyway.
+    /// With `replacing`, `dependents` are the originals `id` replaces for every consumer
+    /// (disabling it would leave nothing loaded for them) instead of its consumers.
     #[error("{message}")]
     HasDependents {
         id: String,
         message: String,
         dependents: Vec<String>,
+        replacing: bool,
     },
     /// Some consumers do not accept the version the new provider declares; confirm
     /// to replace anyway. `consumers` are the unsatisfied ones.
@@ -75,6 +78,13 @@ pub enum Error {
         id: String,
         message: String,
         consumers: Vec<String>,
+    },
+    /// `sync_dist` committed what it could but left active packages without their
+    /// deployed folder; `sync` is the report (its `skipped` lists them with the reason).
+    #[error("{message}")]
+    NotDeployed {
+        message: String,
+        sync: Box<crate::DistSync>,
     },
     /// Malformed JSON/state data.
     #[error("{0}")]
@@ -108,6 +118,7 @@ impl Error {
             Error::DependencyConflict(_) => "dependency_conflict",
             Error::HasDependents { .. } => "has_dependents",
             Error::IncompatibleReplacement { .. } => "incompatible_replacement",
+            Error::NotDeployed { .. } => "not_deployed",
             Error::InvalidData(_) => "invalid_data",
             Error::Io(_) => "io",
         }
@@ -232,6 +243,7 @@ mod tests {
                     id: "a/b".into(),
                     message: s(),
                     dependents: vec![],
+                    replacing: false,
                 },
                 "has_dependents",
             ),
@@ -242,6 +254,13 @@ mod tests {
                     consumers: vec![],
                 },
                 "incompatible_replacement",
+            ),
+            (
+                Error::NotDeployed {
+                    message: s(),
+                    sync: Box::default(),
+                },
+                "not_deployed",
             ),
             (Error::InvalidData(s()), "invalid_data"),
             (Error::Io(s()), "io"),
@@ -271,6 +290,7 @@ mod tests {
             | Error::DependencyConflict(_)
             | Error::HasDependents { .. }
             | Error::IncompatibleReplacement { .. }
+            | Error::NotDeployed { .. }
             | Error::InvalidData(_)
             | Error::Io(_) => {}
         }
@@ -279,7 +299,7 @@ mod tests {
     #[test]
     fn every_variant_has_its_stable_kind() {
         let all = all();
-        assert_eq!(all.len(), 23);
+        assert_eq!(all.len(), 24);
         for (error, kind) in &all {
             covered(error);
             assert_eq!(error.kind(), *kind, "{error:?}");
@@ -337,6 +357,148 @@ mod tests {
                 assert_eq!(error.to_string(), "message", "{error:?}");
             }
         }
+    }
+
+    /// String literals of `source` outside comments and the test module.
+    fn literals(source: &str) -> Vec<String> {
+        let code = source.split("\n#[cfg(test)]\nmod tests").next().unwrap();
+        let chars: Vec<char> = code.chars().collect();
+        let (mut out, mut i) = (Vec::new(), 0);
+        while i < chars.len() {
+            match chars[i] {
+                '/' if chars.get(i + 1) == Some(&'/') => {
+                    while i < chars.len() && chars[i] != '\n' {
+                        i += 1;
+                    }
+                }
+                // A char literal ('"', '\'', 'x'); a lifetime has no closing quote.
+                '\'' if chars.get(i + 1) == Some(&'\\') => i += 4,
+                '\'' if chars.get(i + 2) == Some(&'\'') => i += 3,
+                'r' if chars.get(i + 1) == Some(&'#') && chars.get(i + 2) == Some(&'"') => {
+                    let start = i + 3;
+                    i = start;
+                    while !(chars[i] == '"' && chars.get(i + 1) == Some(&'#')) {
+                        i += 1;
+                    }
+                    out.push(chars[start..i].iter().collect());
+                    i += 2;
+                }
+                '"' => {
+                    let mut text = String::new();
+                    i += 1;
+                    while chars[i] != '"' {
+                        if chars[i] == '\\' {
+                            i += 1;
+                        }
+                        text.push(chars[i]);
+                        i += 1;
+                    }
+                    out.push(text);
+                    i += 1;
+                }
+                _ => i += 1,
+            }
+        }
+        out
+    }
+
+    /// Library messages are neutral: no CLI command, flag or hosting service (the CLI
+    /// adds command hints per error kind). Git commands quoted in messages (`git …`) and
+    /// the README a new package repository gets are not messages.
+    #[test]
+    fn messages_name_no_cli_command() {
+        let scaffold = include_str!("scaffold.rs");
+        let readme_start = scaffold.find("let install = if release").unwrap();
+        let readme_end = scaffold.find("git(&directory, &[\"init\"").unwrap();
+        let scaffold = format!("{}{}", &scaffold[..readme_start], &scaffold[readme_end..]);
+        let sources = [
+            ("auth.rs", include_str!("auth.rs")),
+            ("catalog.rs", include_str!("catalog.rs")),
+            ("check.rs", include_str!("check.rs")),
+            ("deps.rs", include_str!("deps.rs")),
+            ("error.rs", include_str!("error.rs")),
+            ("lib.rs", include_str!("lib.rs")),
+            ("exec.rs", include_str!("exec.rs")),
+            ("identity.rs", include_str!("identity.rs")),
+            ("list.rs", include_str!("list.rs")),
+            ("lock.rs", include_str!("lock.rs")),
+            ("lost_work.rs", include_str!("lost_work.rs")),
+            ("model.rs", include_str!("model.rs")),
+            ("packages.rs", include_str!("packages.rs")),
+            ("releases.rs", include_str!("releases.rs")),
+            ("scaffold.rs", scaffold.as_str()),
+            ("txn.rs", include_str!("txn.rs")),
+            ("upgrade.rs", include_str!("upgrade.rs")),
+            ("workspace.rs", include_str!("workspace.rs")),
+            ("workspace/clones.rs", include_str!("workspace/clones.rs")),
+            ("workspace/fork.rs", include_str!("workspace/fork.rs")),
+        ];
+        let commands = [
+            "init",
+            "fork",
+            "remote",
+            "auth",
+            "info",
+            "catalog",
+            "commit",
+            "install",
+            "list",
+            "check",
+            "update",
+            "rollback",
+            "enable",
+            "disable",
+            "forget",
+            "restore",
+            "uninstall",
+            "replace",
+            "sync-dist",
+            "register",
+        ];
+        let mut found = Vec::new();
+        for (file, source) in sources {
+            for text in literals(source) {
+                // Git arguments (`--format=…`) and quoted git commands are not prose.
+                let flag = text.contains(' ')
+                    && !text.starts_with("git ")
+                    && !text.starts_with("--")
+                    && text.match_indices("--").any(|(at, _)| {
+                        text[at + 2..].starts_with(|c: char| c.is_ascii_lowercase())
+                    });
+                // `gitpm restore`, `` `restore ``, or advice such as "use restore"/"run update".
+                let command = commands.iter().any(|c| {
+                    text.contains(&format!("gitpm {c}"))
+                        || text.contains(&format!("`{c}"))
+                        || ["use ", "run "].iter().any(|verb| {
+                            text.match_indices(&format!("{verb}{c}")).any(|(at, m)| {
+                                !text[at + m.len()..]
+                                    .starts_with(|ch: char| ch.is_ascii_alphanumeric())
+                            })
+                        })
+                });
+                if flag || command || text.contains("R2") || text.contains("catalog-update") {
+                    found.push(format!("{file}: {text}"));
+                }
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "messages naming CLI commands:\n{}",
+            found.join("\n")
+        );
+        assert!(literals("x(\"a --b\", '\"', r#\"c\"#) // \"d\"").len() == 2);
+        // The checks catch the advice the messages used to give.
+        let flagged = |text: &str| {
+            commands.iter().any(|c| {
+                ["use ", "run "].iter().any(|verb| {
+                    text.match_indices(&format!("{verb}{c}")).any(|(at, m)| {
+                        !text[at + m.len()..].starts_with(|ch: char| ch.is_ascii_alphanumeric())
+                    })
+                })
+            })
+        };
+        assert!(flagged("kept; use restore, or uninstall it first"));
+        assert!(!flagged("use the dev channel") && !flagged("use restored files"));
     }
 
     #[test]

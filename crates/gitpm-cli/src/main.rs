@@ -1,13 +1,29 @@
-//! `gitpm` command-line client: argument parsing, environment defaults, printing and
-//! prompts. Business logic lives in the gitpm library.
+//! `gitpm` command-line client: argument parsing, environment defaults, printing, TTY
+//! prompts and command hints per error kind. Business logic lives in the gitpm library.
 use anyhow::{Result, bail, ensure};
-use gitpm::{Error as PmError, Manager, Options, auth, catalog, check, identity, scaffold};
+use gitpm::{
+    DistSync, Error as PmError, ListOptions, Manager, Options, ReplacementPlan, auth, catalog,
+    check, identity, scaffold,
+};
 use gitpm_cli::{catalog as catalog_text, check as check_text};
 use std::io::{self, IsTerminal, Write};
 use std::path::Path;
 
+/// What the command line named, for the hint lines of a failure.
+#[derive(Default)]
+struct Invocation {
+    command: String,
+    id: String,
+    /// The catalog location is an HTTP(S) URL.
+    remote_catalog: bool,
+    /// `--into DIR` and `--multi` of `init`.
+    into: Option<String>,
+    multi: bool,
+}
+
 fn main() {
-    if let Err(error) = run() {
+    let mut invocation = Invocation::default();
+    if let Err(error) = run(&mut invocation) {
         eprintln!("Error: {error:#}");
         if let Some(pm_error) = error.downcast_ref::<PmError>() {
             if let PmError::LocalChanges { items, .. } = pm_error {
@@ -17,9 +33,70 @@ fn main() {
             }
             // Same stable kind the library API and FFI report.
             eprintln!("Error kind: {}", pm_error.kind());
+            if let Some(hint) = hint(&invocation, pm_error) {
+                eprintln!("Hint: {hint}");
+            }
         }
         std::process::exit(1);
     }
+}
+/// The gitpm command that helps after a library error, chosen from the command line,
+/// the error kind and its structured fields (never from the message).
+fn hint(invocation: &Invocation, error: &PmError) -> Option<String> {
+    let Invocation {
+        command,
+        id,
+        remote_catalog,
+        into,
+        multi,
+    } = invocation;
+    Some(match error {
+        PmError::AlreadyInstalled { id, .. } => format!(
+            "if {id} was forgotten, `gitpm restore {id}` records it again and `gitpm uninstall {id}` removes its clone"
+        ),
+        PmError::HasDependents {
+            dependents,
+            replacing: true,
+            ..
+        } => format!(
+            "switch back first: gitpm replace {} --back",
+            dependents.first()?
+        ),
+        PmError::HasDependents { id, .. } => {
+            format!("`gitpm {command} {id} --force` does it anyway")
+        }
+        PmError::LocalChanges { id, .. } if command == "uninstall" => {
+            format!("`gitpm uninstall {id} --force` deletes it anyway")
+        }
+        // restore needs the clone; uninstall drops what is left of a package without one.
+        PmError::RepositoryNotFound { id } if command == "restore" => format!(
+            "`gitpm uninstall {id}` drops a record whose clone is gone; install it again afterwards"
+        ),
+        // Only where a multi-package repository solves the refusal (the library decides).
+        PmError::InvalidArgument(_)
+            if command == "init"
+                && !multi
+                && into
+                    .as_deref()
+                    .is_some_and(|dir| scaffold::suggests_multi(Path::new(dir))) =>
+        {
+            format!(
+                "`gitpm init {id} --into DIR --multi` makes a new or empty DIR a multi-package repository"
+            )
+        }
+        PmError::InvalidArgument(_)
+            if *remote_catalog && matches!(command.as_str(), "catalog-update" | "register") =>
+        {
+            format!("{command} writes a local catalog folder; upload its files yourself")
+        }
+        PmError::NotDeployed { sync, .. } => {
+            let first = &sync.skipped.first()?.id;
+            format!(
+                "`gitpm uninstall {first}` drops a package whose clone is gone; install it again to deploy it"
+            )
+        }
+        _ => return None,
+    })
 }
 fn flag(args: &mut Vec<String>, key: &str) -> Result<bool> {
     ensure!(
@@ -33,12 +110,55 @@ fn flag(args: &mut Vec<String>, key: &str) -> Result<bool> {
         Ok(false)
     }
 }
+/// Ask `[y/N]` on stderr (stdout carries only result lines); EOF counts as no.
+fn ask(question: &str) -> Result<bool> {
+    eprint!("{question} [y/N] ");
+    io::stderr().flush()?;
+    let mut answer = String::new();
+    if io::stdin().read_line(&mut answer)? == 0 {
+        eprintln!();
+        return Ok(false);
+    }
+    Ok(matches!(answer.trim().to_lowercase().as_str(), "y" | "yes"))
+}
 /// Show which consumers a replacement would leave unsatisfied and decide: no conflict
-/// → go; TTY → ask [y/N]; no TTY → only with --force (the warning is still printed).
-fn confirm_replacement(plan: &gitpm::ReplacementPlan, force: bool) -> Result<bool> {
+/// → go; TTY → ask [y/N] (no: the command is cancelled); no TTY → only with --force (the
+/// warning is still printed).
+fn confirm_replacement(plan: &ReplacementPlan, force: bool) -> Result<bool> {
     if plan.incompatible.is_empty() {
         return Ok(false);
     }
+    warn_incompatible(plan);
+    if force {
+        return Ok(true);
+    }
+    if !io::stdin().is_terminal() {
+        // Unconfirmed: the library refuses with its typed incompatible_replacement error.
+        eprintln!("No terminal to confirm; use --force to replace anyway.");
+        return Ok(false);
+    }
+    ensure!(
+        ask("Replace anyway?")?,
+        "replacement cancelled; nothing was changed"
+    );
+    Ok(true)
+}
+/// A pending replacement of `fork --replace`: warn and ask on a TTY. Unlike
+/// `confirm_replacement`, a refusal does not cancel the command (the fork is already
+/// released and installed): the replacement stays pending.
+fn confirm_pending(plan: &ReplacementPlan) -> Result<bool> {
+    warn_incompatible(plan);
+    if !io::stdin().is_terminal() {
+        eprintln!("No terminal to confirm; use --force to replace anyway.");
+        return Ok(false);
+    }
+    let yes = ask("Replace anyway?")?;
+    if !yes {
+        eprintln!("{} is not replaced.", plan.original);
+    }
+    Ok(yes)
+}
+fn warn_incompatible(plan: &ReplacementPlan) {
     eprintln!(
         "Warning: {} provides {} {}, which these consumers do not accept:",
         plan.provider, plan.original, plan.version
@@ -50,26 +170,6 @@ fn confirm_replacement(plan: &gitpm::ReplacementPlan, force: bool) -> Result<boo
         );
     }
     eprintln!("The replacement applies to every consumer in this workspace.");
-    if force {
-        return Ok(true);
-    }
-    if !io::stdin().is_terminal() {
-        // Unconfirmed: the library refuses with its typed incompatible_replacement error.
-        eprintln!("No terminal to confirm; use --force to replace anyway.");
-        return Ok(false);
-    }
-    eprint!("Replace anyway? [y/N] ");
-    io::stderr().flush()?;
-    let mut answer = String::new();
-    if io::stdin().read_line(&mut answer)? == 0 {
-        eprintln!();
-        bail!("replacement cancelled; nothing was changed");
-    }
-    ensure!(
-        matches!(answer.trim().to_lowercase().as_str(), "y" | "yes"),
-        "replacement cancelled; nothing was changed"
-    );
-    Ok(true)
 }
 fn option(args: &mut Vec<String>, key: &str) -> Result<Option<String>> {
     ensure!(
@@ -85,46 +185,25 @@ fn option(args: &mut Vec<String>, key: &str) -> Result<Option<String>> {
         Ok(None)
     }
 }
-/// Split the init argument `NAMESPACE/NAME` (a package ID, not a path). The
-/// namespace is mandatory: there is no default and no config file.
-fn split_id(value: &str) -> Result<(&str, &str)> {
-    let Some((namespace, name)) = value.split_once('/') else {
-        bail!("package id needs a namespace: use NAMESPACE/NAME, for example acme/{value}");
-    };
-    identity::qualified(namespace, name)?;
-    Ok((namespace, name))
-}
 /// Ask on a TTY before discarding local work; anything but y/yes keeps everything.
 fn confirm_lost_work(plan: &gitpm::UninstallPlan) -> Result<bool> {
-    println!("Uninstall {} would delete:", plan.id);
+    eprintln!("Uninstall {} would delete:", plan.id);
     for path in &plan.deletes {
-        println!("  {path}");
+        eprintln!("  {path}");
     }
     if plan.registered {
-        println!("  state.json entry {}", plan.id);
+        eprintln!("  state.json entry {}", plan.id);
     }
-    println!("Local work that would be lost:");
+    eprintln!("Local work that would be lost:");
     for item in &plan.lost_work {
-        println!("  - {}", item.describe());
+        eprintln!("  - {}", item.describe());
     }
-    print!("Delete anyway? [y/N] ");
-    io::stdout().flush()?;
-    let mut answer = String::new();
-    if io::stdin().read_line(&mut answer)? == 0 {
-        println!();
-        return Ok(false);
-    }
-    Ok(matches!(answer.trim().to_lowercase().as_str(), "y" | "yes"))
+    ask("Delete anyway?")
 }
 /// `ORIGINAL replaced by PROVIDER INSTALLED_VERSION for: consumers`; the version
 /// consumers see (a fork's declared `replaces.version`) is added when it differs.
-fn print_replacement(manager: &Manager, plan: &gitpm::ReplacementPlan) -> Result<()> {
-    let installed = manager
-        .state()?
-        .packages
-        .get(&plan.provider)
-        .map(|p| p.current.version.clone())
-        .unwrap_or_else(|| plan.version.clone());
+fn print_replacement(plan: &ReplacementPlan) {
+    let installed = plan.installed_version.as_deref().unwrap_or(&plan.version);
     println!(
         "{} replaced by {} {installed}{} for: {}",
         plan.original,
@@ -140,7 +219,6 @@ fn print_replacement(manager: &Manager, plan: &gitpm::ReplacementPlan) -> Result
             plan.consumers.join(", ")
         }
     );
-    Ok(())
 }
 /// Library warnings (ignored metadata keys) on stderr.
 fn warn(warnings: &[String]) {
@@ -148,9 +226,19 @@ fn warn(warnings: &[String]) {
         eprintln!("Warning: {warning}");
     }
 }
+/// Broken release tags the library passed over.
+fn warn_skipped(skipped: &[gitpm::releases::SkippedTag]) {
+    for skipped in skipped {
+        eprintln!(
+            "Warning: skipped release tag {}: {}",
+            skipped.name, skipped.reason
+        );
+    }
+}
 /// `installed ID@VERSION from SOURCE`, or `ID already installed (VERSION)` (with `; run
 /// update` when the source has another revision, naming the requested ref or channel).
 fn print_installed(result: &gitpm::InstallResult, requested: Option<&str>) {
+    warn_skipped(&result.skipped);
     warn(&result.warnings);
     if result.already_installed {
         let hint = match (&result.available, requested) {
@@ -170,50 +258,47 @@ fn print_installed(result: &gitpm::InstallResult, requested: Option<&str>) {
             result.id, result.current.version, result.source
         );
     }
+    warn_dist(&result.dist);
 }
 /// `replace ORIGINAL --back`: which replacement was dropped and who uses the original now.
-fn print_switch_back(manager: &Manager, plan: &gitpm::ReplacementPlan) -> Result<()> {
-    let installed = manager
-        .state()?
-        .packages
-        .get(&plan.original)
-        .map(|p| p.current.version.clone())
-        .unwrap_or_else(|| plan.version.clone());
+fn print_switch_back(plan: &ReplacementPlan) {
+    let installed = plan.installed_version.as_deref().unwrap_or(&plan.version);
     let consumers = if plan.consumers.is_empty() {
         "no installed consumers".to_owned()
     } else {
         format!("for: {}", plan.consumers.join(", "))
     };
-    // switch_back refuses when nothing is replaced, so `current` names the fork.
+    // switch_back refuses when nothing is replaced, so `current` names the fork; the fork
+    // is not touched: say what is left of it.
     let fork = plan.current.as_deref().unwrap_or_default();
-    // The fork is not touched: say what is left of it.
-    let remains = match manager.state()?.packages.get(fork) {
-        Some(p) if p.enabled => {
-            format!("; {fork} stays installed and enabled (disable or uninstall it if not wanted)")
-        }
-        Some(_) => format!("; {fork} stays installed (disabled)"),
-        None => String::new(),
+    let remains = if plan.fork_enabled {
+        format!("; {fork} stays installed and enabled (disable or uninstall it if not wanted)")
+    } else {
+        format!("; {fork} stays installed (disabled)")
     };
     println!(
         "{} switched back from {fork} ({} {installed} {consumers}){remains}",
         plan.original, plan.original
     );
-    Ok(())
 }
-/// `update all`: one line per installed package (updated, up to date or kept back),
-/// then the new dependencies and the totals.
-fn print_update_all(before: &gitpm::State, plan: &gitpm::UpdateAllPlan, dry_run: bool) {
+/// `update all`: one line per installed package (updated, up to date or kept back) from
+/// the plan, then the new dependencies and the totals.
+fn print_update_all(plan: &gitpm::UpdateAllPlan, dry_run: bool) {
+    warn_skipped(&plan.skipped);
     for change in &plan.updates {
         warn(&change.warnings);
     }
     for install in &plan.installs {
         warn(&install.warnings);
     }
-    for (id, installed) in &before.packages {
-        let held = plan.kept_back.iter().find(|h| &h.id == id);
-        match plan.updates.iter().find(|c| &c.id == id) {
-            Some(change) => println!(
-                "{id} {} {} → {}{}",
+    let mut lines: Vec<(&str, String)> = Vec::new();
+    for change in &plan.updates {
+        let held = plan.kept_back.iter().find(|h| h.id == change.id);
+        lines.push((
+            &change.id,
+            format!(
+                "{} {} {} → {}{}",
+                change.id,
                 if dry_run {
                     "would be updated"
                 } else {
@@ -224,14 +309,28 @@ fn print_update_all(before: &gitpm::State, plan: &gitpm::UpdateAllPlan, dry_run:
                 held.map(|h| format!(" (latest {} kept back by dependency constraints)", h.latest))
                     .unwrap_or_default()
             ),
-            None => match held {
-                Some(h) => println!(
-                    "{id} kept back at {} (latest {}: dependency constraints)",
-                    installed.current.version, h.latest
+        ));
+    }
+    for held in &plan.kept_back {
+        if !plan.updates.iter().any(|c| c.id == held.id) {
+            lines.push((
+                &held.id,
+                format!(
+                    "{} kept back at {} (latest {}: dependency constraints)",
+                    held.id, held.selected, held.latest
                 ),
-                None => println!("{id} up to date ({})", installed.current.version),
-            },
+            ));
         }
+    }
+    for unchanged in &plan.unchanged {
+        lines.push((
+            &unchanged.id,
+            format!("{} up to date ({})", unchanged.id, unchanged.version),
+        ));
+    }
+    lines.sort();
+    for (_, line) in lines {
+        println!("{line}");
     }
     for install in &plan.installs {
         println!(
@@ -252,9 +351,10 @@ fn print_update_all(before: &gitpm::State, plan: &gitpm::UpdateAllPlan, dry_run:
         plan.kept_back.len(),
         if dry_run { " Nothing was changed." } else { "" }
     );
+    warn_dist(&plan.dist);
 }
 /// What sync-dist did (or would do); problems go to stderr.
-fn print_dist_sync(sync: &gitpm::DistSync, dry_run: bool) {
+fn print_dist_sync(sync: &DistSync, dry_run: bool) {
     let (deploy, remove) = if dry_run {
         ("would be deployed to", "would be removed from")
     } else {
@@ -273,8 +373,9 @@ fn print_dist_sync(sync: &gitpm::DistSync, dry_run: bool) {
         println!("Nothing was changed (--dry-run).");
     }
 }
-/// Folders under dist/ gitpm leaves alone, and active packages left without dist/.
-fn warn_dist(sync: &gitpm::DistSync) {
+/// The dist report of a result: folders under dist/ gitpm leaves alone, and active
+/// packages left without their deployed folder.
+fn warn_dist(sync: &DistSync) {
     for path in &sync.unmanaged {
         eprintln!("Warning: {path} belongs to no known package or is not a folder; left as it is");
     }
@@ -287,6 +388,7 @@ fn warn_dist(sync: &gitpm::DistSync) {
 }
 /// `ID updated A → B` or `ID up to date (A)` (`verb`: updated, rolled back).
 fn print_change(change: &gitpm::RevisionChange, verb: &str) {
+    warn_skipped(&change.skipped);
     warn(&change.warnings);
     let short = |commit: &str| commit.chars().take(12).collect::<String>();
     if !change.changed {
@@ -305,6 +407,7 @@ fn print_change(change: &gitpm::RevisionChange, verb: &str) {
             change.id, change.from.version, change.to.version
         );
     }
+    warn_dist(&change.dist);
 }
 /// What a fork created or added, and the rewritten dependencies.
 fn print_package_fork(fork: &gitpm::PackageFork) {
@@ -346,8 +449,10 @@ fn print_package_fork(fork: &gitpm::PackageFork) {
     }
 }
 /// `fork ID... --ns NAMESPACE --into DIR --replace`: per package release, install,
-/// replace (one package or several, same output). The fork is never removed; every
-/// package that did not finish says how to finish or undo.
+/// replace (one package or several, same output). A replacement the library left
+/// pending (incompatible consumers) is confirmed on a TTY and applied with
+/// `fork_replace_resume`. The fork is never removed; every package that did not finish
+/// says how to finish or undo.
 fn fork_packages_replace(
     manager: &Manager,
     ids: &[&str],
@@ -358,7 +463,33 @@ fn fork_packages_replace(
 ) -> Result<()> {
     let outcome = manager.fork_packages_replace(ids, destination, namespace, version, force)?;
     print_package_fork(&outcome.fork);
+    let mut confirmed = Vec::new();
+    for pending in outcome.pending() {
+        if confirm_pending(&pending.plan)? {
+            confirmed.push(pending);
+        }
+    }
+    let gitpm::ForkResume {
+        applied: resumed,
+        failed: mut resume_failure,
+    } = manager.fork_replace_resume(&confirmed, true);
     let quoted = scaffold::shell_quote(&outcome.fork.path.to_string_lossy());
+    // Warn about dist/ once, from the report of the last transaction.
+    let last_dist = resumed
+        .last()
+        .map(|plan| &plan.dist)
+        .or_else(|| {
+            let packages = outcome.packages.iter().rev();
+            packages
+                .clone()
+                .find_map(|p| p.replacement.as_ref().map(|plan| &plan.dist))
+                .or_else(|| {
+                    packages
+                        .clone()
+                        .find_map(|p| p.installed.as_ref().map(|i| &i.dist))
+                })
+        })
+        .cloned();
     let mut first_error = None;
     for package in outcome.packages {
         let (original, new_id) = (&package.original, &package.id);
@@ -366,25 +497,27 @@ fn fork_packages_replace(
             println!("Released: {tag}");
         }
         if let Some(installed) = &package.installed {
+            warn_skipped(&installed.skipped);
+            warn(&installed.warnings);
             println!("Installed: {new_id} {}", installed.current.version);
         }
-        let error = match (package.failed, package.error) {
+        if let Some(plan) = resumed
+            .iter()
+            .find(|plan| plan.original == *original && plan.provider == *new_id)
+        {
+            print_replacement(plan);
+            continue;
+        }
+        // A confirmed replacement that failed on resume reports that failure.
+        let resumed_error = resume_failure
+            .take_if(|f| f.original == *original && f.fork == *new_id)
+            .map(|f| f.error);
+        let error = match (package.failed, resumed_error.or(package.error)) {
             (None, _) => {
                 if let Some(plan) = &package.replacement {
-                    print_replacement(manager, plan)?;
+                    print_replacement(plan);
                 }
                 continue;
-            }
-            (
-                Some(gitpm::ForkStep::Replace),
-                Some(error @ PmError::IncompatibleReplacement { .. }),
-            ) if !force => {
-                let plan = manager.replace_plan(original, new_id)?;
-                if confirm_replacement(&plan, false)? {
-                    print_replacement(manager, &manager.replace(original, new_id, true)?)?;
-                    continue;
-                }
-                error
             }
             (_, Some(error)) => error,
             (Some(step), None) => {
@@ -411,6 +544,9 @@ fn fork_packages_replace(
             ),
         }
         first_error.get_or_insert(error);
+    }
+    if let Some(dist) = &last_dist {
+        warn_dist(dist);
     }
     match first_error {
         None => Ok(()),
@@ -628,7 +764,7 @@ fn command_usage(command: &str) -> Option<String> {
         .collect();
     (!blocks.is_empty()).then(|| blocks.join("\n"))
 }
-fn run() -> Result<()> {
+fn run(invocation: &mut Invocation) -> Result<()> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let root = option(&mut args, "--root")?
         .or_else(|| std::env::var("GITPM_ROOT").ok())
@@ -700,10 +836,7 @@ fn run() -> Result<()> {
             .is_none_or(|c| c == "dev" || c == "stable"),
         "channel must be stable or dev"
     );
-    ensure!(
-        channel.is_none() || reference.is_none(),
-        "--channel conflicts with --ref"
-    );
+    // `--channel dev --ref REF` is passed on: the library refuses the combination.
     let dev = channel.as_deref() == Some("dev");
     ensure!(
         build.is_none() || command == "register",
@@ -767,13 +900,15 @@ fn run() -> Result<()> {
         args.len() - 1
     );
     let id = args.get(1).map(String::as_str).unwrap_or("");
-    if command == "init" {
-        split_id(id)?;
-        ensure!(
-            into.is_some(),
-            "{command} needs --into DIR: the repository (a new folder, or a repository with gitpm.json to add the package to)"
-        );
-    }
+    *invocation = Invocation {
+        command: command.to_owned(),
+        id: id.to_owned(),
+        remote_catalog: catalog_location
+            .as_deref()
+            .is_some_and(|l| catalog::is_local(l).is_ok_and(|local| !local)),
+        into: into.clone(),
+        multi,
+    };
     if command == "install" && args.len() == 3 {
         ensure!(
             package.is_none(),
@@ -784,19 +919,28 @@ fn run() -> Result<()> {
         "install" if args.len() == 3 => Some(args[2].clone()),
         _ => package,
     };
-    if let Some(package) = &package {
-        gitpm::valid_id(package)?;
-    }
     let update_all = command == "update" && id == "all";
     ensure!(
         !dry_run || update_all || command == "sync-dist",
         "--dry-run requires update all or sync-dist"
     );
+    // `update all` has no ref or channel parameter: these options do not apply to it.
     ensure!(
         !update_all || (reference.is_none() && !dev),
         "update all supports stable releases only; --ref and --channel dev are not supported"
     );
-    // Validate input before opening the workspace: a rejected command creates nothing.
+    // Parse IDs and versions with the library's parsers before opening the workspace: a
+    // rejected command creates nothing.
+    if command == "init" {
+        identity::split(id)?;
+        ensure!(
+            into.is_some(),
+            "{command} needs --into DIR: the repository (a new folder, or a repository with gitpm.json to add the package to)"
+        );
+    }
+    if let Some(package) = &package {
+        gitpm::valid_id(package)?;
+    }
     if matches!(
         command,
         "update"
@@ -826,12 +970,8 @@ fn run() -> Result<()> {
             into.is_some(),
             "fork needs --into DIR: the fork repository (a new folder, or a repository with gitpm.json to add the packages to)"
         );
-        for (index, other) in args[1..].iter().enumerate() {
+        for other in &args[1..] {
             gitpm::valid_id(other)?;
-            ensure!(
-                !args[1..index + 1].contains(other),
-                "{other} is given more than once"
-            );
         }
     }
     if let Some(fork) = &with {
@@ -883,19 +1023,18 @@ fn run() -> Result<()> {
             return Ok(());
         }
         "init" => {
-            let (namespace, name) = split_id(id)?;
+            let (namespace, name) = identity::split(id)?;
             let dir = into.as_deref().unwrap_or_default();
             let options = scaffold::InitOptions {
                 multi,
                 release: !no_release,
             };
             let created = scaffold::init_with(Path::new(dir), namespace, name, options)?;
-            let package_id = identity::qualified(namespace, name)?;
             let source = scaffold::shell_quote(&created.repo.to_string_lossy());
             let root = scaffold::shell_quote(&root);
             let package = match &created.folder {
                 None => String::new(),
-                Some(_) => format!(" --package {package_id}"),
+                Some(_) => format!(" --package {id}"),
             };
             let version = match &created.tag {
                 Some(tag) => format!("Git commit and tag {tag}"),
@@ -909,14 +1048,14 @@ fn run() -> Result<()> {
             };
             match &created.folder {
                 None => println!(
-                    "\nCreated: {}\nID: {package_id}\nVersion 0.1.0: {version}.\nEdit: {}/dist/index.js\n\nInstall:\n{install}  gitpm --root {root} install {source}\n\nNew release after editing:\n  gitpm commit {source} 0.1.1\n\nGit uses your configured identity; if there is none, the repository gets a local\nPackage Demo <demo@example.invalid>.",
+                    "\nCreated: {}\nID: {id}\nVersion 0.1.0: {version}.\nEdit: {}/dist/index.js\n\nInstall:\n{install}  gitpm --root {root} install {source}\n\nNew release after editing:\n  gitpm commit {source} 0.1.1\n\nGit uses your configured identity; if there is none, the repository gets a local\nPackage Demo <demo@example.invalid>.",
                     created.repo.display(),
                     created.repo.display()
                 ),
                 Some(folder) => {
                     let path = created.repo.join(folder);
                     println!(
-                        "\nCreated: {}\nID: {package_id}\nVersion 0.1.0: {version} (only gitpm.json and this folder are committed).\nEdit: {}/dist/index.js\n\nInstall:\n{install}  gitpm --root {root} install {source} {package_id}\n\nNew release after editing (stages ALL changes of the repository):\n  gitpm commit {source} 0.1.1{package}",
+                        "\nCreated: {}\nID: {id}\nVersion 0.1.0: {version} (only gitpm.json and this folder are committed).\nEdit: {}/dist/index.js\n\nInstall:\n{install}  gitpm --root {root} install {source} {id}\n\nNew release after editing (stages ALL changes of the repository):\n  gitpm commit {source} 0.1.1{package}",
                         path.display(),
                         path.display()
                     );
@@ -924,39 +1063,50 @@ fn run() -> Result<()> {
             }
             return Ok(());
         }
+        "list" => {
+            // Read-only: never opens, locks or creates the workspace.
+            let view = gitpm::list_with(Path::new(&root), &ListOptions { provides })?;
+            println!("{}", serde_json::to_string_pretty(&view)?);
+            return Ok(());
+        }
         "check" => {
-            let state = check::read_state(Path::new(&root))?;
-            if state.packages.is_empty() {
+            let report = match check::check(Path::new(&root), catalog_location.as_deref()) {
+                // Only a non-empty workspace needs the catalog.
+                Err(PmError::InvalidArgument(_)) if catalog_location.is_none() => {
+                    return Err(require_catalog().unwrap_err());
+                }
+                report => report?,
+            };
+            if report.rows.is_empty() {
                 println!("No packages installed in workspace {root}.");
-            } else {
-                let url = require_catalog()?;
-                let rows = check::check(Path::new(&root), &url)?;
-                println!("Workspace: {root}\nCatalog: {url}\n");
-                let color = io::stdout().is_terminal()
-                    && std::env::var_os("NO_COLOR").is_none()
-                    && std::env::var("TERM").as_deref() != Ok("dumb");
-                print!("{}", check_text::display_colored(&rows, color));
-                for (original, fork) in &state.replacements {
-                    println!("Replacement: {original} → {fork} (for every consumer)");
-                }
-                for package in state.installed() {
-                    for dep in package.dependencies.iter().filter(|d| !d.satisfied) {
-                        println!(
-                            "Unsatisfied dependency: {} → {} {}: {}",
-                            package.id,
-                            dep.id,
-                            dep.requirement,
-                            dep.problem.as_deref().unwrap_or("")
-                        );
-                    }
-                }
+                return Ok(());
+            }
+            println!(
+                "Workspace: {root}\nCatalog: {}\n",
+                catalog_location.as_deref().unwrap_or_default()
+            );
+            let color = io::stdout().is_terminal()
+                && std::env::var_os("NO_COLOR").is_none()
+                && std::env::var("TERM").as_deref() != Ok("dumb");
+            print!("{}", check_text::display_colored(&report.rows, color));
+            for (original, fork) in &report.replacements {
+                println!("Replacement: {original} → {fork} (for every consumer)");
+            }
+            for dep in &report.unsatisfied {
+                println!(
+                    "Unsatisfied dependency: {} → {} {}: {}",
+                    dep.package,
+                    dep.dependency,
+                    dep.requirement,
+                    dep.problem.as_deref().unwrap_or("")
+                );
             }
             return Ok(());
         }
         "catalog" => {
             println!(
                 "{}",
-                serde_json::to_string_pretty(&catalog::list(&require_catalog()?)?)?
+                serde_json::to_string_pretty(&catalog::links(&require_catalog()?)?)?
             );
             return Ok(());
         }
@@ -983,11 +1133,11 @@ fn run() -> Result<()> {
             return Ok(());
         }
         "commit" => {
-            let version = &args[2];
-            let tag = scaffold::commit_package(Path::new(id), version, package.as_deref())?;
-            // A release tag is always `ID@VERSION`: it names the package.
-            let (package, _) = tag.rsplit_once('@').expect("release tags are ID@VERSION");
-            println!("{package} committed {version} (local commit and tag {tag})");
+            let done = scaffold::commit_package(Path::new(id), &args[2], package.as_deref())?;
+            println!(
+                "{} committed {} (local commit and tag {})",
+                done.package, done.version, done.tag
+            );
             return Ok(());
         }
         "install-catalog" => {
@@ -995,13 +1145,14 @@ fn run() -> Result<()> {
         }
         _ => {}
     }
-    // A direct Git install needs a catalog only for missing dependencies; a local
-    // catalog that does not exist means none is configured (the library says so).
-    let catalog = catalog_location.filter(|url| {
-        let is_url = url.starts_with("https://") || url.starts_with("http://");
-        command != "install" || is_url || Path::new(url).exists()
-    });
-    let manager = Manager::open_with(root, Options { catalog })?;
+    // The catalog location is passed as given; the library refuses one that does not
+    // exist before anything is created.
+    let manager = Manager::open_with(
+        root,
+        Options {
+            catalog: catalog_location,
+        },
+    )?;
     match command {
         "fork" => {
             let namespace = ns.as_deref().unwrap_or_default();
@@ -1040,30 +1191,9 @@ fn run() -> Result<()> {
                 }
             }
         }
-        "list" => {
-            // Raw state plus the resolved view (providers, dependents, replacements).
-            let mut state = manager.state()?;
-            let mut resolved = manager.list()?;
-            if let Some(service) = &provides {
-                // Only packages whose plugin.json provides the service.
-                resolved.retain(|p| p.provides.contains(service));
-                state
-                    .packages
-                    .retain(|id, _| resolved.iter().any(|p| &p.id == id));
-            }
-            let mut value = serde_json::to_value(state)?;
-            value["resolved"] = serde_json::to_value(resolved)?;
-            println!("{}", serde_json::to_string_pretty(&value)?);
-        }
         "install" => {
             let result =
                 manager.install_package(id, package.as_deref(), reference.as_deref(), dev)?;
-            for skipped in &result.skipped {
-                eprintln!(
-                    "Warning: skipped release tag {}: {}",
-                    skipped.name, skipped.reason
-                );
-            }
             let requested = match (&reference, dev) {
                 (Some(reference), _) => Some(format!(
                     "--ref {}",
@@ -1086,13 +1216,12 @@ fn run() -> Result<()> {
         }
         "update" => {
             if update_all {
-                let before = manager.state()?;
                 let plan = if dry_run {
                     manager.update_all_plan()?
                 } else {
                     manager.update_all()?
                 };
-                print_update_all(&before, &plan, dry_run);
+                print_update_all(&plan, dry_run);
             } else {
                 print_change(
                     &manager.update_channel(id, reference.as_deref(), dev)?,
@@ -1102,16 +1231,19 @@ fn run() -> Result<()> {
         }
         "rollback" => print_change(&manager.rollback(id)?, "rolled back"),
         "enable" => {
-            manager.set_enabled(id, true)?;
+            let dist = manager.set_enabled(id, true)?;
             println!("{id} enabled");
+            warn_dist(&dist);
         }
         "disable" => {
-            manager.set_enabled_with(id, false, force)?;
+            let dist = manager.set_enabled_with(id, false, force)?;
             println!("{id} disabled");
+            warn_dist(&dist);
         }
         "forget" => {
-            manager.forget_with(id, force)?;
+            let dist = manager.forget_with(id, force)?;
             println!("{id} forgotten (clone kept; restore re-registers it)");
+            warn_dist(&dist);
         }
         "replace" => {
             let plan = match &with {
@@ -1119,35 +1251,45 @@ fn run() -> Result<()> {
                 None => manager.switch_back_plan(id)?,
             };
             let confirm = confirm_replacement(&plan, force)?;
-            match &with {
-                Some(fork) => print_replacement(&manager, &manager.replace(id, fork, confirm)?)?,
-                None => print_switch_back(&manager, &manager.switch_back(id, confirm)?)?,
-            }
+            let done = match &with {
+                Some(fork) => {
+                    let done = manager.replace(id, fork, confirm)?;
+                    print_replacement(&done);
+                    done
+                }
+                None => {
+                    let done = manager.switch_back(id, confirm)?;
+                    print_switch_back(&done);
+                    done
+                }
+            };
+            warn_dist(&done.dist);
         }
         "restore" => {
             let restored = manager.restore(id)?;
             warn(&restored.warnings);
             println!("{id} restored {}", restored.current.version);
+            warn_dist(&restored.dist);
         }
         "sync-dist" => {
-            let sync = if dry_run {
-                manager.sync_dist_plan()?
+            if dry_run {
+                print_dist_sync(&manager.sync_dist_plan()?, true);
             } else {
-                manager.sync_dist()?
-            };
-            print_dist_sync(&sync, dry_run);
-            if !dry_run && !sync.skipped.is_empty() {
-                let failed: Vec<&str> = sync.skipped.iter().map(|s| s.id.as_str()).collect();
-                bail!(
-                    "sync-dist: {} package(s) not deployed: {}",
-                    failed.len(),
-                    failed.join(", ")
-                );
+                match manager.sync_dist() {
+                    Ok(sync) => print_dist_sync(&sync, false),
+                    Err(error) => {
+                        // What could be synced is committed; say what it was.
+                        if let PmError::NotDeployed { sync, .. } = &error {
+                            print_dist_sync(sync, false);
+                        }
+                        return Err(error.into());
+                    }
+                }
             }
         }
         "uninstall" => {
-            if force {
-                manager.uninstall_with(id, true, true)?;
+            let dist = if force {
+                manager.uninstall_with(id, true, true)?
             } else {
                 let plan = manager.uninstall_plan(id)?;
                 if !plan.dependents.is_empty() {
@@ -1155,40 +1297,24 @@ fn run() -> Result<()> {
                     for item in &plan.lost_work {
                         eprintln!("Local work that would be lost: {}", item.describe());
                     }
-                    manager.uninstall(id, false)?;
                 }
-                if plan.lost_work.is_empty() || !io::stdin().is_terminal() {
-                    // Without a TTY the library refuses and lists the local work.
-                    manager.uninstall(id, false)?;
+                if !plan.dependents.is_empty()
+                    || plan.lost_work.is_empty()
+                    || !io::stdin().is_terminal()
+                {
+                    // Unconfirmed: the library refuses dependents and, without a TTY,
+                    // lists the local work.
+                    manager.uninstall(id, false)?
                 } else if confirm_lost_work(&plan)? {
-                    manager.uninstall(id, true)?;
+                    manager.uninstall(id, true)?
                 } else {
                     bail!("uninstall cancelled; nothing was changed");
                 }
-            }
+            };
             println!("{id} uninstalled");
+            warn_dist(&dist);
         }
         _ => bail!("unknown command: {command}"),
-    }
-    // Mutating commands reconcile dist/ (already committed): report what they left alone.
-    let mutating = matches!(
-        command,
-        "install"
-            | "install-catalog"
-            | "update"
-            | "rollback"
-            | "enable"
-            | "disable"
-            | "forget"
-            | "restore"
-            | "uninstall"
-            | "replace"
-    ) || (command == "fork" && replace);
-    if mutating && !dry_run {
-        match manager.sync_dist_plan() {
-            Ok(sync) => warn_dist(&sync),
-            Err(error) => eprintln!("Warning: cannot check dist/: {error}"),
-        }
     }
     Ok(())
 }

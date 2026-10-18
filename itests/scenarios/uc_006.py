@@ -29,7 +29,7 @@ def author(t: T):
 
 def no_side_effects(t: T, bare):
     t.eq(t.git(bare, "for-each-ref"), "", "nothing pushed to origin")
-    t.ok(not t.catalog.exists(), "no catalog written")
+    t.ok(t.catalog_empty(), "no catalog written")
     t.ok(not t.ws.exists(), "no workspace touched")
 
 

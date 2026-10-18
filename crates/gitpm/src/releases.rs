@@ -363,5 +363,28 @@ mod tests {
         let found = discover_all(&author.path, None).unwrap();
         assert_eq!(found.skipped.len(), 1);
         assert_eq!(found.skipped[0].name, "dan/demo1@0.0.1");
+        // update and update all pass over it to the newest valid release and report it,
+        // as install does.
+        let skipped_names = |skipped: &[SkippedTag]| -> Vec<String> {
+            skipped.iter().map(|s| s.name.clone()).collect()
+        };
+        let m = crate::Manager::open(dir.join("ws-update")).unwrap();
+        m.install_ref(author.source(), Some("dan/demo1@0.1.0"), None)
+            .unwrap();
+        let change = m.update("dan/demo1").unwrap();
+        assert_eq!(change.to.commit, good);
+        assert_eq!(skipped_names(&change.skipped), ["dan/demo1@0.0.1"]);
+        assert!(change.skipped[0].reason.contains("invalid manifest"));
+        let m = crate::Manager::open(dir.join("ws-update-all")).unwrap();
+        m.install_ref(author.source(), Some("dan/demo1@0.1.0"), None)
+            .unwrap();
+        let plan = m.update_all().unwrap();
+        assert_eq!(plan.updates.len(), 1);
+        assert_eq!(plan.updates[0].to.commit, good);
+        assert_eq!(skipped_names(&plan.skipped), ["dan/demo1@0.0.1"]);
+        // An unchanged package reports it too.
+        let plan = m.update_all_plan().unwrap();
+        assert_eq!(plan.unchanged.len(), 1);
+        assert_eq!(skipped_names(&plan.skipped), ["dan/demo1@0.0.1"]);
     }
 }

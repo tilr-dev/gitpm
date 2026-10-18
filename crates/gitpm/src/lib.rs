@@ -20,6 +20,7 @@ pub mod deps;
 mod error;
 mod exec;
 pub mod identity;
+pub mod list;
 mod lock;
 mod lost_work;
 mod model;
@@ -33,13 +34,15 @@ mod upgrade;
 mod workspace;
 
 pub use error::{Error, Result};
+pub use list::{ListOptions, ListView, list_with};
 pub use lost_work::LostWork;
 pub use model::{
     ForkOf, Installed, InstalledPackage, Manifest, Metadata, Replaces, Revision, STATE_FORMAT,
     State, valid_id,
 };
 pub use workspace::{
-    DependencyRewrite, DistSync, ForkReplacement, ForkStep, ForkedPackage, HeldBack,
+    DependencyRewrite, DistSync, ForkReplacement, ForkResume, ForkStep, ForkedPackage, HeldBack,
     IncompatibleConsumer, InstallResult, Manager, Options, PackageFork, PackageForkReplacement,
-    ReplacementPlan, RevisionChange, SkippedDist, UninstallPlan, UpdateAllPlan,
+    PendingReplacement, ReplacementPlan, ResumeFailure, RevisionChange, SkippedDist, Unchanged,
+    UninstallPlan, UpdateAllPlan,
 };

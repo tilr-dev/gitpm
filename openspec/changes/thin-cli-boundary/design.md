@@ -14,14 +14,14 @@ pub struct Options { pub catalog: Option<String> }        // validated by open_w
 impl Manager {
     pub fn open_with(root: &Path, options: Options) -> Result<Manager>; // validates first, then creates
     pub fn fork_replace_resume(&self, pending: &[PendingReplacement], confirm: bool)
-        -> Result<Vec<ReplacementPlan>>;
+        -> ForkResume;   // { applied: Vec<ReplacementPlan>, failed: Option<ResumeFailure { original, fork, error }> }
 }
 pub struct PendingReplacement { pub original: String, pub fork: String, pub plan: ReplacementPlan }
 pub struct ReplacementPlan {
     pub original: String, pub provider: String, pub version: String,
     pub current: Option<String>, pub consumers: Vec<String>,
     pub incompatible: Vec<IncompatibleConsumer>,
-    pub installed_version: Option<String>,   // NEW: ORIGINAL's installed version
+    pub installed_version: Option<String>,   // NEW: installed version of `provider` (FORK; ORIGINAL when switching back)
     pub fork_enabled: bool,                  // NEW
 }
 pub struct UpdateAllPlan { pub updates, pub installs, pub kept_back,
@@ -41,12 +41,13 @@ pub struct Commit { pub package: String, pub version: String, pub tag: String }
 pub fn commit_package(repo: &Path, version: &str, package: Option<&str>) -> Result<Commit>;
 
 // error.rs
-Error::NotDeployed { message: String, sync: DistSync }    // kind "not_deployed"
+Error::NotDeployed { message: String, sync: Box<DistSync> }    // kind "not_deployed"
+Error::HasDependents { …, replacing: bool }   // dependents are the originals of an active replacement
 ```
 
 `Manager::sync_dist` returns `Ok(DistSync)` when nothing is skipped and `Err(NotDeployed { sync })` after committing otherwise. `sync_dist_plan` never fails for skipped packages.
 
-FFI (`crates/gitpm-ffi`): free functions `list(root, provides: Option<String>) -> ListView`, `check(root, catalog: Option<String>) -> CheckReport`, `readState(root) -> ListView` (the full state view: raw state including `forgotten` and `replacements`, plus `resolved` with `active`; no filter), `catalogLinks(location) -> CatalogLinks`; `readInstalled` is removed (one free function for the state, no compatibility alias, D1); `PackageManager.check` removed; `PackageManager.forkReplaceResume(pending, confirm)`; records gain the fields above; `PmError.NotDeployed { message, skipped }`.
+FFI (`crates/gitpm-ffi`): free functions `list(root, provides: Option<String>) -> ListView`, `check(root, catalog: Option<String>) -> CheckReport`, `readState(root) -> ListView` (the full state view: raw state including `forgotten` and `replacements`, plus `resolved` with `active`; no filter), `catalogLinks(location) -> CatalogLinks`; `readInstalled` is removed (one free function for the state, no compatibility alias, D1); `PackageManager.check` removed; `PackageManager.forkReplaceResume(pending, confirm)`; records gain the fields above; `PmError.NotDeployed { message, sync: DistSync }` (the whole report, as the CLI prints it); `forkReplaceResume` returns `ForkResume { applied, failed: Option<ResumeFailure { original, fork, errorKind, errorMessage }> }`; `UpdateAllPlan.skipped`.
 
 CLI hints: a table `kind → hint` in the CLI (`already_installed` for a forgotten ID → restore/uninstall; `invalid_argument` for a scaffold refusal → `init --multi`; `has_dependents` for an active replacement → `replace ORIGINAL --back`; HTTP catalog write → `catalog-update` needs a local folder). The hint is chosen from the kind and structured fields, never by parsing the message.
 
@@ -57,12 +58,12 @@ CLI hints: a table `kind → hint` in the CLI (`already_installed` for a forgott
 - `--channel stable --ref x` becomes valid (stable is the default); only dev + ref is a library refusal. `single-ref-mode` removes `--channel` entirely later.
 - `open_with` validates before creating; a failure after opening still leaves the empty workspace it created (documented in errors).
 
-- `releases::latest` keeps `Discovery.skipped`, so `update`/`update all` return the skipped tags in `RevisionChange.skipped` (and per entry of `update_all`) as install does in `InstallResult.skipped` (TILR-103).
+- `releases::latest` keeps `Discovery.skipped`, so `update`/`update all` return the skipped tags in `RevisionChange.skipped` (and, for `update all`, in the plan-level `UpdateAllPlan.skipped`, which covers updated, kept-back and unchanged packages) as install does in `InstallResult.skipped` (TILR-103).
 - `readState` replaces `readInstalled`: both read `state.json` without opening; one function that returns the whole view is enough for hosts (restore offers need `forgotten`, status views need `resolved`).
 
 ## Transactions and crash recovery
 
-No new write paths. `fork_replace_resume` runs one `replace` transaction per pending package, re-planning under the lock; a crash between packages leaves completed replacements committed and the rest pending (the host re-runs resume). `sync_dist` commits the deployable packages in one transaction before returning `not_deployed`. `list_with` and `check` never write.
+No new write paths. `fork_replace_resume` runs one `replace` transaction per pending package, re-planning under the lock; a crash or a refusal between packages leaves completed replacements committed (reported in `ForkResume.applied`) and the rest pending (the host re-runs resume). `sync_dist` commits the deployable packages in one transaction before returning `not_deployed`. `list_with` and `check` never write.
 
 ## Risks
 

@@ -52,7 +52,7 @@ def _(t: T):
         t.eq(t.rev(t.clone(id)), p["current"]["commit"], f"{id} clone HEAD")
         t.has((t.dist(id) / "index.js").read_text(), f"{id} {p['current']['version']}")
         t.eq(t.git(t.clone(id), "status", "--porcelain", "--ignored"), "", f"{id} clone clean")
-    t.ok(not t.catalog.exists(), "no catalog")
+    t.ok(t.catalog_empty(), "no catalog")
 
 
 @fixture()

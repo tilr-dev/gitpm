@@ -62,7 +62,7 @@ def unknown_id_changes_nothing(t: T):
         r = t.gitpm_err("uninstall", "dan/zzz", *extra, contains="dan/zzz")
         t.has(r.err, "Error kind:")
         t.same(before, "workspace and author repos")
-    t.ok(not (t.root / "catalog").exists(), "no catalog created")
+    t.ok(t.catalog_empty(), "no catalog created")
 
 
 @case(fixture="g3_trio_installed", spec=["package-ids/ids-are-matched-exactly"])

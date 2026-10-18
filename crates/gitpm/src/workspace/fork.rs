@@ -44,6 +44,34 @@ pub struct ForkReplacement {
     pub failed: Option<ForkStep>,
     #[serde(skip)]
     pub error: Option<Error>,
+    /// The replace step needs confirmation (incompatible consumers, not confirmed): the
+    /// plan to show; [`Manager::fork_replace_resume`] applies it once confirmed. `failed`
+    /// is then `Replace` and `error` the `incompatible_replacement` refusal.
+    pub pending: Option<ReplacementPlan>,
+}
+/// Result of [`Manager::fork_replace_resume`]: the replacements applied (in order, each
+/// with its dist report) and the first one that failed, if any.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct ForkResume {
+    pub applied: Vec<ReplacementPlan>,
+    pub failed: Option<ResumeFailure>,
+}
+/// The pending replacement [`Manager::fork_replace_resume`] stopped at.
+#[derive(Clone, Debug, Serialize)]
+pub struct ResumeFailure {
+    pub original: String,
+    pub fork: String,
+    #[serde(skip)]
+    pub error: Error,
+}
+/// A replacement of `fork --replace` waiting for confirmation (see
+/// [`ForkReplacement::pending`]), as [`Manager::fork_replace_resume`] takes it.
+#[derive(Clone, Debug, Serialize)]
+pub struct PendingReplacement {
+    pub original: String,
+    pub fork: String,
+    /// The plan that was shown for confirmation.
+    pub plan: ReplacementPlan,
 }
 
 /// A dependency of a package rewritten by a fork: `from` (an original) became `to` (its
@@ -93,6 +121,19 @@ impl PackageForkReplacement {
     /// The first failure (by package order), if any package did not finish.
     pub fn error(&self) -> Option<&Error> {
         self.packages.iter().find_map(|p| p.error.as_ref())
+    }
+    /// The replacements waiting for confirmation, in package order.
+    pub fn pending(&self) -> Vec<PendingReplacement> {
+        self.packages
+            .iter()
+            .filter_map(|p| {
+                p.pending.as_ref().map(|plan| PendingReplacement {
+                    original: p.original.clone(),
+                    fork: p.id.clone(),
+                    plan: plan.clone(),
+                })
+            })
+            .collect()
     }
 }
 
@@ -286,6 +327,7 @@ impl Manager {
                     replacement: None,
                     failed: None,
                     error: None,
+                    pending: None,
                 }
             })
             .collect();
@@ -323,6 +365,9 @@ impl Manager {
             match self.replace(&result.original, &result.id, confirm) {
                 Ok(plan) => result.replacement = Some(plan),
                 Err(error) => {
+                    if let Error::IncompatibleReplacement { .. } = error {
+                        result.pending = self.replace_plan(&result.original, &result.id).ok();
+                    }
                     result.failed = Some(ForkStep::Replace);
                     result.error = Some(error);
                 }
@@ -332,6 +377,50 @@ impl Manager {
             fork,
             packages: results,
         })
+    }
+
+    /// Apply the pending replacements of a `fork --replace` (see
+    /// [`PackageForkReplacement::pending`]) once the caller confirmed them (`confirm`;
+    /// unconfirmed, an incompatible one is refused as by [`Manager::replace`]). Each is
+    /// planned again under the lock, one transaction per package, in order: when its
+    /// incompatible consumers are no longer the confirmed ones it is refused with
+    /// [`Error::IncompatibleReplacement`]. The first failure stops the run; the result
+    /// lists what was applied (each plan with its dist report) and that failure, and the
+    /// replacements after it stay pending.
+    pub fn fork_replace_resume(&self, pending: &[PendingReplacement], confirm: bool) -> ForkResume {
+        let mut done = ForkResume::default();
+        for item in pending {
+            let applied = self.transaction(|_, state| {
+                let plan = replacement_plan(state, &item.original, Some(&item.fork))?;
+                if plan.incompatible != item.plan.incompatible {
+                    return Err(Error::IncompatibleReplacement {
+                        message: format!(
+                            "the consumers of {} that {} does not satisfy changed since the replacement was confirmed",
+                            item.original, item.fork
+                        ),
+                        id: item.original.clone(),
+                        consumers: plan.incompatible.iter().map(|c| c.id.clone()).collect(),
+                    });
+                }
+                plan.refuse_unless(confirm)?;
+                state
+                    .replacements
+                    .insert(item.original.clone(), item.fork.clone());
+                Ok(plan)
+            });
+            match applied {
+                Ok((plan, dist)) => done.applied.push(ReplacementPlan { dist, ..plan }),
+                Err(error) => {
+                    done.failed = Some(ResumeFailure {
+                        original: item.original.clone(),
+                        fork: item.fork.clone(),
+                        error,
+                    });
+                    break;
+                }
+            }
+        }
+        done
     }
 
     /// Absolute fork repository `destination`: refused with `..`, inside the workspace

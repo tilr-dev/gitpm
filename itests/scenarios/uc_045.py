@@ -102,8 +102,21 @@ def missing_clone_case(name: str, argv: list):
 
 
 for _name, _argv in [("update", ["update", A]), ("rollback", ["rollback", A]),
-                     ("restore", ["restore", A]), ("uninstall", ["uninstall", A])]:
+                     ("restore", ["restore", A])]:
     missing_clone_case(_name, _argv)
+
+
+@case(fixture="g3_trio_installed", spec=["dist/sync-dist-repairs-dist-explicitly",
+                                         "dist/undeployable-packages-do-not-block-others"])
+def missing_clone_uninstall_drops_the_record(t: T):
+    """3. packages/dan/a removed: `uninstall dan/a` drops its record and dist (what sync-dist's hint
+    names); B untouched."""
+    shutil.rmtree(t.clone(A))
+    b_before = t.snap(t.clone(B), t.dist(B), git=True)
+    t.gitpm_ok("uninstall", A)
+    t.not_installed(A)
+    t.same(b_before, "B untouched")
+    t.gitpm_ok("sync-dist")
 
 
 # ---------------------------------------------------------------- 4. dist of A removed
@@ -160,12 +173,15 @@ def moved_head_uninstall_refused(t: T):
 
 @case(fixture="g3_trio_installed", spec=["transactions-locking/transactions-stage-only-touched-paths#failure-before-commit"])
 def uncommitted_transaction_discarded(t: T):
-    """6. <ws>/.pm-txn/new/... without a journal: list discards it; state and packages identical."""
+    """6. <ws>/.pm-txn/new/... without a journal: list reads the live state and leaves it; the next command
+    that opens the workspace discards it; state and packages identical."""
     before = everything(t)
     t.write(t.ws / ".pm-txn/new/packages/dan/a", {"junk.txt": "half-staged\n"})
     t.write(t.ws / ".pm-txn/new", {"state.json": "{}"})
     out = t.gitpm_ok("list").json()
     t.eq(sorted(out["packages"]), [A, B, "other/c"], "listed packages")
+    t.ok((t.ws / ".pm-txn").exists(), "list does not recover")
+    t.gitpm_ok("sync-dist")
     t.ok(not (t.ws / ".pm-txn").exists(), "leftover discarded")
     t.same(before, "workspace and author repos")
 

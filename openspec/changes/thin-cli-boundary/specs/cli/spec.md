@@ -49,7 +49,7 @@ Every workspace-mutating command (`install`, `install-catalog`, `update`, `updat
 - **THEN** the lines are `ORIGINAL replaced by FORK V [(as ORIGINAL V')] for: consumers` and `ORIGINAL switched back from FORK (…)` (exact variants in fork-replacement), built from the `ReplacementPlan`; the `fork` and `commit` lines are specified in fork-replacement and authoring
 
 ### Requirement: JSON output for state and catalog
-`list` SHALL print the library's list view (`list_with`, raw state plus `resolved`) as pretty JSON. Each `resolved[]` entry SHALL always have `id`, `source`, `current`, `previous`, `enabled`, `active`, `title`, `description`, `provides`, `tags` (plugin-metadata) and SHALL omit `forkOf`, `replaces`, `catalog`, `path`, `clone`, `dependencies`, `replacing`, `dependents` when empty. `catalog` and `register` print JSON. Verified by `list_reports_metadata_present_or_absent_and_filters_by_provides`.
+`list` SHALL print the library's list view (`list_with`, raw state plus `resolved`) as pretty JSON. Each `resolved[]` entry SHALL always have `id`, `source`, `current`, `previous`, `enabled`, `active`, `title`, `description`, `provides`, `tags` (plugin-metadata) and SHALL omit `forkOf`, `replaces`, `catalog`, `path`, `clone`, `dependencies`, `replacing`, `dependents` when empty. `catalog` SHALL print the library's typed directory links of the catalog level (`{schema, directories}`, the same `CatalogLinks` the FFI `catalogLinks` returns; a v1 or invalid root fails with `catalog`), and `register` prints JSON. Verified by `list_reports_metadata_present_or_absent_and_filters_by_provides`.
 
 #### Scenario: Filter by service
 - **WHEN** the user runs `gitpm list --provides theme`
@@ -72,7 +72,7 @@ The CLI SHALL print every warning a library result carries (ignored metadata key
 
 #### Scenario: Skipped tag on update
 - **WHEN** `update ID` or `update all` skips a broken historical tag
-- **THEN** stderr contains the same `Warning: skipped release tag NAME: reason` line, taken from `RevisionChange.skipped`
+- **THEN** stderr contains the same `Warning: skipped release tag NAME: reason` line, taken from `RevisionChange.skipped` (`update ID`) or `UpdateAllPlan.skipped` (`update all`, also for packages that stay unchanged or kept back)
 
 ### Requirement: Errors and exit codes
 On failure the CLI SHALL print `Error: MESSAGE` to stderr, for a library error also `Error kind: KIND` (and for `local_changes` one `  - item` line per lost item) and, for kinds where a gitpm command helps, one `Hint: …` line naming that command; CLI usage errors print no kind. It SHALL exit with status 1 on failure and 0 on success. Verified by `uninstall_without_tty_refuses_and_lists_lost_work_including_stash`.

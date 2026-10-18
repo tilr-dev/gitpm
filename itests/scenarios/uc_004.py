@@ -27,7 +27,7 @@ def inspect_scaffold(t: T, repo: Path, plugin_id: str):
     t.eq(t.git(repo, "status", "--porcelain", "--ignored"), "", "clean tree")
     t.eq(t.git(repo, "remote"), "", "no remote")
     t.ok(not t.ws.exists(), "no installation (workspace absent)")
-    t.ok(not t.catalog.exists(), "no catalog entry (catalog absent)")
+    t.ok(t.catalog_empty(), "no catalog entry (catalog absent)")
 
 
 def install_scaffold(t: T, repo: Path, plugin_id: str):
@@ -111,7 +111,7 @@ def existing_case(command: str):
                     contains="exists but is not a Git repository")
         t.same(before, "fixture (sentinel directory)")
         t.ok(not (target / ".git").exists(), "no repository inside the existing directory")
-        t.ok(not t.ws.exists() and not t.catalog.exists(), "no workspace or catalog")
+        t.ok(not t.ws.exists() and t.catalog_empty(), "no workspace or catalog")
     fn.__name__ = f"{command}_existing_directory_preserved"
     fn.__doc__ = f"{command} --into an existing non-repository directory refuses and changes nothing."
     fn.__module__ = __name__

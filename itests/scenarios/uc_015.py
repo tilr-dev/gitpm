@@ -15,7 +15,7 @@ def update_to_new_release(t: T):
     t.eq(p["previous"]["version"], "0.1.0", "previous version")
     t.eq(t.rev(t.clone(ID)), commit, "clone HEAD")
     t.eq((t.dist(ID) / "index.js").read_text(), t.git(ID, "show", f"{ID}@0.1.1:dist/index.js") + "\n", "dist")
-    t.ok(not t.catalog.exists(), "catalog never created or read")
+    t.ok(t.catalog_empty(), "catalog never created or read")
 
 
 @case(fixture="hello_installed", spec=["updates/stable-update-moves-to-the-newest-release#update-and-repeat"])

@@ -82,26 +82,30 @@ def explicit_ref_selects_its_revision(t: T):
 
 @case(fixture="hello", spec=["cli/option-validation#channel-and-ref"])
 def ref_with_channel_is_rejected(t: T):
-    """--ref with --channel (dev or stable), an unknown channel or --channel elsewhere: usage error, nothing changes."""
-    for channel in ["dev", "stable"]:
-        r = t.gitpm("install", t.repo(ID), "--ref", f"{ID}@0.1.0", "--channel", channel)
-        t.ok(r.code != 0, "install --ref --channel fails")
-        t.has(r.err, "--channel conflicts with --ref")
+    """--ref with --channel dev: the library's invalid_argument, nothing installed; --channel stable --ref
+    installs the ref (stable is the default); an unknown channel or --channel elsewhere: usage error."""
+    r = t.gitpm("install", t.repo(ID), "--ref", f"{ID}@0.1.0", "--channel", "dev")
+    t.ok(r.code != 0, "install --ref --channel dev fails")
+    t.has(r.err, "the dev channel conflicts with an explicit ref", "Error kind: invalid_argument")
+    t.not_installed(ID)
     r = t.gitpm("install", t.repo(ID), "--channel", "beta")
     t.ok(r.code != 0, "unknown channel fails")
     t.has(r.err, "channel must be stable or dev")
-    t.ok(not t.ws.exists(), "rejected install created no workspace")
-    t.gitpm_ok("install", t.repo(ID))
+    t.not_installed(ID)
+    r = t.gitpm_ok("install", t.repo(ID), "--ref", f"{ID}@0.1.0", "--channel", "stable")
+    t.has(r.out, f"installed {ID}@0.1.0 from ")
     t.release(ID, "0.2.0")
     before = t.snap(t.ws, git=True)
-    for args in [("update", ID, "--ref", f"{ID}@0.2.0", "--channel", "dev"),
-                 ("update", ID, "--ref", f"{ID}@0.2.0", "--channel", "stable"),
-                 ("update", ID, "--channel", "nightly"),
-                 ("rollback", ID, "--channel", "dev")]:
+    for args, needle in [(("update", ID, "--ref", f"{ID}@0.2.0", "--channel", "dev"),
+                          "the dev channel conflicts with an explicit ref"),
+                         (("update", ID, "--channel", "nightly"), "channel must be stable or dev"),
+                         (("rollback", ID, "--channel", "dev"), "--channel requires install/update")]:
         r = t.gitpm(*args)
         t.ok(r.code != 0, f"gitpm {' '.join(args)} fails")
-        t.has(r.err, "channel")
+        t.has(r.err, needle)
         t.same(before, "workspace")
+    t.gitpm_ok("update", ID, "--ref", f"{ID}@0.2.0", "--channel", "stable")
+    t.eq(t.package(ID)["current"]["version"], "0.2.0", "update --channel stable --ref")
 
 
 @case(fixture="hello", spec=["errors/failing-operations-leave-the-workspace-unchanged"])

@@ -65,7 +65,7 @@ def usage_case(name: str, doc: str, argv, needle: str, spec: str = OPT, fixture:
         t.eq(r.out, "", "nothing printed on stdout")
         t.same(before, "fixture (repos, workspace, catalog)")
         t.ok(not t.ws.exists(), "no workspace created")
-        t.ok(not t.catalog.exists(), "no catalog created")
+        t.ok(t.catalog_empty(), "no catalog created")
     fn.__name__ = name
     fn.__doc__ = doc
     fn.__module__ = __name__
@@ -90,9 +90,7 @@ for _args in [
     ("missing_root_value", "5. --root without a value", ["list", "--root"], "--root requires a value"),
     ("unsupported_channel", "6. --channel beta", ["install", "@REPO", "--channel", "beta"],
      "channel must be stable or dev", f"{OPT}#channel-and-ref"),
-    ("channel_with_ref", "7. --channel together with --ref",
-     ["install", "@REPO", "--channel", "dev", "--ref", f"{ID}@0.1.0"], "--channel conflicts with --ref",
-     f"{OPT}#channel-and-ref"),
+    # 7. --channel dev with --ref is no usage error: the library refuses it (uc_012).
     ("dry_run_outside_update_all", "9. --dry-run with catalog-update", ["catalog-update", "--dry-run"],
      "--dry-run requires update all or sync-dist", f"{OPT}#misplaced-flag"),
     ("build_flags_outside_register", "10. build metadata with install",

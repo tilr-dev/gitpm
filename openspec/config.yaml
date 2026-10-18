@@ -114,6 +114,7 @@ rules:
     - Use the glossary terms of the context; CLI failures are "exit status 1".
     - When a requirement is backed by an existing test, name the test in the requirement text.
     - Error cases name the stable error kind (for example `local_changes`, `has_dependents`).
+    - Thin CLI (TILR-33) - Domain rules and option combinations live in the library; CLI specs cover argv/env parsing, printing, TTY prompts and hints per error kind; every CLI capability has an FFI equivalent.
   design:
     - Keep subprocess, printing and environment access out of the library design; route git/curl through the exec module.
     - Thin CLI (TILR-29..33): the CLI only parses argv and environment, calls the library, prints results, asks TTY prompts and adds command hints per error kind; library messages stay neutral (no CLI command names, no host or hosting names), and every CLI capability has an FFI equivalent.

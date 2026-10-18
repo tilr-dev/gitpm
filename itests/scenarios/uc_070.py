@@ -79,13 +79,17 @@ def next_mutation_reconciles_the_stale_tree(t: T):
 
 @case(fixture="g2_demos_installed", spec=["dist/sync-dist-repairs-dist-explicitly"])
 def undeployable_package_is_named_and_others_synced(t: T):
-    """B's clone and dist gone, A stale: sync-dist removes dist/A, then fails naming B (no Error kind)."""
+    """B's clone and dist gone, A stale: sync-dist removes dist/A, then fails with not_deployed naming B
+    and a hint."""
     stale(t)
     shutil.rmtree(t.clone(B))
     shutil.rmtree(t.dist(B))
-    r = t.gitpm_err("sync-dist")
+    r = t.gitpm_err("sync-dist", kind="not_deployed", contains=f"Error: 1 package(s) not deployed: {B}")
     t.has(r.out, f"{A} removed from dist/{A}")
-    t.has(r.err, f"sync-dist: 1 package(s) not deployed: {B}")
-    t.lacks(r.err, "Error kind:")
+    t.has(r.err, f"Hint: `gitpm uninstall {B}`")
+    # The hint works: uninstall drops the record whose clone is gone, then dist/ is in sync.
+    t.gitpm_ok("uninstall", B)
+    t.not_installed(B)
+    t.gitpm_ok("sync-dist")
     t.ok(not t.dist(A).exists(), "dist/A removed")
     t.ok(not t.dist(B).exists(), "dist/B not fabricated")

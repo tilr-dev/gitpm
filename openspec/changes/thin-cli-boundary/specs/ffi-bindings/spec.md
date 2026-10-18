@@ -42,7 +42,7 @@ Every CLI command that reads or changes a workspace, reads a catalog or checks a
 - **THEN** none exist; those stay library/CLI functions
 
 ### Requirement: Errors keep kind and message
-Library errors SHALL map to the `PmError` enum, one case per kind, each with the full `message` and the library's structured fields (`id`, `LocalChanges.items`, `HasDependents.dependents`, `IncompatibleReplacement.consumers`, `NotDeployed.skipped`); `Other { kind, message }` SHALL carry a kind added to the non-exhaustive library enum later. Verified by `every_library_error_maps_to_its_own_case_with_the_full_message` and `ids_and_lost_work_items_are_preserved`.
+Library errors SHALL map to the `PmError` enum, one case per kind, each with the full `message` and the library's structured fields (`id`, `LocalChanges.items`, `HasDependents.dependents` and `.replacing`, `IncompatibleReplacement.consumers`, `NotDeployed.sync`, the dist report as `syncDist` returns it); `Other { kind, message }` SHALL carry a kind added to the non-exhaustive library enum later. Verified by `every_library_error_maps_to_its_own_case_with_the_full_message` and `ids_and_lost_work_items_are_preserved`.
 
 #### Scenario: Local changes from Swift
 - **WHEN** an unconfirmed uninstall would lose work
@@ -50,10 +50,10 @@ Library errors SHALL map to the `PmError` enum, one case per kind, each with the
 
 #### Scenario: Undeployed packages from Swift
 - **WHEN** `syncDist` leaves an active package undeployed
-- **THEN** Swift receives `PmError.NotDeployed` with the message and the skipped packages with their reasons
+- **THEN** Swift receives `PmError.NotDeployed` with the message and the `sync` report (what was deployed and removed, and the skipped packages with their reasons), as the CLI prints it
 
 ### Requirement: Records mirror library results
-FFI records SHALL convert library results field by field, dropping none: `InstalledPackage` (`active`, `clone`, `path`, metadata), `InstallResult` (`alreadyInstalled`, `available`, `skipped`, `warnings`), `RevisionChange` (`warnings`, `skipped`), the dist report of every mutating result, `CatalogRelease`, `PackageSummary`, `DistSync`, `UpdateAllPlan` (`unchanged`), `ReplacementPlan` (`installedVersion`, `forkEnabled`), and fork results (`ForkStep`, `errorKind`, `errorMessage`, pending plan).
+FFI records SHALL convert library results field by field, dropping none: `InstalledPackage` (`active`, `clone`, `path`, metadata), `InstallResult` (`alreadyInstalled`, `available`, `skipped`, `warnings`), `RevisionChange` (`warnings`, `skipped`), the dist report of every mutating result, `CatalogRelease`, `PackageSummary`, `DistSync`, `UpdateAllPlan` (`unchanged`, `skipped`), `ReplacementPlan` (`installedVersion`, `forkEnabled`), and fork results (`ForkStep`, `errorKind`, `errorMessage`, pending plan, `ForkResume` with `applied` and `failed`).
 
 #### Scenario: Partial fork failure
 - **WHEN** `forkAndReplace` fails at the install step
@@ -62,4 +62,4 @@ FFI records SHALL convert library results field by field, dropping none: `Instal
 
 #### Scenario: Warnings reach the host
 - **WHEN** an install skips a broken historical tag and ignores a wrong-typed metadata key
-- **THEN** the FFI `InstallResult` carries both in `skipped` and `warnings`, as the CLI prints them; an update past such a tag carries it in `RevisionChange.skipped`
+- **THEN** the FFI `InstallResult` carries both in `skipped` and `warnings`, as the CLI prints them; an update past such a tag carries it in `RevisionChange.skipped`, `update all` in `UpdateAllPlan.skipped`

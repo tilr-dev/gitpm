@@ -358,7 +358,19 @@ pub(super) fn removal(root: &Path, state: &State, id: &str) -> Result<Removal> {
     let entry = state.packages.get(id).or_else(|| state.forgotten.get(id));
     let Some((p, key)) = entry.and_then(|p| Some((p, p.clone.clone()?))) else {
         // Own clone, registered or forgotten (retained) under `packages/<id>`.
-        let repo = package_repo(root, id)?;
+        let repo = match package_repo(root, id) {
+            Ok(repo) => repo,
+            // A recorded package whose clone is gone: only the record (and dist) remain.
+            Err(Error::RepositoryNotFound { .. }) if state.packages.contains_key(id) => {
+                return Ok(Removal {
+                    relative: format!("packages/{id}"),
+                    repo: None,
+                    key: None,
+                    lost_work: Vec::new(),
+                });
+            }
+            Err(error) => return Err(error),
+        };
         let recorded = state.packages.get(id).map(|p| p.current.commit.as_str());
         return Ok(Removal {
             relative: format!("packages/{id}"),
@@ -370,8 +382,9 @@ pub(super) fn removal(root: &Path, state: &State, id: &str) -> Result<Removal> {
     let relative = p.clone_folder(id);
     let live = match installed_repo(root, id, p) {
         Ok(live) => live,
-        // A forgotten record whose clone is gone: only the record (and dist) remain.
-        Err(Error::RepositoryNotFound { .. }) if !state.packages.contains_key(id) => {
+        // A record (forgotten or not) whose shared clone is gone: only the record (and
+        // dist) remain.
+        Err(Error::RepositoryNotFound { .. }) => {
             return Ok(Removal {
                 relative,
                 repo: None,

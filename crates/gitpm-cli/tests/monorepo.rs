@@ -25,6 +25,8 @@ impl Fixture {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("home")).unwrap();
         fs::create_dir_all(dir.join("tmp")).unwrap();
+        // The catalog location every command gets must exist (it starts empty).
+        fs::create_dir_all(dir.join("catalog")).unwrap();
         fs::write(
             dir.join("home/.gitconfig"),
             "[user]\n\tname = Test\n\temail = test@example.invalid\n[init]\n\tdefaultBranch = main\n[commit]\n\tgpgsign = false\n[tag]\n\tgpgsign = false\n",
@@ -562,6 +564,60 @@ fn fork_replace_keeps_the_fork_and_says_how_to_finish_when_a_step_fails() {
         "2.0.0",
     ]);
     assert!(!f.dir.join("you").exists());
+
+    // An incompatible replacement needs confirmation: without a terminal the library
+    // leaves it pending, so the fork stays released and installed and the original is
+    // not replaced. acme/app needs acme/hello ^2, which a fork of 1.0.0 does not give.
+    fs::write(
+        legacy.join("plugin.json"),
+        r#"{"id":"acme/hello","version":"2.0.0"}"#,
+    )
+    .unwrap();
+    f.git(&legacy, &["commit", "-q", "-am", "2.0.0"]);
+    f.git(&legacy, &["tag", "acme/hello@2.0.0"]);
+    let app = f.dir.join("app");
+    fs::create_dir_all(app.join("dist")).unwrap();
+    f.git(&app, &["init", "-q", "-b", "main"]);
+    fs::write(
+        app.join("plugin.json"),
+        r#"{"id":"acme/app","version":"1.0.0","dependencies":{"acme/hello":"^2"}}"#,
+    )
+    .unwrap();
+    fs::write(app.join("dist/index.js"), "app").unwrap();
+    f.git(&app, &["add", "--all"]);
+    f.git(&app, &["commit", "-q", "-m", "app"]);
+    f.git(&app, &["tag", "acme/app@1.0.0"]);
+    f.ok(&["update", "acme/hello"]);
+    f.ok(&["install", app.to_str().unwrap()]);
+    f.ok(&["uninstall", "acme/hello", "--force"]);
+    f.ok(&[
+        "install",
+        legacy.to_str().unwrap(),
+        "--ref",
+        "acme/hello@1.0.0",
+    ]);
+    let error = f.fails(&[
+        "fork",
+        "acme/hello",
+        "--ns",
+        "pending",
+        "--into",
+        "pending/hello",
+        "--replace",
+    ]);
+    for needle in [
+        "Warning: pending/hello provides acme/hello 1.0.0, which these consumers do not accept:",
+        "  - acme/app needs acme/hello ^2",
+        "No terminal to confirm; use --force to replace anyway.",
+        "pending/hello: the replace step failed",
+        "gitpm replace acme/hello --with pending/hello [--force]",
+        "Error kind: incompatible_replacement",
+    ] {
+        assert!(error.contains(needle), "missing {needle:?}: {error}");
+    }
+    let state = f.state();
+    assert!(state["packages"].get("pending/hello").is_some());
+    assert!(state.get("replacements").is_none());
 }
 
 // ---- forks of several packages ------------------------------------------------------
@@ -1051,4 +1107,113 @@ fn a_v_version_tag_in_a_multi_package_repository_is_ignored_without_a_warning() 
             .join("catalog/namespaces/tilr/store/versions/0.2.0")
             .exists()
     );
+}
+
+/// `acme/hello` installed at 1.0.0 while `acme/app` needs `acme/hello ^2`: a fork of it is
+/// an incompatible replacement.
+fn incompatible_consumer(f: &Fixture) -> std::path::PathBuf {
+    let hello = f.dir.join("hello");
+    fs::create_dir_all(hello.join("dist")).unwrap();
+    f.git(&hello, &["init", "-q", "-b", "main"]);
+    for version in ["1.0.0", "2.0.0"] {
+        fs::write(
+            hello.join("plugin.json"),
+            format!(r#"{{"id":"acme/hello","version":"{version}"}}"#),
+        )
+        .unwrap();
+        fs::write(hello.join("dist/index.js"), version).unwrap();
+        f.git(&hello, &["add", "--all"]);
+        f.git(&hello, &["commit", "-q", "-m", version]);
+        f.git(&hello, &["tag", &format!("acme/hello@{version}")]);
+    }
+    let app = f.dir.join("app");
+    fs::create_dir_all(app.join("dist")).unwrap();
+    f.git(&app, &["init", "-q", "-b", "main"]);
+    fs::write(
+        app.join("plugin.json"),
+        r#"{"id":"acme/app","version":"1.0.0","dependencies":{"acme/hello":"^2"}}"#,
+    )
+    .unwrap();
+    fs::write(app.join("dist/index.js"), "app").unwrap();
+    f.git(&app, &["add", "--all"]);
+    f.git(&app, &["commit", "-q", "-m", "app"]);
+    f.git(&app, &["tag", "acme/app@1.0.0"]);
+    f.ok(&["install", hello.to_str().unwrap()]);
+    f.ok(&["install", app.to_str().unwrap()]);
+    f.ok(&["uninstall", "acme/hello", "--force"]);
+    f.ok(&[
+        "install",
+        hello.to_str().unwrap(),
+        "--ref",
+        "acme/hello@1.0.0",
+    ]);
+    hello
+}
+
+/// On a TTY a declined pending replacement does not cancel `fork --replace`: the fork
+/// stays released and installed, the original is not replaced, and the command says
+/// how to finish; a confirmed one is applied.
+#[test]
+fn fork_replace_on_a_tty_keeps_a_declined_replacement_pending() {
+    if !Path::new("/usr/bin/script").exists() {
+        return;
+    }
+    let f = Fixture::new();
+    incompatible_consumer(&f);
+    let util_linux = Command::new("script")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success());
+    let stderr_file = f.dir.join("fork.stderr");
+    let run = |ns: &str, answer: &str| {
+        let gitpm = format!(
+            "'{}' --root '{}' --catalog '{}' fork acme/hello --ns {ns} --into {ns}/hello --replace 2>'{}'",
+            env!("CARGO_BIN_EXE_gitpm"),
+            f.dir.join("workspace").display(),
+            f.dir.join("catalog").display(),
+            stderr_file.display()
+        );
+        let script = if util_linux {
+            format!("script -qec \"{gitpm}\" /dev/null")
+        } else {
+            format!("script -q /dev/null sh -c \"exec {gitpm}\"")
+        };
+        let out = f
+            .command("sh")
+            .current_dir(&f.dir)
+            .arg("-c")
+            .arg(format!(
+                "(sleep 2; printf '{answer}\\n'; sleep 1) | {script}"
+            ))
+            .output()
+            .unwrap();
+        (
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            fs::read_to_string(&stderr_file).unwrap_or_default(),
+        )
+    };
+    let (stdout, stderr) = run("me", "n");
+    for needle in [
+        "  - acme/app needs acme/hello ^2",
+        "Replace anyway? [y/N]",
+        "acme/hello is not replaced.",
+        "me/hello: the replace step failed",
+        "To finish:\n    gitpm replace acme/hello --with me/hello [--force]",
+        "The fork ",
+        "Error kind: incompatible_replacement",
+    ] {
+        assert!(stderr.contains(needle), "missing {needle:?}: {stderr}");
+    }
+    assert!(!stderr.contains("nothing was changed"), "{stderr}");
+    assert!(stdout.contains("Released: me/hello@1.0.0"), "{stdout}");
+    assert!(stdout.contains("Installed: me/hello 1.0.0"), "{stdout}");
+    let state = f.state();
+    assert!(state["packages"].get("me/hello").is_some());
+    assert!(state.get("replacements").is_none());
+    let (stdout, stderr) = run("you", "y");
+    assert!(
+        stdout.contains("acme/hello replaced by you/hello 1.0.0 for: acme/app"),
+        "{stdout}\n{stderr}"
+    );
+    assert_eq!(f.state()["replacements"]["acme/hello"], "you/hello");
 }

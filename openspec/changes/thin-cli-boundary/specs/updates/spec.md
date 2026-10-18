@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: update all reports every package
-`UpdateAllPlan` (of `update_all_plan` and `update_all`) SHALL list every installed package in exactly one of `updates`, `installs`, `kept_back` and `unchanged` (packages that stay at their installed revision, with their version), so the output is built from the plan alone. Verified by `update_all_plan_lists_unchanged_packages`.
+`UpdateAllPlan` (of `update_all_plan` and `update_all`) SHALL list every installed package in `updates`, `kept_back` or `unchanged` (packages that stay at their installed revision with no newer release, with their version); a package updated to a release older than its latest is in both `updates` and `kept_back`, and `installs` lists only new dependencies. The output is built from the plan alone. Verified by `update_all_plan_lists_unchanged_packages`.
 
 #### Scenario: One update, one current
 - **WHEN** `a` has a newer release and `b` is current, and the user runs `update all`

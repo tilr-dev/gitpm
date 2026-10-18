@@ -24,6 +24,8 @@ impl Fixture {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("home")).unwrap();
         fs::create_dir_all(dir.join("tmp")).unwrap();
+        // The catalog location every command gets must exist (it starts empty).
+        fs::create_dir_all(dir.join("catalog")).unwrap();
         fs::write(
             dir.join("home/.gitconfig"),
             "[user]\n\tname = Test\n\temail = test@example.invalid\n[init]\n\tdefaultBranch = main\n[commit]\n\tgpgsign = false\n[tag]\n\tgpgsign = false\n",
@@ -542,9 +544,18 @@ fn a_missing_clone_is_reported_and_blocks_only_its_own_dist() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success());
     assert!(
-        stderr.contains("sync-dist: 1 package(s) not deployed: vendor/demo"),
+        stderr.contains("Error: 1 package(s) not deployed: vendor/demo"),
         "{stderr}"
     );
+    // A library error now: the kind and the command that helps.
+    assert!(stderr.contains("Error kind: not_deployed"), "{stderr}");
+    assert!(
+        stderr.contains("Hint: `gitpm uninstall vendor/demo` drops a package whose clone is gone"),
+        "{stderr}"
+    );
+    // The hint works: uninstall drops the record of the package without a clone.
+    f.ok(&["uninstall", "vendor/demo", "--force"]);
+    f.ok(&["sync-dist"]);
     assert_eq!(f.dist("other/pkg"), None);
     assert_eq!(f.dist("dan/demo").as_deref(), Some("fork"));
 }

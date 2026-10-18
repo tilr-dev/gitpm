@@ -95,14 +95,13 @@ def info_and_catalog_over_loopback_http(t: T):
 
 @case(fixture="g4_v1", spec=["catalog/catalog-v2-is-a-tree-of-static-files"])
 def info_v1_is_refused(t: T):
-    """`info` on a v1 catalog fails with `catalog` and reads it as data only; `catalog`
-    still prints the raw root JSON."""
+    """`info` and `catalog` on a v1 catalog fail with `catalog` and read it as data only (the library's
+    typed v2 links are all `catalog` prints)."""
     v1 = t.root / "v1"
-    r = readonly(t, lambda: gitpm_env(t, "--catalog", v1, "info", ok=False), v1)
-    t.ok(r.code != 0, "info on v1 fails")
-    t.has(r.err, "Error kind: catalog", "v1 catalogs")
-    t.eq(sorted(readonly(t, lambda: gitpm_env(t, "--catalog", v1, "catalog").json(), v1)["plugins"]),
-         ["dan/hello", "old/oldie"], "raw root of v1")
+    for command in ("info", "catalog"):
+        r = readonly(t, lambda: gitpm_env(t, "--catalog", v1, command, ok=False), v1)
+        t.ok(r.code != 0, f"{command} on v1 fails")
+        t.has(r.err, "Error kind: catalog", "v1 catalogs")
 
 
 @case(fixture="g4_tree_catalog", spec=["cli/commands-that-need-a-catalog-say-so"])

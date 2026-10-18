@@ -26,7 +26,7 @@ Every failure SHALL be a `gitpm::Error` whose `kind()` is one of: not_installed,
 - **AND** this is covered by `workspace::every_operation_on_a_missing_id_fails_without_changes`
 
 ### Requirement: Display is the complete message
-`Display` of an error SHALL be the complete human message in English. Library messages SHALL be neutral: they SHALL NOT name a CLI command, flag or hosting service; the CLI adds command hints per error kind (cli, "Errors and exit codes"). Structured variants SHALL carry their data: `LocalChanges.items`, `HasDependents.dependents`, `IncompatibleReplacement.consumers`, `NotDeployed.skipped`. Verified by `error::display_is_the_complete_message` and `error::messages_name_no_cli_command`.
+`Display` of an error SHALL be the complete human message in English. Library messages SHALL be neutral: they SHALL NOT name a CLI command, flag or hosting service; the CLI adds command hints per error kind (cli, "Errors and exit codes"). Structured variants SHALL carry their data: `LocalChanges.items`, `HasDependents.dependents` (with `replacing` true when they are the originals an active replacement provides, not consumers), `IncompatibleReplacement.consumers`, `NotDeployed.sync` (the dist report; its `skipped` lists the undeployed packages). Verified by `error::display_is_the_complete_message` and `error::messages_name_no_cli_command`.
 
 #### Scenario: Has dependents
 - **WHEN** disabling `lib` is refused because `app` depends on it

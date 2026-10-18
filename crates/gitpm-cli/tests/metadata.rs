@@ -31,6 +31,8 @@ impl Fixture {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("home")).unwrap();
         fs::create_dir_all(dir.join("tmp")).unwrap();
+        // The catalog location every command gets must exist (it starts empty).
+        fs::create_dir_all(dir.join("catalog")).unwrap();
         fs::write(
             dir.join("home/.gitconfig"),
             "[user]\n\tname = Test\n\temail = test@example.invalid\n[init]\n\tdefaultBranch = main\n[commit]\n\tgpgsign = false\n[tag]\n\tgpgsign = false\n",
@@ -433,7 +435,21 @@ fn init_multi_creates_a_multi_package_repository_that_takes_more_packages() {
     // An empty folder (not a repository yet) works with --multi only.
     fs::create_dir(f.dir.join("empty")).unwrap();
     let error = f.fails(&["init", "acme/three", "--into", "empty"]);
-    assert!(error.contains("init --multi"), "{error}");
+    // The library message states the problem; the CLI names the command as a hint.
+    assert!(
+        error.contains("an empty folder can become a multi-package repository"),
+        "{error}"
+    );
+    assert!(
+        error.contains("Hint: `gitpm init acme/three --into DIR --multi`"),
+        "{error}"
+    );
+    assert!(
+        !error.contains(
+            "Error: empty exists but is not a Git repository; pass a new folder or a repository (or"
+        ),
+        "{error}"
+    );
     f.ok(&["init", "acme/three", "--into", "empty", "--multi"]);
     assert!(f.dir.join("empty/packages/three/plugin.json").is_file());
 
@@ -443,7 +459,8 @@ fn init_multi_creates_a_multi_package_repository_that_takes_more_packages() {
     assert_eq!(m["title"], "single");
     let error = f.fails(&["init", "acme/other", "--into", "single"]);
     assert!(
-        error.contains("move it into a folder") && error.contains("init --multi"),
+        error.contains("a multi-package repository needs gitpm.json")
+            && error.contains("Hint: `gitpm init acme/other --into DIR --multi`"),
         "{error}"
     );
     assert!(

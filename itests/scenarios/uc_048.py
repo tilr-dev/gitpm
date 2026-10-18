@@ -42,7 +42,10 @@ def forget_then_install_same_id(t: T):
     t.release(B, "0.1.1")
     t.gitpm_ok("forget", B)
     before = t.snap(t.ws, git=True)
-    t.gitpm_err("install", t.repo(B), kind="already_installed", contains=("dan/b", "restore"))
+    r = t.gitpm_err("install", t.repo(B), kind="already_installed",
+                    contains="Error: dan/b was forgotten and its clone is kept\n")
+    # The library message is neutral; the CLI names the commands that help.
+    t.has(r.err, "Hint: ", "`gitpm restore dan/b`", "`gitpm uninstall dan/b`")
     t.same(before, "workspace with the forgotten clone")
     t.ok(B not in t.state()["packages"], "still forgotten")
 

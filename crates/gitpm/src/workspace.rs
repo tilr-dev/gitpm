@@ -36,8 +36,8 @@ use clones::{
     settle_head, shared_head_moved,
 };
 pub use fork::{
-    DependencyRewrite, ForkReplacement, ForkStep, ForkedPackage, PackageFork,
-    PackageForkReplacement,
+    DependencyRewrite, ForkReplacement, ForkResume, ForkStep, ForkedPackage, PackageFork,
+    PackageForkReplacement, PendingReplacement, ResumeFailure,
 };
 
 /// Settings passed explicitly by the caller; the library never reads environment variables.
@@ -76,6 +76,9 @@ pub struct InstallResult {
     /// with the same ref or channel moves to it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub available: Option<Revision>,
+    /// Reconciliation report of the transaction (empty when nothing was written, for
+    /// example `already_installed`, or inside an `update all` plan).
+    pub dist: DistSync,
 }
 /// Result of update/rollback: `from` → `to`; `changed` is false for a no-op update.
 #[derive(Clone, Debug, Serialize)]
@@ -87,6 +90,14 @@ pub struct RevisionChange {
     /// Metadata keys of the new manifest with the wrong type, ignored.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// Broken release tags passed over while choosing the latest release (an update
+    /// without an explicit ref; `update all` reports them in [`UpdateAllPlan::skipped`]);
+    /// the caller should warn about them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub skipped: Vec<releases::SkippedTag>,
+    /// Reconciliation report of the transaction (empty inside an [`UpdateAllPlan`], which
+    /// carries the report of its one transaction).
+    pub dist: DistSync,
 }
 /// `ID VERSION: plugin.json KEY must be …; ignored` for each wrong-typed metadata key.
 /// Installing is lenient about metadata (only authoring refuses it).
@@ -101,7 +112,24 @@ pub(crate) fn metadata_warnings(m: &Manifest) -> Vec<String> {
 pub struct UpdateAllPlan {
     pub updates: Vec<RevisionChange>,
     pub installs: Vec<InstallResult>,
+    /// Packages for which a newer release exists than the one selected: either updated
+    /// to an older one (then also in `updates`) or kept at their installed version.
     pub kept_back: Vec<HeldBack>,
+    /// Installed packages that stay at their installed revision with no newer release.
+    /// Every installed package is in `updates`, `kept_back` or `unchanged`.
+    pub unchanged: Vec<Unchanged>,
+    /// Broken release tags passed over while reading the releases of every installed
+    /// package (updated, kept back or unchanged), as `update ID` reports them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub skipped: Vec<releases::SkippedTag>,
+    /// Reconciliation report of the transaction (`update_all`; empty for the plan).
+    pub dist: DistSync,
+}
+/// An installed package `update all` leaves as it is: no newer release exists.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct Unchanged {
+    pub id: String,
+    pub version: String,
 }
 /// A newer release exists, but the chosen compatible solution uses an older one.
 #[derive(Clone, Debug, Serialize)]
@@ -336,6 +364,9 @@ impl Manager {
     pub fn open(root: impl AsRef<Path>) -> Result<Self> {
         Self::open_with(root, Options::default())
     }
+    /// Open (and create, if missing) the workspace at `root`. The root path and
+    /// `options` are validated first (for example a local catalog location that does not
+    /// exist is refused with [`Error::InvalidArgument`]), so a refusal creates nothing.
     pub fn open_with(root: impl AsRef<Path>, options: Options) -> Result<Self> {
         let root = std::path::absolute(root)?;
         let file_name = root
@@ -344,6 +375,12 @@ impl Manager {
         let parent = root
             .parent()
             .require(Error::Workspace, "workspace needs a parent")?;
+        file_name
+            .to_str()
+            .require(Error::Workspace, "non-UTF8 workspace name")?;
+        if let Some(location) = &options.catalog {
+            catalog::validate_location(location)?;
+        }
         fs::create_dir_all(parent)?;
         // Keyed by the real path: a symlinked spelling of the root or of its parent is
         // the same workspace and must take the same lock.
@@ -406,7 +443,7 @@ impl Manager {
         self.options
             .catalog
             .as_deref()
-            .require(Error::InvalidArgument, "no catalog configured")
+            .require(Error::InvalidArgument, check::NO_CATALOG)
     }
     /// The workspace state (`state.json` of format [`crate::STATE_FORMAT`]).
     pub fn state(&self) -> Result<State> {
@@ -418,13 +455,27 @@ impl Manager {
     }
     /// Run `action` on a transaction that stages only the paths it touches; nothing
     /// in the live workspace changes unless the action succeeds.
-    fn transaction<T>(&self, action: impl FnOnce(&mut Txn, &mut State) -> Result<T>) -> Result<T> {
+    /// Returns the action's value and the reconciliation report of `dist/`: what the
+    /// transaction deployed and removed, then (read after the commit) the unmanaged paths
+    /// and the active packages left without their deployed folder.
+    fn transaction<T>(
+        &self,
+        action: impl FnOnce(&mut Txn, &mut State) -> Result<T>,
+    ) -> Result<(T, DistSync)> {
         let _busy = self.busy();
         let mut txn = Txn::begin(&self.root)?;
         let mut state = self.state()?;
         let before = state.clone();
         let value = action(&mut txn, &mut state)?;
         settle_dist(&mut txn, &before, &state)?;
+        let mut report = DistSync::default();
+        for id in txn.staged_dists() {
+            if txn.deploys_dist(&id) {
+                report.deployed.push(id);
+            } else if fs::symlink_metadata(self.root.join("dist").join(&id)).is_ok() {
+                report.removed.push(id);
+            }
+        }
         // The installed revisions of each shared clone stay reachable (see `clones`): in
         // the staged copy as part of the transaction, else in the live clone afterwards.
         let keys: std::collections::BTreeSet<&str> = state
@@ -448,7 +499,12 @@ impl Manager {
                 let _ = clones::sync_refs(&repo, &state, key);
             }
         }
-        Ok(value)
+        // Committed: a failing read of dist/ must not turn the change into an error.
+        if let Ok(drift) = dist_drift(&self.root, &state) {
+            report.unmanaged = drift.unmanaged;
+            report.skipped = drift.skipped;
+        }
+        Ok((value, report))
     }
 
     /// Compare installed versions with the configured catalog. Read-only.
@@ -587,6 +643,7 @@ impl Manager {
                     warnings: Vec::new(),
                     already_installed: true,
                     available: (resolved.commit != installed.current.commit).then_some(resolved),
+                    dist: DistSync::default(),
                 });
             }
             check_new_id(txn.root(), state, &m)?;
@@ -612,7 +669,7 @@ impl Manager {
         });
         match (installed, already) {
             (Err(Error::AlreadyInstalled { .. }), Some(already)) => Ok(already),
-            (installed, _) => installed,
+            (installed, _) => installed.map(|(result, dist)| InstallResult { dist, ..result }),
         }
     }
     /// Install catalog releases chosen by the solver (inside the current transaction).
@@ -661,7 +718,7 @@ impl Manager {
             ensure!(
                 fork != id || m.replaces.as_ref().is_some_and(|r| r.id == *original),
                 VersionConflict,
-                "{id} {} no longer declares that it replaces {original}; switch {original} back first",
+                "{id} {} no longer declares that it replaces {original}, which it replaces now",
                 m.version
             );
         }
@@ -712,7 +769,8 @@ impl Manager {
     /// Resolve and apply a joint upgrade in one recoverable transaction.
     /// Local work blocks the operation. No merge, deletion or downgrade is attempted.
     pub fn update_all(&self) -> Result<UpdateAllPlan> {
-        self.transaction(|txn, state| self.prepare_update_all(txn, state))
+        let (plan, dist) = self.transaction(|txn, state| self.prepare_update_all(txn, state))?;
+        Ok(UpdateAllPlan { dist, ..plan })
     }
 
     fn prepare_update_all(&self, txn: &mut Txn, state: &mut State) -> Result<UpdateAllPlan> {
@@ -727,6 +785,13 @@ impl Manager {
                 .push(id.clone());
         }
         let mut repos: BTreeMap<String, PathBuf> = BTreeMap::new();
+        // Broken release tags passed over, for every installed package.
+        let mut skipped: Vec<releases::SkippedTag> = Vec::new();
+        let installed_versions: Vec<(String, String)> = state
+            .packages
+            .iter()
+            .map(|(id, p)| (id.clone(), p.current.version.clone()))
+            .collect();
         for (number, (relative, ids)) in groups.iter().enumerate() {
             let first = &ids[0];
             let key = state.packages[first].clone.as_deref();
@@ -799,7 +864,9 @@ impl Manager {
                         path: installed.path.clone(),
                     },
                 );
-                for tag in releases::discover(&repo, Some(id))? {
+                let found = releases::discover_all(&repo, Some(id))?;
+                skipped.extend(found.skipped);
+                for tag in found.tags {
                     let version = deps::version(&tag.manifest.version)?;
                     if version < current {
                         continue;
@@ -875,6 +942,8 @@ impl Manager {
                     to: next.clone(),
                     changed: true,
                     warnings: metadata_warnings(m),
+                    skipped: Vec::new(),
+                    dist: DistSync::default(),
                 });
                 installed.previous = Some(installed.current.clone());
                 installed.current = next;
@@ -903,6 +972,15 @@ impl Manager {
                 )?);
             }
         }
+        skipped.sort_by(|a, b| a.name.cmp(&b.name));
+        plan.skipped = skipped;
+        for (id, version) in installed_versions {
+            if !plan.updates.iter().any(|c| c.id == id)
+                && !plan.kept_back.iter().any(|h| h.id == id)
+            {
+                plan.unchanged.push(Unchanged { id, version });
+            }
+        }
         Ok(plan)
     }
 
@@ -926,7 +1004,7 @@ impl Manager {
             "the dev channel conflicts with an explicit ref"
         );
         valid_id(id)?;
-        self.transaction(|txn, state| {
+        let (change, dist) = self.transaction(|txn, state| {
             let p = state
                 .packages
                 .get(id)
@@ -980,12 +1058,16 @@ impl Manager {
             if dev || reference == Some("HEAD") {
                 git(&repo, &["remote", "set-head", "origin", "--auto"])?;
             }
+            let mut skipped = Vec::new();
             let target = if let Some(reference) = reference {
                 resolve_upstream_ref(&repo, reference)?
             } else if dev {
                 resolve_ref(&repo, "refs/remotes/origin/HEAD")?
             } else {
-                let latest = releases::latest(&repo, Some(id))?;
+                let mut found = releases::discover_all(&repo, Some(id))?;
+                found.ensure_latest_is_valid()?;
+                skipped = std::mem::take(&mut found.skipped);
+                let latest = found.tags.pop().require(Error::NoReleases, "no releases")?;
                 let latest_version = catalog::version_key(&latest.manifest.version)?;
                 let current_version = catalog::version_key(&p.current.version)?;
                 ensure!(
@@ -1007,6 +1089,8 @@ impl Manager {
                     to: p.current.clone(),
                     changed: false,
                     warnings: Vec::new(),
+                    skipped,
+                    dist: DistSync::default(),
                 });
             }
             if dev {
@@ -1050,13 +1134,16 @@ impl Manager {
                 to: next,
                 changed: true,
                 warnings: metadata_warnings(&m),
+                skipped,
+                dist: DistSync::default(),
             })
-        })
+        })?;
+        Ok(RevisionChange { dist, ..change })
     }
     /// Swap current and previous version (offline). Refused if it breaks a dependent.
     pub fn rollback(&self, id: &str) -> Result<RevisionChange> {
         valid_id(id)?;
-        self.transaction(|txn, state| {
+        let (change, dist) = self.transaction(|txn, state| {
             let p = state
                 .packages
                 .get(id)
@@ -1103,17 +1190,20 @@ impl Manager {
                 to: previous,
                 changed: true,
                 warnings: Vec::new(),
+                skipped: Vec::new(),
+                dist: DistSync::default(),
             })
-        })
+        })?;
+        Ok(RevisionChange { dist, ..change })
     }
-    pub fn set_enabled(&self, id: &str, enabled: bool) -> Result<()> {
+    pub fn set_enabled(&self, id: &str, enabled: bool) -> Result<DistSync> {
         self.set_enabled_with(id, enabled, false)
     }
     /// Disabling removes `dist/<id>`; enabling deploys it again from the clone at the
     /// installed commit (unless the package is replaced). Disabling a package others
     /// depend on, or one that replaces another (`dependents` then names the originals),
-    /// is refused with [`Error::HasDependents`] unless `force`.
-    pub fn set_enabled_with(&self, id: &str, enabled: bool, force: bool) -> Result<()> {
+    /// is refused with [`Error::HasDependents`] unless `force`. Returns the dist report.
+    pub fn set_enabled_with(&self, id: &str, enabled: bool, force: bool) -> Result<DistSync> {
         valid_id(id)?;
         self.transaction(|_, state| {
             if !state.packages.contains_key(id) {
@@ -1130,28 +1220,29 @@ impl Manager {
                 if !replaced.is_empty() {
                     return Err(Error::HasDependents {
                         message: format!(
-                            "cannot disable {id}: it replaces {} for every consumer, so nothing would be loaded for it; switch back first (replace {} --back), or doing it anyway requires force",
-                            replaced.join(", "),
-                            replaced[0]
+                            "cannot disable {id}: it replaces {} for every consumer, so nothing would be loaded for it; switching back first, or force, is required",
+                            replaced.join(", ")
                         ),
                         id: id.into(),
                         dependents: replaced,
+                        replacing: true,
                     });
                 }
             }
             state.packages.get_mut(id).unwrap().enabled = enabled;
             Ok(())
         })
+        .map(|((), dist)| dist)
     }
-    pub fn enable(&self, id: &str) -> Result<()> {
+    pub fn enable(&self, id: &str) -> Result<DistSync> {
         self.set_enabled(id, true)
     }
-    pub fn disable(&self, id: &str) -> Result<()> {
+    pub fn disable(&self, id: &str) -> Result<DistSync> {
         self.set_enabled(id, false)
     }
     /// Forget registration but retain the repository; `dist/<id>` is removed (a
     /// forgotten package is not installed) and `restore` deploys it again.
-    pub fn forget(&self, id: &str) -> Result<()> {
+    pub fn forget(&self, id: &str) -> Result<DistSync> {
         self.forget_with(id, false)
     }
     /// Like [`Manager::forget`]; dependents refuse unless `force`. Replacements this
@@ -1160,7 +1251,7 @@ impl Manager {
     /// of a shared clone is kept in `State::forgotten`, so its clone stays while it is
     /// forgotten and `restore`/`uninstall` find it; the clone's HEAD moves to a
     /// registered package's revision if it was this package's.
-    pub fn forget_with(&self, id: &str, force: bool) -> Result<()> {
+    pub fn forget_with(&self, id: &str, force: bool) -> Result<DistSync> {
         valid_id(id)?;
         self.transaction(|txn, state| {
             if !state.packages.contains_key(id) {
@@ -1178,13 +1269,14 @@ impl Manager {
             }
             Ok(())
         })
+        .map(|((), dist)| dist)
     }
     /// Re-register a retained (forgotten) clean repository; previous history is not
     /// restored. An own clone is registered at its HEAD; a forgotten package of a shared
     /// clone at its recorded revision (the clone is checked out there if needed).
     pub fn restore(&self, id: &str) -> Result<InstallResult> {
         valid_id(id)?;
-        self.transaction(|txn, state| {
+        let (result, dist) = self.transaction(|txn, state| {
             if let Some(record) = state.forgotten.get(id).cloned() {
                 return restore_shared(txn, state, id, record);
             }
@@ -1225,11 +1317,13 @@ impl Manager {
                 warnings: Vec::new(),
                 already_installed: false,
                 available: None,
+                dist: DistSync::default(),
             };
             state.packages.insert(id.to_owned(), installed);
             txn.deploy(id, &format!("packages/{id}"), path.as_deref(), &head)?;
             Ok(result)
-        })
+        })?;
+        Ok(InstallResult { dist, ..result })
     }
     /// Read-only: what `uninstall` would delete, which local work would be lost and
     /// which installed packages depend on it.
@@ -1264,12 +1358,12 @@ impl Manager {
     /// (changes, untracked/ignored files, unpublished commits/branches/tags, stash)
     /// refuses with [`Error::LocalChanges`]; `confirm == true` deletes it anyway.
     /// Dependents refuse with [`Error::HasDependents`]; see [`Manager::uninstall_with`].
-    pub fn uninstall(&self, id: &str, confirm: bool) -> Result<()> {
+    pub fn uninstall(&self, id: &str, confirm: bool) -> Result<DistSync> {
         self.uninstall_with(id, confirm, false)
     }
     /// [`Manager::uninstall`] that removes a package others depend on when `force`; the
     /// dependents then report an unsatisfied dependency.
-    pub fn uninstall_with(&self, id: &str, confirm: bool, force: bool) -> Result<()> {
+    pub fn uninstall_with(&self, id: &str, confirm: bool, force: bool) -> Result<DistSync> {
         valid_id(id)?;
         self.transaction(|txn, state| {
             let removal = removal(txn.root(), state, id)?;
@@ -1291,6 +1385,7 @@ impl Manager {
             txn.delete_dist(id)?;
             Ok(())
         })
+        .map(|((), dist)| dist)
     }
 
     /// Read-only: what replacing `original` by `replacement` for every consumer in the
@@ -1312,14 +1407,15 @@ impl Manager {
         replacement: &str,
         confirm: bool,
     ) -> Result<ReplacementPlan> {
-        self.transaction(|_, state| {
+        let (plan, dist) = self.transaction(|_, state| {
             let plan = replacement_plan(state, original, Some(replacement))?;
             plan.refuse_unless(confirm)?;
             state
                 .replacements
                 .insert(original.into(), replacement.into());
             Ok(plan)
-        })
+        })?;
+        Ok(ReplacementPlan { dist, ..plan })
     }
     /// Read-only plan for [`Manager::switch_back`].
     pub fn switch_back_plan(&self, original: &str) -> Result<ReplacementPlan> {
@@ -1331,12 +1427,13 @@ impl Manager {
     /// `confirm`. The fork stays installed. `dist/<original>` is deployed again from its
     /// clone at the installed commit (if the original is enabled).
     pub fn switch_back(&self, original: &str, confirm: bool) -> Result<ReplacementPlan> {
-        self.transaction(|_, state| {
+        let (plan, dist) = self.transaction(|_, state| {
             let plan = replacement_plan(state, original, None)?;
             plan.refuse_unless(confirm)?;
             state.replacements.remove(original);
             Ok(plan)
-        })
+        })?;
+        Ok(ReplacementPlan { dist, ..plan })
     }
 
     /// Read-only: what [`Manager::sync_dist`] would change.
@@ -1351,9 +1448,10 @@ impl Manager {
     /// end; this one changes nothing else. A missing `dist/` that cannot be deployed
     /// (its clone is gone) is reported as an error here.
     /// A package that cannot be deployed (see [`DistSync::skipped`], or any other error
-    /// for it) is reported in `skipped` and the others are still synced.
+    /// for it) is reported in `skipped` and the others are still synced: the transaction
+    /// commits, then the call fails with [`Error::NotDeployed`] carrying the report.
     pub fn sync_dist(&self) -> Result<DistSync> {
-        self.transaction(|txn, state| {
+        let (plan, _) = self.transaction(|txn, state| {
             let mut plan = dist_drift(txn.root(), state)?;
             let mut deployed = Vec::new();
             for id in std::mem::take(&mut plan.deployed) {
@@ -1372,6 +1470,14 @@ impl Manager {
             plan.deployed = deployed;
             plan.skipped.sort_by(|a, b| a.id.cmp(&b.id));
             Ok(plan)
+        })?;
+        if plan.skipped.is_empty() {
+            return Ok(plan);
+        }
+        let ids: Vec<&str> = plan.skipped.iter().map(|s| s.id.as_str()).collect();
+        Err(Error::NotDeployed {
+            message: format!("{} package(s) not deployed: {}", ids.len(), ids.join(", ")),
+            sync: Box::new(plan),
         })
     }
 }
@@ -1516,13 +1622,8 @@ fn restore_shared(
 ) -> Result<InstallResult> {
     let key = record.clone.clone().unwrap_or_default();
     let relative = record.clone_folder(id);
-    let live = match installed_repo(txn.root(), id, &record) {
-        Err(Error::RepositoryNotFound { .. }) => fail!(
-            Workspace,
-            "the shared clone {relative} of the forgotten {id} is gone; uninstall {id} to drop its record, then install it again"
-        ),
-        live => live?,
-    };
+    // The shared clone is gone: `repository_not_found`, like a restore without a clone.
+    let live = installed_repo(txn.root(), id, &record)?;
     clean(&live, id)?;
     let commit = record.current.commit.clone();
     if git(&live, &["rev-parse", "HEAD"])? != commit {
@@ -1562,6 +1663,7 @@ fn restore_shared(
         warnings: Vec::new(),
         already_installed: false,
         available: None,
+        dist: DistSync::default(),
     };
     state.forgotten.remove(id);
     state.packages.insert(id.to_owned(), installed);
@@ -1694,10 +1796,7 @@ fn check_new_id(root: &Path, state: &State, m: &Manifest) -> Result<()> {
     }
     if state.forgotten.contains_key(&m.id) {
         return Err(Error::AlreadyInstalled {
-            message: format!(
-                "{} was forgotten and its files are kept; use restore, or uninstall it first",
-                m.id
-            ),
+            message: format!("{} was forgotten and its clone is kept", m.id),
             id: m.id.clone(),
         });
     }
@@ -1717,7 +1816,7 @@ fn check_new_id(root: &Path, state: &State, m: &Manifest) -> Result<()> {
     );
     if dest.exists() {
         return Err(Error::AlreadyInstalled {
-            message: format!("repository already exists: {}; use restore", m.id),
+            message: format!("{} was forgotten and its clone is kept", m.id),
             id: m.id.clone(),
         });
     }
@@ -1757,6 +1856,7 @@ fn adopt(
         warnings: metadata_warnings(m),
         already_installed: false,
         available: None,
+        dist: DistSync::default(),
     })
 }
 
@@ -1788,6 +1888,7 @@ fn refuse_dependents(state: &State, id: &str, action: &str) -> Result<()> {
         ),
         id: id.into(),
         dependents,
+        replacing: false,
     })
 }
 
@@ -1811,6 +1912,14 @@ pub struct ReplacementPlan {
     pub consumers: Vec<String>,
     /// Consumers whose requirement `version` does not satisfy (need confirmation).
     pub incompatible: Vec<IncompatibleConsumer>,
+    /// Installed version of `provider` (the fork; the original when switching back),
+    /// which can differ from `version`, the one consumers see.
+    pub installed_version: Option<String>,
+    /// The fork (`provider` when replacing, `current` when switching back) is installed
+    /// and enabled.
+    pub fork_enabled: bool,
+    /// Reconciliation report of `replace`/`switch_back` (empty for a plan).
+    pub dist: DistSync,
 }
 impl ReplacementPlan {
     fn refuse_unless(&self, confirm: bool) -> Result<()> {
@@ -1947,6 +2056,17 @@ fn replacement_plan(
         "{provider} has unsatisfied dependencies: {}",
         broken.join(", ")
     );
+    let installed_version = state
+        .packages
+        .get(&provider)
+        .map(|p| p.current.version.clone());
+    let fork = match replacement {
+        Some(_) => Some(provider.as_str()),
+        None => current.as_deref(),
+    };
+    let fork_enabled = fork
+        .and_then(|fork| state.packages.get(fork))
+        .is_some_and(|p| p.enabled);
     Ok(ReplacementPlan {
         original: original.into(),
         provider,
@@ -1954,6 +2074,9 @@ fn replacement_plan(
         current,
         consumers,
         incompatible,
+        installed_version,
+        fork_enabled,
+        dist: DistSync::default(),
     })
 }
 
@@ -2093,15 +2216,64 @@ mod tests {
     // ---- open -----------------------------------------------------------------------
 
     #[test]
+    fn open_with_validates_options_before_creating_anything() {
+        let dir = TempDir::new("workspace");
+        let before = tree_hash(dir.path());
+        let root = dir.join("nested/new-ws");
+        for (location, kind) in [
+            ("ftp://example.com/catalog", "invalid_argument"),
+            ("http://example.com/catalog", "invalid_argument"),
+        ] {
+            let options = Options {
+                catalog: Some(location.into()),
+            };
+            let error = Manager::open_with(&root, options).err().unwrap();
+            assert_eq!(error.kind(), kind, "{location}: {error}");
+        }
+        assert!(!dir.join("nested").exists());
+        assert_eq!(tree_hash(dir.path()), before);
+        // A valid remote location is not fetched when opening.
+        let options = Options {
+            catalog: Some("https://example.invalid/catalog".into()),
+        };
+        drop(Manager::open_with(&root, options).unwrap());
+        assert!(root.join("state.json").exists());
+    }
+
+    #[test]
+    fn a_missing_catalog_location_is_refused_before_creating_anything() {
+        let dir = TempDir::new("workspace");
+        let before = tree_hash(dir.path());
+        let root = dir.join("new-ws");
+        for missing in [dir.join("catlog"), dir.join("catalog/catalog.json")] {
+            let location = missing.to_string_lossy().into_owned();
+            let options = Options {
+                catalog: Some(location.clone()),
+            };
+            let error = Manager::open_with(&root, options).err().unwrap();
+            assert_eq!(error.kind(), "invalid_argument");
+            assert_eq!(
+                error.to_string(),
+                format!("catalog location {location} does not exist")
+            );
+        }
+        assert!(!root.exists() && !dir.join(".new-ws.lock").exists());
+        assert_eq!(tree_hash(dir.path()), before);
+    }
+
+    #[test]
     fn open_creates_the_workspace_layout_and_lock() {
         let dir = TempDir::new("workspace");
         let root = dir.join("nested/workspace");
+        let catalog = dir.join("catalog-local");
+        fs::create_dir(&catalog).unwrap();
+        let catalog = catalog.to_string_lossy().into_owned();
         let options = Options {
-            catalog: Some("catalog-local".into()),
+            catalog: Some(catalog.clone()),
         };
         let m = Manager::open_with(&root, options).unwrap();
         assert_eq!(m.root(), root);
-        assert_eq!(m.options().catalog.as_deref(), Some("catalog-local"));
+        assert_eq!(m.options().catalog.as_deref(), Some(catalog.as_str()));
         assert_eq!(
             read(&root.join("state.json")),
             "{\n  \"format\": 3,\n  \"packages\": {}\n}"
@@ -2592,7 +2764,12 @@ mod tests {
         assert!(m.list().unwrap().is_empty());
         assert!(ws.repo().join(".git").is_dir() && !ws.dist().exists());
         let error = ws.refuses("already_installed", || m.install(ws.author.source()));
-        assert!(error.to_string().contains("use restore"), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("was forgotten and its clone is kept"),
+            "{error}"
+        );
         ws.refuses("not_installed", || m.forget("dan/demo1"));
         let restored = m.restore("dan/demo1").unwrap();
         assert_eq!(restored.source, ws.author.source());
@@ -2902,6 +3079,81 @@ mod tests {
         assert!(m.list().unwrap()[0].enabled);
         assert_eq!(tree_hash(&ws.root.join("packages")), payload);
         ws.no_leftovers();
+    }
+
+    #[test]
+    fn mutating_results_carry_the_dist_report() {
+        let (ws, m) = Ws::installed("dan/demo1");
+        let id = "dan/demo1";
+        // A folder of no package is reported, never touched.
+        fs::create_dir_all(ws.root.join("dist/custom")).unwrap();
+        let other = ws.other_author("other", "dan/other");
+        let installed = m.install(other.source()).unwrap();
+        assert_eq!(installed.dist.deployed, ["dan/other"]);
+        assert!(installed.dist.removed.is_empty() && installed.dist.skipped.is_empty());
+        assert_eq!(installed.dist.unmanaged, ["dist/custom"]);
+        let report = m.disable(id).unwrap();
+        assert!(report.deployed.is_empty());
+        assert_eq!(report.removed, [id]);
+        assert_eq!(report.unmanaged, ["dist/custom"]);
+        assert_eq!(m.enable(id).unwrap().deployed, [id]);
+        ws.author.release("0.2.0");
+        let updated = m.update(id).unwrap();
+        assert_eq!(updated.dist.deployed, [id]);
+        assert_eq!(updated.dist.unmanaged, ["dist/custom"]);
+        assert_eq!(m.rollback(id).unwrap().dist.deployed, [id]);
+        assert_eq!(m.forget(id).unwrap().removed, [id]);
+        assert_eq!(m.restore(id).unwrap().dist.deployed, [id]);
+        // An active package whose clone and deployed folder are gone is skipped, and every
+        // other mutating result says so.
+        fs::remove_dir_all(ws.root.join("packages/dan/other")).unwrap();
+        fs::remove_dir_all(ws.root.join("dist/dan/other")).unwrap();
+        let report = m.disable(id).unwrap();
+        assert_eq!(
+            report.skipped,
+            [SkippedDist {
+                id: "dan/other".into(),
+                reason: "clone missing".into(),
+            }]
+        );
+        assert_eq!(m.enable(id).unwrap().skipped.len(), 1);
+        let removed = m.uninstall(id, false).unwrap();
+        assert_eq!(removed.removed, [id]);
+        assert_eq!(removed.skipped[0].id, "dan/other");
+        ws.no_leftovers();
+    }
+
+    #[test]
+    fn sync_dist_fails_with_not_deployed_after_syncing_the_others() {
+        let (ws, m) = Ws::installed("dan/demo1");
+        let other = ws.other_author("other", "dan/other");
+        m.install(other.source()).unwrap();
+        // dan/demo1 lost its deployed folder (repairable), dan/other its clone (not).
+        fs::remove_dir_all(ws.dist()).unwrap();
+        fs::remove_dir_all(ws.root.join("packages/dan/other")).unwrap();
+        fs::remove_dir_all(ws.root.join("dist/dan/other")).unwrap();
+        let plan = m.sync_dist_plan().unwrap();
+        assert_eq!(plan.deployed, ["dan/demo1"]);
+        assert_eq!(plan.skipped[0].id, "dan/other");
+        let error = m.sync_dist().unwrap_err();
+        assert_eq!(error.kind(), "not_deployed");
+        assert_eq!(error.to_string(), "1 package(s) not deployed: dan/other");
+        let Error::NotDeployed { sync, .. } = &error else {
+            panic!("{error:?}");
+        };
+        assert_eq!(sync.deployed, ["dan/demo1"]);
+        assert_eq!(sync.skipped[0].reason, "clone missing");
+        // What could be synced is committed.
+        assert!(ws.dist().join("index.js").is_file());
+        ws.no_leftovers();
+        assert_eq!(m.sync_dist().unwrap_err().kind(), "not_deployed");
+        // A recorded package whose clone is gone can be uninstalled (record and dist);
+        // then there is nothing left to deploy.
+        let plan = m.uninstall_plan("dan/other").unwrap();
+        assert!(plan.registered && plan.lost_work.is_empty());
+        m.uninstall("dan/other", false).unwrap();
+        assert!(!m.state().unwrap().packages.contains_key("dan/other"));
+        assert_eq!(m.sync_dist().unwrap(), DistSync::default());
     }
 
     #[test]
@@ -3784,7 +4036,12 @@ mod tests {
         let error = mono.refuses("already_installed", || {
             m.install_package(mono.source(), Some("tilr/store"), None, false)
         });
-        assert!(error.to_string().contains("use restore"), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("was forgotten and its clone is kept"),
+            "{error}"
+        );
         // The last registered user goes; the forgotten one still holds the clone.
         let plan = m.uninstall_plan("tilr/theme").unwrap();
         assert_eq!(plan.deletes.len(), 1, "{:?}", plan.deletes);
@@ -4254,11 +4511,9 @@ mod tests {
         m.forget("tilr/store").unwrap();
         m.uninstall("tilr/theme", false).unwrap();
         fs::remove_dir_all(mono.clone_dir()).unwrap();
-        let error = mono.refuses("workspace", || m.restore("tilr/store"));
-        assert!(
-            error.to_string().contains("is gone; uninstall tilr/store"),
-            "{error}"
-        );
+        // Like a restore without a clone: the clone is what restore needs.
+        let error = mono.refuses("repository_not_found", || m.restore("tilr/store"));
+        assert!(matches!(&error, Error::RepositoryNotFound { id } if id == "tilr/store"));
         let plan = m.uninstall_plan("tilr/store").unwrap();
         assert!(!plan.registered && plan.lost_work.is_empty());
         assert!(plan.deletes.is_empty(), "{:?}", plan.deletes);

@@ -61,7 +61,7 @@ def _(t: T):
     t.eq(p["enabled"], True, "enabled")
     t.eq(t.rev(t.clone("dan/hello")), p["current"]["commit"], "clone HEAD")
     t.has((t.dist("dan/hello") / "index.js").read_text(), "dan/hello 0.1.0")
-    t.ok(not t.catalog.exists(), "no catalog was created")
+    t.ok(t.catalog_empty(), "no catalog was created")
 
 
 @fixture(requires=["hello_releases", "numeric"], gitpm=True)

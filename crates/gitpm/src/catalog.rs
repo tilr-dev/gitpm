@@ -213,6 +213,23 @@ pub fn version_key(version: &str) -> Result<(u64, u64, u64)> {
     Ok((parts[0].parse()?, parts[1].parse()?, parts[2].parse()?))
 }
 
+/// Refusal of a catalog write to an HTTP(S) location (catalogs are written only locally).
+const WRITE_NEEDS_LOCAL: &str =
+    "writing a catalog requires a local folder; HTTP(S) catalogs are read-only";
+/// Check a catalog location before it is used for reading: an HTTP(S) URL must be
+/// secure (see the transport rules), anything else is a local folder or JSON file that
+/// must exist ([`Error::InvalidArgument`] "catalog location PATH does not exist"). A
+/// missing local catalog never counts as "no catalog"; only the catalog writers create it.
+pub fn validate_location(location: &str) -> Result<()> {
+    if local_file(location)?.is_some() {
+        ensure!(
+            fs::symlink_metadata(location).is_ok(),
+            InvalidArgument,
+            "catalog location {location} does not exist"
+        );
+    }
+    Ok(())
+}
 /// True if `location` is a local folder or JSON file (not HTTP).
 pub fn is_local(location: &str) -> Result<bool> {
     Ok(local_file(location)?.is_some())
@@ -293,8 +310,25 @@ fn read_json(location: &str, relative: &str) -> Result<Option<serde_json::Value>
         serde_json::from_slice(&bytes).context(Error::Catalog, "invalid catalog JSON")?,
     ))
 }
+/// The directory links at one catalog level: its root `catalog.json` (schema 2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CatalogLinks {
+    pub schema: u32,
+    /// Directory name → relative link of its own `catalog.json` level.
+    pub directories: BTreeMap<String, String>,
+}
+/// [`CatalogLinks`] of the catalog level at `location` (refused with `catalog` when its
+/// `catalog.json` is missing or not a v2 directory file).
+pub fn links(location: &str) -> Result<CatalogLinks> {
+    let directory = root_directory(location)?;
+    Ok(CatalogLinks {
+        schema: directory.schema,
+        directories: directory.directories,
+    })
+}
 /// Raw root `catalog.json` at this catalog level.
 pub fn list(location: &str) -> Result<serde_json::Value> {
+    validate_location(location)?;
     read_json(location, "catalog.json")?.require(Error::Catalog, "catalog not found")
 }
 fn package_index(location: &str, id: &str) -> Result<Option<PackageIndex>> {
@@ -329,6 +363,7 @@ pub(crate) fn selected_for_check(location: &str, state: &crate::State) -> Result
 }
 
 fn selected_impl(location: &str, state: &crate::State, diagnostic: bool) -> Result<Catalog> {
+    validate_location(location)?;
     let mut result = Catalog::default();
     // Installed packages with their current and latest release; originals of forks
     // with their latest release only.
@@ -409,7 +444,7 @@ pub fn ensure_publishable(location: &str) -> Result<PathBuf> {
     ensure!(
         local_file(location)?.is_some() && Path::new(location).is_dir(),
         InvalidArgument,
-        "sync requires a local directory containing catalog.json"
+        "a publishable catalog is a local folder containing catalog.json"
     );
     Ok(fs::canonicalize(location)?)
 }
@@ -576,6 +611,7 @@ fn save_release(path: &Path, release: &Release) -> Result<Release> {
 /// Published versions of `id` (unordered); empty if the catalog does not know the package.
 pub fn versions(location: &str, id: &str) -> Result<Vec<String>> {
     valid_id(id)?;
+    validate_location(location)?;
     if let Some(index) = package_index(location, id)? {
         return Ok(index.versions.into_keys().collect());
     }
@@ -608,6 +644,7 @@ pub fn lookup(location: &str, id: &str, version: Option<&str>) -> Result<Release
     if let Some(version) = version {
         version_key(version)?;
     }
+    validate_location(location)?;
     if let Some(index) = package_index(location, id)? {
         let version = match version {
             Some(v) => v,
@@ -664,10 +701,7 @@ pub fn register_package(
     package: Option<&str>,
     build: Option<Build>,
 ) -> Result<Release> {
-    let catalog_path = local_file(url)?.require(
-        Error::InvalidArgument,
-        "register writes only to a local catalog; prepare locally, then sync files to R2",
-    )?;
+    let catalog_path = local_file(url)?.require(Error::InvalidArgument, WRITE_NEEDS_LOCAL)?;
     ensure!(
         !source.starts_with('-'),
         InvalidArgument,
@@ -771,10 +805,7 @@ pub fn update_sources(
     sources_file: &Path,
     progress: &mut dyn FnMut(Progress),
 ) -> Result<UpdateSourcesReport> {
-    let path = local_file(location)?.require(
-        Error::InvalidArgument,
-        "catalog-update requires a local output catalog",
-    )?;
+    let path = local_file(location)?.require(Error::InvalidArgument, WRITE_NEEDS_LOCAL)?;
     let text = fs::read_to_string(sources_file).context(Error::Io, "cannot read sources file")?;
     let base = sources_file
         .parent()
@@ -993,6 +1024,7 @@ fn summary(
 
 /// Bounded, read-only overview. Follows only validated relative directory links.
 pub fn browse(location: &str) -> Result<CatalogOverview> {
+    validate_location(location)?;
     fn walk(
         location: &str,
         prefix: &str,
@@ -1628,12 +1660,10 @@ pub(crate) mod tests {
             ),
             ("catalog", true)
         );
-        assert_eq!(
-            lookup(loc(&dir.join("nowhere")), "dan/demo1", None)
-                .unwrap_err()
-                .kind(),
-            "catalog"
-        );
+        // A local catalog location that does not exist is a caller error, not "no catalog".
+        let error = lookup(loc(&dir.join("nowhere")), "dan/demo1", None).unwrap_err();
+        assert_eq!(error.kind(), "invalid_argument");
+        assert!(error.to_string().ends_with("does not exist"), "{error}");
     }
 
     #[test]

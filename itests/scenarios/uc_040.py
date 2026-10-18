@@ -59,7 +59,7 @@ def held_workspace_lock_refuses_every_mutation(t: T):
     holder = hold(WS_LOCK)
     before = t.snap(t.ws)
     for args in [("update", ID), ("disable", ID), ("rollback", ID), ("forget", ID), ("uninstall", ID, "--force"),
-                 ("install", t.repo("dan/other")), ("list",)]:
+                 ("install", t.repo("dan/other")), ("sync-dist",)]:
         t.gitpm_err(*args, kind="locked", contains="workspace is already in use")
     t.same(before, "workspace while locked")
     release(holder)
@@ -67,6 +67,27 @@ def held_workspace_lock_refuses_every_mutation(t: T):
     t.eq(t.package(ID)["current"]["version"], "0.1.1", "retry after release")
     t.gitpm_ok("install", t.repo("dan/other"))
     t.ok(WS_LOCK.exists(), "lock file kept")
+
+
+@case(fixture="hello_installed", spec=["transactions-locking/workspace-lock#two-cli-processes",
+                                       "dist/read-only-commands-never-change-dist"])
+def list_reads_during_a_held_lock(t: T):
+    """While another process holds the workspace lock, `list` reports the last committed state; it takes
+    no lock and creates or recovers nothing."""
+    holder = hold(WS_LOCK)
+    before = t.snap(t.ws)
+    r = t.gitpm_ok("list")
+    value = json.loads(r.out)
+    t.eq(value["packages"][ID]["current"]["version"], "0.1.0", "committed state")
+    t.eq([p["id"] for p in value["resolved"]], [ID], "resolved")
+    t.eq(json.loads(t.gitpm_ok("list", "--provides", "nothing").out)["resolved"], [], "filter applied")
+    t.gitpm_err("enable", ID, kind="locked")
+    t.same(before, "workspace while listed")
+    release(holder)
+    # A new root is not created by list.
+    fresh = t.root / "fresh-ws"
+    t.eq(json.loads(t.gitpm_ok("--root", fresh, "list").out)["packages"], {}, "empty list")
+    t.ok(not fresh.exists(), "list created no workspace")
 
 
 @case(fixture="hello_installed", spec=["transactions-locking/locks-are-process-owned-and-survive-crashes#killed-owner"])
@@ -125,17 +146,20 @@ def dead_writers_temporary_file_is_cleaned(t: T):
 
 @case(fixture="hello_installed", spec=["transactions-locking/transactions-stage-only-touched-paths#failure-before-commit"])
 def uncommitted_transaction_is_discarded_on_next_open(t: T):
-    """Stage without journal (crash before commit decided): the next invocation removes
-    .pm-txn; the live workspace stays exactly as it was."""
+    """Stage without journal (crash before commit decided): the read-only `list` shows the old state and
+    leaves .pm-txn alone; the next command that opens the workspace removes it, and the live workspace
+    stays exactly as it was."""
     before = t.snap(t.ws)
     txn = t.ws / ".pm-txn"
     shutil.copytree(t.clone(ID), txn / "new/packages" / ID, symlinks=True)
     t.write(txn, {f"new/dist/{ID}/index.js": "half-staged\n", "state.json": "{ partial",
                   "scratch/incoming/plugin.json": "{}"})
     out = t.gitpm_ok("list").json()
+    t.eq(out["packages"][ID]["current"]["version"], "0.1.0", "list shows the old state")
+    t.ok(txn.exists(), "list does not recover")
+    t.gitpm_ok("sync-dist")
     t.ok(not txn.exists(), ".pm-txn discarded")
     t.same(before, "live workspace")
-    t.eq(out["packages"][ID]["current"]["version"], "0.1.0", "list shows the old state")
 
 
 def committed_txn(t: T, applied: list[str]) -> Path:
@@ -168,10 +192,13 @@ def rolled_forward(t: T, after: Path):
 
 @case(fixture="hello_installed", spec=["transactions-locking/crash-recovery#crash-during-commit"])
 def committed_transaction_rolls_forward_on_next_open(t: T):
-    """Crash after the journal with dist already moved: `list` finishes the commit."""
+    """Crash after the journal with dist already moved: `list` reports state.json as it is and leaves the
+    transaction alone; the next command that opens the workspace (sync-dist) finishes the commit."""
     after = committed_txn(t, [f"dist/{ID}"])
     t.has((t.dist(ID) / "index.js").read_text(), "0.1.1")
     t.eq(t.package(ID)["current"]["version"], "0.1.0", "state not yet switched")
+    t.ok((t.ws / ".pm-txn/journal.json").exists(), "list left the journal")
+    t.gitpm_ok("sync-dist")
     out = t.gitpm_ok("list").json()
     t.eq(out["packages"][ID]["current"]["version"], "0.1.1", "list sees the recovered state")
     rolled_forward(t, after)

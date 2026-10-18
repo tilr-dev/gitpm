@@ -171,8 +171,17 @@ pub fn release_current(repo: &Path, package: Option<&str>) -> Result<String> {
     Ok(tag)
 }
 
+/// The release [`commit_package`] made: the package, its new version and the tag.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct Commit {
+    pub package: String,
+    pub version: String,
+    /// Release tag `ID@VERSION`.
+    pub tag: String,
+}
+
 /// Commit package changes locally and create an immutable version tag. Never pushes.
-pub fn commit(repo: &Path, version: &str) -> Result<String> {
+pub fn commit(repo: &Path, version: &str) -> Result<Commit> {
     commit_package(repo, version, None)
 }
 
@@ -180,7 +189,7 @@ pub fn commit(repo: &Path, version: &str) -> Result<String> {
 /// package by ID (optional when it lists only one) and the tag is `ID@VERSION`. Like
 /// [`commit`] it stages ALL changes of the repository, not only the package folder.
 /// For a single-package repository a given `package` must match the root manifest.
-pub fn commit_package(repo: &Path, version: &str, package: Option<&str>) -> Result<String> {
+pub fn commit_package(repo: &Path, version: &str, package: Option<&str>) -> Result<Commit> {
     version_key(version)?;
     let (repo, manifest_path, mut m) = locate(repo, package)?;
     // Authoring is strict about metadata types; installing is lenient.
@@ -206,7 +215,11 @@ pub fn commit_package(repo: &Path, version: &str, package: Option<&str>) -> Resu
             "choose a new version"
         );
         git(&repo, &["tag", "--", &tag])?;
-        return Ok(tag);
+        return Ok(Commit {
+            package: m.id,
+            version: version.to_owned(),
+            tag,
+        });
     }
     require_identity(&repo)?;
     // A failed commit (hook, signing) must leave the manifest and the index as they were.
@@ -238,9 +251,13 @@ pub fn commit_package(repo: &Path, version: &str, package: Option<&str>) -> Resu
     }
     git(&repo, &["tag", "--", &tag]).context(
         Error::Git,
-        "commit succeeded but tag creation failed; run the same commit again to create the tag",
+        "commit succeeded but tag creation failed; releasing the same version again creates the tag",
     )?;
-    Ok(tag)
+    Ok(Commit {
+        package: m.id,
+        version: version.to_owned(),
+        tag,
+    })
 }
 
 /// HEAD is the commit that set `version` of package `id` and only lacks its tag: a
@@ -337,7 +354,7 @@ pub fn init_with(dir: &Path, namespace: &str, name: &str, options: InitOptions) 
             "{} exists but is not a Git repository; pass a new folder or a repository{}",
             dir.display(),
             if empty {
-                " (or make this empty folder a multi-package repository with `init --multi`)"
+                " (an empty folder can become a multi-package repository)"
             } else {
                 ""
             }
@@ -355,6 +372,18 @@ pub fn init_with(dir: &Path, namespace: &str, name: &str, options: InitOptions) 
         folder: relative,
         tag,
     })
+}
+
+/// Whether `init` into `dir` without `multi` is refused for a reason a multi-package
+/// repository solves: `dir` is an empty folder that is not a repository (`multi` makes it
+/// one), or a repository whose root is a package without `gitpm.json` (only a new
+/// multi-package repository can take more packages). Read-only; for callers that show
+/// the option after an `invalid_argument` refusal.
+pub fn suggests_multi(dir: &Path) -> bool {
+    let is_repo = fs::symlink_metadata(dir.join(".git")).is_ok();
+    let empty = dir.is_dir() && fs::read_dir(dir).is_ok_and(|mut e| e.next().is_none());
+    (empty && !is_repo)
+        || (is_repo && dir.join("plugin.json").is_file() && !dir.join(packages::CONFIG).exists())
 }
 
 /// Add the package `namespace/name` with release 0.1.0 (commit + tag `ID@0.1.0`) to the
@@ -413,7 +442,7 @@ fn add_package(
                 ensure!(
                     !repo.join("plugin.json").exists(),
                     InvalidArgument,
-                    "the repository root is a package (plugin.json); move it into a folder and list that folder in {} first, or create the repository with `init --multi`",
+                    "the repository root is a package (plugin.json); a multi-package repository needs {} listing package folders, so move the root package into one first",
                     packages::CONFIG
                 );
                 packages::Config {
@@ -711,12 +740,52 @@ mod tests {
     }
 
     #[test]
+    fn suggests_multi_only_where_a_multi_package_repository_helps() {
+        let dir = TempDir::new("scaffold");
+        fs::create_dir(dir.join("empty")).unwrap();
+        assert!(suggests_multi(&dir.join("empty")));
+        let single = new_repo(&dir, "single");
+        assert!(suggests_multi(&single));
+        assert!(!suggests_multi(&dir.join("missing")));
+        fs::create_dir(dir.join("full")).unwrap();
+        fs::write(dir.join("full/x"), "x").unwrap();
+        assert!(!suggests_multi(&dir.join("full")));
+        let multi = dir.join("multi");
+        init_with(
+            &multi,
+            "dan",
+            "a",
+            InitOptions {
+                multi: true,
+                release: true,
+            },
+        )
+        .unwrap();
+        assert!(!suggests_multi(&multi));
+    }
+
+    #[test]
+    fn commit_package_returns_package_version_and_tag() {
+        let dir = TempDir::new("scaffold");
+        let repo = new_repo(&dir, "demo1");
+        fs::write(repo.join("dist/index.js"), "v2").unwrap();
+        assert_eq!(
+            commit_package(&repo, "0.2.0", Some("dan/demo1")).unwrap(),
+            Commit {
+                package: "dan/demo1".into(),
+                version: "0.2.0".into(),
+                tag: "dan/demo1@0.2.0".into(),
+            }
+        );
+    }
+
+    #[test]
     fn commit_bumps_version_commits_everything_and_tags() {
         let dir = TempDir::new("scaffold");
         let repo = new_repo(&dir, "demo1");
         fs::write(repo.join("dist/index.js"), "v2").unwrap();
         fs::write(repo.join("dist/new.js"), "new").unwrap();
-        let tag = commit(&repo, "0.2.0").unwrap();
+        let tag = commit(&repo, "0.2.0").unwrap().tag;
         assert_eq!(tag, "dan/demo1@0.2.0");
         assert_eq!(model::manifest(&repo).unwrap().version, "0.2.0");
         assert_eq!(fixture_git(&repo, &["status", "--porcelain"]), "");
@@ -803,12 +872,14 @@ mod tests {
         fs::write(&lock, "").unwrap();
         let error = commit(&repo, "0.2.0").unwrap_err();
         assert!(
-            error.to_string().contains("run the same commit again"),
+            error
+                .to_string()
+                .contains("releasing the same version again"),
             "{error}"
         );
         let head = fixture_git(&repo, &["rev-parse", "HEAD"]);
         fs::remove_file(&lock).unwrap();
-        assert_eq!(commit(&repo, "0.2.0").unwrap(), "dan/demo1@0.2.0");
+        assert_eq!(commit(&repo, "0.2.0").unwrap().tag, "dan/demo1@0.2.0");
         assert_eq!(fixture_git(&repo, &["rev-parse", "dan/demo1@0.2.0"]), head);
         // Once tagged, the same version is a conflict again.
         assert_eq!(
@@ -917,7 +988,11 @@ mod tests {
         assert!(error.to_string().contains("tilr/store"), "{error}");
         assert_eq!(
             commit_package(&repo, "0.2.0", Some("tilr/theme")).unwrap(),
-            "tilr/theme@0.2.0"
+            Commit {
+                package: "tilr/theme".into(),
+                version: "0.2.0".into(),
+                tag: "tilr/theme@0.2.0".into(),
+            }
         );
         let m = model::package_manifest(&repo, Some("packages/theme")).unwrap();
         assert_eq!(m.version, "0.2.0");

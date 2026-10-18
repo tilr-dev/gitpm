@@ -5,7 +5,7 @@ use crate::{
     catalog::{Catalog, version_key},
 };
 use serde::Serialize;
-use std::{fs, path::Path};
+use std::{collections::BTreeMap, fs, path::Path};
 
 /// Outcome of comparing one installed package with the catalog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -198,15 +198,59 @@ fn compare_one(id: &str, installed: &crate::Installed, catalog: &Catalog) -> Che
     row
 }
 
-/// Read the workspace state and compare it with the catalog. An empty or missing
-/// workspace does not touch the catalog at all.
-pub fn check(root: &Path, catalog_location: &str) -> Result<Vec<CheckRow>> {
+/// What `check` reports: one row per installed package, the replacement bindings and
+/// the dependencies that are not satisfied in the workspace.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CheckReport {
+    pub rows: Vec<CheckRow>,
+    /// `ORIGINAL → FORK` for every consumer.
+    pub replacements: BTreeMap<String, String>,
+    pub unsatisfied: Vec<UnsatisfiedDependency>,
+}
+/// A dependency of an installed package the workspace does not satisfy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UnsatisfiedDependency {
+    /// The installed package that declares the dependency.
+    pub package: String,
+    pub dependency: String,
+    pub requirement: String,
+    pub problem: Option<String>,
+}
+
+/// Read the workspace state without opening it and compare it with the catalog. An
+/// empty or missing workspace does not touch the catalog at all and needs none; any
+/// other needs `catalog` ([`Error::InvalidArgument`] "no catalog configured").
+pub fn check(root: &Path, catalog: Option<&str>) -> Result<CheckReport> {
     let state = read_state(root)?;
     if state.packages.is_empty() {
-        return Ok(Vec::new());
+        return Ok(CheckReport::default());
     }
-    check_state(&state, catalog_location)
+    let location = catalog.ok_or_else(|| Error::InvalidArgument(NO_CATALOG.into()))?;
+    let rows = check_state(&state, location)?;
+    let unsatisfied = state
+        .installed()
+        .into_iter()
+        .flat_map(|package| {
+            package
+                .dependencies
+                .into_iter()
+                .filter(|d| !d.satisfied)
+                .map(move |d| UnsatisfiedDependency {
+                    package: package.id.clone(),
+                    dependency: d.id,
+                    requirement: d.requirement,
+                    problem: d.problem,
+                })
+        })
+        .collect();
+    Ok(CheckReport {
+        rows,
+        replacements: state.replacements,
+        unsatisfied,
+    })
 }
+/// Refusal of a catalog operation without a catalog location.
+pub(crate) const NO_CATALOG: &str = "no catalog configured";
 
 pub(crate) fn check_state(state: &State, location: &str) -> Result<Vec<CheckRow>> {
     let snapshot = crate::catalog::selected_for_check(location, state)?;
@@ -527,23 +571,28 @@ mod tests {
         let dir = TempDir::new("check");
         let root = dir.join("workspace");
         // The catalog location is invalid, but it is never read.
-        assert!(check(&root, "ftp://invalid").unwrap().is_empty());
+        assert!(check(&root, Some("ftp://invalid")).unwrap().rows.is_empty());
+        assert!(check(&root, None).unwrap().rows.is_empty());
         fs::create_dir(&root).unwrap();
         fs::write(root.join("state.json"), r#"{"format":3,"packages":{}}"#).unwrap();
-        assert!(check(&root, "ftp://invalid").unwrap().is_empty());
+        assert!(check(&root, Some("ftp://invalid")).unwrap().rows.is_empty());
 
         let (state, _) = fixture();
         fs::write(root.join("state.json"), serde_json::to_vec(&state).unwrap()).unwrap();
         assert_eq!(
-            check(&root, "ftp://invalid").unwrap_err().kind(),
+            check(&root, Some("ftp://invalid")).unwrap_err().kind(),
             "invalid_argument"
+        );
+        let error = check(&root, None).unwrap_err();
+        assert_eq!(
+            (error.kind(), error.to_string().as_str()),
+            ("invalid_argument", NO_CATALOG)
         );
         // A missing catalog is an error, not "no updates".
         let missing = dir.join("missing-catalog");
-        assert_eq!(
-            check(&root, missing.to_str().unwrap()).unwrap_err().kind(),
-            "catalog"
-        );
+        let error = check(&root, Some(missing.to_str().unwrap())).unwrap_err();
+        assert_eq!(error.kind(), "invalid_argument");
+        assert!(error.to_string().ends_with("does not exist"), "{error}");
     }
 
     #[test]
@@ -593,7 +642,9 @@ mod tests {
         fs::create_dir(&root).unwrap();
         let state = crate::test_support::state_with("dan/demo", source, "1.9.0", &"a".repeat(40));
         fs::write(root.join("state.json"), serde_json::to_vec(&state).unwrap()).unwrap();
-        let rows = check(&root, catalog.to_str().unwrap()).unwrap();
+        let report = check(&root, catalog.to_str()).unwrap();
+        assert!(report.replacements.is_empty() && report.unsatisfied.is_empty());
+        let rows = report.rows;
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].status, CheckStatus::UpdateAvailable);
         assert_eq!(rows[0].latest.as_deref(), Some("1.10.0"));

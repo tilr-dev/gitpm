@@ -258,7 +258,15 @@ fn direct_install_without_catalog_names_the_missing_dependency() {
         &consumer,
         serde_json::json!({"id": "app/consumer", "version": "0.2.0", "dependencies": {"lib/core": "^1.0"}}),
     );
-    let out = pm(&dir, &["install", consumer.to_str().unwrap()]);
+    // No --catalog and no GITPM_CATALOG: the missing dependency cannot be fetched.
+    let out = hermetic(&dir, env!("CARGO_BIN_EXE_gitpm"))
+        .current_dir(&*dir)
+        .arg("--root")
+        .arg(dir.join("workspace"))
+        .args(["install", consumer.to_str().unwrap()])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success(), "{stderr}");
     for needle in [
@@ -268,4 +276,10 @@ fn direct_install_without_catalog_names_the_missing_dependency() {
     ] {
         assert!(stderr.contains(needle), "missing {needle:?}: {stderr}");
     }
+    // A catalog location that does not exist is refused, never read as "no catalog".
+    let out = pm(&dir, &["install", consumer.to_str().unwrap()]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(stderr.contains("does not exist"), "{stderr}");
+    assert!(stderr.contains("Error kind: invalid_argument"), "{stderr}");
 }

@@ -23,6 +23,8 @@ impl Fixture {
         fs::create_dir(&dir).unwrap();
         fs::create_dir(dir.join("tmp")).unwrap();
         fs::create_dir(dir.join("home")).unwrap();
+        // The catalog location every command gets must exist (it starts empty).
+        fs::create_dir(dir.join("catalog")).unwrap();
         fs::write(
             dir.join("home/.gitconfig"),
             "[user]\n\tname = Test\n\temail = test@example.invalid\n[init]\n\tdefaultBranch = main\n[commit]\n\tgpgsign = false\n[tag]\n\tgpgsign = false\n",
@@ -218,15 +220,18 @@ fn recovery_and_lock() {
     let manager = gitpm::Manager::open(&f.root).unwrap();
     assert!(gitpm::Manager::open(&f.root).is_err());
     drop(manager);
-    // An interrupted, uncommitted transaction is discarded on the next run.
+    // An interrupted, uncommitted transaction is discarded by the next command that
+    // opens the workspace; the read-only `list` leaves it alone.
     fs::create_dir_all(f.root.join(".pm-txn/new/dist/dan/hello")).unwrap();
     fs::write(f.root.join(".pm-txn/new/dist/dan/hello/index.js"), "half").unwrap();
+    f.cli(&["list"], true);
+    assert!(f.root.join(".pm-txn").exists(), "list must not recover");
     assert_eq!(f.content_after_recovery(), "hello v1");
     assert!(!f.root.join(".pm-txn").exists());
 }
 impl Fixture {
     fn content_after_recovery(&self) -> String {
-        self.cli(&["list"], true);
+        self.cli(&["enable", "dan/hello"], true);
         self.content()
     }
 }
@@ -369,7 +374,8 @@ fn init_requires_a_namespace_and_never_prompts_or_reads_the_environment() {
     for (args, message) in [
         (
             &["init", "hello", "--into", "hello"][..],
-            "package id needs a namespace: use NAMESPACE/NAME, for example acme/hello",
+            // The library refuses it (invalid_id); the CLI only prints the error.
+            "package ID needs a namespace: use NAMESPACE/NAME, for example acme/hello\nError kind: invalid_id",
         ),
         (&["init"][..], "init: expected 1 argument(s), got 0"),
         (&["init", "dan/a/b", "--into", "x"][..], "namespace/name"),
@@ -1128,11 +1134,13 @@ fn uninstall_on_tty_asks_before_losing_work() {
         .arg("--version")
         .output()
         .is_ok_and(|o| o.status.success());
+    // stdin is the terminal; stderr goes to a file, so the prompt's stream is visible.
     let script = if util_linux {
-        "script -qec \"'$0' --root '$1' uninstall dan/hello\" /dev/null"
+        "script -qec \"'$0' --root '$1' uninstall dan/hello 2>'$2'\" /dev/null"
     } else {
-        "script -q /dev/null \"$0\" --root \"$1\" uninstall dan/hello"
+        "script -q /dev/null sh -c \"exec '$0' --root '$1' uninstall dan/hello 2>'$2'\""
     };
+    let stderr_file = f.dir.join("uninstall.stderr");
     let ask = |answer: &str| {
         let out = f
             .command("sh")
@@ -1142,16 +1150,27 @@ fn uninstall_on_tty_asks_before_losing_work() {
             ))
             .arg(env!("CARGO_BIN_EXE_gitpm"))
             .arg(&f.root)
+            .arg(&stderr_file)
             .output()
             .unwrap();
-        String::from_utf8_lossy(&out.stdout).into_owned()
+        (
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            fs::read_to_string(&stderr_file).unwrap_or_default(),
+        )
     };
-    let output = ask("n");
-    assert!(output.contains("Delete anyway? [y/N]"), "{output}");
-    assert!(output.contains("untracked: notes.txt"), "{output}");
+    let (output, stderr) = ask("n");
+    assert!(stderr.contains("Delete anyway? [y/N]"), "{stderr}");
+    assert!(stderr.contains("untracked: notes.txt"), "{stderr}");
+    assert!(
+        stderr.contains("uninstall cancelled; nothing was changed"),
+        "{stderr}"
+    );
+    // stdout carries only result lines.
+    assert!(!output.contains("Delete anyway"), "{output}");
     assert!(repo.join("notes.txt").exists());
     assert_eq!(f.state()["packages"]["dan/hello"]["enabled"], true);
-    let output = ask("y");
+    let (output, stderr) = ask("y");
+    assert!(stderr.contains("Delete anyway? [y/N]"), "{stderr}");
     assert!(output.contains("dan/hello uninstalled"), "{output}");
     assert!(!repo.exists());
     assert!(f.state()["packages"].as_object().unwrap().is_empty());
@@ -1183,7 +1202,12 @@ fn usage_errors_name_the_problem_and_create_nothing() {
         ),
         (&["namespace"][..], "unknown command: namespace"),
         (&["namespace", "me"][..], "unknown command: namespace"),
-        (&["init", "hello"][..], "package id needs a namespace"),
+        (&["init", "hello"][..], "package ID needs a namespace"),
+        // Library refusals before anything is created (Options are validated first).
+        (
+            &["--catalog", "./missing", "update", "qa/demo"][..],
+            "catalog location ./missing does not exist",
+        ),
         (
             &["list", "--namespace", "me"][..],
             "unknown option: --namespace",
@@ -1322,7 +1346,7 @@ fn legacy_pm_variables_are_ignored() {
     );
     let out = cli(&["init", "hello", "--into", "hello"]);
     assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("package id needs a namespace"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("package ID needs a namespace"));
     let out = cli(&["init", "dan/hello", "--into", "dan/hello"]);
     assert!(
         out.status.success(),
@@ -1609,4 +1633,138 @@ fn command_help_prints_only_that_command() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("unknown command: nope"));
     assert!(!f.root.exists());
+}
+
+impl Fixture {
+    /// Run the CLI; returns (success, stdout, stderr).
+    fn output(&self, args: &[&str]) -> (bool, String, String) {
+        let out = self
+            .pm()
+            .current_dir(&self.dir)
+            .arg("--root")
+            .arg(&self.root)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
+}
+
+/// The CLI passes the catalog location and option combinations to the library unchanged:
+/// a missing local catalog and `--channel dev --ref` are library errors with a kind.
+#[test]
+fn a_missing_catalog_and_dev_with_ref_are_library_errors() {
+    let f = Fixture::new();
+    let source = f.repo.to_str().unwrap();
+    let (ok, _, stderr) = f.output(&["--catalog", "./missing", "install", source]);
+    assert!(!ok);
+    assert!(
+        stderr.contains("Error: catalog location ./missing does not exist"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("Error kind: invalid_argument"), "{stderr}");
+    assert!(
+        !f.root.exists(),
+        "a refused catalog location created the workspace"
+    );
+    let (ok, _, stderr) = f.output(&["install", source, "--ref", "x", "--channel", "dev"]);
+    assert!(!ok);
+    assert!(
+        stderr.contains("the dev channel conflicts with an explicit ref"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("Error kind: invalid_argument"), "{stderr}");
+    // stable is the default channel: with a ref it installs that ref.
+    let (ok, stdout, stderr) = f.output(&[
+        "install",
+        source,
+        "--ref",
+        "dan/hello@1.0.0",
+        "--channel",
+        "stable",
+    ]);
+    assert!(ok, "{stderr}");
+    assert!(
+        stdout.starts_with("installed dan/hello@1.0.0 from "),
+        "{stdout}"
+    );
+}
+
+/// `list` reads the committed state while another process holds the workspace lock.
+#[test]
+fn list_works_while_the_workspace_is_locked() {
+    let f = Fixture::new();
+    f.install();
+    let manager = gitpm::Manager::open(&f.root).unwrap();
+    let state = f.state();
+    assert_eq!(state["resolved"][0]["id"], "dan/hello");
+    let (ok, _, stderr) = f.output(&["enable", "dan/hello"]);
+    assert!(!ok);
+    assert!(stderr.contains("Error kind: locked"), "{stderr}");
+    drop(manager);
+}
+
+/// Library messages are neutral; the CLI adds the command that helps as a `Hint:` line.
+#[test]
+fn errors_print_a_command_hint_by_kind() {
+    let f = Fixture::new();
+    f.install();
+    f.cli(&["forget", "dan/hello"], true);
+    let (ok, _, stderr) = f.output(&["install", f.repo.to_str().unwrap()]);
+    assert!(!ok);
+    assert!(
+        stderr.contains("Error: dan/hello was forgotten and its clone is kept\n"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("Error kind: already_installed"), "{stderr}");
+    assert!(
+        stderr.contains("Hint: ")
+            && stderr.contains("`gitpm restore dan/hello`")
+            && stderr.contains("`gitpm uninstall dan/hello`"),
+        "{stderr}"
+    );
+    // A usage error has no kind and no hint.
+    let (ok, _, stderr) = f.output(&["list", "--force"]);
+    assert!(!ok);
+    assert!(
+        !stderr.contains("Error kind") && !stderr.contains("Hint:"),
+        "{stderr}"
+    );
+}
+
+/// `update` reports broken release tags it passed over, as install does.
+#[test]
+fn update_past_a_broken_historical_tag_warns_about_it() {
+    let f = Fixture::new();
+    f.install();
+    // 1.5.0: a tag whose manifest is invalid; 2.0.0: valid.
+    fs::write(f.repo.join("plugin.json"), "{broken").unwrap();
+    f.git(&["add", "."]);
+    f.git(&["commit", "-m", "broken"]);
+    f.git(&["tag", "dan/hello@1.5.0"]);
+    f.release("2.0.0", "hello v2");
+    let (ok, stdout, stderr) = f.output(&["update", "dan/hello"]);
+    assert!(ok, "{stderr}");
+    assert_eq!(stdout, "dan/hello updated 1.0.0 → 2.0.0\n");
+    assert!(
+        stderr.contains("Warning: skipped release tag dan/hello@1.5.0: invalid manifest"),
+        "{stderr}"
+    );
+    f.cli(&["rollback", "dan/hello"], true);
+    f.release("2.1.0", "hello v2.1");
+    let (ok, stdout, stderr) = f.output(&["update", "all"]);
+    assert!(ok, "{stderr}");
+    assert!(
+        stdout.contains("dan/hello updated 1.0.0 → 2.1.0"),
+        "{stdout}"
+    );
+    assert!(
+        stderr.contains("Warning: skipped release tag dan/hello@1.5.0: invalid manifest"),
+        "{stderr}"
+    );
 }

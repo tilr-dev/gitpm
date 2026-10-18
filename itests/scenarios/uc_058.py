@@ -9,6 +9,9 @@ import json
 
 from gitpmtest import T, case
 
+# No catalog configured: an empty GITPM_CATALOG counts as unset.
+NO_CATALOG = {"GITPM_CATALOG": ""}
+
 CORE = "lib/core"
 
 
@@ -167,22 +170,33 @@ def shared_dependency_single_copy(t: T):
 @case(fixture="g6_core_catalog", spec=["dependencies/install-resolves-dependencies#no-catalog"])
 def direct_install_without_catalog_refused(t: T):
     """8a. No catalog configured and lib/core not installed: refused naming lib/core and "no catalog configured"."""
-    t.gitpm_err("--catalog", t.root / "no-catalog", "install", t.repo("app/a"), kind="dependency_conflict",
+    t.gitpm_err("install", t.repo("app/a"), env=NO_CATALOG, kind="dependency_conflict",
              contains=(CORE, "no catalog configured"))
     t.not_installed("app/a")
     t.not_installed(CORE)
 
 
+@case(fixture="g6_core_catalog", spec=["cli/commands-that-need-a-catalog-say-so"])
+def missing_catalog_location_is_refused(t: T):
+    """8a'. A configured catalog location that does not exist is no "no catalog": `--catalog ./missing install`
+    fails with the library's invalid_argument before anything is created."""
+    before = t.snap(t.root, git=True)
+    t.gitpm_err("--catalog", "./missing", "install", t.repo("app/a"), kind="invalid_argument",
+             contains="catalog location ./missing does not exist")
+    t.same(before, "fixture (workspace, catalog, repos)")
+    t.ok(not (t.root / "missing").exists(), "no catalog created")
+
+
 @case(fixture="g6_core_catalog", spec=["dependencies/install-resolves-dependencies"])
 def direct_install_with_dependency_installed(t: T):
     """8b. lib/core already installed (from Git), no catalog: app/a installs and resolves to it."""
-    nocat = t.root / "no-catalog"
-    t.gitpm_ok("--catalog", nocat, "install", t.repo(CORE), "--ref", f"{CORE}@1.1.0")
-    t.gitpm_ok("--catalog", nocat, "install", t.repo("app/a"))
+    before = t.snap(t.catalog)
+    t.gitpm_ok("install", t.repo(CORE), "--ref", f"{CORE}@1.1.0", env=NO_CATALOG)
+    t.gitpm_ok("install", t.repo("app/a"), env=NO_CATALOG)
     row = resolved(t)["app/a"]["dependencies"][0]
     t.eq((row["provider"], row["satisfied"]), (CORE, True), "resolved")
     t.eq(t.package("app/a").get("catalog"), None, "direct install records no catalog")
-    t.ok(not nocat.exists(), "no catalog created")
+    t.same(before, "catalog untouched")
 
 
 @case(fixture="g6_core_catalog", spec=["dependencies/install-resolves-dependencies"])

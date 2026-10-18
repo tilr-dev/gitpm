@@ -20,6 +20,18 @@ pub fn qualified(namespace: &str, name: &str) -> Result<String> {
     valid_part(name)?;
     Ok(format!("{namespace}/{name}"))
 }
+/// Split a full package ID `NAMESPACE/NAME` into its validated parts. A name without a
+/// namespace is refused with [`crate::Error::InvalidId`]: there is no default namespace.
+pub fn split(id: &str) -> Result<(&str, &str)> {
+    let Some((namespace, name)) = id.split_once('/') else {
+        crate::error::fail!(
+            InvalidId,
+            "package ID needs a namespace: use NAMESPACE/NAME, for example acme/{id}"
+        );
+    };
+    qualified(namespace, name)?;
+    Ok((namespace, name))
+}
 /// The release tag `ID@VERSION`, the only tag spelling gitpm creates and reads.
 pub fn release_tag(id: &str, version: &str) -> String {
     format!("{id}@{version}")
@@ -72,6 +84,18 @@ mod tests {
         assert_eq!(qualified("", "demo1").unwrap_err().kind(), "invalid_id");
         assert_eq!(qualified("dan", "..").unwrap_err().kind(), "invalid_id");
         assert_eq!(qualified("dan", "a/b").unwrap_err().kind(), "invalid_id");
+    }
+
+    #[test]
+    fn split_needs_a_namespace() {
+        assert_eq!(split("acme/hello").unwrap(), ("acme", "hello"));
+        let error = split("hello").unwrap_err();
+        assert_eq!(error.kind(), "invalid_id");
+        assert_eq!(
+            error.to_string(),
+            "package ID needs a namespace: use NAMESPACE/NAME, for example acme/hello"
+        );
+        assert_eq!(split("a/b/c").unwrap_err().kind(), "invalid_id");
     }
 
     #[test]

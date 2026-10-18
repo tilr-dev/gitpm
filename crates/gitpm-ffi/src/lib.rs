@@ -62,11 +62,13 @@ pub enum PmError {
     #[error("{message}")]
     DependencyConflict { message: String },
     /// Other installed packages depend on `id`; retry with `force` to proceed anyway.
+    /// With `replacing`, `dependents` are the originals `id` replaces for every consumer.
     #[error("{message}")]
     HasDependents {
         id: String,
         message: String,
         dependents: Vec<String>,
+        replacing: bool,
     },
     /// `consumers` do not accept the new provider's version; retry with `confirm`.
     #[error("{message}")]
@@ -75,6 +77,10 @@ pub enum PmError {
         message: String,
         consumers: Vec<String>,
     },
+    /// `syncDist` committed what it could; `sync` is its report (as `syncDist` returns
+    /// it), whose `skipped` are the active packages left without their deployed folder.
+    #[error("{message}")]
+    NotDeployed { message: String, sync: DistSync },
     #[error("{message}")]
     InvalidData { message: String },
     #[error("{message}")]
@@ -111,10 +117,20 @@ impl From<pm::Error> for PmError {
             pm::Error::Auth(_) => PmError::Auth { message },
             pm::Error::Unsupported(_) => PmError::Unsupported { message },
             pm::Error::DependencyConflict(_) => PmError::DependencyConflict { message },
-            pm::Error::HasDependents { id, dependents, .. } => PmError::HasDependents {
+            pm::Error::HasDependents {
+                id,
+                dependents,
+                replacing,
+                ..
+            } => PmError::HasDependents {
                 id,
                 message,
                 dependents,
+                replacing,
+            },
+            pm::Error::NotDeployed { sync, .. } => PmError::NotDeployed {
+                message,
+                sync: (*sync).into(),
             },
             pm::Error::IncompatibleReplacement { id, consumers, .. } => {
                 PmError::IncompatibleReplacement {
@@ -277,6 +293,12 @@ pub struct ReplacementPlan {
     pub consumers: Vec<String>,
     /// Non-empty: ask the user, then call again with `confirm = true`.
     pub incompatible: Vec<IncompatibleConsumer>,
+    /// Installed version of `provider` (the fork; the original when switching back).
+    pub installed_version: Option<String>,
+    /// The fork (`provider` when replacing, `current` when switching back) is enabled.
+    pub fork_enabled: bool,
+    /// Reconciliation report of `replace`/`switchBack` (empty for a plan).
+    pub dist: DistSync,
 }
 impl From<pm::ReplacementPlan> for ReplacementPlan {
     fn from(p: pm::ReplacementPlan) -> Self {
@@ -294,6 +316,104 @@ impl From<pm::ReplacementPlan> for ReplacementPlan {
                     requirement: c.requirement,
                 })
                 .collect(),
+            installed_version: p.installed_version,
+            fork_enabled: p.fork_enabled,
+            dist: p.dist.into(),
+        }
+    }
+}
+impl From<ReplacementPlan> for pm::ReplacementPlan {
+    fn from(p: ReplacementPlan) -> Self {
+        Self {
+            original: p.original,
+            provider: p.provider,
+            version: p.version,
+            current: p.current,
+            consumers: p.consumers,
+            incompatible: p
+                .incompatible
+                .into_iter()
+                .map(|c| pm::IncompatibleConsumer {
+                    id: c.id,
+                    requirement: c.requirement,
+                })
+                .collect(),
+            installed_version: p.installed_version,
+            fork_enabled: p.fork_enabled,
+            dist: p.dist.into(),
+        }
+    }
+}
+/// A replacement of `forkPackagesAndReplace` waiting for confirmation; pass it to
+/// `PackageManager.forkReplaceResume` once the user confirmed.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct PendingReplacement {
+    pub original: String,
+    pub fork: String,
+    /// The plan to show (its `incompatible` consumers).
+    pub plan: ReplacementPlan,
+}
+impl From<pm::PendingReplacement> for PendingReplacement {
+    fn from(p: pm::PendingReplacement) -> Self {
+        Self {
+            original: p.original,
+            fork: p.fork,
+            plan: p.plan.into(),
+        }
+    }
+}
+impl From<PendingReplacement> for pm::PendingReplacement {
+    fn from(p: PendingReplacement) -> Self {
+        Self {
+            original: p.original,
+            fork: p.fork,
+            plan: p.plan.into(),
+        }
+    }
+}
+
+/// Result of `forkReplaceResume`: the replacements applied (each with its dist report)
+/// and the first one that failed; the ones after it stay pending.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ForkResume {
+    pub applied: Vec<ReplacementPlan>,
+    pub failed: Option<ResumeFailure>,
+}
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ResumeFailure {
+    pub original: String,
+    pub fork: String,
+    /// Stable kind of the failure (as `PmError` kinds), with its message.
+    pub error_kind: String,
+    pub error_message: String,
+}
+impl From<pm::ForkResume> for ForkResume {
+    fn from(r: pm::ForkResume) -> Self {
+        Self {
+            applied: r.applied.into_iter().map(Into::into).collect(),
+            failed: r.failed.map(|f| ResumeFailure {
+                error_kind: f.error.kind().to_owned(),
+                error_message: f.error.to_string(),
+                original: f.original,
+                fork: f.fork,
+            }),
+        }
+    }
+}
+
+/// A release-looking tag that was passed over (broken manifest, mismatch, …).
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct SkippedTag {
+    pub name: String,
+    pub version: String,
+    pub reason: String,
+}
+impl From<pm::releases::SkippedTag> for SkippedTag {
+    fn from(t: pm::releases::SkippedTag) -> Self {
+        Self {
+            name: t.name,
+            version: t.version,
+            reason: t.reason,
         }
     }
 }
@@ -311,6 +431,12 @@ pub struct InstallResult {
     /// the requested ref or dev channel) when it differs from `current`; `update` with
     /// the same ref or channel moves to it.
     pub available: Option<Revision>,
+    /// Broken release tags passed over while choosing the latest release; warn about them.
+    pub skipped: Vec<SkippedTag>,
+    /// Ignored wrong-typed metadata keys of the installed manifest; show them.
+    pub warnings: Vec<String>,
+    /// Reconciliation report of the transaction.
+    pub dist: DistSync,
 }
 impl From<pm::InstallResult> for InstallResult {
     fn from(r: pm::InstallResult) -> Self {
@@ -321,6 +447,9 @@ impl From<pm::InstallResult> for InstallResult {
             fork_of: r.fork_of.map(Into::into),
             already_installed: r.already_installed,
             available: r.available.map(Into::into),
+            skipped: r.skipped.into_iter().map(Into::into).collect(),
+            warnings: r.warnings,
+            dist: r.dist.into(),
         }
     }
 }
@@ -332,6 +461,12 @@ pub struct RevisionChange {
     pub to: Revision,
     /// False when the package was already at the target revision.
     pub changed: bool,
+    /// Ignored wrong-typed metadata keys of the new manifest.
+    pub warnings: Vec<String>,
+    /// Broken release tags passed over while choosing the latest release.
+    pub skipped: Vec<SkippedTag>,
+    /// Reconciliation report (empty inside an `UpdateAllPlan`, which carries its own).
+    pub dist: DistSync,
 }
 impl From<pm::RevisionChange> for RevisionChange {
     fn from(c: pm::RevisionChange) -> Self {
@@ -340,6 +475,9 @@ impl From<pm::RevisionChange> for RevisionChange {
             from: c.from.into(),
             to: c.to.into(),
             changed: c.changed,
+            warnings: c.warnings,
+            skipped: c.skipped.into_iter().map(Into::into).collect(),
+            dist: c.dist.into(),
         }
     }
 }
@@ -350,6 +488,17 @@ pub struct UpdateAllPlan {
     pub updates: Vec<RevisionChange>,
     pub installs: Vec<InstallResult>,
     pub kept_back: Vec<HeldBack>,
+    /// Installed packages that stay as they are (no newer release).
+    pub unchanged: Vec<Unchanged>,
+    /// Broken release tags passed over for any installed package.
+    pub skipped: Vec<SkippedTag>,
+    /// Reconciliation report of `updateAll` (empty for the plan).
+    pub dist: DistSync,
+}
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct Unchanged {
+    pub id: String,
+    pub version: String,
 }
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct HeldBack {
@@ -371,6 +520,16 @@ impl From<pm::UpdateAllPlan> for UpdateAllPlan {
                     latest: p.latest,
                 })
                 .collect(),
+            unchanged: plan
+                .unchanged
+                .into_iter()
+                .map(|u| Unchanged {
+                    id: u.id,
+                    version: u.version,
+                })
+                .collect(),
+            skipped: plan.skipped.into_iter().map(Into::into).collect(),
+            dist: plan.dist.into(),
         }
     }
 }
@@ -459,6 +618,23 @@ impl From<pm::DistSync> for DistSync {
                 .skipped
                 .into_iter()
                 .map(|s| SkippedDist {
+                    id: s.id,
+                    reason: s.reason,
+                })
+                .collect(),
+        }
+    }
+}
+impl From<DistSync> for pm::DistSync {
+    fn from(s: DistSync) -> Self {
+        Self {
+            deployed: s.deployed,
+            removed: s.removed,
+            unmanaged: s.unmanaged,
+            skipped: s
+                .skipped
+                .into_iter()
+                .map(|s| pm::SkippedDist {
                     id: s.id,
                     reason: s.reason,
                 })
@@ -560,6 +736,112 @@ impl From<pm::check::CheckRow> for CheckRow {
                 latest: u.latest,
                 newer: u.newer,
             }),
+        }
+    }
+}
+/// What `check` reports: rows, replacement bindings and unsatisfied dependencies.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct CheckReport {
+    pub rows: Vec<CheckRow>,
+    /// Original → fork, for every consumer.
+    pub replacements: HashMap<String, String>,
+    pub unsatisfied: Vec<UnsatisfiedDependency>,
+}
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct UnsatisfiedDependency {
+    pub package: String,
+    pub dependency: String,
+    pub requirement: String,
+    pub problem: Option<String>,
+}
+impl From<pm::check::CheckReport> for CheckReport {
+    fn from(r: pm::check::CheckReport) -> Self {
+        Self {
+            rows: r.rows.into_iter().map(Into::into).collect(),
+            replacements: r.replacements.into_iter().collect(),
+            unsatisfied: r
+                .unsatisfied
+                .into_iter()
+                .map(|u| UnsatisfiedDependency {
+                    package: u.package,
+                    dependency: u.dependency,
+                    requirement: u.requirement,
+                    problem: u.problem,
+                })
+                .collect(),
+        }
+    }
+}
+
+/// A package record of `state.json` as stored (see `InstalledPackage` for the resolved
+/// view).
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct PackageRecord {
+    pub source: String,
+    pub current: Revision,
+    pub previous: Option<Revision>,
+    pub enabled: bool,
+    pub fork_of: Option<ForkOf>,
+    /// Dependency ID → version requirement of the current revision.
+    pub dependencies: HashMap<String, String>,
+    pub replaces: Option<Replaces>,
+    pub catalog: Option<String>,
+    pub clone: Option<String>,
+    pub path: Option<String>,
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub provides: Vec<String>,
+    pub tags: Vec<String>,
+}
+impl From<pm::Installed> for PackageRecord {
+    fn from(p: pm::Installed) -> Self {
+        Self {
+            source: p.source,
+            current: p.current.into(),
+            previous: p.previous.map(Into::into),
+            enabled: p.enabled,
+            fork_of: p.fork_of.map(Into::into),
+            dependencies: p.dependencies.into_iter().collect(),
+            replaces: p.replaces.map(Into::into),
+            catalog: p.catalog,
+            clone: p.clone,
+            path: p.path,
+            title: p.metadata.title,
+            description: p.metadata.description,
+            provides: p.metadata.provides,
+            tags: p.metadata.tags,
+        }
+    }
+}
+/// The state view of `list`/`readState`: raw `state.json` plus `resolved`.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ListView {
+    pub format: u32,
+    pub packages: HashMap<String, PackageRecord>,
+    /// Original → fork, for every consumer.
+    pub replacements: HashMap<String, String>,
+    /// Forgotten packages of shared clones (restorable).
+    pub forgotten: HashMap<String, PackageRecord>,
+    pub resolved: Vec<InstalledPackage>,
+}
+impl From<pm::ListView> for ListView {
+    fn from(v: pm::ListView) -> Self {
+        Self {
+            format: v.state.format,
+            packages: v
+                .state
+                .packages
+                .into_iter()
+                .map(|(id, p)| (id, p.into()))
+                .collect(),
+            replacements: v.state.replacements.into_iter().collect(),
+            forgotten: v
+                .state
+                .forgotten
+                .into_iter()
+                .map(|(id, p)| (id, p.into()))
+                .collect(),
+            resolved: v.resolved.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -719,6 +1001,9 @@ pub struct ForkReplacement {
     /// Stable kind of the failure (as `PmError` kinds), with its message.
     pub error_kind: Option<String>,
     pub error_message: Option<String>,
+    /// The replace step needs confirmation (`failedStep` replace): the plan to show;
+    /// `forkReplaceResume` applies it.
+    pub pending: Option<ReplacementPlan>,
 }
 /// A dependency rewritten by a multi-package fork (`from` became `to`); `newRequirement`
 /// is set when the old requirement does not accept the fork's version.
@@ -786,10 +1071,13 @@ impl From<pm::PackageFork> for PackageFork {
 pub struct PackageForkReplacement {
     pub fork: PackageFork,
     pub packages: Vec<ForkReplacement>,
+    /// The replacements waiting for confirmation (for `forkReplaceResume`).
+    pub pending: Vec<PendingReplacement>,
 }
 impl From<pm::PackageForkReplacement> for PackageForkReplacement {
     fn from(r: pm::PackageForkReplacement) -> Self {
         Self {
+            pending: r.pending().into_iter().map(Into::into).collect(),
             fork: r.fork.into(),
             packages: r.packages.into_iter().map(Into::into).collect(),
         }
@@ -807,6 +1095,7 @@ impl From<pm::ForkReplacement> for ForkReplacement {
             failed_step: r.failed.map(Into::into),
             error_kind: r.error.as_ref().map(|e| e.kind().to_owned()),
             error_message: r.error.as_ref().map(ToString::to_string),
+            pending: r.pending.map(Into::into),
         }
     }
 }
@@ -852,10 +1141,6 @@ impl PackageManager {
     }
     pub fn list(&self) -> Result<Vec<InstalledPackage>> {
         Ok(self.inner.list()?.into_iter().map(Into::into).collect())
-    }
-    /// Compare installed versions with the configured catalog (read-only).
-    pub fn check(&self) -> Result<Vec<CheckRow>> {
-        Ok(self.inner.check()?.into_iter().map(Into::into).collect())
     }
     pub fn browse_catalog(&self) -> Result<CatalogOverview> {
         Ok(self.inner.browse_catalog()?.into())
@@ -916,21 +1201,21 @@ impl PackageManager {
     pub fn rollback(&self, id: String) -> Result<RevisionChange> {
         Ok(self.inner.rollback(&id)?.into())
     }
-    /// Deploys `dist/<id>` again (unless the package is replaced).
-    pub fn enable(&self, id: String) -> Result<()> {
-        Ok(self.inner.enable(&id)?)
+    /// Deploys `dist/<id>` again (unless the package is replaced). Returns the dist report.
+    pub fn enable(&self, id: String) -> Result<DistSync> {
+        Ok(self.inner.enable(&id)?.into())
     }
     /// Removes `dist/<id>`. Refuses with `HasDependents` if others depend on it, unless
     /// `force`.
     #[uniffi::method(default(force = false))]
-    pub fn disable(&self, id: String, force: bool) -> Result<()> {
-        Ok(self.inner.set_enabled_with(&id, false, force)?)
+    pub fn disable(&self, id: String, force: bool) -> Result<DistSync> {
+        Ok(self.inner.set_enabled_with(&id, false, force)?.into())
     }
     /// Unregister; the repository stays on disk, `dist/<id>` is removed (`restore`
     /// deploys it again). Dependents refuse unless `force`.
     #[uniffi::method(default(force = false))]
-    pub fn forget(&self, id: String, force: bool) -> Result<()> {
-        Ok(self.inner.forget_with(&id, force)?)
+    pub fn forget(&self, id: String, force: bool) -> Result<DistSync> {
+        Ok(self.inner.forget_with(&id, force)?.into())
     }
     /// Re-register a forgotten repository.
     pub fn restore(&self, id: String) -> Result<InstallResult> {
@@ -941,8 +1226,9 @@ impl PackageManager {
         Ok(self.inner.sync_dist_plan()?.into())
     }
     /// Make `dist/` hold exactly the active packages (an explicit repair, for example after
-    /// a folder was copied into `dist/` by hand). Mutating calls
-    /// reconcile too; `syncDistPlan().skipped` tells which active packages have no dist.
+    /// a folder was copied into `dist/` by hand). Mutating calls reconcile too and return
+    /// their dist report. Active packages left undeployed: `NotDeployed` (what could be
+    /// synced is committed).
     pub fn sync_dist(&self) -> Result<DistSync> {
         Ok(self.inner.sync_dist()?.into())
     }
@@ -952,8 +1238,8 @@ impl PackageManager {
     /// `confirm = false` refuses with `LocalChanges` if anything would be lost;
     /// dependents refuse with `HasDependents` unless `force`.
     #[uniffi::method(default(force = false))]
-    pub fn uninstall(&self, id: String, confirm: bool, force: bool) -> Result<()> {
-        Ok(self.inner.uninstall_with(&id, confirm, force)?)
+    pub fn uninstall(&self, id: String, confirm: bool, force: bool) -> Result<DistSync> {
+        Ok(self.inner.uninstall_with(&id, confirm, force)?.into())
     }
     /// Read-only: what replacing `original` by `replacement` would change.
     pub fn replace_plan(&self, original: String, replacement: String) -> Result<ReplacementPlan> {
@@ -1053,6 +1339,18 @@ impl PackageManager {
             )?
             .into())
     }
+    /// Apply the pending replacements of `forkPackagesAndReplace` (or `forkAndReplace`)
+    /// after the user confirmed them (`confirm`), in order. Each is planned again; when its
+    /// incompatible consumers changed it is refused (`incompatible_replacement`). The
+    /// first failure stops the run and is reported with what was applied before it.
+    pub fn fork_replace_resume(
+        &self,
+        pending: Vec<PendingReplacement>,
+        confirm: bool,
+    ) -> ForkResume {
+        let pending: Vec<pm::PendingReplacement> = pending.into_iter().map(Into::into).collect();
+        self.inner.fork_replace_resume(&pending, confirm).into()
+    }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1085,15 +1383,41 @@ pub fn catalog_release(
     Ok(pm::catalog::lookup(&location, &id, version.as_deref())?.into())
 }
 
-/// Read installed state without opening (locking or creating) the workspace.
+/// The list view (what `gitpm list [--provides SERVICE]` prints), read without
+/// opening, locking or creating the workspace.
 #[uniffi::export]
-pub fn read_installed(root: String) -> Result<Vec<InstalledPackage>> {
-    let root = std::path::Path::new(&root);
-    Ok(pm::check::read_state(root)?
-        .installed()
-        .into_iter()
-        .map(Into::into)
-        .collect())
+pub fn list(root: String, provides: Option<String>) -> Result<ListView> {
+    let options = pm::ListOptions { provides };
+    Ok(pm::list_with(std::path::Path::new(&root), &options)?.into())
+}
+
+/// The full state view (raw state including `forgotten` and `replacements`, plus
+/// `resolved` with `active`), read without opening the workspace.
+#[uniffi::export]
+pub fn read_state(root: String) -> Result<ListView> {
+    list(root, None)
+}
+
+/// Compare the installed versions with a catalog (what `gitpm check` prints), without
+/// opening the workspace. An empty workspace needs no catalog.
+#[uniffi::export]
+pub fn check(root: String, catalog: Option<String>) -> Result<CheckReport> {
+    Ok(pm::check::check(std::path::Path::new(&root), catalog.as_deref())?.into())
+}
+
+/// The directory links at one catalog level (what `gitpm catalog` prints).
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct CatalogLinks {
+    pub schema: u32,
+    pub directories: HashMap<String, String>,
+}
+#[uniffi::export]
+pub fn catalog_links(location: String) -> Result<CatalogLinks> {
+    let links = pm::catalog::links(&location)?;
+    Ok(CatalogLinks {
+        schema: links.schema,
+        directories: links.directories.into_iter().collect(),
+    })
 }
 
 #[cfg(test)]
@@ -1125,7 +1449,8 @@ mod tests {
             manager.uninstall_plan("a/b".into()),
             Err(PmError::RepositoryNotFound { .. })
         ));
-        assert!(matches!(manager.check(), Ok(rows) if rows.is_empty()));
+        let report = check(root.to_string_lossy().into(), None).unwrap();
+        assert!(report.rows.is_empty() && report.unsatisfied.is_empty());
         assert!(matches!(
             PackageManager::open(root.to_string_lossy().into(), ManagerOptions::default()),
             Err(PmError::Locked { .. })
@@ -1170,11 +1495,22 @@ mod tests {
                 id: "x/one".into(),
                 message: m(),
                 dependents: vec!["app/a".into()],
+                replacing: false,
             },
             pm::Error::IncompatibleReplacement {
                 id: "x/one".into(),
                 message: m(),
                 consumers: vec!["app/b".into()],
+            },
+            pm::Error::NotDeployed {
+                message: m(),
+                sync: Box::new(pm::DistSync {
+                    skipped: vec![pm::SkippedDist {
+                        id: "x/one".into(),
+                        reason: "clone missing".into(),
+                    }],
+                    ..Default::default()
+                }),
             },
             pm::Error::InvalidData(m()),
             pm::Error::Io(m()),
@@ -1204,6 +1540,7 @@ mod tests {
             PmError::DependencyConflict { .. } => "dependency_conflict",
             PmError::HasDependents { .. } => "has_dependents",
             PmError::IncompatibleReplacement { .. } => "incompatible_replacement",
+            PmError::NotDeployed { .. } => "not_deployed",
             PmError::InvalidData { .. } => "invalid_data",
             PmError::Io { .. } => "io",
             PmError::Other { kind, .. } => return format!("other:{kind}"),
@@ -1233,6 +1570,7 @@ mod tests {
             | PmError::DependencyConflict { message }
             | PmError::HasDependents { message, .. }
             | PmError::IncompatibleReplacement { message, .. }
+            | PmError::NotDeployed { message, .. }
             | PmError::InvalidData { message }
             | PmError::Io { message }
             | PmError::Other { message, .. } => message,
@@ -1242,7 +1580,7 @@ mod tests {
     #[test]
     fn every_library_error_maps_to_its_own_case_with_the_full_message() {
         let errors = library_errors();
-        assert_eq!(errors.len(), 23);
+        assert_eq!(errors.len(), 24);
         for error in errors {
             let kind = error.kind();
             let display = error.to_string();
@@ -1354,6 +1692,7 @@ mod tests {
             replacement: None,
             failed: Some(pm::ForkStep::Install),
             error: Some(pm::Error::Unsupported("symlinks are not supported".into())),
+            pending: None,
         });
         assert_eq!(result.failed_step, Some(ForkStep::Install));
         assert_eq!(result.error_kind.as_deref(), Some("unsupported"));
@@ -1419,33 +1758,195 @@ mod tests {
             ("vendor/x", "0.9.0", "f".repeat(40))
         );
 
+        let skipped = || {
+            vec![pm::releases::SkippedTag {
+                name: "me/x@0.5.0".into(),
+                version: "0.5.0".into(),
+                reason: "invalid manifest".into(),
+            }]
+        };
+        let report = || pm::DistSync {
+            deployed: vec!["me/x".into()],
+            removed: vec!["vendor/x".into()],
+            unmanaged: vec!["dist/custom".into()],
+            skipped: vec![pm::SkippedDist {
+                id: "me/y".into(),
+                reason: "clone missing".into(),
+            }],
+        };
+        let check_report = |dist: &DistSync| {
+            assert_eq!(
+                (dist.deployed.as_slice(), dist.removed.as_slice()),
+                (
+                    ["me/x".to_owned()].as_slice(),
+                    ["vendor/x".to_owned()].as_slice()
+                )
+            );
+            assert_eq!(dist.unmanaged, ["dist/custom"]);
+            assert_eq!(
+                (dist.skipped[0].id.as_str(), dist.skipped[0].reason.as_str()),
+                ("me/y", "clone missing")
+            );
+        };
         let result = InstallResult::from(pm::InstallResult {
             id: "me/x".into(),
             source: "src".into(),
             current: revision("1.0.0"),
             fork_of: None,
-            skipped: Vec::new(),
-            warnings: Vec::new(),
+            skipped: skipped(),
+            warnings: vec!["me/x 1.0.0: plugin.json title must be a string; ignored".into()],
             already_installed: true,
             available: Some(revision("1.1.0")),
+            dist: report(),
         });
         assert!(result.fork_of.is_none());
         assert!(result.already_installed);
         assert_eq!(result.available.unwrap().version, "1.1.0");
         assert_eq!(result.current.commit, "1.0.0-commit");
+        assert_eq!(
+            (
+                result.skipped[0].name.as_str(),
+                result.skipped[0].version.as_str(),
+                result.skipped[0].reason.as_str()
+            ),
+            ("me/x@0.5.0", "0.5.0", "invalid manifest")
+        );
+        assert_eq!(
+            result.warnings,
+            ["me/x 1.0.0: plugin.json title must be a string; ignored"]
+        );
+        check_report(&result.dist);
 
         let change = RevisionChange::from(pm::RevisionChange {
             id: "me/x".into(),
             from: revision("1.0.0"),
             to: revision("1.1.0"),
             changed: true,
-            warnings: Vec::new(),
+            warnings: vec!["w".into()],
+            skipped: skipped(),
+            dist: report(),
         });
         assert!(change.changed);
         assert_eq!(
             (change.from.version.as_str(), change.to.version.as_str()),
             ("1.0.0", "1.1.0")
         );
+        assert_eq!(change.warnings, ["w"]);
+        assert_eq!(change.skipped[0].name, "me/x@0.5.0");
+        check_report(&change.dist);
+
+        let plan = UpdateAllPlan::from(pm::UpdateAllPlan {
+            updates: vec![],
+            installs: vec![],
+            kept_back: vec![],
+            unchanged: vec![pm::Unchanged {
+                id: "app/b".into(),
+                version: "2.0.0".into(),
+            }],
+            skipped: skipped(),
+            dist: report(),
+        });
+        assert_eq!(
+            (
+                plan.unchanged[0].id.as_str(),
+                plan.unchanged[0].version.as_str()
+            ),
+            ("app/b", "2.0.0")
+        );
+        check_report(&plan.dist);
+        assert_eq!(plan.skipped[0].name, "me/x@0.5.0");
+
+        let replacement = pm::ReplacementPlan {
+            original: "vendor/x".into(),
+            provider: "me/x".into(),
+            version: "1.4.0".into(),
+            current: None,
+            consumers: vec!["app/a".into()],
+            incompatible: vec![pm::IncompatibleConsumer {
+                id: "app/a".into(),
+                requirement: "^2".into(),
+            }],
+            installed_version: Some("0.3.0".into()),
+            fork_enabled: true,
+            dist: report(),
+        };
+        let ffi = ReplacementPlan::from(replacement.clone());
+        assert_eq!(ffi.installed_version.as_deref(), Some("0.3.0"));
+        assert!(ffi.fork_enabled);
+        assert_eq!(ffi.incompatible[0].requirement, "^2");
+        check_report(&ffi.dist);
+        // Back to the library for forkReplaceResume: nothing is lost.
+        let back = pm::ReplacementPlan::from(ffi.clone());
+        assert_eq!(format!("{back:?}"), format!("{replacement:?}"));
+        let pending = PendingReplacement::from(pm::PendingReplacement {
+            original: "vendor/x".into(),
+            fork: "me/x".into(),
+            plan: replacement.clone(),
+        });
+        assert_eq!(
+            (pending.original.as_str(), pending.fork.as_str()),
+            ("vendor/x", "me/x")
+        );
+        let fork = ForkReplacement::from(pm::ForkReplacement {
+            original: "vendor/x".into(),
+            id: "me/x".into(),
+            path: "/forks/me/x".into(),
+            tag: Some("me/x@0.3.0".into()),
+            installed: None,
+            replacement: None,
+            failed: Some(pm::ForkStep::Replace),
+            error: None,
+            pending: Some(replacement),
+        });
+        assert_eq!(fork.pending.unwrap().provider, "me/x");
+
+        let error = PmError::from(pm::Error::NotDeployed {
+            message: "1 package(s) not deployed: me/y".into(),
+            sync: Box::new(report()),
+        });
+        let PmError::NotDeployed { message, sync } = error else {
+            panic!()
+        };
+        assert_eq!(message, "1 package(s) not deployed: me/y");
+        check_report(&sync);
+        let resume = ForkResume::from(pm::ForkResume {
+            applied: vec![pm::ReplacementPlan {
+                dist: report(),
+                ..back.clone()
+            }],
+            failed: Some(pm::ResumeFailure {
+                original: "vendor/y".into(),
+                fork: "me/y".into(),
+                error: pm::Error::IncompatibleReplacement {
+                    id: "vendor/y".into(),
+                    message: "changed".into(),
+                    consumers: vec!["app/a".into()],
+                },
+            }),
+        });
+        check_report(&resume.applied[0].dist);
+        let failed = resume.failed.unwrap();
+        assert_eq!(
+            (failed.original.as_str(), failed.fork.as_str()),
+            ("vendor/y", "me/y")
+        );
+        assert_eq!(
+            (failed.error_kind.as_str(), failed.error_message.as_str()),
+            ("incompatible_replacement", "changed")
+        );
+        let error = PmError::from(pm::Error::HasDependents {
+            id: "me/x".into(),
+            message: "m".into(),
+            dependents: vec!["vendor/x".into()],
+            replacing: true,
+        });
+        assert!(matches!(
+            error,
+            PmError::HasDependents {
+                replacing: true,
+                ..
+            }
+        ));
 
         let plan = UninstallPlan::from(pm::UninstallPlan {
             id: "me/x".into(),
@@ -1461,6 +1962,119 @@ mod tests {
             plan.lost_work[5],
             LostWork::UnpublishedBranch { commits: 7, .. }
         ));
+    }
+
+    /// Every CLI command that reads or changes a workspace, reads a catalog or checks
+    /// access has an FFI call returning what it prints; the author commands and the
+    /// catalog writers are the stated exceptions.
+    #[test]
+    fn ffi_covers_every_workspace_and_catalog_read_command() {
+        // The references fail to compile when a call is removed or renamed.
+        let covered: Vec<(&str, Vec<&str>)> = vec![
+            ("auth", {
+                let _ = auth_check;
+                vec!["authCheck"]
+            }),
+            ("info", {
+                let _ = browse_catalog;
+                let _ = PackageManager::browse_catalog;
+                vec!["browseCatalog"]
+            }),
+            ("catalog", {
+                let _ = catalog_links;
+                vec!["catalogLinks"]
+            }),
+            ("install-catalog", {
+                let _ = PackageManager::install_from_catalog;
+                let _ = catalog_release;
+                vec!["installFromCatalog", "catalogRelease"]
+            }),
+            ("install", {
+                let _ = PackageManager::install;
+                vec!["install"]
+            }),
+            ("list", {
+                let _ = list;
+                let _ = read_state;
+                vec!["list", "readState"]
+            }),
+            ("check", {
+                let _ = check;
+                vec!["check"]
+            }),
+            ("update", {
+                let _ = PackageManager::update;
+                let _ = PackageManager::update_all;
+                let _ = PackageManager::update_all_plan;
+                vec!["update", "updateAll", "updateAllPlan"]
+            }),
+            ("rollback", {
+                let _ = PackageManager::rollback;
+                vec!["rollback"]
+            }),
+            ("enable", {
+                let _ = PackageManager::enable;
+                vec!["enable"]
+            }),
+            ("disable", {
+                let _ = PackageManager::disable;
+                vec!["disable"]
+            }),
+            ("forget", {
+                let _ = PackageManager::forget;
+                vec!["forget"]
+            }),
+            ("restore", {
+                let _ = PackageManager::restore;
+                vec!["restore"]
+            }),
+            ("uninstall", {
+                let _ = PackageManager::uninstall_plan;
+                let _ = PackageManager::uninstall;
+                let _ = describe_lost_work;
+                vec!["uninstallPlan", "uninstall"]
+            }),
+            ("fork", {
+                let _ = PackageManager::fork_packages;
+                let _ = PackageManager::fork_packages_and_replace;
+                let _ = PackageManager::fork_replace_resume;
+                vec![
+                    "forkPackages",
+                    "forkPackagesAndReplace",
+                    "forkReplaceResume",
+                ]
+            }),
+            ("replace", {
+                let _ = PackageManager::replace_plan;
+                let _ = PackageManager::replace;
+                let _ = PackageManager::switch_back_plan;
+                let _ = PackageManager::switch_back;
+                vec!["replacePlan", "replace", "switchBackPlan", "switchBack"]
+            }),
+            ("sync-dist", {
+                let _ = PackageManager::sync_dist_plan;
+                let _ = PackageManager::sync_dist;
+                vec!["syncDistPlan", "syncDist"]
+            }),
+        ];
+        let exceptions = ["init", "commit", "remote", "catalog-update", "register"];
+        let cli = include_str!("../../gitpm-cli/src/main.rs");
+        let block = cli
+            .split("const COMMANDS: &[&str] = &[")
+            .nth(1)
+            .and_then(|rest| rest.split("];").next())
+            .expect("the CLI lists its commands");
+        let commands: Vec<&str> = block.split('"').skip(1).step_by(2).collect();
+        assert!(commands.len() > 20, "{commands:?}");
+        for command in &commands {
+            assert!(
+                covered.iter().any(|(c, _)| c == command) || exceptions.contains(command),
+                "CLI command {command} has no FFI equivalent"
+            );
+        }
+        for (command, _) in &covered {
+            assert!(commands.contains(command), "{command} is no CLI command");
+        }
     }
 
     #[test]
@@ -1655,22 +2269,48 @@ mod tests {
             ),
             Err(PmError::InvalidVersion { .. })
         ));
+        // A local catalog location that does not exist is refused, not "no catalog".
         assert!(matches!(
             catalog_release("/nonexistent-pm-catalog".into(), "acme/x".into(), None),
-            Err(PmError::Catalog { .. })
+            Err(PmError::InvalidArgument { .. })
         ));
+        assert!(matches!(
+            catalog_links("/nonexistent-pm-catalog".into()),
+            Err(PmError::InvalidArgument { .. })
+        ));
+        assert!(matches!(
+            PackageManager::open(
+                std::env::temp_dir()
+                    .join(format!("pm-ffi-never-{}", std::process::id()))
+                    .to_string_lossy()
+                    .into(),
+                ManagerOptions {
+                    catalog: Some("/nonexistent-pm-catalog".into())
+                }
+            ),
+            Err(PmError::InvalidArgument { .. })
+        ));
+        assert!(
+            !std::env::temp_dir()
+                .join(format!("pm-ffi-never-{}", std::process::id()))
+                .exists()
+        );
         // A workspace that does not exist yet reads as empty and is not created.
         let missing = std::env::temp_dir().join(format!("pm-ffi-missing-{}", std::process::id()));
+        let view = read_state(missing.to_string_lossy().into()).unwrap();
+        assert!(view.packages.is_empty() && view.resolved.is_empty());
+        assert!(list(missing.to_string_lossy().into(), Some("theme".into())).is_ok());
         assert!(
-            read_installed(missing.to_string_lossy().into())
+            check(missing.to_string_lossy().into(), None)
                 .unwrap()
+                .rows
                 .is_empty()
         );
         assert!(!missing.exists());
     }
 
     #[test]
-    fn read_installed_and_manager_report_state_errors() {
+    fn read_state_and_manager_report_state_errors() {
         let dir = std::env::temp_dir().join(format!("pm-ffi-state-{}", std::process::id()));
         let root = dir.join("workspace");
         std::fs::create_dir_all(&root).unwrap();
@@ -1678,7 +2318,7 @@ mod tests {
         let old = r#"{"format":2,"plugins":{}}"#;
         std::fs::write(root.join("state.json"), old).unwrap();
         assert!(matches!(
-            read_installed(root.to_string_lossy().into()),
+            read_state(root.to_string_lossy().into()),
             Err(PmError::Unsupported { .. })
         ));
         assert!(matches!(
@@ -1694,17 +2334,20 @@ mod tests {
             r#"{"format":3,"packages":{"me/x":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":false,"forkOf":{"id":"vendor/x","version":"0.9.0","commit":"f"},"metadata":{}}}}"#,
         )
         .unwrap();
-        let list = read_installed(root.to_string_lossy().into()).unwrap();
+        let view = read_state(root.to_string_lossy().into()).unwrap();
+        let list = view.resolved;
         assert_eq!(list.len(), 1);
         assert_eq!((list[0].id.as_str(), list[0].enabled), ("me/x", false));
         assert_eq!(list[0].fork_of.as_ref().unwrap().id, "vendor/x");
+        assert_eq!(view.format, 3);
+        assert_eq!(view.packages["me/x"].current.version, "1.0.0");
 
         let manager =
             PackageManager::open(root.to_string_lossy().into(), ManagerOptions::default()).unwrap();
         assert_eq!(manager.root(), root.to_string_lossy());
         assert_eq!(manager.list().unwrap()[0].current.version, "1.0.0");
         assert!(matches!(
-            manager.check(),
+            check(root.to_string_lossy().into(), None),
             Err(PmError::InvalidArgument { .. })
         ));
         assert!(matches!(
@@ -1754,7 +2397,7 @@ mod tests {
 
         std::fs::write(root.join("state.json"), "{broken").unwrap();
         assert!(matches!(
-            read_installed(root.to_string_lossy().into()),
+            read_state(root.to_string_lossy().into()),
             Err(PmError::InvalidData { .. })
         ));
         let _ = std::fs::remove_dir_all(dir);

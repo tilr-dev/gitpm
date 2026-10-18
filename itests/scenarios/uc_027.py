@@ -26,7 +26,7 @@ def release(t: T, version: str) -> dict:
 def register_into_new_catalog(t: T):
     """1. A committed scoped tag registered into a new local catalog: exact commit,
     manifest, reference and committed file hashes; nothing installed."""
-    t.ok(not t.catalog.exists(), "no catalog yet")
+    t.ok(t.catalog_empty(), "no catalog yet")
     out = t.gitpm_ok("register", t.repo(ID), "--ref", f"{ID}@0.1.0").json()
     commit = t.rev(ID, f"{ID}@0.1.0")
     stored = release(t, "0.1.0")

@@ -22,7 +22,8 @@ def init_without_namespace_refused(t: T):
     """`init hello --into a/p1` (no namespace) is refused and creates nothing."""
     r = t.gitpm("init", "hello", "--into", "a/p1")
     t.ok(r.code != 0, "init refused")
-    t.has(r.err, "package id needs a namespace: use NAMESPACE/NAME, for example acme/hello")
+    t.has(r.err, "package ID needs a namespace: use NAMESPACE/NAME, for example acme/hello")
+    t.has(r.err, "Error kind: invalid_id")
     t.ok(not (t.root / "a").exists(), "nothing created")
 
 

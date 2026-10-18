@@ -49,7 +49,7 @@ def catalog_option_beats_env(t: T):
     other = t.root / "other-catalog"
     t.gitpm_ok("--catalog", other, "register", t.repo(ID), "--ref", f"{ID}@0.1.0")
     t.ok(t.catalog_index(ID, other).is_file(), "release in --catalog")
-    t.ok(not t.catalog.exists(), "GITPM_CATALOG untouched")
+    t.ok(t.catalog_empty(), "GITPM_CATALOG untouched")
 
 
 @case(fixture="hello", spec=[SETTINGS])
@@ -80,8 +80,9 @@ def defaults_in_isolated_cwd(t: T):
     r = t.run(*without_gitpm_env("gitpm", "info"), cwd=iso)
     t.ok(r.code != 0, "info without a catalog fails")
     t.has(r.err, "info needs a catalog: pass --catalog DIR_OR_JSON_OR_URL or set GITPM_CATALOG")
-    for p in (t.ws, t.catalog, t.root / "sources.txt"):
+    for p in (t.ws, t.root / "sources.txt"):
         t.ok(not p.exists(), f"environment path {p} untouched")
+    t.ok(t.catalog_empty(), f"environment path {t.catalog} untouched")
 
 
 @case(fixture="hello", spec=[f"{SETTINGS}#legacy-variable"])

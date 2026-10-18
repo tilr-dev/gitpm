@@ -227,7 +227,10 @@ def remove_dirty_fork_tty_confirmation(t: T):
     before = t.snap(t.ws)
     r = gitpm_tty(t, "uninstall", FORK, answer=b"n\n")
     t.ok(r.code != 0, "N: non-zero exit")
-    t.has(r.out, "modified: dist/index.js", "untracked: notes.txt", "Delete anyway? [y/N]")
+    # The prompt and what it lists go to stderr; stdout carries only result lines.
+    t.has(r.err, "modified: dist/index.js", "untracked: notes.txt", "Delete anyway? [y/N]",
+          "uninstall cancelled; nothing was changed")
+    t.lacks(r.out, "Delete anyway")
     t.same(before, "workspace")
     r = gitpm_tty(t, "uninstall", FORK, answer=b"y\n")
     t.eq(r.code, 0, "y: exit code")

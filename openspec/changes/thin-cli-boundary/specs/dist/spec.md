@@ -18,7 +18,7 @@ Every mutating library operation SHALL return, inside its result, the reconcilia
 
 #### Scenario: Package that cannot be deployed
 - **WHEN** the clone of an active package is missing and the user runs `sync-dist`
-- **THEN** it syncs the others and fails with `not_deployed` ("N package(s) not deployed: IDS"); the CLI prints `Error kind: not_deployed` and exits with status 1
+- **THEN** it syncs the others and fails with `not_deployed` ("N package(s) not deployed: IDS"); the CLI prints `Error kind: not_deployed` and a `Hint:` naming `gitpm uninstall ID` (uninstall drops a recorded package whose clone is gone), and exits with status 1
 
 #### Scenario: Nothing to do
 - **WHEN** `dist/` already matches the active packages (unmanaged paths may exist; they are only warned about)
@@ -32,8 +32,12 @@ Every mutating library operation SHALL return, inside its result, the reconcilia
 `list` and `check` SHALL NOT reconcile or deploy anything in `dist/`, and neither opens the workspace (no lock, no crash recovery; transactions-locking, "Workspace lock"), so an interrupted commit is completed only by the next command that opens it.
 
 #### Scenario: list on a 0.4 workspace
-- **WHEN** a workspace written by gitpm 0.4 is listed by a later gitpm
-- **THEN** `dist/` is unchanged
+- **WHEN** a workspace written by gitpm 0.4 (state format 2) is listed by a later gitpm
+- **THEN** `list` fails with `unsupported` (workspace-layout) and `dist/` and `state.json` are unchanged
+
+#### Scenario: list of a state edited by hand
+- **WHEN** a package record in `state.json` was set to `"enabled": false` by hand while its `dist/<id>` still exists, and the user runs `gitpm list`
+- **THEN** `list` reports the package with `active` false and `dist/` is unchanged; the next mutating command or `sync-dist` removes the folder
 
 #### Scenario: list after an interrupted commit
 - **WHEN** `.pm-txn/` holds a committed journal and the user runs `gitpm list`

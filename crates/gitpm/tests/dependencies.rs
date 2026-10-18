@@ -611,9 +611,15 @@ fn update_all_coordinates_versions_and_adds_dependencies_atomically() {
     assert_eq!(plan.installs[0].id, "lib/extra");
     assert!(plan.kept_back.is_empty());
     let applied = m.update_all().unwrap();
+    assert_eq!(applied.dist.deployed, ["app/a", "lib/core", "lib/extra"]);
+    // The plan is what was applied; only the applied one carries a dist report.
     assert_eq!(
         serde_json::to_value(plan).unwrap(),
-        serde_json::to_value(applied).unwrap()
+        serde_json::to_value(gitpm::UpdateAllPlan {
+            dist: Default::default(),
+            ..applied
+        })
+        .unwrap()
     );
     for id in ["app/a", "lib/core"] {
         assert_eq!(plugin(&m, id).current.version, "2.0.0");
@@ -768,4 +774,162 @@ fn update_all_resolves_replacement_versions_together_with_consumers() {
         provider(&m, "app/a", "vendor/base"),
         (Some("mine/base".into()), true)
     );
+}
+
+/// The replace and switch-back lines are built from the plan alone.
+#[test]
+fn replacement_plan_carries_installed_version_and_fork_enabled() {
+    let f = Fixture::new();
+    let cat = f.catalog("catalog");
+    f.publish(&cat, "vendor/base", "1.4.0", &[]);
+    f.publish(&cat, "app/a", "1.0.0", &[("vendor/base", "^1.0")]);
+    let m = f.open(&cat);
+    m.install_from_catalog("app/a", None).unwrap();
+    let repo = f.author("mine/base");
+    f.release_manifest(
+        &repo,
+        json!({"id": "mine/base", "version": "0.3.0", "replaces": {"id": "vendor/base", "version": "1.4.0"}}),
+    );
+    m.install(repo.to_str().unwrap()).unwrap();
+    let plan = m.replace_plan("vendor/base", "mine/base").unwrap();
+    assert_eq!(
+        (plan.version.as_str(), plan.installed_version.as_deref()),
+        ("1.4.0", Some("0.3.0"))
+    );
+    assert!(plan.fork_enabled);
+    assert!(plan.dist.deployed.is_empty() && plan.dist.removed.is_empty());
+    let applied = m.replace("vendor/base", "mine/base", false).unwrap();
+    assert_eq!(applied.installed_version.as_deref(), Some("0.3.0"));
+    assert_eq!(applied.dist.removed, ["vendor/base"]);
+    // Without consumers left, the active replacement still refuses to be disabled, and
+    // the error says that it is because of the replacement.
+    m.uninstall_with("app/a", true, true).unwrap();
+    let error = f.refuses("has_dependents", || m.disable("mine/base"));
+    let Error::HasDependents {
+        dependents,
+        replacing,
+        ..
+    } = &error
+    else {
+        panic!("{error:?}");
+    };
+    assert_eq!(
+        (dependents.as_slice(), *replacing),
+        (["vendor/base".to_owned()].as_slice(), true)
+    );
+    assert!(!error.to_string().contains("--back"), "{error}");
+    m.set_enabled_with("mine/base", false, true).unwrap();
+    // Switching back to a disabled fork: the plan says so.
+    let plan = m.switch_back_plan("vendor/base").unwrap();
+    assert_eq!(plan.current.as_deref(), Some("mine/base"));
+    assert_eq!(plan.installed_version.as_deref(), Some("1.4.0"));
+    assert!(!plan.fork_enabled);
+    let back = m.switch_back("vendor/base", false).unwrap();
+    assert!(!back.fork_enabled);
+    assert_eq!(back.dist.deployed, ["vendor/base"]);
+}
+
+/// `fork --replace` stops before an incompatible replacement and resumes once confirmed.
+#[test]
+fn fork_replace_pending_replacement_is_resumed_after_confirmation() {
+    let f = Fixture::new();
+    let hello = f.author("acme/hello");
+    f.release(&hello, "acme/hello", "1.0.0", &[]);
+    f.release(&hello, "acme/hello", "2.0.0", &[]);
+    let app = f.author("acme/app");
+    f.release(&app, "acme/app", "1.0.0", &[("acme/hello", "^2")]);
+    let m = Manager::open(f.path("workspace")).unwrap();
+    m.install(hello.to_str().unwrap()).unwrap();
+    m.install(app.to_str().unwrap()).unwrap();
+    // acme/hello goes back to 1.0.0, so app's requirement ^2 is not met by a fork of it.
+    m.uninstall_with("acme/hello", true, true).unwrap();
+    m.install_ref(hello.to_str().unwrap(), Some("acme/hello@1.0.0"), None)
+        .unwrap();
+    let done = m
+        .fork_packages_replace(&["acme/hello"], &f.path("forks/hello"), "me", None, false)
+        .unwrap();
+    let package = &done.packages[0];
+    assert_eq!(package.failed, Some(gitpm::ForkStep::Replace));
+    assert_eq!(
+        package.error.as_ref().map(Error::kind),
+        Some("incompatible_replacement")
+    );
+    assert!(package.installed.is_some(), "the fork stays installed");
+    let pending = done.pending();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(
+        (pending[0].original.as_str(), pending[0].fork.as_str()),
+        ("acme/hello", "me/hello")
+    );
+    assert_eq!(pending[0].plan.incompatible[0].id, "acme/app");
+    assert!(m.state().unwrap().replacements.is_empty());
+    // Unconfirmed it is refused, and nothing changes.
+    let before = f.snapshot();
+    let done = m.fork_replace_resume(&pending, false);
+    assert!(done.applied.is_empty());
+    let failed = done.failed.expect("refused");
+    assert_eq!(
+        (failed.original.as_str(), failed.error.kind()),
+        ("acme/hello", "incompatible_replacement")
+    );
+    assert!(
+        f.snapshot() == before,
+        "an unconfirmed resume changed the workspace"
+    );
+    // A plan whose consumers no longer match is refused even when confirmed.
+    let mut stale = pending.clone();
+    stale[0].plan.incompatible.clear();
+    let done = m.fork_replace_resume(&stale, true);
+    assert_eq!(
+        done.failed.unwrap().error.kind(),
+        "incompatible_replacement"
+    );
+    assert!(m.state().unwrap().replacements.is_empty());
+    // Two pending, the second stale: the first is applied and reported with its dist
+    // report, the second is the failure.
+    let both = vec![pending[0].clone(), stale[0].clone()];
+    let done = m.fork_replace_resume(&both, true);
+    assert_eq!(done.applied.len(), 1);
+    assert_eq!(done.applied[0].provider, "me/hello");
+    assert_eq!(done.applied[0].dist.removed, ["acme/hello"]);
+    let failed = done.failed.expect("the stale one fails");
+    assert_eq!(failed.error.kind(), "incompatible_replacement");
+    assert!(
+        failed.error.to_string().contains("changed since"),
+        "{}",
+        failed.error
+    );
+    assert_eq!(m.state().unwrap().replacements["acme/hello"], "me/hello");
+}
+
+/// Every installed package is in exactly one list of the plan or in `updates` with a
+/// `kept_back` note; current ones are `unchanged`.
+#[test]
+fn update_all_plan_lists_unchanged_packages() {
+    let f = Fixture::new();
+    let a = f.author("app/a");
+    f.release(&a, "app/a", "1.0.0", &[]);
+    let b = f.author("app/b");
+    f.release(&b, "app/b", "2.0.0", &[]);
+    let m = Manager::open(f.path("workspace")).unwrap();
+    m.install(a.to_str().unwrap()).unwrap();
+    m.install(b.to_str().unwrap()).unwrap();
+    f.release(&a, "app/a", "1.1.0", &[]);
+    let plan = m.update_all_plan().unwrap();
+    assert_eq!(plan.updates.len(), 1);
+    assert_eq!(plan.updates[0].id, "app/a");
+    assert!(plan.kept_back.is_empty() && plan.installs.is_empty());
+    assert_eq!(
+        plan.unchanged,
+        [gitpm::Unchanged {
+            id: "app/b".into(),
+            version: "2.0.0".into()
+        }]
+    );
+    let applied = m.update_all().unwrap();
+    assert_eq!(applied.unchanged, plan.unchanged);
+    assert_eq!(applied.dist.deployed, ["app/a"]);
+    let again = m.update_all().unwrap();
+    assert_eq!(again.unchanged.len(), 2);
+    assert!(again.updates.is_empty());
 }

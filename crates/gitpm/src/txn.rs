@@ -196,6 +196,10 @@ impl Txn {
             .map(str::to_owned)
             .collect()
     }
+    /// Whether this transaction deploys (rather than deletes) `dist/<id>`.
+    pub(crate) fn deploys_dist(&self, id: &str) -> bool {
+        self.journal.paths.get(&format!("dist/{id}")) == Some(&Change::Replace)
+    }
     pub(crate) fn commit(mut self, state: &State) -> Result<()> {
         fs::write(
             self.dir.join("state.json"),
