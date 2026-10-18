@@ -36,8 +36,13 @@ pub enum Error {
     /// Existing release/tag/version rules forbid the operation.
     #[error("{0}")]
     VersionConflict(String),
-    #[error("no previous version of {id}")]
-    NoPreviousVersion { id: String },
+    /// No previous revision to roll back to, or (`commit`) the previous revision's commit
+    /// is no longer in the clone (pruned after the origin deleted or moved its tag).
+    #[error("{}", match commit {
+        Some(commit) => format!("previous revision {commit} of {id} is no longer available"),
+        None => format!("no previous version of {id}"),
+    })]
+    NoPreviousVersion { id: String, commit: Option<String> },
     #[error("{0}")]
     NoReleases(String),
     /// The path for the ID is not a package repository (also for case variants of an ID).
@@ -224,7 +229,10 @@ mod tests {
             (Error::InvalidArgument(s()), "invalid_argument"),
             (Error::VersionConflict(s()), "version_conflict"),
             (
-                Error::NoPreviousVersion { id: "a/b".into() },
+                Error::NoPreviousVersion {
+                    id: "a/b".into(),
+                    commit: None,
+                },
                 "no_previous_version",
             ),
             (Error::NoReleases(s()), "no_releases"),
@@ -340,7 +348,11 @@ mod tests {
             "package a/b is not installed"
         );
         assert_eq!(
-            Error::NoPreviousVersion { id: "a/b".into() }.to_string(),
+            Error::NoPreviousVersion {
+                id: "a/b".into(),
+                commit: None,
+            }
+            .to_string(),
             "no previous version of a/b"
         );
         assert_eq!(

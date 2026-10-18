@@ -63,15 +63,18 @@ def explicit_older_revision_is_allowed(t: T):
     t.eq(t.package(ID)["previous"]["commit"], newer, "previous commit")
 
 
+# Change no-tag-immutability changes the "Same version on another commit" scenario of "Explicit ref resolves
+# against the origin" and "Update mirrors the origin's tags"; the anchors keep the current
+# main slugs until that change is archived.
 @case(fixture="hello_installed", spec=["updates/explicit-ref-resolves-against-the-origin#same-version-on-another-commit"])
-def same_version_other_commit_is_rejected(t: T):
-    """A new commit still saying 0.1.0: --ref SHA is refused (version_conflict); --ref main
-    follows the branch, which moves by commit."""
+def same_version_other_commit_is_accepted(t: T):
+    """A new commit still saying 0.1.0: --ref SHA pins it (tags are not policed, change
+    no-tag-immutability); --ref main follows the branch, which moves by commit."""
     sha = t.commit(ID, "code change without bump", {"dist/index.js": "export const greeting = 'changed';\n"})
-    refused(t, "update", ID, "--ref", sha, kind="version_conflict", contains="without a version bump")
-    at(t, "0.1.0", t.rev(ID, f"{ID}@0.1.0"), None)
+    t.gitpm_ok("update", ID, "--ref", sha)
+    at(t, "0.1.0", sha, "0.1.0")
+    t.eq(t.package(ID)["mode"], {"pinned": sha}, "mode")
     t.gitpm_ok("update", ID, "--ref", "main")
-    t.eq(t.package(ID)["current"], {"version": "0.1.0", "commit": sha}, "branch mode moves by commit")
     t.eq(t.package(ID)["mode"], {"branch": "main"}, "mode")
 
 
@@ -92,20 +95,22 @@ def id_change_in_release_tag_is_rejected(t: T):
     at(t, "0.1.0", t.rev(ID, f"{ID}@0.1.0"), None)
 
 
-@case(fixture="hello_installed", spec=["updates/stable-update-never-downgrades-or-accepts-mutated-releases#release-commit-of-the-installed-version-moved"])
-def moved_installed_release_tag_by_ref_is_rejected(t: T):
-    """The installed release tag re-pointed upstream; update --ref TAG refuses (same version, new commit)."""
-    installed = t.rev(ID, f"{ID}@0.1.0")
-    t.commit(ID, "rewritten 0.1.0", {"dist/index.js": "export const greeting = 'rewritten';\n"})
+@case(fixture="hello_installed", spec=["updates/explicit-ref-resolves-against-the-origin#same-version-on-another-commit"])
+def moved_installed_release_tag_by_ref_is_accepted(t: T):
+    """The installed release tag re-pointed upstream; update --ref TAG pins its new commit
+    with a warning (same version, new commit)."""
+    moved = t.commit(ID, "rewritten 0.1.0", {"dist/index.js": "export const greeting = 'rewritten';\n"})
     t.tag(ID, f"{ID}@0.1.0", force=True)
-    r = refused(t, "update", ID, "--ref", f"{ID}@0.1.0", kind="version_conflict")
-    print(f"  failure stage: {r.err.strip().splitlines()[0]}")
-    at(t, "0.1.0", installed, None)
+    r = t.gitpm_ok("update", ID, "--ref", f"{ID}@0.1.0")
+    t.has(r.err, f"Warning: release tag {ID}@0.1.0 now points to {moved[:12]}")
+    at(t, "0.1.0", moved, "0.1.0")
+    t.eq(t.package(ID)["mode"], {"pinned": f"{ID}@0.1.0"}, "mode")
 
 
-@case(fixture="hello_installed", spec=["package-ids/moved-release-tags-are-refused#retagged-release"])
-def moved_fetched_release_tag_is_rejected(t: T):
-    """0.1.2 fetched by an earlier update, then re-tagged upstream on another commit: refused."""
+@case(fixture="hello_installed", spec=["updates/update-mirrors-the-origin-s-tags"])
+def moved_fetched_release_tag_is_taken(t: T):
+    """0.1.2 fetched by an earlier update, then re-tagged upstream on another commit: taken
+    where it points now (tags are not policed, change no-tag-immutability)."""
     first = t.release(ID, "0.1.1")
     original = t.release(ID, "0.1.2")
     t.gitpm_ok("update", ID, "--ref", f"{ID}@0.1.1")
@@ -115,7 +120,9 @@ def moved_fetched_release_tag_is_rejected(t: T):
     t.tag(ID, f"{ID}@0.1.2", force=True)
     print(f"  0.1.2 moved upstream: {original} -> {moved}")
     t.git(ID, "checkout", "-q", "main")
-    # The ref pinned 0.1.1: back to releases, or to the moved tag.
+    # The ref pinned 0.1.1: back to releases, or to the moved tag; both take the new commit.
     for args in [("update", ID, "--release"), ("update", ID, "--ref", f"{ID}@0.1.2")]:
-        refused(t, *args, kind=None)
-        at(t, "0.1.1", first, "0.1.0")
+        t.gitpm_ok(*args)
+        at(t, "0.1.2", moved, "0.1.1")
+        t.gitpm_ok("rollback", ID)
+        at(t, "0.1.1", first, "0.1.2")

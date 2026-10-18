@@ -37,15 +37,28 @@ def stable_ignores_untagged_head(t: T):
     t.same(before, "workspace")
 
 
+# Change no-tag-immutability renames "Stable update never downgrades or accepts mutated
+# releases" to "Stable update never downgrades"; the anchors keep the current main slug
+# until that change is archived.
+RETRACTED = "Warning: installed release dan/hello@{} no longer exists on the origin"
+
+
 @case(fixture="hello_releases", spec=["updates/stable-update-never-downgrades-or-accepts-mutated-releases"])
 def latest_release_older_than_installed(t: T):
-    """4. installed 0.2.0, upstream tags above 0.1.0 deleted: update refuses."""
+    """4. installed 0.2.0, upstream tags above 0.1.0 deleted: update and update all stay up
+    to date with a warning (never a downgrade)."""
     t.gitpm_ok("install", t.repo(ID))
     t.eq(t.package(ID)["current"]["version"], "0.2.0", "installed the newest release")
     for v in ["0.1.1", "0.2.0"]:
         t.git(ID, "tag", "-d", f"{ID}@{v}")
     before = t.snap(t.ws)
-    t.gitpm_err("update", ID, kind="version_conflict", contains="latest release is older")
+    r = t.gitpm_ok("update", ID)
+    t.has(r.out, f"{ID} up to date (0.2.0)")
+    t.has(r.err, RETRACTED.format("0.2.0"))
+    t.same(before, "workspace")
+    r = t.gitpm_ok("update", "all")
+    t.has(r.out, f"{ID} up to date (0.2.0)")
+    t.has(r.err, RETRACTED.format("0.2.0"))
     t.same(before, "workspace")
     # An explicit return to releases may go down to the newest one.
     t.gitpm_ok("update", ID, "--release")
@@ -54,9 +67,16 @@ def latest_release_older_than_installed(t: T):
 
 @case(fixture="hello_installed", spec=["updates/stable-update-never-downgrades-or-accepts-mutated-releases#release-commit-of-the-installed-version-moved"])
 def installed_release_retagged(t: T):
-    """5. the installed version re-tagged on another commit upstream: update refuses."""
-    t.commit(ID, "rewritten release", {"dist/index.js": "other\n"})
+    """5. the installed version re-tagged on another commit upstream: update and update all
+    stay up to date with a warning; the installed commit is kept."""
+    installed = t.package(ID)["current"]
+    moved = t.commit(ID, "rewritten release", {"dist/index.js": "other\n"})
     t.tag(ID, f"{ID}@0.1.0", force=True)
     before = t.snap(t.ws)
-    t.gitpm_err("update", ID, kind="version_conflict", contains="release commit changed for installed version")
-    t.same(before, "workspace")
+    for args in [("update", ID), ("update", "all")]:
+        r = t.gitpm_ok(*args)
+        t.has(r.out, f"{ID} up to date (0.1.0)")
+        t.has(r.err, f"Warning: release tag {ID}@0.1.0 now points to {moved[:12]}; the installed commit is kept")
+        t.same(before, "workspace")
+    t.eq(t.package(ID)["current"], installed, "installed revision kept by commit")
+    t.eq(t.rev(t.clone(ID), f"{ID}@0.1.0"), moved, "the clone took the moved tag")

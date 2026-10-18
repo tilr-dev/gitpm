@@ -52,53 +52,45 @@ pub(super) fn sync_refs(repo: &Path, state: &State, key: &str) -> Result<()> {
     Ok(())
 }
 
-/// Remove the `refs/gitpm/` refs (from a copy of a shared clone that is not one).
+/// Remove the workspace's own refs, `refs/gitpm/` and the recorded origin tags
+/// (`refs/origin-tags/`), from a copy of a clone that is not one of its clones.
 pub(super) fn drop_refs(repo: &Path) -> Result<()> {
-    for name in git(repo, &["for-each-ref", "--format=%(refname)", KEEP])?.lines() {
+    for name in git(
+        repo,
+        &[
+            "for-each-ref",
+            "--format=%(refname)",
+            KEEP,
+            lost_work::ORIGIN_TAGS,
+        ],
+    )?
+    .lines()
+    {
         git(repo, &["update-ref", "-d", name])?;
     }
     Ok(())
 }
 
-/// The one tag policy of a shared clone: fetch origin's tags forced (a tag moved upstream
-/// is taken as it is there; with `prune`, deleted ones go), after protecting every
-/// installed revision with [`sync_refs`]. Refused when the release tag of an installed
-/// revision of a user (`except` aside: the caller checks those itself) would point at
-/// another commit.
-pub(super) fn fetch_tags(
-    repo: &Path,
-    state: &State,
-    key: &str,
-    except: &[&str],
-    prune: bool,
-) -> Result<()> {
+/// Fetch the origin's tags into a shared clone as they are there (a moved tag is taken
+/// at its new commit; with `prune`, deleted ones go), after protecting every installed
+/// revision with [`sync_refs`]. Tags are not policed: installed revisions are kept by
+/// commit.
+pub(super) fn fetch_tags(repo: &Path, state: &State, key: &str, prune: bool) -> Result<()> {
     sync_refs(repo, state, key)?;
-    let mut pinned = Vec::new();
-    for (id, p) in clone_users(state, key, "") {
-        if except.contains(&id) {
-            continue;
-        }
-        let tag = identity::release_tag(id, &p.current.version);
-        if resolve_ref(repo, &format!("refs/tags/{tag}")).is_ok_and(|c| c == p.current.commit) {
-            pinned.push((id, tag, p.current.commit.as_str()));
-        }
-    }
+    fetch_origin(repo, prune)
+}
+
+/// `git fetch origin --force --tags` (with `prune`, also `--prune --prune-tags`, so the
+/// clone mirrors the origin's tags), then record those tags as the origin's tags of the
+/// last fetch ([`lost_work::record_origin_tags`]).
+pub(super) fn fetch_origin(repo: &Path, prune: bool) -> Result<()> {
     let mut args = vec!["fetch", "origin"];
     if prune {
         args.extend(["--prune", "--prune-tags"]);
     }
     args.extend(["--force", "--tags"]);
     git(repo, &args)?;
-    for (id, tag, commit) in pinned {
-        if let Ok(now) = resolve_ref(repo, &format!("refs/tags/{tag}")) {
-            ensure!(
-                now == commit,
-                VersionConflict,
-                "release tag {tag} of the installed {id} changed commit upstream; the shared clone was left unchanged"
-            );
-        }
-    }
-    Ok(())
+    lost_work::record_origin_tags(repo)
 }
 
 /// The own clone `packages/<id>` (exact spelling, must be a Git repository).
@@ -280,7 +272,7 @@ pub(super) fn place_clone(
         let staged = txn.add_repo(&relative, &cloned.repo)?;
         return Ok((staged, relative, Some(key)));
     };
-    fetch_tags(&staged, state, &key, &[], false)?;
+    fetch_tags(&staged, state, &key, false)?;
     git(&staged, &["checkout", "--detach", &commit])?;
     let m = package_manifest(&staged, cloned.path.as_deref())?;
     ensure!(

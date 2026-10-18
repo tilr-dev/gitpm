@@ -320,6 +320,9 @@ fn print_update_all(plan: &gitpm::UpdateAllPlan, dry_run: bool) {
     for install in &plan.installs {
         warn(&install.warnings);
     }
+    for unchanged in &plan.unchanged {
+        warn(&unchanged.warnings);
+    }
     let mut lines: Vec<(&str, String)> = Vec::new();
     for change in &plan.updates {
         let held = plan.kept_back.iter().find(|h| h.id == change.id);
@@ -1148,6 +1151,7 @@ fn run(invocation: &mut Invocation) -> Result<()> {
             for skipped in &report.skipped {
                 eprintln!("Warning: {}: {}", skipped.source, skipped.tag.reason);
             }
+            warn(&report.warnings);
             println!(
                 "Catalog ready: {} release(s) checked from sources.",
                 report.releases

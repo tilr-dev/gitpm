@@ -788,6 +788,10 @@ pub struct UpdateSourcesReport {
     pub sources: Vec<String>,
     /// Release-looking tags that were skipped (broken manifest, version mismatch).
     pub skipped: Vec<SkippedSourceTag>,
+    /// Published versions whose regenerated release differs from the record (a moved
+    /// tag, or a manifest or file hashes that changed): the published record is kept.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 /// A skipped tag of one source in [`UpdateSourcesReport`].
@@ -907,6 +911,8 @@ pub fn update_sources(
         directory_of(value)?;
     }
     // Check every source and immutable version before writing any release.
+    let mut warnings = Vec::new();
+    let mut kept = Vec::new();
     for ((id, version), release) in &mut pending {
         if let Some(index) = package_index(location, id)? {
             ensure!(
@@ -928,12 +934,26 @@ pub fn update_sources(
             validate_release(&old, id, version)?;
             release.reference = old.reference.clone();
             release.build = old.build.clone();
-            ensure!(
-                serde_json::to_value(&old)? == serde_json::to_value(&release)?,
-                VersionConflict,
-                "release {id}@{version} changed; refusing to replace published version"
-            );
+            // A published record is never replaced: a moved tag or a regenerated
+            // release that differs keeps the record, with a warning.
+            if serde_json::to_value(&old)? != serde_json::to_value(&*release)? {
+                warnings.push(if old.commit != release.commit {
+                    format!(
+                        "release {id}@{version}: tag now points to {}; the published record is kept",
+                        &release.commit[..release.commit.len().min(12)]
+                    )
+                } else {
+                    format!(
+                        "release {id}@{version} differs from the published record; the published record is kept"
+                    )
+                });
+                kept.push((id.clone(), version.clone()));
+            }
         }
+    }
+    let releases = pending.len();
+    for key in &kept {
+        pending.remove(key);
     }
     prepare_root(&path)?;
     for release in pending.values() {
@@ -943,9 +963,10 @@ pub fn update_sources(
         link_directory(&path, first, &format!("{first}/"))?;
     }
     Ok(UpdateSourcesReport {
-        releases: pending.len(),
+        releases,
         sources: sources.into_iter().collect(),
         skipped,
+        warnings,
     })
 }
 
@@ -2173,7 +2194,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn update_sources_keeps_build_metadata_and_refuses_changed_releases() {
+    fn update_sources_keeps_build_metadata_and_published_records() {
         let dir = TempDir::new("catalog");
         let author = Author::new(dir.join("author"), "dan/demo1");
         let cat = dir.join("catalog");
@@ -2184,26 +2205,59 @@ pub(crate) mod tests {
         register_build(loc(&cat), author.source(), "dan/demo1@0.1.0", Some(build)).unwrap();
         let list = sources(dir.path(), "author\n");
         update_sources(loc(&cat), &list, &mut |_| {}).unwrap();
-        let stored = lookup(loc(&cat), "dan/demo1", None).unwrap();
-        assert_eq!(stored.build.unwrap().url, "https://pkg.example/x.tar.zst");
+        let stored = lookup(loc(&cat), "dan/demo1", Some("0.1.0")).unwrap();
+        assert_eq!(
+            stored.build.as_ref().unwrap().url,
+            "https://pkg.example/x.tar.zst"
+        );
+        let record = cat.join("namespaces/dan/demo1/versions/0.1.0/release.json");
+        let published = fs::read(&record).unwrap();
 
-        // The published tag is moved to another commit with the same version.
+        // The published tag is moved to another commit with the same version: the record
+        // stays, with a warning, and the other versions are published.
         fs::write(author.path.join("dist/index.js"), "rewritten").unwrap();
         fixture_git(&author.path, &["commit", "-q", "-am", "rewrite"]);
+        let moved = author.head();
         fixture_git(&author.path, &["tag", "-f", "dan/demo1@0.1.0"]);
         author.release("0.2.0");
-        let before = tree_hash(&cat);
-        let error = update_sources(loc(&cat), &list, &mut |_| {}).unwrap_err();
-        assert_eq!(error.kind(), "version_conflict");
-        assert!(
-            error.to_string().contains("dan/demo1@0.1.0 changed"),
-            "{error}"
-        );
+        let report = update_sources(loc(&cat), &list, &mut |_| {}).unwrap();
+        assert_eq!(report.releases, 2);
         assert_eq!(
-            tree_hash(&cat),
-            before,
-            "no release is written when one conflicts"
+            report.warnings,
+            [format!(
+                "release dan/demo1@0.1.0: tag now points to {}; the published record is kept",
+                &moved[..12]
+            )]
         );
+        assert_eq!(fs::read(&record).unwrap(), published);
+        assert_eq!(
+            lookup(loc(&cat), "dan/demo1", None)
+                .unwrap()
+                .manifest
+                .version,
+            "0.2.0"
+        );
+
+        // The release commit is unchanged but the record's file hashes differ (a manual
+        // edit): kept as well.
+        fixture_git(
+            &author.path,
+            &["tag", "-f", "dan/demo1@0.1.0", &stored.commit],
+        );
+        let mut edited: serde_json::Value = serde_json::from_slice(&published).unwrap();
+        let files = edited["files"].as_object_mut().unwrap();
+        let first = files.keys().next().unwrap().clone();
+        files[&first]["sha256"] = serde_json::Value::String(ABC.into());
+        let edited = serde_json::to_vec_pretty(&edited).unwrap();
+        fs::write(&record, &edited).unwrap();
+        let report = update_sources(loc(&cat), &list, &mut |_| {}).unwrap();
+        assert_eq!(
+            report.warnings,
+            [
+                "release dan/demo1@0.1.0 differs from the published record; the published record is kept"
+            ]
+        );
+        assert_eq!(fs::read(&record).unwrap(), edited);
     }
 
     #[test]

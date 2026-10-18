@@ -229,19 +229,16 @@ fn failed_update_keeps_files_and_state() {
     let f = Fixture::new();
     f.install();
     let before = f.state();
-    f.release("1.0.0", "changed without version bump");
-    f.cli(&["update", "dan/hello"], false);
-    assert_eq!(f.state(), before);
-    assert_eq!(f.content(), "hello v1");
-    f.release("2.0.0", "v2");
+    // The newest release needs a package nobody can install.
+    fs::write(f.repo.join("dist/index.js"), "v2").unwrap();
     fs::write(
         f.repo.join("plugin.json"),
-        r#"{"id":"dan/hello","version":"3.0.0","dependencies":{"missing":"1"}}"#,
+        r#"{"id":"dan/hello","version":"2.0.0","dependencies":{"dan/missing":"1"}}"#,
     )
     .unwrap();
     f.git(&["add", "."]);
     f.git(&["commit", "-m", "dependency"]);
-    f.git(&["tag", "v3.0.0"]);
+    f.git(&["tag", "dan/hello@2.0.0"]);
     f.cli(&["update", "dan/hello"], false);
     assert_eq!(f.state(), before);
     assert_eq!(f.content(), "hello v1");
@@ -981,7 +978,7 @@ fn stable_install_and_update_ignore_untagged_head_and_sort_versions() {
 }
 
 #[test]
-fn catalog_update_generates_all_tags_and_rejects_moved_releases_without_partial_write() {
+fn catalog_update_keeps_published_records_when_tags_move() {
     use gitpm::catalog;
     let f = Fixture::new();
     let catalog_dir = f.dir.join("generated");
@@ -1021,12 +1018,22 @@ fn catalog_update_generates_all_tags_and_rejects_moved_releases_without_partial_
     f.cli(&["--catalog", location, "catalog-update"], true);
     assert_eq!(fs::read(&index).unwrap(), original_index);
     f.release("2.0.0", "two");
-    // Move an old tag to a different commit with the same manifest version.
+    // Move an old tag to a different commit with the same manifest version: the
+    // published record is kept with a warning, the new version is published.
     f.release("1.0.0", "replacement");
-    f.cli(&["--catalog", location, "catalog-update"], false);
-    assert_eq!(fs::read(index).unwrap(), original_index);
+    let (ok, out, err) = f.output(&["--catalog", location, "catalog-update"]);
+    assert!(ok, "{err}");
     assert!(
-        !catalog_dir
+        out.contains("Catalog ready: 3 release(s) checked from sources."),
+        "{out}"
+    );
+    assert!(
+        err.contains("Warning: release dan/hello@1.0.0: tag now points to ")
+            && err.contains("; the published record is kept"),
+        "{err}"
+    );
+    assert!(
+        catalog_dir
             .join("namespaces/dan/hello/versions/2.0.0/release.json")
             .exists()
     );
@@ -1072,13 +1079,22 @@ fn catalog_update_validates_every_source_before_writing_and_retains_removed_sour
 }
 
 #[test]
-fn release_manifest_must_match_tag_and_update_rejects_retagging() {
+fn release_manifest_must_match_tag_and_update_warns_on_retagging() {
     let f = Fixture::new();
     f.install();
     let before = f.state();
+    // A moved release tag of the installed version: up to date with a warning.
     f.release("1.0.0", "replacement");
-    f.cli(&["update", "dan/hello"], false);
+    let (ok, out, err) = f.output(&["update", "dan/hello"]);
+    assert!(ok, "{err}");
+    assert_eq!(out.trim(), "dan/hello up to date (1.0.0)");
+    assert!(
+        err.contains("Warning: release tag dan/hello@1.0.0 now points to ")
+            && err.contains("; the installed commit is kept"),
+        "{err}"
+    );
     assert_eq!(f.state(), before);
+    assert_eq!(f.content(), "hello v1");
     f.git(&["tag", "dan/hello@8.0.0"]); // manifest still says 1.0.0
     let dir = f.dir.join("generated");
     fs::write(f.dir.join("sources.txt"), "./upstream\n").unwrap();
@@ -1087,6 +1103,29 @@ fn release_manifest_must_match_tag_and_update_rejects_retagging() {
         false,
     );
     assert!(!dir.exists());
+}
+
+#[test]
+fn update_after_a_deleted_release_tag_is_up_to_date_with_a_warning() {
+    let f = Fixture::new();
+    f.install();
+    let before = f.state();
+    f.git(&["tag", "-d", "dan/hello@1.0.0"]);
+    let (ok, out, err) = f.output(&["update", "dan/hello"]);
+    assert!(ok, "{err}");
+    assert_eq!(out.trim(), "dan/hello up to date (1.0.0)");
+    assert_eq!(
+        err.trim(),
+        "Warning: installed release dan/hello@1.0.0 no longer exists on the origin"
+    );
+    let (ok, out, err) = f.output(&["update", "all"]);
+    assert!(ok, "{err}");
+    assert!(out.contains("dan/hello up to date (1.0.0)"), "{out}");
+    assert!(
+        err.contains("Warning: installed release dan/hello@1.0.0 no longer exists on the origin"),
+        "{err}"
+    );
+    assert_eq!(f.state(), before);
 }
 
 #[test]

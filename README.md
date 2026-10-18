@@ -150,7 +150,9 @@ branches of a clone and revision expressions (`HEAD~1`, `TAG^`) are refused
 record the new mode the same way (a new mode at the installed commit is a change too:
 `ID pinned at V (REF)`); `update ID --release` returns it to release mode at the newest
 release, even when that is below the installed version (a plain `update` never goes
-down). A tag or commit must change the version (it may go back to an older one); a
+down). A tag or commit may go back to an older version or keep the installed one at
+another commit (an explicit `--ref` of a moved release tag warns `release tag ID@V now
+points to COMMIT`); a
 branch whose history no longer contains the installed commit, or that the origin no
 longer has, is refused (`version_conflict`, "history of main diverged; automatic update
 refused"); `update ID --ref BRANCH` follows it again after a force-push. `previous`
@@ -161,6 +163,19 @@ diverged)`, a deleted one `ID kept at V (branch BRANCH is gone)`). Installing an
 package again names its mode: `ID already installed (V, pinned at REF)`. `check` shows a pinned package as `pinned (REF)` without
 asking its origin and compares a branch-mode package with the branch HEAD on the origin.
 `install-catalog --version V` installs in release mode.
+
+gitpm does not police release tags: every fetch takes the origin's tags as they are (a
+moved tag at its new commit, a deleted one gone), and the installed revision is kept by
+commit. A release-mode `update ID` or `update all` compares versions only, so a moved tag
+of the installed version prints `ID up to date (V)` with `Warning: release tag ID@V now
+points to COMMIT; the installed commit is kept`, and a retracted installed release (its
+tag deleted, only older ones left) `ID up to date (V)` with `Warning: installed release
+ID@V no longer exists on the origin`; a tag moved onto a commit of another version is a
+broken tag (`… now points to COMMIT (skipped: REASON) …`; as the newest tag it still
+fails `update ID`, "latest release tag is broken"). Integrity of published versions is the job of a
+verified catalog. `rollback` to a previous commit that is no longer in the clone (pruned
+after its tag went) fails with `no_previous_version` ("previous revision COMMIT of ID is
+no longer available").
 
 ```console
 $ gitpm install ./greeter --ref acme/greeter@0.1.0
@@ -622,6 +637,26 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   package (produced by gitpm ≤0.5 `disable --force` or a hand edit) is refused with
   `invalid_data`, and the `replace --back` line always ends `; FORK stays installed and
   enabled (…)`. Migration: remove the entry from `replacements` in `state.json`.
+- No tag policing: a moved (retagged) or deleted release tag no longer fails `update`,
+  `update all`, an install or update of a sibling in a shared clone, or `catalog-update`
+  with `version_conflict` ("release tag … changed commit", "release commit changed for
+  installed version", "latest release is older than installed version; downgrading
+  requires an explicit ref", "release ID@V changed; refusing to replace published
+  version" are gone). Release-mode updates compare versions only and keep the installed
+  commit; a moved or retracted installed release is up to date with a warning in
+  `RevisionChange.warnings` and the new `Unchanged.warnings` (FFI `Unchanged.warnings`).
+  `catalog-update` never replaces a published record: it keeps it and reports
+  `UpdateSourcesReport.warnings` (`release ID@V: tag now points to COMMIT; the published
+  record is kept`, `release ID@V differs from the published record; the published record
+  is kept`). `Error::NoPreviousVersion` gains `commit` (FFI `PmError.NoPreviousVersion
+  .commit`), set when the previous revision's commit is gone from the clone. Rollback
+  counts a tag the origin had with the same object at the last fetch as published (clones
+  record them under `refs/origin-tags/`), as update does, so a fork's retained upstream
+  tags no longer block it. Migration: scripts that expected `version_conflict` on a
+  retagged release read the warning instead. An explicit `--ref TAG|COMMIT` with the
+  installed version at another commit is accepted and pinned ("upstream changed without
+  a version bump" is gone; a moved release tag of that version warns `release tag ID@V
+  now points to COMMIT`).
 
 ## Working without a catalog
 
@@ -794,10 +829,9 @@ packages/theme/dist/…
 - Shared clones keep `refs/gitpm/<namespace>/<name>/current` and `.../previous` for every
   package that uses them (registered or forgotten), updated with each change and deleted
   with the package, so an upstream rewrite, a pruned tag or `git gc` never loses another
-  package's installed or rollback revision. One tag policy: fetching takes upstream's tags
-  as they are (moved ones overwritten; `update` also drops deleted ones), but is refused
-  (`version_conflict`, naming the tag) when the release tag of an installed revision of
-  any package of the clone would move.
+  package's installed or rollback revision. Fetching takes the origin's tags as they are
+  (moved ones overwritten; `update` also drops deleted ones); a moved release tag of an
+  installed package never blocks another package of the clone (each keeps its commit).
 - Forgetting a package of a shared clone keeps its record in `state.json` (`forgotten`,
   as for every forgotten package): it still holds the clone (its `dist/` is removed by
   `forget`), `restore` records it again as it was (revision, `enabled`, mode; the clone is
@@ -1142,7 +1176,8 @@ A package whose newest release is not selected is kept back with a reason: `depe
 constraints`; `needs DEP REQ, which is not installed and no catalog is configured`; or
 `no longer replaces ORIGINAL` (a replacing fork whose newest release or branch commit
 dropped `replaces`).
-Local changes, unpublished work and moved release tags block the operation.
+Local changes and unpublished work block the operation; moved or deleted release tags
+never do (the package stays, listed in `unchanged` with its `warnings`).
 Each package follows its recorded mode: release-mode packages are solved over their
 release tags, a branch-mode package gets its branch HEAD as its only new candidate (its
 manifest version takes part in the solve, so dependents stay protected; a diverged

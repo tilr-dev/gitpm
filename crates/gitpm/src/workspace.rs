@@ -241,7 +241,10 @@ pub struct RevisionChange {
     pub from: Revision,
     pub to: Revision,
     pub changed: bool,
-    /// Metadata keys of the new manifest with the wrong type, ignored.
+    /// Metadata keys of the new manifest with the wrong type, ignored; for a package
+    /// that stays in release mode, a moved (`release tag ID@V now points to COMMIT; the
+    /// installed commit is kept`) or deleted (`installed release ID@V no longer exists
+    /// on the origin`) installed release tag. The caller should show them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
     /// Broken release tags passed over while choosing the latest release (an update
@@ -260,6 +263,42 @@ pub struct RevisionChange {
     /// Reconciliation report of the transaction (empty inside an [`UpdateAllPlan`], which
     /// carries the report of its one transaction).
     pub dist: DistSync,
+}
+/// The warning for a release-mode package whose installed release tag moved, broke or
+/// was deleted on the origin (`found` are its releases after the fetch in `repo`); `None`
+/// when the tag is where it was. Tags are not policed: the installed commit is kept.
+fn release_tag_warning(
+    repo: &Path,
+    id: &str,
+    current: &Revision,
+    found: &releases::Discovery,
+) -> Option<String> {
+    let tag = identity::release_tag(id, &current.version);
+    let short = |commit: &str| commit[..commit.len().min(12)].to_owned();
+    if let Some(release) = found
+        .tags
+        .iter()
+        .find(|t| t.manifest.version == current.version)
+    {
+        return (release.commit != current.commit).then(|| {
+            format!(
+                "release tag {tag} now points to {}; the installed commit is kept",
+                short(&release.commit)
+            )
+        });
+    }
+    // The tag still exists but points at a commit it is no release of (a broken tag).
+    if let Some(broken) = found.skipped.iter().find(|s| s.name == tag) {
+        let commit = resolve_ref(repo, &format!("refs/tags/{tag}")).unwrap_or_default();
+        return Some(format!(
+            "release tag {tag} now points to {} (skipped: {}); the installed commit is kept",
+            short(&commit),
+            broken.reason
+        ));
+    }
+    Some(format!(
+        "installed release {tag} no longer exists on the origin"
+    ))
 }
 /// The original `id` replaces now when `manifest` (a newer revision of `id`) no longer
 /// declares that it replaces it.
@@ -345,6 +384,10 @@ pub struct Unchanged {
     pub version: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<UnchangedReason>,
+    /// The installed release tag moved or was deleted on the origin (see
+    /// [`RevisionChange::warnings`]); the installed commit is kept.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 /// A newer release exists, but the chosen compatible solution uses an older one.
 #[derive(Clone, Debug, Serialize)]
@@ -1171,6 +1214,8 @@ impl Manager {
         // Why a package whose newest release is not selected is kept back, when it is
         // more than dependency constraints.
         let mut held: BTreeMap<String, HeldBackReason> = BTreeMap::new();
+        // Release-mode packages whose installed release tag moved or was deleted.
+        let mut tag_warnings: BTreeMap<String, String> = BTreeMap::new();
         let catalog = self.options.catalog.as_deref();
         // Broken release tags passed over, for every installed package.
         let mut skipped: Vec<releases::SkippedTag> = Vec::new();
@@ -1195,39 +1240,9 @@ impl Manager {
             // Scratch copies ensure even held-back repositories keep their original refs.
             let repo = txn.scratch(&format!("upgrade-{number}"));
             copy_tree(&live, &repo, true)?;
-            let mut known = Vec::new();
-            for id in ids {
-                known.extend(releases::discover(&repo, Some(id))?);
-            }
             match key {
-                // The registered packages of the group are checked below.
-                Some(key) => {
-                    let except: Vec<&str> = ids.iter().map(String::as_str).collect();
-                    clones::fetch_tags(&repo, state, key, &except, true)?;
-                }
-                None => {
-                    git(
-                        &repo,
-                        &[
-                            "fetch",
-                            "origin",
-                            "--prune",
-                            "--prune-tags",
-                            "--force",
-                            "--tags",
-                        ],
-                    )?;
-                }
-            }
-            for tag in known {
-                if git(&repo, &["tag", "--list", &tag.name])? == tag.name {
-                    ensure!(
-                        resolve_ref(&repo, &format!("refs/tags/{}", tag.name))? == tag.commit,
-                        VersionConflict,
-                        "release tag {} changed commit",
-                        tag.name
-                    );
-                }
+                Some(key) => clones::fetch_tags(&repo, state, key, true)?,
+                None => clones::fetch_origin(&repo, true)?,
             }
             for id in ids {
                 let installed = &state.packages[id];
@@ -1350,18 +1365,22 @@ impl Manager {
                         continue;
                     }
                 }
-                let found = releases::discover_all(&repo, Some(id))?;
+                // Every tag of the package may be gone (all retracted).
+                let found = match releases::discover_all(&repo, Some(id)) {
+                    Err(Error::NoReleases(_)) => releases::Discovery::default(),
+                    other => other?,
+                };
+                if let Some(warning) = release_tag_warning(&repo, id, &installed.current, &found) {
+                    tag_warnings.insert(id.clone(), warning);
+                }
                 skipped.extend(found.skipped);
                 for tag in found.tags {
                     let version = deps::version(&tag.manifest.version)?;
-                    if version < current {
+                    // Versions only: the installed revision (kept by commit) stands for
+                    // its version, also when the tag moved.
+                    if version <= current {
                         continue;
                     }
-                    ensure!(
-                        version != current || tag.commit == installed.current.commit,
-                        VersionConflict,
-                        "release commit changed for installed version of {id}"
-                    );
                     newest = newest.max(version.clone());
                     // An active replacement must continue providing the same original ID.
                     if let Some(original) = no_longer_replaces(state, id, &tag.manifest) {
@@ -1474,10 +1493,12 @@ impl Manager {
                 && !plan.kept_back.iter().any(|h| h.id == id)
             {
                 let reason = reasons.remove(&id);
+                let warnings = tag_warnings.remove(&id).into_iter().collect();
                 plan.unchanged.push(Unchanged {
                     id,
                     version,
                     reason,
+                    warnings,
                 });
             }
         }
@@ -1534,43 +1555,19 @@ impl Manager {
                 true,
             )?;
             let repo = txn.repo(&relative, &live)?;
-            let known_releases = match releases::discover(&repo, Some(id)) {
-                Ok(tags) => tags,
-                Err(Error::NoReleases(_)) => Vec::new(),
-                Err(error) => return Err(error),
-            };
-            // Mirror upstream tags exactly: a deleted release disappears, a moved one is
-            // seen at its new commit (and refused below as a version conflict). Local
-            // tags holding unpublished commits were refused above, so nothing is lost.
+            // Mirror the origin's tags exactly: a deleted release disappears, a moved one
+            // is seen at its new commit (tags are not policed; the installed revision is
+            // kept by commit). Local tags holding unpublished commits were refused above.
             match p.clone.as_deref() {
-                Some(key) => clones::fetch_tags(&repo, state, key, &[id], true)?,
-                None => {
-                    git(
-                        &repo,
-                        &["fetch", "origin", "--prune", "--prune-tags", "--force", "--tags"],
-                    )?;
-                }
-            }
-            for known in known_releases {
-                let tag = format!("refs/tags/{}", known.name);
-                // Deleting a tag is allowed; moving an observed release is not.
-                if git(&repo, &["tag", "--list", &known.name])? == known.name {
-                    ensure!(
-                        resolve_ref(&repo, &tag)? == known.commit,
-                        VersionConflict,
-                        "{}",
-                        if known.manifest.version == p.current.version {
-                            "release commit changed for installed version".to_owned()
-                        } else {
-                            format!("release tag {} changed commit", known.name)
-                        }
-                    );
-                }
+                Some(key) => clones::fetch_tags(&repo, state, key, true)?,
+                None => clones::fetch_origin(&repo, true)?,
             }
             if matches!(&target, Target::Dev) || target == Target::Ref("HEAD".into()) {
                 git(&repo, &["remote", "set-head", "origin", "--auto"])?;
             }
             let mut skipped = Vec::new();
+            // Moved or retracted installed release tag (release mode).
+            let mut warnings: Vec<String> = Vec::new();
             let (next_commit, mode) = match (&target, &p.mode) {
                 (Target::Ref(reference), _) => resolve_upstream_ref(&repo, reference)?,
                 (Target::Dev, _) => resolve_upstream_ref(&repo, "HEAD")?,
@@ -1584,29 +1581,45 @@ impl Manager {
                     (commit, p.mode.clone())
                 }
                 _ => {
-                    let mut found = releases::discover_all(&repo, Some(id))?;
-                    found.ensure_latest_is_valid()?;
+                    // Following releases (no explicit target) compares versions only.
+                    let following = target == Target::Recorded;
+                    let mut found = match releases::discover_all(&repo, Some(id)) {
+                        // Every release tag was deleted on the origin: the installed one
+                        // was retracted, the package stays.
+                        Err(Error::NoReleases(_)) if following => releases::Discovery::default(),
+                        other => other?,
+                    };
+                    if !found.tags.is_empty() {
+                        found.ensure_latest_is_valid()?;
+                    }
+                    let tag_warning = release_tag_warning(&repo, id, &p.current, &found);
                     skipped = std::mem::take(&mut found.skipped);
-                    let latest = found.tags.pop().require(Error::NoReleases, "no releases")?;
-                    let latest_version = catalog::version_key(&latest.manifest.version)?;
                     let current_version = catalog::version_key(&p.current.version)?;
-                    // Following releases never downgrades; an explicit return to
-                    // releases may go down to the newest one.
-                    ensure!(
-                        target == Target::Release || latest_version >= current_version,
-                        VersionConflict,
-                        "latest release is older than installed version; downgrading requires an explicit ref"
-                    );
-                    // At the version of its release, the tag must not have moved (a
-                    // branch commit may carry the version of the release before it).
-                    ensure!(
-                        matches!(p.mode, Mode::Branch(_))
-                            || latest_version != current_version
-                            || latest.commit == p.current.commit,
-                        VersionConflict,
-                        "release commit changed for installed version"
-                    );
-                    (latest.commit, Mode::Release)
+                    let latest = found.tags.pop();
+                    let latest_version = latest
+                        .as_ref()
+                        .map(|tag| catalog::version_key(&tag.manifest.version))
+                        .transpose()?;
+                    match latest {
+                        // Following releases never downgrades: a retracted installed
+                        // release stays (an explicit return to releases may go down).
+                        _ if following && latest_version.as_ref() < Some(&current_version) => {
+                            warnings.extend(tag_warning);
+                            (p.current.commit.clone(), Mode::Release)
+                        }
+                        // The tag of the installed version moved: the installed commit
+                        // is kept (a branch commit may carry the version of the release
+                        // before it, and then moves to the release).
+                        Some(_)
+                            if !matches!(p.mode, Mode::Branch(_))
+                                && latest_version.as_ref() == Some(&current_version) =>
+                        {
+                            warnings.extend(tag_warning);
+                            (p.current.commit.clone(), Mode::Release)
+                        }
+                        Some(latest) => (latest.commit, Mode::Release),
+                        None => fail!(NoReleases, "no releases"),
+                    }
                 }
             };
             // Following the recorded branch (no explicit ref): its history must contain
@@ -1617,12 +1630,16 @@ impl Manager {
             if next_commit == p.current.commit {
                 // A new mode is recorded even when the revision stays: that is a change.
                 if mode == p.mode {
-                    return Ok(unchanged(None, skipped));
+                    return Ok(RevisionChange {
+                        warnings,
+                        ..unchanged(None, skipped)
+                    });
                 }
                 state.packages.get_mut(id).unwrap().mode = mode.clone();
                 return Ok(RevisionChange {
                     changed: true,
                     mode,
+                    warnings,
                     ..unchanged(None, skipped)
                 });
             }
@@ -1650,15 +1667,17 @@ impl Manager {
             git(&repo, &["checkout", "--detach", &next_commit])?;
             let m = package_manifest(&repo, path.as_deref())?;
             ensure!(m.id == id, InvalidManifest, "package id changed upstream");
-            // Branch mode moves by commit; a release, tag or commit needs a version bump
-            // (leaving branch mode may keep the version of the branch commit).
-            ensure!(
-                matches!(mode, Mode::Branch(_))
-                    || matches!(p.mode, Mode::Branch(_))
-                    || m.version != p.current.version,
-                VersionConflict,
-                "upstream changed without a version bump"
-            );
+            // Tags are not policed: an explicit tag or commit may keep the installed version
+            // at another commit; when it is the moved release tag of that version, say so.
+            if let Target::Ref(reference) = &target
+                && m.version == p.current.version
+                && *reference == identity::release_tag(id, &m.version)
+            {
+                warnings.push(format!(
+                    "release tag {reference} now points to {}",
+                    &next_commit[..next_commit.len().min(12)]
+                ));
+            }
             self.check_change(txn, state, id, &m, true)?;
             let next = revision(&repo, &m)?;
             let entry = state.packages.get_mut(id).unwrap();
@@ -1677,7 +1696,7 @@ impl Manager {
                 from: p.current.clone(),
                 to: next,
                 changed: true,
-                warnings: metadata_warnings(&m),
+                warnings: warnings.into_iter().chain(metadata_warnings(&m)).collect(),
                 skipped,
                 unchanged_reason: None,
                 mode,
@@ -1698,7 +1717,10 @@ impl Manager {
             let previous = p
                 .previous
                 .clone()
-                .ok_or_else(|| Error::NoPreviousVersion { id: id.into() })?;
+                .ok_or_else(|| Error::NoPreviousVersion {
+                    id: id.into(),
+                    commit: None,
+                })?;
             let relative = p.clone_folder(id);
             let live = installed_repo(txn.root(), id, &p)?;
             guard_clone(
@@ -1710,6 +1732,15 @@ impl Manager {
                 "local branches, tags or stash hold unpublished work; keep or remove them before rolling back",
                 false,
             )?;
+            // The previous commit can be gone: pruned after the origin deleted or moved
+            // the tag that held it.
+            if git(&live, &["cat-file", "-e", &format!("{}^{{commit}}", previous.commit)]).is_err()
+            {
+                return Err(Error::NoPreviousVersion {
+                    id: id.into(),
+                    commit: Some(previous.commit.clone()),
+                });
+            }
             let repo = txn.repo(&relative, &live)?;
             let path = match packages::find_at(&repo, &previous.commit, Some(id)) {
                 Ok(found) => found.subdir().map(str::to_owned),
@@ -2364,6 +2395,8 @@ fn clone_revision(txn: &Txn, fetch: &Fetch, name: &str) -> Result<Cloned> {
         parent,
         &["clone", "--no-hardlinks", "--", fetch.source, name],
     )?;
+    // A fresh clone has exactly the origin's tags.
+    lost_work::record_origin_tags(&repo)?;
     let mut skipped = Vec::new();
     let (commit, mode) = match fetch.target {
         FetchTarget::Exact(commit) => (resolve_ref(&repo, commit)?, Mode::Release),
@@ -3733,11 +3766,13 @@ mod tests {
         });
 
         // Upstream: same version on a new commit, then a commit with another ID.
+        // Tags are not policed: an explicit commit may keep the installed version.
         let same = same_version_commit(&ws.author);
-        let error = ws.refuses("version_conflict", || {
-            m.update_to(id, Target::Ref(String::from(&same)))
-        });
-        assert_eq!(error.to_string(), "upstream changed without a version bump");
+        let change = m.update_to(id, Target::Ref(String::from(&same))).unwrap();
+        assert_eq!(change.to.commit, same);
+        assert_eq!(change.mode, Mode::Pinned(same.clone()));
+        assert!(change.warnings.is_empty(), "{:?}", change.warnings);
+        m.rollback(id).unwrap();
         write_manifest(&ws.author.path, &make_manifest("dan/renamed", "0.2.0"));
         fixture_git(&ws.author.path, &["commit", "-q", "-am", "rename"]);
         let renamed = ws.author.head();
@@ -3756,9 +3791,9 @@ mod tests {
     }
 
     #[test]
-    fn stable_update_refuses_a_release_whose_commit_changed() {
+    fn return_to_releases_at_the_installed_version_keeps_the_commit() {
         let ws = Ws::new("dan/demo1");
-        same_version_commit(&ws.author);
+        let pinned = same_version_commit(&ws.author);
         let m = ws.open();
         // Pinned to 0.1.0 at HEAD, but the 0.1.0 release tag is another commit.
         m.install_package(
@@ -3767,17 +3802,42 @@ mod tests {
             InstallTarget::Ref(ws.author.head()),
         )
         .unwrap();
-        let error = ws.refuses("version_conflict", || {
-            m.update_to("dan/demo1", Target::Release)
-        });
+        // Versions only: the installed revision stays, only the mode changes.
+        let change = m.update_to("dan/demo1", Target::Release).unwrap();
+        assert!(change.changed);
+        assert_eq!(change.mode, Mode::Release);
+        assert_eq!(change.to.commit, pinned);
+        assert_eq!(change.warnings.len(), 1, "{:?}", change.warnings);
+        assert!(
+            change.warnings[0].starts_with("release tag dan/demo1@0.1.0 now points to "),
+            "{:?}",
+            change.warnings
+        );
+        assert!(change.warnings[0].ends_with("; the installed commit is kept"));
+    }
+
+    #[test]
+    fn explicit_ref_to_the_moved_installed_tag_is_accepted() {
+        let (ws, m) = Ws::installed("dan/demo1");
+        let moved = same_version_commit(&ws.author);
+        fixture_git(&ws.author.path, &["tag", "-f", "dan/demo1@0.1.0"]);
+        let change = m
+            .update_to("dan/demo1", Target::Ref("dan/demo1@0.1.0".into()))
+            .unwrap();
+        assert!(change.changed);
+        assert_eq!(change.to.commit, moved);
+        assert_eq!(change.mode, Mode::Pinned("dan/demo1@0.1.0".into()));
         assert_eq!(
-            error.to_string(),
-            "release commit changed for installed version"
+            change.warnings,
+            [format!(
+                "release tag dan/demo1@0.1.0 now points to {}",
+                &moved[..12]
+            )]
         );
     }
 
     #[test]
-    fn update_refuses_moved_fetched_but_not_installed_release() {
+    fn update_takes_a_moved_release_tag_at_its_new_commit() {
         let (ws, m) = Ws::installed("dan/demo1");
         ws.author.release("0.1.1");
         let original = ws.author.release("0.1.2");
@@ -3787,17 +3847,15 @@ mod tests {
             resolve_ref(&ws.repo(), "dan/demo1@0.1.2").unwrap(),
             original
         );
-        same_version_commit(&ws.author);
+        let moved = same_version_commit(&ws.author);
         fixture_git(&ws.author.path, &["tag", "-f", "dan/demo1@0.1.2"]);
-        // The explicit ref pinned it: back to releases, or to the moved tag.
+        // The explicit ref pinned it: back to releases, or to the moved tag, both take
+        // the tag where it is now.
         for target in [Target::Release, Target::Ref("dan/demo1@0.1.2".into())] {
-            ws.refuses("version_conflict", || {
-                m.update_to("dan/demo1", target.clone())
-            });
-            assert_eq!(
-                resolve_ref(&ws.repo(), "dan/demo1@0.1.2").unwrap(),
-                original
-            );
+            let change = m.update_to("dan/demo1", target.clone()).unwrap();
+            assert_eq!(change.to.commit, moved);
+            assert_eq!(resolve_ref(&ws.repo(), "dan/demo1@0.1.2").unwrap(), moved);
+            m.rollback("dan/demo1").unwrap();
         }
     }
 
@@ -3816,20 +3874,103 @@ mod tests {
     #[test]
     fn stable_update_follows_deleted_and_moved_upstream_tags() {
         let (ws, m) = Ws::installed("dan/demo1");
-        ws.author.release("0.2.0");
+        let installed = ws.author.release("0.2.0");
         m.update("dan/demo1").unwrap();
-        // Moved release tag: same version, other commit.
-        same_version_commit(&ws.author);
+        let state = read(&ws.root.join("state.json"));
+        // Moved release tag: same version, other commit; the clone mirrors it.
+        let moved = same_version_commit(&ws.author);
         fixture_git(&ws.author.path, &["tag", "-f", "dan/demo1@0.2.0"]);
-        let error = ws.refuses("version_conflict", || m.update("dan/demo1"));
+        let change = m.update("dan/demo1").unwrap();
+        assert!(!change.changed);
+        assert_eq!(change.to.commit, installed);
         assert_eq!(
-            error.to_string(),
-            "release commit changed for installed version"
+            change.warnings,
+            [format!(
+                "release tag dan/demo1@0.2.0 now points to {}; the installed commit is kept",
+                &moved[..12]
+            )]
         );
-        // Deleted release tag: the installed version is no longer the latest release.
+        assert_eq!(resolve_ref(&ws.repo(), "dan/demo1@0.2.0").unwrap(), moved);
+        assert_eq!(read(&ws.root.join("state.json")), state);
+        // Deleted release tag: the installed release was retracted, the package stays.
         fixture_git(&ws.author.path, &["tag", "-d", "dan/demo1@0.2.0"]);
+        let change = m.update("dan/demo1").unwrap();
+        assert!(!change.changed);
+        assert_eq!(
+            change.warnings,
+            ["installed release dan/demo1@0.2.0 no longer exists on the origin"]
+        );
+        assert!(resolve_ref(&ws.repo(), "refs/tags/dan/demo1@0.2.0").is_err());
+        assert_eq!(read(&ws.root.join("state.json")), state);
+    }
+
+    #[test]
+    fn a_broken_installed_release_tag_is_named_as_skipped() {
+        let (ws, m) = Ws::installed("dan/demo1");
+        let installed = ws.author.release("0.2.0");
+        m.update("dan/demo1").unwrap();
+        // The 0.2.0 tag now points at a commit whose manifest says 0.3.0.
+        let broken = ws.author.commit("0.3.0");
+        fixture_git(&ws.author.path, &["tag", "-f", "dan/demo1@0.2.0"]);
+        let plan = m.update_all().unwrap();
+        assert_eq!(
+            plan.unchanged[0].warnings,
+            [format!(
+                "release tag dan/demo1@0.2.0 now points to {} (skipped: tag dan/demo1@0.2.0 disagrees with manifest version 0.3.0); the installed commit is kept",
+                &broken[..12]
+            )]
+        );
+        assert_eq!(
+            m.state().unwrap().packages["dan/demo1"].current.commit,
+            installed
+        );
+        // The one tag refusal left: a broken newest tag is never silently passed over.
         let error = ws.refuses("version_conflict", || m.update("dan/demo1"));
-        assert!(error.to_string().starts_with("latest release is older"));
+        assert!(
+            error
+                .to_string()
+                .starts_with("latest release tag is broken")
+        );
+    }
+
+    #[test]
+    fn moved_and_deleted_tags_are_taken_as_they_are() {
+        // Own clone: update all reports what update ID reports, and never fails.
+        let (ws, m) = Ws::installed("dan/demo1");
+        let installed = ws.author.release("0.2.0");
+        m.update("dan/demo1").unwrap();
+        let moved = same_version_commit(&ws.author);
+        fixture_git(&ws.author.path, &["tag", "-f", "dan/demo1@0.2.0"]);
+        for plan in [m.update_all_plan().unwrap(), m.update_all().unwrap()] {
+            assert!(plan.updates.is_empty());
+            assert_eq!(
+                plan.unchanged,
+                [Unchanged {
+                    id: "dan/demo1".into(),
+                    version: "0.2.0".into(),
+                    reason: None,
+                    warnings: vec![format!(
+                        "release tag dan/demo1@0.2.0 now points to {}; the installed commit is kept",
+                        &moved[..12]
+                    )],
+                }]
+            );
+        }
+        // Every release tag deleted on the origin: still up to date, with the warning.
+        fixture_git(&ws.author.path, &["tag", "-d", "dan/demo1@0.2.0"]);
+        fixture_git(&ws.author.path, &["tag", "-d", "dan/demo1@0.1.0"]);
+        let retracted = ["installed release dan/demo1@0.2.0 no longer exists on the origin"];
+        let plan = m.update_all().unwrap();
+        assert_eq!(plan.unchanged[0].warnings, retracted);
+        let change = m.update("dan/demo1").unwrap();
+        assert!(!change.changed);
+        assert_eq!(change.to.commit, installed);
+        assert_eq!(change.warnings, retracted);
+        // A new release after the retraction is an ordinary update.
+        ws.author.release("0.3.0");
+        let change = m.update("dan/demo1").unwrap();
+        assert_eq!(change.to.version, "0.3.0");
+        assert!(change.warnings.is_empty());
     }
 
     #[test]
@@ -3852,8 +3993,14 @@ mod tests {
         m.install(ws.author.source()).unwrap();
         // The installed release disappears upstream: following releases never goes down.
         fixture_git(&ws.author.path, &["tag", "-d", "dan/demo1@0.5.0"]);
-        let error = ws.refuses("version_conflict", || m.update("dan/demo1"));
-        assert!(error.to_string().starts_with("latest release is older"));
+        let change = m.update("dan/demo1").unwrap();
+        assert!(!change.changed);
+        assert_eq!(change.to.version, "0.5.0");
+        assert_eq!(
+            change.warnings,
+            ["installed release dan/demo1@0.5.0 no longer exists on the origin"]
+        );
+        assert!(m.update_all().unwrap().updates.is_empty());
         // An explicit return to releases may go down to the newest one (here from branch
         // mode above every release).
         m.update_to("dan/demo1", Target::Dev).unwrap();
@@ -4555,6 +4702,81 @@ mod tests {
     }
 
     #[test]
+    fn rollback_of_a_fork_treats_fetched_upstream_tags_as_published() {
+        let ws = Ws::new("me/hello");
+        // The fork's repository holds a tag of its upstream on a commit no branch of the
+        // fork contains (the upstream released after the fork point).
+        let author = &ws.author.path;
+        fixture_git(author, &["switch", "-q", "--detach"]);
+        write_manifest(author, &make_manifest("acme/hello", "1.1.0"));
+        fixture_git(author, &["commit", "-qam", "upstream 1.1.0"]);
+        fixture_git(author, &["tag", "acme/hello@1.1.0"]);
+        fixture_git(author, &["switch", "-q", "main"]);
+        let m = ws.open();
+        m.install(ws.author.source()).unwrap();
+        ws.author.release("0.2.0");
+        m.update("me/hello").unwrap();
+        // Offline, as published as it was for the update.
+        let change = m.rollback("me/hello").unwrap();
+        assert_eq!(
+            (change.from.version.as_str(), change.to.version.as_str()),
+            ("0.2.0", "0.1.0")
+        );
+        // A tag made by hand is still local work, for both.
+        let repo = ws.repo();
+        fixture_git(&repo, &["switch", "-q", "--detach"]);
+        fs::write(repo.join("extra.txt"), "x\n").unwrap();
+        fixture_git(&repo, &["add", "extra.txt"]);
+        fixture_git(&repo, &["commit", "-q", "-m", "tag only"]);
+        fixture_git(&repo, &["tag", "local-only"]);
+        fixture_git(&repo, &["switch", "-q", "--detach", "HEAD~1"]);
+        for error in [
+            ws.refuses("local_changes", || m.rollback("me/hello")),
+            ws.refuses("local_changes", || m.update("me/hello")),
+        ] {
+            let Error::LocalChanges { items, .. } = error else {
+                unreachable!()
+            };
+            assert_eq!(
+                items,
+                [LostWork::UnpublishedTag {
+                    name: "local-only".into()
+                }]
+            );
+        }
+    }
+
+    #[test]
+    fn rollback_to_a_pruned_commit_names_it() {
+        let (ws, m) = Ws::installed("dan/demo1");
+        let first = ws.author.head();
+        // The origin rewrites its history: 0.1.0 is on no branch and its tag is gone.
+        let author = &ws.author.path;
+        fixture_git(author, &["switch", "-q", "--orphan", "rewritten"]);
+        fs::create_dir_all(author.join("dist")).unwrap();
+        ws.author.release("0.2.0");
+        fixture_git(author, &["branch", "-q", "-M", "main"]);
+        fixture_git(author, &["tag", "-d", "dan/demo1@0.1.0"]);
+        m.update("dan/demo1").unwrap();
+        let repo = ws.repo();
+        for branch in fixture_git(
+            &repo,
+            &["for-each-ref", "--format=%(refname)", "refs/heads/"],
+        )
+        .lines()
+        {
+            fixture_git(&repo, &["update-ref", "-d", branch]);
+        }
+        fixture_git(&repo, &["reflog", "expire", "--expire=now", "--all"]);
+        fixture_git(&repo, &["gc", "-q", "--prune=now"]);
+        let error = ws.refuses("no_previous_version", || m.rollback("dan/demo1"));
+        assert_eq!(
+            error.to_string(),
+            format!("previous revision {first} of dan/demo1 is no longer available")
+        );
+    }
+
+    #[test]
     fn symlinked_workspace_root_shares_the_lock() {
         let ws = Ws::new("dan/demo1");
         let m = ws.open();
@@ -5203,6 +5425,7 @@ mod tests {
                 reason: Some(UnchangedReason::BranchGone {
                     branch: "feature".into()
                 }),
+                warnings: Vec::new(),
             }]
         );
     }
@@ -5292,6 +5515,7 @@ mod tests {
                 reason: Some(UnchangedReason::Pinned {
                     reference: "dan/b@0.1.0".into()
                 }),
+                warnings: Vec::new(),
             }]
         );
         assert!(plan.kept_back.is_empty());
@@ -5922,13 +6146,87 @@ mod tests {
     }
 
     #[test]
-    fn a_moved_tag_of_an_installed_package_refuses_install_and_update_of_a_sibling() {
+    fn a_deleted_tag_in_a_shared_clone_is_reported_not_fatal() {
         let mono = Mono::new();
         let m = mono.open();
         for id in ["tilr/store", "tilr/theme"] {
             m.install_package(mono.source(), Some(id), InstallTarget::Release)
                 .unwrap();
         }
+        fixture_git(&mono.repo, &["tag", "-d", "tilr/store@1.0.0"]);
+        mono.release("theme", "1.1.0");
+        let retracted = ["installed release tilr/store@1.0.0 no longer exists on the origin"];
+        let change = m.update("tilr/store").unwrap();
+        assert!(!change.changed);
+        assert_eq!(change.warnings, retracted);
+        let plan = m.update_all().unwrap();
+        assert_eq!(plan.updates[0].id, "tilr/theme");
+        let store = plan
+            .unchanged
+            .iter()
+            .find(|u| u.id == "tilr/store")
+            .unwrap();
+        assert_eq!(store.warnings, retracted);
+        assert_eq!(mono.dist("store"), "store 1.0.0");
+    }
+
+    #[test]
+    fn origin_tags_are_read_from_the_origin_never_from_local_tags() {
+        let mono = Mono::new();
+        fixture_git(&mono.repo, &["tag", "extra"]);
+        let m = mono.open();
+        m.install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
+            .unwrap();
+        let clone = mono.clone_dir();
+        assert!(resolve_ref(&clone, "refs/origin-tags/extra").is_ok());
+        // A tag made by hand on a published commit, then the origin drops the commit
+        // and the tag `extra`; installing a sibling fetches without pruning tags.
+        fixture_git(&clone, &["tag", "mine"]);
+        fixture_git(&mono.repo, &["tag", "-d", "extra"]);
+        m.install_package(mono.source(), Some("tilr/theme"), InstallTarget::Release)
+            .unwrap();
+        assert!(resolve_ref(&clone, "refs/origin-tags/extra").is_err());
+        assert!(resolve_ref(&clone, "refs/origin-tags/mine").is_err());
+        fixture_git(&mono.repo, &["switch", "-q", "--orphan", "rewritten"]);
+        mono.write("store", "2.0.0", &[]);
+        mono.write("theme", "2.0.0", &[]);
+        mono.commit("rewritten");
+        fixture_git(&mono.repo, &["branch", "-q", "-M", "main"]);
+        fixture_git(
+            &clone,
+            &[
+                "fetch",
+                "-q",
+                "--force",
+                "origin",
+                "+refs/heads/*:refs/remotes/origin/*",
+                "--prune",
+            ],
+        );
+        // The clone goes with its last package: its plan lists the hand-made tag.
+        m.uninstall("tilr/theme", &[], false).unwrap();
+        let plan = m.uninstall_plan("tilr/store").unwrap();
+        assert!(
+            plan.lost_work.contains(&LostWork::UnpublishedTag {
+                name: "mine".into()
+            }),
+            "{:?}",
+            plan.lost_work
+        );
+    }
+
+    #[test]
+    fn a_moved_tag_of_an_installed_package_does_not_block_a_sibling() {
+        let mono = Mono::new();
+        let m = mono.open();
+        for id in ["tilr/store", "tilr/theme"] {
+            m.install_package(mono.source(), Some(id), InstallTarget::Release)
+                .unwrap();
+        }
+        let store = m.state().unwrap().packages["tilr/store"]
+            .current
+            .commit
+            .clone();
         mono.write("dock", "1.0.0", &[]);
         mono.commit("dock");
         mono.tag("dock", "1.0.0");
@@ -5938,21 +6236,33 @@ mod tests {
             "store moved",
         )
         .unwrap();
-        mono.commit("move store");
+        let moved = mono.commit("move store");
         fixture_git(&mono.repo, &["tag", "-f", "tilr/store@1.0.0"]);
-        for error in [
-            mono.refuses("version_conflict", || {
-                m.install_package(mono.source(), Some("tilr/dock"), InstallTarget::Release)
-            }),
-            mono.refuses("version_conflict", || m.update("tilr/theme")),
-        ] {
-            assert!(
-                error.to_string().contains(
-                    "release tag tilr/store@1.0.0 of the installed tilr/store changed commit"
-                ),
-                "{error}"
-            );
-        }
+        m.install_package(mono.source(), Some("tilr/dock"), InstallTarget::Release)
+            .unwrap();
+        assert_eq!(m.update("tilr/theme").unwrap().to.version, "1.1.0");
+        // The shared clone took the moved tag; tilr/store keeps its installed commit.
+        assert_eq!(
+            resolve_ref(&mono.clone_dir(), "tilr/store@1.0.0").unwrap(),
+            moved
+        );
+        assert_eq!(
+            m.state().unwrap().packages["tilr/store"].current.commit,
+            store
+        );
+        assert_eq!(mono.dist("store"), "store 1.0.0");
+        let warning = format!(
+            "release tag tilr/store@1.0.0 now points to {}; the installed commit is kept",
+            &moved[..12]
+        );
+        assert_eq!(m.update("tilr/store").unwrap().warnings, [warning.as_str()]);
+        let plan = m.update_all().unwrap();
+        let unchanged = plan
+            .unchanged
+            .iter()
+            .find(|u| u.id == "tilr/store")
+            .unwrap();
+        assert_eq!(unchanged.warnings, [warning]);
     }
 
     #[test]

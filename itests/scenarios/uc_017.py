@@ -81,8 +81,29 @@ def corrupt_previous(t: T, change):
 
 @case(fixture="g2_hello_history", spec=["errors/failing-operations-leave-the-workspace-unchanged"])
 def missing_previous_snapshot_fails_safely(t: T):
-    """previous.commit names a commit that does not exist in the clone: rollback fails, nothing changes."""
-    corrupt_previous(t, lambda p: p.update(commit="0123456789abcdef0123456789abcdef01234567"))
+    """previous.commit names a commit that does not exist in the clone: rollback fails with
+    no_previous_version naming the commit, nothing changes."""
+    gone = "0123456789abcdef0123456789abcdef01234567"
+    r = corrupt_previous(t, lambda p: p.update(commit=gone))
+    t.has(r.err, "Error kind: no_previous_version", f"previous revision {gone} of {ID} is no longer available")
+
+
+@case(fixture="hello", spec=["updates/local-work-blocks-update-and-rollback#retained-upstream-tag-on-rollback"])
+def rollback_of_a_fork_with_upstream_tags(t: T):
+    """A fork whose repository also holds a tag of its upstream on a commit no branch of the
+    fork contains: install, update, rollback all succeed (the fetched tag is published)."""
+    fork = "me/hello"
+    first = t.new_package(fork, "1.0.0")
+    repo = t.repo(fork)
+    t.git(repo, "checkout", "-q", "--detach")
+    t.release("acme/hello", "1.1.0", repo=repo)
+    t.git(repo, "checkout", "-q", "main")
+    t.gitpm_ok("install", repo)
+    t.release(fork, "1.1.0")
+    t.gitpm_ok("update", fork)
+    r = t.gitpm_ok("rollback", fork)
+    t.has(r.out, f"{fork} rolled back 1.1.0 → 1.0.0")
+    t.eq(t.package(fork)["current"], {"version": "1.0.0", "commit": first}, "current after rollback")
 
 
 @case(fixture="g2_hello_history", spec=["errors/failing-operations-leave-the-workspace-unchanged"])

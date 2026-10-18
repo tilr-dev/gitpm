@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Tags are not policed; integrity via protected catalog
-Single source for moved and deleted release tags: fetching into any clone (own or shared) SHALL take the origin's release tags as they are, so a moved tag is seen at its new commit and a deleted one disappears, and no operation SHALL fail because a tag moved. Installed revisions are kept by commit. Integrity of published versions is the job of a verified catalog (catalog). Verified by `releases::moved_and_deleted_tags_are_taken_as_they_are`.
+Single source for moved and deleted tags: fetching into any clone (own or shared) SHALL take the origin's release tags as they are: no install, update, `update all` or `catalog-update` SHALL fail because a tag moved or was deleted. Installed revisions are kept by commit; the only tag refusal left is a broken newest tag (scenario below). Integrity of published versions is the job of a verified catalog. Verified by `workspace::moved_and_deleted_tags_are_taken_as_they_are`.
 
 #### Scenario: Retagged release
 - **WHEN** the tag of an already seen release `acme/greeter@0.2.0` is moved to another commit on the origin
@@ -10,6 +10,11 @@ Single source for moved and deleted release tags: fetching into any clone (own o
 #### Scenario: Moved tag of a sibling
 - **WHEN** the tag of installed `tilr/theme@0.1.0` moved on the origin and the user updates `tilr/store` from the same shared clone
 - **THEN** the update of `tilr/store` succeeds and `tilr/theme` keeps its installed commit
+- **AND** this is covered by `a_moved_tag_of_an_installed_package_does_not_block_a_sibling`
+
+#### Scenario: Moved onto a commit of another version
+- **WHEN** the installed release tag `acme/greeter@0.2.0` is moved onto a commit whose manifest says 0.3.0
+- **THEN** it is a broken tag: `update all` keeps the package with the warning `release tag acme/greeter@0.2.0 now points to COMMIT (skipped: REASON); the installed commit is kept`, while `update acme/greeter` fails with `version_conflict` ("latest release tag is broken: …") because it is the newest tag
 
 #### Scenario: Moved tag on regenerate
 - **WHEN** a published tag was moved to another commit and the user runs `catalog-update`

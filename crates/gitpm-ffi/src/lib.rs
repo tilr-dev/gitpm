@@ -40,8 +40,13 @@ pub enum PmError {
     InvalidArgument { message: String },
     #[error("{message}")]
     VersionConflict { message: String },
+    /// `commit`: the previous revision's commit is no longer in the clone.
     #[error("{message}")]
-    NoPreviousVersion { id: String, message: String },
+    NoPreviousVersion {
+        id: String,
+        commit: Option<String>,
+        message: String,
+    },
     #[error("{message}")]
     NoReleases { message: String },
     #[error("{message}")]
@@ -108,7 +113,11 @@ impl From<pm::Error> for PmError {
             pm::Error::InvalidVersion(_) => PmError::InvalidVersion { message },
             pm::Error::InvalidArgument(_) => PmError::InvalidArgument { message },
             pm::Error::VersionConflict(_) => PmError::VersionConflict { message },
-            pm::Error::NoPreviousVersion { id } => PmError::NoPreviousVersion { id, message },
+            pm::Error::NoPreviousVersion { id, commit } => PmError::NoPreviousVersion {
+                id,
+                commit,
+                message,
+            },
             pm::Error::NoReleases(_) => PmError::NoReleases { message },
             pm::Error::RepositoryNotFound { id } => PmError::RepositoryNotFound { id, message },
             pm::Error::Workspace(_) => PmError::Workspace { message },
@@ -638,6 +647,8 @@ pub struct Unchanged {
     pub reason: Option<UnchangedReason>,
     /// `reason` as the CLI prints it (`dependency acme/lib is not installed`).
     pub message: Option<String>,
+    /// A moved or deleted installed release tag (the installed commit is kept).
+    pub warnings: Vec<String>,
 }
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct HeldBack {
@@ -673,6 +684,7 @@ impl From<pm::UpdateAllPlan> for UpdateAllPlan {
                     version: u.version,
                     message: u.reason.as_ref().map(ToString::to_string),
                     reason: u.reason.map(Into::into),
+                    warnings: u.warnings,
                 })
                 .collect(),
             skipped: plan.skipped.into_iter().map(Into::into).collect(),
@@ -1797,7 +1809,10 @@ mod tests {
             pm::Error::InvalidVersion(m()),
             pm::Error::InvalidArgument(m()),
             pm::Error::VersionConflict(m()),
-            pm::Error::NoPreviousVersion { id: "a/b".into() },
+            pm::Error::NoPreviousVersion {
+                id: "a/b".into(),
+                commit: Some("c0ffee".into()),
+            },
             pm::Error::NoReleases(m()),
             pm::Error::RepositoryNotFound { id: "a/b".into() },
             pm::Error::Workspace(m()),
@@ -1924,11 +1939,23 @@ mod tests {
                 id: "x/one".into(),
                 message: "m".into(),
             },
-            pm::Error::NoPreviousVersion { id: "x/one".into() },
+            pm::Error::NoPreviousVersion {
+                id: "x/one".into(),
+                commit: Some("c0ffee".into()),
+            },
             pm::Error::RepositoryNotFound { id: "x/one".into() },
         ] {
             assert_eq!(id_of(error.into()), "x/one");
         }
+        let PmError::NoPreviousVersion { commit, .. } =
+            PmError::from(pm::Error::NoPreviousVersion {
+                id: "x/one".into(),
+                commit: Some("c0ffee".into()),
+            })
+        else {
+            unreachable!()
+        };
+        assert_eq!(commit.as_deref(), Some("c0ffee"));
         let items = all_lost_work();
         let error = PmError::from(pm::Error::LocalChanges {
             id: "x/one".into(),
@@ -2374,6 +2401,7 @@ mod tests {
                     reason: Some(pm::UnchangedReason::Diverged {
                         branch: "main".into(),
                     }),
+                    warnings: vec![],
                 },
                 pm::Unchanged {
                     id: "app/c".into(),
@@ -2382,6 +2410,15 @@ mod tests {
                         dependency: "acme/lib".into(),
                         problem: "not installed".into(),
                     }),
+                    warnings: vec![],
+                },
+                pm::Unchanged {
+                    id: "app/d".into(),
+                    version: "1.0.0".into(),
+                    reason: None,
+                    warnings: vec![
+                        "installed release app/d@1.0.0 no longer exists on the origin".into(),
+                    ],
                 },
             ],
             skipped: skipped(),
@@ -2427,6 +2464,11 @@ mod tests {
             plan.unchanged[1].message.as_deref(),
             Some("dependency acme/lib is not installed")
         );
+        assert_eq!(
+            plan.unchanged[2].warnings,
+            ["installed release app/d@1.0.0 no longer exists on the origin"]
+        );
+        assert_eq!(plan.unchanged[2].reason, None);
         check_report(&plan.dist);
         assert_eq!(plan.skipped[0].name, "me/x@0.5.0");
 

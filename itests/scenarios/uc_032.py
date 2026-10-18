@@ -93,24 +93,41 @@ def malformed_manifest_tag_newer_than_valid(t: T):
                       "version_conflict", "latest release tag is broken")
 
 
-@case(fixture="g4_sources_catalog", spec=["package-ids/moved-release-tags-are-refused#moved-tag-on-regenerate"])
+# Change no-tag-immutability adds the scenario "Manifest or files differ from the published
+# record" to "Published versions are immutable"; the anchors keep the current main slug
+# (#regenerate) until that change is archived.
+@case(fixture="g4_sources_catalog", spec=["catalog/published-versions-are-immutable#regenerate"])
 def moved_old_release(t: T):
-    """An already published release tag (dan/spaced@1.0.0) moved to another commit:
-    refused as a change of a published version; hello 0.3.0 not written; retry after
-    restoring the tag succeeds and the published 1.0.0 is unchanged."""
+    """An already published release tag (dan/spaced@1.0.0) moved to another commit: the
+    published record is kept with a warning, and hello 0.3.0 is published (change
+    no-tag-immutability)."""
     spaced = t.root / "spaced repos/dan/spaced"
     original = t.rev(spaced, "dan/spaced@1.0.0")
     published = t.catalog_release("dan/spaced", "1.0.0").read_bytes()
-
-    def bad():
-        t.git(spaced, "checkout", "-q", "-b", "side", original)
-        t.commit(spaced, "rewritten 1.0.0", {"dist/index.js": "rewritten\n"})
-        t.tag(spaced, "dan/spaced@1.0.0", force=True)
-        t.git(spaced, "checkout", "-q", "main")
-
-    failed_then_retry(t, bad, lambda: t.tag(spaced, "dan/spaced@1.0.0", original, force=True),
-                      "version_conflict", ("dan/spaced@1.0.0", "refusing to replace published version"))
+    commit = t.release(HELLO, "0.3.0")
+    t.git(spaced, "checkout", "-q", "-b", "side", original)
+    moved = t.commit(spaced, "rewritten 1.0.0", {"dist/index.js": "rewritten\n"})
+    t.tag(spaced, "dan/spaced@1.0.0", force=True)
+    t.git(spaced, "checkout", "-q", "main")
+    r = update(t)
+    t.has(r.err, f"Warning: release dan/spaced@1.0.0: tag now points to {moved[:12]}; the published record is kept")
     t.eq(t.catalog_release("dan/spaced", "1.0.0").read_bytes(), published, "published 1.0.0 bytes")
+    t.eq(json.loads(t.catalog_release(HELLO, "0.3.0").read_text())["commit"], commit, "0.3.0 published")
+
+
+@case(fixture="g4_sources_catalog", spec=["catalog/published-versions-are-immutable#regenerate"])
+def edited_published_record_is_kept(t: T):
+    """A published record whose file hashes differ from the regenerated release (a manual
+    edit of release.json) is kept with a warning; catalog-update exits 0."""
+    path = t.catalog_release("dan/spaced", "1.0.0")
+    record = json.loads(path.read_text())
+    name = next(iter(record["files"]))
+    record["files"][name]["sha256"] = "ab" * 32
+    path.write_text(json.dumps(record, indent=2) + "\n")
+    edited = path.read_bytes()
+    r = update(t)
+    t.has(r.err, "Warning: release dan/spaced@1.0.0 differs from the published record; the published record is kept")
+    t.eq(path.read_bytes(), edited, "edited record kept")
 
 
 @case(fixture="g4_sources_catalog", spec=["catalog/published-versions-are-immutable#regenerate"])

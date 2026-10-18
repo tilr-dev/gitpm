@@ -1061,19 +1061,35 @@ fn update_all_preserves_local_work_and_never_partially_deploys() {
 }
 
 #[test]
-fn update_all_does_not_downgrade_or_accept_mutated_releases() {
+fn update_all_does_not_downgrade_and_warns_about_moved_and_retracted_releases() {
     let f = Fixture::new();
     let cat = f.catalog("catalog");
     f.publish(&cat, "x/a", "2.0.0", &[]);
     let m = f.open(&cat);
     m.install_from_catalog("x/a", None).unwrap();
+    let installed = plugin(&m, "x/a").current.commit;
     let repo = f.path("authors/x/a");
     git(&repo, &["tag", "-d", "x/a@2.0.0"]);
     f.release(&repo, "x/a", "1.0.0", &[]);
-    assert!(m.update_all().unwrap().updates.is_empty());
+    // Retracted: no downgrade, up to date with a warning.
+    let plan = m.update_all().unwrap();
+    assert!(plan.updates.is_empty());
+    assert_eq!(
+        plan.unchanged[0].warnings,
+        ["installed release x/a@2.0.0 no longer exists on the origin"]
+    );
     assert_eq!(plugin(&m, "x/a").current.version, "2.0.0");
+    // Retagged at another commit: taken as it is, the installed commit is kept.
     f.release(&repo, "x/a", "2.0.0", &[]);
-    f.refuses("version_conflict", || m.update_all());
+    let plan = m.update_all().unwrap();
+    assert!(plan.updates.is_empty());
+    assert_eq!(plan.unchanged[0].warnings.len(), 1);
+    assert!(
+        plan.unchanged[0].warnings[0].starts_with("release tag x/a@2.0.0 now points to "),
+        "{:?}",
+        plan.unchanged[0].warnings
+    );
+    assert_eq!(plugin(&m, "x/a").current.commit, installed);
 }
 
 #[test]
@@ -1332,6 +1348,7 @@ fn update_all_plan_lists_unchanged_packages() {
             id: "app/b".into(),
             version: "2.0.0".into(),
             reason: None,
+            warnings: Vec::new(),
         }]
     );
     let applied = m.update_all().unwrap();
@@ -1365,6 +1382,7 @@ fn update_all_skips_broken_consumers_and_never_reinstalls() {
             dependency: "lib/core".into(),
             problem: "not installed".into(),
         }),
+        warnings: Vec::new(),
     };
     let assert_skipped = |plan: &gitpm::UpdateAllPlan, other: &str| {
         assert_eq!(

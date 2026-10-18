@@ -162,6 +162,28 @@ pub(crate) fn require_head(repo: &Path, id: &str, recorded: &str, message: &str)
     })
 }
 
+/// Where a clone records the origin's tags as of its last fetch (see
+/// [`record_origin_tags`]), so an offline check knows which tags are published.
+pub(crate) const ORIGIN_TAGS: &str = "refs/origin-tags/";
+
+/// Record the origin's tags under [`ORIGIN_TAGS`], read from the origin itself (never
+/// from local tags, so a tag made by hand never counts as published), pruning records of
+/// tags the origin deleted. Called after every clone and every fetch from the origin.
+pub(crate) fn record_origin_tags(repo: &Path) -> Result<()> {
+    git(
+        repo,
+        &[
+            "fetch",
+            "--quiet",
+            "--prune",
+            "--no-tags",
+            "origin",
+            &format!("+refs/tags/*:{ORIGIN_TAGS}*"),
+        ],
+    )?;
+    Ok(())
+}
+
 fn unpublished_refs(repo: &Path, prefix: &str) -> Result<Vec<(String, u64)>> {
     let mut result = Vec::new();
     for name in git(repo, &["for-each-ref", "--format=%(refname)", prefix])?.lines() {
@@ -184,8 +206,9 @@ fn hidden(repo: &Path, check_remote: bool) -> Result<Vec<LostWork>> {
         items.push(LostWork::UnpublishedBranch { name, commits });
     }
     let tags = unpublished_refs(repo, "refs/tags/")?;
-    // A published tag need not be reachable from any remote branch (forks
-    // commonly retain upstream tags). Verify the exact ref and object remotely.
+    // A published tag need not be reachable from any remote branch (forks commonly
+    // retain upstream tags): a tag the origin had with the same object at the last
+    // fetch is published (offline); `check_remote` also accepts one it has now.
     let published = if tags.is_empty() || !check_remote {
         String::new()
     } else {
@@ -194,9 +217,20 @@ fn hidden(repo: &Path, check_remote: bool) -> Result<Vec<LostWork>> {
     for (name, _) in tags {
         let reference = format!("refs/tags/{name}");
         let object = git(repo, &["rev-parse", &reference])?;
-        if !published
-            .lines()
-            .any(|line| line == format!("{object}\t{reference}"))
+        let fetched = git(
+            repo,
+            &[
+                "rev-parse",
+                "--verify",
+                "-q",
+                &format!("{ORIGIN_TAGS}{name}"),
+            ],
+        )
+        .is_ok_and(|seen| seen == object);
+        if !fetched
+            && !published
+                .lines()
+                .any(|line| line == format!("{object}\t{reference}"))
         {
             items.push(LostWork::UnpublishedTag { name });
         }
