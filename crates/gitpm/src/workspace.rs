@@ -552,8 +552,8 @@ pub(crate) fn copy_tree(from: &Path, to: &Path, symlinks: bool) -> Result<()> {
 }
 /// Copy the folder `path` (`""`: the root) of `commit` from `repo` into `target`: one
 /// `git archive` of that tree (`COMMIT:PATH`, a literal path, never a pattern), unpacked
-/// in process. Plain files and folders only, the executable bit is kept; symlinks are
-/// refused (a submodule comes out as an empty folder). The folder must exist.
+/// in process. Plain files and folders only, the executable bit is kept; symlinks
+/// and submodules are refused. The folder must exist.
 pub(crate) fn export_folder(
     repo: &Path,
     commit: &str,
@@ -571,6 +571,24 @@ pub(crate) fn export_folder(
         "revision {commit} has no folder {}",
         if path.is_empty() { "(root)" } else { path }
     );
+    // Archive represents gitlinks as ordinary empty directories, losing their type.
+    // Inspect the committed tree before creating or writing any deployment files.
+    let entries = crate::exec::git_raw(repo, &["ls-tree", "-r", "-z", &tree], custom_ssh)?;
+    for entry in entries.split(|byte| *byte == 0) {
+        if entry.starts_with(b"160000 ") {
+            let name =
+                String::from_utf8_lossy(entry.splitn(2, |byte| *byte == b'\t').nth(1).unwrap());
+            fail!(
+                Unsupported,
+                "symlinks and submodules are not supported: {}",
+                if path.is_empty() {
+                    name.into_owned()
+                } else {
+                    format!("{path}/{name}")
+                }
+            );
+        }
+    }
     let tar = crate::exec::git_raw(repo, &["archive", "--format=tar", &tree], custom_ssh)?;
     fs::create_dir_all(target)?;
     let mut archive = tar::Archive::new(&tar[..]);
@@ -6024,6 +6042,32 @@ mod tests {
         fixture_git(&bad.path, &["commit", "-q", "-m", "symlink in dist"]);
         fixture_git(&bad.path, &["tag", "-f", "dan/bad@0.1.0"]);
         ws.refuses("unsupported", || m.install(bad.source()));
+    }
+
+    #[test]
+    fn a_submodule_in_dist_is_refused() {
+        let (ws, m) = Ws::installed("dan/demo1");
+        let bad = ws.other_author("bad", "dan/bad");
+        let sha = git(&bad.path, &["rev-parse", "HEAD"]).unwrap();
+        fixture_git(
+            &bad.path,
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("160000,{sha},dist/vendor"),
+            ],
+        );
+        fixture_git(&bad.path, &["commit", "-q", "-m", "submodule in dist"]);
+        fixture_git(&bad.path, &["tag", "-f", "dan/bad@0.1.0"]);
+        let error = ws.refuses("unsupported", || m.install(bad.source()));
+        assert!(
+            error
+                .to_string()
+                .contains("symlinks and submodules are not supported: dist/vendor"),
+            "{error}"
+        );
+        assert!(!ws.root.join("dist/dan/bad/vendor").exists());
     }
 
     #[test]
