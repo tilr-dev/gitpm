@@ -43,14 +43,6 @@ All subprocesses of the library (system `git` and `curl`) SHALL be started from 
 - **WHEN** `PM_*` and `GITPM_*` variables hold garbage while the library is used
 - **THEN** results are the same as with a clean environment
 
-#### Scenario: Explicit options for standalone operations
-- **WHEN** a caller invokes a standalone catalog, ref, check or authoring `*_with_options` operation with `custom_ssh: true`
-- **THEN** every Git command uses the same SSH override policy as a Manager opened with those options, without reading environment variables
-
-#### Scenario: Default standalone options
-- **WHEN** an existing standalone entry point is used
-- **THEN** its SSH behavior is equivalent to its `*_with_options` variant with `Options::default()`
-
 ### Requirement: Origin tag lookup is bounded and restricted
 The repository-less `git ls-remote --tags --heads -- SOURCE` of `check` SHALL run in `exec.rs` with the bounds of every repository command plus `LC_ALL=C`, the OS temp dir as working directory and a transport allowlist (file, git, http, https, ssh), and only on a source that passes `auth::validate_recorded`; nothing is fetched or written. Verified by `exec::ls_remote_refs_lists_tags_with_peeled_commits_and_branches_and_fails_as_git`.
 
@@ -70,3 +62,16 @@ The repository-less `git ls-remote --tags --heads -- SOURCE` of `check` SHALL ru
 #### Scenario: Local paths stay allowed
 - **WHEN** the recorded source is an absolute local path (Git 2.38.1 and later default `protocol.file.allow` to `user`)
 - **THEN** the lookup still reads its tags and branches, because the allowlist sets `protocol.file.allow=always` instead of `GIT_PROTOCOL_FROM_USER=0`
+
+## ADDED Requirements
+
+### Requirement: SSH settings for standalone operations
+Standalone catalog, ref, check and authoring operations SHALL offer `*_with_options` entry points accepting `&Options` and use the caller's SSH policy for every Git command. Existing entry points SHALL use default options. Verified by `custom_ssh_is_shared_by_auth_install_catalog_and_check`.
+
+#### Scenario: Explicit options for standalone operations
+- **WHEN** a caller invokes a standalone catalog, ref, check or authoring `*_with_options` operation with `custom_ssh: true`
+- **THEN** every Git command uses the same SSH override policy as a Manager opened with those options, without reading environment variables
+
+#### Scenario: Default standalone options
+- **WHEN** an existing standalone entry point is used
+- **THEN** its SSH behavior is equivalent to its `*_with_options` variant with `Options::default()`
