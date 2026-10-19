@@ -9,7 +9,7 @@
 - Cap the bytes read from curl's stdout at 16 MiB regardless of headers (stream the child's stdout and kill curl when the cap is exceeded), reporting `http`.
 - Keep the existing timeouts, protocol and redirect rules.
 
-Depends on: the 2026-10-18 chain through `host-compatibility` and the per-task changes split from the former `robustness-fixes` (`sync-dist-reports-blocked-namespace` … `package-errors-name-the-package`). `cli-catalog-commands` and `embedded-git-and-http` build on this change.
+Depends on: the 2026-10-18 chain through `host-compatibility` and the per-task changes split from the former `robustness-fixes` (`sync-dist-reports-blocked-namespace` … `package-errors-name-the-package`). `cli-catalog-commands` and `embedded-http` (TILR-145) build on this change.
 
 ## Capabilities
 
@@ -18,7 +18,7 @@ Depends on: the 2026-10-18 chain through `host-compatibility` and the per-task c
 
 ## Out of scope
 
-- Replacing curl with an embedded HTTP client (see `embedded-git-and-http`, which lands after this change).
+- Replacing curl with an embedded HTTP client (see `embedded-http`, which lands after this change).
 - Changing the limit value.
 
 ## Impact

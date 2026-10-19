@@ -11,7 +11,7 @@
 
 Depends on: the 2026-10-18 chain through `host-compatibility` (`no-backward-compat` … `host-compatibility`); the deltas are written against the specs as that chain leaves them.
 
-Shared requirement: git-safety "Git never waits for input" is also modified by `git-never-prompts-via-askpass` (TILR-53) and `bounded-auth-check` (TILR-24); each delta changes only its own part of the current text. The change archived later rebases its delta onto the spec the earlier one left. `embedded-git-and-http` keeps this change's git-safety "One subprocess boundary" and single SSH policy.
+Shared requirement: git-safety "Git never waits for input" is also modified by `git-never-prompts-via-askpass` (TILR-53) and `bounded-auth-check` (TILR-24); each delta changes only its own part of the current text. The change archived later rebases its delta onto the spec the earlier one left. `embedded-git` (TILR-141) and `embedded-http` (TILR-145) keep this change's git-safety "One subprocess boundary" (each modifies only its own part of it) and single SSH policy.
 
 ## Capabilities
 
