@@ -40,6 +40,11 @@ Every deploy (install, update, rollback, restore, `replace --back`, enable, reco
 - **WHEN** a release's `dist/bin/run` has the executable bit
 - **THEN** the deployed `dist/<id>/bin/run` is executable
 
+#### Scenario: export-ignore in the package repository
+- **WHEN** the release commit's `.gitattributes` marks `dist/debug.js` `export-ignore`
+- **THEN** `dist/<id>/debug.js` is deployed and `export-subst` placeholders stay as committed
+- **AND** catalog creation, `install-catalog`, protected-package update, and `verify_catalog_release` hash or verify the staged `dist/<id>` export after `export_dist` and before committing the transaction, so each hash covers the deployed bytes
+
 ### Requirement: A revision without dist is refused
 Single source for the missing package dist refusal: a revision whose package folder has no `dist/` SHALL be refused with `invalid_manifest` and SHALL NOT be deployed as an empty folder. The message names where it was detected (see the scenarios). Verified by `workspace::a_revision_without_dist_is_never_deployed_empty` and `packages::invalid_package_sets_are_refused`.
 

@@ -65,7 +65,7 @@ def enable_deploys_committed_tree_not_working_tree(t: T):
     t.lacks((t.dist(A) / "index.js").read_text(), "uncommitted")
 
 
-@case(fixture="catalog", spec=["dist/deploys-copy-the-committed-tree"])
+@case(fixture="catalog", spec=["dist/deploys-copy-the-committed-tree#export-ignore-in-the-package-repository"])
 def export_ignore_deploys_and_hashes_committed_bytes(t: T):
     """Catalog registration, protected install and update use the deployed Git blobs."""
     id = "attrs/demo"
