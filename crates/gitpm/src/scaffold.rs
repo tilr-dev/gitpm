@@ -69,7 +69,7 @@ fn create_repo(directory: &Path, id: &str, release: bool) -> Result<PathBuf> {
             ),
         )?;
         git(&directory, &["init", "-b", "main"])?;
-        ensure_identity(&directory)?;
+        identity(&directory, true)?;
         git(&directory, &["add", "--all", "--", "."])?;
         git(
             &directory,
@@ -91,30 +91,43 @@ pub fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
-/// Give a repository that gitpm has just created (never a user's existing one) a local
-/// demo identity when the user has none, so authoring works on a fresh machine without
-/// changing global Git settings. An identity the user has is never overridden.
-pub(crate) fn ensure_identity(directory: &Path) -> Result<()> {
-    if git(directory, &["config", "user.name"]).is_err() {
+/// Check both identities without Git's login/host fallback. Only repositories newly
+/// created by gitpm may receive a local demo identity, and configured values stay intact.
+pub(crate) fn identity(repo: &Path, created: bool) -> Result<()> {
+    let configured = || {
         git(
-            directory,
-            &["config", "--local", "user.name", "Package Demo"],
-        )?;
+            repo,
+            &["-c", "user.useConfigOnly=true", "var", "GIT_AUTHOR_IDENT"],
+        )
+        .and_then(|_| {
+            git(
+                repo,
+                &[
+                    "-c",
+                    "user.useConfigOnly=true",
+                    "var",
+                    "GIT_COMMITTER_IDENT",
+                ],
+            )
+        })
+        .is_ok()
+    };
+    if created && !configured() {
+        if git(repo, &["config", "user.name"]).is_err() {
+            git(repo, &["config", "--local", "user.name", "Package Demo"])?;
+        }
+        if git(repo, &["config", "user.email"]).is_err() {
+            git(
+                repo,
+                &["config", "--local", "user.email", "demo@example.invalid"],
+            )?;
+        }
     }
-    if git(directory, &["config", "user.email"]).is_err() {
-        git(
-            directory,
-            &["config", "--local", "user.email", "demo@example.invalid"],
-        )?;
-    }
-    Ok(())
-}
-
-/// Refuse to commit in a user's repository without a Git identity (gitpm never writes
-/// one there): the error of `git var GIT_AUTHOR_IDENT`/`GIT_COMMITTER_IDENT`.
-pub(crate) fn require_identity(repo: &Path) -> Result<()> {
-    git(repo, &["var", "GIT_AUTHOR_IDENT"])?;
-    git(repo, &["var", "GIT_COMMITTER_IDENT"])?;
+    ensure!(
+        configured(),
+        InvalidArgument,
+        "no Git identity configured; set user.name and user.email"
+    );
     Ok(())
 }
 
@@ -221,7 +234,7 @@ pub fn commit_package(repo: &Path, version: &str, package: Option<&str>) -> Resu
             tag,
         });
     }
-    require_identity(&repo)?;
+    identity(&repo, false)?;
     // A failed commit (hook, signing) must leave the manifest and the index as they were.
     let original = fs::read(repo.join(&manifest_path))?;
     let index = PathBuf::from(git(
@@ -495,11 +508,7 @@ fn add_package(
             }
         }
         // gitpm never writes an identity into a user's repository; a new one is its own.
-        if created {
-            ensure_identity(&repo)?;
-        } else {
-            require_identity(&repo)?;
-        }
+        identity(&repo, created)?;
         // A failed commit (hook, signing) must leave the index as it was, too.
         let index = PathBuf::from(git(
             &repo,
@@ -647,6 +656,33 @@ pub fn set_remote(repo: &Path, url: &str) -> Result<()> {
 mod tests {
     use super::*;
     use crate::test_support::{TempDir, git as fixture_git, tree_hash};
+
+    // Cargo supplies a global test identity. Run the missing-identity case in a
+    // single isolated test process so other parallel unit tests keep their config.
+    fn isolated_identity_test(name: &str) -> bool {
+        if std::env::var_os("GITPM_IDENTITY_TEST_CHILD").is_some() {
+            return false;
+        }
+        let dir = TempDir::new("identity-test-config");
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name])
+            .env("GITPM_IDENTITY_TEST_CHILD", "1")
+            .env("GIT_CONFIG_GLOBAL", dir.join("missing-config"))
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env_remove("GIT_AUTHOR_NAME")
+            .env_remove("GIT_AUTHOR_EMAIL")
+            .env_remove("GIT_COMMITTER_NAME")
+            .env_remove("GIT_COMMITTER_EMAIL")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        true
+    }
 
     #[test]
     fn shell_quote_survives_single_quotes() {
@@ -1041,6 +1077,11 @@ mod tests {
 
     #[test]
     fn create_package_refuses_uncommitted_config_and_a_missing_identity() {
+        if isolated_identity_test(
+            "scaffold::tests::create_package_refuses_uncommitted_config_and_a_missing_identity",
+        ) {
+            return;
+        }
         let dir = TempDir::new("scaffold");
         let repo = dir.join("mono");
         create_package(&repo, "tilr", "store").unwrap();
@@ -1061,15 +1102,22 @@ mod tests {
         assert_eq!(snapshot(&repo), before);
         fixture_git(&repo, &["checkout", "-q", "--", packages::CONFIG]);
         // gitpm never writes an identity into an existing repository.
-        fixture_git(&repo, &["config", "user.name", ""]);
+        fixture_git(&repo, &["config", "--unset", "user.name"]);
+        fixture_git(&repo, &["config", "--unset", "user.email"]);
         let before = snapshot(&repo);
         let error = create_package(&repo, "tilr", "theme").unwrap_err();
-        assert_eq!(error.kind(), "git");
-        assert!(error.to_string().contains("GIT_AUTHOR_IDENT"), "{error}");
+        assert_eq!(error.kind(), "invalid_argument");
+        assert_eq!(
+            error.to_string(),
+            "no Git identity configured; set user.name and user.email"
+        );
         assert_eq!(snapshot(&repo), before);
-        assert_eq!(fixture_git(&repo, &["config", "--local", "user.name"]), "");
+        assert!(
+            !fs::read_to_string(repo.join(".git/config"))
+                .unwrap()
+                .contains("name =")
+        );
         // An existing folder is refused like in a fork that adds packages.
-        fixture_git(&repo, &["config", "--unset", "user.name"]);
         fs::create_dir_all(repo.join("packages/theme")).unwrap();
         fs::write(repo.join("packages/theme/notes.txt"), "mine").unwrap();
         let error = create_package(&repo, "tilr", "theme").unwrap_err();

@@ -332,6 +332,87 @@ fn direct_git_refs_and_local_author_commit() {
     assert_eq!(f.content(), "author release");
 }
 
+mod scaffold {
+    use super::*;
+
+    #[test]
+    fn derived_identity_is_refused() {
+        let f = Fixture::new();
+        fs::write(
+            f.dir.join("home/.gitconfig"),
+            "[init]\n\tdefaultBranch = main\n[commit]\n\tgpgsign = false\n[tag]\n\tgpgsign = false\n",
+        )
+        .unwrap();
+        f.git(&["config", "--unset", "user.name"]);
+        f.git(&["config", "--unset", "user.email"]);
+        fs::write(f.repo.join("dist/index.js"), "next release").unwrap();
+
+        // Names are explicit, but EMAIL is Git's implicit email fallback. Plain
+        // `git var` accepts it; user.useConfigOnly rejects it.
+        for variable in ["GIT_AUTHOR_IDENT", "GIT_COMMITTER_IDENT"] {
+            let ident = f
+                .command("git")
+                .arg("-C")
+                .arg(&f.repo)
+                .args(["var", variable])
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("EMAIL", "derived@example.invalid")
+                .output()
+                .unwrap();
+            assert!(
+                ident.status.success(),
+                "{}",
+                String::from_utf8_lossy(&ident.stderr)
+            );
+        }
+
+        let git_output = |args: &[&str]| {
+            let out = f
+                .command("git")
+                .arg("-C")
+                .arg(&f.repo)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            out.stdout
+        };
+        let state = || {
+            (
+                git_output(&["rev-parse", "HEAD"]),
+                git_output(&["status", "--porcelain"]),
+                git_output(&["tag", "--list"]),
+                fs::read(f.repo.join("plugin.json")).unwrap(),
+                fs::read(f.repo.join("dist/index.js")).unwrap(),
+                fs::read(f.repo.join(".git/config")).unwrap(),
+                fs::read(f.repo.join(".git/index")).unwrap(),
+            )
+        };
+        let before = state();
+        let out = f
+            .pm()
+            .args(["commit", f.repo.to_str().unwrap(), "1.0.1"])
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("EMAIL", "derived@example.invalid")
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        let stderr = String::from_utf8(out.stderr).unwrap();
+        assert!(stderr.contains("invalid_argument"), "{stderr}");
+        assert!(
+            stderr.contains("no Git identity configured; set user.name and user.email"),
+            "{stderr}"
+        );
+        assert_eq!(state(), before);
+    }
+}
+
 #[test]
 fn catalog_manifest_is_verified_before_install() {
     let f = Fixture::new();

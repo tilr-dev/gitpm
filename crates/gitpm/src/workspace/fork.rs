@@ -857,7 +857,7 @@ fn new_fork(
         committed.push(manifest_path(&source.path));
     }
     // A new repository created by gitpm: a local demo identity only if the user has none.
-    scaffold::ensure_identity(destination)?;
+    scaffold::identity(destination, true)?;
     // Commit only the fork's own changes; keep unrelated local edits and staged files.
     let message = fork_message(sources);
     // A new repository of gitpm's: hooks of the copied clone or the user's are not run.
@@ -1008,7 +1008,7 @@ fn add_packages(
         repo.display()
     );
     // gitpm never writes a Git identity into the author's repository.
-    scaffold::require_identity(&repo)?;
+    scaffold::identity(&repo, false)?;
     let originals: HashMap<String, Option<Vec<u8>>> = touched
         .iter()
         .map(|path| (path.clone(), fs::read(repo.join(path)).ok()))
