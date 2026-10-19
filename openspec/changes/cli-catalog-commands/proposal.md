@@ -17,7 +17,7 @@ After the 2026-10-18 chain (`no-backward-compat` removes `migrate-catalog` and t
 - Dagger suite: `uc_076` (catalog group, unknown subcommand, old names unknown) and the `gitpmtest.COMMANDS` remap to the new spellings, carried over from `2026-10-18-dagger-integration-tests` (its tasks 0.1 and 5.5).
 - README: command table and a "Changed in 0.6" entry with the renames.
 
-Depends on: the whole 2026-10-18 chain through `robustness-fixes` (`no-backward-compat` … `robustness-fixes`) and `catalog-streaming-size-limit`. `catalog-metadata-index` builds on this change.
+Depends on: the whole 2026-10-18 chain through `host-compatibility` (`no-backward-compat` … `host-compatibility`), the per-task changes split from the former `robustness-fixes` and `catalog-streaming-size-limit`. `catalog-metadata-index` builds on this change.
 
 ## Capabilities
 

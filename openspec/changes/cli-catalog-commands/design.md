@@ -2,7 +2,7 @@
 
 ## Context
 
-See proposal.md (Why). State this change starts from: `crates/gitpm-cli/src/main.rs` at `0b146cf` as changed by the 2026-10-18 chain (`no-backward-compat` … `robustness-fixes`):
+See proposal.md (Why). State this change starts from: `crates/gitpm-cli/src/main.rs` at `0b146cf` as changed by the 2026-10-18 chain (`no-backward-compat` … `host-compatibility`, plus the per-task changes split from the former `robustness-fixes`):
 
 - The CLI parses flat commands from `COMMANDS`, pulls options first (`option`/`flag`), validates option/command pairs, checks the argument count (`expected`), and dispatches. Catalog commands call the library directly: `catalog::browse` (via `gitpm_cli::catalog::info`), `catalog::list`, `catalog::update_sources`, `catalog::register_package`.
 - Every library function the group needs already exists and is already tested. After `thin-cli-boundary` library messages name no command; the CLI adds hints per error kind, and this change only updates the hint texts to the new spellings (D6).
@@ -51,7 +51,7 @@ Flags keep their rules with the new names: `--sources` only with `catalog update
 Unchanged per operation: `catalog show` prints the overview text (limit line now `… gitpm --catalog <branch location> catalog show`), `catalog links` and `catalog register` print pretty JSON, `catalog update` prints `Reading releases: SOURCE` progress and `Warning: SOURCE: reason` on stderr and `Catalog ready: N release(s) checked from sources.` on stdout, The "one line per affected package" rule of spec `cli` applies to workspace mutations and is not extended to catalog writes here.
 
 ### D6. Library API
-No library change. The group uses `catalog::browse`, `catalog::list`, `catalog::update_sources` and `catalog::register_package`. `update_sources` on an HTTP(S) location already fails with `invalid_argument` and a neutral text (`thin-cli-boundary`); the CLI hint for it now names `gitpm catalog update`. `auth check` is untouched (`Options.custom_ssh` from `robustness-fixes`). All git/curl calls stay in `crates/gitpm/src/exec.rs`.
+No library change. The group uses `catalog::browse`, `catalog::list`, `catalog::update_sources` and `catalog::register_package`. `update_sources` on an HTTP(S) location already fails with `invalid_argument` and a neutral text (`thin-cli-boundary`); the CLI hint for it now names `gitpm catalog update`. `auth check` is untouched (`Options.custom_ssh` from `one-ssh-policy-custom-ssh`). All git/curl calls stay in `crates/gitpm/src/exec.rs`.
 
 ### D7. Namespace default is not added
 The brief asked for a gitpm equivalent of the stand's `namespace` command (`.pm.json`, `PM_NAMESPACE`). The recorded decisions are the opposite: no config file and no namespace command (change `2026-10-16-gitpm-cli`, task 1.3), namespace config removed from the library (`2026-10-17-multi-package-repos`), spec `package-ids` "No default namespace" and spec `cli` "There SHALL be no config file". This change keeps them. Scenarios that relied on a default pass `NAMESPACE/NAME` to `init` and `--ns` to `fork`. If the owner reverses the decision, the smallest consistent design is a CLI-only `GITPM_NAMESPACE` variable used when `init` gets a bare `NAME` or `fork` lacks `--ns` (no file, no command, library signatures unchanged); that would be its own change modifying `package-ids` and `cli`.

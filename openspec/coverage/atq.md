@@ -80,7 +80,7 @@ Spec references read `capability › Requirement › Scenario`; several scenario
 | 009.2 | markers in URL query/fragment rejected, not leaked | git-safety › Credentials in URLs are the user's responsibility › Query or fragment in an HTTP URL | missing → added | cargo `auth::rejects_embedded_credentials_before_starting_git`; Dagger `uc_009:rejects_https_query_token` etc. (loop-tagged `#token-in-url`) |
 | 009.3 | unavailable endpoint fails in bounded time | git-safety › Git never waits for input; git-safety › Read-only repository access check | covered |  |
 | 009.4 | raw git stderr not echoed | git-safety › Read-only repository access check › Unknown host key | covered |  |
-| 009.5 | no terminal prompt; strict noninteractive default SSH | git-safety › Git never waits for input › Access check ls-remote / Credential prompt | covered | `robustness-fixes` (TILR-53) switches auth check to `StrictHostKeyChecking=accept-new` |
+| 009.5 | no terminal prompt; strict noninteractive default SSH | git-safety › Git never waits for input › Access check ls-remote / Credential prompt | covered | `one-ssh-policy-custom-ssh` (TILR-135) switches auth check to `StrictHostKeyChecking=accept-new` |
 | 009.6 | explicit SSH overrides kept | git-safety › Git never waits for input › User's GIT_SSH_COMMAND / Probe of the user's SSH setting | covered |  |
 | 010.1 | install by exact scoped tag | install-uninstall › Install an explicit ref or the dev channel | covered |  |
 | 010.2 | install by exact SHA | install-uninstall › Install an explicit ref or the dev channel › Install by exact commit | covered |  |
