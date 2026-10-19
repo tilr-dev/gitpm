@@ -531,11 +531,20 @@ fn a_namespace_path_that_is_not_a_folder_blocks_nothing_else() {
     fs::remove_dir_all(dist.join("vendor")).unwrap();
     let out = f.run(&["sync-dist"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success(), "{stderr}");
+    assert!(!out.status.success(), "{stderr}");
     assert!(
         stderr.contains("dist/dan belongs to no known package or is not a folder"),
         "{stderr}"
     );
+    assert!(
+        stderr.contains("Warning: dan/demo: dist not deployed (dist/dan is not a folder)"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("Error: 1 package(s) not deployed: dan/demo"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("Error kind: not_deployed"), "{stderr}");
     assert_eq!(f.dist("vendor/demo").as_deref(), Some("vendor 1"));
     // A plain file there behaves the same.
     fs::remove_file(dist.join("dan")).unwrap();
@@ -543,6 +552,19 @@ fn a_namespace_path_that_is_not_a_folder_blocks_nothing_else() {
     f.ok(&["disable", "vendor/demo"]);
     assert_eq!(f.dist("vendor/demo"), None);
     assert_eq!(fs::read_to_string(dist.join("dan")).unwrap(), "file");
+    let out = f.run(&["uninstall", "dan/demo", "--force"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(stderr.contains("Error kind: workspace"), "{stderr}");
+    assert_eq!(fs::read_to_string(dist.join("dan")).unwrap(), "file");
+    let out = f.run(&["sync-dist"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("Warning: dan/demo: dist not deployed (dist/dan is not a folder)"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("Error kind: not_deployed"), "{stderr}");
 }
 
 #[test]
