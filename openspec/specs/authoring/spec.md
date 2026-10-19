@@ -101,7 +101,7 @@ When `git commit` fails (hook, signing), gitpm SHALL restore `plugin.json` and t
 - **THEN** `plugin.json` keeps its old version and the index is unchanged
 
 ### Requirement: Git identity is never invented in existing repositories
-gitpm SHALL NOT write a Git identity into an existing repository; when git cannot determine an author and committer identity there, `commit`, `init` into an existing repository and adding packages to an existing fork SHALL be refused with `git`. Only a repository gitpm creates itself (a new `init` folder, a new fork) MAY get a local demo identity `Package Demo <demo@example.invalid>` when the user has none. Verified by `scaffold::create_package_refuses_uncommitted_config_and_a_missing_identity`.
+gitpm SHALL NOT write a Git identity into an existing repository; without a configured identity there (`user.useConfigOnly`), `commit`, `init` into an existing repository and adding packages to an existing fork SHALL be refused with `invalid_argument`. Only a repository gitpm creates itself (new `init` folder, new fork) MAY get the local identity `Package Demo <demo@example.invalid>` when the user has none. Verified by `scaffold::create_package_refuses_uncommitted_config_and_a_missing_identity`.
 
 #### Scenario: Tag-only retry without identity
 - **WHEN** an existing repository has no identity and `commit` is retried after a failed tag
@@ -109,8 +109,8 @@ gitpm SHALL NOT write a Git identity into an existing repository; when git canno
 
 #### Scenario: No identity
 - **WHEN** git cannot determine a user identity for an existing repository and the author runs `gitpm commit REPO 0.2.0`
-- **THEN** the command fails with `git` and the repository is unchanged
-- **AND** the refusal is the error of `git var GIT_AUTHOR_IDENT` / `GIT_COMMITTER_IDENT`, so an identity git can derive on its own is accepted
+- **THEN** the command fails with `invalid_argument` ("no Git identity configured; set user.name and user.email") and the repository is unchanged
+- **AND** an identity git would derive on its own from the login and host name is not accepted; `user.name`/`user.email` in any Git config, or the `GIT_AUTHOR_*`/`GIT_COMMITTER_*` variables, count; this is covered by `scaffold::derived_identity_is_refused`
 
 ### Requirement: remote sets origin without network
 `remote REPO URL` SHALL add or replace `origin` (all configured URLs, fetch and push) of a package repository root without network access; URLs that are empty, start with `-` or contain control characters SHALL be refused with `invalid_argument`. Verified by `scaffold::set_remote_adds_or_replaces_origin_without_network`.
