@@ -21,33 +21,50 @@ static HELD: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
 /// process lock a fresh inode while a third still waits on the old one.
 #[derive(Debug)]
 pub(crate) struct FileLock {
-    _file: File,
+    file: Option<File>,
     key: PathBuf,
 }
 
 impl Drop for FileLock {
     fn drop(&mut self) {
-        // Closing `_file` (after this) releases the record lock.
-        HELD.lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&self.key);
+        let mut held = HELD.lock().unwrap_or_else(|e| e.into_inner());
+        // Keep HELD reserved until closing the descriptor releases the record lock.
+        drop(self.file.take());
+        held.remove(&self.key);
     }
 }
 
 /// Lock `path` (created if missing) or fail at once with [`Error::Locked`].
 pub(crate) fn try_lock(path: &Path, busy: &str) -> Result<FileLock> {
+    // Resolve the key without opening the lock file. It may not exist yet, so
+    // resolve its parent and append the final component in that case.
+    let key = match std::fs::canonicalize(path) {
+        Ok(key) => key,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let parent = path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            let name = path.file_name().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "lock path has no file name",
+                )
+            })?;
+            std::fs::canonicalize(parent)?.join(name)
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let mut held = HELD.lock().unwrap_or_else(|e| e.into_inner());
+    if held.contains(&key) {
+        return Err(Error::Locked(busy.into()));
+    }
     let file = File::options()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
         .open(path)?;
-    // Same file through another spelling (symlinked parent) is the same lock.
-    let key = std::fs::canonicalize(path)?;
-    let mut held = HELD.lock().unwrap_or_else(|e| e.into_inner());
-    if held.contains(&key) {
-        return Err(Error::Locked(busy.into()));
-    }
     // SAFETY: plain fcntl on an owned, open descriptor with a zeroed flock struct.
     let locked = unsafe {
         let mut request: libc::flock = std::mem::zeroed();
@@ -63,14 +80,57 @@ pub(crate) fn try_lock(path: &Path, busy: &str) -> Result<FileLock> {
         });
     }
     held.insert(key.clone());
-    Ok(FileLock { _file: file, key })
+    Ok(FileLock {
+        file: Some(file),
+        key,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_support::TempDir;
+    use crate::workspace::Manager;
     use std::process::Command;
+
+    #[test]
+    fn refused_second_open_keeps_the_first_lock() {
+        let dir = TempDir::new("workspace-lock");
+        let root = dir.join("workspace");
+        let first = Manager::open(&root).unwrap();
+        std::os::unix::fs::symlink(dir.path(), dir.join("alias")).unwrap();
+
+        for attempted in [&root, &dir.join("alias/workspace")] {
+            assert_eq!(Manager::open(attempted).err().unwrap().kind(), "locked");
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "lock::tests::probe_workspace_lock_helper",
+                    "--ignored",
+                ])
+                .env("GITPM_TEST_PROBE_WORKSPACE", &root)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "child acquired the first Manager's lock: {}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+        }
+        drop(first);
+    }
+
+    #[test]
+    #[ignore = "helper process for refused_second_open_keeps_the_first_lock"]
+    fn probe_workspace_lock_helper() {
+        let Some(path) = std::env::var_os("GITPM_TEST_PROBE_WORKSPACE") else {
+            return;
+        };
+        assert_eq!(
+            Manager::open(Path::new(&path)).err().unwrap().kind(),
+            "locked"
+        );
+    }
 
     #[test]
     fn second_lock_in_process_is_refused_until_drop() {

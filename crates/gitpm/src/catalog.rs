@@ -1253,6 +1253,7 @@ pub(crate) mod tests {
         write_json,
     };
     use serde_json::json;
+    use std::process::Command;
 
     const SOURCE: &str = "https://example.com/demo1.git";
     const ABC: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
@@ -1757,6 +1758,41 @@ pub(crate) mod tests {
         assert!(save_release(&path, &bad).is_err());
         drop(lock(&path).expect("released after a failed write"));
         assert!(lock_path.exists(), "the lock file is kept");
+    }
+
+    #[test]
+    fn refused_second_catalog_writer_keeps_the_first_lock() {
+        let dir = TempDir::new("catalog");
+        let path = dir.join("catalog/catalog.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let first = lock(&path).unwrap();
+        let error = save_release(&path, &release("dan/demo1", "0.1.0", SOURCE, 'a')).unwrap_err();
+        assert_eq!(error.kind(), "locked");
+
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "catalog::tests::probe_catalog_lock_helper",
+                "--ignored",
+            ])
+            .env("GITPM_TEST_PROBE_CATALOG", &path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "child acquired the first catalog writer's lock: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        drop(first);
+    }
+
+    #[test]
+    #[ignore = "helper process for refused_second_catalog_writer_keeps_the_first_lock"]
+    fn probe_catalog_lock_helper() {
+        let Some(path) = std::env::var_os("GITPM_TEST_PROBE_CATALOG") else {
+            return;
+        };
+        assert_eq!(lock(Path::new(&path)).err().unwrap().kind(), "locked");
     }
 
     #[test]
