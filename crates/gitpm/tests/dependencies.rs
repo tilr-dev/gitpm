@@ -98,6 +98,7 @@ impl Fixture {
             self.path("workspace"),
             Options {
                 catalog: Some(catalog.into()),
+                custom_ssh: false,
             },
         )
         .unwrap()
@@ -2069,6 +2070,7 @@ fn dependency_ranges_pick_pre_releases_only_when_named() {
         f.path("other"),
         Options {
             catalog: Some(cat.clone()),
+            custom_ssh: false,
         },
     )
     .unwrap();

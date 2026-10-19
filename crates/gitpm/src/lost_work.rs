@@ -78,14 +78,14 @@ const DIRTY: &str = "package has local changes (including untracked/ignored file
 const CONFIRM: &str = "confirm the listed lost work to remove it";
 
 /// Modified, untracked and ignored files (`git status`, without taking optional locks).
-fn status(repo: &Path) -> Result<Vec<LostWork>> {
-    status_of(repo, true, &[])
+fn status(repo: &Path, custom_ssh: bool) -> Result<Vec<LostWork>> {
+    status_of(repo, true, &[], custom_ssh)
 }
 
 /// Paths under `paths` (pathspecs) that differ from HEAD: modified, staged or untracked
 /// (whatever `status.showUntrackedFiles` says), not ignored ones.
-pub(crate) fn changed_paths(repo: &Path, paths: &[&str]) -> Result<Vec<String>> {
-    Ok(status_of(repo, false, paths)?
+pub(crate) fn changed_paths(repo: &Path, paths: &[&str], custom_ssh: bool) -> Result<Vec<String>> {
+    Ok(status_of(repo, false, paths, custom_ssh)?
         .into_iter()
         .filter_map(|item| match item {
             LostWork::Modified { path } | LostWork::Untracked { path } => Some(path),
@@ -94,7 +94,12 @@ pub(crate) fn changed_paths(repo: &Path, paths: &[&str]) -> Result<Vec<String>> 
         .collect())
 }
 
-fn status_of(repo: &Path, ignored: bool, paths: &[&str]) -> Result<Vec<LostWork>> {
+fn status_of(
+    repo: &Path,
+    ignored: bool,
+    paths: &[&str],
+    custom_ssh: bool,
+) -> Result<Vec<LostWork>> {
     let mut args = vec![
         "--no-optional-locks",
         "status",
@@ -109,7 +114,7 @@ fn status_of(repo: &Path, ignored: bool, paths: &[&str]) -> Result<Vec<LostWork>
         args.push("--");
         args.extend(paths);
     }
-    let raw = git_raw(repo, &args)?;
+    let raw = git_raw(repo, &args, custom_ssh)?;
     let mut items = Vec::new();
     let mut entries = raw.split(|b| *b == 0).filter(|e| !e.is_empty());
     while let Some(entry) = entries.next() {
@@ -134,8 +139,8 @@ fn status_of(repo: &Path, ignored: bool, paths: &[&str]) -> Result<Vec<LostWork>
 }
 
 /// Refuse when the clone has modified, untracked or ignored files.
-pub(crate) fn clean(repo: &Path, id: &str) -> Result<()> {
-    let items = status(repo)?;
+pub(crate) fn clean(repo: &Path, id: &str, custom_ssh: bool) -> Result<()> {
+    let items = status(repo, custom_ssh)?;
     if items.is_empty() {
         return Ok(());
     }
@@ -147,8 +152,14 @@ pub(crate) fn clean(repo: &Path, id: &str) -> Result<()> {
 }
 
 /// Refuse when HEAD differs from the recorded installed commit.
-pub(crate) fn require_head(repo: &Path, id: &str, recorded: &str, message: &str) -> Result<()> {
-    let head = git(repo, &["rev-parse", "HEAD"])?;
+pub(crate) fn require_head(
+    repo: &Path,
+    id: &str,
+    recorded: &str,
+    message: &str,
+    custom_ssh: bool,
+) -> Result<()> {
+    let head = git(repo, &["rev-parse", "HEAD"], custom_ssh)?;
     if head == recorded {
         return Ok(());
     }
@@ -169,7 +180,7 @@ pub(crate) const ORIGIN_TAGS: &str = "refs/origin-tags/";
 /// Record the origin's tags under [`ORIGIN_TAGS`], read from the origin itself (never
 /// from local tags, so a tag made by hand never counts as published), pruning records of
 /// tags the origin deleted. Called after every clone and every fetch from the origin.
-pub(crate) fn record_origin_tags(repo: &Path) -> Result<()> {
+pub(crate) fn record_origin_tags(repo: &Path, custom_ssh: bool) -> Result<()> {
     git(
         repo,
         &[
@@ -180,16 +191,27 @@ pub(crate) fn record_origin_tags(repo: &Path) -> Result<()> {
             "origin",
             &format!("+refs/tags/*:{ORIGIN_TAGS}*"),
         ],
+        custom_ssh,
     )?;
     Ok(())
 }
 
-fn unpublished_refs(repo: &Path, prefix: &str) -> Result<Vec<(String, u64)>> {
+fn unpublished_refs(repo: &Path, prefix: &str, custom_ssh: bool) -> Result<Vec<(String, u64)>> {
     let mut result = Vec::new();
-    for name in git(repo, &["for-each-ref", "--format=%(refname)", prefix])?.lines() {
-        let count: u64 = git(repo, &["rev-list", "--count", name, "--not", "--remotes"])?
-            .parse()
-            .map_err(|e| Error::Git(format!("git rev-list --count: {e}")))?;
+    for name in git(
+        repo,
+        &["for-each-ref", "--format=%(refname)", prefix],
+        custom_ssh,
+    )?
+    .lines()
+    {
+        let count: u64 = git(
+            repo,
+            &["rev-list", "--count", name, "--not", "--remotes"],
+            custom_ssh,
+        )?
+        .parse()
+        .map_err(|e| Error::Git(format!("git rev-list --count: {e}")))?;
         if count > 0 {
             let short = name.strip_prefix(prefix).unwrap_or(name).to_owned();
             result.push((short, count));
@@ -200,23 +222,23 @@ fn unpublished_refs(repo: &Path, prefix: &str) -> Result<Vec<(String, u64)>> {
 
 /// Local branches and tags with commits no remote-tracking branch contains, and stash
 /// entries: work that survives a checkout but is easy to lose track of.
-fn hidden(repo: &Path, check_remote: bool) -> Result<Vec<LostWork>> {
+fn hidden(repo: &Path, check_remote: bool, custom_ssh: bool) -> Result<Vec<LostWork>> {
     let mut items = Vec::new();
-    for (name, commits) in unpublished_refs(repo, "refs/heads/")? {
+    for (name, commits) in unpublished_refs(repo, "refs/heads/", custom_ssh)? {
         items.push(LostWork::UnpublishedBranch { name, commits });
     }
-    let tags = unpublished_refs(repo, "refs/tags/")?;
+    let tags = unpublished_refs(repo, "refs/tags/", custom_ssh)?;
     // A published tag need not be reachable from any remote branch (forks commonly
     // retain upstream tags): a tag the origin had with the same object at the last
     // fetch is published (offline); `check_remote` also accepts one it has now.
     let published = if tags.is_empty() || !check_remote {
         String::new()
     } else {
-        git(repo, &["ls-remote", "--tags", "origin"])?
+        git(repo, &["ls-remote", "--tags", "origin"], custom_ssh)?
     };
     for (name, _) in tags {
         let reference = format!("refs/tags/{name}");
-        let object = git(repo, &["rev-parse", &reference])?;
+        let object = git(repo, &["rev-parse", &reference], custom_ssh)?;
         let fetched = git(
             repo,
             &[
@@ -225,6 +247,7 @@ fn hidden(repo: &Path, check_remote: bool) -> Result<Vec<LostWork>> {
                 "-q",
                 &format!("{ORIGIN_TAGS}{name}"),
             ],
+            custom_ssh,
         )
         .is_ok_and(|seen| seen == object);
         if !fetched
@@ -235,7 +258,7 @@ fn hidden(repo: &Path, check_remote: bool) -> Result<Vec<LostWork>> {
             items.push(LostWork::UnpublishedTag { name });
         }
     }
-    for entry in git(repo, &["stash", "list"])?.lines() {
+    for entry in git(repo, &["stash", "list"], custom_ssh)?.lines() {
         items.push(LostWork::Stash {
             entry: entry.into(),
         });
@@ -244,8 +267,13 @@ fn hidden(repo: &Path, check_remote: bool) -> Result<Vec<LostWork>> {
 }
 
 /// Updating already needs the origin; account for tags published outside branches.
-pub(crate) fn require_no_hidden_for_update(repo: &Path, id: &str, message: &str) -> Result<()> {
-    let items = hidden(repo, true)?;
+pub(crate) fn require_no_hidden_for_update(
+    repo: &Path,
+    id: &str,
+    message: &str,
+    custom_ssh: bool,
+) -> Result<()> {
+    let items = hidden(repo, true, custom_ssh)?;
     if items.is_empty() {
         return Ok(());
     }
@@ -257,8 +285,13 @@ pub(crate) fn require_no_hidden_for_update(repo: &Path, id: &str, message: &str)
 }
 
 /// Refuse when local branches/tags hold unpublished commits or the stash is not empty.
-pub(crate) fn require_no_hidden(repo: &Path, id: &str, message: &str) -> Result<()> {
-    let items = hidden(repo, false)?;
+pub(crate) fn require_no_hidden(
+    repo: &Path,
+    id: &str,
+    message: &str,
+    custom_ssh: bool,
+) -> Result<()> {
+    let items = hidden(repo, false, custom_ssh)?;
     if items.is_empty() {
         return Ok(());
     }
@@ -271,9 +304,13 @@ pub(crate) fn require_no_hidden(repo: &Path, id: &str, message: &str) -> Result<
 
 /// Every kind of local work in `repo`. `recorded` is the installed commit from state
 /// (`None` for a forgotten repository).
-pub(crate) fn detect(repo: &Path, recorded: Option<&str>) -> Result<Vec<LostWork>> {
-    let mut items = status(repo)?;
-    let head = git(repo, &["rev-parse", "HEAD"])?;
+pub(crate) fn detect(
+    repo: &Path,
+    recorded: Option<&str>,
+    custom_ssh: bool,
+) -> Result<Vec<LostWork>> {
+    let mut items = status(repo, custom_ssh)?;
+    let head = git(repo, &["rev-parse", "HEAD"], custom_ssh)?;
     if let Some(recorded) = recorded
         && head != recorded
     {
@@ -292,6 +329,7 @@ pub(crate) fn detect(repo: &Path, recorded: Option<&str>) -> Result<Vec<LostWork
             "--not",
             "--remotes",
         ],
+        custom_ssh,
     )?;
     for line in log.lines() {
         let (commit, summary) = line.split_once('\t').unwrap_or((line, ""));
@@ -300,13 +338,13 @@ pub(crate) fn detect(repo: &Path, recorded: Option<&str>) -> Result<Vec<LostWork
             summary: summary.into(),
         });
     }
-    items.extend(hidden(repo, false)?);
+    items.extend(hidden(repo, false, custom_ssh)?);
     Ok(items)
 }
 
 /// Commits reachable from HEAD that no remote-tracking branch and no tag contains:
 /// work only this clone has (a restore would record it as if it were published).
-pub(crate) fn unpublished_head_commits(repo: &Path) -> Result<Vec<LostWork>> {
+pub(crate) fn unpublished_head_commits(repo: &Path, custom_ssh: bool) -> Result<Vec<LostWork>> {
     Ok(git(
         repo,
         &[
@@ -318,6 +356,7 @@ pub(crate) fn unpublished_head_commits(repo: &Path) -> Result<Vec<LostWork>> {
             "--remotes",
             "--tags",
         ],
+        custom_ssh,
     )?
     .lines()
     .map(|line| {
@@ -332,7 +371,11 @@ pub(crate) fn unpublished_head_commits(repo: &Path) -> Result<Vec<LostWork>> {
 
 /// Commits that moving HEAD away would leave unreachable: reachable from HEAD but from
 /// no branch, tag, remote-tracking ref or `keep` commit.
-pub(crate) fn unreferenced_head_commits(repo: &Path, keep: &[&str]) -> Result<Vec<LostWork>> {
+pub(crate) fn unreferenced_head_commits(
+    repo: &Path,
+    keep: &[&str],
+    custom_ssh: bool,
+) -> Result<Vec<LostWork>> {
     let mut args = vec![
         "log",
         MAX_COMMITS,
@@ -344,7 +387,7 @@ pub(crate) fn unreferenced_head_commits(repo: &Path, keep: &[&str]) -> Result<Ve
         "--remotes",
     ];
     args.extend(keep.iter().copied());
-    Ok(git(repo, &args)?
+    Ok(git(repo, &args, custom_ssh)?
         .lines()
         .map(|line| {
             let (commit, summary) = line.split_once('\t').unwrap_or((line, ""));
@@ -535,11 +578,11 @@ mod tests {
         let dir = TempDir::new("lost-work");
         let repo = clone(&dir);
         let head = fixture_git(&repo, &["rev-parse", "HEAD"]);
-        assert!(status(&repo).unwrap().is_empty());
-        assert!(clean(&repo, "dan/demo1").is_ok());
-        assert!(require_head(&repo, "dan/demo1", &head, "m").is_ok());
-        assert_eq!(detect(&repo, Some(&head)).unwrap(), []);
-        assert_eq!(detect(&repo, None).unwrap(), []);
+        assert!(status(&repo, false).unwrap().is_empty());
+        assert!(clean(&repo, "dan/demo1", false).is_ok());
+        assert!(require_head(&repo, "dan/demo1", &head, "m", false).is_ok());
+        assert_eq!(detect(&repo, Some(&head), false).unwrap(), []);
+        assert_eq!(detect(&repo, None, false).unwrap(), []);
     }
 
     #[test]
@@ -562,7 +605,7 @@ mod tests {
         fs::write(repo.join("new/deep/u.txt"), "u").unwrap();
         fs::write(repo.join("debug.log"), "l").unwrap();
 
-        let mut items = status(&repo).unwrap();
+        let mut items = status(&repo, false).unwrap();
         items.sort_by_key(|i| i.describe());
         let described: Vec<_> = items.iter().map(LostWork::describe).collect();
         assert_eq!(
@@ -576,7 +619,7 @@ mod tests {
                 "untracked: new/deep/u.txt",
             ]
         );
-        let error = clean(&repo, "dan/demo1").unwrap_err();
+        let error = clean(&repo, "dan/demo1", false).unwrap_err();
         assert_eq!(error.kind(), "local_changes");
         assert_eq!(error.to_string(), DIRTY);
         assert!(matches!(error, Error::LocalChanges { items, .. } if items.len() == 6));
@@ -595,7 +638,7 @@ mod tests {
         fs::write(repo.join("dist/index.js"), "stashed").unwrap();
         fixture_git(&repo, &["stash", "-q"]);
 
-        let error = require_head(&repo, "dan/demo1", &installed, "moved").unwrap_err();
+        let error = require_head(&repo, "dan/demo1", &installed, "moved", false).unwrap_err();
         assert_eq!(error.to_string(), "moved");
         let Error::LocalChanges { items, .. } = error else {
             panic!()
@@ -608,7 +651,7 @@ mod tests {
             }]
         );
 
-        let items = detect(&repo, Some(&installed)).unwrap();
+        let items = detect(&repo, Some(&installed), false).unwrap();
         let described: Vec<_> = items.iter().map(LostWork::describe).collect();
         assert_eq!(described.len(), 6, "{described:?}");
         assert_eq!(
@@ -629,7 +672,7 @@ mod tests {
             described[5]
         );
         // A forgotten repository (no recorded commit) has no HeadMoved item.
-        let items = detect(&repo, None).unwrap();
+        let items = detect(&repo, None, false).unwrap();
         assert!(
             !items
                 .iter()
@@ -649,7 +692,7 @@ mod tests {
         fixture_git(&repo, &["checkout", "-q", "--detach", &first]);
         let second = author.head();
         assert_eq!(
-            detect(&repo, Some(&second)).unwrap(),
+            detect(&repo, Some(&second), false).unwrap(),
             [LostWork::HeadMoved {
                 head: first,
                 recorded: second
@@ -667,7 +710,7 @@ mod tests {
                 &["commit", "-q", "--allow-empty", "-m", &format!("c{n}")],
             );
         }
-        let items = detect(&repo, None).unwrap();
+        let items = detect(&repo, None, false).unwrap();
         let commits = items
             .iter()
             .filter(|i| matches!(i, LostWork::UnpublishedCommit { .. }))

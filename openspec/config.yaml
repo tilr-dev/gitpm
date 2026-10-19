@@ -19,15 +19,14 @@ context: |
   failures are gitpm::Error with a stable snake_case kind() that never changes for an
   existing variant. The CLI (crates/gitpm-cli) and the UniFFI wrapper (crates/gitpm-ffi)
   only add presentation, env defaults (GITPM_ROOT/GITPM_CATALOG/GITPM_SOURCES; the CLI
-  also derives `custom_ssh` for `auth check` from GIT_SSH_COMMAND/GIT_SSH), prompts and
+  derives `Options.custom_ssh` from GIT_SSH_COMMAND/GIT_SSH for every command), prompts and
   bindings.
 
   Subprocesses: every git and curl invocation lives in crates/gitpm/src/exec.rs (the planned
   switch point to gix/ureq). Every git command on a repository (`git -C`) is noninteractive
-  and bounded: closed stdin, GIT_TERMINAL_PROMPT=0, BatchMode SSH with keepalives unless the
-  user configured their own, http.lowSpeed limits, a 10-minute wall-clock kill. Exceptions:
-  the `auth check` ls-remote uses its own SSH command (BatchMode, StrictHostKeyChecking=yes,
-  no keepalives) and has no wall-clock kill; the `git config --get core.sshCommand` probe has
+  and bounded: closed stdin, GIT_TERMINAL_PROMPT=0, one BatchMode SSH command with keepalives and StrictHostKeyChecking=accept-new unless
+  Options.custom_ssh is set or the user configured core.sshCommand, http.lowSpeed limits, a 10-minute wall-clock kill. Exceptions:
+  the `auth check` ls-remote uses the same SSH policy and has no wall-clock kill; the `git config --get core.sshCommand` probe has
   no timeout. The repository-less `check` ls-remote (`ls_remote_refs`) has the repository
   bounds plus LC_ALL=C, the temp dir as cwd and a transport allowlist (file, git, http(s),
   ssh; never remote helpers), and runs only on sources passing `auth::validate_recorded`. curl has --connect-timeout 5 and --max-time 20. IDs and refs are validated

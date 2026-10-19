@@ -221,9 +221,9 @@ fn rewrite_dependencies(
 }
 
 /// Paths that differ from HEAD (staged, unstaged or untracked), limited to `paths`.
-fn dirty(repo: &Path, paths: &[String]) -> Result<Vec<String>> {
+fn dirty(repo: &Path, paths: &[String], custom_ssh: bool) -> Result<Vec<String>> {
     let specs: Vec<&str> = paths.iter().map(|p| pathspec(p)).collect();
-    lost_work::changed_paths(repo, &specs)
+    lost_work::changed_paths(repo, &specs, custom_ssh)
 }
 
 impl Manager {
@@ -333,7 +333,7 @@ impl Manager {
                 }
             })
             .collect();
-        if let Err((tagged, error)) = release_packages(&fork, version) {
+        if let Err((tagged, error)) = release_packages(&fork, version, self.options.custom_ssh) {
             // The packages are released together: nothing is installed unless all are.
             for result in &mut results {
                 result.tag = tagged.get(&result.id).cloned();
@@ -548,7 +548,11 @@ impl Manager {
         // revision belong to the fork. A shared clone's HEAD can be another package's
         // revision, so each package starts from its installed one.
         let own_head = match first_installed.clone {
-            None => Some(git(&clone, &["rev-parse", "HEAD"])?),
+            None => Some(git(
+                &clone,
+                &["rev-parse", "HEAD"],
+                self.options.custom_ssh,
+            )?),
             Some(_) => None,
         };
         let mut sources = Vec::new();
@@ -576,7 +580,12 @@ impl Manager {
                 "fork ID {new_id} differs only in letter case from an installed package"
             );
             let commit = own_head.clone().unwrap_or_else(|| p.current.commit.clone());
-            let package = match packages::find_at(&clone, &commit, Some(id)) {
+            let package = match packages::find_at_with_ssh(
+                &clone,
+                &commit,
+                Some(id),
+                self.options.custom_ssh,
+            ) {
                 Ok(package) => package,
                 Err(Error::InvalidArgument(_)) if own_head.is_some() => fail!(
                     InvalidManifest,
@@ -624,7 +633,13 @@ impl Manager {
                     destination.display()
                 );
             }
-            return add_packages(&clone, &destination, &sources, version);
+            return add_packages(
+                &clone,
+                &destination,
+                &sources,
+                version,
+                self.options.custom_ssh,
+            );
         }
         let parent = destination
             .parent()
@@ -646,6 +661,7 @@ impl Manager {
                     &destination,
                     &sources,
                     version,
+                    self.options.custom_ssh,
                 )
             });
         if result.is_err() {
@@ -695,11 +711,12 @@ fn identify(m: &mut Manifest, source: &Source) {
 }
 
 /// Whether `path` has the same tree at both commits (`false` if it is missing in one).
-fn same_folder(repo: &Path, a: &str, b: &str, path: &str) -> bool {
+fn same_folder(repo: &Path, a: &str, b: &str, path: &str, custom_ssh: bool) -> bool {
     let tree = |commit: &str| {
         git(
             repo,
             &["rev-parse", "--verify", "-q", &format!("{commit}:{path}")],
+            custom_ssh,
         )
         .ok()
     };
@@ -712,12 +729,14 @@ fn new_fork(
     destination: &Path,
     sources: &[Source],
     version: Option<&str>,
+    custom_ssh: bool,
 ) -> Result<PackageFork> {
     let root = sources.iter().any(|s| s.path.is_empty());
     for source in sources {
         git(
             clone,
             &["cat-file", "-e", &format!("{}^{{commit}}", source.commit)],
+            custom_ssh,
         )
         .map_err(|_| {
             Error::Git(format!(
@@ -737,7 +756,7 @@ fn new_fork(
                     || git(
                         clone,
                         &["merge-base", "--is-ancestor", &s.commit, candidate],
-                    )
+                     custom_ssh)
                     .is_ok()
             })
         })
@@ -748,27 +767,36 @@ fn new_fork(
         .to_owned();
     copy_tree(clone, destination, true)?;
     // The workspace's keep-alive refs of a shared clone are not the author's.
-    clones::drop_refs(destination)?;
-    let remotes = git(destination, &["remote"])?;
+    clones::drop_refs(destination, custom_ssh)?;
+    let remotes = git(destination, &["remote"], custom_ssh)?;
     for remote in ["origin", "upstream"] {
         if remotes.lines().any(|r| r == remote) {
-            git(destination, &["remote", "remove", remote])?;
+            git(destination, &["remote", "remove", remote], custom_ssh)?;
         }
     }
-    git(destination, &["remote", "add", "--", "upstream", upstream])?;
+    git(
+        destination,
+        &["remote", "add", "--", "upstream", upstream],
+        custom_ssh,
+    )?;
     let mut branch = "fork".to_owned();
     let mut number = 2;
-    while !git(destination, &["branch", "--list", &branch])?.is_empty() {
+    while !git(destination, &["branch", "--list", &branch], custom_ssh)?.is_empty() {
         branch = format!("fork-{number}");
         number += 1;
     }
     // Attached to the new branch, so the fork commit is on it (whatever HEAD was).
-    git(destination, &["checkout", "-q", "-b", &branch, &base])?;
+    git(
+        destination,
+        &["checkout", "-q", "-b", &branch, &base],
+        custom_ssh,
+    )?;
     let mut committed: Vec<String> = Vec::new();
     if !root {
         let kept: BTreeSet<&str> = sources.iter().map(|s| s.path.as_str()).collect();
         // Siblings leave the tree (valid or not), so the fork can never release their IDs.
-        let layout = packages::layout_at(destination, &base)?.unwrap_or_default();
+        let layout =
+            packages::layout_at_with_ssh(destination, &base, custom_ssh)?.unwrap_or_default();
         for folder in layout.folders() {
             if kept.contains(folder) {
                 continue;
@@ -784,6 +812,7 @@ fn new_fork(
                     "--",
                     folder,
                 ],
+                custom_ssh,
             )?;
             match fs::remove_dir_all(destination.join(folder)) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
@@ -793,10 +822,10 @@ fn new_fork(
         }
         // A package installed at an older revision starts from that revision's files.
         for source in sources.iter().filter(|s| s.commit != base) {
-            if same_folder(destination, &base, &source.commit, &source.path) {
+            if same_folder(destination, &base, &source.commit, &source.path, custom_ssh) {
                 continue;
             }
-            let edits = dirty(destination, std::slice::from_ref(&source.path))?;
+            let edits = dirty(destination, std::slice::from_ref(&source.path), custom_ssh)?;
             if !edits.is_empty() {
                 return Err(Error::LocalChanges {
                     id: source.original.clone(),
@@ -821,6 +850,7 @@ fn new_fork(
                     "--",
                     &source.path,
                 ],
+                custom_ssh,
             )?;
             match fs::remove_dir_all(destination.join(&source.path)) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
@@ -829,6 +859,7 @@ fn new_fork(
             git(
                 destination,
                 &["checkout", &source.commit, "--", &source.path],
+                custom_ssh,
             )?;
             committed.push(source.path.clone());
         }
@@ -857,7 +888,7 @@ fn new_fork(
         committed.push(manifest_path(&source.path));
     }
     // A new repository created by gitpm: a local demo identity only if the user has none.
-    scaffold::require_identity(destination, true)?;
+    scaffold::require_identity(destination, true, custom_ssh)?;
     // Commit only the fork's own changes; keep unrelated local edits and staged files.
     let message = fork_message(sources);
     // A new repository of gitpm's: hooks of the copied clone or the user's are not run.
@@ -871,13 +902,14 @@ fn new_fork(
         "--",
     ];
     args.extend(committed.iter().map(String::as_str));
-    git(destination, &args)?;
-    let commit = git(destination, &["rev-parse", "HEAD"])?;
+    git(destination, &args, custom_ssh)?;
+    let commit = git(destination, &["rev-parse", "HEAD"], custom_ssh)?;
     if root {
-        packages::find_at(destination, &commit, Some(&sources[0].id))?;
+        packages::find_at_with_ssh(destination, &commit, Some(&sources[0].id), custom_ssh)?;
     } else {
         // The fork must be a valid multi-package repository with exactly these packages.
-        let found = packages::packages_at(destination, &commit)?.unwrap_or_default();
+        let found =
+            packages::packages_at_with_ssh(destination, &commit, custom_ssh)?.unwrap_or_default();
         ensure!(
             found.len() == sources.len()
                 && sources
@@ -920,10 +952,11 @@ fn add_packages(
     destination: &Path,
     sources: &[Source],
     version: Option<&str>,
+    custom_ssh: bool,
 ) -> Result<PackageFork> {
     let repo = fs::canonicalize(destination)?;
     ensure!(
-        Path::new(&git(&repo, &["rev-parse", "--show-toplevel"])?) == repo,
+        Path::new(&git(&repo, &["rev-parse", "--show-toplevel"], custom_ssh)?) == repo,
         InvalidArgument,
         "pass the repository root"
     );
@@ -999,7 +1032,7 @@ fn add_packages(
     }
     let mut touched: Vec<String> = vec![packages::CONFIG.to_owned()];
     touched.extend(changed.iter().map(|(path, _)| manifest_path(path)));
-    let unclean = dirty(&repo, &touched)?;
+    let unclean = dirty(&repo, &touched, custom_ssh)?;
     ensure!(
         unclean.is_empty(),
         InvalidArgument,
@@ -1008,7 +1041,7 @@ fn add_packages(
         repo.display()
     );
     // gitpm never writes a Git identity into the author's repository.
-    scaffold::require_identity(&repo, false)?;
+    scaffold::require_identity(&repo, false, custom_ssh)?;
     let originals: HashMap<String, Option<Vec<u8>>> = touched
         .iter()
         .map(|path| (path.clone(), fs::read(repo.join(path)).ok()))
@@ -1017,6 +1050,7 @@ fn add_packages(
     let index = PathBuf::from(git(
         &repo,
         &["rev-parse", "--path-format=absolute", "--git-path", "index"],
+        custom_ssh,
     )?);
     let saved_index = fs::read(&index).ok();
     let mut committed = touched.clone();
@@ -1024,7 +1058,7 @@ fn add_packages(
         for (source, m) in sources.iter().zip(&new_manifests) {
             let target = repo.join(&source.path);
             committed.push(source.path.clone());
-            export_folder(clone, &source.commit, &source.path, &target)?;
+            export_folder(clone, &source.commit, &source.path, &target, custom_ssh)?;
             // The exported package must be valid as it is (dist/, dependencies).
             manifest(&target)?;
             fs::write(target.join("plugin.json"), manifest_json(m)?)?;
@@ -1045,11 +1079,11 @@ fn add_packages(
         )?;
         let mut args = vec!["add", "--"];
         args.extend(committed.iter().map(String::as_str));
-        git(&repo, &args)?;
+        git(&repo, &args, custom_ssh)?;
         let message = fork_message(sources);
         let mut args = vec!["commit", "-q", "--only", "-m", &message, "--"];
         args.extend(committed.iter().map(String::as_str));
-        git(&repo, &args)
+        git(&repo, &args, custom_ssh)
     })();
     if let Err(error) = written {
         match &saved_index {
@@ -1059,7 +1093,7 @@ fn add_packages(
             None => {
                 let mut args = vec!["reset", "-q", "--"];
                 args.extend(committed.iter().map(String::as_str));
-                let _ = git(&repo, &args);
+                let _ = git(&repo, &args, custom_ssh);
             }
         }
         for source in sources {
@@ -1086,7 +1120,7 @@ fn add_packages(
     Ok(PackageFork {
         path: repo.clone(),
         created: false,
-        commit: git(&repo, &["rev-parse", "HEAD"])?,
+        commit: git(&repo, &["rev-parse", "HEAD"], custom_ssh)?,
         packages: forked(sources, &new_manifests),
         rewrites,
     })
@@ -1143,6 +1177,7 @@ fn install_order(packages: &[(&str, BTreeSet<String>)]) -> Result<Vec<usize>> {
 fn release_packages(
     fork: &PackageFork,
     version: Option<&str>,
+    custom_ssh: bool,
 ) -> std::result::Result<(), (BTreeMap<String, String>, Error)> {
     let repo = &fork.path;
     let mut tagged = BTreeMap::new();
@@ -1150,7 +1185,7 @@ fn release_packages(
     let mut tags = Vec::new();
     for package in &fork.packages {
         let tag = identity::release_tag(&package.id, version.unwrap_or(&package.version));
-        match git(repo, &["tag", "--list", "--", &tag]) {
+        match git(repo, &["tag", "--list", "--", &tag], custom_ssh) {
             Ok(found) if found.is_empty() => tags.push((package.id.clone(), tag)),
             Ok(_) => {
                 return fail(
@@ -1178,10 +1213,10 @@ fn release_packages(
         let result = (|| {
             let mut args = vec!["add", "--all", "--"];
             args.extend(&folders);
-            git(repo, &args)?;
+            git(repo, &args, custom_ssh)?;
             let mut args = vec!["status", "--porcelain", "--"];
             args.extend(&folders);
-            if git(repo, &args)?.is_empty() {
+            if git(repo, &args, custom_ssh)?.is_empty() {
                 return Ok(());
             }
             let names: Vec<String> = fork
@@ -1192,7 +1227,7 @@ fn release_packages(
             let message = format!("Release {}", names.join(", "));
             let mut args = vec!["commit", "-q", "--only", "-m", &message, "--"];
             args.extend(&folders);
-            git(repo, &args).map(drop)
+            git(repo, &args, custom_ssh).map(drop)
         })();
         if let Err(error) = result {
             for (path, bytes) in saved {
@@ -1208,7 +1243,7 @@ fn release_packages(
         return fail(&tagged, error);
     }
     for (id, tag) in tags {
-        if let Err(error) = git(repo, &["tag", "--", &tag]) {
+        if let Err(error) = git(repo, &["tag", "--", &tag], custom_ssh) {
             return fail(&tagged, error);
         }
         tagged.insert(id, tag);
@@ -1301,7 +1336,7 @@ mod tests {
             "M packages/a/plugin.json"
         );
         let paths = [packages::CONFIG.to_owned(), "packages/a".to_owned()];
-        let mut found = dirty(&repo, &paths).unwrap();
+        let mut found = dirty(&repo, &paths, false).unwrap();
         found.sort();
         assert_eq!(
             found,
@@ -1311,7 +1346,11 @@ mod tests {
                 "packages/a/plugin.json"
             ]
         );
-        assert!(dirty(&repo, &["other".to_owned()]).unwrap().is_empty());
+        assert!(
+            dirty(&repo, &["other".to_owned()], false)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

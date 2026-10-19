@@ -1429,6 +1429,18 @@ pub struct ManagerOptions {
     /// Catalog location: local folder, JSON file or HTTP(S) URL.
     #[uniffi(default = None)]
     pub catalog: Option<String>,
+    /// Preserve the host's SSH transport for all workspace Git commands.
+    #[uniffi(default = false)]
+    pub custom_ssh: bool,
+}
+
+impl From<ManagerOptions> for pm::Options {
+    fn from(options: ManagerOptions) -> Self {
+        Self {
+            catalog: options.catalog,
+            custom_ssh: options.custom_ssh,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1445,12 +1457,7 @@ impl PackageManager {
     /// Open (or create) a dedicated workspace directory and take its lock.
     #[uniffi::constructor]
     pub fn open(root: String, options: ManagerOptions) -> Result<Arc<Self>> {
-        let inner = pm::Manager::open_with(
-            root,
-            pm::Options {
-                catalog: options.catalog,
-            },
-        )?;
+        let inner = pm::Manager::open_with(root, options.into())?;
         Ok(Arc::new(Self { inner }))
     }
     pub fn root(&self) -> String {
@@ -1719,7 +1726,13 @@ impl PackageManager {
 /// `custom_ssh`: the process environment already sets GIT_SSH_COMMAND/GIT_SSH.
 #[uniffi::export]
 pub fn auth_check(source: String, custom_ssh: bool) -> Result<AuthCheck> {
-    let result = pm::auth::check(&source, &pm::auth::AuthOptions { custom_ssh })?;
+    let result = pm::auth::check(
+        &source,
+        &pm::Options {
+            custom_ssh,
+            ..Default::default()
+        },
+    )?;
     Ok(AuthCheck {
         source: result.source,
         message: result.message,
@@ -2190,6 +2203,14 @@ mod tests {
 
     #[test]
     fn records_convert_field_by_field() {
+        let options: pm::Options = ManagerOptions {
+            catalog: Some("catalog.json".into()),
+            custom_ssh: true,
+        }
+        .into();
+        assert_eq!(options.catalog.as_deref(), Some("catalog.json"));
+        assert!(options.custom_ssh);
+        assert!(!pm::Options::from(ManagerOptions::default()).custom_ssh);
         let package = InstalledPackage::from(pm::InstalledPackage {
             id: "me/x".into(),
             source: "src".into(),
@@ -3026,7 +3047,8 @@ mod tests {
                     .to_string_lossy()
                     .into(),
                 ManagerOptions {
-                    catalog: Some("/nonexistent-pm-catalog".into())
+                    catalog: Some("/nonexistent-pm-catalog".into()),
+                    custom_ssh: false,
                 }
             ),
             Err(PmError::InvalidArgument { .. })
@@ -3063,6 +3085,7 @@ mod tests {
             dir.join("workspace").to_string_lossy().into(),
             ManagerOptions {
                 catalog: Some(catalog),
+                custom_ssh: true,
             },
         )
         .unwrap();

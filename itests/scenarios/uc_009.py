@@ -6,6 +6,8 @@ within a bound; a 401 server with no credential helper fails without a terminal 
 even on a TTY with GIT_TERMINAL_PROMPT unset by the caller; raw Git stderr carrying a
 synthetic marker is not echoed.
 
+Real SSH transport checks use a local SSH helper running git-upload-pack.
+
 SIMULATED checks: a fake `git` first on PATH records the ls-remote invocation and its
 environment (SSH policy, prompt suppression, stdin) and can emit a scripted stderr; all
 other git calls are passed to the real git. No real SSH server or remote is contacted.
@@ -22,7 +24,7 @@ from gitpmtest import T, case
 
 
 MARKER = "SYNTHMARKER7c1e"
-STRICT_SSH = "ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes"
+BATCH_SSH = "ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o StrictHostKeyChecking=accept-new"
 
 FAKE_GIT = r'''#!/usr/bin/env python3
 import json, os, sys
@@ -178,12 +180,13 @@ def raw_stderr_not_leaked_simulated(t: T):
 
 
 @case(fixture="g1_ws_catalog", spec=["git-safety/git-never-waits-for-input#access-check-ls-remote", "git-safety/git-never-waits-for-input#batch-ssh-command"])
-def default_ssh_policy_is_strict(t: T):
-    """SIMULATED: default ls-remote gets strict noninteractive SSH, no prompts, closed stdin."""
+def default_ssh_policy_is_batch(t: T):
+    """SIMULATED: default ls-remote gets unified noninteractive SSH, no prompts, closed stdin."""
     env = fake_git(t, GIT_TERMINAL_PROMPT="1")
     t.gitpm_ok("auth", "check", "git@example.invalid:dan/private.git", env=env)
     call = ls_remote_call(t)
-    t.eq(call["env"].get("GIT_SSH_COMMAND"), STRICT_SSH, "GIT_SSH_COMMAND")
+    t.ok("GIT_SSH_COMMAND" not in call["env"], "no environment override")
+    t.has(" ".join(call["argv"]), "core.sshCommand=" + BATCH_SSH)
     t.eq(call["env"].get("GIT_TERMINAL_PROMPT"), "0", "GIT_TERMINAL_PROMPT (caller had 1)")
     t.eq(call["stdin"], "/dev/null", "stdin")
     t.eq(call["argv"][-3:], ["ls-remote", "--", "git@example.invalid:dan/private.git"], "argv")
@@ -196,7 +199,9 @@ def explicit_git_ssh_command_kept(t: T):
     custom = "ssh -i /keys/id_test -o StrictHostKeyChecking=accept-new"
     env = fake_git(t, GIT_SSH_COMMAND=custom)
     t.gitpm_ok("auth", "check", "ssh://git@example.invalid/dan/private.git", env=env)
-    t.eq(ls_remote_call(t)["env"].get("GIT_SSH_COMMAND"), custom, "GIT_SSH_COMMAND")
+    call = ls_remote_call(t)
+    t.eq(call["env"].get("GIT_SSH_COMMAND"), custom, "GIT_SSH_COMMAND")
+    t.ok(not any(a.startswith("core.sshCommand=") for a in call["argv"]), "no batch SSH command injected")
 
 
 @case(fixture="g1_ws_catalog", spec=["git-safety/git-never-waits-for-input#probe-of-the-user-s-ssh-setting"])
@@ -207,6 +212,7 @@ def explicit_git_ssh_kept(t: T):
     call = ls_remote_call(t)
     t.eq(call["env"].get("GIT_SSH"), "/usr/local/bin/my-ssh", "GIT_SSH")
     t.ok("GIT_SSH_COMMAND" not in call["env"], "no GIT_SSH_COMMAND injected")
+    t.ok(not any(a.startswith("core.sshCommand=") for a in call["argv"]), "no batch SSH command injected")
 
 
 @case(fixture="g1_ws_catalog", spec=["git-safety/git-never-waits-for-input#probe-of-the-user-s-ssh-setting"])
@@ -218,5 +224,34 @@ def core_ssh_command_kept(t: T):
     t.gitpm_ok("auth", "check", "git@example.invalid:dan/private.git", env=env)
     call = ls_remote_call(t)
     t.ok("GIT_SSH_COMMAND" not in call["env"], "no GIT_SSH_COMMAND injected")
+    t.ok(not any(a.startswith("core.sshCommand=") for a in call["argv"]), "no batch SSH command injected")
     t.eq(t.run("git", "config", "--get", "core.sshCommand", env={"GIT_CONFIG_GLOBAL": str(cfg)}).out.strip(),
          "ssh -F /my/config", "user config intact")
+
+
+def real_custom_ssh_install(t: T, variable: str):
+    helper = t.root / "local-ssh"
+    log = t.root / "ssh.log"
+    helper.write_text('#!/bin/sh\ncase "$1" in -G) exit 1;; esac\nprintf "%s\\n" "$*" >> "$GITPMT_SSH_LOG"\nexec git-upload-pack "$GITPMT_SSH_REPO"\n')
+    helper.chmod(0o755)
+    env = {variable: str(helper), "GITPMT_SSH_LOG": str(log), "GITPMT_SSH_REPO": str(t.repo("dan/hello"))}
+    if variable == "GIT_SSH_COMMAND":
+        env["GIT_SSH"] = "/nonexistent-must-not-be-used"
+    source = "git@example.invalid:repo.git"
+    t.gitpm_ok("auth", "check", source, env=env)
+    before = len(log.read_text().splitlines())
+    t.ok(before > 0, "auth uses SSH helper")
+    t.gitpm_ok("install", source, env=env)
+    t.ok(len(log.read_text().splitlines()) > before, "install uses SSH helper")
+    t.eq(t.package("dan/hello")["source"], source, "recorded source")
+    t.ok(t.dist("dan/hello").is_dir(), "package deployed")
+
+
+@case(fixture="catalog", spec=["git-safety/one-subprocess-boundary#ssh-setting-from-the-environment"])
+def real_git_ssh_install(t: T):
+    real_custom_ssh_install(t, "GIT_SSH")
+
+
+@case(fixture="catalog", spec=["git-safety/one-subprocess-boundary#ssh-setting-from-the-environment"])
+def real_git_ssh_command_install(t: T):
+    real_custom_ssh_install(t, "GIT_SSH_COMMAND")

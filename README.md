@@ -418,6 +418,14 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   refuse a missing configured Git identity with `invalid_argument` instead of using
   a name or email derived by Git. Migration: set `user.name` and `user.email` in Git
   config (or provide both author and committer identity environment variables).
+- `auth::check` now takes `&Options`; the separate `AuthOptions` was removed.
+  `Options` now includes `custom_ssh` (UniFFI `ManagerOptions.customSsh`, default false).
+  Set it when the host supplies `GIT_SSH` or `GIT_SSH_COMMAND`; the CLI does this for
+  every command. Auth checks and workspace Git commands share one batch SSH policy
+  with keepalives and `StrictHostKeyChecking=accept-new`. The library never reads
+  these environment variables. Standalone operations offer `*_with_options` variants;
+  their existing entry points use default options.
+
 - Package IDs are always `namespace/name`; an unscoped ID (`demo`) is refused with
   `invalid_id` everywhere (manifests, dependencies, state, commands). `update all` is
   always the joint upgrade, as no ID can be `all`. Migration: re-create the package
@@ -1156,6 +1164,10 @@ $ gitpm list --provides theme | jq '.resolved[] | {id, title, description, provi
   `Content-Length`; oversized responses fail with `http`.
 - All subprocesses (system `git`, `curl`) go through one internal module (`exec`), the
   place to switch to gix/ureq later.
+- All Git operations share batch SSH with keepalives and
+  `StrictHostKeyChecking=accept-new` unless `Options.custom_ssh` is true or Git config
+  defines `core.sshCommand`. Hosts pass `custom_ssh` explicitly; Git subprocesses
+  inherit the host environment.
 - No backward compatibility before 1.0: package IDs are always `namespace/name`, release
   tags always `ID@VERSION`, catalogs always the v2 tree; there are no aliases,
   migrations or compatibility readers, and the FFI promises no stability. Every breaking
@@ -1177,7 +1189,7 @@ $ gitpm list --provides theme | jq '.resolved[] | {id, title, description, provi
 ```rust
 use gitpm::{Manager, Options};
 
-let pm = Manager::open_with("/path/to/workspace", Options { catalog: Some(url) })?;
+let pm = Manager::open_with("/path/to/workspace", Options { catalog: Some(url), ..Default::default() })?;
 pm.install("git@github.com:acme/demo1.git")?;          // latest release tag
 use gitpm::{InstallTarget, Target};
 pm.install_package(src, None, InstallTarget::Ref("acme/demo1@0.2.0".into()))?; // pinned
@@ -1224,7 +1236,7 @@ Modules with free functions (no workspace lock needed):
 | `list` | `list_with(root, &ListOptions)` → `ListView` (raw state + `resolved`; `provides` filter) |
 | `catalog` | `browse` (`CatalogOverview.verified`), `is_verified`, `list`, `links`, `lookup`, `selected`, `register`, `register_build`, `register_package`, `update_sources` (progress callback), `hash_files`, `version_key`, `validate_location`, `ensure_publishable` |
 | `check` | `read_state` (does not create/lock), `compare`/`compare_in` (run `git ls-remote` for packages the catalog does not list), `check(root, catalog: Option)` → `CheckReport` (`catalog_verified`); `CheckStatus::message()`, `CheckRow::message()`, `CheckSource` |
-| `auth` | `check(source, &AuthOptions)` — `git ls-remote` only; refuses credentials in the URL, stores nothing; failures are `auth` |
+| `auth` | `check(source, &Options)` — `git ls-remote` only; refuses credentials in the URL, stores nothing; failures are `auth` |
 | `scaffold` | `init(dir, namespace, name)` (the `init --into` rule; the only way to create a package besides `create_package`), `init_with` (`InitOptions { multi, release }`), `create_package` (into a multi-package repo), `commit`, `commit_package` (`Commit { package, version, tag }`), `release_current`, `set_remote`, `shell_quote` |
 | `packages` | `config_at`, `layout_at` (packages and defective folders of a commit), `packages_at` (strict), `find_at` (one package of a commit), `read_config`, `packages_in` (working tree), `matches`, `validate_pattern` |
 | `identity` | `valid_part`, `qualified`, `split` (`NAMESPACE/NAME`, else `invalid_id`), `release_tag` (no default namespace, no namespace config) |

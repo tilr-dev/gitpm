@@ -1164,14 +1164,16 @@ fn run(invocation: &mut Invocation) -> Result<()> {
             )
         })
     };
+    let custom_ssh =
+        std::env::var_os("GIT_SSH_COMMAND").is_some() || std::env::var_os("GIT_SSH").is_some();
+    let ssh_options = Options {
+        custom_ssh,
+        ..Options::default()
+    };
     match command {
         "auth" => {
             ensure!(id == "check", "use: gitpm auth check GIT_URL");
-            let options = auth::AuthOptions {
-                custom_ssh: std::env::var_os("GIT_SSH_COMMAND").is_some()
-                    || std::env::var_os("GIT_SSH").is_some(),
-            };
-            println!("{}", auth::check(&args[2], &options)?.message);
+            println!("{}", auth::check(&args[2], &ssh_options)?.message);
             return Ok(());
         }
         "info" => {
@@ -1184,10 +1186,15 @@ fn run(invocation: &mut Invocation) -> Result<()> {
                 .clone()
                 .or_else(|| std::env::var("GITPM_SOURCES").ok())
                 .unwrap_or(DEFAULT_SOURCES.into());
-            let report = catalog::update_sources(&url, Path::new(&sources), &mut |event| {
-                let catalog::Progress::ReadingReleases { source } = event;
-                eprintln!("Reading releases: {source}");
-            })?;
+            let report = catalog::update_sources_with_options(
+                &url,
+                Path::new(&sources),
+                &mut |event| {
+                    let catalog::Progress::ReadingReleases { source } = event;
+                    eprintln!("Reading releases: {source}");
+                },
+                &ssh_options,
+            )?;
             for skipped in &report.skipped {
                 eprintln!("Warning: {}: {}", skipped.source, skipped.tag.reason);
             }
@@ -1205,7 +1212,13 @@ fn run(invocation: &mut Invocation) -> Result<()> {
                 multi,
                 release: !no_release,
             };
-            let created = scaffold::init_with(Path::new(dir), namespace, name, options)?;
+            let created = scaffold::init_with_with_options(
+                Path::new(dir),
+                namespace,
+                name,
+                options,
+                &ssh_options,
+            )?;
             let source = scaffold::shell_quote(&created.repo.to_string_lossy());
             let root = scaffold::shell_quote(&root);
             let package = match &created.folder {
@@ -1246,7 +1259,11 @@ fn run(invocation: &mut Invocation) -> Result<()> {
             return Ok(());
         }
         "check" => {
-            let report = check::check(Path::new(&root), catalog_location.as_deref())?;
+            let report = check::check_with_options(
+                Path::new(&root),
+                catalog_location.as_deref(),
+                &ssh_options,
+            )?;
             if report.rows.is_empty() {
                 println!("No packages installed in workspace {root}.");
                 return Ok(());
@@ -1294,23 +1311,29 @@ fn run(invocation: &mut Invocation) -> Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("register requires --ref TAG_OR_COMMIT"))?;
             println!(
                 "{}",
-                serde_json::to_string_pretty(&catalog::register_package(
+                serde_json::to_string_pretty(&catalog::register_package_with_options(
                     &url,
                     id,
                     reference,
                     package.as_deref(),
-                    build
+                    build,
+                    &ssh_options,
                 )?)?
             );
             return Ok(());
         }
         "remote" => {
-            scaffold::set_remote(Path::new(id), &args[2])?;
+            scaffold::set_remote_with_options(Path::new(id), &args[2], &ssh_options)?;
             println!("Origin for {id} set to {} (fetch and push).", args[2]);
             return Ok(());
         }
         "commit" => {
-            let done = scaffold::commit_package(Path::new(id), &args[2], package.as_deref())?;
+            let done = scaffold::commit_package_with_options(
+                Path::new(id),
+                &args[2],
+                package.as_deref(),
+                &ssh_options,
+            )?;
             println!(
                 "{} committed {} (local commit and tag {})",
                 done.package, done.version, done.tag
@@ -1328,6 +1351,7 @@ fn run(invocation: &mut Invocation) -> Result<()> {
         root,
         Options {
             catalog: catalog_location,
+            custom_ssh,
         },
     )?;
     match command {
