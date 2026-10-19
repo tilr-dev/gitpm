@@ -22,7 +22,7 @@ Every git command on a repository (`git -C REPO …`) SHALL run with closed stdi
 
 #### Scenario: Probe of the user's SSH setting
 - **WHEN** gitpm checks whether `core.sshCommand` is configured
-- **THEN** `git config --get core.sshCommand` runs without a timeout
+- **THEN** `git -c credential.interactive=never config --get core.sshCommand` runs with empty `GIT_ASKPASS`, closed stdin, and without a timeout
 
 #### Scenario: Catalog download
 - **WHEN** a remote catalog file is fetched

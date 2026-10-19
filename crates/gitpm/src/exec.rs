@@ -35,14 +35,24 @@ fn git_base() -> Command {
             git_config_defined("core.sshCommand", "cannot start git").unwrap_or(true)
         }),
     };
-    let mut command = Command::new("git");
+    let mut command = noninteractive_git();
     command.args(["-c", "http.lowSpeedLimit=1", "-c", "http.lowSpeedTime=20"]);
     if !custom_ssh {
         command
             .arg("-c")
             .arg(format!("core.sshCommand={BATCH_SSH}"));
     }
-    command.env("GIT_TERMINAL_PROMPT", "0").stdin(Stdio::null());
+    command
+}
+
+/// Apply the input policy before adding arguments specific to a Git invocation.
+fn noninteractive_git() -> Command {
+    let mut command = Command::new("git");
+    command
+        .args(["-c", "credential.interactive=never"])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "")
+        .stdin(Stdio::null());
     command
 }
 
@@ -174,12 +184,17 @@ pub(crate) fn ls_remote_refs(source: &str) -> Result<RemoteRefs> {
 
 /// Whether the user's Git configuration (outside any repository) defines `key`.
 pub(crate) fn git_config_defined(key: &str, start_error: &str) -> Result<bool> {
-    Ok(Command::new("git")
-        .args(["config", "--get", key])
+    Ok(git_config_command(key)
         .output()
         .context(Error::Auth, start_error)?
         .status
         .success())
+}
+
+fn git_config_command(key: &str) -> Command {
+    let mut command = noninteractive_git();
+    command.args(["config", "--get", key]);
+    command
 }
 
 /// Outcome of a read-only `git ls-remote`.
@@ -194,7 +209,17 @@ pub(crate) fn ls_remote(
     ssh_command: Option<&str>,
     start_error: &str,
 ) -> Result<LsRemote> {
-    let mut command = Command::new("git");
+    let output = ls_remote_command(source, ssh_command)
+        .output()
+        .context(Error::Auth, start_error)?;
+    Ok(LsRemote {
+        success: output.status.success(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    })
+}
+
+fn ls_remote_command(source: &str, ssh_command: Option<&str>) -> Command {
+    let mut command = noninteractive_git();
     command
         .args([
             "-c",
@@ -205,19 +230,13 @@ pub(crate) fn ls_remote(
             "--",
             source,
         ])
-        .env("GIT_TERMINAL_PROMPT", "0")
         .env("LC_ALL", "C")
-        .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
     if let Some(ssh) = ssh_command {
         command.env("GIT_SSH_COMMAND", ssh);
     }
-    let output = command.output().context(Error::Auth, start_error)?;
-    Ok(LsRemote {
-        success: output.status.success(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-    })
+    command
 }
 
 /// HTTP GET result. `None` body means HTTP 404. Redirects are not followed (a 3xx
@@ -321,13 +340,42 @@ mod tests {
     fn git_never_reads_stdin_or_prompts() {
         let dir = TempDir::new("exec");
         let author = Author::new(dir.join("repo"), "demo1");
-        // A credential prompt would block; with prompts disabled it fails fast.
-        let error = git(
-            &author.path,
-            &["ls-remote", "--", "https://127.0.0.1:9/none.git"],
-        )
-        .unwrap_err();
-        assert_eq!(error.kind(), "git");
+        let commands = [
+            git_command(&author.path, &["status"]).unwrap(),
+            git_config_command("core.sshCommand"),
+            ls_remote_command("https://example.invalid/repo.git", None),
+        ];
+        for command in &commands {
+            let args: Vec<_> = command.get_args().collect();
+            assert!(
+                args.windows(2).any(|pair| {
+                    pair[0] == std::ffi::OsStr::new("-c")
+                        && pair[1] == std::ffi::OsStr::new("credential.interactive=never")
+                }),
+                "missing noninteractive credential config: {command:?}"
+            );
+            for (name, expected) in [("GIT_TERMINAL_PROMPT", "0"), ("GIT_ASKPASS", "")] {
+                assert_eq!(
+                    command
+                        .get_envs()
+                        .find(|(key, _)| *key == std::ffi::OsStr::new(name))
+                        .map(|(_, value)| value),
+                    Some(Some(std::ffi::OsStr::new(expected))),
+                    "missing {name}: {command:?}"
+                );
+            }
+        }
+
+        // Git reads EOF from the explicitly closed stdin without waiting.
+        let output = git_command(&author.path, &["hash-object", "--stdin"])
+            .unwrap()
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap().trim(),
+            "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+        );
     }
 
     #[test]
