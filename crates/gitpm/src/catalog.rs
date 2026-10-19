@@ -146,6 +146,24 @@ pub fn hash_files(dist: &Path) -> Result<BTreeMap<String, FileDigest>> {
     walk(dist, dist, &mut result)?;
     Ok(result)
 }
+
+/// Hash the same committed export that a workspace stages at `dist/<id>`.
+pub(crate) fn hash_exported_dist(
+    repo: &Path,
+    commit: &str,
+    package: Option<&str>,
+    staged: &Path,
+    custom_ssh: bool,
+) -> Result<BTreeMap<String, FileDigest>> {
+    if staged.exists() {
+        fs::remove_dir_all(staged)?;
+    }
+    crate::workspace::export_dist(repo, commit, package, staged, custom_ssh).map_err(|error| match error {
+        Error::Unsupported(_) => Error::Unsupported("build contains a symlink".into()),
+        other => other,
+    })?;
+    hash_files(staged)
+}
 fn valid_hash(hash: &str) -> bool {
     hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit())
 }
@@ -878,24 +896,19 @@ pub(crate) fn register_package_with_ssh(
     git(&repo, &["checkout", "--detach", &commit], custom_ssh)?;
     let manifest = package_manifest(&repo, path.as_deref())?;
     version_key(&manifest.version)?;
+    let files = hash_exported_dist(&repo, &commit, path.as_deref(), &temp.0.join("staged-dist"), custom_ssh)?;
     let release = Release {
         manifest,
         source,
         commit,
         reference: reference.to_owned(),
-        files: hash_files(&package_dir(&repo, path.as_deref()).join("dist"))?,
+        files,
         build,
         path,
     };
     save_release(&catalog_path, &release)
 }
 
-fn package_dir(repo: &Path, path: Option<&str>) -> PathBuf {
-    match path {
-        Some(path) => repo.join(path),
-        None => repo.to_path_buf(),
-    }
-}
 /// Packages whose releases a source publishes: `[None]` (the root package) for a
 /// single-package repository, every package listed at HEAD for a `gitpm.json` one. As
 /// for a root package, HEAD decides the identity: tags a fork keeps from its upstream
@@ -1079,12 +1092,19 @@ pub(crate) fn update_sources_with_ssh(
             }
             git(&repo, &["checkout", "--detach", &tag.commit], custom_ssh)?;
             let path = (!tag.path.is_empty()).then_some(tag.path);
+            let files = hash_exported_dist(
+                &repo,
+                &tag.commit,
+                path.as_deref(),
+                &temp.0.join("staged-dist"),
+                custom_ssh,
+            )?;
             let release = Release {
                 manifest: package_manifest(&repo, path.as_deref())?,
                 source: source.clone(),
                 commit: tag.commit,
                 reference: tag.name,
-                files: hash_files(&package_dir(&repo, path.as_deref()).join("dist"))?,
+                files,
                 build: None,
                 path,
             };

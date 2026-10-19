@@ -21,4 +21,5 @@ Every deploy (install, update, rollback, restore, `replace --back`, enable, reco
 
 #### Scenario: export-ignore in the package repository
 - **WHEN** the release commit's `.gitattributes` marks `dist/debug.js` `export-ignore`
-- **THEN** `dist/<id>/debug.js` is deployed (likewise `export-subst` placeholders stay as committed), and the catalog's file hashes (catalog, "Release record") cover it, so install verification and deploy see the same files
+- **THEN** `dist/<id>/debug.js` is deployed and `export-subst` placeholders stay as committed
+- **AND** catalog creation, `install-catalog`, protected-package update, and `verify_catalog_release` hash or verify the staged `dist/<id>` export after `export_dist` and before committing the transaction, so each hash covers the deployed bytes

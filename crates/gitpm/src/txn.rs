@@ -154,14 +154,15 @@ impl Txn {
         package: Option<&str>,
         commit: &str,
         custom_ssh: bool,
-    ) -> Result<()> {
+    ) -> Result<PathBuf> {
         ensure_managed_parents(&self.root, repo_relative)?;
         let repo = match self.staged_repo(repo_relative) {
             Some(staged) => staged,
             None => self.root.join(repo_relative),
         };
         let staged = self.stage_dist(id)?;
-        crate::workspace::export_dist(&repo, commit, package, &staged, custom_ssh)
+        crate::workspace::export_dist(&repo, commit, package, &staged, custom_ssh)?;
+        Ok(staged)
     }
     /// Remove a clone (`packages/<id>` or `repos/<key>`) on commit.
     pub(crate) fn delete_repo(&mut self, relative: &str) -> Result<()> {
