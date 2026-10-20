@@ -1148,6 +1148,8 @@ $ gitpm list --provides theme | jq '.resolved[] | {id, title, description, provi
   snake_case identifier; `Display` is the complete human message.
 - Blocking API. `Manager` is `Send + Sync`; its operations are serialized internally.
   Call it off the UI thread.
+- Catalog HTTP responses are limited to 16 MiB, including streams without
+  `Content-Length`; oversized responses fail with `http`.
 - All subprocesses (system `git`, `curl`) go through one internal module (`exec`), the
   place to switch to gix/ureq later.
 - No backward compatibility before 1.0: package IDs are always `namespace/name`, release

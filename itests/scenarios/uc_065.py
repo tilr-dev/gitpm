@@ -7,11 +7,6 @@ behaves like a passphrase-protected key without an agent: with BatchMode=yes it 
 like OpenSSH ("Permission denied (publickey)"), otherwise it prompts on /dev/tty and
 blocks — run under script(1), a prompt would hang the case into its timeout.
 
-Known defect (expected failure until change catalog-streaming-size-limit):
-* oversized_streamed_catalog_response_is_refused — a catalog response of 50 MB
-  without Content-Length is accepted: the 16 MiB limit is curl --max-filesize, which
-  curl 7.88 (Debian bookworm) applies only when the size is announced up front
-  (exec.rs http_get).
 """
 
 import json
@@ -252,7 +247,7 @@ def oversized_catalog_response_is_refused(t: T):
     t.not_installed(ID)
 
 
-@case(fixture="catalog", spec=["catalog/catalog-locations-and-transport"], xfail="catalog-streaming-size-limit")
+@case(fixture="catalog", spec=["catalog/catalog-locations-and-transport"])
 def oversized_streamed_catalog_response_is_refused(t: T):
     """50 MB without Content-Length (streamed until close): the 16 MiB limit must still
     refuse it."""
@@ -260,6 +255,7 @@ def oversized_streamed_catalog_response_is_refused(t: T):
     r = timed(t, "--catalog", huge.url, "install-catalog", ID, limit=30)
     print(f"  server sent {huge.sent} bytes")
     t.ok(r.code != 0, f"a {Huge.SIZE // 2**20} MiB response is refused (16 MiB limit)")
+    t.has(r.err, "Error kind: http")
     t.not_installed(ID)
 
 
