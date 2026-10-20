@@ -1244,12 +1244,15 @@ impl Manager {
         let mut txn = Txn::begin(&self.root)?;
         let mut state = self.state()?;
         self.prepare_update_all(&mut txn, &mut state)
+            .map_err(Error::listing_lost_work)
     }
 
     /// Resolve and apply a joint upgrade in one recoverable transaction.
     /// Local work blocks the operation. No merge, deletion or downgrade is attempted.
     pub fn update_all(&self) -> Result<UpdateAllPlan> {
-        let (plan, dist) = self.transaction(|txn, state| self.prepare_update_all(txn, state))?;
+        let (plan, dist) = self
+            .transaction(|txn, state| self.prepare_update_all(txn, state))
+            .map_err(Error::listing_lost_work)?;
         Ok(UpdateAllPlan { dist, ..plan })
     }
 
@@ -1927,7 +1930,7 @@ impl Manager {
                 detached,
                 dist: DistSync::default(),
             })
-        }).map_err(|error| error.with_package(id))?;
+        }).map_err(|error| error.with_package(id).listing_lost_work())?;
         Ok(RevisionChange { dist, ..change })
     }
     /// Swap current and previous version (offline). Refused if it breaks a dependent.
@@ -2004,7 +2007,7 @@ impl Manager {
                 detached: None,
                 dist: DistSync::default(),
             })
-        }).map_err(|error| error.with_package(id))?;
+        }).map_err(|error| error.with_package(id).listing_lost_work())?;
         Ok(RevisionChange { dist, ..change })
     }
     pub fn set_enabled(&self, id: &str, enabled: bool) -> Result<DistSync> {

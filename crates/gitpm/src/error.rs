@@ -112,20 +112,25 @@ impl Error {
 
     /// Identify the package whose update or rollback was refused.
     pub(crate) fn with_package(mut self, package: &str) -> Self {
-        match &mut self {
-            Self::InvalidManifest { id, message } | Self::VersionConflict { id, message } => {
-                if id.is_none() {
-                    *id = Some(package.into());
-                    *message = format!("{package}: {message}");
-                }
+        if let Self::InvalidManifest { id, message } | Self::VersionConflict { id, message } =
+            &mut self
+            && id.is_none()
+        {
+            *id = Some(package.into());
+            *message = format!("{package}: {message}");
+        }
+        self
+    }
+
+    /// Put the clone's ID and its lost-work items into a `LocalChanges` message.
+    /// Applied once, where update, update all and rollback return, so the CLI
+    /// prints the message alone.
+    pub(crate) fn listing_lost_work(mut self) -> Self {
+        if let Self::LocalChanges { id, message, items } = &mut self {
+            *message = format!("{id}: {message}");
+            for item in items {
+                message.push_str(&format!("; {}", item.describe()));
             }
-            Self::LocalChanges { id, message, items } => {
-                *message = format!("{id}: {message}");
-                for item in items {
-                    message.push_str(&format!("; {}", item.describe()));
-                }
-            }
-            _ => {}
         }
         self
     }
@@ -373,7 +378,8 @@ mod tests {
                 path: "extra.js".into(),
             }],
         }
-        .with_package("dan/demo");
+        .with_package("dan/demo")
+        .listing_lost_work();
         assert_eq!(
             error.to_string(),
             "dan/demo: local work blocks update; untracked: extra.js"
