@@ -812,7 +812,7 @@ pub fn register_package(
         source.to_owned()
     };
     let temp = Scratch::new("pm-register")?;
-    git(&temp.0, &["clone", "--no-hardlinks", "--", &source, "repo"])?;
+    git(&temp.0, &["clone", "--no-local", "--", &source, "repo"])?;
     let repo = temp.0.join("repo");
     let commit = resolve_ref(&repo, reference)?;
     let found = packages::find_at(
@@ -970,7 +970,7 @@ pub fn update_sources(
             &temp.0,
             &[
                 "clone",
-                "--no-hardlinks",
+                "--no-local",
                 "--",
                 source,
                 repo.to_str().require(Error::Io, "invalid temporary path")?,
