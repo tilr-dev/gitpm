@@ -7,4 +7,4 @@
 ## 2. Validation
 
 - [x] 2.1 Run `openspec validate --all --strict` and verify all reconciliation references resolve.
-- [ ] 2.2 Run the required checks through `bin/check` (including `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace`); archive through `bin/finish`.
+- [x] 2.2 Run the required checks through `bin/check` (including `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace`); archive through `bin/finish`.
