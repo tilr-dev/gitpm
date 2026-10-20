@@ -11,4 +11,4 @@
 
 - [x] 3.1 Run `./itests/dt coverage` and verify it writes both files, `git status --porcelain -- openspec/coverage` is empty, `git check-ignore openspec/coverage/coverage.md openspec/coverage/coverage.json` lists both and `git ls-files openspec/coverage` is empty.
 - [x] 3.2 Verify no tracked file outside `openspec/changes/archive/` asks to regenerate and commit the report: `rg -n "openspec/coverage"` lists only the spec, this change, the generator and the READMEs, each saying the report is local.
-- [ ] 3.3 Run `openspec validate --all --strict`, then `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace` through `bin/check`; archive through `bin/finish`.
+- [x] 3.3 Run `openspec validate --all --strict`, then `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace` through `bin/check`; archive through `bin/finish`.
