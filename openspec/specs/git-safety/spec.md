@@ -9,10 +9,6 @@ Defines how gitpm talks to system `git` and `curl` safely: one subprocess bounda
 ### Requirement: One subprocess boundary
 All subprocesses of the library (system `git` and `curl`) SHALL be started from the internal transport module, the planned switch point to embedded implementations; no other gitpm library module SHALL start processes. Single source for the library's I/O rule: the library SHALL NOT print, prompt, read stdin or read environment variables itself; a setting that depends on the environment is passed in by the caller. Verified by `no_env::garbage_pm_environment_is_ignored`.
 
-#### Scenario: Process boundary enforcement
-- **WHEN** library source is checked
-- **THEN** production process creation is confined to the transport module, verified by `transport::boundary_tests::production_processes_stay_inside_transport`
-
 #### Scenario: SSH setting from the environment
 - **WHEN** `GIT_SSH_COMMAND` or `GIT_SSH` is set and the user runs any gitpm command
 - **THEN** the CLI sets `Options.custom_ssh` (an FFI host sets `ManagerOptions.customSsh` and passes it to `authCheck`), gitpm then sets no SSH command of its own, and git uses the inherited variable
