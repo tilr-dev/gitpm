@@ -41,6 +41,8 @@ Repository git commands SHALL use closed stdin, `GIT_TERMINAL_PROMPT=0`, empty `
 #### Scenario: Probe of the user's SSH setting
 - **WHEN** gitpm checks whether `core.sshCommand` is configured
 - **THEN** `git -c credential.interactive=never config --get core.sshCommand` runs with empty `GIT_ASKPASS`, closed stdin, and is killed after 10 seconds (`git`, "timed out after 10s")
+- **AND** a timed-out probe stops `auth check` before `ls-remote`; it cannot be treated as a configured SSH command
+- **AND** this is covered by `auth_check_reports_config_probe_timeout_without_running_ls_remote`
 
 #### Scenario: Catalog download
 - **WHEN** a remote catalog file is fetched

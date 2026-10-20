@@ -24,19 +24,25 @@ const BATCH_SSH: &str = "ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliv
 /// stdin, bounded transfers. The user's own `core.sshCommand` or `GIT_SSH_COMMAND`
 /// (inherited by the child) keeps precedence over the batch SSH command.
 fn git_command(repo: &Path, args: &[&str], custom_ssh: bool) -> Result<Command> {
-    let mut command = git_base(custom_ssh);
+    let mut command = git_base(custom_ssh)?;
     command.arg("-C").arg(repo).args(args);
     Ok(command)
 }
 
 /// The bounded, noninteractive `git` of [`git_command`] without a repository.
-fn git_base(custom_ssh: bool) -> Command {
+fn git_base(custom_ssh: bool) -> Result<Command> {
     static CONFIGURED_SSH: OnceLock<bool> = OnceLock::new();
-    let custom_ssh = custom_ssh
-        || *CONFIGURED_SSH.get_or_init(|| {
-            git_config_defined("core.sshCommand", "cannot start git").unwrap_or(true)
-        });
-    git_base_with_policy(custom_ssh)
+    let configured = if custom_ssh {
+        true
+    } else if let Some(configured) = CONFIGURED_SSH.get() {
+        *configured
+    } else {
+        // Cache successful probes only: a timeout must reach the caller.
+        let configured = git_config_defined("core.sshCommand", "cannot start git")?;
+        let _ = CONFIGURED_SSH.set(configured);
+        configured
+    };
+    Ok(git_base_with_policy(configured))
 }
 
 fn git_base_with_policy(custom_ssh: bool) -> Command {
@@ -104,7 +110,15 @@ fn output_within(
     start_kind: fn(String) -> Error,
     start_error: &str,
 ) -> Result<Output> {
-    output_with_input_within(command, None, limit, what, start_kind, start_error)
+    output_with_input_within(
+        command,
+        None,
+        limit,
+        what,
+        start_kind,
+        start_error,
+        Stdio::piped(),
+    )
 }
 
 /// Supplied input is written concurrently so a child that stops reading is still bounded.
@@ -115,12 +129,13 @@ fn output_with_input_within(
     what: &str,
     start_kind: fn(String) -> Error,
     start_error: &str,
+    stdout: Stdio,
 ) -> Result<Output> {
     if input.is_some() {
         command.stdin(Stdio::piped());
     }
     let mut child = command
-        .stdout(Stdio::piped())
+        .stdout(stdout)
         .stderr(Stdio::piped())
         .spawn()
         .context(start_kind, start_error)?;
@@ -215,6 +230,7 @@ pub(crate) fn git_with_input(
         &what,
         Error::Git,
         "cannot start git",
+        Stdio::piped(),
     )?;
     ensure!(
         output.status.success(),
@@ -243,7 +259,7 @@ pub(crate) struct RemoteRefs {
 /// (`auth::validate_recorded`): a URL or an absolute path, no remote helper.
 pub(crate) fn ls_remote_refs(source: &str, custom_ssh: bool) -> Result<RemoteRefs> {
     let what = format!("git ls-remote --tags --heads -- {source}");
-    let mut command = git_base(custom_ssh);
+    let mut command = git_base(custom_ssh)?;
     // Outside any repository: a bare word is a path, never a remote name of the cwd.
     // An explicit transport allowlist: a source from a foreign manifest never reaches
     // `ext::`, `fd::` or any other remote helper. (`GIT_PROTOCOL_FROM_USER=0` alone would
@@ -316,12 +332,14 @@ pub(crate) struct LsRemote {
 /// `git ls-remote -- SOURCE` without cloning; stdout is discarded.
 pub(crate) fn ls_remote(source: &str, custom_ssh: bool, start_error: &str) -> Result<LsRemote> {
     let what = format!("git ls-remote -- {source}");
-    let output = output_within(
-        ls_remote_command(source, custom_ssh),
+    let output = output_with_input_within(
+        ls_remote_command(source, custom_ssh)?,
+        None,
         QUICK_TIMEOUT,
         &what,
         Error::Auth,
         start_error,
+        Stdio::null(),
     )?;
     Ok(LsRemote {
         success: output.status.success(),
@@ -329,14 +347,14 @@ pub(crate) fn ls_remote(source: &str, custom_ssh: bool, start_error: &str) -> Re
     })
 }
 
-fn ls_remote_command(source: &str, custom_ssh: bool) -> Command {
-    let mut command = git_base(custom_ssh);
+fn ls_remote_command(source: &str, custom_ssh: bool) -> Result<Command> {
+    let mut command = git_base(custom_ssh)?;
     command
         .args(["ls-remote", "--", source])
         .env("LC_ALL", "C")
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
-    command
+    Ok(command)
 }
 
 /// HTTP GET result. `None` body means HTTP 404. Redirects are not followed (a 3xx
@@ -498,6 +516,7 @@ mod tests {
             "sh",
             Error::Git,
             "cannot start sh",
+            Stdio::piped(),
         );
         unsafe { libc::signal(libc::SIGPIPE, previous) };
         let error = result.unwrap_err();
@@ -535,7 +554,7 @@ mod tests {
         let commands = [
             git_command(&author.path, &["status"], false).unwrap(),
             config_probe("core.sshCommand").0,
-            ls_remote_command("https://example.invalid/repo.git", false),
+            ls_remote_command("https://example.invalid/repo.git", false).unwrap(),
         ];
         for command in &commands {
             let args: Vec<_> = command.get_args().collect();
