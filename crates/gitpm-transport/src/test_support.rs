@@ -1,5 +1,4 @@
 use std::{
-    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -22,9 +21,6 @@ impl TempDir {
         fs::create_dir_all(&path).unwrap();
         // Canonical path: on macOS the temp dir is behind the /var -> /private/var symlink.
         Self(fs::canonicalize(path).unwrap())
-    }
-    pub(crate) fn path(&self) -> &Path {
-        &self.0
     }
     pub(crate) fn join(&self, part: impl AsRef<Path>) -> PathBuf {
         self.0.join(part)

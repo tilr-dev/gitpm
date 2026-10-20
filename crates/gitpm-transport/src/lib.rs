@@ -116,3 +116,6 @@ impl Transport for SystemTransport {
         transport::git(repo, &["ls-remote", "--tags", remote], custom_ssh)
     }
 }
+
+#[cfg(test)]
+mod message_tests;
