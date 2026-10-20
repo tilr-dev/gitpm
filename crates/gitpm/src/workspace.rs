@@ -646,7 +646,7 @@ pub(crate) fn export_dist(
     // Archive represents gitlinks as ordinary empty directories, losing their type.
     // Inspect the committed tree before creating or writing any deployment files.
     let tree = format!("{commit}:{folder}");
-    let entries = crate::exec::git_raw(repo, &["ls-tree", "-r", "-z", &tree], custom_ssh)?;
+    let entries = crate::transport::git_raw(repo, &["ls-tree", "-r", "-z", &tree], custom_ssh)?;
     for entry in entries.split(|byte| *byte == 0) {
         if entry.starts_with(b"160000 ") {
             let name =
