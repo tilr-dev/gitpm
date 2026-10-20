@@ -49,6 +49,14 @@ Repository git commands SHALL use closed stdin, `GIT_TERMINAL_PROMPT=0`, empty `
 - **WHEN** a clone of an HTTPS URL would ask for a password, also through `GIT_ASKPASS`, `SSH_ASKPASS`-style helpers or an interactive credential helper
 - **THEN** git fails fast with `git` instead of waiting, so the workspace lock is released
 
+### Requirement: Library-owned Git input
+Git ref transactions SHALL accept only library-generated input, close the input pipe after writing, and retain the execution timeout and noninteractive bounds.
+
+#### Scenario: Library-owned ref transaction input
+- **WHEN** release tags are created by `update-ref --stdin`
+- **THEN** only library-generated commands are supplied, followed by EOF, with the same execution timeout
+- **AND** verified by `fork_replace_release_late_tag_lock_leaves_no_tags`
+
 ### Requirement: No option injection
 Single source for option-like input: ID components starting with `-` SHALL be refused with `invalid_id` before any git call, and user refs starting with `-` with `invalid_argument` ("invalid git ref") before they reach git; user refs (install, update, register) SHALL be resolved with `rev-parse --verify --end-of-options`, and positional names (sources, tags, paths) SHALL be passed after `--`. Verified by `identity::valid_part_accepts_1_to_80_safe_ascii_characters`.
 

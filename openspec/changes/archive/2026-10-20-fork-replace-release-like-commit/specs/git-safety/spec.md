@@ -1,17 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Git never waits for input
-Every repository git command SHALL run noninteractively with closed stdin, except library-owned input closed after writing; user stdin is never inherited. Commands SHALL retain prompt, transfer and SSH bounds, and SHALL be killed after 10 minutes with a `git` error ("timed out after 600s").
-
-#### Scenario: Noninteractive command bounds
-- **WHEN** a repository git command starts
-- **THEN** it has `GIT_TERMINAL_PROMPT=0`, `http.lowSpeedLimit=1`/`http.lowSpeedTime=20` and batch SSH (`BatchMode=yes`, `ConnectTimeout=10`, keepalives) via `core.sshCommand` unless the user defines it
-- **AND** verified by `exec::git_never_reads_stdin_or_prompts`
-
-#### Scenario: Library-owned ref transaction input
-- **WHEN** release tags are created by `update-ref --stdin`
-- **THEN** only library-generated commands are supplied, followed by EOF, with the same execution timeout
-- **AND** verified by `fork_replace_release_late_tag_lock_leaves_no_tags`
+Repository git commands SHALL use closed stdin (or library-owned input closed after writing), `GIT_TERMINAL_PROMPT=0`, `http.lowSpeedLimit=1`/`http.lowSpeedTime=20` and batch SSH via `core.sshCommand` unless user-defined. User stdin SHALL NOT be inherited; a command running after 10 minutes SHALL be killed with `git` ("timed out after 600s").
 
 #### Scenario: Wedged git
 - **WHEN** a git subprocess hangs for 10 minutes
@@ -42,3 +32,12 @@ Every repository git command SHALL run noninteractively with closed stdin, excep
 - **WHEN** a clone of an HTTPS URL would ask for a password
 - **THEN** git fails fast with `git` instead of waiting, so the workspace lock is released
 
+## ADDED Requirements
+
+### Requirement: Library-owned Git input
+Git ref transactions SHALL accept only library-generated input, close the input pipe after writing, and retain the execution timeout and noninteractive bounds.
+
+#### Scenario: Library-owned ref transaction input
+- **WHEN** release tags are created by `update-ref --stdin`
+- **THEN** only library-generated commands are supplied, followed by EOF, with the same execution timeout
+- **AND** verified by `fork_replace_release_late_tag_lock_leaves_no_tags`
