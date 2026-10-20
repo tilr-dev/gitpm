@@ -2,7 +2,7 @@
 
 ## Context
 
-See proposal.md (Why). State this change starts from: `crates/gitpm-cli/src/main.rs` at `0b146cf` as changed by the 2026-10-18 chain (`no-backward-compat` … `host-compatibility`, plus the per-task changes split from the former `robustness-fixes`):
+See proposal.md (Why). State this change starts from: `crates/gitpm-cli/src/main.rs` at `0b146cf` as changed by the 2026-10-18 chain (`no-backward-compat` … `pre-release-versions`, plus the per-task changes split from the former `robustness-fixes`):
 
 - The CLI parses flat commands from `COMMANDS`, pulls options first (`option`/`flag`), validates option/command pairs, checks the argument count (`expected`), and dispatches. Catalog commands call the library directly: `catalog::browse` (via `gitpm_cli::catalog::info`), `catalog::list`, `catalog::update_sources`, `catalog::register_package`.
 - Every library function the group needs already exists and is already tested. After `thin-cli-boundary` library messages name no command; the CLI adds hints per error kind, and this change only updates the hint texts to the new spellings (D6).

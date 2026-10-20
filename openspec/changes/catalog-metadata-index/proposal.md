@@ -6,7 +6,7 @@ Since 0.5 the catalog overview (`browse`, FFI `browseCatalog`, the CLI overview 
 
 ## What Changes
 
-- **BREAKING** (catalog format) The catalog package index `namespaces/<ns>/<name>/plugin.json` gains the metadata of the package's latest release (`title`, `description`, `provides`, `tags`), its `host` map (`host-compatibility`) and its version; its `schema` value becomes 3, and readers refuse other values as today. Migration: regenerate the catalog with `gitpm catalog update`; no reader of the old index is kept.
+- **BREAKING** (catalog format) The catalog package index `namespaces/<ns>/<name>/plugin.json` gains the metadata of the package's latest release (`title`, `description`, `provides`, `tags`) and its version; its `schema` value becomes 3, and readers refuse other values as today. Migration: regenerate the catalog with `gitpm catalog update`; no reader of the old index is kept.
 - Catalog generation and registration write that summary in the same locked, atomic write as the index.
 - The catalog overview (`catalog show`, `browse`, FFI `browseCatalog`) reads the summary from the index instead of one `release.json` per package. The two guarantees stay: the overview is bounded (40 entries), and missing or broken data of one package only leaves that package without metadata.
 - Only the per-package index carries the summary; directory files stay links only (variant A, owner decision of 2026-10-18).
@@ -26,6 +26,6 @@ Since 0.5 the catalog overview (`browse`, FFI `browseCatalog`, the CLI overview 
 
 ## Impact
 
-`crates/gitpm/src/catalog.rs` (index type, writers, `browse`), catalog file layout, README "Plugin metadata" and the catalog format notes, FFI `PackageSummary` unchanged (it already has the metadata and `host`). Tracker: TILR-15.
+`crates/gitpm/src/catalog.rs` (index type, writers, `browse`), catalog file layout, README "Plugin metadata" and the catalog format notes, FFI `PackageSummary` unchanged (it already has the metadata). Tracker: TILR-15.
 
 Depends on: `cli-catalog-commands` (and through it the whole 2026-10-18 chain and `catalog-streaming-size-limit`). `fork-repository-without-workspace` builds on this change.

@@ -12,7 +12,7 @@ The catalog package index `{"schema": 2, "id", "source", "versions"}` is read wi
 
 ## Decisions
 
-- Summary lives in the catalog package index: `latest {version, title, description, provides, tags, host}` (`host` from `host-compatibility`), written with the same lock and atomic rename as the index (spec `catalog` "Writers are serialized and crash-safe"); the index `schema` becomes 3 and other values are refused with `catalog`.
+- Summary lives in the catalog package index: `latest {version, title, description, provides, tags}`, written with the same lock and atomic rename as the index (spec `catalog` "Writers are serialized and crash-safe"); the index `schema` becomes 3 and other values are refused with `catalog`.
 - Only the per-package index carries the summary (owner decision of 2026-10-18 on TILR-15, variant A): one index request per listed package, no `release.json`; directory files stay links only. No reader for schema-2 indexes is kept (TILR-38).
 - A summary that disagrees with `release.json` is display-only: installs keep verifying against `release.json`.
 
