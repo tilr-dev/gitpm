@@ -156,10 +156,15 @@ class GitpmItests:
         """Slim test runtime: git, python3, curl and the result runner."""
         return self._apt(RUNTIME_IMAGE).with_new_file("/usr/local/bin/gitpmt-run", RUNNER, permissions=0o755)
 
-    def _rust(self, target_cache: str) -> dagger.Container:
+    async def _rust(self, target_cache: str) -> dagger.Container:
+        source = self._build_src()
+        # Cargo freshness uses source mtimes, which Dagger snapshots normalize.
+        # Its build lock also ends before BUILD copies the executables. Different
+        # snapshots must never share mutable outputs, even across worktrees.
+        target_cache = f"{target_cache}-source-v1-{await source.digest()}"
         return (
             self._apt(RUST_IMAGE).with_exec(["rustup", "component", "add", "clippy"])
-            .with_directory(SRC, self._build_src())
+            .with_directory(SRC, source)
             # The whole CARGO_HOME, so cargo's package-cache lock is shared by concurrent containers.
             .with_mounted_cache("/cargo-home", dag.cache_volume("gitpm-itests-cargo-home"))
             .with_env_variable("CARGO_HOME", "/cargo-home")
@@ -172,23 +177,30 @@ class GitpmItests:
         )
 
     @function
-    def build(self) -> dagger.Directory:
+    async def build(self) -> dagger.Directory:
         """Compiled test executables, gitpm, gitpm-api and manifest.json (suites and test names)."""
         return (
-            self._rust("gitpm-itests-target-test")
+            (await self._rust("gitpm-itests-target-test"))
             .with_new_file("/usr/local/bin/gitpmt-build", BUILD, permissions=0o755)
             .with_exec(["gitpmt-build"])
             .directory("/out")
         )
 
     @function
-    def gitpm(self) -> dagger.File:
+    async def gitpm(self) -> dagger.File:
         """The gitpm CLI binary (Linux) built from the working tree."""
-        return self.build().file("bin/gitpm")
+        return (await self.build()).file("bin/gitpm")
 
-    def _with_gitpm(self, ctr: dagger.Container) -> dagger.Container:
-        return (ctr.with_file("/usr/local/bin/gitpm", self.gitpm())
-                .with_file("/usr/local/bin/gitpm-api", self.build().file("bin/gitpm-api")))
+    async def _with_gitpm(self, ctr: dagger.Container) -> dagger.Container:
+        out = await self.build()
+        return (ctr.with_file("/usr/local/bin/gitpm", out.file("bin/gitpm"))
+                .with_file("/usr/local/bin/gitpm-api", out.file("bin/gitpm-api")))
+
+    @function(cache="never")
+    async def cache_regression(self) -> str:
+        """Verify build artifact ownership with controlled Cargo workspaces."""
+        from .cache_regression import check
+        return await check(self)
 
     async def _run(self, sem: asyncio.Semaphore, ctr: dagger.Container, argv: list[str],
                    rid: str, kind: str, spec: list[str] | None = None, xfail: str = "") -> Result:
@@ -214,7 +226,7 @@ class GitpmItests:
     # ------------------------------------------------------------- rust, lint
 
     async def _rust_tests(self, sem, run_id: str, filter: str) -> list[Result]:
-        out = self.build()
+        out = await self.build()
         suites = json.loads(await out.file("manifest.json").contents())
         base = (
             self.runtime()
@@ -239,7 +251,7 @@ class GitpmItests:
         rid = "lint:clippy"
         if not _match(filter, rid):
             return []
-        ctr = (self._rust("gitpm-itests-target-clippy")
+        ctr = ((await self._rust("gitpm-itests-target-clippy"))
                .with_new_file("/usr/local/bin/gitpmt-run", RUNNER, permissions=0o755)
                .with_env_variable("GITPMT_RUN", run_id))
         return [await self._run(sem, ctr, ["cargo", "clippy", "--locked", "--workspace", "--all-targets",
@@ -281,7 +293,7 @@ class GitpmItests:
                 fx = fx.with_directory(".", await get(parent))
             ctr = self._gitpmtest(self.runtime(), spec["module"])
             if spec["gitpm"]:
-                ctr = self._with_gitpm(ctr)
+                ctr = await self._with_gitpm(ctr)
             ctr = ctr.with_directory("/fx", fx).with_exec(
                 ["python3", "-m", "gitpmtest", "fixture", f"{spec['module']}:{name}"])
             await ctr.sync()
@@ -335,7 +347,7 @@ class GitpmItests:
                 except Exception:
                     return Result(rid, "scenario", "BLOCKED", 0, f"fixture {c['fixture']} failed to build",
                                   c["spec"], c["xfail"])
-            ctr = (self._with_gitpm(self._gitpmtest(self.runtime(), c["module"]))
+            ctr = ((await self._with_gitpm(self._gitpmtest(self.runtime(), c["module"])))
                    .with_directory("/fx", fx)
                    .with_env_variable("GITPMT_RUN", run_id))
             return await self._run(sem, ctr, ["python3", "-m", "gitpmtest", "case", c["id"]], rid, "scenario",
@@ -383,12 +395,18 @@ class GitpmItests:
         started = datetime.datetime.now(datetime.timezone.utc)
         groups = []
         if "rust" in kinds:
+            if _match(filter, "rust:build-cache"):
+                async def cache_check():
+                    log = await self.cache_regression()
+                    return [Result("rust:build-cache", "rust", "PASS", log=log,
+                                   spec=["integration-tests/build-artifacts-belong-to-their-source-snapshot"])]
+                groups.append(cache_check())
             groups.append(self._rust_tests(sem, run_id, filter))
         if "lint" in kinds:
             async def lint():
                 if kinds & {"rust", "scenarios"}:
                     # One cold cargo build at a time: two in parallel ran the pb engine out of memory.
-                    await self.build().sync()
+                    await (await self.build()).sync()
                 return await self._lint(sem, run_id, filter)
             groups.append(lint())
         if "scenarios" in kinds:
