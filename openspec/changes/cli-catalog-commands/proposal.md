@@ -39,8 +39,8 @@ The MODIFIED deltas cover the 26 requirements authorized by Dan in TILR-8 commen
 
 ## Impact
 
-`crates/gitpm-cli/src/main.rs` (dispatch, option validation, help, error hints), `crates/gitpm-cli/tests/`, `itests/` (`gitpmtest.COMMANDS`, `uc_001`/`uc_063` help assertions, new `uc_076`), README. Spec requirements that still name the old commands in examples (catalog, cli, plugin-metadata and the requirements the chain added, for example catalog "Verified catalogs") get MODIFIED deltas before archive (task 3.2). Tracker: TILR-8.
+`crates/gitpm-cli/src/main.rs` (dispatch, option validation, help, error hints), `crates/gitpm-cli/tests/`, `itests/` (`gitpmtest.COMMANDS`, `uc_001`/`uc_063` help assertions, new `uc_076`), README. Spec requirements that still name the old commands in examples (catalog, cli, plugin-metadata and the requirements the chain added, for example catalog "Verified catalogs") are covered by MODIFIED deltas (task 3.2). Tracker: TILR-8.
 
 ## Implementation
 
-Implementing commit: `9290151` (TILR-8, catalog group dispatch, documentation and integration scenarios). The FFI parity test follows the renamed command keys; FFI functions are unchanged.
+Implementing commit: «Собрать команды каталога в группу gitpm catalog» (Task: TILR-8; dispatch, documentation and integration scenarios). The FFI parity test follows the renamed command keys; FFI functions are unchanged.

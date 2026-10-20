@@ -482,10 +482,10 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   `Options.catalog`) is refused with `invalid_argument` ("catalog location PATH does not
   exist") before anything is created; it no longer counts as "no catalog" for `install`.
   `Manager::open_with` validates its Options first. The free catalog readers do the same:
-  `check`, `catalog show`/`browse`, `catalog`, `catalog_release`/`lookup` on a missing local
+  `check`, `catalog show`/`browse`, `catalog links`, `catalog_release`/`lookup` on a missing local
   location fail with `invalid_argument` (was `catalog` "catalog not found"). Migration:
   create the catalog folder (`catalog update`/`catalog register` create it) or drop the setting.
-- `gitpm catalog` prints the library's typed directory links `{"schema": 2,
+- `gitpm catalog links` prints the library's typed directory links `{"schema": 2,
   "directories": {…}}` (`catalog::links`, the same as FFI `catalogLinks`) instead of the
   raw `catalog.json`; a v1 or otherwise invalid root fails with `catalog`.
 - `uninstall` and `forget` of a recorded package whose clone is gone drop its record and
