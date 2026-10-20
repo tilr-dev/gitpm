@@ -29,7 +29,7 @@ Sources and recheck commands:
 - `https://crates.io/api/v1/crates/askama_derive/0.16.1/dependencies`
 - `https://rustsec.org/advisories/RUSTSEC-2026-0374.html`
 - `https://raw.githubusercontent.com/RustSec/advisory-db/main/crates/basic-toml/RUSTSEC-2026-0374.md`
-- Recheck the API endpoints with `curl -fsSL`, then `cargo tree -i basic-toml`.
+- Recheck the API endpoints with `curl -fsSL`, then `cargo tree --all-features -i basic-toml`.
   Update upstream dependencies and remove the exception once basic-toml is gone.
 
 ## Validation

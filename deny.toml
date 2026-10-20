@@ -11,7 +11,7 @@ ignore = [
     # Verified 2026-10-20 via crates.io API: latest uniffi 0.32.2 -> askama_derive
     # 0.16.1 -> basic-toml 0.1.10; no released upgrade removes it. Used to parse
     # compile-time template config, not runtime input; advisory is unmaintained.
-    # Recheck latest uniffi/askama_derive releases and `cargo tree -i basic-toml`;
+    # Recheck latest uniffi/askama_derive releases and `cargo tree --all-features -i basic-toml`;
     # update dependencies and remove this exception once basic-toml is gone.
     { id = "RUSTSEC-2026-0374", reason = "Unmaintained build-time Askama config parser; latest released UniFFI still requires it (verified 2026-10-20). Remove when upstream drops basic-toml." },
 ]
