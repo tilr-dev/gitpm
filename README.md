@@ -1573,8 +1573,9 @@ DT_ENGINE=dagger ./itests/dt                  # the same on a local engine (Dock
 With the 1Password SSH agent run `env -u SSH_AUTH_SOCK ./itests/dt`. Results land in
 `itests/results/<timestamp>/` (`summary.txt`, `report.html`, logs). Every case is tagged
 with the spec requirement it verifies; `./itests/dt coverage` writes
-`openspec/coverage/coverage.md` and `coverage.json`. Details, statuses (`XFAIL` for known
-defects) and how to write cases: [itests/README.md](itests/README.md).
+`openspec/coverage/coverage.md` and `coverage.json` locally (the directory is ignored by Git;
+nothing in it is committed). Details, statuses (`XFAIL` for known defects) and how to write
+cases: [itests/README.md](itests/README.md).
 
 ## Build
 

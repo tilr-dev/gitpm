@@ -181,6 +181,8 @@ writes `openspec/coverage/coverage.md` and `coverage.json`: per capability, each
 requirement and scenario with the cases tagged for it, the cargo tests the spec text names
 ("Verified by …"), and each case's status in `itests/results/latest` when present;
 requirements with neither are listed under "Uncovered". It exits 1 on an invalid registry.
+The report is a local artifact: `openspec/coverage/` is ignored by Git and nothing in it is
+committed; regenerate it when you need it.
 
 ## Not ported
 
