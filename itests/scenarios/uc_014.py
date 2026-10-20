@@ -157,6 +157,20 @@ def symlinks_in_dist_cannot_escape(t: T):
         t.not_installed(id)
 
 
+@case(fixture="hello_installed", spec=["dist/deploys-copy-the-committed-tree"])
+def submodule_in_dist_refused(t: T):
+    """A committed gitlink in dist/ fails before deploying anything."""
+    repo, sha = bad_repo(t, "submodule", {
+        "plugin.json": manifest(id="bad/submodule", version="0.1.0"), **DIST,
+    })
+    t.git(repo, "update-index", "--add", "--cacheinfo", f"160000,{sha},dist/vendor")
+    t.git(repo, "commit", "-q", "-m", "submodule in dist")
+    refused(t, repo, "--ref", t.rev(repo), kind="unsupported",
+            contains="symlinks and submodules are not supported: dist/vendor")
+    t.not_installed("bad/submodule")
+    t.eq((t.ws / "dist/bad/submodule/vendor").exists(), False, "no empty vendor folder")
+
+
 # ------------------------------------------------------------------ catalog installs
 
 def catalog_refused(t: T, id: str, kind: str | None, contains=()):

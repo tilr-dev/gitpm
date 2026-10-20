@@ -426,6 +426,9 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   these environment variables. Standalone catalog and check operations offer
   `*_with_options` variants; their existing entry points use default options. FFI
   `check` takes `customSsh`.
+- Submodules (gitlinks) inside a package's `dist/` are refused with `unsupported`
+  before deploying anything, instead of silently creating an empty directory.
+  Migration: include the dependency's files in the committed `dist/` tree.
 - Package IDs are always `namespace/name`; an unscoped ID (`demo`) is refused with
   `invalid_id` everywhere (manifests, dependencies, state, commands). `update all` is
   always the joint upgrade, as no ID can be `all`. Migration: re-create the package
@@ -858,7 +861,8 @@ not derive it. `enabled` is not `active`: a replaced package stays `enabled: tru
 - Every deploy (install, update, rollback, restore, `replace --back`, enable, reconcile)
   copies `<path>/dist` of the resolved commit from the clone's Git objects (one
   `git archive`), never the working tree: uncommitted edits in a clone are not deployed,
-  nested folders and the executable bit are kept, symlinks are refused, and a revision
+  nested folders and the executable bit are kept, symlinks and submodules are refused
+  with `unsupported` before deploying anything, and a revision
   without that folder is refused (`invalid_manifest`, "release … has no dist/ folder")
   instead of deploying an empty folder.
 - `replace X --with Y` removes `dist/X/`; nothing of `Y` is copied there; `dist/Y/` stays.

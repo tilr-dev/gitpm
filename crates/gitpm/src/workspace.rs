@@ -552,8 +552,8 @@ pub(crate) fn copy_tree(from: &Path, to: &Path, symlinks: bool) -> Result<()> {
 }
 /// Copy the folder `path` (`""`: the root) of `commit` from `repo` into `target`: one
 /// `git archive` of that tree (`COMMIT:PATH`, a literal path, never a pattern), unpacked
-/// in process. Plain files and folders only, the executable bit is kept; symlinks are
-/// refused (a submodule comes out as an empty folder). The folder must exist.
+/// in process. The executable bit is kept; symlinks are refused. Gitlinks become
+/// empty directories in the archive. The folder must exist.
 pub(crate) fn export_folder(
     repo: &Path,
     commit: &str,
@@ -622,6 +622,7 @@ pub(crate) fn export_folder(
 /// Fill `target` with the package's `dist/` (package folder `package`, `None`: the
 /// root) at `commit` of `repo`, from Git objects (never the working tree). A revision
 /// without that folder is refused ([`Error::InvalidManifest`]), never deployed empty.
+/// Gitlinks are refused before any files are exported.
 pub(crate) fn export_dist(
     repo: &Path,
     commit: &str,
@@ -643,6 +644,20 @@ pub(crate) fn export_dist(
         InvalidManifest,
         "release {commit} has no {folder}/ folder"
     );
+    // Archive represents gitlinks as ordinary empty directories, losing their type.
+    // Inspect the committed tree before creating or writing any deployment files.
+    let tree = format!("{commit}:{folder}");
+    let entries = crate::exec::git_raw(repo, &["ls-tree", "-r", "-z", &tree], custom_ssh)?;
+    for entry in entries.split(|byte| *byte == 0) {
+        if entry.starts_with(b"160000 ") {
+            let name =
+                String::from_utf8_lossy(entry.splitn(2, |byte| *byte == b'\t').nth(1).unwrap());
+            fail!(
+                Unsupported,
+                "symlinks and submodules are not supported: {folder}/{name}"
+            );
+        }
+    }
     export_folder(repo, commit, &folder, target, custom_ssh)
 }
 /// Locate an updated package, retaining the requested and upstream identities.
@@ -6027,6 +6042,32 @@ mod tests {
     }
 
     #[test]
+    fn a_submodule_in_dist_is_refused() {
+        let (ws, m) = Ws::installed("dan/demo1");
+        let bad = ws.other_author("bad", "dan/bad");
+        let sha = git(&bad.path, &["rev-parse", "HEAD"], false).unwrap();
+        fixture_git(
+            &bad.path,
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("160000,{sha},dist/vendor"),
+            ],
+        );
+        fixture_git(&bad.path, &["commit", "-q", "-m", "submodule in dist"]);
+        fixture_git(&bad.path, &["tag", "-f", "dan/bad@0.1.0"]);
+        let error = ws.refuses("unsupported", || m.install(bad.source()));
+        assert!(
+            error
+                .to_string()
+                .contains("symlinks and submodules are not supported: dist/vendor"),
+            "{error}"
+        );
+        assert!(!ws.root.join("dist/dan/bad/vendor").exists());
+    }
+
+    #[test]
     fn symlinked_namespace_directory_is_never_followed() {
         // Install: `packages/vendor` points outside; nothing may be written there.
         let ws = Ws::new("vendor/demo1");
@@ -7304,6 +7345,39 @@ mod tests {
             !mono.dir.join("new").exists(),
             "created parents are removed"
         );
+    }
+
+    #[test]
+    fn a_submodule_outside_dist_does_not_block_adding_to_a_fork() {
+        let mono = Mono::new();
+        let sha = head_of(&mono.repo);
+        fixture_git(
+            &mono.repo,
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("160000,{sha},packages/theme/src/vendor"),
+            ],
+        );
+        fixture_git(
+            &mono.repo,
+            &["commit", "-q", "-m", "submodule outside dist"],
+        );
+        fixture_git(&mono.repo, &["tag", "-f", "tilr/theme@1.0.0"]);
+        let m = mono.open();
+        for id in ["tilr/store", "tilr/theme"] {
+            m.install_package(mono.source(), Some(id), InstallTarget::Release)
+                .unwrap();
+        }
+        let destination = mono.dir.join("forks/me");
+        m.fork_packages(&["tilr/store"], &destination, "me")
+            .unwrap();
+        m.fork_packages(&["tilr/theme"], &destination, "me")
+            .expect("a submodule outside dist must not block adding to a fork");
+        assert!(destination.join("packages/theme/src/vendor").is_dir());
+        let manifest = manifest(&destination.join("packages/theme")).unwrap();
+        assert_eq!(manifest.id, "me/theme");
     }
 
     #[test]
