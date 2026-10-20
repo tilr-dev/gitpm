@@ -170,6 +170,85 @@ fn core_catalog(f: &Fixture) -> String {
     cat
 }
 
+/// Model the lifetime of update-server-info's packs_XXXXXX without racing a timer.
+/// A filesystem clone opens the FIFO, then its writer removes the pathname before
+/// closing: Git's copy_file_with_time fails when it stats the vanished source.
+/// A transport clone never opens it; after the operation, a reader releases the
+/// writer so cleanup also completes in that case.
+fn with_transient_server_info<T>(repo: &Path, operation: impl FnOnce() -> T) -> T {
+    use std::os::unix::{ffi::OsStrExt, fs::OpenOptionsExt};
+    let path = repo.join(".git/objects/info/packs_controlled");
+    let cpath = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+    // SAFETY: cpath is a valid NUL-terminated path; mkfifo retains no pointer.
+    assert_eq!(unsafe { libc::mkfifo(cpath.as_ptr(), 0o600) }, 0);
+    let writer_path = path.clone();
+    let writer = std::thread::spawn(move || {
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .open(&writer_path)
+            .unwrap();
+        fs::remove_file(writer_path).unwrap();
+        drop(file);
+    });
+    let result = operation();
+    let release = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path);
+    writer.join().unwrap();
+    drop(release);
+    result
+}
+
+#[test]
+fn local_source_clones_ignore_transient_server_info() {
+    let f = Fixture::new();
+    let repo = fs::canonicalize(f.author("app/local")).unwrap();
+    let tag = f.release(&repo, "app/local", "1.0.0", &[]);
+    let source = repo.to_str().unwrap();
+    // Control: real Git must reproduce the original error with this case.
+    let out = with_transient_server_info(&repo, || {
+        Command::new("git")
+            .args(["clone", "--no-hardlinks", "--", source])
+            .arg(f.path("control"))
+            .env("LC_ALL", "C")
+            .output()
+            .unwrap()
+    });
+    assert!(!out.status.success());
+    let error = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        error.contains("failed to copy file to") && error.contains("packs_controlled"),
+        "{error}"
+    );
+    assert!(error.contains("No such file or directory"), "{error}");
+
+    let cat = f.catalog("catalog");
+    let release =
+        with_transient_server_info(&repo, || catalog::register(&cat, source, &tag)).unwrap();
+    assert_eq!(release.manifest.id, "app/local");
+    let sources = f.path("sources.txt");
+    fs::write(&sources, source).unwrap();
+    with_transient_server_info(&repo, || {
+        catalog::update_sources(&cat, &sources, &mut |_| {})
+    })
+    .unwrap();
+    let manager = f.open(&cat);
+    let installed =
+        with_transient_server_info(&repo, || manager.install_from_catalog("app/local", None))
+            .unwrap();
+    assert_eq!(installed.id, "app/local");
+    let clone = f.path("workspace/packages/app/local");
+    assert_eq!(git(&clone, &["remote", "get-url", "origin"]), source);
+    assert!(!clone.join(".git/objects/info/packs_controlled").exists());
+    assert!(!clone.join(".git/objects/info/alternates").exists());
+    fs::remove_dir_all(repo).unwrap();
+    assert_eq!(
+        git(&clone, &["show", "HEAD:dist/index.js"]),
+        "app/local 1.0.0"
+    );
+}
+
 #[test]
 fn catalog_install_resolves_dependencies_and_records_edges() {
     // An unverified catalog serves discovery only: nothing records it.

@@ -2609,10 +2609,7 @@ fn clone_revision(txn: &Txn, fetch: &Fetch, name: &str) -> Result<Cloned> {
     let repo = txn.scratch(name);
     let parent = repo.parent().unwrap();
     fs::create_dir_all(parent)?;
-    git(
-        parent,
-        &["clone", "--no-hardlinks", "--", fetch.source, name],
-    )?;
+    git(parent, &["clone", "--no-local", "--", fetch.source, name])?;
     // A fresh clone has exactly the origin's tags.
     lost_work::record_origin_tags(&repo)?;
     let mut skipped = Vec::new();
