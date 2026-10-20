@@ -346,14 +346,14 @@ fn fork_and_commit_carry_the_metadata_unchanged() {
 fn catalog_releases_carry_and_show_the_metadata() {
     let f = Fixture::new();
     fs::write(f.dir.join("sources.txt"), format!("{}\n", f.source())).unwrap();
-    f.ok(&["catalog-update"]);
+    f.ok(&["catalog", "update"]);
     let release = f.json(
         &f.dir
             .join("catalog/namespaces/tilr/theme/versions/1.0.0/release.json"),
     );
     assert_eq!(release["manifest"]["title"], "Theme");
     assert_eq!(release["manifest"]["provides"], "theme");
-    let info = f.ok(&["info"]);
+    let info = f.ok(&["catalog", "show"]);
     assert!(
         info.contains("Title: Theme")
             && info.contains("Description: Dark and light")
@@ -380,7 +380,7 @@ fn catalog_releases_carry_and_show_the_metadata() {
         "{",
     )
     .unwrap();
-    let info = f.ok(&["info"]);
+    let info = f.ok(&["catalog", "show"]);
     assert!(
         info.contains("tilr/theme — latest: 1.0.0") && !info.contains("Title:"),
         "{info}"
@@ -393,7 +393,7 @@ fn catalog_update_publishes_historical_releases_with_wrong_typed_metadata() {
     f.release("store", "1.1.0", r#","title":"Old","tags":"ui""#);
     f.release("store", "1.2.0", r#","title":"New""#);
     fs::write(f.dir.join("sources.txt"), format!("{}\n", f.source())).unwrap();
-    let out = f.ok(&["catalog-update"]);
+    let out = f.ok(&["catalog", "update"]);
     assert!(out.contains("Catalog ready: 4 release(s)"), "{out}");
     let old = f.json(
         &f.dir
@@ -408,7 +408,7 @@ fn catalog_update_publishes_historical_releases_with_wrong_typed_metadata() {
         (&store["title"], &store["tags"]),
         (&"Old".into(), &serde_json::json!([]))
     );
-    assert!(f.ok(&["info"]).contains("Title: New"));
+    assert!(f.ok(&["catalog", "show"]).contains("Title: New"));
 }
 
 #[test]

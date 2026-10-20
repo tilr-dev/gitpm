@@ -15,7 +15,7 @@ OPT = "cli/option-validation"
 # Every command of `gitpm --help` (main.rs COMMANDS).
 COMMANDS = ["install", "install-catalog", "download", "download-catalog", "list", "check", "update", "rollback", "enable", "disable", "forget",
             "restore", "uninstall", "fork", "replace", "sync-dist", "init", "commit", "remote", "auth",
-            "info", "catalog", "catalog-update", "register"]
+            "catalog show", "catalog links", "catalog update", "catalog register"]
 
 
 @case(fixture="hello", spec=["cli/help", "cli/command-set#every-command-documented"])
@@ -30,7 +30,7 @@ def help_in_every_spelling(t: T):
     t.eq(len(set(outputs)), 1, "distinct help texts")
     text = outputs[0]
     for command in COMMANDS:
-        t.ok(any(line.split()[:1] == [command] or f"| {command}" in line for line in text.splitlines()),
+        t.ok(any(line.split()[:len(command.split())] == command.split() or f"| {command}" in line for line in text.splitlines()),
              f"help describes {command}")
     t.has(text, "--root", "--catalog")
     t.same(before, "fixture")
@@ -115,7 +115,7 @@ for _args in [
      "--dry-run requires update all or sync-dist", f"{OPT}#misplaced-flag"),
     ("build_flags_outside_register", "10. build metadata with install",
      ["install", "@REPO", "--build-url", "https://example.invalid/b.tar", "--build-sha256", "a" * 64],
-     "build options require register", f"{OPT}#misplaced-flag"),
+     "build options require catalog register", f"{OPT}#misplaced-flag"),
     ("build_url_alone", "10. --build-url without --build-sha256 (register)",
      ["register", "@REPO", "--ref", f"{ID}@0.1.0", "--build-url", "https://example.invalid/b.tar"],
      "--build-url and --build-sha256 must be provided together", "catalog/register-one-version"),

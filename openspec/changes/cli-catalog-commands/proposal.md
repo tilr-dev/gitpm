@@ -2,7 +2,7 @@
 
 ## Why
 
-After the 2026-10-18 chain (`no-backward-compat` removes `migrate-catalog` and the alias `create`) the catalog operations are still four unrelated top-level verbs: `info`, `catalog`, `catalog-update` and `register` (checked against `crates/gitpm-cli/src/main.rs`, 0.5.0-dev at `0b146cf`, minus what the chain removes). The owner asked for one noun, `gitpm catalog show|links|update|register`, when the Dagger suite was moved into this repository (2026-10-18, change `2026-10-18-dagger-integration-tests`; tracker TILR-8), and decided on variant (c): rename, breaking, in one step (owner decision of 2026-10-18 on TILR-8; no backward compatibility before 1.0, TILR-38). The stand-only commands stay out: `sync`/`catalog-update --publish` are Tilr hosting, `namespace` was removed on purpose (change `2026-10-16-gitpm-cli`; spec `package-ids` "No default namespace").
+The catalog operations were four unrelated top-level verbs: `info`, `catalog`, `catalog-update` and `register`. The owner asked for one noun, `gitpm catalog show|links|update|register`, when the Dagger suite was moved into this repository (2026-10-18, change `2026-10-18-dagger-integration-tests`; tracker TILR-8), and decided on variant (c): rename, breaking, in one step (owner decision of 2026-10-18 on TILR-8; no backward compatibility before 1.0, TILR-38). The stand-only commands stay out: `sync`/`catalog-update --publish` are Tilr hosting, `namespace` was removed on purpose (change `2026-10-16-gitpm-cli`; spec `package-ids` "No default namespace").
 
 ## What Changes
 
@@ -17,7 +17,7 @@ After the 2026-10-18 chain (`no-backward-compat` removes `migrate-catalog` and t
 - Dagger suite: `uc_076` (catalog group, unknown subcommand, old names unknown) and the `gitpmtest.COMMANDS` remap to the new spellings, carried over from `2026-10-18-dagger-integration-tests` (its tasks 0.1 and 5.5).
 - README: command table and a "Changed in 0.6" entry with the renames.
 
-Depends on: the whole 2026-10-18 chain through `host-compatibility` (`no-backward-compat` … `host-compatibility`), the per-task changes split from the former `robustness-fixes` and `catalog-streaming-size-limit`. `catalog-metadata-index` builds on this change.
+The preceding catalog and CLI changes are integrated. `catalog-metadata-index` builds on this change.
 
 ## Capabilities
 
@@ -25,9 +25,11 @@ Depends on: the whole 2026-10-18 chain through `host-compatibility` (`no-backwar
 - None.
 
 ### Modified Capabilities
-- `cli`: the `catalog` command group, its help and errors; MODIFIED "Command set", "Commands that need a catalog say so", "Option validation", "Help" (on the state the chain leaves: `--ref`/`--dev`/`--release`, `download`, `--detach`, option combinations checked by the library).
-- `catalog`: MODIFIED "Bounded overview" (the limit line names `gitpm catalog show`), "Nothing is built, executed or uploaded" (the scenario names `catalog update`).
-- `plugin-metadata`: MODIFIED "Metadata in the catalog" (`catalog show` instead of `info`).
+- `cli`: catalog group dispatch, help, errors and command names in output scenarios.
+- `catalog`: command names in browsing, generation, registration and catalog safety scenarios.
+- `plugin-metadata`, `package-ids`, `multi-package-repos`, `ffi-bindings`: CLI command names in examples; API names and behavior stay unchanged.
+
+The MODIFIED deltas cover the 26 requirements authorized by Dan in TILR-8 comments #4174, #4178 and #4180; their existing behavior is preserved.
 
 ## Out of scope
 

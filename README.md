@@ -206,10 +206,10 @@ everything and tags:
 ```console
 $ export GITPM_CATALOG=$PWD/catalog
 $ echo './greeter' > sources.txt
-$ gitpm catalog-update
+$ gitpm catalog update
 Reading releases: /…/greeter
 Catalog ready: 2 release(s) checked from sources.
-$ gitpm info
+$ gitpm catalog show
 Catalog: /…/catalog
 Type: local folder/JSON
 Verified: no (discovery only)
@@ -232,7 +232,7 @@ $ echo 'export const greeting = "hello v2";' > hello/dist/index.js
 $ gitpm commit hello 0.1.1
 acme/hello committed 0.1.1 (local commit and tag acme/hello@0.1.1)
 $ echo './hello' >> sources.txt
-$ gitpm catalog-update
+$ gitpm catalog update
 Reading releases: /…/greeter
 Reading releases: /…/hello
 Catalog ready: 4 release(s) checked from sources.
@@ -254,13 +254,13 @@ Updates: 0. Nothing was changed.
 #### Verified catalogs
 
 A catalog is a guarantor only when its owner says so: `"verified": true` in the
-top-level `catalog.json`, set by hand (no command sets it; `register` keeps it). Any other
+top-level `catalog.json`, set by hand (no command sets it; `catalog register` keeps it). Any other
 catalog serves discovery only: `install-catalog` still installs exactly the release record
 (commit, manifest and file hashes are checked), but records nothing, and the package then
 updates from its origin like a direct install.
 
-- Versions enter a verified catalog only one by one through `register` (a manual act of
-  verification); `catalog-update` into it fails with `invalid_argument` ("a verified
+- Versions enter a verified catalog only one by one through `catalog register` (a manual act of
+  verification); `catalog update` into it fails with `invalid_argument` ("a verified
   catalog takes versions only one by one through register") and changes nothing. An ID
   stays bound to the source that first registered it, which is the namespace ownership.
 - A package installed from a verified catalog (and each dependency pulled from it) is
@@ -288,7 +288,7 @@ updates from its origin like a direct install.
 - One verified catalog per workspace: installing from a second verified catalog is refused
   with `catalog` ("… mixing verified catalogs is not supported"); unverified catalogs are
   exempt. `check` prints `Catalog: LOCATION (verified)` or `(unverified: discovery only)`
-  and `info` a `Verified:` line.
+  and `catalog show` a `Verified:` line.
 
 ```console
 $ gitpm install-catalog acme/hello            # catalog.json has "verified": true
@@ -341,7 +341,7 @@ the library returns the replacement as pending; the CLI shows its warning, asks 
 and applies it with the library's resume call.
 
 Output: stdout carries the result lines (one per affected package for workspace-mutating
-commands, JSON for `list`, `catalog` and `register`); everything else goes to stderr:
+commands, JSON for `list`, `catalog links` and `catalog register`); everything else goes to stderr:
 `Warning: …` lines taken from the result (ignored metadata keys, skipped release tags,
 the dist report), `[y/N]` prompts with what they list, and failures. A failure prints
 `Error: MESSAGE`, for a library error also `Error kind: KIND` (and one `  - item` line
@@ -367,8 +367,8 @@ folder are gone; `init --in REPO` is now `init --into DIR`.
 Changed in 0.5:
 
 - [Plugin metadata](#package-metadata): `title`, `description`, `provides`, `tags` in
-  `plugin.json`, reported by `list` (and `list --provides SERVICE`), `info` and the FFI;
-  `init` writes a `title`. `info`/`browse` now read each listed plugin's latest
+  `plugin.json`, reported by `list` (and `list --provides SERVICE`), `catalog show` and the FFI;
+  `init` writes a `title`. `catalog show`/`browse` now read each listed plugin's latest
   `release.json` (one extra HTTP request per plugin on a remote catalog, at most 40).
 - Output: every mutating command prints one line per affected package, `ID <verb> …`
   (detail lines such as `Fork created:` stay as they were); `OK:` lines are gone from
@@ -396,7 +396,7 @@ Changed in 0.5:
 - `gitpm COMMAND --help` (or `-h`) prints that command's usage; builds from a Git
   checkout that is not at a release tag report `gitpm --version` as `VERSION-dev+HASH`.
 - Metadata types: `commit` refuses a `plugin.json` whose metadata keys have the wrong
-  type (`invalid_manifest`); `install`, `update`, `rollback`, `fork`, `catalog-update`
+  type (`invalid_manifest`); `install`, `update`, `rollback`, `fork`, `catalog update`
   and `list` accept such manifests (published before 0.5) and treat those keys as
   absent, with a warning on stderr for install and update.
 - `init --multi` makes a new (or empty) folder a multi-package repository;
@@ -413,6 +413,11 @@ Changed in 0.5:
   upgrading) run `gitpm sync-dist` (FFI `syncDist`) once.
 
 Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING**):
+
+- Catalog commands: `info` → `catalog show`, bare `catalog` → `catalog links`,
+  `catalog-update` → `catalog update`, `register` → `catalog register`. Old spellings
+  have no aliases.
+
 
 - `commit`, `init` into an existing repository, and adding to an existing fork now
   refuse a missing configured Git identity with `invalid_argument` instead of using
@@ -464,8 +469,8 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
 - v1 catalogs are refused: a monolithic `catalog.json` (`{"plugins": …}`) fails every
   read and write with `catalog`; `legacy/<id>/` folders and releases without file
   hashes are gone (`catalog release of ID has no file hashes`). `migrate-catalog` and
-  `catalog::migrate` are removed; `info` no longer prints a `Format:` line. Migration:
-  regenerate the catalog with `catalog-update` into an empty folder.
+  `catalog::migrate` are removed; `catalog show` no longer prints a `Format:` line. Migration:
+  regenerate the catalog with `catalog update` into an empty folder.
 - The CLI alias `create` is removed (`init` only); `create` and `migrate-catalog` fail
   with `unknown command: X; use --help`.
 - `list` takes metadata only from the state record; `metadata` is required in every format-3 record (a record without it is `invalid_data`).
@@ -477,9 +482,9 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   `Options.catalog`) is refused with `invalid_argument` ("catalog location PATH does not
   exist") before anything is created; it no longer counts as "no catalog" for `install`.
   `Manager::open_with` validates its Options first. The free catalog readers do the same:
-  `check`, `info`/`browse`, `catalog`, `catalog_release`/`lookup` on a missing local
+  `check`, `catalog show`/`browse`, `catalog`, `catalog_release`/`lookup` on a missing local
   location fail with `invalid_argument` (was `catalog` "catalog not found"). Migration:
-  create the catalog folder (`catalog-update`/`register` create it) or drop the setting.
+  create the catalog folder (`catalog update`/`catalog register` create it) or drop the setting.
 - `gitpm catalog` prints the library's typed directory links `{"schema": 2,
   "directories": {…}}` (`catalog::links`, the same as FFI `catalogLinks`) instead of the
   raw `catalog.json`; a v1 or otherwise invalid root fails with `catalog`.
@@ -706,14 +711,14 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   `invalid_data`, and the `replace --back` line always ends `; FORK stays installed and
   enabled (…)`. Migration: remove the entry from `replacements` in `state.json`.
 - No tag policing: a moved (retagged) or deleted release tag no longer fails `update`,
-  `update all`, an install or update of a sibling in a shared clone, or `catalog-update`
+  `update all`, an install or update of a sibling in a shared clone, or `catalog update`
   with `version_conflict` ("release tag … changed commit", "release commit changed for
   installed version", "latest release is older than installed version; downgrading
   requires an explicit ref", "release ID@V changed; refusing to replace published
   version" are gone). Release-mode updates compare versions only and keep the installed
   commit; a moved or retracted installed release is up to date with a warning in
   `RevisionChange.warnings` and the new `Unchanged.warnings` (FFI `Unchanged.warnings`).
-  `catalog-update` never replaces a published record: it keeps it and reports
+  `catalog update` never replaces a published record: it keeps it and reports
   `UpdateSourcesReport.warnings` (`release ID@V: tag now points to COMMIT; the published
   record is kept`, `release ID@V differs from the published record; the published record
   is kept`). `Error::NoPreviousVersion` gains `commit` (FFI `PmError.NoPreviousVersion
@@ -730,7 +735,7 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   longer records `packages.<id>.catalog` on `install-catalog` (or for pulled
   dependencies), so its packages update from their origins and the one-catalog rule
   ignores it; the refusal now says "mixing verified catalogs is not supported".
-  `catalog-update` into a verified catalog is refused with `invalid_argument`. Packages
+  `catalog update` into a verified catalog is refused with `invalid_argument`. Packages
   from a verified catalog update only to its versions, hash-checked (`catalog` on a
   mismatch); `update ID --detach` drops the protection. Library: `Manager::update_with(id,
   target, UpdateOptions { detach })`, `RevisionChange.detached`,
@@ -743,9 +748,9 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   `UnchangedReason.notInCatalog(version)`, `UnchangedReason.catalogUnavailable(reason)`,
   `CatalogOverview.verified`,
   `CheckStatus.upstreamNotInCatalog`, `CheckRow.originLatest`,
-  `CheckReport.catalogVerified`. `info` prints `Verified: yes|no …`, the `check` header
+  `CheckReport.catalogVerified`. `catalog show` prints `Verified: yes|no …`, the `check` header
   `Catalog: LOCATION (verified)` or `(unverified: discovery only)`. Migration: add
-  `"verified": true` to a catalog you vouch for and register its versions with `register`;
+  `"verified": true` to a catalog you vouch for and register its versions with `catalog register`;
   a record that names an unverified catalog (written by an earlier gitpm) is still
   protected and its updates fail with `catalog` ("… is no longer verified") until you run
   `update ID --detach` (or verify that catalog).
@@ -826,7 +831,7 @@ A fork records the original's source in `forkOf.source`, so `check` shows the or
 newest release without a catalog too: `me/hello: fork of acme/hello (base 1.0.0); original
 at origin: 1.1.0 — newer than the fork base` (or `original: unreachable (REASON)`).
 
-Catalog commands (`info`, `catalog`, `catalog-update`, `register`) and
+Catalog commands (`catalog show`, `catalog links`, `catalog update`, `catalog register`) and
 `install-catalog` need a catalog.
 
 ## Workspace layout and `dist/`
@@ -940,7 +945,7 @@ packages/theme/dist/…
   symlink); packages cannot nest. Deployed files must be plain files, as for a root
   package. Only the package being installed, updated or registered must be valid at its
   commit: a defective sibling folder (no `dist/`, bad ID, …) does not block it
-  (`catalog-update` reports it as a warning and publishes the other packages).
+  (`catalog update` reports it as a warning and publishes the other packages).
 - Releases are per package: tag `ID@VERSION` (`tilr/store@1.2.0`), so the packages of one
   repository release independently. The package set is read from `gitpm.json` at the
   tagged commit, so a package may move to another folder between releases. Other tags
@@ -978,9 +983,9 @@ packages/theme/dist/…
   again is refused until it is restored or uninstalled (as for a forgotten root package).
   If the clone is gone, `uninstall` drops the record, and `restore` says so.
 - Catalog: a release of a package carries `"path": "packages/store"` next to `source` and
-  `commit` (absent for a root package). `catalog-update` publishes every package listed in
+  `commit` (absent for a root package). `catalog update` publishes every package listed in
   `gitpm.json` at the source's HEAD from its `ID@VERSION` tags (one source line, all
-  packages); `register SRC --ref REF --package ID` registers one (an `ID@VERSION` ref names
+  packages); `catalog register SRC --ref REF --package ID` registers one (an `ID@VERSION` ref names
   it).
 - Authoring: `gitpm init NAMESPACE/NAME --into DIR` adds a package with release 0.1.0
   to a repository with `gitpm.json`; an existing repository without `gitpm.json` gets that
@@ -1093,7 +1098,7 @@ all commands, `gitpm COMMAND --help` one). There is no config file; the old `PM_
 | `--sources FILE` | `GITPM_SOURCES` | `./sources.txt` |
 
 Publishing a catalog is up to you: it is a folder of static files, so any static host
-works (`catalog-update` and `register` write only to a local folder; HTTP(S) catalogs are
+works (`catalog update` and `catalog register` write only to a local folder; HTTP(S) catalogs are
 read-only).
 
 When you upload an updated catalog, go in an order that never shows readers a half-updated
@@ -1129,7 +1134,7 @@ they were: `commit`, `fork` and `fork --replace` rewrite `version`, `id`, `forkO
 `init` writes `"title": "NAME"`.
 
 Shape rule, everywhere gitpm reports metadata (`list` `resolved[]` and
-`packages.<id>.metadata`, `info`/`browse` `PackageSummary`, `CatalogRelease`, the FFI
+`packages.<id>.metadata`, `catalog show`/`browse` `PackageSummary`, `CatalogRelease`, the FFI
 records): all four keys are always present; an absent string (`title`, `description`) is
 `null` (`Option<String>`, Swift `String?`), an absent list (`provides`, `tags`) is `[]`
 (`Vec<String>`, `[String]`).
@@ -1141,8 +1146,8 @@ records): all four keys are always present; an absent string (`title`, `descript
 - `gitpm list --provides SERVICE`: only the packages whose `provides` contains `SERVICE`.
   It filters `packages` and `resolved` only; `replacements` and `forgotten` are printed
   unfiltered (they describe the workspace, not single packages).
-- Catalog: a release (`release.json`) has the whole manifest, so `catalog-update` and
-  `register` publish the metadata with it. `info` and `browse` (`PackageSummary`) show
+- Catalog: a release (`release.json`) has the whole manifest, so `catalog update` and
+  `catalog register` publish the metadata with it. `catalog show` and `browse` (`PackageSummary`) show
   the metadata of each package's latest release; a missing or broken latest
   `release.json` only leaves that package without metadata. The catalog package index
   (`namespaces/<ns>/<name>/plugin.json`) carries no metadata. Cost: the overview reads
@@ -1280,11 +1285,11 @@ case-insensitive file system `Vendor/Module` never resolves to `vendor/module`.
 A version is SemVer `MAJOR.MINOR.PATCH` with an optional pre-release `-PRE`
 (`1.3.0-beta.1`); build metadata is refused. Versions are ordered by SemVer precedence
 (`1.0.0-alpha < 1.0.0-beta < 1.0.0-beta.2 < 1.0.0`), and `ID@1.3.0-beta.1` is a release
-tag like any other (`gitpm commit REPO 1.3.0-beta.1` creates it, `catalog-update`
+tag like any other (`gitpm commit REPO 1.3.0-beta.1` creates it, `catalog update`
 publishes it). Pre-releases are opt-in, as in npm:
 
 - `install`, `install-catalog` without `--version`, `update` and `update all` never pick
-  one; `check` and `info` show it (`check`: `up to date; pre-release 1.3.0-beta.1`).
+  one; `check` and `catalog show` show it (`check`: `up to date; pre-release 1.3.0-beta.1`).
 - Install one by name: `install-catalog ID --version 1.3.0-beta.1` (release mode), or
   `install SRC --ref ID@1.3.0-beta.1` (pinned; `update ID --release` returns it to
   release mode).
@@ -1451,7 +1456,7 @@ without one, `browse_catalog`, `catalog_release` and `install_from_catalog` fail
 `invalid_argument` ("no catalog configured"); `check` then reads each package's origin. A configured local location that
 does not exist is not "no catalog": `Manager::open_with` and every catalog reader refuse
 it with `invalid_argument` ("catalog location PATH does not exist") before anything is
-created; only `catalog-update` and `register` create a missing local catalog. A workspace uses one verified catalog
+created; only `catalog update` and `catalog register` create a missing local catalog. A workspace uses one verified catalog
 ([Verified catalogs](#verified-catalogs), `catalog::is_verified`). `install_from_catalog`
 records the canonical location of a verified catalog per package (`packages.<id>.catalog`,
 the package is then protected) and refuses to install from a second verified catalog;
@@ -1529,7 +1534,7 @@ with its `source`, replacements, unsatisfied dependencies; `catalog` may be `nil
 `authCheck(source, customSsh)`, `browseCatalog`, `catalogRelease`, `describeLostWork`,
 `uninstallRefusal(plan)`.
 Every CLI command that reads or changes a workspace, reads a catalog or checks access has
-its FFI call; `init`, `commit`, `remote`, `catalog-update` and `register` stay library and
+its FFI call; `init`, `commit`, `remote`, `catalog update` and `catalog register` stay library and
 CLI functions. Errors are the `PmError` enum (one case per kind, each with `message`;
 `id` where the library error has one, `LocalChanges.items`, `HasDependents.dependents`
 and `.lostWork`, `IncompatibleReplacement.consumers`, `NotDeployed.sync` (the dist report), and
