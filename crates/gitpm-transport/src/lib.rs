@@ -60,7 +60,7 @@ impl Transport for SystemTransport {
         transport::git_with_input(repo, args, input, custom_ssh)
     }
     fn git_config_defined(&self, key: &str, start_error: &str) -> Result<bool> {
-        transport::git_config_defined(key, start_error)
+        transport::git_config_defined(key, Error::Auth, start_error)
     }
     fn ls_remote(&self, source: &str, custom_ssh: bool, start_error: &str) -> Result<LsRemote> {
         transport::ls_remote(source, custom_ssh, start_error)

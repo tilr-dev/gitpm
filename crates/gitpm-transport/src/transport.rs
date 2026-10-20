@@ -304,7 +304,7 @@ pub fn ls_remote_refs(source: &str, custom_ssh: bool) -> Result<RemoteRefs> {
 }
 
 /// Whether the user's Git configuration (outside any repository) defines `key`.
-fn git_config_defined(
+pub fn git_config_defined(
     key: &str,
     start_kind: fn(String) -> Error,
     start_error: &str,
