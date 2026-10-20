@@ -8,7 +8,7 @@ Workspace and catalog locks SHALL be process-owned POSIX record locks, not inher
 - **THEN** the next open succeeds immediately
 
 #### Scenario: Refused second Manager in the same process
-- **WHEN** a host holds a Manager on a workspace, opens a second Manager on the same workspace in the same process (also through a symlinked spelling), gets `locked`, and another process then opens the workspace
+- **WHEN** a host holds a Manager on a workspace, opens a second Manager on the same workspace in the same process (also through a symlinked spelling or a lock-file symlink whose target was initially missing), gets `locked`, and another process then opens the workspace
 - **THEN** the other process still fails with `locked`, because the refused attempt did not release the first Manager's lock
 
 #### Scenario: Refused second catalog writer in the same process

@@ -34,27 +34,44 @@ impl Drop for FileLock {
     }
 }
 
-/// Lock `path` (created if missing) or fail at once with [`Error::Locked`].
-pub(crate) fn try_lock(path: &Path, busy: &str) -> Result<FileLock> {
-    // Resolve the key without opening the lock file. It may not exist yet, so
-    // resolve its parent and append the final component in that case.
-    let key = match std::fs::canonicalize(path) {
-        Ok(key) => key,
+// Resolve a missing final component, including dangling symlinks, without
+// opening a descriptor that could release an existing process lock.
+fn canonical_lock_path(path: &Path, remaining_links: usize) -> std::io::Result<PathBuf> {
+    match std::fs::canonicalize(path) {
+        Ok(key) => Ok(key),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let parent = path
                 .parent()
                 .filter(|parent| !parent.as_os_str().is_empty())
                 .unwrap_or_else(|| Path::new("."));
-            let name = path.file_name().ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "lock path has no file name",
-                )
-            })?;
-            std::fs::canonicalize(parent)?.join(name)
+            match std::fs::read_link(path) {
+                Ok(target) => {
+                    if remaining_links == 0 {
+                        return Err(std::io::Error::other("too many lock path symlinks"));
+                    }
+                    canonical_lock_path(&parent.join(target), remaining_links - 1)
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    let name = path.file_name().ok_or_else(|| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "lock path has no file name",
+                        )
+                    })?;
+                    Ok(std::fs::canonicalize(parent)?.join(name))
+                }
+                Err(error) => Err(error),
+            }
         }
-        Err(error) => return Err(error.into()),
-    };
+        Err(error) => Err(error),
+    }
+}
+
+/// Lock `path` (created if missing) or fail at once with [`Error::Locked`].
+pub(crate) fn try_lock(path: &Path, busy: &str) -> Result<FileLock> {
+    // Resolve the key without opening the lock file. It may not exist yet, so
+    // resolve its parent and append the final component in that case.
+    let key = canonical_lock_path(path, 40)?;
     let mut held = HELD.lock().unwrap_or_else(|e| e.into_inner());
     if held.contains(&key) {
         return Err(Error::Locked(busy.into()));
@@ -95,8 +112,20 @@ mod tests {
 
     #[test]
     fn refused_second_open_keeps_the_first_lock() {
+        check_refused_second_open(false);
+    }
+
+    #[test]
+    fn refused_second_open_with_dangling_lock_symlink_keeps_the_first_lock() {
+        check_refused_second_open(true);
+    }
+
+    fn check_refused_second_open(dangling_symlink: bool) {
         let dir = TempDir::new("workspace-lock");
         let root = dir.join("workspace");
+        if dangling_symlink {
+            std::os::unix::fs::symlink("actual.lock", dir.join(".workspace.lock")).unwrap();
+        }
         let first = Manager::open(&root).unwrap();
         std::os::unix::fs::symlink(dir.path(), dir.join("alias")).unwrap();
 
