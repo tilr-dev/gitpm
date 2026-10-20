@@ -24,13 +24,13 @@ const BATCH_SSH: &str = "ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliv
 /// stdin, bounded transfers. The user's own `core.sshCommand` or `GIT_SSH_COMMAND`
 /// (inherited by the child) keeps precedence over the batch SSH command.
 fn git_command(repo: &Path, args: &[&str], custom_ssh: bool) -> Result<Command> {
-    let mut command = git_base(custom_ssh)?;
+    let mut command = git_base(custom_ssh, Error::Git)?;
     command.arg("-C").arg(repo).args(args);
     Ok(command)
 }
 
 /// The bounded, noninteractive `git` of [`git_command`] without a repository.
-fn git_base(custom_ssh: bool) -> Result<Command> {
+fn git_base(custom_ssh: bool, start_kind: fn(String) -> Error) -> Result<Command> {
     static CONFIGURED_SSH: OnceLock<bool> = OnceLock::new();
     let configured = if custom_ssh {
         true
@@ -38,7 +38,7 @@ fn git_base(custom_ssh: bool) -> Result<Command> {
         *configured
     } else {
         // Cache successful probes only: a timeout must reach the caller.
-        let configured = git_config_defined("core.sshCommand", "cannot start git")?;
+        let configured = git_config_defined("core.sshCommand", start_kind, "cannot start git")?;
         let _ = CONFIGURED_SSH.set(configured);
         configured
     };
@@ -259,7 +259,7 @@ pub(crate) struct RemoteRefs {
 /// (`auth::validate_recorded`): a URL or an absolute path, no remote helper.
 pub(crate) fn ls_remote_refs(source: &str, custom_ssh: bool) -> Result<RemoteRefs> {
     let what = format!("git ls-remote --tags --heads -- {source}");
-    let mut command = git_base(custom_ssh)?;
+    let mut command = git_base(custom_ssh, Error::Git)?;
     // Outside any repository: a bare word is a path, never a remote name of the cwd.
     // An explicit transport allowlist: a source from a foreign manifest never reaches
     // `ext::`, `fd::` or any other remote helper. (`GIT_PROTOCOL_FROM_USER=0` alone would
@@ -309,10 +309,14 @@ pub(crate) fn ls_remote_refs(source: &str, custom_ssh: bool) -> Result<RemoteRef
 }
 
 /// Whether the user's Git configuration (outside any repository) defines `key`.
-pub(crate) fn git_config_defined(key: &str, start_error: &str) -> Result<bool> {
+fn git_config_defined(
+    key: &str,
+    start_kind: fn(String) -> Error,
+    start_error: &str,
+) -> Result<bool> {
     let (command, limit) = config_probe(key);
     let what = format!("git config --get {key}");
-    let output = output_within(command, limit, &what, Error::Auth, start_error)?;
+    let output = output_within(command, limit, &what, start_kind, start_error)?;
     Ok(output.status.success())
 }
 
@@ -348,7 +352,7 @@ pub(crate) fn ls_remote(source: &str, custom_ssh: bool, start_error: &str) -> Re
 }
 
 fn ls_remote_command(source: &str, custom_ssh: bool) -> Result<Command> {
-    let mut command = git_base(custom_ssh)?;
+    let mut command = git_base(custom_ssh, Error::Auth)?;
     command
         .args(["ls-remote", "--", source])
         .env("LC_ALL", "C")
@@ -608,7 +612,9 @@ mod tests {
 
     #[test]
     fn git_config_defined_detects_missing_keys() {
-        assert!(!git_config_defined("pm-unit-test.surely-undefined-key", "start").unwrap());
+        assert!(
+            !git_config_defined("pm-unit-test.surely-undefined-key", Error::Auth, "start").unwrap()
+        );
     }
 
     #[test]

@@ -1673,6 +1673,28 @@ fn init_install_and_fork_into_explicit_folders() {
     assert!(config_files(&f.dir).is_empty());
 }
 
+#[test]
+fn missing_git_keeps_auth_and_repository_error_kinds() {
+    let f = Fixture::new();
+    let empty = f.dir.join("empty-path");
+    fs::create_dir(&empty).unwrap();
+    for (args, kind) in [
+        (
+            vec!["auth", "check", "https://example.invalid/repo.git"],
+            "auth",
+        ),
+        (vec!["install", f.repo.to_str().unwrap()], "git"),
+    ] {
+        let output = f.pm().env("PATH", &empty).args(&args).output().unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{args:?}");
+        assert!(
+            stderr.contains(&format!("Error kind: {kind}")),
+            "{args:?}: {stderr}"
+        );
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn auth_check_reports_config_probe_timeout_without_running_ls_remote() {
