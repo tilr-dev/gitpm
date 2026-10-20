@@ -44,7 +44,7 @@ Releases SHALL be per package with tags `ID@VERSION` (package-ids, "Release tag 
 
 #### Scenario: vVERSION tag in a multi-package repository
 - **WHEN** a multi-package repository also has the tag `v0.2.0`
-- **THEN** it is no release of any package and install, update and `catalog-update` print no warning about it
+- **THEN** it is no release of any package and install, update and `catalog update` print no warning about it
 - **AND** this is covered by `a_v_version_tag_in_a_multi_package_repository_is_ignored_without_a_warning`
 
 ### Requirement: Choosing a package at install

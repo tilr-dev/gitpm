@@ -11,10 +11,10 @@ The CLI SHALL offer exactly the commands of its full usage (`gitpm --help`), eac
 
 #### Scenario: Command list
 - **WHEN** the user reads `gitpm --help`
-- **THEN** the commands are `init`, `commit`, `remote` (authoring); `fork`, `replace` (fork-replacement); `auth check` (git-safety); `info`, `catalog-update`, `register`, `check` (catalog); `catalog` (below); `install`, `install-catalog`, `download`, `download-catalog`, `forget`, `restore`, `uninstall` (install-uninstall); `enable`, `disable`, `sync-dist` (dist); `update`, `rollback` (updates); `list` (below)
+- **THEN** the commands are `init`, `commit`, `remote` (authoring); `fork`, `replace` (fork-replacement); `auth check` (git-safety); `catalog show`, `catalog update`, `catalog register`, `check` (catalog); `catalog links` (below); `install`, `install-catalog`, `download`, `download-catalog`, `forget`, `restore`, `uninstall` (install-uninstall); `enable`, `disable`, `sync-dist` (dist); `update`, `rollback` (updates); `list` (below)
 
 #### Scenario: Catalog links
-- **WHEN** the user runs `gitpm --catalog ./catalog catalog`
+- **WHEN** the user runs `gitpm --catalog ./catalog catalog links`
 - **THEN** it prints the JSON links of the catalog root level ("JSON output for state and catalog")
 
 #### Scenario: Install forms
@@ -30,7 +30,7 @@ The CLI SHALL offer exactly the commands of its full usage (`gitpm --help`), eac
 - **THEN** each command of the CLI has a usage block
 
 #### Scenario: Removed command
-- **WHEN** the user runs a command that is not in the list, including the former `create` and `migrate-catalog`
+- **WHEN** the user runs a command that is not in the list, including the former `create`, `migrate-catalog`, `info`, `catalog-update` and `register`
 - **THEN** it fails with `unknown command: X; use --help`
 
 ### Requirement: Settings come from flags, environment, defaults
@@ -45,11 +45,11 @@ The CLI SHALL resolve `--root DIR` / `GITPM_ROOT` (default `./gitpm-workspace`),
 - **THEN** the workspace is `./gitpm-workspace`
 
 ### Requirement: Commands that need a catalog say so
-Catalog commands (`info`, `catalog`, `catalog-update`, `register`) and `install-catalog` SHALL fail without a catalog with `COMMAND needs a catalog: pass --catalog DIR_OR_JSON_OR_URL or set GITPM_CATALOG` (a CLI usage error without `Error kind`) and create nothing; `check` works without one. A given location SHALL be passed to the library unchanged, also for `install`. Verified by `catalog_commands_name_the_missing_catalog_and_create_nothing`.
+Catalog commands (`catalog show`, `catalog links`, `catalog update`, `catalog register`) and `install-catalog` SHALL fail without a catalog with `COMMAND needs a catalog: pass --catalog DIR_OR_JSON_OR_URL or set GITPM_CATALOG` (a CLI usage error without `Error kind`) and create nothing; `check` works without one. A given location SHALL be passed to the library unchanged, also for `install`. Verified by `catalog_commands_name_the_missing_catalog_and_create_nothing`.
 
 #### Scenario: Catalog command without a catalog
-- **WHEN** neither `--catalog` nor `GITPM_CATALOG` is set and the user runs `gitpm info`
-- **THEN** it fails with `info needs a catalog: pass --catalog DIR_OR_JSON_OR_URL or set GITPM_CATALOG`, exit status 1, and no file is created
+- **WHEN** neither `--catalog` nor `GITPM_CATALOG` is set and the user runs `gitpm catalog show`
+- **THEN** it fails with `catalog show needs a catalog: pass --catalog DIR_OR_JSON_OR_URL or set GITPM_CATALOG`, exit status 1, and no file is created
 - **AND** which operations need a catalog is specified in catalog ("A catalog is optional")
 
 #### Scenario: Catalog path that does not exist
@@ -80,7 +80,7 @@ Before calling the library the CLI SHALL refuse only syntax: unknown or repeated
 Every workspace-mutating command (`install`, `install-catalog`, `download`, `download-catalog`, `update`, `update all`, `rollback`, `enable`, `disable`, `forget`, `restore`, `uninstall`, `replace`, `fork --replace`, `sync-dist`) SHALL print one line per affected package in the form `ID <verb> …` (scenario "Single-package verbs"), built from the library result alone without reading state, and SHALL NOT print `OK:` lines. Other commands print what their capability specifies.
 
 #### Scenario: Other author and catalog commands
-- **WHEN** the user runs `init`, `remote`, `fork`, `commit`, `catalog-update` or `register`
+- **WHEN** the user runs `init`, `remote`, `fork`, `commit`, `catalog update` or `catalog register`
 - **THEN** they print the output specified in their capability (authoring, fork-replacement, catalog); this rule does not apply to them
 
 #### Scenario: update all lines
@@ -100,7 +100,7 @@ Every workspace-mutating command (`install`, `install-catalog`, `download`, `dow
 - **THEN** the lines are `ORIGINAL replaced by FORK V [(as ORIGINAL V')] for: consumers` and `ORIGINAL switched back from FORK (…)` (exact variants in fork-replacement), built from the `ReplacementPlan`; the `fork` and `commit` lines are specified in fork-replacement and authoring
 
 ### Requirement: JSON output for state and catalog
-`list` SHALL print the library's list view (`list_with`, raw state plus `resolved`) as pretty JSON; each `resolved[]` entry SHALL always have the fields of plugin-metadata ("Reported shape") and omit the empty optional ones (`catalog` is set only for protected packages). `catalog` SHALL print the library's `CatalogLinks` (`{schema, directories}`, as FFI `catalogLinks`), `register` JSON. Verified by `list_reports_metadata_present_or_absent_and_filters_by_provides`.
+`list` SHALL print the library's list view (`list_with`, raw state plus `resolved`) as pretty JSON; each `resolved[]` entry SHALL always have the fields of plugin-metadata ("Reported shape") and omit the empty optional ones (`catalog` is set only for protected packages). `catalog links` SHALL print the library's `CatalogLinks` (`{schema, directories}`, as FFI `catalogLinks`), `catalog register` JSON. Verified by `list_reports_metadata_present_or_absent_and_filters_by_provides`.
 
 #### Scenario: Filter by service
 - **WHEN** the user runs `gitpm list --provides theme`
@@ -184,3 +184,44 @@ The CLI SHALL delegate domain validation, dependency resolution and workspace mu
 #### Scenario: Domain validation is available without the CLI
 - **WHEN** a caller requests a domain-invalid operation directly through the library
 - **THEN** the library applies the same domain guards as a CLI caller, without relying on CLI validation: for example, every operation refuses an invalid package ID with `invalid_id` and changes nothing
+
+### Requirement: Catalog command group
+The CLI SHALL provide the catalog operations as subcommands of `gitpm catalog`: `show` (text overview), `links` (JSON links of one level), `update [--sources FILE]` (generate from Git release tags) and `register GIT_SOURCE --ref REF [--package ID] [--build-url URL --build-sha256 SHA]` (one committed version). Each SHALL behave and print as its operation does under the `catalog` spec.
+
+#### Scenario: Generate a catalog with the group name
+- **WHEN** `sources.txt` lists `./greeter` with tags 0.1.0 and 0.2.0 and the user runs `gitpm --catalog ./catalog catalog update`
+- **THEN** stdout is `Catalog ready: 2 release(s) checked from sources.` and the exit status is 0
+
+#### Scenario: Register with the group name
+- **WHEN** the user runs `gitpm --catalog ./catalog catalog register ./greeter --ref acme/greeter@0.1.0`
+- **THEN** the release is added and printed as pretty JSON
+
+### Requirement: Catalog subcommands need a catalog
+Every `catalog` subcommand SHALL need a catalog location; without `--catalog` or `GITPM_CATALOG` it SHALL fail with `catalog SUB needs a catalog: pass --catalog DIR_OR_JSON_OR_URL or set GITPM_CATALOG` and create nothing.
+
+#### Scenario: Missing catalog names the subcommand
+- **WHEN** neither `--catalog` nor `GITPM_CATALOG` is set and the user runs `gitpm catalog show`
+- **THEN** it fails with `catalog show needs a catalog: pass --catalog DIR_OR_JSON_OR_URL or set GITPM_CATALOG` and no file is created
+
+#### Scenario: Writing to an HTTP catalog
+- **WHEN** the user runs `gitpm --catalog https://pkg.example/catalog.json catalog update`
+- **THEN** the command fails with `invalid_argument`, because HTTP(S) catalogs are read-only; the library message names no command and the CLI adds the `gitpm catalog update` hint; nothing is uploaded
+
+### Requirement: Catalog group usage and errors
+`gitpm catalog --help` SHALL print the usage blocks of every catalog subcommand, and `gitpm catalog SUB --help` only that subcommand's block. Bare `gitpm catalog` and an unknown word after `catalog` SHALL fail before opening a workspace or catalog, as SHALL wrong argument counts or misplaced options, naming the two-word command (for example `--sources requires catalog update`).
+
+#### Scenario: Unknown subcommand
+- **WHEN** the user runs `gitpm catalog publish`
+- **THEN** it fails with `unknown catalog command: publish; use gitpm catalog --help`, exit status 1, and nothing is created
+
+#### Scenario: Bare catalog
+- **WHEN** the user runs `gitpm --catalog ./catalog catalog`
+- **THEN** it fails with `catalog needs a subcommand: show, links, update or register; use gitpm catalog --help` and exit status 1
+
+#### Scenario: Subcommand help
+- **WHEN** the user runs `gitpm catalog register --help`
+- **THEN** only the `catalog register` usage block is printed and the exit status is 0
+
+#### Scenario: Misplaced sources flag
+- **WHEN** the user runs `gitpm catalog show --sources list.txt`
+- **THEN** it fails with `--sources requires catalog update`
