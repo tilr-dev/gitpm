@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Git never waits for input
-Every git command on a repository (`git -C REPO …`) SHALL run with closed stdin, `GIT_TERMINAL_PROMPT=0`, `http.lowSpeedLimit=1`/`http.lowSpeedTime=20`, and one batch SSH command ("Batch SSH command") passed as `core.sshCommand` unless `Options.custom_ssh` is set or the user's Git config defines `core.sshCommand`; the `auth check` ls-remote SHALL get the same SSH command; one still running after 10 minutes SHALL be killed and reported as `git` ("timed out after 600s"). Verified by `exec::git_never_reads_stdin_or_prompts`.
+Repository git commands SHALL use closed stdin, `GIT_TERMINAL_PROMPT=0`, `http.lowSpeedLimit=1`/`http.lowSpeedTime=20`, and the "Batch SSH command" policy. A command still running after 10 minutes SHALL be killed and reported as `git` ("timed out after 600s"). Verified by `exec::git_never_reads_stdin_or_prompts`.
 
 #### Scenario: Wedged git
 - **WHEN** a git subprocess hangs for 10 minutes
