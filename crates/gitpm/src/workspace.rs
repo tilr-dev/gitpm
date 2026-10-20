@@ -2930,6 +2930,10 @@ fn adopt(
 
 /// Install `release` of dependency `id` that an update pulls; its refusal names the
 /// dependency, not the package that pulled it.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "pulled dependency inputs include the caller SSH policy"
+)]
 fn install_pulled(
     txn: &mut Txn,
     state: &mut State,
