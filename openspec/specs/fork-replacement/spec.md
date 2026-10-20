@@ -64,6 +64,7 @@ Without `--replace`, the CLI SHALL print the fork lines and the next steps per p
 - **WHEN** a pre-commit hook rejects the release commit of `fork … --replace`
 - **THEN** the forked manifests and the index are as before the release, no tag exists (tags are created all or none), nothing is installed, and the result reports the failed `release` step
 - **AND** a wrong-typed metadata key fails the release step with `invalid_manifest` (plugin-metadata)
+- **AND** verified by `fork_replace_release_rejecting_hook_restores_manifests_and_index` and `fork_replace_release_rejects_wrong_metadata_type`
 
 ### Requirement: Fork folder is never removed after a partial failure
 When a step of `fork --replace` fails, the fork folder SHALL be kept and the steps that succeeded SHALL stay: the library reports the failed step in its result instead of failing, an exception to errors ("Failing operations leave the workspace unchanged"). The CLI SHALL print per package which step failed and how to finish or undo, and SHALL fail with exit status 1 and the first failing step's `Error kind`. Verified by `fork_replace_keeps_the_fork_and_says_how_to_finish_when_a_step_fails`.
