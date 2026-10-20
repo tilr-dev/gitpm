@@ -2,7 +2,11 @@
 //! Never pushes and never touches a workspace.
 use crate::catalog::version_key;
 use crate::error::{Context, Error, Result, ensure, fail};
-use crate::{Manifest, exec::git, identity, model, packages};
+use crate::{
+    Manifest,
+    exec::{git, git_with_input},
+    identity, model, packages,
+};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -373,30 +377,13 @@ pub(crate) fn release_packages(
         git(repo, &["tag", "--", &tags[0]]).map(drop)
     } else {
         let head = git(repo, &["rev-parse", "HEAD"])?;
-        let refs: Vec<String> = tags
+        // update-ref applies the whole batch as one transaction. `create` refuses
+        // a tag that appeared after validation rather than overwriting it.
+        let input: String = tags
             .iter()
-            .map(|tag| format!("{head}:refs/tags/{tag}"))
+            .map(|tag| format!("create refs/tags/{tag} {head}\n"))
             .collect();
-        // Fetching our own HEAD can atomically create several refs with closed
-        // stdin. Suppress fetch side effects: this release needs no network,
-        // pruning, FETCH_HEAD, submodules or repository maintenance.
-        let mut args = vec![
-            "-c",
-            "fetch.bundleURI=",
-            "fetch",
-            "--atomic",
-            "--no-tags",
-            "--no-write-fetch-head",
-            "--no-prune",
-            "--no-prune-tags",
-            "--no-recurse-submodules",
-            "--no-auto-maintenance",
-            "--no-write-commit-graph",
-            "--",
-            ".",
-        ];
-        args.extend(refs.iter().map(String::as_str));
-        git(repo, &args).map(drop)
+        git_with_input(repo, &["update-ref", "--stdin"], input.into_bytes())
     };
     tagged.context(Error::Git, tag_failure)
 }

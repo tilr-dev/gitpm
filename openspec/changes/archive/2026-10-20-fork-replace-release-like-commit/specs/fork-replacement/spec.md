@@ -11,3 +11,8 @@
 - **WHEN** a pre-commit hook rejects the release commit of `fork … --replace`
 - **THEN** the forked manifests and the index are as before the release, no tag exists (tags are created all or none), nothing is installed, and the result reports the failed `release` step
 - **AND** a wrong-typed metadata key fails the release step with `invalid_manifest` (plugin-metadata)
+
+#### Scenario: Release without file transport
+- **WHEN** a multi-package fork is released while Git's file transport is disabled
+- **THEN** all release tags are created at the release commit without using a transport
+- **AND** verified by `fork_replace_release_without_file_transport`

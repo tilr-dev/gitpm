@@ -290,6 +290,49 @@ fn fork_replace_release_rejects_wrong_metadata_type() {
 
 #[test]
 #[cfg(unix)]
+fn fork_replace_release_without_file_transport() {
+    let f = Fixture::new();
+    f.ok(&["install", f.source(), "tilr/store"]);
+    f.ok(&["install", f.source(), "tilr/theme"]);
+    let output = f
+        .command(env!("CARGO_BIN_EXE_gitpm"))
+        .current_dir(&f.dir)
+        .arg("--root")
+        .arg(f.dir.join("workspace"))
+        .arg("--catalog")
+        .arg(f.dir.join("catalog"))
+        .env("GITPM_SOURCES", f.dir.join("sources.txt"))
+        .env("GIT_PROTOCOL_FROM_USER", "0")
+        .args([
+            "fork",
+            "tilr/store",
+            "tilr/theme",
+            "--ns",
+            "me",
+            "--into",
+            "forks/me/mono",
+            "--replace",
+            "--version",
+            "2.0.0",
+        ])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    // The following install needs file transport; release itself must complete.
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("the install step failed"), "{stderr}");
+    assert!(!stderr.contains("the release step failed"), "{stderr}");
+    let fork = f.dir.join("forks/me/mono");
+    for name in ["store", "theme"] {
+        f.git(
+            &fork,
+            &["diff", "--exit-code", "HEAD", &format!("me/{name}@2.0.0")],
+        );
+    }
+}
+
+#[test]
+#[cfg(unix)]
 fn fork_replace_release_late_tag_lock_leaves_no_tags() {
     let f = Fixture::new();
     f.ok(&["install", f.source(), "tilr/store"]);

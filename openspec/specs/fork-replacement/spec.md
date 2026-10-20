@@ -51,6 +51,11 @@ Without `--replace`, the CLI SHALL print the fork lines and the next steps per p
 ### Requirement: Fork and replace in one step
 `fork … --replace [--version V] [--force]` SHALL make a release commit of the forked folders (`version` set by `--version`) and one release tag per package (package-ids), under the rules of `commit` (authoring), then install each fork (dependencies first) and replace its original. If the release fails nothing SHALL be installed; a failed install or replace of one package does not stop the others. Verified by `fork_replace_releases_installs_and_replaces_in_one_step`.
 
+#### Scenario: Release without file transport
+- **WHEN** a multi-package fork is released while Git's file transport is disabled
+- **THEN** all release tags are created at the release commit without using a transport
+- **AND** verified by `fork_replace_release_without_file_transport`
+
 #### Scenario: One-step fork
 - **WHEN** the user runs `gitpm fork acme/hello --ns me --into f --replace`
 - **THEN** `me/hello@<forked version>` is tagged, installed and replaces `acme/hello`, so only `dist/me/hello/` is deployed

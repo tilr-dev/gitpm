@@ -27,6 +27,6 @@ Implemented in commit `47489c9` (Task: TILR-57).
 The fork release previously skipped strict metadata validation, restored only
 manifests after staging failed commits, and created tags one by one. The shared
 authoring path validates all manifests before writes, restores manifests and the
-index on commit failure, and creates batch tags atomically with a local fetch.
+index on commit failure, and creates batch tags atomically with an update-ref transaction.
 Hooks and a locked second tag reproduce the failures deterministically; all three
 new integration tests fail on the original code.

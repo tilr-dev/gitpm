@@ -59,7 +59,20 @@ fn noninteractive_git() -> Command {
 }
 
 /// Run to completion with a wall-clock limit; stdout/stderr are drained concurrently.
-fn output_within(mut command: Command, limit: Duration, what: &str) -> Result<Output> {
+fn output_within(command: Command, limit: Duration, what: &str) -> Result<Output> {
+    output_with_input_within(command, None, limit, what)
+}
+
+/// Supplied input is written concurrently so a child that stops reading is still bounded.
+fn output_with_input_within(
+    mut command: Command,
+    input: Option<Vec<u8>>,
+    limit: Duration,
+    what: &str,
+) -> Result<Output> {
+    if input.is_some() {
+        command.stdin(Stdio::piped());
+    }
     let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -76,6 +89,13 @@ fn output_within(mut command: Command, limit: Duration, what: &str) -> Result<Ou
     };
     let stdout = drain(child.stdout.take().map(|p| Box::new(p) as _));
     let stderr = drain(child.stderr.take().map(|p| Box::new(p) as _));
+    let writer = input.map(|input| {
+        let mut stdin = child.stdin.take().expect("piped stdin");
+        std::thread::spawn(move || {
+            use std::io::Write;
+            stdin.write_all(&input)
+        })
+    });
     let deadline = Instant::now() + limit;
     let status = loop {
         if let Some(status) = child.try_wait()? {
@@ -91,6 +111,14 @@ fn output_within(mut command: Command, limit: Duration, what: &str) -> Result<Ou
         }
         std::thread::sleep(Duration::from_millis(5));
     };
+    if let Some(writer) = writer {
+        let written = writer
+            .join()
+            .map_err(|_| Error::Git("git input writer panicked".into()))?;
+        if status.success() {
+            written.context(Error::Git, "cannot write git input")?;
+        }
+    }
     Ok(Output {
         status,
         stdout: stdout.join().unwrap_or_default(),
@@ -115,6 +143,20 @@ pub(crate) fn git_raw(repo: &Path, args: &[&str], custom_ssh: bool) -> Result<Ve
         String::from_utf8_lossy(&output.stderr)
     );
     Ok(output.stdout)
+}
+
+/// Run Git with library-owned input, never inherited user stdin. Input closes at EOF.
+pub(crate) fn git_with_input(repo: &Path, args: &[&str], input: Vec<u8>) -> Result<()> {
+    let what = format!("git {}", args.join(" "));
+    let output =
+        output_with_input_within(git_command(repo, args)?, Some(input), GIT_TIMEOUT, &what)?;
+    ensure!(
+        output.status.success(),
+        Git,
+        "{what}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
 }
 
 /// Tags and branches of a remote, as `git ls-remote` lists them.
