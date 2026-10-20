@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     fs,
-    io::Write,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -546,27 +545,11 @@ pub fn ensure_publishable(location: &str) -> Result<PathBuf> {
 
 fn atomic_json(path: &Path, value: &impl Serialize) -> Result<()> {
     fs::create_dir_all(path.parent().unwrap())?;
-    // Unique per writer: a file left by a killed writer never blocks the next one.
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let temporary = path.with_extension(format!(
-        "json.{}-{}.tmp",
-        std::process::id(),
-        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temporary)?;
-    let result = (|| {
-        file.write_all(format!("{}\n", serde_json::to_string_pretty(value)?).as_bytes())?;
-        file.sync_all()?;
-        fs::rename(&temporary, path)?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(temporary);
-    }
-    result
+    crate::atomic_write::write_atomically(
+        path,
+        path,
+        format!("{}\n", serde_json::to_string_pretty(value)?).as_bytes(),
+    )
 }
 /// Writer lock of a local catalog. Released with the process, so a killed writer
 /// never blocks the catalog; its leftover temporary files are removed here.

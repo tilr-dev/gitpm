@@ -815,9 +815,6 @@ Catalog commands (`info`, `catalog`, `catalog-update`, `register`) and
 
 ## Workspace layout and `dist/`
 
-A new workspace root may be empty or contain only `.DS_Store`; Finder metadata is
-preserved. Any other content without `state.json` is refused with `workspace`.
-
 ```text
 state.json              {"format": 3, "packages": …}: installed packages, replacements, forgotten records
 packages/<ns>/<name>/   own clone of a root package
@@ -825,6 +822,14 @@ repos/<name>-<hash>/    shared clone of a multi-package source
 dist/<ns>/<name>/       deployed files of an active package
 .pm-txn/                an interrupted operation (finished or discarded on open)
 ```
+
+A new workspace root may be empty or contain only `.DS_Store`; Finder metadata is
+preserved. New workspaces publish `state.json` by writing `.state.json-<pid>-<n>.tmp`
+inside the root and renaming it into place before creating `packages/` and `dist/`,
+so the root may be a mount point of its own. An interrupted write leaves no partial
+state: when the root holds nothing but such files (and `.DS_Store`), the next open
+removes them under the workspace lock and finishes creation. Any other content
+without `state.json` is refused with `workspace`, untouched.
 
 `dist/<namespace>/<name>/` exists exactly when the package is installed, enabled and not
 replaced by another package (`State::is_active`). A host loads every package folder under

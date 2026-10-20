@@ -701,6 +701,29 @@ fn ids_collide(a: &str, b: &str) -> bool {
         .take_while(|(x, y)| x.eq_ignore_ascii_case(y))
         .any(|(x, y)| x != y)
 }
+
+/// `.state.json-<pid>-<counter>.tmp`, the name `write_initial_state` stages under.
+fn is_initial_state_temp(name: &std::ffi::OsStr) -> bool {
+    fn is_digits(s: &str) -> bool {
+        !s.is_empty() && s.bytes().all(|c| c.is_ascii_digit())
+    }
+    name.to_str()
+        .and_then(|name| name.strip_prefix(".state.json-"))
+        .and_then(|id| id.strip_suffix(".tmp"))
+        .and_then(|id| id.split_once('-'))
+        .is_some_and(|(pid, counter)| is_digits(pid) && is_digits(counter))
+}
+
+fn write_initial_state(root: &Path) -> Result<()> {
+    // Stage inside the root: the rename never crosses a filesystem, even when the root
+    // is a mount point.
+    crate::atomic_write::write_atomically(
+        &root.join(".state.json"),
+        &root.join("state.json"),
+        &serde_json::to_vec_pretty(&State::default())?,
+    )
+}
+
 impl Manager {
     /// A dedicated workspace only: never point this at the application's live data.
     pub fn open(root: impl AsRef<Path>) -> Result<Self> {
@@ -755,22 +778,32 @@ impl Manager {
             txn::recover(&root)?;
         }
         if root.exists() && !root.join("state.json").exists() {
+            // Under the lock, gitpm's own staged state is an abandoned write and `.DS_Store`
+            // is Finder metadata, not content; anything else refuses the directory before
+            // one file is removed.
+            let mut abandoned = Vec::new();
             for entry in fs::read_dir(&root)? {
+                let entry = entry?;
+                if entry.file_name() == ".DS_Store" {
+                    continue;
+                }
                 ensure!(
-                    entry?.file_name() == ".DS_Store",
+                    is_initial_state_temp(&entry.file_name()) && entry.file_type()?.is_file(),
                     Workspace,
                     "refusing nonempty directory without state.json"
                 );
+                abandoned.push(entry.path());
             }
+            for path in abandoned {
+                fs::remove_file(path)?;
+            }
+        }
+        if !root.join("state.json").exists() {
+            fs::create_dir_all(&root)?;
+            write_initial_state(&real)?;
         }
         fs::create_dir_all(root.join("packages"))?;
         fs::create_dir_all(root.join("dist"))?;
-        if !root.join("state.json").exists() {
-            fs::write(
-                root.join("state.json"),
-                serde_json::to_vec_pretty(&State::default())?,
-            )?;
-        }
         manager.state()?;
         Ok(manager)
     }
@@ -3514,6 +3547,95 @@ mod tests {
             assert_eq!(error.kind(), "workspace");
             assert_eq!(tree_hash(&root), before);
         }
+    }
+
+    #[test]
+    fn open_retries_after_interrupted_initial_state_write() {
+        for existing_root in [false, true] {
+            let dir = TempDir::new("workspace-initial-state-crash");
+            let root = dir.join("workspace");
+            if existing_root {
+                fs::create_dir(&root).unwrap();
+            }
+            crate::atomic_write::CRASH_WRITE.set(true);
+            let crash = std::panic::catch_unwind(|| Manager::open(&root));
+            assert!(crash.is_err(), "initial state write was not interrupted");
+            assert!(
+                !root.join("state.json").exists(),
+                "partial state was published"
+            );
+            let staged: Vec<_> = fs::read_dir(&root)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect();
+            assert!(
+                staged.len() == 1 && is_initial_state_temp(&staged[0]),
+                "the root holds only the staged state: {staged:?}"
+            );
+            // Any other entry makes it a foreign directory: refused, the staged file kept.
+            for name in ["notes.txt", ".state.json-1-x.tmp"] {
+                fs::write(root.join(name), "user data").unwrap();
+                let before = tree_hash(&root);
+                assert_eq!(reopen(&root).err().unwrap().kind(), "workspace");
+                assert_eq!(tree_hash(&root), before);
+                fs::remove_file(root.join(name)).unwrap();
+            }
+            let manager = reopen(&root).unwrap();
+            assert!(manager.list().unwrap().is_empty());
+            assert_eq!(
+                read(&root.join("state.json")),
+                "{\n  \"format\": 3,\n  \"packages\": {}\n}"
+            );
+            assert!(root.join("packages").is_dir() && root.join("dist").is_dir());
+            assert!(
+                fs::read_dir(&root)
+                    .unwrap()
+                    .all(|entry| !is_initial_state_temp(&entry.unwrap().file_name())),
+                "stale initial state temporary remains after reopen"
+            );
+        }
+    }
+
+    #[test]
+    fn open_creates_a_workspace_on_a_mount_point_root() {
+        let dir = TempDir::new("workspace-mount-point");
+        let root = dir.join("workspace");
+        fs::create_dir(&root).unwrap();
+        crate::atomic_write::MOUNT_POINT.set(Some(root.clone()));
+        let opened = Manager::open(&root);
+        crate::atomic_write::MOUNT_POINT.set(None);
+        assert!(opened.unwrap().list().unwrap().is_empty());
+        assert!(root.join("state.json").is_file());
+    }
+
+    #[test]
+    fn open_ds_store_root_with_abandoned_initial_state() {
+        let dir = TempDir::new("workspace-ds-store-crash");
+        let root = dir.join("workspace");
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join(".DS_Store"), b"Finder metadata").unwrap();
+        crate::atomic_write::CRASH_WRITE.set(true);
+        let crash = std::panic::catch_unwind(|| Manager::open(&root));
+        assert!(crash.is_err(), "initial state write was not interrupted");
+        assert!(
+            fs::read_dir(&root)
+                .unwrap()
+                .any(|entry| is_initial_state_temp(&entry.unwrap().file_name()))
+        );
+
+        let manager = reopen(&root).unwrap();
+        assert!(manager.list().unwrap().is_empty());
+        assert!(root.join("state.json").is_file());
+        assert!(
+            fs::read_dir(&root)
+                .unwrap()
+                .all(|entry| !is_initial_state_temp(&entry.unwrap().file_name())),
+            "stale initial state temporary remains after reopen"
+        );
+        assert_eq!(
+            fs::read(root.join(".DS_Store")).unwrap(),
+            b"Finder metadata"
+        );
     }
 
     #[test]
