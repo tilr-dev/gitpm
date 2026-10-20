@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Repeating enable and disable is idempotent
-For an installed package whose dependencies and replacement guards permit the operation, enabling an already enabled package or disabling an already disabled package SHALL succeed without changing the bytes of workspace state or clones. When dist is already reconciled with the installed state, deployed files SHALL remain byte-identical; otherwise the operation SHALL reconcile dist as required by "Every mutating command reconciles all of dist". The CLI SHALL exit 0. Verified by `uc_020:repeated_disable_is_noop`, `uc_020:enable_of_enabled_plugin_is_noop`, `uc_062:enable_enabled` and `uc_062:disable_disabled`.
+When dependency and replacement guards permit it, repeating enable or disable SHALL succeed with CLI exit 0, preserving workspace state and clone bytes. Already reconciled deployed files SHALL remain byte-identical; otherwise the operation SHALL reconcile dist as required by "Every mutating command reconciles all of dist".
 
 #### Scenario: Repeat enable
 - **WHEN** an enabled package is enabled again with no intervening workspace changes
@@ -10,3 +10,7 @@ For an installed package whose dependencies and replacement guards permit the op
 #### Scenario: Repeat disable
 - **WHEN** a disabled package is disabled again with no intervening workspace changes
 - **THEN** the operation succeeds and workspace state, clone contents and deployed files remain byte-identical
+
+#### Scenario: Repeat enable repairs missing dist
+- **WHEN** an enabled package is enabled again while another active package has a missing deployed folder
+- **THEN** the operation reconciles dist and restores that folder, preserving workspace state and clone bytes
