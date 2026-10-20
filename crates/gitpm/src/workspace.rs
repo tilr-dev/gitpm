@@ -1163,26 +1163,21 @@ impl Manager {
         let origin = protecting_catalog_at(location, state)?;
         let mut installed = Vec::new();
         for (number, (id, version)) in missing.iter().enumerate() {
-            // A dependency's own refusal names the dependency, not the package that pulled it.
-            let mut install = || {
-                let release = catalog::lookup(location, id, Some(&version.to_string()))?;
-                catalog::validate_release(&release, id, &release.manifest.version)?;
-                let cloned = clone_revision(
-                    txn,
-                    &Fetch::release(&release),
-                    &format!("dependency-{number}"),
-                )?;
-                check_new_id(txn.root(), state, &cloned.manifest)?;
-                adopt(
-                    txn,
-                    state,
-                    cloned,
-                    release.source.clone(),
-                    origin.clone(),
-                    enabled,
-                )
-            };
-            let result = install().map_err(|error| error.with_package(id))?;
+            let release = catalog::lookup(location, id, Some(&version.to_string()))
+                .and_then(|release| {
+                    catalog::validate_release(&release, id, &release.manifest.version)?;
+                    Ok(release)
+                })
+                .map_err(|error| error.with_package(id))?;
+            let result = install_pulled(
+                txn,
+                state,
+                id,
+                &release,
+                &format!("dependency-{number}"),
+                origin.clone(),
+                enabled,
+            )?;
             installed.push(InstalledDependency {
                 id: result.id,
                 source: result.source,
@@ -1424,7 +1419,8 @@ impl Manager {
                                 // The branch commit is the identity: at the installed
                                 // version it takes the installed revision's place.
                                 if version >= current && dropped.is_none() {
-                                    deps::validate(&found.manifest)?;
+                                    deps::validate(&found.manifest)
+                                        .map_err(|error| error.with_package(id))?;
                                     newest = newest.max(version.clone());
                                     versions.insert(
                                         version,
@@ -1522,7 +1518,7 @@ impl Manager {
                         }
                         continue;
                     }
-                    deps::validate(&tag.manifest)?;
+                    deps::validate(&tag.manifest).map_err(|error| error.with_package(id))?;
                     versions.insert(
                         version,
                         catalog::Release {
@@ -1625,17 +1621,12 @@ impl Manager {
                     catalog.require(Error::InvalidArgument, check::NO_CATALOG)?,
                     state,
                 )?;
-                let cloned = clone_revision(
-                    txn,
-                    &Fetch::release(release),
-                    &format!("upgrade-new-{number}"),
-                )?;
-                check_new_id(txn.root(), state, &cloned.manifest)?;
-                plan.installs.push(adopt(
+                plan.installs.push(install_pulled(
                     txn,
                     state,
-                    cloned,
-                    release.source.clone(),
+                    id,
+                    release,
+                    &format!("upgrade-new-{number}"),
                     origin,
                     // Enabled only when an active package pulls it (as `update ID`).
                     active_new.contains(id),
@@ -2812,6 +2803,24 @@ fn adopt(
     })
 }
 
+/// Install `release` of dependency `id` that an update pulls; its refusal names the
+/// dependency, not the package that pulled it.
+fn install_pulled(
+    txn: &mut Txn,
+    state: &mut State,
+    id: &str,
+    release: &catalog::Release,
+    name: &str,
+    catalog: Option<String>,
+    enabled: bool,
+) -> Result<InstallResult> {
+    (|| {
+        let cloned = clone_revision(txn, &Fetch::release(release), name)?;
+        check_new_id(txn.root(), state, &cloned.manifest)?;
+        adopt(txn, state, cloned, release.source.clone(), catalog, enabled)
+    })()
+    .map_err(|error| error.with_package(id))
+}
 /// [`Manager::protecting_catalog`] for the catalog at `location`.
 fn protecting_catalog_at(location: &str, state: &State) -> Result<Option<String>> {
     if !catalog::is_verified(location)? {
@@ -4681,6 +4690,34 @@ mod tests {
             assert!(
                 matches!(&items[..], [LostWork::HeadMoved { .. }]),
                 "{items:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn update_all_invalid_requirement_on_the_branch_names_the_package() {
+        let id = "dan/demo1";
+        let ws = Ws::new(id);
+        let m = ws.open();
+        m.install_package(ws.author.source(), None, InstallTarget::Dev)
+            .unwrap();
+        let mut next = make_manifest(id, "0.2.0");
+        next.dependencies
+            .insert("dan/lib".into(), "^1 || ^2".into());
+        write_manifest(&ws.author.path, &next);
+        fixture_git(&ws.author.path, &["commit", "-qam", "bad requirement"]);
+        for error in [
+            ws.refuses("invalid_manifest", || m.update_all()),
+            ws.refuses("invalid_manifest", || m.update_all_plan()),
+        ] {
+            assert!(
+                error
+                    .to_string()
+                    .starts_with("dan/demo1: invalid version requirement"),
+                "{error}"
+            );
+            assert!(
+                matches!(error, Error::InvalidManifest { id: Some(package), .. } if package == id)
             );
         }
     }

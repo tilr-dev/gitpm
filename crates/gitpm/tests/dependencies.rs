@@ -600,6 +600,76 @@ fn update_refusal_from_a_pulled_dependency_names_the_dependency() {
     );
 }
 
+/// `update all`: a dependency it pulls that cannot be installed is named in the
+/// refusal, as with `update ID`.
+#[test]
+fn update_all_refusal_from_a_pulled_dependency_names_the_dependency() {
+    let f = Fixture::new();
+    let cat = f.catalog("catalog");
+    f.publish(&cat, "app/a", "1.0.0", &[]);
+    let m = f.open(&cat);
+    m.install_from_catalog("app/a", None).unwrap();
+    f.publish(&cat, "lib/extra", "1.0.0", &[]);
+    f.publish(&cat, "app/a", "1.1.0", &[("lib/extra", "^1")]);
+    // The catalog points lib/extra at a commit whose plugin.json is broken.
+    let author = f.path("authors/lib/extra");
+    fs::write(author.join("plugin.json"), "{ broken").unwrap();
+    git(&author, &["commit", "-qam", "break"]);
+    let broken = git(&author, &["rev-parse", "HEAD"]);
+    let release = Path::new(&cat).join("namespaces/lib/extra/versions/1.0.0/release.json");
+    let mut value: Value = serde_json::from_slice(&fs::read(&release).unwrap()).unwrap();
+    value["commit"] = json!(broken.trim());
+    fs::write(&release, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+    for error in [
+        m.update_all_plan().unwrap_err(),
+        m.update_all().unwrap_err(),
+    ] {
+        assert!(
+            matches!(&error, Error::InvalidManifest { id: Some(id), .. } if id == "lib/extra"),
+            "{error:?}"
+        );
+        assert!(
+            error
+                .to_string()
+                .starts_with("lib/extra: invalid plugin.json"),
+            "{error}"
+        );
+    }
+}
+
+/// `update all`: a newer release of an installed package with an invalid version
+/// requirement is refused with that package's ID.
+#[test]
+fn update_all_invalid_requirement_names_the_package() {
+    let f = Fixture::new();
+    let cat = f.catalog("catalog");
+    f.publish(&cat, "lib/core", "1.0.0", &[]);
+    f.publish(&cat, "x/b", "1.0.0", &[]);
+    let m = f.open(&cat);
+    m.install_from_catalog("x/b", None).unwrap();
+    f.release(
+        &f.path("authors/x/b"),
+        "x/b",
+        "1.1.0",
+        &[("lib/core", "^1 || ^2")],
+    );
+    for error in [
+        m.update_all_plan().unwrap_err(),
+        m.update_all().unwrap_err(),
+    ] {
+        assert!(
+            matches!(&error, Error::InvalidManifest { id: Some(id), .. } if id == "x/b"),
+            "{error:?}"
+        );
+        assert!(
+            error
+                .to_string()
+                .starts_with("x/b: invalid version requirement"),
+            "{error}"
+        );
+    }
+}
+
 /// Install over a download fills `available`/`requested_mode` and warns that the
 /// recorded mode is kept.
 #[test]
