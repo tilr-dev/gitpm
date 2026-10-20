@@ -58,6 +58,41 @@ fn noninteractive_git() -> Command {
     command
 }
 
+/// Run `write` on pipe `fd` so a closed reader yields EPIPE rather than SIGPIPE.
+#[cfg(target_os = "macos")]
+fn without_sigpipe<T>(fd: std::os::fd::RawFd, write: impl FnOnce() -> T) -> T {
+    // macOS sends SIGPIPE to the process, so a thread mask does not help; the
+    // descriptor flag suppresses it. `F_SETNOSIGPIPE` from <sys/fcntl.h>.
+    const F_SETNOSIGPIPE: libc::c_int = 73;
+    // SAFETY: fcntl on a pipe this thread owns.
+    unsafe { libc::fcntl(fd, F_SETNOSIGPIPE, 1) };
+    write()
+}
+
+/// Run `write` on pipe `fd` so a closed reader yields EPIPE rather than SIGPIPE.
+#[cfg(not(target_os = "macos"))]
+fn without_sigpipe<T>(_fd: std::os::fd::RawFd, write: impl FnOnce() -> T) -> T {
+    // Linux sends SIGPIPE of a write to the writing thread: block it there and
+    // take a pending one before unblocking, so it is never delivered.
+    // SAFETY: sigset operations on local values; changes the mask of this thread only.
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, libc::SIGPIPE);
+        let mut old: libc::sigset_t = std::mem::zeroed();
+        libc::pthread_sigmask(libc::SIG_BLOCK, &set, &mut old);
+        let result = write();
+        let mut pending: libc::sigset_t = std::mem::zeroed();
+        libc::sigpending(&mut pending);
+        if libc::sigismember(&pending, libc::SIGPIPE) == 1 {
+            let mut taken = 0;
+            libc::sigwait(&set, &mut taken);
+        }
+        libc::pthread_sigmask(libc::SIG_SETMASK, &old, std::ptr::null_mut());
+        result
+    }
+}
+
 /// Run to completion with a wall-clock limit; stdout/stderr are drained concurrently.
 fn output_within(command: Command, limit: Duration, what: &str) -> Result<Output> {
     output_with_input_within(command, None, limit, what)
@@ -93,7 +128,10 @@ fn output_with_input_within(
         let mut stdin = child.stdin.take().expect("piped stdin");
         std::thread::spawn(move || {
             use std::io::Write;
-            stdin.write_all(&input)
+            // A child that exits before reading must not kill a host (FFI) that keeps
+            // the default SIGPIPE action: the write fails with EPIPE instead.
+            let fd = std::os::fd::AsRawFd::as_raw_fd(&stdin);
+            without_sigpipe(fd, || stdin.write_all(&input))
         })
     });
     let deadline = Instant::now() + limit;
@@ -404,6 +442,28 @@ mod tests {
         assert_eq!(error.kind(), "git");
         assert!(error.to_string().contains("timed out"), "{error}");
         assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[test]
+    fn input_to_a_child_that_closed_stdin_fails_without_sigpipe() {
+        // A host process (FFI) keeps the default SIGPIPE action, unlike a Rust `main`.
+        let previous = unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
+        let mut command = Command::new("sh");
+        command.args(["-c", "exec 0<&-; exit 0"]);
+        // More than a pipe buffer: the write must hit the closed pipe.
+        let result = output_with_input_within(
+            command,
+            Some(vec![b'x'; 1 << 20]),
+            Duration::from_secs(60),
+            "sh",
+        );
+        unsafe { libc::signal(libc::SIGPIPE, previous) };
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), "git");
+        assert!(
+            error.to_string().contains("cannot write git input"),
+            "{error}"
+        );
     }
 
     #[test]
