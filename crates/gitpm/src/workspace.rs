@@ -553,7 +553,13 @@ pub(crate) fn copy_tree(from: &Path, to: &Path, symlinks: bool) -> Result<()> {
 /// `git ls-tree`/`cat-file` of that tree (`COMMIT:PATH`, a literal path, never a pattern).
 /// Plain files and folders only, the executable bit is kept; symlinks are
 /// refused (a submodule comes out as an empty folder). The folder must exist.
-pub(crate) fn export_folder(repo: &Path, commit: &str, path: &str, target: &Path, custom_ssh: bool) -> Result<()> {
+pub(crate) fn export_folder(
+    repo: &Path,
+    commit: &str,
+    path: &str,
+    target: &Path,
+    custom_ssh: bool,
+) -> Result<()> {
     if !path.is_empty() {
         packages::validate_path(path)?;
     }
@@ -1711,7 +1717,15 @@ impl Manager {
                 if txn.staged_repo(&relative).is_none() {
                     txn.add_repo(&relative, &repo)?;
                 }
-                let staged = txn.deploy(id, &relative, path.as_deref(), &release.commit, self.options.custom_ssh).map_err(|error| error.with_package(id))?;
+                let staged = txn
+                    .deploy(
+                        id,
+                        &relative,
+                        path.as_deref(),
+                        &release.commit,
+                        self.options.custom_ssh,
+                    )
+                    .map_err(|error| error.with_package(id))?;
                 if protected {
                     verify_catalog_release(&actual, release, &staged)?;
                 }
@@ -2600,7 +2614,13 @@ fn deploy_committed(txn: &mut Txn, id: &str, p: &Installed, custom_ssh: bool) ->
     if txn.staged_repo(&relative).is_none() {
         installed_repo(txn.root(), id, p)?;
     }
-    txn.deploy(id, &relative, p.path.as_deref(), &p.current.commit, custom_ssh)?;
+    txn.deploy(
+        id,
+        &relative,
+        p.path.as_deref(),
+        &p.current.commit,
+        custom_ssh,
+    )?;
     Ok(())
 }
 
@@ -2844,6 +2864,7 @@ fn clone_revision(txn: &Txn, fetch: &Fetch, name: &str, custom_ssh: bool) -> Res
                 &commit,
                 path.as_deref(),
                 &txn.scratch("verify-dist"),
+                custom_ssh,
             )? == *expected_files,
             Catalog,
             "catalog file hashes do not match git dist"
@@ -2911,7 +2932,13 @@ fn adopt(
     let m = &cloned.manifest;
     let current = revision(&staged, m, custom_ssh)?;
     if enabled {
-        let staged = txn.deploy(&m.id, &relative, cloned.path.as_deref(), &current.commit, custom_ssh)?;
+        let staged = txn.deploy(
+            &m.id,
+            &relative,
+            cloned.path.as_deref(),
+            &current.commit,
+            custom_ssh,
+        )?;
         if let Some(expected) = &cloned.expected_files {
             ensure!(
                 catalog::hash_files(&staged)? == *expected,
@@ -3090,7 +3117,13 @@ fn verify_installed_release(
     if staged.exists() {
         fs::remove_dir_all(&staged)?;
     }
-    export_dist(repo, &release.commit, release.path.as_deref(), &staged, custom_ssh)?;
+    export_dist(
+        repo,
+        &release.commit,
+        release.path.as_deref(),
+        &staged,
+        custom_ssh,
+    )?;
     verify_catalog_release(&actual, &release, &staged)
 }
 /// The commit of a catalog release must be in `repo` (the clone after fetching its origin).

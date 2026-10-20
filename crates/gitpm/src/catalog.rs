@@ -158,9 +158,11 @@ pub(crate) fn hash_exported_dist(
     if staged.exists() {
         fs::remove_dir_all(staged)?;
     }
-    crate::workspace::export_dist(repo, commit, package, staged, custom_ssh).map_err(|error| match error {
-        Error::Unsupported(_) => Error::Unsupported("build contains a symlink".into()),
-        other => other,
+    crate::workspace::export_dist(repo, commit, package, staged, custom_ssh).map_err(|error| {
+        match error {
+            Error::Unsupported(_) => Error::Unsupported("build contains a symlink".into()),
+            other => other,
+        }
     })?;
     hash_files(staged)
 }
@@ -896,7 +898,13 @@ pub(crate) fn register_package_with_ssh(
     git(&repo, &["checkout", "--detach", &commit], custom_ssh)?;
     let manifest = package_manifest(&repo, path.as_deref())?;
     version_key(&manifest.version)?;
-    let files = hash_exported_dist(&repo, &commit, path.as_deref(), &temp.0.join("staged-dist"), custom_ssh)?;
+    let files = hash_exported_dist(
+        &repo,
+        &commit,
+        path.as_deref(),
+        &temp.0.join("staged-dist"),
+        custom_ssh,
+    )?;
     let release = Release {
         manifest,
         source,
