@@ -864,12 +864,16 @@ not derive it. `enabled` is not `active`: a replaced package stays `enabled: tru
 `active: false`. `list --provides SERVICE` keeps inactive packages (it is a status view).
 
 - Every deploy (install, update, rollback, restore, `replace --back`, enable, reconcile)
-  copies `<path>/dist` of the resolved commit from the clone's Git objects (one
-  `git archive`), never the working tree: uncommitted edits in a clone are not deployed,
+  copies `<path>/dist` of the resolved commit from the clone's Git objects using
+  `git ls-tree` and `git cat-file`, never the working tree: uncommitted edits in a clone are not deployed,
   nested folders and the executable bit are kept, symlinks and submodules are refused
   with `unsupported` before deploying anything, and a revision
   without that folder is refused (`invalid_manifest`, "release … has no dist/ folder")
   instead of deploying an empty folder.
+  Git attributes such as `export-ignore` and `export-subst` are not applied: all
+  committed files keep their committed bytes. Catalog hashes are calculated from
+  the staged export, covering exactly the bytes deployed; verified catalog
+  installs and protected updates check that export before committing the transaction.
 - `replace X --with Y` removes `dist/X/`; nothing of `Y` is copied there; `dist/Y/` stays.
   `X` must be installed (`not_installed`) and `Y` enabled (`invalid_argument`: "Y is
   disabled; enable it first"), so a replacement never leaves nothing loaded. `replace X --back` deploys `dist/X/` again from
