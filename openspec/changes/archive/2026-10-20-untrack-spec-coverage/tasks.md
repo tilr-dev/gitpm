@@ -1,6 +1,6 @@
 ## 1. Specification
 
-- [x] 1.1 Modify the `integration-tests` "Coverage report" requirement: the report is local, `openspec/coverage/` is ignored by Git and never committed; add the scenario "Report stays untracked". Verified by `openspec validate untrack-spec-coverage --strict`.
+- [x] 1.1 Add the `integration-tests` requirement "Coverage report is local" (`openspec/coverage/` is ignored by Git and never committed) with the scenario "Report stays untracked"; the "Coverage report" requirement itself is unchanged (keeps it under the 500-character limit). Verified by `openspec validate untrack-spec-coverage --strict`.
 
 ## 2. Repository and documentation
 

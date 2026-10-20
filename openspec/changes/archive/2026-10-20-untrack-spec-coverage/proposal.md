@@ -7,7 +7,7 @@
 ## What Changes
 
 - Remove `openspec/coverage/coverage.md` and `coverage.json` from Git and ignore the whole `openspec/coverage/` directory.
-- The `integration-tests` "Coverage report" requirement states that the report is a local artifact: written on demand, ignored by Git, never committed.
+- New `integration-tests` requirement "Coverage report is local": the report is written on demand, ignored by Git, never committed.
 - README and `itests/README.md` say the report is local and not committed.
 
 ## Non-goals
