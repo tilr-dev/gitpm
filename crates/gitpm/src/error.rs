@@ -244,6 +244,19 @@ impl<T> Require<T> for Option<T> {
     }
 }
 
+impl From<gitpm_transport::Error> for Error {
+    fn from(error: gitpm_transport::Error) -> Self {
+        use gitpm_transport::Error as TransportError;
+        match error {
+            TransportError::Git(s) => Self::Git(s),
+            TransportError::Http(s) => Self::Http(s),
+            TransportError::Auth(s) => Self::Auth(s),
+            TransportError::Io(s) => Self::Io(s),
+            TransportError::InvalidData(s) => Self::InvalidData(s),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -656,18 +669,5 @@ mod tests {
             ("catalog", "missing".into())
         );
         assert_eq!(Some(2).require(Error::Catalog, "unused").unwrap(), 2);
-    }
-}
-
-impl From<gitpm_transport::Error> for Error {
-    fn from(error: gitpm_transport::Error) -> Self {
-        use gitpm_transport::Error as TransportError;
-        match error {
-            TransportError::Git(s) => Self::Git(s),
-            TransportError::Http(s) => Self::Http(s),
-            TransportError::Auth(s) => Self::Auth(s),
-            TransportError::Io(s) => Self::Io(s),
-            TransportError::InvalidData(s) => Self::InvalidData(s),
-        }
     }
 }
