@@ -1760,6 +1760,7 @@ impl Manager {
         options: UpdateOptions,
     ) -> Result<RevisionChange> {
         valid_id(id)?;
+        let ssh = self.options.custom_ssh;
         let (change, dist) = self.transaction(|txn, state| {
             let p = state
                 .packages
@@ -1839,7 +1840,7 @@ impl Manager {
             let (next_commit, mode) = match (&target, &p.mode) {
                 _ if protected.is_some() => {
                     let location = protected.as_deref().unwrap();
-                    let (releases, upstream) = catalog_candidates(&repo, id, &p, location, self.options.custom_ssh)?;
+                    let (releases, upstream) = catalog_candidates(&repo, id, &p, location, ssh)?;
                     let Some(release) = releases.into_iter().last() else {
                         return Ok(unchanged(
                             upstream.map(|version| UnchangedReason::NotInCatalog { version }),
@@ -1851,10 +1852,10 @@ impl Manager {
                     expected = Some(release);
                     (commit, Mode::Release)
                 }
-                (Target::Ref(reference), _) => resolve_upstream_ref(&repo, reference, self.options.custom_ssh)?,
+                (Target::Ref(reference), _) => resolve_upstream_ref(&repo, reference, ssh)?,
                 (Target::Dev, _) => resolve_upstream_ref(&repo, "HEAD", self.options.custom_ssh)?,
                 (Target::Recorded, Mode::Branch(branch)) => {
-                    let commit = resolve_ref(&repo, &format!("refs/remotes/origin/{branch}"), self.options.custom_ssh)
+                    let commit = resolve_ref(&repo, &format!("refs/remotes/origin/{branch}"), ssh)
                         .map_err(|_| {
                             Error::version_conflict(format!(
                                 "the origin no longer has the branch {branch} it follows; automatic update refused"
@@ -1865,7 +1866,7 @@ impl Manager {
                 _ => {
                     // Following releases (no explicit target) compares versions only.
                     let following = target == Target::Recorded;
-                    let mut found = match releases::discover_all_with_ssh(&repo, Some(id), self.options.custom_ssh) {
+                    let mut found = match releases::discover_all_with_ssh(&repo, Some(id), ssh) {
                         // Every release tag was deleted on the origin: the installed one
                         // was retracted, the package stays.
                         Err(Error::NoReleases(_)) if following => releases::Discovery::default(),
@@ -1873,7 +1874,7 @@ impl Manager {
                     };
                     let current_version = catalog::version_key(&p.current.version)?;
                     // The installed release tag is looked up among all of them.
-                    let tag_warning = release_tag_warning(&repo, id, &p.current, &found, self.options.custom_ssh);
+                    let tag_warning = release_tag_warning(&repo, id, &p.current, &found, ssh);
                     // Pre-releases only on the installed pre-release's track.
                     found.offered(Some(&current_version));
                     if !found.tags.is_empty() {
@@ -1937,14 +1938,15 @@ impl Manager {
                 git(
                     &repo,
                     &["merge-base", "--is-ancestor", &p.current.commit, &next_commit],
-                 self.options.custom_ssh)
+                    self.options.custom_ssh,
+                )
                 .context(
                     Error::version_conflict,
                     format!("history of {branch} diverged; automatic update refused"),
                 )?;
             }
             // The package can move to another folder (or into a multi-package layout).
-            let path = updated_package(&repo, &next_commit, id, self.options.custom_ssh)?
+            let path = updated_package(&repo, &next_commit, id, ssh)?
                 .subdir()
                 .map(str::to_owned);
             if let Some(release) = &expected {
@@ -2011,6 +2013,7 @@ impl Manager {
     /// Swap current and previous version (offline). Refused if it breaks a dependent.
     pub fn rollback(&self, id: &str) -> Result<RevisionChange> {
         valid_id(id)?;
+        let ssh = self.options.custom_ssh;
         let (change, dist) = self.transaction(|txn, state| {
             let p = state
                 .packages
@@ -2034,18 +2037,19 @@ impl Manager {
                 "local commits detected",
                 "local branches, tags or stash hold unpublished work; keep or remove them before rolling back",
                 false,
-             self.options.custom_ssh)?;
+                self.options.custom_ssh,
+            )?;
             // The previous commit can be gone: pruned after the origin deleted or moved
             // the tag that held it.
-            if git(&live, &["cat-file", "-e", &format!("{}^{{commit}}", previous.commit)], self.options.custom_ssh).is_err()
-            {
+            let previous_commit = format!("{}^{{commit}}", previous.commit);
+            if git(&live, &["cat-file", "-e", &previous_commit], ssh).is_err() {
                 return Err(Error::NoPreviousVersion {
                     id: id.into(),
                     commit: Some(previous.commit.clone()),
                 });
             }
             let repo = txn.repo(&relative, &live)?;
-            let path = match packages::find_at_with_ssh(&repo, &previous.commit, Some(id), self.options.custom_ssh) {
+            let path = match packages::find_at_with_ssh(&repo, &previous.commit, Some(id), ssh) {
                 Ok(found) => found.subdir().map(str::to_owned),
                 Err(Error::InvalidArgument(_)) => fail!(InvalidManifest, "rollback manifest mismatch"),
                 Err(error) => return Err(error),
