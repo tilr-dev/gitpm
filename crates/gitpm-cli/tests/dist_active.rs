@@ -545,6 +545,11 @@ fn a_namespace_path_that_is_not_a_folder_blocks_nothing_else() {
         "{stderr}"
     );
     assert!(stderr.contains("Error kind: not_deployed"), "{stderr}");
+    assert!(
+        stderr.contains("Hint: remove or rename `dist/dan` and run `gitpm sync-dist` again"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("clone is gone"), "{stderr}");
     assert_eq!(f.dist("vendor/demo").as_deref(), Some("vendor 1"));
     // A plain file there behaves the same.
     fs::remove_file(dist.join("dan")).unwrap();
@@ -565,6 +570,16 @@ fn a_namespace_path_that_is_not_a_folder_blocks_nothing_else() {
         "{stderr}"
     );
     assert!(stderr.contains("Error kind: not_deployed"), "{stderr}");
+    assert!(
+        stderr.contains("Hint: remove or rename `dist/dan` and run `gitpm sync-dist` again"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("clone is gone"), "{stderr}");
+    // Following the hint repairs deployment without dropping the package's record.
+    fs::rename(dist.join("dan"), dist.join("dan-blocked")).unwrap();
+    f.ok(&["sync-dist"]);
+    assert_eq!(f.dist("dan/demo").as_deref(), Some("fork"));
+    assert_eq!(fs::read_to_string(dist.join("dan-blocked")).unwrap(), "file");
 }
 
 #[test]

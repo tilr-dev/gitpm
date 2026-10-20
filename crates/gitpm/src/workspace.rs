@@ -2430,7 +2430,7 @@ impl Manager {
 /// active, gets it from its clone at the installed commit. Folders of no known package
 /// are left alone, and so is an active package that cannot be deployed because its clone
 /// or installed commit is missing or its namespace path is not a folder (callers report
-/// both with [`Manager::sync_dist_plan`]); any other failure fails the operation. Cheap:
+/// these with [`Manager::sync_dist_plan`]); any other failure fails the operation. Cheap:
 /// one listing of `dist/`, and Git reads only for the packages deployed.
 fn settle_dist(txn: &mut Txn, before: &State, after: &State) -> Result<()> {
     let drift = dist_drift(txn.root(), after)?;
@@ -2443,12 +2443,7 @@ fn settle_dist(txn: &mut Txn, before: &State, after: &State) -> Result<()> {
         if !after.is_active(id) || txn.has_dist(id) || drift.skipped.iter().any(|s| s.id == *id) {
             continue;
         }
-        // A package below a namespace path that is not a folder is never deployed.
-        let blocked = id
-            .split_once('/')
-            .is_some_and(|(ns, _)| drift.unmanaged.contains(&format!("dist/{ns}")))
-            && !drift.deployed.contains(id);
-        if drift.deployed.contains(id) || (!before.is_active(id) && !blocked) {
+        if drift.deployed.contains(id) || !before.is_active(id) {
             deploy_committed(txn, id, p)?;
         }
     }

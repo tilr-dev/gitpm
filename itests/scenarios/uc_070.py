@@ -105,5 +105,10 @@ def blocked_namespace_with_sync_dist(t: T):
 
     r = t.gitpm_err("sync-dist", kind="not_deployed", contains=f"Error: 1 package(s) not deployed: {A}")
     t.has(r.err, f"Warning: {A}: dist not deployed (dist/vendor is not a folder)")
+    t.has(r.err, "Hint: remove or rename `dist/vendor` and run `gitpm sync-dist` again")
     t.ok(blocked.read_text() == "blocked", "blocked namespace file preserved")
     t.ok(t.dist(B).exists(), "unrelated active package deployed")
+
+    blocked.unlink()
+    t.gitpm_ok("sync-dist")
+    t.ok(t.dist(A).exists(), "removing the obstruction allows deployment")

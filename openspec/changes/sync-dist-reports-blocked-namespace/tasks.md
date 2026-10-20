@@ -8,3 +8,9 @@
 
 - [x] 2.1 Dagger: blocked namespace with `sync-dist`; verify `./itests/dt --only scenarios`
 - [x] 2.2 Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace`
+
+## 3. Review corrections
+
+- [x] 3.1 Choose the CLI hint from the skipped reason and verify blocked file and symlink recovery, preserving missing-clone advice
+- [x] 3.2 Document blocked namespace warnings and sync-dist exit status in README
+- [ ] 3.3 Run self-review, bin/check and Dagger blocked namespace scenario

@@ -10,6 +10,7 @@ Folders under `dist/` that belong to no known package SHALL be left untouched an
 #### Scenario: sync-dist with a blocked namespace
 - **WHEN** `dist/acme` is a file, `acme/greeter` is active and the user runs `sync-dist`
 - **THEN** `acme/greeter` is in `skipped` ("dist/acme is not a folder") and `sync-dist` fails with `not_deployed` instead of printing `dist/ already holds exactly the active packages.`
+- **AND** the CLI hint tells the user to remove or rename `dist/acme` and run `gitpm sync-dist` again; advice to uninstall or forget a package whose clone is gone is given only for `clone_missing`
 
 #### Scenario: Unknown folder
 - **WHEN** `dist/custom/` exists and belongs to no package
