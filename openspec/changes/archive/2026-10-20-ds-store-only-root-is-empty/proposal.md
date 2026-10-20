@@ -10,6 +10,10 @@ A fresh folder made in Finder holds `.DS_Store` and is refused as a non-empty fo
 
 Depends on: the 2026-10-18 chain through `host-compatibility` (`no-backward-compat` … `host-compatibility`); the deltas are written against the specs as that chain leaves them.
 
+## Non-goals
+
+- Do not remove Finder metadata, accept other foreign content, or change workspace initialization and recovery.
+
 ## Capabilities
 
 ### Modified Capabilities

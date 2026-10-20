@@ -738,11 +738,13 @@ impl Manager {
             txn::recover(&root)?;
         }
         if root.exists() && !root.join("state.json").exists() {
-            ensure!(
-                fs::read_dir(&root)?.next().is_none(),
-                Workspace,
-                "refusing nonempty directory without state.json"
-            );
+            for entry in fs::read_dir(&root)? {
+                ensure!(
+                    entry?.file_name() == ".DS_Store",
+                    Workspace,
+                    "refusing nonempty directory without state.json"
+                );
+            }
         }
         fs::create_dir_all(root.join("packages"))?;
         fs::create_dir_all(root.join("dist"))?;
@@ -3451,6 +3453,39 @@ mod tests {
         drop(reopen(&root).unwrap());
         assert_eq!(tree_hash(&root), before);
         assert_eq!(Manager::open("/").err().unwrap().kind(), "workspace");
+    }
+
+    #[test]
+    fn open_ds_store_only_root() {
+        let dir = TempDir::new("workspace");
+        let root = dir.join("workspace");
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join(".DS_Store"), b"Finder metadata").unwrap();
+
+        let manager = Manager::open(&root).unwrap();
+        assert!(manager.list().unwrap().is_empty());
+        assert!(root.join("state.json").is_file());
+        assert!(root.join("packages").is_dir());
+        assert!(root.join("dist").is_dir());
+        assert_eq!(
+            fs::read(root.join(".DS_Store")).unwrap(),
+            b"Finder metadata"
+        );
+    }
+
+    #[test]
+    fn open_ds_store_with_other_content_is_refused() {
+        let dir = TempDir::new("workspace");
+        for name in ["notes.txt", ".hidden"] {
+            let root = dir.join(name);
+            fs::create_dir(&root).unwrap();
+            fs::write(root.join(".DS_Store"), b"Finder metadata").unwrap();
+            fs::write(root.join(name), b"user data").unwrap();
+            let before = tree_hash(&root);
+            let error = Manager::open(&root).err().unwrap();
+            assert_eq!(error.kind(), "workspace");
+            assert_eq!(tree_hash(&root), before);
+        }
     }
 
     #[test]
