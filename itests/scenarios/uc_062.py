@@ -28,13 +28,13 @@ def second_err(t: T, first: list, again: list | None = None, **kw):
     return r
 
 
-@case(fixture="g3_trio_installed", spec=["dist/enable-and-disable-deploy-and-remove"])
+@case(fixture="g3_trio_installed", spec=["dist/enable-and-disable-deploy-and-remove", "dist/repeating-enable-and-disable-is-idempotent#repeat-enable"])
 def enable_enabled(t: T):
     second_ok(t, "enable", B)
     t.eq(t.package(B)["enabled"], True, "enabled")
 
 
-@case(fixture="g3_trio_installed", spec=["dist/enable-and-disable-deploy-and-remove"])
+@case(fixture="g3_trio_installed", spec=["dist/enable-and-disable-deploy-and-remove", "dist/repeating-enable-and-disable-is-idempotent#repeat-disable"])
 def disable_disabled(t: T):
     second_ok(t, "disable", B)
     t.eq(t.package(B)["enabled"], False, "disabled")

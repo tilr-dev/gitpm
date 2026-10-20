@@ -256,7 +256,7 @@ Catalog versions SHALL be ordered by SemVer precedence (package-ids, "Version fo
 - **THEN** `check` first shows `up to date; pre-release 2.0.0-beta.1`, then LATEST `2.0.0 (major)` with `update available`
 
 ### Requirement: Local release history remains bounded in execution time
-For the local integration fixture containing one package with 200 committed releases `1.0.0` through `1.199.0`, catalog generation, catalog overview, catalog installation and direct installation SHALL each complete in less than 60 seconds. This is the local fixture's acceptance budget, not a bound on remote transport latency. Verified by `uc_061:two_hundred_versions`.
+For the local integration fixture containing one package with 200 committed releases `1.0.0` through `1.199.0`, catalog generation, catalog overview, catalog installation and direct installation SHALL each complete in less than 60 seconds. This is the local fixture's acceptance budget, not a bound on remote transport latency.
 
 #### Scenario: Two hundred local releases
 - **WHEN** the local fixture creates the 200 releases and runs `catalog-update`, `info`, `install-catalog` and direct `install` separately

@@ -169,7 +169,7 @@ def list_is_library_state_plus_resolved(t: T):
     t.eq([p["id"] for p in resolved_view], sorted(t.state()["packages"]), "resolved is the sorted flat view")
 
 
-@case(fixture="hello_releases", spec=["cli/json-output-for-state-and-catalog#list", "dist/dist-holds-exactly-the-active-packages"])
+@case(fixture="hello_releases", spec=["cli/json-output-for-state-and-catalog#list", "dist/dist-holds-exactly-the-active-packages", "cli/the-library-owns-domain-behavior#equivalent-lifecycle-through-cli-and-library"])
 def side_by_side_library_run(t: T):
     """Run a lifecycle through the public API and CLI, comparing state and deployed bytes after each step."""
     paired = t.root / "api-workspace"
