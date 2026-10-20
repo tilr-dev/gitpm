@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Linked packages report releases without automatic replacement
-Single-package update, update all and check SHALL retain link records and report link mode explicitly. They SHALL discover releases under existing source/selection policies without modifying the author repository and report a newer version with dev-linked, unchanged status. This overrides recorded-mode update and clone lost-work rules for links. An explicit target MUST NOT silently convert a link into a managed installation.
+Single-package update, update all and check SHALL retain link records and report link mode explicitly. They SHALL discover releases under existing source/selection policies without modifying the author repository and report a newer version with dev-linked, unchanged status. An explicit target MUST NOT silently convert a link into a managed installation.
 
 #### Scenario: A new release is available
 - **WHEN** a dev-linked package declares version 0.3.0 and its release source offers 0.4.0
@@ -32,3 +32,16 @@ The joint update solver SHALL keep each linked package's recorded version and de
 #### Scenario: Preview
 - **WHEN** update all runs in dry-run mode with a linked package
 - **THEN** it reports the same dev-link status and discovered release information without modifying state or deployed entries
+
+## MODIFIED Requirements
+
+### Requirement: update follows the recorded mode
+`update ID` without a target SHALL follow the package's recorded mode (links: "Linked packages report releases without automatic replacement"): release mode moves to the newest release, branch mode to the branch HEAD, and a pinned package SHALL stay unchanged with reason `pinned` (CLI: `ID pinned at V (REF)`). `--ref REF` and `--dev` SHALL move the package and record the new mode as at install (install-uninstall); `--release` SHALL return it to release mode at the newest release. Verified by `workspace::update_follows_and_switches_the_recorded_mode`.
+
+#### Scenario: Pinned package
+- **WHEN** `acme/greeter` was installed with `--ref acme/greeter@0.1.0`, 0.2.0 is released and the user runs `update acme/greeter`
+- **THEN** it prints `acme/greeter pinned at 0.1.0 (acme/greeter@0.1.0)` and nothing changes
+
+#### Scenario: Back to releases
+- **WHEN** the user then runs `update acme/greeter --release`
+- **THEN** it prints `acme/greeter updated 0.1.0 → 0.2.0 (major)` and the record has no `mode`
