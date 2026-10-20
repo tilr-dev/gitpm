@@ -756,7 +756,8 @@ fn new_fork(
                     || git(
                         clone,
                         &["merge-base", "--is-ancestor", &s.commit, candidate],
-                     custom_ssh)
+                        custom_ssh,
+                    )
                     .is_ok()
             })
         })

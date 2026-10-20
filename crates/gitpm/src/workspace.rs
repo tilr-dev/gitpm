@@ -637,7 +637,7 @@ pub(crate) fn export_dist(
         git(
             repo,
             &["cat-file", "-t", &format!("{commit}:{folder}")],
-            custom_ssh
+            custom_ssh,
         )
         .is_ok_and(|kind| kind == "tree"),
         InvalidManifest,
