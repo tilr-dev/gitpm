@@ -18,7 +18,7 @@
 - [x] 3.1 README: command reference uses the new names and a "Changed in 0.6" entry lists the four renames as BREAKING; the Settings block names `catalog update` for `--sources`; verify `grep -n "catalog-update\|\binfo\b" README.md` hits only the "Changed in" lines
 - [x] 3.2 Before archive, add MODIFIED deltas for every remaining spec requirement that names `info`, bare `catalog`, `catalog-update` or `register` as a command (`grep -rn` over `openspec/specs/` after the chain is archived, including requirements the chain added such as catalog "Verified catalogs" and "Published versions are immutable"), so archiving leaves no old name; verify `openspec validate cli-catalog-commands --strict`
 - [x] 3.3 Dagger: remap `gitpmtest.COMMANDS` to the new spellings, update the help/usage assertions in `uc_001`/`uc_063`, and write `uc_076` (four subcommands, bare `catalog`, unknown subcommand, old names unknown; no alias case) tagged into `cli`; verify `./itests/dt --only scenarios --filter uc_0` is green and `./itests/dt coverage` resolves every tag (moved from `2026-10-18-dagger-integration-tests` tasks 0.1 and 5.5)
-- [ ] 3.4 Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace`; all green
+- [x] 3.4 Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace`; all green
 
 ## Workflow follow-up
 
