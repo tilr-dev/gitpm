@@ -2339,3 +2339,43 @@ fn catalog_package_with_pre_releases_only() {
         "{out}"
     );
 }
+
+#[test]
+fn update_all_local_work_prints_the_library_message_unchanged() {
+    let f = Fixture::new();
+    f.install();
+    let repo = f.root.join("packages/dan/hello");
+    let git = |args: &[&str]| {
+        let out = f
+            .command("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    fs::write(repo.join("local.txt"), "local work").unwrap();
+    git(&["add", "local.txt"]);
+    git(&["commit", "-qm", "local"]);
+    git(&["tag", "local-only"]);
+    git(&["reset", "--hard", "HEAD~1"]);
+    let error = {
+        let manager = gitpm::Manager::open(&f.root).unwrap();
+        manager.update_all().unwrap_err()
+    };
+    let (ok, out, err) = f.output(&["update", "all"]);
+    assert!(!ok);
+    assert!(out.is_empty(), "{out}");
+    assert_eq!(err, format!("Error: {error}\nError kind: local_changes\n"));
+    assert!(
+        err.contains(
+            "dan/hello: unpublished local work blocks update all; unpublished tag: local-only"
+        ),
+        "{err}"
+    );
+}

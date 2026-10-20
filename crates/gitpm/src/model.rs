@@ -43,7 +43,7 @@ impl Manifest {
     pub fn metadata_strict(&self) -> Result<Metadata> {
         let (metadata, problems) = Metadata::read(&self.extra);
         match problems.into_iter().next() {
-            Some(problem) => Err(Error::InvalidManifest(format!(
+            Some(problem) => Err(Error::invalid_manifest(format!(
                 "invalid plugin.json: {problem}"
             ))),
             None => Ok(metadata),
@@ -442,12 +442,12 @@ pub(crate) fn manifest(repo: &Path) -> Result<Manifest> {
     let path = repo.join("plugin.json");
     let bytes = fs::read(&path).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => {
-            Error::InvalidManifest(format!("missing plugin.json: {}", path.display()))
+            Error::invalid_manifest(format!("missing plugin.json: {}", path.display()))
         }
         _ => Error::Io(format!("cannot read {}: {e}", path.display())),
     })?;
     let m: Manifest = serde_json::from_slice(&bytes)
-        .map_err(|e| Error::InvalidManifest(format!("invalid plugin.json: {e}")))?;
+        .map_err(|e| Error::invalid_manifest(format!("invalid plugin.json: {e}")))?;
     valid_id(&m.id)?;
     if let Some(base) = &m.fork_of {
         valid_id(&base.id)?;
@@ -474,7 +474,7 @@ pub(crate) fn manifest(repo: &Path) -> Result<Manifest> {
                 "forkOf.source is empty"
             );
             crate::auth::validate_recorded(source)
-                .map_err(|e| Error::InvalidManifest(format!("invalid forkOf.source: {e}")))?;
+                .map_err(|e| Error::invalid_manifest(format!("invalid forkOf.source: {e}")))?;
         }
     }
     ensure!(
@@ -515,7 +515,7 @@ pub(crate) fn package_manifest(repo: &Path, path: Option<&str>) -> Result<Manife
     for part in path.split('/') {
         current.push(part);
         let meta = fs::symlink_metadata(&current)
-            .map_err(|e| Error::InvalidManifest(format!("missing package {path}: {e}")))?;
+            .map_err(|e| Error::invalid_manifest(format!("missing package {path}: {e}")))?;
         ensure!(
             !meta.file_type().is_symlink(),
             Unsupported,

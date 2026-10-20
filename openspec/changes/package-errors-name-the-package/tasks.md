@@ -1,9 +1,15 @@
 # Tasks
 
-## 1. Library
+## 1. Specification
 
-- [ ] 1.1 Messages name the package: "COMMIT changed without a version bump", "history of BRANCH diverged", "rollback manifest mismatch", "package id changed upstream" and the `update all` local-work refusal carry the ID; FFI `PmError` gets `id` for them (TILR-50); verify `error::package_errors_name_the_package` and `ids_and_lost_work_items_are_preserved`
+- [x] 1.1 Reconcile refusals after TILR-39: same-version commits remain allowed; scope errors, FFI and updates deltas to remaining refusals.
 
-## 2. Specs, tests, docs
+## 2. Library and bindings
 
-- [ ] 2.1 Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace`
+- [x] 2.1 Package-scoped update/rollback invalid_manifest and version_conflict errors carry structured ID and complete messages; global errors retain their message without a package ID.
+- [x] 2.2 Local-work refusals of update/rollback/update all name the package and list items; CLI prints the library message unchanged; FFI preserves ID and items.
+
+## 3. Verification
+
+- [x] 3.1 Reproduce missing ID with deterministic regression tests, including package_errors_name_the_package and ids_and_lost_work_items_are_preserved.
+- [x] 3.2 Run task bin/check and finish workflow.

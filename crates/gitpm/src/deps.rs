@@ -378,7 +378,7 @@ fn comparator(
 /// `||`, hyphen ranges and other wildcards are refused with `invalid_manifest`.
 pub fn requirement(text: &str) -> Result<Range> {
     let invalid = |reason: String| {
-        Error::InvalidManifest(format!("invalid version requirement {text:?}: {reason}"))
+        Error::invalid_manifest(format!("invalid version requirement {text:?}: {reason}"))
     };
     if text.contains(',') {
         return Err(invalid(

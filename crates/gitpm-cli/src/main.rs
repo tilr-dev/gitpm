@@ -31,8 +31,10 @@ fn main() {
                 lost_work: items, ..
             } = pm_error
             {
-                for item in items {
-                    eprintln!("  - {}", item.describe());
+                if !matches!(invocation.command.as_str(), "update" | "rollback") {
+                    for item in items {
+                        eprintln!("  - {}", item.describe());
+                    }
                 }
             }
             // Same stable kind the library API and FFI report.

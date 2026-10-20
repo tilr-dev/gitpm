@@ -33,13 +33,13 @@ pub enum PmError {
     #[error("{message}")]
     InvalidId { message: String },
     #[error("{message}")]
-    InvalidManifest { message: String },
+    InvalidManifest { id: Option<String>, message: String },
     #[error("{message}")]
     InvalidVersion { message: String },
     #[error("{message}")]
     InvalidArgument { message: String },
     #[error("{message}")]
-    VersionConflict { message: String },
+    VersionConflict { id: Option<String>, message: String },
     /// `commit`: the previous revision's commit is no longer in the clone.
     #[error("{message}")]
     NoPreviousVersion {
@@ -109,10 +109,10 @@ impl From<pm::Error> for PmError {
             },
             pm::Error::Locked(_) => PmError::Locked { message },
             pm::Error::InvalidId(_) => PmError::InvalidId { message },
-            pm::Error::InvalidManifest(_) => PmError::InvalidManifest { message },
+            pm::Error::InvalidManifest { id, .. } => PmError::InvalidManifest { id, message },
             pm::Error::InvalidVersion(_) => PmError::InvalidVersion { message },
             pm::Error::InvalidArgument(_) => PmError::InvalidArgument { message },
-            pm::Error::VersionConflict(_) => PmError::VersionConflict { message },
+            pm::Error::VersionConflict { id, .. } => PmError::VersionConflict { id, message },
             pm::Error::NoPreviousVersion { id, commit } => PmError::NoPreviousVersion {
                 id,
                 commit,
@@ -1849,10 +1849,16 @@ mod tests {
             },
             pm::Error::Locked(m()),
             pm::Error::InvalidId(m()),
-            pm::Error::InvalidManifest(m()),
+            pm::Error::InvalidManifest {
+                id: None,
+                message: m(),
+            },
             pm::Error::InvalidVersion(m()),
             pm::Error::InvalidArgument(m()),
-            pm::Error::VersionConflict(m()),
+            pm::Error::VersionConflict {
+                id: None,
+                message: m(),
+            },
             pm::Error::NoPreviousVersion {
                 id: "a/b".into(),
                 commit: Some("c0ffee".into()),
@@ -1930,10 +1936,10 @@ mod tests {
             | PmError::LocalChanges { message, .. }
             | PmError::Locked { message }
             | PmError::InvalidId { message }
-            | PmError::InvalidManifest { message }
+            | PmError::InvalidManifest { message, .. }
             | PmError::InvalidVersion { message }
             | PmError::InvalidArgument { message }
-            | PmError::VersionConflict { message }
+            | PmError::VersionConflict { message, .. }
             | PmError::NoPreviousVersion { message, .. }
             | PmError::NoReleases { message }
             | PmError::RepositoryNotFound { message, .. }
@@ -1974,10 +1980,20 @@ mod tests {
             | PmError::AlreadyInstalled { id, .. }
             | PmError::LocalChanges { id, .. }
             | PmError::NoPreviousVersion { id, .. }
-            | PmError::RepositoryNotFound { id, .. } => id,
+            | PmError::RepositoryNotFound { id, .. }
+            | PmError::InvalidManifest { id: Some(id), .. }
+            | PmError::VersionConflict { id: Some(id), .. } => id,
             other => panic!("no id: {other:?}"),
         };
         for error in [
+            pm::Error::InvalidManifest {
+                id: Some("x/one".into()),
+                message: "x/one: rollback manifest mismatch".into(),
+            },
+            pm::Error::VersionConflict {
+                id: Some("x/one".into()),
+                message: "x/one: history of main diverged; automatic update refused".into(),
+            },
             pm::Error::NotInstalled { id: "x/one".into() },
             pm::Error::AlreadyInstalled {
                 id: "x/one".into(),
@@ -1989,7 +2005,29 @@ mod tests {
             },
             pm::Error::RepositoryNotFound { id: "x/one".into() },
         ] {
-            assert_eq!(id_of(error.into()), "x/one");
+            let message = error.to_string();
+            let mapped = PmError::from(error);
+            assert_eq!(mapped.to_string(), message);
+            assert_eq!(id_of(mapped), "x/one");
+        }
+        for error in [
+            pm::Error::InvalidManifest {
+                id: None,
+                message: "global manifest error".into(),
+            },
+            pm::Error::VersionConflict {
+                id: None,
+                message: "global version conflict".into(),
+            },
+        ] {
+            let message = error.to_string();
+            let mapped = PmError::from(error);
+            assert_eq!(mapped.to_string(), message);
+            assert!(matches!(
+                mapped,
+                PmError::InvalidManifest { id: None, .. }
+                    | PmError::VersionConflict { id: None, .. }
+            ));
         }
         let PmError::NoPreviousVersion { commit, .. } =
             PmError::from(pm::Error::NoPreviousVersion {

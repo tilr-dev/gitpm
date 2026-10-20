@@ -1176,7 +1176,9 @@ fn update_all_preserves_local_work_and_never_partially_deploys() {
     git(&repo, &["add", "--all"]);
     git(&repo, &["commit", "-qm", "remove dist"]);
     git(&repo, &["tag", "-f", "x/b@2.0.0"]);
-    f.refuses("invalid_manifest", || m.update_all());
+    let error = f.refuses("invalid_manifest", || m.update_all());
+    assert!(error.to_string().starts_with("x/b: "), "{error}");
+    assert!(matches!(error, gitpm::Error::InvalidManifest { id: Some(id), .. } if id == "x/b"));
     assert_eq!(plugin(&m, "x/a").current.version, "1.0.0");
 }
 
