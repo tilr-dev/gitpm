@@ -3,6 +3,7 @@
 use crate::error::{Context, Error, Result, ensure};
 use std::{
     collections::BTreeMap,
+    io::Read,
     path::Path,
     process::{Command, Output, Stdio},
     sync::OnceLock,
@@ -224,38 +225,76 @@ pub(crate) fn ls_remote(
 /// is an error, so a catalog cannot be moved to another host silently) and bodies
 /// over 16 MiB are refused.
 pub(crate) fn http_get(url: &str) -> Result<Option<Vec<u8>>> {
-    let output = Command::new("curl")
-        .args([
-            "--disable",
-            "--silent",
-            "--show-error",
-            "--connect-timeout",
-            "5",
-            "--max-time",
-            "20",
-            "--proto",
-            "=https,http",
-            "--max-filesize",
-            "16777216",
-            "--write-out",
-            "\n%{http_code}",
-            "--url",
-            url,
-        ])
-        .output()
+    let mut command = Command::new("curl");
+    command.args([
+        "--disable",
+        "--silent",
+        "--show-error",
+        "--connect-timeout",
+        "5",
+        "--max-time",
+        "20",
+        "--proto",
+        "=https,http",
+        "--max-filesize",
+        "16777216",
+        "--write-out",
+        "\n%{http_code}",
+        "--url",
+        url,
+    ]);
+    http_response(command)
+}
+
+const HTTP_BODY_LIMIT: usize = 16 * 1024 * 1024;
+const HTTP_STATUS_LEN: usize = 4; // newline plus three status digits
+
+fn http_response(mut command: Command) -> Result<Option<Vec<u8>>> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .context(Error::Http, "cannot start curl")?;
+    let mut stderr = child.stderr.take().expect("piped stderr");
+    let errors = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stderr.read_to_end(&mut bytes);
+        bytes
+    });
+    // One extra byte proves overflow; never buffer the rest of the stream.
+    let mut stdout = Vec::new();
+    let read = child
+        .stdout
+        .take()
+        .expect("piped stdout")
+        .take((HTTP_BODY_LIMIT + HTTP_STATUS_LEN + 1) as u64)
+        .read_to_end(&mut stdout);
+    let oversized = stdout.len() > HTTP_BODY_LIMIT + HTTP_STATUS_LEN;
+    if oversized || read.is_err() {
+        let _ = child.kill();
+    }
+    let status = child.wait();
+    let stderr = errors.join().unwrap_or_default();
+    read.context(Error::Http, "cannot read catalog response")?;
+    ensure!(!oversized, Http, "catalog response exceeds 16 MiB");
+    let status = status.context(Error::Http, "cannot wait for curl")?;
     ensure!(
-        output.status.success(),
+        status.success(),
         Http,
         "catalog request failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        String::from_utf8_lossy(&stderr)
     );
-    let split = output
-        .stdout
+    let split = stdout
         .iter()
         .rposition(|b| *b == b'\n')
         .ok_or_else(|| Error::Http("missing HTTP status".into()))?;
-    let status = &output.stdout[split + 1..];
+    ensure!(
+        split <= HTTP_BODY_LIMIT,
+        Http,
+        "catalog response exceeds 16 MiB"
+    );
+    let status = &stdout[split + 1..];
     if status == b"404" {
         return Ok(None);
     }
@@ -265,7 +304,8 @@ pub(crate) fn http_get(url: &str) -> Result<Option<Vec<u8>>> {
         "catalog HTTP {}",
         String::from_utf8_lossy(status)
     );
-    Ok(Some(output.stdout[..split].to_vec()))
+    stdout.truncate(split);
+    Ok(Some(stdout))
 }
 
 #[cfg(test)]
@@ -382,6 +422,80 @@ mod tests {
                 .starts_with("git ls-remote --tags --heads -- "),
             "{error}"
         );
+    }
+
+    fn streamed_response(size: usize, status: u16) -> Result<Option<Vec<u8>>> {
+        use std::{io::Write, net::TcpListener};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/catalog.json", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            // Read the complete request before writing, without timing assumptions.
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                stream.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+            }
+            write!(
+                stream,
+                "HTTP/1.1 {status} Test\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+            let chunk = [b' '; 8192];
+            let mut send = || -> std::io::Result<()> {
+                for start in (0..size).step_by(chunk.len()) {
+                    let len = (size - start).min(chunk.len());
+                    write!(stream, "{len:x}\r\n")?;
+                    stream.write_all(&chunk[..len])?;
+                    stream.write_all(b"\r\n")?;
+                }
+                stream.write_all(b"0\r\n\r\n")
+            };
+            let _ = send(); // gitpm closes the connection on overflow.
+        });
+        // Emulate curl versions that do not enforce --max-filesize on streams.
+        let mut command = Command::new("curl");
+        command.args([
+            "--disable",
+            "--silent",
+            "--max-time",
+            "20",
+            "--write-out",
+            "\n%{http_code}",
+            "--url",
+            &url,
+        ]);
+        let result = http_response(command);
+        server.join().unwrap();
+        result
+    }
+
+    #[test]
+    fn oversized_streamed_catalog_response_is_refused() {
+        let error = streamed_response(50 * 1024 * 1024, 200).unwrap_err();
+        assert_eq!(error.kind(), "http");
+        assert!(error.to_string().contains("exceeds 16 MiB"), "{error}");
+    }
+
+    #[test]
+    fn streamed_catalog_response_size_boundary_and_status() {
+        for size in [0, 17, HTTP_BODY_LIMIT] {
+            assert_eq!(
+                streamed_response(size, 200).unwrap().unwrap(),
+                vec![b' '; size]
+            );
+        }
+        for extra in 1..=5 {
+            assert_eq!(
+                streamed_response(HTTP_BODY_LIMIT + extra, 200)
+                    .unwrap_err()
+                    .kind(),
+                "http"
+            );
+        }
+        assert_eq!(streamed_response(17, 404).unwrap(), None);
+        assert_eq!(streamed_response(0, 301).unwrap_err().kind(), "http");
     }
 
     #[test]
