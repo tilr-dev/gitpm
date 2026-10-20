@@ -1673,6 +1673,67 @@ fn init_install_and_fork_into_explicit_folders() {
     assert!(config_files(&f.dir).is_empty());
 }
 
+#[test]
+fn missing_git_keeps_auth_and_repository_error_kinds() {
+    let f = Fixture::new();
+    let empty = f.dir.join("empty-path");
+    fs::create_dir(&empty).unwrap();
+    for (args, kind) in [
+        (
+            vec!["auth", "check", "https://example.invalid/repo.git"],
+            "auth",
+        ),
+        (vec!["install", f.repo.to_str().unwrap()], "git"),
+    ] {
+        let output = f.pm().env("PATH", &empty).args(&args).output().unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{args:?}");
+        assert!(
+            stderr.contains(&format!("Error kind: {kind}")),
+            "{args:?}: {stderr}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn auth_check_reports_config_probe_timeout_without_running_ls_remote() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    let bin = f.dir.join("fakebin");
+    fs::create_dir(&bin).unwrap();
+    let fifo = f.dir.join("probe.fifo");
+    assert!(f.command("mkfifo").arg(&fifo).status().unwrap().success());
+    let wrapper = bin.join("git");
+    // With no writer, opening the FIFO blocks until gitpm kills the probe.
+    fs::write(&wrapper, "#!/bin/sh\ncase \" $* \" in\n*' config --get core.sshCommand '*) exec /bin/cat \"$GITPMT_PROBE_FIFO\";;\n*' ls-remote '*) printf fallback > \"$GITPMT_FALLBACK\"; exit 0;;\nesac\nexit 1\n").unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+    let fallback = f.dir.join("fallback");
+    let path = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )))
+    .unwrap();
+    let output = f
+        .pm()
+        .env("PATH", path)
+        .env("GITPMT_PROBE_FIFO", fifo)
+        .env("GITPMT_FALLBACK", &fallback)
+        .args(["auth", "check", "https://example.invalid/repo.git"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "probe timeout was swallowed: {stderr}"
+    );
+    assert!(stderr.contains("Error kind: git"), "{stderr}");
+    assert!(
+        stderr.contains("git config --get core.sshCommand: timed out after 10s"),
+        "{stderr}"
+    );
+    assert!(!fallback.exists(), "ls-remote ran after the failed probe");
+}
+
 #[cfg(unix)]
 #[test]
 fn custom_ssh_is_shared_by_auth_install_catalog_and_check() {

@@ -340,4 +340,36 @@ mod tests {
         assert!(error.to_string().contains("not found"), "{error}");
         assert_eq!(check("", &options).unwrap_err().kind(), "invalid_argument");
     }
+
+    #[test]
+    fn access_check_is_bounded() {
+        // A server that accepts the connection and never answers: git waits for the
+        // ref advertisement forever unless the check kills it.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let source = format!("git://{}/silent.git", listener.local_addr().unwrap());
+        let (accepted_tx, accepted_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let server = std::thread::spawn(move || {
+            let (connection, _) = listener.accept().unwrap();
+            accepted_tx.send(()).unwrap();
+            let _ = release_rx.recv();
+            drop(connection);
+        });
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(check(&source, &Options::default()));
+        });
+        // Only a guard against hanging the test run; the check must end on its own limit.
+        let result = receiver
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .expect("auth check against a silent server did not finish");
+        accepted_rx
+            .try_recv()
+            .expect("git never connected to the silent server");
+        drop(release_tx);
+        server.join().unwrap();
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), "git");
+        assert!(error.to_string().contains("timed out after 10s"), "{error}");
+    }
 }
