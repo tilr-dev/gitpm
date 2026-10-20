@@ -530,15 +530,15 @@ pub(crate) fn package_manifest(repo: &Path, path: Option<&str>) -> Result<Manife
     manifest(&current)
 }
 
-pub(crate) fn revision(repo: &Path, m: &Manifest) -> Result<Revision> {
+pub(crate) fn revision(repo: &Path, m: &Manifest, custom_ssh: bool) -> Result<Revision> {
     Ok(Revision {
         version: m.version.clone(),
-        commit: git(repo, &["rev-parse", "HEAD"])?,
+        commit: git(repo, &["rev-parse", "HEAD"], custom_ssh)?,
         mode: Mode::Release,
     })
 }
 
-pub(crate) fn resolve_ref(repo: &Path, reference: &str) -> Result<String> {
+pub(crate) fn resolve_ref(repo: &Path, reference: &str, custom_ssh: bool) -> Result<String> {
     ensure!(
         !reference.is_empty() && !reference.starts_with('-'),
         InvalidArgument,
@@ -552,15 +552,17 @@ pub(crate) fn resolve_ref(repo: &Path, reference: &str) -> Result<String> {
             "--end-of-options",
             &format!("{reference}^{{commit}}"),
         ],
+        custom_ssh,
     )
 }
 
 /// The name of the origin's default branch (`refs/remotes/origin/HEAD`, set by a clone
 /// or by `git remote set-head origin --auto`).
-pub(crate) fn default_branch(repo: &Path) -> Result<String> {
+pub(crate) fn default_branch(repo: &Path, custom_ssh: bool) -> Result<String> {
     let name = git(
         repo,
         &["symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD"],
+        custom_ssh,
     )
     .map_err(|_| Error::Git("the origin has no default branch (HEAD)".into()))?;
     let branch = name.strip_prefix("origin/").unwrap_or(&name).to_owned();
@@ -579,19 +581,24 @@ pub(crate) fn default_branch(repo: &Path) -> Result<String> {
 /// expressions (`HEAD~1`, `TAG^`) and local branches of a clone (stale copies of the
 /// origin) are refused with `invalid_argument`. Returns the commit and the mode that
 /// records it: a tag or commit pins, a branch is followed.
-pub(crate) fn resolve_upstream_ref(repo: &Path, reference: &str) -> Result<(String, Mode)> {
+pub(crate) fn resolve_upstream_ref(
+    repo: &Path,
+    reference: &str,
+    custom_ssh: bool,
+) -> Result<(String, Mode)> {
     ensure!(
         !reference.is_empty() && !reference.starts_with('-'),
         InvalidArgument,
         "invalid git ref"
     );
-    let exists = |full: &str| git(repo, &["show-ref", "--verify", "--quiet", full]).is_ok();
+    let exists =
+        |full: &str| git(repo, &["show-ref", "--verify", "--quiet", full], custom_ssh).is_ok();
     let branch = |name: &str| -> Result<(String, Mode)> {
-        let commit = resolve_ref(repo, &format!("refs/remotes/origin/{name}"))?;
+        let commit = resolve_ref(repo, &format!("refs/remotes/origin/{name}"), custom_ssh)?;
         Ok((commit, Mode::Branch(name.to_owned())))
     };
     if reference == "HEAD" || reference == "refs/remotes/origin/HEAD" {
-        return branch(&default_branch(repo)?);
+        return branch(&default_branch(repo, custom_ssh)?);
     }
     let unknown = || {
         Error::InvalidArgument(format!(
@@ -610,14 +617,17 @@ pub(crate) fn resolve_upstream_ref(repo: &Path, reference: &str) -> Result<(Stri
             return branch(name);
         }
         if rest.starts_with("tags/") && exists(reference) {
-            let commit = resolve_ref(repo, reference)?;
+            let commit = resolve_ref(repo, reference, custom_ssh)?;
             return Ok((commit, Mode::Pinned(reference.to_owned())));
         }
         return Err(unknown());
     }
     let tag = format!("refs/tags/{reference}");
     if exists(&tag) {
-        return Ok((resolve_ref(repo, &tag)?, Mode::Pinned(reference.to_owned())));
+        return Ok((
+            resolve_ref(repo, &tag, custom_ssh)?,
+            Mode::Pinned(reference.to_owned()),
+        ));
     }
     if exists(&format!("refs/remotes/origin/{reference}")) {
         return branch(reference);
@@ -626,7 +636,7 @@ pub(crate) fn resolve_upstream_ref(repo: &Path, reference: &str) -> Result<(Stri
         && reference
             .bytes()
             .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
-        && let Ok(commit) = resolve_ref(repo, reference)
+        && let Ok(commit) = resolve_ref(repo, reference, custom_ssh)
     {
         return Ok((commit.clone(), Mode::Pinned(commit)));
     }
@@ -1281,30 +1291,41 @@ mod tests {
     fn resolve_ref_refuses_option_like_refs_and_resolves_commits() {
         for bad in ["", "-x", "--upload-pack=evil"] {
             // Rejected before git runs: the path does not even exist.
-            let error = resolve_ref(Path::new("/nonexistent-pm-repo"), bad).unwrap_err();
+            let error = resolve_ref(Path::new("/nonexistent-pm-repo"), bad, false).unwrap_err();
             assert_eq!(error.kind(), "invalid_argument", "{bad:?}");
         }
         let dir = TempDir::new("model");
         let author = Author::new(dir.join("author"), "dan/demo1");
         let first = author.head();
         let second = author.commit("0.2.0");
-        assert_eq!(resolve_ref(&author.path, "dan/demo1@0.1.0").unwrap(), first);
         assert_eq!(
-            resolve_ref(&author.path, "refs/tags/dan/demo1@0.1.0").unwrap(),
+            resolve_ref(&author.path, "dan/demo1@0.1.0", false).unwrap(),
             first
         );
-        assert_eq!(resolve_ref(&author.path, "main").unwrap(), second);
-        assert_eq!(resolve_ref(&author.path, &first[..12]).unwrap(), first);
         assert_eq!(
-            resolve_ref(&author.path, "missing").unwrap_err().kind(),
+            resolve_ref(&author.path, "refs/tags/dan/demo1@0.1.0", false).unwrap(),
+            first
+        );
+        assert_eq!(resolve_ref(&author.path, "main", false).unwrap(), second);
+        assert_eq!(
+            resolve_ref(&author.path, &first[..12], false).unwrap(),
+            first
+        );
+        assert_eq!(
+            resolve_ref(&author.path, "missing", false)
+                .unwrap_err()
+                .kind(),
             "git"
         );
         // A tree object is not a commit.
         let tree = fixture_git(&author.path, &["rev-parse", "HEAD^{tree}"]);
-        assert_eq!(resolve_ref(&author.path, &tree).unwrap_err().kind(), "git");
+        assert_eq!(
+            resolve_ref(&author.path, &tree, false).unwrap_err().kind(),
+            "git"
+        );
         let m = manifest(&author.path).unwrap();
         assert_eq!(
-            revision(&author.path, &m).unwrap(),
+            revision(&author.path, &m, false).unwrap(),
             Revision {
                 version: "0.2.0".into(),
                 commit: second,

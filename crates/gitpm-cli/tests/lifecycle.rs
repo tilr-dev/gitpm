@@ -1673,6 +1673,57 @@ fn init_install_and_fork_into_explicit_folders() {
     assert!(config_files(&f.dir).is_empty());
 }
 
+#[cfg(unix)]
+#[test]
+fn custom_ssh_is_shared_by_auth_install_catalog_and_check() {
+    use std::os::unix::fs::PermissionsExt;
+    for variable in ["GIT_SSH", "GIT_SSH_COMMAND"] {
+        let f = Fixture::new();
+        let helper = f.dir.join("local-ssh");
+        let log = f.dir.join("ssh.log");
+        fs::write(&helper, "#!/bin/sh\ncase \"$1\" in -G) exit 1;; esac\nprintf '%s\\n' \"$*\" >> \"$GITPMT_SSH_LOG\"\nexec git-upload-pack \"$GITPMT_SSH_REPO\"\n").unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+        let source = "git@example.invalid:repo.git";
+        fs::write(f.dir.join("sources.txt"), format!("{source}\n")).unwrap();
+        let mut previous = 0;
+        for args in [
+            vec!["auth", "check", source],
+            vec!["install", source],
+            vec!["check"],
+            vec!["catalog-update"],
+            vec!["register", source, "--ref", "dan/hello@1.0.0"],
+        ] {
+            let mut command = f.pm();
+            command
+                .current_dir(&f.dir)
+                .env(variable, &helper)
+                .env("GITPMT_SSH_LOG", &log)
+                .env("GITPMT_SSH_REPO", &f.repo)
+                .args(&args);
+            if args == ["check"] {
+                // Exercise origin lookup without the fixture's not-yet-built catalog.
+                command.env_remove("GITPM_CATALOG");
+            }
+            if variable == "GIT_SSH_COMMAND" {
+                command.env("GIT_SSH", "/nonexistent-must-not-be-used");
+            }
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success(),
+                "{variable} {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let calls = fs::read_to_string(&log).unwrap().lines().count();
+            assert!(
+                calls > previous,
+                "{variable} {args:?} must use the SSH helper"
+            );
+            previous = calls;
+        }
+        assert_eq!(f.content(), "hello v1");
+    }
+}
+
 #[test]
 fn gitpm_variables_set_root_catalog_and_sources() {
     let f = Fixture::new();

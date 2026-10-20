@@ -763,7 +763,26 @@ impl Drop for Scratch {
 }
 /// Read the exact committed manifest, rather than an author's uncommitted working tree.
 pub fn register(url: &str, source: &str, reference: &str) -> Result<Release> {
-    register_build(url, source, reference, None)
+    register_with_ssh(url, source, reference, false)
+}
+
+/// Run with the caller's SSH policy.
+pub fn register_with_options(
+    url: &str,
+    source: &str,
+    reference: &str,
+    ssh_options: &crate::Options,
+) -> Result<Release> {
+    register_with_ssh(url, source, reference, ssh_options.custom_ssh)
+}
+
+pub(crate) fn register_with_ssh(
+    url: &str,
+    source: &str,
+    reference: &str,
+    custom_ssh: bool,
+) -> Result<Release> {
+    register_build_with_ssh(url, source, reference, None, custom_ssh)
 }
 pub fn register_build(
     url: &str,
@@ -771,7 +790,28 @@ pub fn register_build(
     reference: &str,
     build: Option<Build>,
 ) -> Result<Release> {
-    register_package(url, source, reference, None, build)
+    register_build_with_ssh(url, source, reference, build, false)
+}
+
+/// Run with the caller's SSH policy.
+pub fn register_build_with_options(
+    url: &str,
+    source: &str,
+    reference: &str,
+    build: Option<Build>,
+    ssh_options: &crate::Options,
+) -> Result<Release> {
+    register_build_with_ssh(url, source, reference, build, ssh_options.custom_ssh)
+}
+
+pub(crate) fn register_build_with_ssh(
+    url: &str,
+    source: &str,
+    reference: &str,
+    build: Option<Build>,
+    custom_ssh: bool,
+) -> Result<Release> {
+    register_package_with_ssh(url, source, reference, None, build, custom_ssh)
 }
 /// [`register_build`] of one package of a multi-package repository: `package` picks it
 /// (an `ID@VERSION` reference names it too); for a single-package repository a given
@@ -782,6 +822,36 @@ pub fn register_package(
     reference: &str,
     package: Option<&str>,
     build: Option<Build>,
+) -> Result<Release> {
+    register_package_with_ssh(url, source, reference, package, build, false)
+}
+
+/// Run with the caller's SSH policy.
+pub fn register_package_with_options(
+    url: &str,
+    source: &str,
+    reference: &str,
+    package: Option<&str>,
+    build: Option<Build>,
+    ssh_options: &crate::Options,
+) -> Result<Release> {
+    register_package_with_ssh(
+        url,
+        source,
+        reference,
+        package,
+        build,
+        ssh_options.custom_ssh,
+    )
+}
+
+pub(crate) fn register_package_with_ssh(
+    url: &str,
+    source: &str,
+    reference: &str,
+    package: Option<&str>,
+    build: Option<Build>,
+    custom_ssh: bool,
 ) -> Result<Release> {
     let catalog_path = local_file(url)?.require(Error::InvalidArgument, WRITE_NEEDS_LOCAL)?;
     ensure!(
@@ -795,16 +865,21 @@ pub fn register_package(
         source.to_owned()
     };
     let temp = Scratch::new("pm-register")?;
-    git(&temp.0, &["clone", "--no-local", "--", &source, "repo"])?;
+    git(
+        &temp.0,
+        &["clone", "--no-local", "--", &source, "repo"],
+        custom_ssh,
+    )?;
     let repo = temp.0.join("repo");
-    let commit = resolve_ref(&repo, reference)?;
-    let found = packages::find_at(
+    let commit = resolve_ref(&repo, reference, custom_ssh)?;
+    let found = packages::find_at_with_ssh(
         &repo,
         &commit,
         package.or_else(|| packages::tag_id(reference)),
+        custom_ssh,
     )?;
     let path = found.subdir().map(str::to_owned);
-    git(&repo, &["checkout", "--detach", &commit])?;
+    git(&repo, &["checkout", "--detach", &commit], custom_ssh)?;
     let manifest = package_manifest(&repo, path.as_deref())?;
     version_key(&manifest.version)?;
     let release = Release {
@@ -830,12 +905,15 @@ fn package_dir(repo: &Path, path: Option<&str>) -> PathBuf {
 /// for a root package, HEAD decides the identity: tags a fork keeps from its upstream
 /// are not releases of the fork. Folders at HEAD that are not valid packages are
 /// returned as warnings (the other packages are still published).
-fn source_packages(repo: &Path) -> Result<(Vec<Option<String>>, Vec<crate::releases::SkippedTag>)> {
-    if packages::config_at(repo, "HEAD")?.is_none() {
+fn source_packages(
+    repo: &Path,
+    custom_ssh: bool,
+) -> Result<(Vec<Option<String>>, Vec<crate::releases::SkippedTag>)> {
+    if packages::config_at_with_ssh(repo, "HEAD", custom_ssh)?.is_none() {
         return Ok((vec![None], Vec::new()));
     }
-    let head = git(repo, &["rev-parse", "HEAD"])?;
-    let layout = packages::layout_at(repo, &head)?.unwrap_or_default();
+    let head = git(repo, &["rev-parse", "HEAD"], custom_ssh)?;
+    let layout = packages::layout_at_with_ssh(repo, &head, custom_ssh)?.unwrap_or_default();
     let warnings = layout
         .problems
         .iter()
@@ -904,6 +982,25 @@ pub fn update_sources(
     sources_file: &Path,
     progress: &mut dyn FnMut(Progress),
 ) -> Result<UpdateSourcesReport> {
+    update_sources_with_ssh(location, sources_file, progress, false)
+}
+
+/// Run with the caller's SSH policy.
+pub fn update_sources_with_options(
+    location: &str,
+    sources_file: &Path,
+    progress: &mut dyn FnMut(Progress),
+    ssh_options: &crate::Options,
+) -> Result<UpdateSourcesReport> {
+    update_sources_with_ssh(location, sources_file, progress, ssh_options.custom_ssh)
+}
+
+pub(crate) fn update_sources_with_ssh(
+    location: &str,
+    sources_file: &Path,
+    progress: &mut dyn FnMut(Progress),
+    custom_ssh: bool,
+) -> Result<UpdateSourcesReport> {
     let path = local_file(location)?.require(Error::InvalidArgument, WRITE_NEEDS_LOCAL)?;
     refuse_verified(location)?;
     let text = fs::read_to_string(sources_file).context(Error::Io, "cannot read sources file")?;
@@ -958,19 +1055,21 @@ pub fn update_sources(
                 source,
                 repo.to_str().require(Error::Io, "invalid temporary path")?,
             ],
+            custom_ssh,
         )?;
         let mut tags = Vec::new();
-        let (ids, warnings) = source_packages(&repo)?;
+        let (ids, warnings) = source_packages(&repo, custom_ssh)?;
         skipped.extend(warnings.into_iter().map(|tag| SkippedSourceTag {
             source: source.clone(),
             tag,
         }));
         for id in ids {
-            let found = match crate::releases::discover_all(&repo, id.as_deref()) {
-                // A package listed at HEAD without a release yet has nothing to publish.
-                Err(Error::NoReleases(_)) if id.is_some() => continue,
-                other => other?,
-            };
+            let found =
+                match crate::releases::discover_all_with_ssh(&repo, id.as_deref(), custom_ssh) {
+                    // A package listed at HEAD without a release yet has nothing to publish.
+                    Err(Error::NoReleases(_)) if id.is_some() => continue,
+                    other => other?,
+                };
             found.ensure_latest_is_valid()?;
             skipped.extend(found.skipped.into_iter().map(|tag| SkippedSourceTag {
                 source: source.clone(),
@@ -987,7 +1086,7 @@ pub fn update_sources(
                     "multiple sources claim package {id}"
                 );
             }
-            git(&repo, &["checkout", "--detach", &tag.commit])?;
+            git(&repo, &["checkout", "--detach", &tag.commit], custom_ssh)?;
             let path = (!tag.path.is_empty()).then_some(tag.path);
             let release = Release {
                 manifest: package_manifest(&repo, path.as_deref())?,

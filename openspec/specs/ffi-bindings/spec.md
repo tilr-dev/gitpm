@@ -164,3 +164,10 @@ FFI records SHALL carry the version flags of the library results: `RevisionChang
 #### Scenario: Pre-release in a check row
 - **WHEN** 1.2.0 is installed and the catalog has 2.0.0 and 2.1.0-rc.1
 - **THEN** the host's `CheckReport` row has `major` true and `prerelease` `2.1.0-rc.1`
+
+### Requirement: SSH setting in ManagerOptions
+`ManagerOptions` SHALL carry `customSsh` (the library's `Options.custom_ssh`), used for every git command of the opened workspace, and `authCheck(source, customSsh)` and `check(root, catalog, customSsh)` SHALL take the same setting, so a host decides once whether its environment brings its own SSH command. Verified by `records_convert_field_by_field`.
+
+#### Scenario: Host with its own SSH command
+- **WHEN** a host that sets `GIT_SSH` for its process opens a `PackageManager` with `customSsh: true` and installs from an SSH URL
+- **THEN** gitpm passes no SSH command of its own and git uses `GIT_SSH`, as `authCheck` does

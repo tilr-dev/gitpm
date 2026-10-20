@@ -1429,6 +1429,18 @@ pub struct ManagerOptions {
     /// Catalog location: local folder, JSON file or HTTP(S) URL.
     #[uniffi(default = None)]
     pub catalog: Option<String>,
+    /// Preserve the host's SSH transport for all workspace Git commands.
+    #[uniffi(default = false)]
+    pub custom_ssh: bool,
+}
+
+impl From<ManagerOptions> for pm::Options {
+    fn from(options: ManagerOptions) -> Self {
+        Self {
+            catalog: options.catalog,
+            custom_ssh: options.custom_ssh,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1445,12 +1457,7 @@ impl PackageManager {
     /// Open (or create) a dedicated workspace directory and take its lock.
     #[uniffi::constructor]
     pub fn open(root: String, options: ManagerOptions) -> Result<Arc<Self>> {
-        let inner = pm::Manager::open_with(
-            root,
-            pm::Options {
-                catalog: options.catalog,
-            },
-        )?;
+        let inner = pm::Manager::open_with(root, options.into())?;
         Ok(Arc::new(Self { inner }))
     }
     pub fn root(&self) -> String {
@@ -1719,7 +1726,13 @@ impl PackageManager {
 /// `custom_ssh`: the process environment already sets GIT_SSH_COMMAND/GIT_SSH.
 #[uniffi::export]
 pub fn auth_check(source: String, custom_ssh: bool) -> Result<AuthCheck> {
-    let result = pm::auth::check(&source, &pm::auth::AuthOptions { custom_ssh })?;
+    let result = pm::auth::check(
+        &source,
+        &pm::Options {
+            custom_ssh,
+            ..Default::default()
+        },
+    )?;
     Ok(AuthCheck {
         source: result.source,
         message: result.message,
@@ -1758,10 +1771,18 @@ pub fn read_state(root: String) -> Result<ListView> {
 }
 
 /// Compare the installed versions with a catalog (what `gitpm check` prints), without
-/// opening the workspace. An empty workspace needs no catalog.
+/// opening the workspace. An empty workspace needs no catalog. `custom_ssh` is the
+/// same setting as `ManagerOptions.customSsh`.
 #[uniffi::export]
-pub fn check(root: String, catalog: Option<String>) -> Result<CheckReport> {
-    Ok(pm::check::check(std::path::Path::new(&root), catalog.as_deref())?.into())
+pub fn check(root: String, catalog: Option<String>, custom_ssh: bool) -> Result<CheckReport> {
+    let options = pm::Options {
+        custom_ssh,
+        ..Default::default()
+    };
+    Ok(
+        pm::check::check_with_options(std::path::Path::new(&root), catalog.as_deref(), &options)?
+            .into(),
+    )
 }
 
 /// The directory links at one catalog level (what `gitpm catalog` prints).
@@ -1808,7 +1829,7 @@ mod tests {
             manager.uninstall_plan("a/b".into()),
             Err(PmError::RepositoryNotFound { .. })
         ));
-        let report = check(root.to_string_lossy().into(), None).unwrap();
+        let report = check(root.to_string_lossy().into(), None, false).unwrap();
         assert!(report.rows.is_empty() && report.unsatisfied.is_empty());
         assert!(matches!(
             PackageManager::open(root.to_string_lossy().into(), ManagerOptions::default()),
@@ -2190,6 +2211,14 @@ mod tests {
 
     #[test]
     fn records_convert_field_by_field() {
+        let options: pm::Options = ManagerOptions {
+            catalog: Some("catalog.json".into()),
+            custom_ssh: true,
+        }
+        .into();
+        assert_eq!(options.catalog.as_deref(), Some("catalog.json"));
+        assert!(options.custom_ssh);
+        assert!(!pm::Options::from(ManagerOptions::default()).custom_ssh);
         let package = InstalledPackage::from(pm::InstalledPackage {
             id: "me/x".into(),
             source: "src".into(),
@@ -3026,7 +3055,8 @@ mod tests {
                     .to_string_lossy()
                     .into(),
                 ManagerOptions {
-                    catalog: Some("/nonexistent-pm-catalog".into())
+                    catalog: Some("/nonexistent-pm-catalog".into()),
+                    custom_ssh: false,
                 }
             ),
             Err(PmError::InvalidArgument { .. })
@@ -3042,7 +3072,7 @@ mod tests {
         assert!(view.packages.is_empty() && view.resolved.is_empty());
         assert!(list(missing.to_string_lossy().into(), Some("theme".into())).is_ok());
         assert!(
-            check(missing.to_string_lossy().into(), None)
+            check(missing.to_string_lossy().into(), None, false)
                 .unwrap()
                 .rows
                 .is_empty()
@@ -3063,6 +3093,7 @@ mod tests {
             dir.join("workspace").to_string_lossy().into(),
             ManagerOptions {
                 catalog: Some(catalog),
+                custom_ssh: true,
             },
         )
         .unwrap();
@@ -3112,7 +3143,7 @@ mod tests {
                 reference: "acme/greeter@0.1.0".into()
             })
         );
-        let report = check(root.to_string_lossy().into(), None).unwrap();
+        let report = check(root.to_string_lossy().into(), None, false).unwrap();
         assert!(matches!(report.rows[0].status, CheckStatus::Pinned));
         drop(manager);
         let _ = std::fs::remove_dir_all(&dir);
@@ -3156,7 +3187,7 @@ mod tests {
         assert_eq!(manager.root(), root.to_string_lossy());
         assert_eq!(manager.list().unwrap()[0].current.version, "1.0.0");
         // Without a catalog check asks the origin; "s" is unreachable: a row, no error.
-        let report = check(root.to_string_lossy().into(), None).unwrap();
+        let report = check(root.to_string_lossy().into(), None, true).unwrap();
         assert!(matches!(
             report.rows[0].status,
             CheckStatus::OriginUnreachable

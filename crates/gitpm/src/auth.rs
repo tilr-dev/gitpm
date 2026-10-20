@@ -1,17 +1,8 @@
 //! Check repository read access using the user's existing Git credentials.
 use crate::error::{Result, ensure, fail};
-use crate::exec;
+use crate::{Options, exec};
 use serde::Serialize;
 use std::path::Path;
-
-/// Options for [`check`]. The library never reads the environment itself.
-#[derive(Debug, Clone, Default)]
-pub struct AuthOptions {
-    /// The caller's environment already selects an SSH transport (`GIT_SSH_COMMAND` or
-    /// `GIT_SSH`). When false and Git has no `core.sshCommand`, a noninteractive SSH
-    /// command with strict host key checking is used.
-    pub custom_ssh: bool,
-}
 
 /// Successful read-access check.
 #[derive(Debug, Clone, Serialize)]
@@ -20,9 +11,6 @@ pub struct AuthCheck {
     /// Human-readable confirmation.
     pub message: String,
 }
-
-pub(crate) const NONINTERACTIVE_SSH: &str =
-    "ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes";
 
 fn validate(source: &str) -> Result<()> {
     basic(source)?;
@@ -155,15 +143,11 @@ pub(crate) fn failure(stderr: &str) -> &'static str {
 
 /// Does not clone, fetch, create a workspace, or store credentials in PM.
 /// A successful check also covers an empty repository with no refs.
-pub fn check(source: &str, options: &AuthOptions) -> Result<AuthCheck> {
+pub fn check(source: &str, options: &Options) -> Result<AuthCheck> {
     validate(source)?;
-    // Preserve explicitly configured SSH transports. Standard SSH remains
-    // noninteractive, uses the user's config/agent and requires a known host.
-    let custom_ssh =
-        options.custom_ssh || exec::git_config_defined("core.sshCommand", "cannot start git")?;
     let output = exec::ls_remote(
         source,
-        (!custom_ssh).then_some(NONINTERACTIVE_SSH),
+        options.custom_ssh,
         "cannot start git; check the Git installation and PATH",
     )?;
     if !output.success {
@@ -336,7 +320,10 @@ mod tests {
         let dir = TempDir::new("auth");
         let author = Author::new(dir.join("repo"), "dan/demo1");
         let before = crate::test_support::tree_hash(dir.path());
-        let options = AuthOptions { custom_ssh: true };
+        let options = Options {
+            custom_ssh: true,
+            ..Default::default()
+        };
         let result = check(author.source(), &options).unwrap();
         assert_eq!(result.source, author.source());
         assert!(result.message.starts_with("Read access confirmed"));
@@ -346,7 +333,7 @@ mod tests {
         let empty = dir.join("empty");
         std::fs::create_dir(&empty).unwrap();
         crate::test_support::git(&empty, &["init", "-q", "--bare"]);
-        assert!(check(empty.to_str().unwrap(), &AuthOptions::default()).is_ok());
+        assert!(check(empty.to_str().unwrap(), &Options::default()).is_ok());
 
         let error = check(dir.join("missing").to_str().unwrap(), &options).unwrap_err();
         assert_eq!(error.kind(), "auth");

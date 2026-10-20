@@ -29,26 +29,47 @@ pub struct Discovery {
 }
 
 pub fn discover(repo: &Path, expected_id: Option<&str>) -> Result<Vec<Tag>> {
-    Ok(discover_all(repo, expected_id)?.tags)
+    discover_with_ssh(repo, expected_id, false)
+}
+
+pub(crate) fn discover_with_ssh(
+    repo: &Path,
+    expected_id: Option<&str>,
+    custom_ssh: bool,
+) -> Result<Vec<Tag>> {
+    Ok(discover_all_with_ssh(repo, expected_id, custom_ssh)?.tags)
 }
 
 /// Release discovery that tolerates broken historical tags: a tag whose manifest is
 /// unreadable or disagrees with the tag version is skipped and reported. Two different
 /// commits for one version stay a hard conflict.
 pub fn discover_all(repo: &Path, expected_id: Option<&str>) -> Result<Discovery> {
+    discover_all_with_ssh(repo, expected_id, false)
+}
+
+pub(crate) fn discover_all_with_ssh(
+    repo: &Path,
+    expected_id: Option<&str>,
+    custom_ssh: bool,
+) -> Result<Discovery> {
     let default_id;
     let id = match expected_id {
         Some(id) => id,
-        None if packages::config_at(repo, "HEAD")?.is_some() => {
-            let head = git(repo, &["rev-parse", "HEAD"])?;
-            default_id = packages::find_at(repo, &head, None)?.manifest.id;
+        None if packages::config_at_with_ssh(repo, "HEAD", custom_ssh)?.is_some() => {
+            let head = git(repo, &["rev-parse", "HEAD"], custom_ssh)?;
+            default_id = packages::find_at_with_ssh(repo, &head, None, custom_ssh)?
+                .manifest
+                .id;
             &default_id
         }
         None => {
-            let head: Manifest = serde_json::from_str(&git(repo, &["show", "HEAD:plugin.json"])?)
-                .map_err(|e| {
-                Error::invalid_manifest(format!("invalid plugin.json at repository HEAD: {e}"))
-            })?;
+            let head: Manifest =
+                serde_json::from_str(&git(repo, &["show", "HEAD:plugin.json"], custom_ssh)?)
+                    .map_err(|e| {
+                        Error::invalid_manifest(format!(
+                            "invalid plugin.json at repository HEAD: {e}"
+                        ))
+                    })?;
             default_id = head.id;
             &default_id
         }
@@ -58,7 +79,7 @@ pub fn discover_all(repo: &Path, expected_id: Option<&str>) -> Result<Discovery>
     let mut layouts: BTreeMap<String, Result<Option<packages::Layout>>> = BTreeMap::new();
     let mut releases = BTreeMap::new();
     let mut skipped = Vec::new();
-    for name in git(repo, &["tag", "--list"])?.lines() {
+    for name in git(repo, &["tag", "--list"], custom_ssh)?.lines() {
         // Only `ID@VERSION` is a release tag; `vVERSION` and others are ignored.
         let Some(version) = name.strip_prefix(&format!("{id}@")) else {
             continue;
@@ -74,14 +95,19 @@ pub fn discover_all(repo: &Path, expected_id: Option<&str>) -> Result<Discovery>
             })
         };
         let reference = format!("refs/tags/{name}");
-        let commit = resolve_ref(repo, &reference)?;
+        let commit = resolve_ref(repo, &reference, custom_ssh)?;
         let layout = layouts
             .entry(commit.clone())
-            .or_insert_with(|| packages::layout_at(repo, &commit))
+            .or_insert_with(|| packages::layout_at_with_ssh(repo, &commit, custom_ssh))
             .clone();
         let (manifest, path) = match layout {
             Ok(None) => {
-                match git(repo, &["show", &format!("{commit}:plugin.json")]).and_then(|text| {
+                match git(
+                    repo,
+                    &["show", &format!("{commit}:plugin.json")],
+                    custom_ssh,
+                )
+                .and_then(|text| {
                     serde_json::from_str(&text).map_err(|e| Error::invalid_manifest(e.to_string()))
                 }) {
                     Ok(manifest) => (manifest, String::new()),
@@ -207,7 +233,15 @@ impl Discovery {
 /// The newest release that is not a pre-release; see
 /// [`Discovery::ensure_latest_is_valid`].
 pub fn latest(repo: &Path, expected_id: Option<&str>) -> Result<Tag> {
-    let mut found = discover_all(repo, expected_id)?;
+    latest_with_ssh(repo, expected_id, false)
+}
+
+pub(crate) fn latest_with_ssh(
+    repo: &Path,
+    expected_id: Option<&str>,
+    custom_ssh: bool,
+) -> Result<Tag> {
+    let mut found = discover_all_with_ssh(repo, expected_id, custom_ssh)?;
     found.offered(None);
     found.ensure_latest_is_valid()?;
     found

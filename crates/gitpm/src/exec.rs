@@ -15,27 +15,28 @@ use std::{
 const GIT_TIMEOUT: Duration = Duration::from_secs(600);
 /// Noninteractive SSH for git transports: never prompts for passphrases or
 /// unknown host keys, and gives up on dead connections.
-const BATCH_SSH: &str =
-    "ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4";
+const BATCH_SSH: &str = "ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o StrictHostKeyChecking=accept-new";
 
 /// `git -C repo` that can never wait for user input: no terminal prompts, closed
 /// stdin, bounded transfers. The user's own `core.sshCommand` or `GIT_SSH_COMMAND`
 /// (inherited by the child) keeps precedence over the batch SSH command.
-fn git_command(repo: &Path, args: &[&str]) -> Result<Command> {
-    let mut command = git_base();
+fn git_command(repo: &Path, args: &[&str], custom_ssh: bool) -> Result<Command> {
+    let mut command = git_base(custom_ssh);
     command.arg("-C").arg(repo).args(args);
     Ok(command)
 }
 
 /// The bounded, noninteractive `git` of [`git_command`] without a repository.
-fn git_base() -> Command {
-    static CUSTOM_SSH: OnceLock<bool> = OnceLock::new();
-    let custom_ssh = match CUSTOM_SSH.get() {
-        Some(value) => *value,
-        None => *CUSTOM_SSH.get_or_init(|| {
+fn git_base(custom_ssh: bool) -> Command {
+    static CONFIGURED_SSH: OnceLock<bool> = OnceLock::new();
+    let custom_ssh = custom_ssh
+        || *CONFIGURED_SSH.get_or_init(|| {
             git_config_defined("core.sshCommand", "cannot start git").unwrap_or(true)
-        }),
-    };
+        });
+    git_base_with_policy(custom_ssh)
+}
+
+fn git_base_with_policy(custom_ssh: bool) -> Command {
     let mut command = noninteractive_git();
     command.args(["-c", "http.lowSpeedLimit=1", "-c", "http.lowSpeedTime=20"]);
     if !custom_ssh {
@@ -98,15 +99,15 @@ fn output_within(mut command: Command, limit: Duration, what: &str) -> Result<Ou
 }
 
 /// `git -C repo ARGS`, noninteractive. Returns trimmed stdout.
-pub(crate) fn git(repo: &Path, args: &[&str]) -> Result<String> {
-    let output = git_raw(repo, args)?;
+pub(crate) fn git(repo: &Path, args: &[&str], custom_ssh: bool) -> Result<String> {
+    let output = git_raw(repo, args, custom_ssh)?;
     Ok(String::from_utf8(output)?.trim().to_owned())
 }
 
 /// Raw stdout (untrimmed) for NUL-separated output such as `status -z`.
-pub(crate) fn git_raw(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
+pub(crate) fn git_raw(repo: &Path, args: &[&str], custom_ssh: bool) -> Result<Vec<u8>> {
     let what = format!("git {}", args.join(" "));
-    let output = output_within(git_command(repo, args)?, GIT_TIMEOUT, &what)?;
+    let output = output_within(git_command(repo, args, custom_ssh)?, GIT_TIMEOUT, &what)?;
     ensure!(
         output.status.success(),
         Git,
@@ -132,9 +133,9 @@ pub(crate) struct RemoteRefs {
 /// stderr (`LC_ALL=C`, so it can be classified). Runs in the OS temp dir with only the
 /// file, git, http(s) and ssh transports; callers validate the source first
 /// (`auth::validate_recorded`): a URL or an absolute path, no remote helper.
-pub(crate) fn ls_remote_refs(source: &str) -> Result<RemoteRefs> {
+pub(crate) fn ls_remote_refs(source: &str, custom_ssh: bool) -> Result<RemoteRefs> {
     let what = format!("git ls-remote --tags --heads -- {source}");
-    let mut command = git_base();
+    let mut command = git_base(custom_ssh);
     // Outside any repository: a bare word is a path, never a remote name of the cwd.
     // An explicit transport allowlist: a source from a foreign manifest never reaches
     // `ext::`, `fd::` or any other remote helper. (`GIT_PROTOCOL_FROM_USER=0` alone would
@@ -205,12 +206,8 @@ pub(crate) struct LsRemote {
 }
 
 /// `git ls-remote -- SOURCE` without cloning; stdout is discarded.
-pub(crate) fn ls_remote(
-    source: &str,
-    ssh_command: Option<&str>,
-    start_error: &str,
-) -> Result<LsRemote> {
-    let output = ls_remote_command(source, ssh_command)
+pub(crate) fn ls_remote(source: &str, custom_ssh: bool, start_error: &str) -> Result<LsRemote> {
+    let output = ls_remote_command(source, custom_ssh)
         .output()
         .context(Error::Auth, start_error)?;
     Ok(LsRemote {
@@ -219,24 +216,13 @@ pub(crate) fn ls_remote(
     })
 }
 
-fn ls_remote_command(source: &str, ssh_command: Option<&str>) -> Command {
-    let mut command = noninteractive_git();
+fn ls_remote_command(source: &str, custom_ssh: bool) -> Command {
+    let mut command = git_base(custom_ssh);
     command
-        .args([
-            "-c",
-            "http.lowSpeedLimit=1",
-            "-c",
-            "http.lowSpeedTime=20",
-            "ls-remote",
-            "--",
-            source,
-        ])
+        .args(["ls-remote", "--", source])
         .env("LC_ALL", "C")
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
-    if let Some(ssh) = ssh_command {
-        command.env("GIT_SSH_COMMAND", ssh);
-    }
     command
 }
 
@@ -337,10 +323,10 @@ mod tests {
     fn git_returns_trimmed_stdout_and_reports_failures_as_git_errors() {
         let dir = TempDir::new("exec");
         let author = Author::new(dir.join("repo"), "demo1");
-        let head = git(&author.path, &["rev-parse", "HEAD"]).unwrap();
+        let head = git(&author.path, &["rev-parse", "HEAD"], false).unwrap();
         assert_eq!(head.len(), 40);
         assert!(!head.ends_with('\n'));
-        let error = git(&author.path, &["rev-parse", "--verify", "nope"]).unwrap_err();
+        let error = git(&author.path, &["rev-parse", "--verify", "nope"], false).unwrap_err();
         assert_eq!(error.kind(), "git");
         let message = error.to_string();
         assert!(
@@ -348,7 +334,7 @@ mod tests {
             "{message}"
         );
         // A missing repository directory is a git failure too, not a panic.
-        let error = git(&dir.join("missing"), &["status"]).unwrap_err();
+        let error = git(&dir.join("missing"), &["status"], false).unwrap_err();
         assert_eq!(error.kind(), "git");
     }
 
@@ -357,10 +343,12 @@ mod tests {
         let dir = TempDir::new("exec");
         let author = Author::new(dir.join("repo"), "demo1");
         fs::write(author.path.join("a b.txt"), "x").unwrap();
-        let raw = git_raw(&author.path, &["status", "--porcelain=v1", "-z"]).unwrap();
+        let raw = git_raw(&author.path, &["status", "--porcelain=v1", "-z"], false).unwrap();
         assert_eq!(raw, b"?? a b.txt\0");
         assert_eq!(
-            git_raw(&author.path, &["bad-command"]).unwrap_err().kind(),
+            git_raw(&author.path, &["bad-command"], false)
+                .unwrap_err()
+                .kind(),
             "git"
         );
     }
@@ -378,12 +366,32 @@ mod tests {
 
     #[test]
     fn git_never_reads_stdin_or_prompts() {
+        let command = git_base_with_policy(true);
+        assert!(
+            !command
+                .get_args()
+                .any(|arg| arg.to_string_lossy().starts_with("core.sshCommand="))
+        );
+        assert!(
+            command
+                .get_envs()
+                .any(|(key, value)| key == "GIT_TERMINAL_PROMPT"
+                    && value == Some(std::ffi::OsStr::new("0")))
+        );
+        assert!(!command.get_envs().any(|(key, _)| key == "GIT_SSH_COMMAND"));
+        let command = git_base_with_policy(false);
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        // Deterministically exercise both policies independently of the host config.
+        assert!(args.contains(&format!("core.sshCommand={BATCH_SSH}")));
         let dir = TempDir::new("exec");
         let author = Author::new(dir.join("repo"), "demo1");
         let commands = [
-            git_command(&author.path, &["status"]).unwrap(),
+            git_command(&author.path, &["status"], false).unwrap(),
             git_config_command("core.sshCommand"),
-            ls_remote_command("https://example.invalid/repo.git", None),
+            ls_remote_command("https://example.invalid/repo.git", false),
         ];
         for command in &commands {
             let args: Vec<_> = command.get_args().collect();
@@ -407,7 +415,7 @@ mod tests {
         }
 
         // Git reads EOF from the explicitly closed stdin without waiting.
-        let output = git_command(&author.path, &["hash-object", "--stdin"])
+        let output = git_command(&author.path, &["hash-object", "--stdin"], false)
             .unwrap()
             .output()
             .unwrap();
@@ -427,10 +435,10 @@ mod tests {
     fn ls_remote_reports_success_and_stderr_without_failing() {
         let dir = TempDir::new("exec");
         let author = Author::new(dir.join("repo"), "demo1");
-        let ok = ls_remote(author.source(), Some("false"), "start").unwrap();
+        let ok = ls_remote(author.source(), false, "start").unwrap();
         assert!(ok.success);
         let missing = dir.join("missing");
-        let failed = ls_remote(missing.to_str().unwrap(), None, "start").unwrap();
+        let failed = ls_remote(missing.to_str().unwrap(), false, "start").unwrap();
         assert!(!failed.success);
         assert!(!failed.stderr.is_empty());
     }
@@ -445,7 +453,7 @@ mod tests {
             &author.path,
             &["tag", "-a", "-m", "release", "dan/demo1@0.2.0"],
         );
-        let refs = ls_remote_refs(author.source()).unwrap();
+        let refs = ls_remote_refs(author.source(), false).unwrap();
         assert_eq!(
             refs.heads,
             BTreeMap::from([("main".to_owned(), second.clone())])
@@ -459,10 +467,11 @@ mod tests {
         );
         // Remote helpers are refused by git itself, even if a caller forgot to validate.
         let marker = dir.join("pwned");
-        let error = ls_remote_refs(&format!("ext::sh -c touch% {}", marker.display())).unwrap_err();
+        let error =
+            ls_remote_refs(&format!("ext::sh -c touch% {}", marker.display()), false).unwrap_err();
         assert!(error.to_string().contains("not allowed"), "{error}");
         assert!(!marker.exists());
-        let error = ls_remote_refs(dir.join("missing").to_str().unwrap()).unwrap_err();
+        let error = ls_remote_refs(dir.join("missing").to_str().unwrap(), false).unwrap_err();
         assert_eq!(error.kind(), "git");
         assert!(
             error

@@ -166,7 +166,24 @@ pub fn read_state(root: &Path) -> Result<State> {
 /// [`compare_in`] without a selected catalog location. Runs `git ls-remote` for every
 /// package the catalog does not list (and for fork originals it does not list).
 pub fn compare(state: &State, catalog: &Catalog) -> Vec<CheckRow> {
-    compare_in(state, catalog, None)
+    compare_with_ssh(state, catalog, false)
+}
+
+/// Run with the caller's SSH policy.
+pub fn compare_with_options(
+    state: &State,
+    catalog: &Catalog,
+    ssh_options: &crate::Options,
+) -> Vec<CheckRow> {
+    compare_with_ssh(state, catalog, ssh_options.custom_ssh)
+}
+
+pub(crate) fn compare_with_ssh(
+    state: &State,
+    catalog: &Catalog,
+    custom_ssh: bool,
+) -> Vec<CheckRow> {
+    compare_in_with_ssh(state, catalog, None, custom_ssh)
 }
 
 /// The newest version of `id` in `catalog` offered to a package at `installed` (no
@@ -194,11 +211,31 @@ fn latest_version(catalog: &Catalog, id: &str, installed: &str) -> Option<String
 /// source, nothing fetched); a source that is not a URL or an absolute path, or uses a
 /// remote helper, is not queried and its row is [`CheckStatus::OriginUnreachable`].
 pub fn compare_in(state: &State, catalog: &Catalog, location: Option<&str>) -> Vec<CheckRow> {
+    compare_in_with_ssh(state, catalog, location, false)
+}
+
+/// Run with the caller's SSH policy.
+pub fn compare_in_with_options(
+    state: &State,
+    catalog: &Catalog,
+    location: Option<&str>,
+    ssh_options: &crate::Options,
+) -> Vec<CheckRow> {
+    compare_in_with_ssh(state, catalog, location, ssh_options.custom_ssh)
+}
+
+pub(crate) fn compare_in_with_ssh(
+    state: &State,
+    catalog: &Catalog,
+    location: Option<&str>,
+    custom_ssh: bool,
+) -> Vec<CheckRow> {
     rows(
         state,
         Some((catalog, location)),
         &BTreeMap::new(),
         &BTreeSet::new(),
+        custom_ssh,
     )
 }
 
@@ -212,6 +249,7 @@ fn rows(
     catalog: Option<(&Catalog, Option<&str>)>,
     own: &BTreeMap<String, Catalog>,
     unverified: &BTreeSet<String>,
+    custom_ssh: bool,
 ) -> Vec<CheckRow> {
     let mut origins = Origins::default();
     state
@@ -231,16 +269,16 @@ fn rows(
                     .or(catalog)
                     .and_then(|(catalog, location)| catalog_row(id, installed, catalog, location))
                     .map(|row| match own_catalog {
-                        true => protected_row(row, id, installed, &mut origins),
+                        true => protected_row(row, id, installed, &mut origins, custom_ssh),
                         false => row,
                     })
-                    .unwrap_or_else(|| origin_row(id, installed, &mut origins)),
+                    .unwrap_or_else(|| origin_row(id, installed, &mut origins, custom_ssh)),
                 Mode::Pinned(_) => {
                     let mut row = new_row(id, installed, CheckSource::Origin);
                     row.status = CheckStatus::Pinned;
                     row
                 }
-                Mode::Branch(branch) => branch_row(id, installed, branch, &mut origins),
+                Mode::Branch(branch) => branch_row(id, installed, branch, &mut origins, custom_ssh),
             };
             if installed
                 .catalog
@@ -253,7 +291,7 @@ fn rows(
             row.upstream = installed
                 .fork_of
                 .as_ref()
-                .map(|base| upstream(base, catalog.map(|(c, _)| c), &mut origins));
+                .map(|base| upstream(base, catalog.map(|(c, _)| c), &mut origins, custom_ssh));
             row
         })
         .collect()
@@ -285,13 +323,19 @@ fn protected_row(
     id: &str,
     installed: &Installed,
     origins: &mut Origins,
+    custom_ssh: bool,
 ) -> CheckRow {
     if row.status != CheckStatus::UpToDate {
         return row;
     }
     let top = row.latest.as_deref().unwrap_or(&row.installed);
     if let (Ok(Some(newest)), Ok(top)) = (
-        origins.latest(&installed.source, id, &installed.current.version),
+        origins.latest(
+            &installed.source,
+            id,
+            &installed.current.version,
+            custom_ssh,
+        ),
         version_key(top),
     ) && version_key(&newest).is_ok_and(|newest| newest > top)
     {
@@ -319,7 +363,12 @@ fn versus(row: &mut CheckRow, latest: &str, newer: CheckStatus) {
     }
 }
 
-fn upstream(base: &ForkOf, catalog: Option<&Catalog>, origins: &mut Origins) -> Upstream {
+fn upstream(
+    base: &ForkOf,
+    catalog: Option<&Catalog>,
+    origins: &mut Origins,
+    custom_ssh: bool,
+) -> Upstream {
     let mut problem = None;
     let (latest, source) = match catalog.filter(|c| c.packages.contains_key(&base.id)) {
         Some(catalog) => (
@@ -327,7 +376,7 @@ fn upstream(base: &ForkOf, catalog: Option<&Catalog>, origins: &mut Origins) -> 
             Some(CheckSource::Catalog),
         ),
         None => match &base.source {
-            Some(source) => match origins.latest(source, &base.id, &base.version) {
+            Some(source) => match origins.latest(source, &base.id, &base.version, custom_ssh) {
                 Ok(latest) => (latest, Some(CheckSource::Origin)),
                 Err(reason) => {
                     problem = Some(reason);
@@ -355,7 +404,11 @@ struct Origins(BTreeMap<String, std::result::Result<exec::RemoteRefs, String>>);
 impl Origins {
     /// Tags and branches of `source`; `Err` is the classified reason the origin was
     /// unreadable.
-    fn refs(&mut self, source: &str) -> std::result::Result<&exec::RemoteRefs, String> {
+    fn refs(
+        &mut self,
+        source: &str,
+        custom_ssh: bool,
+    ) -> std::result::Result<&exec::RemoteRefs, String> {
         self.0
             .entry(source.to_owned())
             .or_insert_with(|| {
@@ -364,7 +417,7 @@ impl Origins {
                 if let Err(e) = crate::auth::validate_recorded(source) {
                     return Err(format!("source not queried: {e}"));
                 }
-                exec::ls_remote_refs(source).map_err(|e| {
+                exec::ls_remote_refs(source, custom_ssh).map_err(|e| {
                     // Classify git's message only, not the command line with the source.
                     let text = e.to_string();
                     let stderr = text.split_once(": ").map_or(text.as_str(), |(_, s)| s);
@@ -377,8 +430,13 @@ impl Origins {
     /// The versions of the `ID@VERSION` tags on `source` by name (their manifests are
     /// verified only when updating); `Err` is the classified reason the origin was
     /// unreadable.
-    fn versions(&mut self, source: &str, id: &str) -> std::result::Result<Vec<String>, String> {
-        let tags = &self.refs(source)?.tags;
+    fn versions(
+        &mut self,
+        source: &str,
+        id: &str,
+        custom_ssh: bool,
+    ) -> std::result::Result<Vec<String>, String> {
+        let tags = &self.refs(source, custom_ssh)?.tags;
         let prefix = format!("{id}@");
         Ok(tags
             .keys()
@@ -393,8 +451,9 @@ impl Origins {
         source: &str,
         id: &str,
         installed: &str,
+        custom_ssh: bool,
     ) -> std::result::Result<Option<String>, String> {
-        let versions = self.versions(source, id)?;
+        let versions = self.versions(source, id, custom_ssh)?;
         Ok(
             crate::catalog::newest_eligible(versions.iter().map(String::as_str), Some(installed))
                 .map(str::to_owned),
@@ -402,10 +461,15 @@ impl Origins {
     }
 }
 
-fn origin_row(id: &str, installed: &Installed, origins: &mut Origins) -> CheckRow {
+fn origin_row(
+    id: &str,
+    installed: &Installed,
+    origins: &mut Origins,
+    custom_ssh: bool,
+) -> CheckRow {
     let mut row = new_row(id, installed, CheckSource::Origin);
     let installed_version = installed.current.version.as_str();
-    match origins.versions(&installed.source, id) {
+    match origins.versions(&installed.source, id, custom_ssh) {
         Err(problem) => {
             row.status = CheckStatus::OriginUnreachable;
             row.problem = Some(problem);
@@ -431,9 +495,15 @@ fn origin_row(id: &str, installed: &Installed, origins: &mut Origins) -> CheckRo
 
 /// A branch-mode package: the installed commit against the branch HEAD on the origin
 /// (a new commit is an update, with or without a version bump).
-fn branch_row(id: &str, installed: &Installed, branch: &str, origins: &mut Origins) -> CheckRow {
+fn branch_row(
+    id: &str,
+    installed: &Installed,
+    branch: &str,
+    origins: &mut Origins,
+    custom_ssh: bool,
+) -> CheckRow {
     let mut row = new_row(id, installed, CheckSource::Origin);
-    match origins.refs(&installed.source) {
+    match origins.refs(&installed.source, custom_ssh) {
         Err(problem) => {
             row.status = CheckStatus::OriginUnreachable;
             row.problem = Some(problem);
@@ -574,11 +644,28 @@ pub struct UnsatisfiedDependency {
 /// missing workspace reads nothing. An unreachable origin only marks its own rows
 /// [`CheckStatus::OriginUnreachable`]; a broken or unreadable catalog fails the check.
 pub fn check(root: &Path, catalog: Option<&str>) -> Result<CheckReport> {
+    check_with_ssh(root, catalog, false)
+}
+
+/// Run with the caller's SSH policy.
+pub fn check_with_options(
+    root: &Path,
+    catalog: Option<&str>,
+    ssh_options: &crate::Options,
+) -> Result<CheckReport> {
+    check_with_ssh(root, catalog, ssh_options.custom_ssh)
+}
+
+pub(crate) fn check_with_ssh(
+    root: &Path,
+    catalog: Option<&str>,
+    custom_ssh: bool,
+) -> Result<CheckReport> {
     let state = read_state(root)?;
     if state.packages.is_empty() {
         return Ok(CheckReport::default());
     }
-    let rows = check_state(&state, catalog)?;
+    let rows = check_state(&state, catalog, custom_ssh)?;
     // Display only: an unreadable top-level `catalog.json` (the rows never need it)
     // reports the catalog as unverified instead of failing the check.
     let catalog_verified =
@@ -615,7 +702,11 @@ pub(crate) const NO_CATALOG: &str = "no catalog configured";
 /// Rows of `state` against the catalog at `location`; without one, a protected package
 /// is compared with the verified catalog it was installed from (read once per location;
 /// a broken or unreadable one fails the check like a selected catalog).
-pub(crate) fn check_state(state: &State, location: Option<&str>) -> Result<Vec<CheckRow>> {
+pub(crate) fn check_state(
+    state: &State,
+    location: Option<&str>,
+    custom_ssh: bool,
+) -> Result<Vec<CheckRow>> {
     // Recorded catalogs whose flag was dropped (an unreadable one is not claimed to be).
     let unverified: BTreeSet<String> = state
         .packages
@@ -635,7 +726,7 @@ pub(crate) fn check_state(state: &State, location: Option<&str>) -> Result<Vec<C
                 );
             }
         }
-        return Ok(rows(state, None, &own, &unverified));
+        return Ok(rows(state, None, &own, &unverified, custom_ssh));
     };
     let snapshot = crate::catalog::selected_for_check(location, state)?;
     let canonical = crate::catalog::canonical_location(location).ok();
@@ -644,6 +735,7 @@ pub(crate) fn check_state(state: &State, location: Option<&str>) -> Result<Vec<C
         Some((&snapshot, canonical.as_deref())),
         &BTreeMap::new(),
         &unverified,
+        custom_ssh,
     ))
 }
 
@@ -1012,20 +1104,20 @@ mod tests {
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         value["manifest"]["id"] = "dan/wrong".into();
         fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
-        let rows = check_state(&state, cat.to_str()).unwrap();
+        let rows = check_state(&state, cat.to_str(), false).unwrap();
         assert_eq!(rows[0].status, CheckStatus::InvalidCatalogData);
         assert_eq!(rows[1].status, CheckStatus::UpToDate);
         assert!(crate::catalog::lookup(cat.to_str().unwrap(), "dan/broken", None).is_err());
         // Directory indexes are unrelated to installed-package diagnostics.
         fs::write(cat.join("catalog.json"), "{ broken").unwrap();
-        assert_eq!(check_state(&state, cat.to_str()).unwrap().len(), 2);
+        assert_eq!(check_state(&state, cat.to_str(), false).unwrap().len(), 2);
         // Unreadable release data must remain a hard error.
         fs::write(
             cat.join("namespaces/dan/broken/versions/1.0.0/release.json"),
             "{ broken",
         )
         .unwrap();
-        assert!(check_state(&state, cat.to_str()).is_err());
+        assert!(check_state(&state, cat.to_str(), false).is_err());
     }
 
     #[test]
@@ -1137,7 +1229,7 @@ mod tests {
         // A pinned package is never queried: even an unreachable origin is not read.
         let mut state = read_state(&root).unwrap();
         state.packages.get_mut("acme/pinned").unwrap().source = "ext::sh -c id".into();
-        let row = rows(&state, None, &BTreeMap::new(), &BTreeSet::new()).remove(1);
+        let row = rows(&state, None, &BTreeMap::new(), &BTreeSet::new(), false).remove(1);
         assert_eq!(
             (row.status, row.problem, row.mode),
             (CheckStatus::Pinned, None, pinned_mode)
@@ -1145,7 +1237,7 @@ mod tests {
         // A branch the origin no longer has is reported, not hidden.
         let entry = state.packages.get_mut("acme/branch").unwrap();
         entry.mode = Mode::Branch("gone".into());
-        let row = rows(&state, None, &BTreeMap::new(), &BTreeSet::new()).remove(0);
+        let row = rows(&state, None, &BTreeMap::new(), &BTreeSet::new(), false).remove(0);
         assert_eq!(row.status, CheckStatus::OriginUnreachable);
         assert_eq!(
             row.problem.as_deref(),
@@ -1209,7 +1301,7 @@ mod tests {
             .into(),
             ..Default::default()
         };
-        let statuses: Vec<_> = rows(&state, None, &BTreeMap::new(), &BTreeSet::new())
+        let statuses: Vec<_> = rows(&state, None, &BTreeMap::new(), &BTreeSet::new(), false)
             .into_iter()
             .map(|r| (r.id, r.status, r.latest))
             .collect();
@@ -1328,6 +1420,7 @@ mod tests {
                 catalog.map(|c| (c, None)),
                 &BTreeMap::new(),
                 &BTreeSet::new(),
+                false,
             )[0]
             .upstream
             .clone()

@@ -99,10 +99,11 @@ pub(crate) fn validate_path(path: &str) -> Result<()> {
 }
 
 /// Mode and type of every entry of the commit's tree (recursive, folders included).
-fn tree(repo: &Path, commit: &str) -> Result<BTreeMap<String, (String, String)>> {
+fn tree(repo: &Path, commit: &str, custom_ssh: bool) -> Result<BTreeMap<String, (String, String)>> {
     let raw = git_raw(
         repo,
         &["ls-tree", "-r", "-t", "-z", "--full-tree", commit, "--"],
+        custom_ssh,
     )?;
     let mut entries = BTreeMap::new();
     for entry in raw.split(|b| *b == 0).filter(|e| !e.is_empty()) {
@@ -119,17 +120,29 @@ fn tree(repo: &Path, commit: &str) -> Result<BTreeMap<String, (String, String)>>
     Ok(entries)
 }
 
-fn show(repo: &Path, commit: &str, path: &str) -> Result<String> {
-    git(repo, &["show", &format!("{commit}:{path}")])
+fn show(repo: &Path, commit: &str, path: &str, custom_ssh: bool) -> Result<String> {
+    git(repo, &["show", &format!("{commit}:{path}")], custom_ssh)
 }
 
 /// `gitpm.json` at `commit`; `None` for a single-package repository.
 pub fn config_at(repo: &Path, commit: &str) -> Result<Option<Config>> {
-    let listed = git(repo, &["ls-tree", "--name-only", commit, "--", CONFIG])?;
+    config_at_with_ssh(repo, commit, false)
+}
+
+pub(crate) fn config_at_with_ssh(
+    repo: &Path,
+    commit: &str,
+    custom_ssh: bool,
+) -> Result<Option<Config>> {
+    let listed = git(
+        repo,
+        &["ls-tree", "--name-only", commit, "--", CONFIG],
+        custom_ssh,
+    )?;
     if listed.is_empty() {
         return Ok(None);
     }
-    let config: Config = serde_json::from_str(&show(repo, commit, CONFIG)?)
+    let config: Config = serde_json::from_str(&show(repo, commit, CONFIG, custom_ssh)?)
         .map_err(|e| Error::invalid_manifest(format!("invalid {CONFIG}: {e}")))?;
     for pattern in &config.packages {
         validate_pattern(pattern)?;
@@ -219,6 +232,7 @@ fn read_folder(
     commit: &str,
     entries: &BTreeMap<String, (String, String)>,
     folder: &str,
+    custom_ssh: bool,
 ) -> std::result::Result<Package, (Option<String>, Error)> {
     let path = format!("{folder}/plugin.json");
     let (mode, kind) = &entries[&path];
@@ -228,7 +242,7 @@ fn read_folder(
             Error::Unsupported(format!("symlinks are not supported: {path}")),
         ));
     }
-    let manifest: Manifest = show(repo, commit, &path)
+    let manifest: Manifest = show(repo, commit, &path, custom_ssh)
         .and_then(|text| {
             serde_json::from_str(&text)
                 .map_err(|e| Error::invalid_manifest(format!("invalid {path}: {e}")))
@@ -264,10 +278,18 @@ fn read_folder(
 /// folder and a `namespace/name` ID that no other folder uses (in any letter case);
 /// nested folders are defective. Only an invalid `gitpm.json` itself is an error.
 pub fn layout_at(repo: &Path, commit: &str) -> Result<Option<Layout>> {
-    let Some(config) = config_at(repo, commit)? else {
+    layout_at_with_ssh(repo, commit, false)
+}
+
+pub(crate) fn layout_at_with_ssh(
+    repo: &Path,
+    commit: &str,
+    custom_ssh: bool,
+) -> Result<Option<Layout>> {
+    let Some(config) = config_at_with_ssh(repo, commit, custom_ssh)? else {
         return Ok(None);
     };
-    let entries = tree(repo, commit)?;
+    let entries = tree(repo, commit, custom_ssh)?;
     let folders: Vec<&str> = entries
         .keys()
         .filter_map(|path| path.strip_suffix("/plugin.json"))
@@ -275,7 +297,7 @@ pub fn layout_at(repo: &Path, commit: &str) -> Result<Option<Layout>> {
         .collect();
     let mut layout = Layout::default();
     for folder in &folders {
-        match read_folder(repo, commit, &entries, folder) {
+        match read_folder(repo, commit, &entries, folder, custom_ssh) {
             Ok(package) => layout.packages.push(package),
             Err((id, error)) => layout.problems.push(Problem {
                 path: (*folder).to_owned(),
@@ -339,7 +361,15 @@ pub fn layout_at(repo: &Path, commit: &str) -> Result<Option<Layout>> {
 /// Packages listed by `gitpm.json` at `commit`, sorted by folder; `None` without
 /// `gitpm.json`. Strict: any defective folder (see [`layout_at`]) is an error.
 pub fn packages_at(repo: &Path, commit: &str) -> Result<Option<Vec<Package>>> {
-    let Some(layout) = layout_at(repo, commit)? else {
+    packages_at_with_ssh(repo, commit, false)
+}
+
+pub(crate) fn packages_at_with_ssh(
+    repo: &Path,
+    commit: &str,
+    custom_ssh: bool,
+) -> Result<Option<Vec<Package>>> {
+    let Some(layout) = layout_at_with_ssh(repo, commit, custom_ssh)? else {
         return Ok(None);
     };
     if let Some(problem) = layout.problems.into_iter().next() {
@@ -364,21 +394,32 @@ fn list(packages: &[Package]) -> String {
 /// is refused with the list of its packages. Only the selected package's folder must be
 /// valid (see [`Layout::select`]).
 pub fn find_at(repo: &Path, commit: &str, id: Option<&str>) -> Result<Package> {
+    find_at_with_ssh(repo, commit, id, false)
+}
+
+pub(crate) fn find_at_with_ssh(
+    repo: &Path,
+    commit: &str,
+    id: Option<&str>,
+    custom_ssh: bool,
+) -> Result<Package> {
     if let Some(id) = id {
         valid_id(id)?;
     }
-    let Some(layout) = layout_at(repo, commit)? else {
+    let Some(layout) = layout_at_with_ssh(repo, commit, custom_ssh)? else {
         ensure!(
             !git(
                 repo,
-                &["ls-tree", "--name-only", commit, "--", "plugin.json"]
+                &["ls-tree", "--name-only", commit, "--", "plugin.json"],
+                custom_ssh
             )?
             .is_empty(),
             InvalidManifest,
             "missing plugin.json in the repository root (and no {CONFIG} listing packages)"
         );
-        let manifest: Manifest = serde_json::from_str(&show(repo, commit, "plugin.json")?)
-            .map_err(|e| Error::invalid_manifest(format!("invalid plugin.json: {e}")))?;
+        let manifest: Manifest =
+            serde_json::from_str(&show(repo, commit, "plugin.json", custom_ssh)?)
+                .map_err(|e| Error::invalid_manifest(format!("invalid plugin.json: {e}")))?;
         if let Some(id) = id {
             ensure!(
                 manifest.id == id,
