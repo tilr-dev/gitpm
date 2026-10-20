@@ -475,6 +475,11 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   record then); the CLI warning for such a package says `uninstall or forget ID to drop
   its record` (was `run \`gitpm sync-dist\``, which could not deploy it); `restore` of a forgotten package whose shared clone is gone fails
   with `repository_not_found` (was `workspace`), like any restore without a clone.
+- Active packages below a file or symlink at `dist/<namespace>` are now reported in
+  `DistSync.skipped` with reason `dist/<namespace> is not a folder`. Mutating commands
+  warn `Warning: ID: dist not deployed (dist/<namespace> is not a folder)`;
+  `sync-dist` now exits 1 with `not_deployed` for these packages (previously 0), with a
+  hint to remove or rename the blocked path and run `gitpm sync-dist` again.
 - `sync-dist` leaving active packages undeployed is the library error `not_deployed` (new
   kind; `Manager::sync_dist` returns `Err(Error::NotDeployed { sync, .. })` after
   committing what it could) instead of `Ok` with `skipped` that the CLI turned into a
@@ -857,7 +862,10 @@ transaction: it deploys the missing folders of active packages and removes those
 inactive ones (disabled, replaced, forgotten or retained clones); folders of no known
 package are left alone (the CLI warns about them on stderr), an existing folder of an
 active package is not rewritten. A namespace path under `dist/` that is a symlink or a
-file is reported the same way and nothing is written below it. An active package whose
+file is reported the same way and nothing is written below it. Active packages below
+it are skipped with `Warning: ID: dist not deployed (dist/<namespace> is not a folder)`;
+unrelated commands succeed, while an operation deploying or removing a package below
+that path fails with `workspace`. An active package whose
 clone or installed commit is gone is skipped, so it does not block an unrelated command;
 the CLI warns `Warning: ID: dist not deployed (clone missing); uninstall or forget ID to
 drop its record` (both drop a record whose clone is gone without asking; `sync-dist` never
@@ -875,6 +883,9 @@ while another process holds the workspace.
 reconcile, as an explicit repair. It syncs and commits every package it can; when an
 active package stays undeployed it then fails with `not_deployed` ("N package(s) not
 deployed: IDS", the report in `Error::NotDeployed.sync`), exit status 1.
+This includes packages below a file or symlink at `dist/<namespace>` (previously
+`sync-dist` exited 0 for them). The CLI hint tells you to remove or rename that path
+and run `gitpm sync-dist` again; uninstall/forget advice applies only to a missing clone.
 
 ## Multi-package repositories
 

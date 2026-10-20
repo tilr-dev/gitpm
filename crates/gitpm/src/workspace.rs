@@ -440,8 +440,7 @@ pub struct DistSync {
     /// real folders where a namespace folder belongs; left alone.
     pub unmanaged: Vec<String>,
     /// Active packages whose missing `dist/<id>` is not deployed, with the reason (clone
-    /// or installed commit missing, or another error in `sync_dist`). Packages below a
-    /// namespace path that is not a folder are not listed: that path is in `unmanaged`.
+    /// or installed commit missing, a blocked namespace, or another error in `sync_dist`).
     pub skipped: Vec<SkippedDist>,
 }
 /// An active package left without `dist/` (see [`DistSync::skipped`]).
@@ -2431,7 +2430,7 @@ impl Manager {
 /// active, gets it from its clone at the installed commit. Folders of no known package
 /// are left alone, and so is an active package that cannot be deployed because its clone
 /// or installed commit is missing or its namespace path is not a folder (callers report
-/// both with [`Manager::sync_dist_plan`]); any other failure fails the operation. Cheap:
+/// these with [`Manager::sync_dist_plan`]); any other failure fails the operation. Cheap:
 /// one listing of `dist/`, and Git reads only for the packages deployed.
 fn settle_dist(txn: &mut Txn, before: &State, after: &State) -> Result<()> {
     let drift = dist_drift(txn.root(), after)?;
@@ -2444,12 +2443,7 @@ fn settle_dist(txn: &mut Txn, before: &State, after: &State) -> Result<()> {
         if !after.is_active(id) || txn.has_dist(id) || drift.skipped.iter().any(|s| s.id == *id) {
             continue;
         }
-        // A package below a namespace path that is not a folder is never deployed.
-        let blocked = id
-            .split_once('/')
-            .is_some_and(|(ns, _)| drift.unmanaged.contains(&format!("dist/{ns}")))
-            && !drift.deployed.contains(id);
-        if drift.deployed.contains(id) || (!before.is_active(id) && !blocked) {
+        if drift.deployed.contains(id) || !before.is_active(id) {
             deploy_committed(txn, id, p)?;
         }
     }
@@ -2529,10 +2523,16 @@ fn dist_drift(root: &Path, state: &State) -> Result<DistSync> {
         if !state.is_active(id) || present.contains(id) {
             continue;
         }
-        // Below a namespace path that is not a folder nothing is written (it is reported
-        // in `unmanaged`); deploying there would fail every operation.
+        // A blocked namespace is unmanaged, and its active packages remain undeployed.
         let namespace = id.split_once('/').map(|(ns, _)| ns);
-        if namespace.is_some_and(|ns| blocked.iter().any(|b| b == ns)) {
+        if let Some(ns) = namespace
+            && blocked.iter().any(|b| b == ns)
+        {
+            plan.skipped.push(SkippedDist {
+                id: id.clone(),
+                reason: format!("dist/{ns} is not a folder"),
+                clone_missing: false,
+            });
             continue;
         }
         let commit = format!("{}^{{commit}}", p.current.commit);

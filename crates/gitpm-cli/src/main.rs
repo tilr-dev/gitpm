@@ -93,10 +93,20 @@ fn hint(invocation: &Invocation, error: &PmError) -> Option<String> {
             format!("`gitpm enable {id} --force` enables it anyway")
         }
         PmError::NotDeployed { sync, .. } => {
-            let first = &sync.skipped.first()?.id;
-            format!(
-                "`gitpm uninstall {first}` or `gitpm forget {first}` drops a package whose clone is gone; install it again to deploy it"
-            )
+            let skipped = sync.skipped.first()?;
+            if skipped.clone_missing {
+                let id = &skipped.id;
+                format!(
+                    "`gitpm uninstall {id}` or `gitpm forget {id}` drops a package whose clone is gone; install it again to deploy it"
+                )
+            } else {
+                let (ns, _) = skipped.id.split_once('/')?;
+                let path = format!("dist/{ns}");
+                if skipped.reason != format!("{path} is not a folder") {
+                    return None;
+                }
+                format!("remove or rename `{path}` and run `gitpm sync-dist` again")
+            }
         }
         _ => return None,
     })
