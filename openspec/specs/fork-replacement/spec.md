@@ -49,11 +49,16 @@ Without `--replace`, the CLI SHALL print the fork lines and the next steps per p
 - **THEN** the output contains `Next steps (or all at once: add --replace):` followed by the commit, install and replace commands
 
 ### Requirement: Fork and replace in one step
-`fork … --replace [--version V] [--force]` SHALL make one release commit of the forked folders (setting `version` when `--version` is given) and one release tag per package (`NAMESPACE/NAME@VERSION`, package-ids), then install each fork (dependencies first) and replace its original. If the release fails nothing SHALL be installed; a failed install or replace of one package SHALL NOT stop the others. Verified by `fork_replace_releases_installs_and_replaces_in_one_step`.
+`fork … --replace [--version V] [--force]` SHALL make a release commit of the forked folders (`version` set by `--version`) and one release tag per package (package-ids), under the rules of `commit` (authoring), then install each fork (dependencies first) and replace its original. If the release fails nothing SHALL be installed; a failed install or replace of one package does not stop the others. Verified by `fork_replace_releases_installs_and_replaces_in_one_step`.
 
 #### Scenario: One-step fork
 - **WHEN** the user runs `gitpm fork acme/hello --ns me --into f --replace`
 - **THEN** `me/hello@<forked version>` is tagged, installed and replaces `acme/hello`, so only `dist/me/hello/` is deployed
+
+#### Scenario: Failed release commit
+- **WHEN** a pre-commit hook rejects the release commit of `fork … --replace`
+- **THEN** the forked manifests and the index are as before the release, no tag exists (tags are created all or none), nothing is installed, and the result reports the failed `release` step
+- **AND** a wrong-typed metadata key fails the release step with `invalid_manifest` (plugin-metadata)
 
 ### Requirement: Fork folder is never removed after a partial failure
 When a step of `fork --replace` fails, the fork folder SHALL be kept and the steps that succeeded SHALL stay: the library reports the failed step in its result instead of failing, an exception to errors ("Failing operations leave the workspace unchanged"). The CLI SHALL print per package which step failed and how to finish or undo, and SHALL fail with exit status 1 and the first failing step's `Error kind`. Verified by `fork_replace_keeps_the_fork_and_says_how_to_finish_when_a_step_fails`.

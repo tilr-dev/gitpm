@@ -14,7 +14,7 @@ The manifest MAY carry `title` (string), `description` (string), `provides` (str
 - **THEN** gitpm reports `provides` as `["theme"]` and keeps the string form in the file
 
 ### Requirement: Lenient reading, strict authoring
-`commit` SHALL refuse a metadata key of the wrong type with `invalid_manifest`. `install`, `install-catalog`, `update`, `update all`, `rollback`, `restore`, `fork` (the release step of `fork --replace` included), `catalog-update`, `register` and `list` SHALL treat such a key (and `null`) as absent. `install`, `install-catalog`, `update` and `update all` SHALL warn on stderr and report it in `InstallResult.warnings` / `RevisionChange.warnings`; `rollback` and `restore` report no warnings.
+`commit` and the release step of `fork --replace` SHALL refuse a metadata key of the wrong type with `invalid_manifest`. `install`, `install-catalog`, `update`, `update all`, `rollback`, `restore`, `fork`, `catalog-update`, `register` and `list` SHALL treat such a key (and `null`) as absent. `install`, `install-catalog`, `update` and `update all` SHALL warn on stderr and report it in `InstallResult.warnings` / `RevisionChange.warnings`; `rollback` and `restore` report no warnings.
 
 #### Scenario: Warning text
 - **WHEN** an install ignores a wrong-typed `tags`
