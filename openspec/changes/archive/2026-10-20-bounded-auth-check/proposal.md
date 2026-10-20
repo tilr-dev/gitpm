@@ -8,15 +8,14 @@
 
 - The `auth check` ls-remote gets SSH keepalives and is killed after 10 seconds (`git`, "timed out after 10s").
 - The `git config --get core.sshCommand` probe gets closed stdin and the same 10-second kill.
-
-Depends on: the 2026-10-18 chain through `host-compatibility` (`no-backward-compat` … `host-compatibility`); the deltas are written against the specs as that chain leaves them.
+- Error kind: an `auth check` that hits the limit fails with `git` (before: `auth` once git gave up on its own, or no failure at all while git kept waiting); every other failing check stays `auth`.
 
 Shared requirement: git-safety "Git never waits for input" is also modified by `git-never-prompts-via-askpass` (TILR-53) and `one-ssh-policy-custom-ssh` (TILR-135); each delta changes only its own part of the current text. The change archived later rebases its delta onto the spec the earlier one left.
 
 ## Capabilities
 
 ### Modified Capabilities
-- `git-safety`: "Git never waits for input".
+- `git-safety`: "Git never waits for input", "Read-only repository access check" (the timeout exception to the `auth` kind).
 
 ## Impact
 

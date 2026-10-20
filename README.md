@@ -772,6 +772,14 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   (a newer pre-release that is not offered; the status ends with `; pre-release V`).
   FFI: `RevisionChange.major`, `CheckRow.major`, `CheckRow.prerelease`. Migration: hosts
   that parse these lines accept the ` (major)` suffix.
+- `auth check` (`auth::check`, FFI `authCheck`) is bounded: its `git ls-remote` and the
+  `core.sshCommand` lookup it makes first are each killed at 10 s and fail with `git`
+  ("git ls-remote -- SOURCE: timed out after 10s"). Before, a server that accepted the
+  connection and sent nothing failed with `auth` after Git's own 20-second low-speed
+  limit on HTTP(S), and was waited for without end on `git://` and on a stalled SSH
+  connection. It uses the same batch SSH policy as clones and fetches; the 10-second
+  kill also bounds SSH stalls. Other failures of the check are still `auth`. Migration: hosts that treat every failed check as `auth` also handle `git`
+  (the server did not answer in time).
 
 ## Working without a catalog
 
@@ -1245,7 +1253,7 @@ Modules with free functions (no workspace lock needed):
 | `list` | `list_with(root, &ListOptions)` → `ListView` (raw state + `resolved`; `provides` filter) |
 | `catalog` | `browse` (`CatalogOverview.verified`), `is_verified`, `list`, `links`, `lookup`, `selected`, `register`, `register_build`, `register_package`, `update_sources` (progress callback), `hash_files`, `version_key`, `validate_location`, `ensure_publishable` |
 | `check` | `read_state` (does not create/lock), `compare`/`compare_in` (run `git ls-remote` for packages the catalog does not list), `check(root, catalog: Option)` → `CheckReport` (`catalog_verified`); `CheckStatus::message()`, `CheckRow::message()`, `CheckSource` |
-| `auth` | `check(source, &Options)` — `git ls-remote` only; refuses credentials in the URL, stores nothing (SSH itself records a new host's key, `accept-new`); failures are `auth` |
+| `auth` | `check(source, &Options)` — `git ls-remote` only; refuses credentials in the URL, stores nothing (SSH itself records a new host's key, `accept-new`); failures are `auth`, except `git` when the check does not finish in 10 s |
 | `scaffold` | `init(dir, namespace, name)` (the `init --into` rule; the only way to create a package besides `create_package`), `init_with` (`InitOptions { multi, release }`), `create_package` (into a multi-package repo), `commit`, `commit_package` (`Commit { package, version, tag }`), `release_current`, `set_remote`, `shell_quote` |
 | `packages` | `config_at`, `layout_at` (packages and defective folders of a commit), `packages_at` (strict), `find_at` (one package of a commit), `read_config`, `packages_in` (working tree), `matches`, `validate_pattern` |
 | `identity` | `valid_part`, `qualified`, `split` (`NAMESPACE/NAME`, else `invalid_id`), `release_tag` (no default namespace, no namespace config) |

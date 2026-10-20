@@ -6,6 +6,9 @@ raw Git stderr). The whole fixture — workspace, catalog, repositories with the
 internals — is compared after every call.
 """
 
+import socket
+import threading
+
 from gitpmtest import T, case
 
 AUTH = "git-safety/read-only-repository-access-check"
@@ -83,3 +86,19 @@ def auth_check_needs_check_subcommand(t: T):
     t.ok(r.code != 0, "refused")
     t.has(r.err, "use: gitpm auth check GIT_URL")
     t.same(before, "fixture")
+
+
+@case(fixture="g1_ws_catalog", spec=[AUTH, "git-safety/git-never-waits-for-input#access-check-ls-remote"])
+def auth_check_against_a_silent_server(t: T):
+    """A server that accepts the connection and sends nothing: killed after 10 s (kind git)."""
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen()
+    held = []
+    threading.Thread(target=lambda: held.extend(iter(server.accept, None)), daemon=True).start()
+    source = f"git://127.0.0.1:{server.getsockname()[1]}/silent.git"
+    before = t.snap(t.root, git=True)
+    # The timeout only guards the run; gitpm must stop on its own 10-second limit.
+    t.gitpm_err("auth", "check", source, kind="git", contains="timed out after 10s", timeout=60)
+    t.same(before, "workspace, catalog and repositories")
+    server.close()

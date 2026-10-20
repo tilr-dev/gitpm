@@ -307,7 +307,7 @@ def silent_git_server_fails_in_bounded_time(t: T):
     t.has(r.err, "Error kind: git")
     r = timed(t, "auth", "check", url, limit=120)
     t.ok(r.code != 0, "auth check failed")
-    t.has(r.err, "Error kind: auth")
+    t.has(r.err, "Error kind: git", "timed out after 10s")
     t.ok(len(silent.conns) >= 2, "the server really accepted the connections")
     t.same(before, "workspace")
     t.gitpm_ok("disable", ID)  # lock released right after

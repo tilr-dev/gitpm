@@ -113,9 +113,9 @@ def closed_port_fails_fast(t: T):
     t.same(before, "fixture")
 
 
-@case(fixture="g1_ws_catalog", spec=["git-safety/git-never-waits-for-input"])
+@case(fixture="g1_ws_catalog", spec=["git-safety/git-never-waits-for-input#access-check-ls-remote"])
 def stalled_server_is_bounded(t: T):
-    """REAL: a loopback server that accepts and never answers is abandoned within a bound."""
+    """REAL: a loopback server that accepts and never answers is abandoned after 10 s (kind git)."""
     srv = socket.socket()
     srv.bind(("127.0.0.1", 0))
     srv.listen(8)
@@ -125,8 +125,8 @@ def stalled_server_is_bounded(t: T):
     r = t.gitpm("auth", "check", f"http://127.0.0.1:{srv.getsockname()[1]}/r.git", timeout=150)
     elapsed = time.time() - start
     t.ok(r.code != 0, "fails")
-    t.has(r.err, "Error kind: auth")
-    t.ok(elapsed < 90, f"bounded by the low-speed limit ({elapsed:.1f}s)")
+    t.has(r.err, "Error kind: git", "timed out after 10s")
+    t.ok(elapsed < 90, f"bounded ({elapsed:.1f}s)")
     t.lacks(r.err, "fatal:")
 
 

@@ -13,6 +13,9 @@ use std::{
 /// Upper bound for one git subprocess; network stalls are cut earlier by
 /// `http.lowSpeed*` and SSH keepalives, this only stops a wedged process.
 const GIT_TIMEOUT: Duration = Duration::from_secs(600);
+/// Upper bound for the quick probes (the `auth check` ls-remote, the `core.sshCommand`
+/// lookup): if they do not answer in this time, waiting longer does not help.
+const QUICK_TIMEOUT: Duration = Duration::from_secs(10);
 /// Noninteractive SSH for git transports: never prompts for passphrases or
 /// unknown host keys, and gives up on dead connections.
 const BATCH_SSH: &str = "ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o StrictHostKeyChecking=accept-new";
@@ -94,8 +97,14 @@ fn without_sigpipe<T>(_fd: std::os::fd::RawFd, write: impl FnOnce() -> T) -> T {
 }
 
 /// Run to completion with a wall-clock limit; stdout/stderr are drained concurrently.
-fn output_within(command: Command, limit: Duration, what: &str) -> Result<Output> {
-    output_with_input_within(command, None, limit, what)
+fn output_within(
+    command: Command,
+    limit: Duration,
+    what: &str,
+    start_kind: fn(String) -> Error,
+    start_error: &str,
+) -> Result<Output> {
+    output_with_input_within(command, None, limit, what, start_kind, start_error)
 }
 
 /// Supplied input is written concurrently so a child that stops reading is still bounded.
@@ -104,6 +113,8 @@ fn output_with_input_within(
     input: Option<Vec<u8>>,
     limit: Duration,
     what: &str,
+    start_kind: fn(String) -> Error,
+    start_error: &str,
 ) -> Result<Output> {
     if input.is_some() {
         command.stdin(Stdio::piped());
@@ -112,7 +123,7 @@ fn output_with_input_within(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .context(Error::Git, "cannot start git")?;
+        .context(start_kind, start_error)?;
     let drain = |pipe: Option<Box<dyn std::io::Read + Send>>| {
         std::thread::spawn(move || {
             let mut buffer = Vec::new();
@@ -173,7 +184,13 @@ pub(crate) fn git(repo: &Path, args: &[&str], custom_ssh: bool) -> Result<String
 /// Raw stdout (untrimmed) for NUL-separated output such as `status -z`.
 pub(crate) fn git_raw(repo: &Path, args: &[&str], custom_ssh: bool) -> Result<Vec<u8>> {
     let what = format!("git {}", args.join(" "));
-    let output = output_within(git_command(repo, args, custom_ssh)?, GIT_TIMEOUT, &what)?;
+    let output = output_within(
+        git_command(repo, args, custom_ssh)?,
+        GIT_TIMEOUT,
+        &what,
+        Error::Git,
+        "cannot start git",
+    )?;
     ensure!(
         output.status.success(),
         Git,
@@ -196,6 +213,8 @@ pub(crate) fn git_with_input(
         Some(input),
         GIT_TIMEOUT,
         &what,
+        Error::Git,
+        "cannot start git",
     )?;
     ensure!(
         output.status.success(),
@@ -239,7 +258,7 @@ pub(crate) fn ls_remote_refs(source: &str, custom_ssh: bool) -> Result<RemoteRef
         .args(["ls-remote", "--tags", "--heads", "--", source])
         .env("LC_ALL", "C")
         .current_dir(std::env::temp_dir());
-    let output = output_within(command, GIT_TIMEOUT, &what)?;
+    let output = output_within(command, GIT_TIMEOUT, &what, Error::Git, "cannot start git")?;
     ensure!(
         output.status.success(),
         Git,
@@ -275,17 +294,17 @@ pub(crate) fn ls_remote_refs(source: &str, custom_ssh: bool) -> Result<RemoteRef
 
 /// Whether the user's Git configuration (outside any repository) defines `key`.
 pub(crate) fn git_config_defined(key: &str, start_error: &str) -> Result<bool> {
-    Ok(git_config_command(key)
-        .output()
-        .context(Error::Auth, start_error)?
-        .status
-        .success())
+    let (command, limit) = config_probe(key);
+    let what = format!("git config --get {key}");
+    let output = output_within(command, limit, &what, Error::Auth, start_error)?;
+    Ok(output.status.success())
 }
 
-fn git_config_command(key: &str) -> Command {
+/// The probe command and the actual deadline used by `git_config_defined`.
+fn config_probe(key: &str) -> (Command, Duration) {
     let mut command = noninteractive_git();
     command.args(["config", "--get", key]);
-    command
+    (command, QUICK_TIMEOUT)
 }
 
 /// Outcome of a read-only `git ls-remote`.
@@ -296,9 +315,14 @@ pub(crate) struct LsRemote {
 
 /// `git ls-remote -- SOURCE` without cloning; stdout is discarded.
 pub(crate) fn ls_remote(source: &str, custom_ssh: bool, start_error: &str) -> Result<LsRemote> {
-    let output = ls_remote_command(source, custom_ssh)
-        .output()
-        .context(Error::Auth, start_error)?;
+    let what = format!("git ls-remote -- {source}");
+    let output = output_within(
+        ls_remote_command(source, custom_ssh),
+        QUICK_TIMEOUT,
+        &what,
+        Error::Auth,
+        start_error,
+    )?;
     Ok(LsRemote {
         success: output.status.success(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
@@ -447,7 +471,14 @@ mod tests {
         let mut command = Command::new("sleep");
         command.arg("5");
         let started = Instant::now();
-        let error = output_within(command, Duration::from_millis(200), "sleep").unwrap_err();
+        let error = output_within(
+            command,
+            Duration::from_millis(200),
+            "sleep",
+            Error::Git,
+            "cannot start sleep",
+        )
+        .unwrap_err();
         assert_eq!(error.kind(), "git");
         assert!(error.to_string().contains("timed out"), "{error}");
         assert!(started.elapsed() < Duration::from_secs(3));
@@ -465,6 +496,8 @@ mod tests {
             Some(vec![b'x'; 1 << 20]),
             Duration::from_secs(60),
             "sh",
+            Error::Git,
+            "cannot start sh",
         );
         unsafe { libc::signal(libc::SIGPIPE, previous) };
         let error = result.unwrap_err();
@@ -501,7 +534,7 @@ mod tests {
         let author = Author::new(dir.join("repo"), "demo1");
         let commands = [
             git_command(&author.path, &["status"], false).unwrap(),
-            git_config_command("core.sshCommand"),
+            config_probe("core.sshCommand").0,
             ls_remote_command("https://example.invalid/repo.git", false),
         ];
         for command in &commands {
@@ -524,6 +557,23 @@ mod tests {
                 );
             }
         }
+
+        let (probe, limit) = config_probe("core.sshCommand");
+        assert_eq!(probe.get_program(), "git");
+        assert_eq!(
+            probe.get_args().collect::<Vec<_>>(),
+            [
+                "-c",
+                "credential.interactive=never",
+                "config",
+                "--get",
+                "core.sshCommand"
+            ]
+        );
+        // `Command` has no stdin getter; its Debug output is not a stable API.
+        let fields: String = format!("{probe:#?}").split_whitespace().collect();
+        assert!(fields.contains("stdin:Some(Null,)"), "{probe:#?}");
+        assert_eq!(limit, Duration::from_secs(10));
 
         // Git reads EOF from the explicitly closed stdin without waiting.
         let output = git_command(&author.path, &["hash-object", "--stdin"], false)
