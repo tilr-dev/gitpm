@@ -1779,7 +1779,8 @@ pub(crate) mod tests {
             .output()
             .unwrap();
         assert!(
-            output.status.success(),
+            output.status.success()
+                && String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"),
             "child acquired the first catalog writer's lock: {}",
             String::from_utf8_lossy(&output.stdout)
         );
