@@ -82,11 +82,12 @@ A single-package update of a package with its own clone SHALL mirror the origin'
 - **THEN** `update ID` (and `update ID --dev`) fails with `version_conflict` whose message names ID and whose structured error carries ID, and the workspace is unchanged, while `update ID --ref BRANCH` moves to the new HEAD
 
 ### Requirement: Local work blocks update and rollback
-Update and rollback SHALL refuse with `local_changes` when the clone has any lost-work item (install-uninstall), staged files included. The complete library message SHALL name the package and describe the lost-work items; FFI SHALL preserve its ID and items, and CLI SHALL print that message unchanged. Both SHALL count a tag the origin had with the same object at the last fetch as published, not `UnpublishedTag`; rollback stays offline, while `update` also accepts a tag the origin has now. Verified by `local_work_blocks_update_and_rollback`, `update_and_rollback_refuse_hidden_local_work` and `rollback_of_a_fork_treats_fetched_upstream_tags_as_published`.
+Update and rollback SHALL refuse with `local_changes` when the clone has any lost-work item (install-uninstall), staged files included. The complete library message SHALL name the package and describe the lost-work items; FFI SHALL preserve its ID and items, and CLI SHALL print that message unchanged. Both SHALL count a tag the origin had with the same object at the last fetch as published, not `UnpublishedTag`; rollback stays offline, while `update` also accepts a tag the origin has now.
 
 #### Scenario: Moved HEAD blocks rollback
 - **WHEN** the clone's HEAD was moved away from the installed commit and the user runs `rollback ID`
 - **THEN** rollback fails with `local_changes` listing `HeadMoved`
+- Verified by `local_work_blocks_update_and_rollback`, `update_and_rollback_refuse_hidden_local_work` and `rollback_of_a_fork_treats_fetched_upstream_tags_as_published`.
 
 #### Scenario: Fork, update, rollback
 - **WHEN** `me/hello`, a fork whose repository also holds its upstream's tags (for example `acme/hello@1.0.0`), is installed at 1.0.0, updated to 1.1.0, and the user runs `rollback me/hello`
