@@ -129,15 +129,6 @@ pub fn config_at(repo: &Path, commit: &str) -> Result<Option<Config>> {
     config_at_with_ssh(repo, commit, false)
 }
 
-/// Run with the caller's SSH policy.
-pub fn config_at_with_options(
-    repo: &Path,
-    commit: &str,
-    ssh_options: &crate::Options,
-) -> Result<Option<Config>> {
-    config_at_with_ssh(repo, commit, ssh_options.custom_ssh)
-}
-
 pub(crate) fn config_at_with_ssh(
     repo: &Path,
     commit: &str,
@@ -290,15 +281,6 @@ pub fn layout_at(repo: &Path, commit: &str) -> Result<Option<Layout>> {
     layout_at_with_ssh(repo, commit, false)
 }
 
-/// Run with the caller's SSH policy.
-pub fn layout_at_with_options(
-    repo: &Path,
-    commit: &str,
-    ssh_options: &crate::Options,
-) -> Result<Option<Layout>> {
-    layout_at_with_ssh(repo, commit, ssh_options.custom_ssh)
-}
-
 pub(crate) fn layout_at_with_ssh(
     repo: &Path,
     commit: &str,
@@ -382,15 +364,6 @@ pub fn packages_at(repo: &Path, commit: &str) -> Result<Option<Vec<Package>>> {
     packages_at_with_ssh(repo, commit, false)
 }
 
-/// Run with the caller's SSH policy.
-pub fn packages_at_with_options(
-    repo: &Path,
-    commit: &str,
-    ssh_options: &crate::Options,
-) -> Result<Option<Vec<Package>>> {
-    packages_at_with_ssh(repo, commit, ssh_options.custom_ssh)
-}
-
 pub(crate) fn packages_at_with_ssh(
     repo: &Path,
     commit: &str,
@@ -422,16 +395,6 @@ fn list(packages: &[Package]) -> String {
 /// valid (see [`Layout::select`]).
 pub fn find_at(repo: &Path, commit: &str, id: Option<&str>) -> Result<Package> {
     find_at_with_ssh(repo, commit, id, false)
-}
-
-/// Run with the caller's SSH policy.
-pub fn find_at_with_options(
-    repo: &Path,
-    commit: &str,
-    id: Option<&str>,
-    ssh_options: &crate::Options,
-) -> Result<Package> {
-    find_at_with_ssh(repo, commit, id, ssh_options.custom_ssh)
 }
 
 pub(crate) fn find_at_with_ssh(

@@ -150,10 +150,10 @@ Registration, catalog source discovery and package installation SHALL clone loca
 - **AND** installation records the dependency edges as usual
 
 ### Requirement: SSH settings for standalone operations
-Standalone catalog, ref, check and authoring operations SHALL offer `*_with_options` entry points accepting `&Options` and use the caller's SSH policy for every Git command. Existing entry points SHALL use default options. Verified by `custom_ssh_is_shared_by_auth_install_catalog_and_check`.
+Standalone catalog and check operations, which reach remotes, SHALL offer `*_with_options` entry points accepting `&Options` and use the caller's SSH policy for every Git command. Local-only operations (authoring, package and release discovery) SHALL NOT take SSH options. Existing entry points SHALL use default options. Verified by `custom_ssh_is_shared_by_auth_install_catalog_and_check`.
 
 #### Scenario: Explicit options for standalone operations
-- **WHEN** a caller invokes a standalone catalog, ref, check or authoring `*_with_options` operation with `custom_ssh: true`
+- **WHEN** a caller invokes a standalone catalog or check `*_with_options` operation with `custom_ssh: true`
 - **THEN** every Git command uses the same SSH override policy as a Manager opened with those options, without reading environment variables
 
 #### Scenario: Default standalone options

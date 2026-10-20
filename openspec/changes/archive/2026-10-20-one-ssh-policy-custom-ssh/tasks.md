@@ -2,7 +2,7 @@
 
 ## 1. Library
 
-- [x] 1.1 `exec.rs`: one batch SSH command for clones and `auth check`, `Options.custom_ssh` used by auth and every git command (standalone `*_with_options`, default wrappers preserved) (TILR-135); verify `exec::git_never_reads_stdin_or_prompts` and `auth::failure_maps_every_category_and_hides_stderr`
+- [x] 1.1 `exec.rs`: one batch SSH command for clones and `auth check`, `Options.custom_ssh` used by auth and every git command (standalone catalog and check `*_with_options`, default wrappers preserved) (TILR-135); verify `exec::git_never_reads_stdin_or_prompts` and `auth::failure_maps_every_category_and_hides_stderr`
 
 ## 2. CLI
 

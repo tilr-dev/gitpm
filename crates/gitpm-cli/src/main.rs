@@ -1212,13 +1212,7 @@ fn run(invocation: &mut Invocation) -> Result<()> {
                 multi,
                 release: !no_release,
             };
-            let created = scaffold::init_with_with_options(
-                Path::new(dir),
-                namespace,
-                name,
-                options,
-                &ssh_options,
-            )?;
+            let created = scaffold::init_with(Path::new(dir), namespace, name, options)?;
             let source = scaffold::shell_quote(&created.repo.to_string_lossy());
             let root = scaffold::shell_quote(&root);
             let package = match &created.folder {
@@ -1323,17 +1317,12 @@ fn run(invocation: &mut Invocation) -> Result<()> {
             return Ok(());
         }
         "remote" => {
-            scaffold::set_remote_with_options(Path::new(id), &args[2], &ssh_options)?;
+            scaffold::set_remote(Path::new(id), &args[2])?;
             println!("Origin for {id} set to {} (fetch and push).", args[2]);
             return Ok(());
         }
         "commit" => {
-            let done = scaffold::commit_package_with_options(
-                Path::new(id),
-                &args[2],
-                package.as_deref(),
-                &ssh_options,
-            )?;
+            let done = scaffold::commit_package(Path::new(id), &args[2], package.as_deref())?;
             println!(
                 "{} committed {} (local commit and tag {})",
                 done.package, done.version, done.tag

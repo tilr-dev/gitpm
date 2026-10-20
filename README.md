@@ -423,8 +423,9 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   Set it when the host supplies `GIT_SSH` or `GIT_SSH_COMMAND`; the CLI does this for
   every command. Auth checks and workspace Git commands share one batch SSH policy
   with keepalives and `StrictHostKeyChecking=accept-new`. The library never reads
-  these environment variables. Standalone operations offer `*_with_options` variants;
-  their existing entry points use default options. FFI `check` takes `customSsh`.
+  these environment variables. Standalone catalog and check operations offer
+  `*_with_options` variants; their existing entry points use default options. FFI
+  `check` takes `customSsh`.
 - Package IDs are always `namespace/name`; an unscoped ID (`demo`) is refused with
   `invalid_id` everywhere (manifests, dependencies, state, commands). `update all` is
   always the joint upgrade, as no ID can be `all`. Migration: re-create the package

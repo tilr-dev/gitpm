@@ -32,15 +32,6 @@ pub fn discover(repo: &Path, expected_id: Option<&str>) -> Result<Vec<Tag>> {
     discover_with_ssh(repo, expected_id, false)
 }
 
-/// Run with the caller's SSH policy.
-pub fn discover_with_options(
-    repo: &Path,
-    expected_id: Option<&str>,
-    ssh_options: &crate::Options,
-) -> Result<Vec<Tag>> {
-    discover_with_ssh(repo, expected_id, ssh_options.custom_ssh)
-}
-
 pub(crate) fn discover_with_ssh(
     repo: &Path,
     expected_id: Option<&str>,
@@ -54,15 +45,6 @@ pub(crate) fn discover_with_ssh(
 /// commits for one version stay a hard conflict.
 pub fn discover_all(repo: &Path, expected_id: Option<&str>) -> Result<Discovery> {
     discover_all_with_ssh(repo, expected_id, false)
-}
-
-/// Run with the caller's SSH policy.
-pub fn discover_all_with_options(
-    repo: &Path,
-    expected_id: Option<&str>,
-    ssh_options: &crate::Options,
-) -> Result<Discovery> {
-    discover_all_with_ssh(repo, expected_id, ssh_options.custom_ssh)
 }
 
 pub(crate) fn discover_all_with_ssh(
@@ -252,15 +234,6 @@ impl Discovery {
 /// [`Discovery::ensure_latest_is_valid`].
 pub fn latest(repo: &Path, expected_id: Option<&str>) -> Result<Tag> {
     latest_with_ssh(repo, expected_id, false)
-}
-
-/// Run with the caller's SSH policy.
-pub fn latest_with_options(
-    repo: &Path,
-    expected_id: Option<&str>,
-    ssh_options: &crate::Options,
-) -> Result<Tag> {
-    latest_with_ssh(repo, expected_id, ssh_options.custom_ssh)
 }
 
 pub(crate) fn latest_with_ssh(

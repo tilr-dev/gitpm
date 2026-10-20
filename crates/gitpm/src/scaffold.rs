@@ -183,15 +183,6 @@ pub fn release_current(repo: &Path, package: Option<&str>) -> Result<String> {
     release_current_with_ssh(repo, package, false)
 }
 
-/// Run with the caller's SSH policy.
-pub fn release_current_with_options(
-    repo: &Path,
-    package: Option<&str>,
-    ssh_options: &crate::Options,
-) -> Result<String> {
-    release_current_with_ssh(repo, package, ssh_options.custom_ssh)
-}
-
 pub(crate) fn release_current_with_ssh(
     repo: &Path,
     package: Option<&str>,
@@ -230,15 +221,6 @@ pub fn commit(repo: &Path, version: &str) -> Result<Commit> {
     commit_with_ssh(repo, version, false)
 }
 
-/// Run with the caller's SSH policy.
-pub fn commit_with_options(
-    repo: &Path,
-    version: &str,
-    ssh_options: &crate::Options,
-) -> Result<Commit> {
-    commit_with_ssh(repo, version, ssh_options.custom_ssh)
-}
-
 pub(crate) fn commit_with_ssh(repo: &Path, version: &str, custom_ssh: bool) -> Result<Commit> {
     commit_package_with_ssh(repo, version, None, custom_ssh)
 }
@@ -249,16 +231,6 @@ pub(crate) fn commit_with_ssh(repo: &Path, version: &str, custom_ssh: bool) -> R
 /// For a single-package repository a given `package` must match the root manifest.
 pub fn commit_package(repo: &Path, version: &str, package: Option<&str>) -> Result<Commit> {
     commit_package_with_ssh(repo, version, package, false)
-}
-
-/// Run with the caller's SSH policy.
-pub fn commit_package_with_options(
-    repo: &Path,
-    version: &str,
-    package: Option<&str>,
-    ssh_options: &crate::Options,
-) -> Result<Commit> {
-    commit_package_with_ssh(repo, version, package, ssh_options.custom_ssh)
 }
 
 pub(crate) fn commit_package_with_ssh(
@@ -410,16 +382,6 @@ pub fn init(dir: &Path, namespace: &str, name: &str) -> Result<Init> {
     init_with_ssh(dir, namespace, name, false)
 }
 
-/// Run with the caller's SSH policy.
-pub fn init_with_options(
-    dir: &Path,
-    namespace: &str,
-    name: &str,
-    ssh_options: &crate::Options,
-) -> Result<Init> {
-    init_with_ssh(dir, namespace, name, ssh_options.custom_ssh)
-}
-
 pub(crate) fn init_with_ssh(
     dir: &Path,
     namespace: &str,
@@ -433,17 +395,6 @@ pub(crate) fn init_with_ssh(
 /// multi-package repository; `release: false` skips the tag.
 pub fn init_with(dir: &Path, namespace: &str, name: &str, options: InitOptions) -> Result<Init> {
     init_with_with_ssh(dir, namespace, name, options, false)
-}
-
-/// Run with the caller's SSH policy.
-pub fn init_with_with_options(
-    dir: &Path,
-    namespace: &str,
-    name: &str,
-    options: InitOptions,
-    ssh_options: &crate::Options,
-) -> Result<Init> {
-    init_with_with_ssh(dir, namespace, name, options, ssh_options.custom_ssh)
 }
 
 pub(crate) fn init_with_with_ssh(
@@ -519,16 +470,6 @@ pub fn suggests_multi(dir: &Path) -> bool {
 /// Returns the package folder.
 pub fn create_package(repo: &Path, namespace: &str, name: &str) -> Result<PathBuf> {
     create_package_with_ssh(repo, namespace, name, false)
-}
-
-/// Run with the caller's SSH policy.
-pub fn create_package_with_options(
-    repo: &Path,
-    namespace: &str,
-    name: &str,
-    ssh_options: &crate::Options,
-) -> Result<PathBuf> {
-    create_package_with_ssh(repo, namespace, name, ssh_options.custom_ssh)
 }
 
 pub(crate) fn create_package_with_ssh(
@@ -742,11 +683,6 @@ fn add_package(
 /// Set the author's origin for fetch and push; no network operations.
 pub fn set_remote(repo: &Path, url: &str) -> Result<()> {
     set_remote_with_ssh(repo, url, false)
-}
-
-/// Run with the caller's SSH policy.
-pub fn set_remote_with_options(repo: &Path, url: &str, ssh_options: &crate::Options) -> Result<()> {
-    set_remote_with_ssh(repo, url, ssh_options.custom_ssh)
 }
 
 pub(crate) fn set_remote_with_ssh(repo: &Path, url: &str, custom_ssh: bool) -> Result<()> {
