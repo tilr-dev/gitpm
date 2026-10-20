@@ -35,6 +35,7 @@ Python on the host only runs the report tools, through `uv run`.
 ./itests/dt fixtures                          # fixture graph and how many cases use each
 ./itests/dt fixture catalog                   # export a snapshot to itests/results/fixture-catalog
 ./itests/dt call gitpm export --path ./gitpm-linux   # the Linux gitpm binary
+./itests/dt call cache-regression             # controlled build-cache ownership regression
 ./itests/dt coverage                          # write openspec/coverage/ (no Dagger)
 DT_ENGINE=dagger ./itests/dt                  # the same on a local engine (Docker)
 ```
@@ -65,8 +66,13 @@ passes: a failure until the marker is removed).
 `Cargo.*`, `README.md`, `crates/`, `tests/`, `.cargo/` and `openspec/specs/`.
 
 1. **build** — one `rust:1.94.0-bookworm` container compiles every test target, `gitpm` and the
-   `api-parity` example (`CARGO_HOME` and the target dir are cache volumes, so rebuilds are
-   incremental), copies the executables into a layer and lists their tests.
+   `api-parity` example, copies the executables into a layer and lists their tests.
+   `CARGO_HOME` is shared; target caches are keyed by the complete build source digest
+   (excluding `openspec/`) and purpose (build or clippy). Identical snapshots reuse
+   compilation; changed sources get separate outputs, because Cargo's mtime freshness
+   checks cannot distinguish normalized source timestamps in different snapshots.
+   The Rust group includes `rust:build-cache`, a small controlled regression for
+   sequential/concurrent source ownership and warm cache reuse.
 2. **rust** — one slim container per test running the copied executable with `--exact NAME`.
    Sources sit at `/src/gitpm`, the binary at `/target/debug/gitpm`, as during the build
    (tests bake `CARGO_MANIFEST_DIR` and `CARGO_BIN_EXE_gitpm`); Git config as in
