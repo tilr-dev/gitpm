@@ -79,11 +79,67 @@ fn ensure_managed_parents(root: &Path, relative: &str) -> Result<()> {
 fn present(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok()
 }
-fn rename(from: &Path, to: &Path) -> Result<()> {
+/// Sync only real staged files/directories; repository symlinks must not be followed.
+fn sync_tree(path: &Path) -> Result<()> {
+    let meta = fs::symlink_metadata(path)?;
+    if meta.file_type().is_symlink() {
+        return Ok(());
+    }
+    if meta.is_dir() {
+        for entry in fs::read_dir(path)? {
+            sync_tree(&entry?.path())?;
+        }
+    }
+    sync_path(path)
+}
+fn sync_path(path: &Path) -> Result<()> {
+    #[cfg(test)]
+    SYNC_FAILURE.with(|failure| {
+        let should_fail = failure.borrow().as_ref().is_some_and(|(target, after)| {
+            target == path
+                && after.as_ref().is_none_or(|destination| {
+                    DURABILITY_EVENTS.with(|events| {
+                        events.borrow().as_ref().is_some_and(|events| {
+                            events.iter().any(|event| {
+                                matches!(event,
+                        DurabilityEvent::Rename(_, to) if to == destination)
+                            })
+                        })
+                    })
+                })
+        });
+        if should_fail {
+            Err(Error::Io("simulated sync failure".into()))
+        } else {
+            Ok(())
+        }
+    })?;
+    fs::File::open(path)?.sync_all()?;
+    #[cfg(test)]
+    record(DurabilityEvent::Sync(path.into()));
+    Ok(())
+}
+/// Persist new ancestors child-first. Missing directories may have been pruned.
+fn sync_parents(root: &Path, path: &Path) -> Result<()> {
+    for parent in path.ancestors().take_while(|p| p.starts_with(root)) {
+        match fs::symlink_metadata(parent) {
+            Ok(_) => sync_path(parent)?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
+}
+fn rename(root: &Path, from: &Path, to: &Path) -> Result<()> {
     fs::create_dir_all(to.parent().unwrap())?;
     #[cfg(test)]
     crash_point()?;
     fs::rename(from, to)?;
+    #[cfg(test)]
+    record(DurabilityEvent::Rename(from.into(), to.into()));
+    // Persist the destination before allowing the source entry to disappear.
+    sync_parents(root, to.parent().unwrap())?;
+    sync_parents(root, from.parent().unwrap())?;
     Ok(())
 }
 
@@ -206,11 +262,21 @@ impl Txn {
             serde_json::to_vec_pretty(state)?,
         )?;
         remove(&self.dir.join("scratch"))?;
+        // Payload data, symlink entries and state must survive before the decision.
+        sync_tree(&self.dir)?;
+        // The workspace itself may have been created by this operation.
+        for parent in self.root.ancestors().skip(1) {
+            sync_path(parent)?;
+        }
         let temporary = self.dir.join("journal.tmp");
         fs::write(&temporary, serde_json::to_vec_pretty(&self.journal)?)?;
+        sync_path(&temporary)?;
         // From here on the transaction is decided: recovery rolls it forward.
         fs::rename(&temporary, self.dir.join(JOURNAL))?;
         self.committed = true;
+        #[cfg(test)]
+        record(DurabilityEvent::Rename(temporary, self.dir.join(JOURNAL)));
+        sync_parents(&self.root, &self.dir)?;
         apply(&self.root, &self.dir)
     }
 }
@@ -258,6 +324,9 @@ fn remove_empty_parents(root: &Path, relative: &str) {
 fn apply(root: &Path, dir: &Path) -> Result<()> {
     let journal: Journal = serde_json::from_slice(&fs::read(dir.join(JOURNAL))?)
         .map_err(|e| Error::Workspace(format!("corrupt transaction journal: {e}")))?;
+    // Recovery can follow a failed sync immediately after journal publication.
+    sync_path(&dir.join(JOURNAL))?;
+    sync_parents(root, dir)?;
     for relative in journal.paths.keys() {
         ensure_managed_parents(root, relative)?;
     }
@@ -269,24 +338,31 @@ fn apply(root: &Path, dir: &Path) -> Result<()> {
             Change::Replace => {
                 if present(&staged) {
                     if present(&live) {
-                        rename(&live, &old)?;
+                        rename(root, &live, &old)?;
                     }
-                    rename(&staged, &live)?;
+                    rename(root, &staged, &live)?;
                 }
             }
             Change::Delete => {
                 if present(&live) {
-                    rename(&live, &old)?;
+                    rename(root, &live, &old)?;
                 }
                 remove_empty_parents(root, relative);
             }
         }
+        // Recovery may resume after a rename succeeded but its sync failed.
+        sync_parents(root, live.parent().unwrap())?;
+        sync_parents(root, staged.parent().unwrap())?;
+        sync_parents(root, old.parent().unwrap())?;
     }
     let state = dir.join("state.json");
     if present(&state) {
-        rename(&state, &root.join("state.json"))?;
+        rename(root, &state, &root.join("state.json"))?;
     }
-    remove(dir)
+    sync_path(&root.join("state.json"))?;
+    sync_path(root)?;
+    remove(dir)?;
+    sync_path(root)
 }
 
 #[cfg(test)]
@@ -304,4 +380,205 @@ fn crash_point() -> Result<()> {
         }
         None => Ok(()),
     })
+}
+
+#[cfg(test)]
+#[derive(Debug, PartialEq, Eq)]
+enum DurabilityEvent {
+    Sync(PathBuf),
+    Rename(PathBuf, PathBuf),
+}
+#[cfg(test)]
+thread_local! {
+    static SYNC_FAILURE: std::cell::RefCell<Option<(PathBuf, Option<PathBuf>)>> = const { std::cell::RefCell::new(None) };
+    static DURABILITY_EVENTS: std::cell::RefCell<Option<Vec<DurabilityEvent>>> = const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+fn record(event: DurabilityEvent) {
+    DURABILITY_EVENTS.with(|events| {
+        if let Some(events) = events.borrow_mut().as_mut() {
+            events.push(event);
+        }
+    });
+}
+
+#[cfg(test)]
+#[test]
+fn commit_syncs_journal_state_and_parents() {
+    let temp = crate::test_support::TempDir::new("txn-sync");
+    let root = temp.path();
+    let mut txn = Txn::begin(root).unwrap();
+    // Stage directly to exercise nested new parents, replacements and deletion.
+    for relative in ["dist/new/plugin", "packages/existing/plugin"] {
+        let path = txn.dir.join("new").join(relative);
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("payload"), b"new").unwrap();
+        txn.journal.paths.insert(relative.into(), Change::Replace);
+    }
+    for relative in ["packages/existing/plugin", "dist/deleted/plugin"] {
+        fs::create_dir_all(root.join(relative)).unwrap();
+        fs::write(root.join(relative).join("payload"), b"old").unwrap();
+    }
+    txn.journal
+        .paths
+        .insert("dist/deleted/plugin".into(), Change::Delete);
+    let _capture = Capture::new();
+    txn.commit(&State::default()).unwrap();
+    let events = DURABILITY_EVENTS.with(|events| events.borrow_mut().take().unwrap());
+    let sync_index = |path: &Path| {
+        events
+            .iter()
+            .position(|event| event == &DurabilityEvent::Sync(path.into()))
+            .unwrap_or_else(|| panic!("missing sync for {}: {events:?}", path.display()))
+    };
+    let journal = sync_index(&root.join(DIR).join("journal.tmp"));
+    let state = sync_index(&root.join(DIR).join("state.json"));
+    assert!(state < journal);
+    for parent in root.ancestors().skip(1) {
+        assert!(sync_index(parent) < journal);
+    }
+    for relative in ["dist/new/plugin", "packages/existing/plugin"] {
+        assert!(sync_index(&root.join(DIR).join("new").join(relative).join("payload")) < journal);
+    }
+    let published = events
+        .iter()
+        .position(|event| {
+            matches!(event,
+        DurabilityEvent::Rename(_, to) if to == &root.join(DIR).join(JOURNAL))
+        })
+        .unwrap();
+    assert!(journal < published);
+    let first_move = events
+        .iter()
+        .enumerate()
+        .skip(published + 1)
+        .find(|(_, event)| matches!(event, DurabilityEvent::Rename(..)))
+        .unwrap()
+        .0;
+    for path in [root.join(DIR), root.to_path_buf()] {
+        assert!(events[published + 1..first_move].contains(&DurabilityEvent::Sync(path)));
+    }
+    // Every rename must persist both parent chains before the next rename.
+    for (index, event) in events.iter().enumerate().skip(first_move) {
+        if let DurabilityEvent::Rename(from, to) = event {
+            let end = events[index + 1..]
+                .iter()
+                .position(|e| matches!(e, DurabilityEvent::Rename(..)))
+                .map_or(events.len(), |offset| index + 1 + offset);
+            for path in [from.parent().unwrap(), to.parent().unwrap()] {
+                for parent in path.ancestors().take_while(|p| p.starts_with(root)) {
+                    assert!(
+                        events[index + 1..end].contains(&DurabilityEvent::Sync(parent.into())),
+                        "missing parent sync after {event:?}: {}",
+                        parent.display()
+                    );
+                }
+            }
+        }
+    }
+    assert_eq!(events.last(), Some(&DurabilityEvent::Sync(root.into())));
+    assert!(!root.join(DIR).exists());
+    assert_eq!(
+        fs::read(root.join("dist/new/plugin/payload")).unwrap(),
+        b"new"
+    );
+    assert!(!root.join("dist/deleted").exists());
+}
+
+#[cfg(test)]
+struct Capture;
+#[cfg(test)]
+impl Capture {
+    fn new() -> Self {
+        DURABILITY_EVENTS.with(|events| *events.borrow_mut() = Some(Vec::new()));
+        Self
+    }
+}
+#[cfg(test)]
+impl Drop for Capture {
+    fn drop(&mut self) {
+        DURABILITY_EVENTS.with(|events| *events.borrow_mut() = None);
+        SYNC_FAILURE.with(|failure| *failure.borrow_mut() = None);
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn sync_errors_preserve_the_commit_decision_and_recovery() {
+    for phase in ["journal", "published", "moved", "state"] {
+        let temp = crate::test_support::TempDir::new("txn-sync-failure");
+        let root = temp.path();
+        let mut txn = Txn::begin(root).unwrap();
+        let relative = "dist/ns/plugin";
+        let staged = txn.dir.join("new").join(relative);
+        fs::create_dir_all(&staged).unwrap();
+        fs::write(staged.join("payload"), b"new").unwrap();
+        txn.journal.paths.insert(relative.into(), Change::Replace);
+        fs::create_dir_all(root.join(relative)).unwrap();
+        fs::write(root.join(relative).join("payload"), b"old").unwrap();
+        let _capture = Capture::new();
+        let (target, after) = match phase {
+            "journal" => (root.join(DIR).join("journal.tmp"), None),
+            "published" => (root.join(DIR), Some(root.join(DIR).join(JOURNAL))),
+            "moved" => (root.join("dist/ns"), Some(root.join(relative))),
+            "state" => (root.to_path_buf(), Some(root.join("state.json"))),
+            _ => unreachable!(),
+        };
+        SYNC_FAILURE.with(|failure| *failure.borrow_mut() = Some((target, after)));
+        let error = txn.commit(&State::default()).unwrap_err();
+        assert!(
+            error.to_string().contains("simulated sync failure"),
+            "{error}"
+        );
+        SYNC_FAILURE.with(|failure| *failure.borrow_mut() = None);
+        if phase == "journal" {
+            assert!(!root.join(DIR).exists());
+            assert_eq!(
+                fs::read(root.join(relative).join("payload")).unwrap(),
+                b"old"
+            );
+        } else {
+            assert!(root.join(DIR).join(JOURNAL).exists());
+            if phase == "published" {
+                assert_eq!(
+                    fs::read(root.join(relative).join("payload")).unwrap(),
+                    b"old"
+                );
+            }
+            recover(root).unwrap();
+            assert_eq!(
+                fs::read(root.join(relative).join("payload")).unwrap(),
+                b"new"
+            );
+            assert!(root.join("state.json").exists());
+            assert!(!root.join(DIR).exists());
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn commit_syncs_symlink_entries_without_following_targets() {
+    use std::os::unix::fs::symlink;
+    let temp = crate::test_support::TempDir::new("txn-sync-symlink");
+    let root = temp.path();
+    let mut txn = Txn::begin(root).unwrap();
+    let staged = txn.dir.join("new/packages/ns/plugin");
+    fs::create_dir_all(&staged).unwrap();
+    symlink("missing-target", staged.join("link")).unwrap();
+    txn.journal
+        .paths
+        .insert("packages/ns/plugin".into(), Change::Replace);
+    let _capture = Capture::new();
+    txn.commit(&State::default()).unwrap();
+    assert_eq!(
+        fs::read_link(root.join("packages/ns/plugin/link")).unwrap(),
+        Path::new("missing-target")
+    );
+    DURABILITY_EVENTS.with(|events| {
+        let events = events.borrow();
+        let events = events.as_ref().unwrap();
+        assert!(events.contains(&DurabilityEvent::Sync(staged.clone())));
+        assert!(!events.contains(&DurabilityEvent::Sync(staged.join("link"))));
+    });
 }
