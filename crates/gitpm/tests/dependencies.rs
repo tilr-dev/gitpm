@@ -567,10 +567,9 @@ fn update_of_a_disabled_package_pulls_disabled_dependencies() {
     assert!(f.path("workspace/dist/lib/more/index.js").is_file());
 }
 
-/// A dependency an update pulls that cannot be installed is named in the refusal;
-/// the updated package's ID is not put on it.
-#[test]
-fn update_refusal_from_a_pulled_dependency_names_the_dependency() {
+/// app/a 1.0.0 installed; its catalog release 1.1.0 pulls lib/extra, whose catalog
+/// release points at a commit with a broken plugin.json.
+fn broken_pulled_dependency() -> (Fixture, Manager) {
     let f = Fixture::new();
     let cat = f.catalog("catalog");
     f.publish(&cat, "app/a", "1.0.0", &[]);
@@ -587,6 +586,14 @@ fn update_refusal_from_a_pulled_dependency_names_the_dependency() {
     let mut value: Value = serde_json::from_slice(&fs::read(&release).unwrap()).unwrap();
     value["commit"] = json!(broken.trim());
     fs::write(&release, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+    (f, m)
+}
+
+/// A dependency an update pulls that cannot be installed is named in the refusal;
+/// the updated package's ID is not put on it.
+#[test]
+fn update_refusal_from_a_pulled_dependency_names_the_dependency() {
+    let (_f, m) = broken_pulled_dependency();
     let error = m.update("app/a").unwrap_err();
     assert!(
         matches!(&error, Error::InvalidManifest { id: Some(id), .. } if id == "lib/extra"),
@@ -604,22 +611,7 @@ fn update_refusal_from_a_pulled_dependency_names_the_dependency() {
 /// refusal, as with `update ID`.
 #[test]
 fn update_all_refusal_from_a_pulled_dependency_names_the_dependency() {
-    let f = Fixture::new();
-    let cat = f.catalog("catalog");
-    f.publish(&cat, "app/a", "1.0.0", &[]);
-    let m = f.open(&cat);
-    m.install_from_catalog("app/a", None).unwrap();
-    f.publish(&cat, "lib/extra", "1.0.0", &[]);
-    f.publish(&cat, "app/a", "1.1.0", &[("lib/extra", "^1")]);
-    // The catalog points lib/extra at a commit whose plugin.json is broken.
-    let author = f.path("authors/lib/extra");
-    fs::write(author.join("plugin.json"), "{ broken").unwrap();
-    git(&author, &["commit", "-qam", "break"]);
-    let broken = git(&author, &["rev-parse", "HEAD"]);
-    let release = Path::new(&cat).join("namespaces/lib/extra/versions/1.0.0/release.json");
-    let mut value: Value = serde_json::from_slice(&fs::read(&release).unwrap()).unwrap();
-    value["commit"] = json!(broken.trim());
-    fs::write(&release, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+    let (_f, m) = broken_pulled_dependency();
     for error in [
         m.update_all_plan().unwrap_err(),
         m.update_all().unwrap_err(),
@@ -653,6 +645,39 @@ fn update_all_invalid_requirement_names_the_package() {
         "1.1.0",
         &[("lib/core", "^1 || ^2")],
     );
+    for error in [
+        m.update_all_plan().unwrap_err(),
+        m.update_all().unwrap_err(),
+    ] {
+        assert!(
+            matches!(&error, Error::InvalidManifest { id: Some(id), .. } if id == "x/b"),
+            "{error:?}"
+        );
+        assert!(
+            error
+                .to_string()
+                .starts_with("x/b: invalid version requirement"),
+            "{error}"
+        );
+    }
+}
+
+/// `update all`: a newer release of a protected package whose catalog manifest has an
+/// invalid version requirement is refused with that package's ID.
+#[test]
+fn update_all_invalid_requirement_in_the_catalog_names_the_package() {
+    let f = Fixture::new();
+    let cat = f.catalog("catalog");
+    f.publish(&cat, "x/b", "1.0.0", &[]);
+    f.verify(&cat);
+    let m = f.open(&cat);
+    m.install_from_catalog("x/b", None).unwrap();
+    f.publish(&cat, "x/b", "1.1.0", &[]);
+    // register refuses such a manifest; a hand-edited catalog can still carry one.
+    let release = Path::new(&cat).join("namespaces/x/b/versions/1.1.0/release.json");
+    let mut value: Value = serde_json::from_slice(&fs::read(&release).unwrap()).unwrap();
+    value["manifest"]["dependencies"] = json!({ "lib/core": "^1 || ^2" });
+    fs::write(&release, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
     for error in [
         m.update_all_plan().unwrap_err(),
         m.update_all().unwrap_err(),

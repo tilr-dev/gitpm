@@ -1479,7 +1479,8 @@ impl Manager {
                             }
                             continue;
                         }
-                        deps::validate(&release.manifest)?;
+                        deps::validate(&release.manifest)
+                            .map_err(|error| error.with_package(id))?;
                         versions.insert(version, release);
                     }
                     if let Some(reason) =

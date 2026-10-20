@@ -80,8 +80,8 @@ Errors about a package SHALL name its ID (and version where relevant) in the lib
 - **THEN** the `invalid_manifest` message starts with `acme/lib:` and the FFI error carries `id` `acme/lib`, not `acme/greeter` (`update_refusal_from_a_pulled_dependency_names_the_dependency`, `update_all_refusal_from_a_pulled_dependency_names_the_dependency`)
 
 #### Scenario: Invalid requirement in a newer revision
-- **WHEN** `update all` finds a newer release tag or branch commit of `acme/greeter` whose `plugin.json` has an invalid version requirement
-- **THEN** the `invalid_manifest` message starts with `acme/greeter:` and the FFI error carries `id` `acme/greeter` (`update_all_invalid_requirement_names_the_package`, `workspace::update_all_invalid_requirement_on_the_branch_names_the_package`)
+- **WHEN** `update all` finds a newer release tag, branch commit or catalog release of `acme/greeter` whose manifest has an invalid version requirement
+- **THEN** the `invalid_manifest` message starts with `acme/greeter:` and the FFI error carries `id` `acme/greeter` (`update_all_invalid_requirement_names_the_package`, `update_all_invalid_requirement_in_the_catalog_names_the_package`, `workspace::update_all_invalid_requirement_on_the_branch_names_the_package`)
 
 ### Requirement: Failing operations leave the workspace unchanged
 Every failing `Manager` operation, update and rollback included, SHALL leave the workspace byte-identical (tree hash: files and state) with no transaction directory left behind. This requirement is the single source for that guarantee; the staging and journal mechanism is in transactions-locking. Verified by `workspace::every_operation_rejects_invalid_ids_without_changes` and `workspace::every_operation_on_a_missing_id_fails_without_changes`.
