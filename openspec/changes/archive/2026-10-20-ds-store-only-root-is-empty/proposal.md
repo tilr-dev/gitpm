@@ -22,5 +22,3 @@ Depends on: the 2026-10-18 chain through `host-compatibility` (`no-backward-comp
 ## Impact
 
 `workspace.rs` (`open`). Tracker: TILR-136. Split from the former shared change `robustness-fixes` (2026-10-20: one task, one change).
-
-Implemented by commit `b20cabc` (TILR-136).

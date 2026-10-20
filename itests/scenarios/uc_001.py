@@ -55,7 +55,7 @@ def list_on_empty_explicit_root(t: T):
     t.ok(not t.ws.exists(), "GITPM_ROOT workspace untouched (explicit --root wins)")
 
 
-@case(spec=["workspace-layout/foreign-directories-are-refused"])
+@case(spec=["workspace-layout/foreign-directories-are-refused#folder-with-only-ds-store"])
 def ds_store_root(t: T):
     """A .DS_Store root becomes a workspace and retains Finder metadata."""
     root = t.root / "ds-store-root"
