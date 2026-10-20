@@ -552,8 +552,8 @@ pub(crate) fn copy_tree(from: &Path, to: &Path, symlinks: bool) -> Result<()> {
 }
 /// Copy the folder `path` (`""`: the root) of `commit` from `repo` into `target`: one
 /// `git archive` of that tree (`COMMIT:PATH`, a literal path, never a pattern), unpacked
-/// in process. Plain files and folders only, the executable bit is kept; symlinks
-/// and submodules are refused. The folder must exist.
+/// in process. The executable bit is kept; symlinks are refused. Gitlinks become
+/// empty directories in the archive. The folder must exist.
 pub(crate) fn export_folder(
     repo: &Path,
     commit: &str,
@@ -571,24 +571,6 @@ pub(crate) fn export_folder(
         "revision {commit} has no folder {}",
         if path.is_empty() { "(root)" } else { path }
     );
-    // Archive represents gitlinks as ordinary empty directories, losing their type.
-    // Inspect the committed tree before creating or writing any deployment files.
-    let entries = crate::exec::git_raw(repo, &["ls-tree", "-r", "-z", &tree], custom_ssh)?;
-    for entry in entries.split(|byte| *byte == 0) {
-        if entry.starts_with(b"160000 ") {
-            let name =
-                String::from_utf8_lossy(entry.splitn(2, |byte| *byte == b'\t').nth(1).unwrap());
-            fail!(
-                Unsupported,
-                "symlinks and submodules are not supported: {}",
-                if path.is_empty() {
-                    name.into_owned()
-                } else {
-                    format!("{path}/{name}")
-                }
-            );
-        }
-    }
     let tar = crate::exec::git_raw(repo, &["archive", "--format=tar", &tree], custom_ssh)?;
     fs::create_dir_all(target)?;
     let mut archive = tar::Archive::new(&tar[..]);
@@ -640,6 +622,7 @@ pub(crate) fn export_folder(
 /// Fill `target` with the package's `dist/` (package folder `package`, `None`: the
 /// root) at `commit` of `repo`, from Git objects (never the working tree). A revision
 /// without that folder is refused ([`Error::InvalidManifest`]), never deployed empty.
+/// Gitlinks are refused before any files are exported.
 pub(crate) fn export_dist(
     repo: &Path,
     commit: &str,
@@ -661,6 +644,20 @@ pub(crate) fn export_dist(
         InvalidManifest,
         "release {commit} has no {folder}/ folder"
     );
+    // Archive represents gitlinks as ordinary empty directories, losing their type.
+    // Inspect the committed tree before creating or writing any deployment files.
+    let tree = format!("{commit}:{folder}");
+    let entries = crate::exec::git_raw(repo, &["ls-tree", "-r", "-z", &tree], custom_ssh)?;
+    for entry in entries.split(|byte| *byte == 0) {
+        if entry.starts_with(b"160000 ") {
+            let name =
+                String::from_utf8_lossy(entry.splitn(2, |byte| *byte == b'\t').nth(1).unwrap());
+            fail!(
+                Unsupported,
+                "symlinks and submodules are not supported: {folder}/{name}"
+            );
+        }
+    }
     export_folder(repo, commit, &folder, target, custom_ssh)
 }
 /// Locate an updated package, retaining the requested and upstream identities.
@@ -7348,6 +7345,36 @@ mod tests {
             !mono.dir.join("new").exists(),
             "created parents are removed"
         );
+    }
+
+    #[test]
+    fn a_submodule_outside_dist_does_not_block_adding_to_a_fork() {
+        let mono = Mono::new();
+        let sha = head_of(&mono.repo);
+        fixture_git(
+            &mono.repo,
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("160000,{sha},packages/theme/src/vendor"),
+            ],
+        );
+        fixture_git(&mono.repo, &["commit", "-q", "-m", "submodule outside dist"]);
+        fixture_git(&mono.repo, &["tag", "-f", "tilr/theme@1.0.0"]);
+        let m = mono.open();
+        for id in ["tilr/store", "tilr/theme"] {
+            m.install_package(mono.source(), Some(id), InstallTarget::Release)
+                .unwrap();
+        }
+        let destination = mono.dir.join("forks/me");
+        m.fork_packages(&["tilr/store"], &destination, "me")
+            .unwrap();
+        m.fork_packages(&["tilr/theme"], &destination, "me")
+            .expect("a submodule outside dist must not block adding to a fork");
+        assert!(destination.join("packages/theme/src/vendor").is_dir());
+        let manifest = manifest(&destination.join("packages/theme")).unwrap();
+        assert_eq!(manifest.id, "me/theme");
     }
 
     #[test]
