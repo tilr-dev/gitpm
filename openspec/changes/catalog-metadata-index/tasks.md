@@ -2,7 +2,7 @@
 
 ## 1. Catalog writer
 
-- [ ] 1.1 Write the latest-release summary (`version`, metadata, `host`) into the catalog package index (`schema` 3) during catalog generation and registration, under the catalog lock (TILR-15); verify `catalog::index_summary_matches_the_latest_release` (summary equals the latest release manifest) and `catalog::index_of_another_schema_is_refused` (schema 2 → `catalog`)
+- [ ] 1.1 Write the latest-release summary (`version`, metadata) into the catalog package index (`schema` 3) during catalog generation and registration, under the catalog lock (TILR-15); verify `catalog::index_summary_matches_the_latest_release` (summary equals the latest release manifest) and `catalog::index_of_another_schema_is_refused` (schema 2 → `catalog`)
 - [ ] 1.2 Keep immutability and atomicity: a failed generation (for example a broken newest tag) writes no index change; verify with the existing tree-hash assertions
 
 ## 2. Reader and docs

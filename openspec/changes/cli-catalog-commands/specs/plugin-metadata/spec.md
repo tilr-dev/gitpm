@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Metadata in the catalog
-Because a catalog release carries the whole manifest (catalog, "Release record"), `catalog update` and `catalog register` SHALL publish the metadata; `catalog show` and `browse` SHALL show the metadata (and the `host` map) of each package's latest release by reading its `release.json` (bounded as in catalog, "Bounded overview"), and a missing or broken latest `release.json` SHALL only leave that package without metadata.
+Because a catalog release carries the whole manifest (catalog, "Release record"), `catalog update` and `catalog register` SHALL publish the metadata; `catalog show` and `browse` SHALL show the metadata of each package's latest release by reading its `release.json` (bounded as in catalog, "Bounded overview"), and a missing or broken latest `release.json` SHALL only leave that package without metadata.
 
 #### Scenario: info shows metadata
 - **WHEN** the latest release of `tilr/theme` has a title and provides
