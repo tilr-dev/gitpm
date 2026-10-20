@@ -38,7 +38,7 @@ The FFI crate SHALL generate the Swift module `Gitpm` over the C module `GitpmFF
 - **THEN** `PackageManager` has `install` (optional `package`, `force`), `installFromCatalog(force)`, `download`, `downloadFromCatalog`, `update`, `updateAllPlan`, `updateAll`, `rollback`, `enable(force)`, `disable(force)`, `forget(force)` (returning `ForgetResult`), `restore`, `uninstallPlan`, `uninstall(confirmed, force)` (`confirmed` the lost-work items the user saw), `fork`, `forkAndReplace`, `forkPackages`, `forkPackagesAndReplace`, `forkReplaceResume`, `replacePlan`, `replace`, `switchBackPlan`, `switchBack(confirm, force)`, `syncDistPlan` and `syncDist`; `check` is a free function, not a method
 
 #### Scenario: Catalog generation is not exposed
-- **WHEN** a host looks for `catalog-update`, `register`, `init` or `commit` in the bindings
+- **WHEN** a host looks for `catalog update`, `catalog register`, `init` or `commit` in the bindings
 - **THEN** none exist; those stay library/CLI functions
 
 ### Requirement: Errors keep kind and message
@@ -97,7 +97,7 @@ FFI records SHALL convert library results field by field, dropping none: `Instal
 - **THEN** the script reports the skipped target and builds the rest
 
 ### Requirement: CLI and FFI parity
-Every CLI command that reads or changes a workspace, reads a catalog or checks access SHALL have an FFI equivalent that returns the data the CLI prints, so a host never re-implements CLI logic. The stated exceptions are the author commands (`init`, `commit`, `remote`) and the catalog writers (`catalog-update`, `register`), which stay library and CLI functions. Verified by `ffi_covers_every_workspace_and_catalog_read_command`.
+Every CLI command that reads or changes a workspace, reads a catalog or checks access SHALL have an FFI equivalent that returns the data the CLI prints, so a host never re-implements CLI logic. The stated exceptions are the author commands (`init`, `commit`, `remote`) and the catalog writers (`catalog update`, `catalog register`), which stay library and CLI functions. Verified by `ffi_covers_every_workspace_and_catalog_read_command`.
 
 #### Scenario: list with a filter
 - **WHEN** a host needs what `gitpm list --provides theme` prints

@@ -78,7 +78,7 @@ def non_https_url_is_rejected(t: T):
 def build_on_other_command_is_rejected(t: T):
     """Build options belong to register only (usage error, nothing written)."""
     before = t.snap(t.catalog)
-    t.gitpm_err("install-catalog", ID, "--build-url", URL, "--build-sha256", SHA, contains="build options require register")
+    t.gitpm_err("install-catalog", ID, "--build-url", URL, "--build-sha256", SHA, contains="build options require catalog register")
     t.same(before, "catalog")
     t.ok(not t.ws.exists(), "nothing installed")
 

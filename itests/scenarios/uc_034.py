@@ -8,12 +8,12 @@ public fallback); `catalog` prints the directory links of one level as JSON.
 import json
 from pathlib import Path
 
-from gitpmtest import T, case
+from gitpmtest import T, case, gitpm_argv
 
 
 def gitpm_env(t: T, *args, env: dict | None = None, unset=(), ok=True, **kw):
     """gitpm with variables removed (env -u) and added."""
-    argv = ["env", *[a for u in unset if u not in (env or {}) for a in ("-u", u)], "gitpm", *args]
+    argv = ["env", *[a for u in unset if u not in (env or {}) for a in ("-u", u)], "gitpm", *gitpm_argv(args)]
     r = t.run(*argv, env=env, **kw)
     if ok and r.code != 0:
         raise AssertionError(f"gitpm {args} exited {r.code}\n{r.err}")
@@ -111,7 +111,7 @@ def info_without_a_catalog_names_it(t: T):
     for command in ["info", "catalog"]:
         r = readonly(t, lambda: gitpm_env(t, command, unset=("GITPM_CATALOG",), ok=False))
         t.ok(r.code != 0, f"{command} without a catalog fails")
-        t.has(r.err, f"{command} needs a catalog: pass --catalog DIR_OR_JSON_OR_URL or set GITPM_CATALOG")
+        t.has(r.err, f"{' '.join(gitpm_argv([command]))} needs a catalog: pass --catalog DIR_OR_JSON_OR_URL or set GITPM_CATALOG")
 
 
 def crafted_v2(root: Path, count: int):

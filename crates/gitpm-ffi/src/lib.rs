@@ -2719,12 +2719,12 @@ mod tests {
                 let _ = auth_check;
                 vec!["authCheck"]
             }),
-            ("info", {
+            ("catalog show", {
                 let _ = browse_catalog;
                 let _ = PackageManager::browse_catalog;
                 vec!["browseCatalog"]
             }),
-            ("catalog", {
+            ("catalog links", {
                 let _ = catalog_links;
                 vec!["catalogLinks"]
             }),
@@ -2810,7 +2810,14 @@ mod tests {
                 vec!["syncDistPlan", "syncDist"]
             }),
         ];
-        let exceptions = ["init", "commit", "remote", "catalog-update", "register"];
+        let exceptions = [
+            "init",
+            "commit",
+            "remote",
+            "catalog",
+            "catalog update",
+            "catalog register",
+        ];
         let cli = include_str!("../../gitpm-cli/src/main.rs");
         let block = cli
             .split("const COMMANDS: &[&str] = &[")

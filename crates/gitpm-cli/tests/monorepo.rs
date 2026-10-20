@@ -555,9 +555,10 @@ fn legacy_root_repository_installs_and_updates_as_before() {
     let out = f.ok(&["commit", legacy.to_str().unwrap(), "1.2.0"]);
     assert!(out.contains("acme/hello@1.2.0"), "{out}");
     fs::write(f.dir.join("sources.txt"), "hello\n").unwrap();
-    let out = f.ok(&["catalog-update"]);
+    let out = f.ok(&["catalog", "update"]);
     assert!(out.contains("3 release(s)"), "{out}");
     let release = &f.ok(&[
+        "catalog",
         "register",
         legacy.to_str().unwrap(),
         "--ref",
@@ -571,9 +572,9 @@ fn catalog_update_publishes_every_package_with_its_path() {
     let f = Fixture::new();
     f.release("store", "1.1.0");
     fs::write(f.dir.join("sources.txt"), "mono\n").unwrap();
-    let out = f.ok(&["catalog-update"]);
+    let out = f.ok(&["catalog", "update"]);
     assert!(out.contains("3 release(s)"), "{out}");
-    let info = f.ok(&["info"]);
+    let info = f.ok(&["catalog", "show"]);
     assert!(
         info.contains("tilr/store — latest: 1.1.0") && info.contains("tilr/theme — latest: 1.0.0"),
         "{info}"
@@ -595,9 +596,10 @@ fn catalog_update_publishes_every_package_with_its_path() {
     let check = f.ok(&["check"]);
     assert!(check.contains("Updates: 0."), "{check}");
     // register needs the package for a ref that does not name it.
-    let error = f.fails(&["register", f.source(), "--ref", "main"]);
+    let error = f.fails(&["catalog", "register", f.source(), "--ref", "main"]);
     assert!(error.contains("choose one by ID"), "{error}");
     let out = f.ok(&[
+        "catalog",
         "register",
         f.source(),
         "--ref",
@@ -1352,7 +1354,7 @@ fn a_v_version_tag_in_a_multi_package_repository_is_ignored_without_a_warning() 
     assert!(out.contains("tilr/store updated 1.0.0 → 1.1.0"), "{out}");
     quiet(&["update", "all"]);
     fs::write(f.dir.join("sources.txt"), "mono\n").unwrap();
-    let out = quiet(&["catalog-update"]);
+    let out = quiet(&["catalog", "update"]);
     assert!(out.contains("3 release(s)"), "{out}");
     assert!(
         !f.dir

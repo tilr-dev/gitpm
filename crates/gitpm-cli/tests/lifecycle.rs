@@ -823,17 +823,33 @@ fn local_catalog_register_read_install_and_immutable_versions() {
     let location = catalog_dir.to_str().unwrap();
     let repo = f.repo.to_str().unwrap();
     f.cli(
-        &["--catalog", location, "register", repo, "--ref", "HEAD"],
+        &[
+            "--catalog",
+            location,
+            "catalog",
+            "register",
+            repo,
+            "--ref",
+            "HEAD",
+        ],
         true,
     );
     let file = catalog_dir.join("catalog.json");
     let original = fs::read(&file).unwrap();
     assert!(
-        f.cli(&["--catalog", location, "catalog"], true)
+        f.cli(&["--catalog", location, "catalog", "links"], true)
             .contains("namespaces")
     );
     f.cli(
-        &["--catalog", location, "register", repo, "--ref", "HEAD"],
+        &[
+            "--catalog",
+            location,
+            "catalog",
+            "register",
+            repo,
+            "--ref",
+            "HEAD",
+        ],
         true,
     );
     assert_eq!(fs::read(&file).unwrap(), original);
@@ -858,13 +874,29 @@ fn local_catalog_register_read_install_and_immutable_versions() {
     f.git(&["add", "."]);
     f.git(&["commit", "-m", "same version different commit"]);
     f.cli(
-        &["--catalog", location, "register", repo, "--ref", "HEAD"],
+        &[
+            "--catalog",
+            location,
+            "catalog",
+            "register",
+            repo,
+            "--ref",
+            "HEAD",
+        ],
         false,
     );
     assert_eq!(fs::read(&file).unwrap(), original);
     fs::write(&file, "not JSON").unwrap();
     f.cli(
-        &["--catalog", location, "register", repo, "--ref", "HEAD"],
+        &[
+            "--catalog",
+            location,
+            "catalog",
+            "register",
+            repo,
+            "--ref",
+            "HEAD",
+        ],
         false,
     );
     assert_eq!(fs::read_to_string(&file).unwrap(), "not JSON");
@@ -872,6 +904,7 @@ fn local_catalog_register_read_install_and_immutable_versions() {
         &[
             "--catalog",
             "https://example.invalid/catalog",
+            "catalog",
             "register",
             repo,
             "--ref",
@@ -977,17 +1010,18 @@ fn v1_catalog_is_refused_and_left_unchanged() {
         "catalog"
     );
     for args in [
-        &["--catalog", location, "info"][..],
+        &["--catalog", location, "catalog", "show"][..],
         &["--catalog", location, "install-catalog", "dan/hello"][..],
         &[
             "--catalog",
             location,
+            "catalog",
             "register",
             f.repo.to_str().unwrap(),
             "--ref",
             "HEAD",
         ][..],
-        &["--catalog", location, "catalog-update"][..],
+        &["--catalog", location, "catalog", "update"][..],
     ] {
         f.cli(args, false);
     }
@@ -1071,7 +1105,7 @@ fn catalog_update_keeps_published_records_when_tags_move() {
     // Paths are relative to the list file, and duplicate lines are harmless.
     let sources = f.dir.join("sources.txt");
     fs::write(&sources, "# Git sources\n\n./upstream\n./upstream\n").unwrap();
-    f.cli(&["--catalog", location, "catalog-update"], true);
+    f.cli(&["--catalog", location, "catalog", "update"], true);
     let first = catalog::lookup(location, "dan/hello", None).unwrap();
     assert_eq!(first.manifest.version, "1.0.0");
     assert!(!first.files.is_empty());
@@ -1081,7 +1115,8 @@ fn catalog_update_keeps_published_records_when_tags_move() {
         &[
             "--catalog",
             location,
-            "catalog-update",
+            "catalog",
+            "update",
             "--sources",
             sources.to_str().unwrap(),
         ],
@@ -1100,13 +1135,13 @@ fn catalog_update_keeps_published_records_when_tags_move() {
     );
     let index = catalog_dir.join("namespaces/dan/hello/plugin.json");
     let original_index = fs::read(&index).unwrap();
-    f.cli(&["--catalog", location, "catalog-update"], true);
+    f.cli(&["--catalog", location, "catalog", "update"], true);
     assert_eq!(fs::read(&index).unwrap(), original_index);
     f.release("2.0.0", "two");
     // Move an old tag to a different commit with the same manifest version: the
     // published record is kept with a warning, the new version is published.
     f.release("1.0.0", "replacement");
-    let (ok, out, err) = f.output(&["--catalog", location, "catalog-update"]);
+    let (ok, out, err) = f.output(&["--catalog", location, "catalog", "update"]);
     assert!(ok, "{err}");
     assert!(
         out.contains("Catalog ready: 3 release(s) checked from sources."),
@@ -1149,16 +1184,16 @@ fn catalog_update_validates_every_source_before_writing_and_retains_removed_sour
             .success()
     );
     fs::write(&sources, "./upstream\n./dan/no-tags\n").unwrap();
-    f.cli(&["--catalog", location, "catalog-update"], false);
+    f.cli(&["--catalog", location, "catalog", "update"], false);
     assert!(!directory.exists());
     // Stable installs have no implicit fallback to the development branch.
     f.cli(&["install", no_tags.to_str().unwrap()], false);
     f.cli(&["install", no_tags.to_str().unwrap(), "--dev"], true);
     fs::write(&sources, "./upstream\n").unwrap();
-    f.cli(&["--catalog", location, "catalog-update"], true);
+    f.cli(&["--catalog", location, "catalog", "update"], true);
     f.cli(&["init", "dan/second", "--into", "dan/second"], true);
     fs::write(&sources, "./dan/second\n").unwrap();
-    f.cli(&["--catalog", location, "catalog-update"], true);
+    f.cli(&["--catalog", location, "catalog", "update"], true);
     assert!(directory.join("namespaces/dan/hello/plugin.json").exists());
     assert!(directory.join("namespaces/dan/second/plugin.json").exists());
 }
@@ -1184,7 +1219,7 @@ fn release_manifest_must_match_tag_and_update_warns_on_retagging() {
     let dir = f.dir.join("generated");
     fs::write(f.dir.join("sources.txt"), "./upstream\n").unwrap();
     f.cli(
-        &["--catalog", dir.to_str().unwrap(), "catalog-update"],
+        &["--catalog", dir.to_str().unwrap(), "catalog", "update"],
         false,
     );
     assert!(!dir.exists());
@@ -1221,7 +1256,7 @@ fn info_shows_directory_tree_without_installing() {
     let dir = f.dir.join("catalog");
     let location = dir.to_str().unwrap();
     let release = catalog::register(location, f.repo.to_str().unwrap(), "HEAD").unwrap();
-    let result = f.cli(&["--catalog", location, "info"], true);
+    let result = f.cli(&["--catalog", location, "catalog", "show"], true);
     assert!(result.contains("Directories and packages:"));
     assert!(result.contains("namespaces/"));
     assert!(result.contains("hello/"));
@@ -1415,6 +1450,49 @@ fn usage_errors_name_the_problem_and_create_nothing() {
     let f = Fixture::new();
     for (args, message) in [
         (&["bogus", "qa/demo"][..], "unknown command: bogus"),
+        (
+            &["catalog", "show", "extra"][..],
+            "catalog show: expected 0 argument(s), got 1",
+        ),
+        (
+            &["catalog", "links", "extra"][..],
+            "catalog links: expected 0 argument(s), got 1",
+        ),
+        (
+            &["catalog", "update", "extra"][..],
+            "catalog update: expected 0 argument(s), got 1",
+        ),
+        (
+            &["catalog", "register"][..],
+            "catalog register: expected 1 argument(s), got 0",
+        ),
+        (
+            &["catalog", "show", "--sources", "list.txt"][..],
+            "--sources requires catalog update",
+        ),
+        (
+            &["catalog", "links", "--ref", "HEAD"][..],
+            "--ref is not valid for catalog links",
+        ),
+        (
+            &["catalog", "update", "--package", "qa/demo"][..],
+            "--package requires install/download/commit/catalog register",
+        ),
+        (
+            &[
+                "catalog",
+                "show",
+                "--build-url",
+                "https://example.invalid/build",
+                "--build-sha256",
+                "a",
+            ][..],
+            "build options require catalog register",
+        ),
+        (
+            &["catalog", "register", "source"][..],
+            "catalog register requires --ref",
+        ),
         (&["list", "--bogus"][..], "unknown option: --bogus"),
         (
             &["update", "qa/demo", "--ref", "a", "--ref", "b"][..],
@@ -1505,10 +1583,10 @@ fn usage_errors_name_the_problem_and_create_nothing() {
 fn catalog_commands_name_the_missing_catalog_and_create_nothing() {
     let f = Fixture::new();
     for args in [
-        &["info"][..],
-        &["catalog"][..],
-        &["catalog-update"][..],
-        &["register", "x", "--ref", "HEAD"][..],
+        &["catalog", "show"][..],
+        &["catalog", "links"][..],
+        &["catalog", "update"][..],
+        &["catalog", "register", "x", "--ref", "HEAD"][..],
         &["install-catalog", "qa/demo"][..],
         &["download-catalog", "qa/demo"][..],
     ] {
@@ -1522,7 +1600,14 @@ fn catalog_commands_name_the_missing_catalog_and_create_nothing() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(!out.status.success(), "{args:?} succeeded");
         assert!(
-            stderr.contains("needs a catalog: pass --catalog"),
+            stderr.contains(&format!(
+                "{} needs a catalog: pass --catalog",
+                if args[0] == "catalog" {
+                    format!("catalog {}", args[1])
+                } else {
+                    args[0].to_owned()
+                }
+            )),
             "{args:?}: {stderr}"
         );
         assert!(!f.root.exists(), "{args:?} created the workspace");
@@ -1611,7 +1696,7 @@ fn legacy_pm_variables_are_ignored() {
             .join("gitpm-workspace/dist/dan/hello/index.js")
             .exists()
     );
-    let out = cli(&["info"]);
+    let out = cli(&["catalog", "show"]);
     assert!(!out.status.success());
     assert!(
         String::from_utf8_lossy(&out.stderr)
@@ -1751,8 +1836,8 @@ fn custom_ssh_is_shared_by_auth_install_catalog_and_check() {
             vec!["auth", "check", source],
             vec!["install", source],
             vec!["check"],
-            vec!["catalog-update"],
-            vec!["register", source, "--ref", "dan/hello@1.0.0"],
+            vec!["catalog", "update"],
+            vec!["catalog", "register", source, "--ref", "dan/hello@1.0.0"],
         ] {
             let mut command = f.pm();
             command
@@ -1793,7 +1878,7 @@ fn gitpm_variables_set_root_catalog_and_sources() {
     let out = f
         .pm()
         .current_dir(&f.dir)
-        .args(["catalog-update"])
+        .args(["catalog", "update"])
         .output()
         .unwrap();
     assert!(
@@ -1831,7 +1916,7 @@ fn help_names_the_binary_and_removed_commands_are_unknown() {
     assert!(!help.contains("--publish"));
     for args in [
         &["sync"][..],
-        &["catalog-update", "--publish"][..],
+        &["catalog", "update", "--publish"][..],
         &["sync", "--dry-run"][..],
     ] {
         let out = f.pm().args(args).output().unwrap();
@@ -1845,7 +1930,13 @@ fn help_names_the_binary_and_removed_commands_are_unknown() {
             .lines()
             .any(|l| l.starts_with("  create ") || l.contains("migrate-catalog"))
     );
-    for command in ["create", "migrate-catalog"] {
+    for command in [
+        "create",
+        "migrate-catalog",
+        "info",
+        "catalog-update",
+        "register",
+    ] {
         let out = f
             .pm()
             .args([command, "dan/hello", "--into", "x"])
@@ -2040,6 +2131,25 @@ fn command_help_prints_only_that_command() {
         update.contains("update ID") && update.contains("update all"),
         "{update}"
     );
+    for flag in ["--help", "-h"] {
+        let group = f.cli(&["catalog", flag], true);
+        for subcommand in ["show", "links", "update", "register"] {
+            let single = f.cli(&["catalog", subcommand, flag], true);
+            assert!(
+                single.starts_with(&format!("  catalog {subcommand} ")),
+                "{single}"
+            );
+            assert!(group.contains(single.trim_end()));
+            assert!(full.contains(single.trim_end()));
+            assert_eq!(
+                single
+                    .lines()
+                    .filter(|l| l.starts_with("  catalog "))
+                    .count(),
+                1
+            );
+        }
+    }
     let out = f.pm().args(["nope", "--help"]).output().unwrap();
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("unknown command: nope"));
@@ -2237,6 +2347,7 @@ fn verified_catalog_protects_updates_and_detach_drops_it() {
         &[
             "--catalog",
             location,
+            "catalog",
             "register",
             repo,
             "--ref",
@@ -2264,9 +2375,9 @@ fn verified_catalog_protects_updates_and_detach_drops_it() {
     fs::write(&file, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
     fs::write(f.dir.join("sources.txt"), format!("{repo}\n")).unwrap();
     let before = fs::read(&file).unwrap();
-    f.cli(&["--catalog", location, "catalog-update"], false);
+    f.cli(&["--catalog", location, "catalog", "update"], false);
     assert_eq!(fs::read(&file).unwrap(), before);
-    let info = f.cli(&["--catalog", location, "info"], true);
+    let info = f.cli(&["--catalog", location, "catalog", "show"], true);
     assert!(info.contains("Verified: yes"), "{info}");
 
     f.cli(
@@ -2353,7 +2464,15 @@ fn update_lines_mark_major_updates() {
         "dan/hello@1.1.0-rc.2",
     ] {
         other.cli(
-            &["--catalog", location, "register", repo, "--ref", tag],
+            &[
+                "--catalog",
+                location,
+                "catalog",
+                "register",
+                repo,
+                "--ref",
+                tag,
+            ],
             true,
         );
     }
@@ -2406,6 +2525,7 @@ fn catalog_package_with_pre_releases_only() {
         &[
             "--catalog",
             location,
+            "catalog",
             "register",
             repo,
             "--ref",
@@ -2413,7 +2533,7 @@ fn catalog_package_with_pre_releases_only() {
         ],
         true,
     );
-    let info = f.cli(&["--catalog", location, "info"], true);
+    let info = f.cli(&["--catalog", location, "catalog", "show"], true);
     assert!(info.contains("latest: pre-releases only"), "{info}");
     let out = f
         .pm()
@@ -2467,4 +2587,117 @@ fn update_all_local_work_prints_the_library_message_unchanged() {
         ),
         "{err}"
     );
+}
+
+#[test]
+fn catalog_group_runs_every_subcommand() {
+    let f = Fixture::new();
+    f.release("1.1.0", "hello v2");
+    let sources = f.dir.join("group-sources.txt");
+    fs::write(&sources, format!("{}\n", f.repo.display())).unwrap();
+    let location = f.dir.join("group-catalog");
+    let location = location.to_str().unwrap();
+    let out = f.cli(
+        &[
+            "catalog",
+            "update",
+            "--catalog",
+            location,
+            "--sources",
+            sources.to_str().unwrap(),
+        ],
+        true,
+    );
+    assert_eq!(out, "Catalog ready: 2 release(s) checked from sources.\n");
+    f.release("1.2.0", "hello v3");
+    let out = f.cli(
+        &[
+            "--catalog",
+            location,
+            "catalog",
+            "register",
+            f.repo.to_str().unwrap(),
+            "--ref",
+            "dan/hello@1.2.0",
+            "--package",
+            "dan/hello",
+            "--build-url",
+            "https://example.invalid/build.tar.gz",
+            "--build-sha256",
+            &"a".repeat(64),
+        ],
+        true,
+    );
+    let release: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(release["manifest"]["id"], "dan/hello");
+    let show = f.cli(&["--catalog", location, "catalog", "show"], true);
+    assert!(
+        show.contains("dan/hello — latest: 1.2.0, versions: 3"),
+        "{show}"
+    );
+    let links = f.cli(&["--catalog", location, "catalog", "links"], true);
+    let links: serde_json::Value = serde_json::from_str(&links).unwrap();
+    assert_eq!(links["schema"], 2);
+    assert!(!f.root.exists());
+}
+
+#[test]
+fn catalog_group_errors_create_nothing() {
+    let f = Fixture::new();
+    let empty = f.dir.join("empty");
+    fs::create_dir(&empty).unwrap();
+    for (args, message) in [
+        (
+            vec!["catalog"],
+            "catalog needs a subcommand: show, links, update or register; use gitpm catalog --help",
+        ),
+        (
+            vec!["catalog", "publish"],
+            "unknown catalog command: publish; use gitpm catalog --help",
+        ),
+        (
+            vec!["catalog", "publish", "--help"],
+            "unknown catalog command: publish; use gitpm catalog --help",
+        ),
+    ] {
+        let out = Command::new(env!("CARGO_BIN_EXE_gitpm"))
+            .env_clear()
+            .current_dir(&empty)
+            .args(["--root", "workspace", "--catalog", "catalog-dir"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(1));
+        assert_eq!(
+            String::from_utf8_lossy(&out.stderr),
+            format!("Error: {message}\n")
+        );
+        assert!(out.stdout.is_empty());
+        assert_eq!(fs::read_dir(&empty).unwrap().count(), 0);
+    }
+}
+
+#[test]
+fn catalog_update_http_error_has_a_command_hint() {
+    let f = Fixture::new();
+    let (ok, out, err) = f.output(&[
+        "--catalog",
+        "https://example.invalid/catalog.json",
+        "catalog",
+        "update",
+    ]);
+    assert!(!ok);
+    assert!(out.is_empty());
+    assert!(
+        err.contains("writing a catalog requires a local folder; HTTP(S) catalogs are read-only"),
+        "{err}"
+    );
+    assert!(err.contains("Error kind: invalid_argument"), "{err}");
+    assert!(
+        err.contains(
+            "Hint: `gitpm catalog update` writes a local catalog folder; upload its files yourself"
+        ),
+        "{err}"
+    );
+    assert!(!f.root.exists());
 }

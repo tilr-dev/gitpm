@@ -85,9 +85,10 @@ fn hint(invocation: &Invocation, error: &PmError) -> Option<String> {
             )
         }
         PmError::InvalidArgument(_)
-            if *remote_catalog && matches!(command.as_str(), "catalog-update" | "register") =>
+            if *remote_catalog
+                && matches!(command.as_str(), "catalog update" | "catalog register") =>
         {
-            format!("{command} writes a local catalog folder; upload its files yourself")
+            format!("`gitpm {command}` writes a local catalog folder; upload its files yourself")
         }
         // The library refused to enable over an inactive dependency.
         PmError::DependencyConflict(_) if command == "enable" => {
@@ -693,10 +694,11 @@ const COMMANDS: &[&str] = &[
     "fork",
     "remote",
     "auth",
-    "info",
+    "catalog show",
     "catalog",
-    "catalog-update",
-    "register",
+    "catalog links",
+    "catalog update",
+    "catalog register",
     "commit",
     "install-catalog",
     "install",
@@ -870,21 +872,21 @@ Authoring:",
 Catalog (a local folder of static JSON files, or an HTTP(S) URL for reading):",
     },
     Help {
-        commands: &["info"],
-        text: "  info                             show the catalog's directories and package versions",
+        commands: &["catalog show"],
+        text: "  catalog show                     show the catalog's directories and package versions",
     },
     Help {
-        commands: &["catalog"],
-        text: "  catalog                          show directory links at this catalog level (JSON)",
+        commands: &["catalog links"],
+        text: "  catalog links                    show directory links at this catalog level (JSON)",
     },
     Help {
-        commands: &["catalog-update"],
-        text: "  catalog-update [--sources FILE]   generate/refresh a local catalog from the Git release
+        commands: &["catalog update"],
+        text: "  catalog update [--sources FILE]   generate/refresh a local catalog from the Git release
                                    tags of the repositories listed in FILE",
     },
     Help {
-        commands: &["register"],
-        text: "  register GIT_SOURCE --ref REF     add one committed version to a local catalog
+        commands: &["catalog register"],
+        text: "  catalog register GIT_SOURCE --ref REF  add one committed version to a local catalog
     [--package ID]                 package of a multi-package repository
     [--build-url HTTPS_URL --build-sha256 SHA256]  optional build metadata",
     },
@@ -896,7 +898,7 @@ Settings (flag, then environment, then default; there is no config file):
   --catalog LOC   GITPM_CATALOG    catalog folder, catalog.json or URL; no default
                                    (needed by catalog commands, install-catalog and
                                    download-catalog)
-  --sources FILE  GITPM_SOURCES    Git sources list for catalog-update; default ./sources.txt
+  --sources FILE  GITPM_SOURCES    Git sources list for catalog update; default ./sources.txt
 
 Nothing is built or executed and nothing is pushed or uploaded: gitpm clones Git
 repositories and copies their dist/ folder.",
@@ -913,10 +915,31 @@ fn usage() -> String {
 fn command_usage(command: &str) -> Option<String> {
     let blocks: Vec<&str> = HELP
         .iter()
-        .filter(|part| part.commands.contains(&command))
+        .filter(|part| {
+            part.commands.contains(&command)
+                || (command == "catalog" && part.commands.iter().any(|c| c.starts_with("catalog ")))
+        })
         .map(|part| part.text)
         .collect();
     (!blocks.is_empty()).then(|| blocks.join("\n"))
+}
+/// Collapse a catalog operation to the same command key used by help and validation.
+fn catalog_command(args: &mut Vec<String>, help: bool) -> Result<()> {
+    if args.first().is_none_or(|arg| arg != "catalog") {
+        return Ok(());
+    }
+    match args.get(1).map(String::as_str) {
+        Some("show" | "links" | "update" | "register") => {
+            let subcommand = args.remove(1);
+            args[0] = format!("catalog {subcommand}");
+        }
+        Some("--help" | "-h") if help => {}
+        None => bail!(
+            "catalog needs a subcommand: show, links, update or register; use gitpm catalog --help"
+        ),
+        Some(other) => bail!("unknown catalog command: {other}; use gitpm catalog --help"),
+    }
+    Ok(())
 }
 fn run(invocation: &mut Invocation) -> Result<()> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
@@ -936,6 +959,7 @@ fn run(invocation: &mut Invocation) -> Result<()> {
     }
     // `gitpm COMMAND --help`: that command's usage only.
     if args[1..].iter().any(|a| a == "--help" || a == "-h") {
+        catalog_command(&mut args, true)?;
         let command = args[0].as_str();
         let text = COMMANDS
             .contains(&command)
@@ -969,6 +993,7 @@ fn run(invocation: &mut Invocation) -> Result<()> {
     let dev = flag(&mut args, "--dev")?;
     let release = flag(&mut args, "--release")?;
     let detach = flag(&mut args, "--detach")?;
+    catalog_command(&mut args, false)?;
     ensure!(!args.is_empty(), "command required; use --help");
     if let Some(unknown) = args.iter().find(|a| a.len() > 1 && a.starts_with('-')) {
         bail!("unknown option: {unknown}; use --help");
@@ -979,8 +1004,8 @@ fn run(invocation: &mut Invocation) -> Result<()> {
         "unknown command: {command}; use --help"
     );
     ensure!(
-        sources.is_none() || command == "catalog-update",
-        "--sources requires catalog-update"
+        sources.is_none() || command == "catalog update",
+        "--sources requires catalog update"
     );
     ensure!(
         !dev || matches!(command, "install" | "download" | "update"),
@@ -998,11 +1023,15 @@ fn run(invocation: &mut Invocation) -> Result<()> {
     );
     ensure!(!release || !dev, "--release conflicts with --dev");
     ensure!(
-        build.is_none() || command == "register",
-        "build options require register"
+        build.is_none() || command == "catalog register",
+        "build options require catalog register"
     );
     ensure!(
-        reference.is_none() || matches!(command, "install" | "download" | "update" | "register"),
+        reference.is_none()
+            || matches!(
+                command,
+                "install" | "download" | "update" | "catalog register"
+            ),
         "--ref is not valid for {command}"
     );
     ensure!(
@@ -1027,8 +1056,12 @@ fn run(invocation: &mut Invocation) -> Result<()> {
         "--force is only valid with uninstall/disable/enable/install/install-catalog/forget/replace/fork --replace"
     );
     ensure!(
-        package.is_none() || matches!(command, "install" | "download" | "commit" | "register"),
-        "--package requires install/download/commit/register"
+        package.is_none()
+            || matches!(
+                command,
+                "install" | "download" | "commit" | "catalog register"
+            ),
+        "--package requires install/download/commit/catalog register"
     );
     ensure!(
         into.is_none() || matches!(command, "init" | "fork"),
@@ -1055,7 +1088,7 @@ fn run(invocation: &mut Invocation) -> Result<()> {
         "replace needs exactly one of --with FORK or --back"
     );
     let expected = match command {
-        "info" | "catalog-update" | "list" | "check" | "catalog" | "sync-dist" => 1,
+        "catalog show" | "catalog update" | "list" | "check" | "catalog links" | "sync-dist" => 1,
         // fork ID [ID...]: one or more installed IDs.
         "fork" => args.len().max(2),
         "auth" | "commit" | "remote" => 3,
@@ -1176,11 +1209,11 @@ fn run(invocation: &mut Invocation) -> Result<()> {
             println!("{}", auth::check(&args[2], &ssh_options)?.message);
             return Ok(());
         }
-        "info" => {
+        "catalog show" => {
             print!("{}", catalog_text::info(&require_catalog()?)?);
             return Ok(());
         }
-        "catalog-update" => {
+        "catalog update" => {
             let url = require_catalog()?;
             let sources = sources
                 .clone()
@@ -1291,18 +1324,18 @@ fn run(invocation: &mut Invocation) -> Result<()> {
             }
             return Ok(());
         }
-        "catalog" => {
+        "catalog links" => {
             println!(
                 "{}",
                 serde_json::to_string_pretty(&catalog::links(&require_catalog()?)?)?
             );
             return Ok(());
         }
-        "register" => {
+        "catalog register" => {
             let url = require_catalog()?;
             let reference = reference
                 .as_deref()
-                .ok_or_else(|| anyhow::anyhow!("register requires --ref TAG_OR_COMMIT"))?;
+                .ok_or_else(|| anyhow::anyhow!("catalog register requires --ref TAG_OR_COMMIT"))?;
             println!(
                 "{}",
                 serde_json::to_string_pretty(&catalog::register_package_with_options(
