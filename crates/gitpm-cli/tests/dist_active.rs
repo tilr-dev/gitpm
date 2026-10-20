@@ -579,7 +579,10 @@ fn a_namespace_path_that_is_not_a_folder_blocks_nothing_else() {
     fs::rename(dist.join("dan"), dist.join("dan-blocked")).unwrap();
     f.ok(&["sync-dist"]);
     assert_eq!(f.dist("dan/demo").as_deref(), Some("fork"));
-    assert_eq!(fs::read_to_string(dist.join("dan-blocked")).unwrap(), "file");
+    assert_eq!(
+        fs::read_to_string(dist.join("dan-blocked")).unwrap(),
+        "file"
+    );
 }
 
 #[test]
