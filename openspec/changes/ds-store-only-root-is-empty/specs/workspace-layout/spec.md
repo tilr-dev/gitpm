@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Foreign directories are refused
-Opening a non-empty directory (one holding anything but `.DS_Store`) that has no `state.json` SHALL fail with `workspace` ("refusing nonempty directory without state.json") and change nothing inside that directory (its parent folder and the workspace lock file beside it may already exist). Single source for a corrupt `state.json`: it SHALL block every operation with `invalid_data` and MUST NOT be overwritten. Verified by `workspace::open_refuses_foreign_directories_and_bad_state` `robustness::corrupt_state_is_not_overwritten`, `workspace::open_ds_store_only_root` and `workspace::open_ds_store_with_other_content_is_refused`.
+Opening a non-empty directory (one holding anything but `.DS_Store`) that has no `state.json` SHALL fail with `workspace` ("refusing nonempty directory without state.json") and change nothing inside that directory (its parent folder and the workspace lock file beside it may already exist). Single source for a corrupt `state.json`: it SHALL block every operation with `invalid_data` and MUST NOT be overwritten. Verified by `workspace::open_refuses_foreign_directories_and_bad_state`, `robustness::corrupt_state_is_not_overwritten`, `workspace::open_ds_store_only_root` and `workspace::open_ds_store_with_other_content_is_refused`.
 
 #### Scenario: Pointing the workspace at a project folder
 - **WHEN** the workspace root is an existing non-empty folder without `state.json`
