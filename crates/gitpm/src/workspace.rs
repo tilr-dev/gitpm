@@ -7270,8 +7270,11 @@ mod tests {
         let error = m
             .fork_packages(&["tilr/theme"], &destination, "me")
             .unwrap_err();
-        assert_eq!(error.kind(), "git", "{error}");
-        assert!(error.to_string().contains("GIT_AUTHOR_IDENT"), "{error}");
+        assert_eq!(error.kind(), "invalid_argument", "{error}");
+        assert_eq!(
+            error.to_string(),
+            "no Git identity configured; set user.name and user.email"
+        );
         assert_eq!(snapshot(&destination), before, "repository changed");
         assert_eq!(
             fixture_git(&destination, &["config", "--local", "user.name"]),

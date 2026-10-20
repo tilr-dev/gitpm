@@ -413,6 +413,10 @@ Changed in 0.5:
 
 Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING**):
 
+- `commit`, `init` into an existing repository, and adding to an existing fork now
+  refuse a missing configured Git identity with `invalid_argument` instead of using
+  a name or email derived by Git. Migration: set `user.name` and `user.email` in Git
+  config (or provide both author and committer identity environment variables).
 - Package IDs are always `namespace/name`; an unscoped ID (`demo`) is refused with
   `invalid_id` everywhere (manifests, dependencies, state, commands). `update all` is
   always the joint upgrade, as no ID can be `all`. Migration: re-create the package
@@ -966,7 +970,12 @@ packages/theme/dist/…
   second `init` is refused naming the package that has the folder). Only `gitpm.json` and
   the new folder are committed; `gitpm.json` must have no uncommitted changes. If only the
   tag fails, the commit stays and the error names the tag to create. gitpm never writes
-  a Git identity into an existing repository (no identity: refused as by `commit`); only a
+  a Git identity into an existing repository: without configured `user.name` and
+  `user.email` (or author and committer identity environment variables), `commit`,
+  `init` into it, and adding to an existing fork fail with `invalid_argument` and
+  `no Git identity configured; set user.name and user.email`. Git's inferred login
+  name and host email are not accepted. A retry that only creates a failed release
+  tag needs no identity. Only a
   repository it creates itself (a new `init` folder, a new fork) gets a local demo identity
   when the user has none. `gitpm commit REPO VERSION --package ID` releases one
   package: like for a root package it stages ALL changes of the repository (not only
