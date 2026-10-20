@@ -7360,7 +7360,10 @@ mod tests {
                 &format!("160000,{sha},packages/theme/src/vendor"),
             ],
         );
-        fixture_git(&mono.repo, &["commit", "-q", "-m", "submodule outside dist"]);
+        fixture_git(
+            &mono.repo,
+            &["commit", "-q", "-m", "submodule outside dist"],
+        );
         fixture_git(&mono.repo, &["tag", "-f", "tilr/theme@1.0.0"]);
         let m = mono.open();
         for id in ["tilr/store", "tilr/theme"] {
