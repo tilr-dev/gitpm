@@ -50,7 +50,7 @@ Repository git commands SHALL use closed stdin, `GIT_TERMINAL_PROMPT=0`, empty `
 - **THEN** git fails fast with `git` instead of waiting, so the workspace lock is released
 
 ### Requirement: Library-owned Git input
-Git ref transactions SHALL accept only library-generated input, close the input pipe after writing, and retain the execution timeout and noninteractive bounds.
+Exception to "Git never waits for input": a Git ref transaction (`update-ref --stdin`) SHALL get only library-generated input instead of closed stdin, and the input pipe SHALL be closed after writing; user stdin SHALL NOT be inherited, and the other bounds of that requirement (no prompts, lowSpeed limits, batch SSH, 600s kill) SHALL apply unchanged.
 
 #### Scenario: Library-owned ref transaction input
 - **WHEN** release tags are created by `update-ref --stdin`
