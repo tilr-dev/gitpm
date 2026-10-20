@@ -244,19 +244,6 @@ impl<T> Require<T> for Option<T> {
     }
 }
 
-impl From<gitpm_transport::Error> for Error {
-    fn from(error: gitpm_transport::Error) -> Self {
-        use gitpm_transport::Error as TransportError;
-        match error {
-            TransportError::Git(s) => Self::Git(s),
-            TransportError::Http(s) => Self::Http(s),
-            TransportError::Auth(s) => Self::Auth(s),
-            TransportError::Io(s) => Self::Io(s),
-            TransportError::InvalidData(s) => Self::InvalidData(s),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -525,7 +512,8 @@ mod tests {
             ("deps.rs", include_str!("deps.rs")),
             ("error.rs", include_str!("error.rs")),
             ("lib.rs", include_str!("lib.rs")),
-            ("transport.rs", include_str!("transport.rs")),
+            ("transport/mod.rs", include_str!("transport/mod.rs")),
+            ("transport/system.rs", include_str!("transport/system.rs")),
             ("identity.rs", include_str!("identity.rs")),
             ("list.rs", include_str!("list.rs")),
             ("lock.rs", include_str!("lock.rs")),

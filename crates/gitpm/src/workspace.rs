@@ -1877,7 +1877,7 @@ impl Manager {
                 None => clones::fetch_origin(&repo, true, self.options.custom_ssh)?,
             }
             if matches!(&target, Target::Dev) || target == Target::Ref("HEAD".into()) {
-                git(&repo, &["remote", "set-head", "origin", "--auto"], self.options.custom_ssh)?;
+                crate::transport::set_remote_head(&repo, "origin", self.options.custom_ssh)?;
             }
             let mut skipped = Vec::new();
             // Moved or retracted installed release tag (release mode).

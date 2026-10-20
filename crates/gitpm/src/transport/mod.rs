@@ -1,22 +1,19 @@
 //! Replaceable, bounded Git and HTTP transport.
-mod error;
-#[cfg(test)]
-mod test_support;
-mod transport;
-pub use error::{Error, Result};
+mod system;
+use crate::error::Result;
 use std::path::Path;
-pub use transport::{LsRemote, RemoteRefs};
+pub(crate) use system::{LsRemote, RemoteRefs};
 
 /// Fetch operations without command-line flags.
 #[derive(Clone, Copy, Debug)]
-pub enum Fetch<'a> {
+pub(crate) enum Fetch<'a> {
     /// Force-update tags, optionally pruning deleted origin tags.
     Tags { remote: &'a str, prune: bool },
     /// Mirror remote tags into a private local ref namespace.
     RecordTags { remote: &'a str, namespace: &'a str },
 }
 /// External Git/HTTP operations. Raw local Git remains for staged migration.
-pub trait Transport {
+pub(crate) trait Transport {
     fn git(&self, repo: &Path, args: &[&str], custom_ssh: bool) -> Result<String>;
     fn git_raw(&self, repo: &Path, args: &[&str], custom_ssh: bool) -> Result<Vec<u8>>;
     fn git_with_input(
@@ -26,7 +23,6 @@ pub trait Transport {
         input: Vec<u8>,
         custom_ssh: bool,
     ) -> Result<()>;
-    fn git_config_defined(&self, key: &str, start_error: &str) -> Result<bool>;
     fn ls_remote(&self, source: &str, custom_ssh: bool, start_error: &str) -> Result<LsRemote>;
     fn ls_remote_refs(&self, source: &str, custom_ssh: bool) -> Result<RemoteRefs>;
     fn http_get(&self, url: &str) -> Result<Option<Vec<u8>>>;
@@ -38,17 +34,18 @@ pub trait Transport {
         custom_ssh: bool,
     ) -> Result<()>;
     fn fetch(&self, repo: &Path, request: Fetch<'_>, custom_ssh: bool) -> Result<()>;
+    fn set_remote_head(&self, repo: &Path, remote: &str, custom_ssh: bool) -> Result<()>;
     fn remote_tags(&self, repo: &Path, remote: &str, custom_ssh: bool) -> Result<String>;
 }
 /// System Git/curl implementation of the transport policies.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct SystemTransport;
+pub(crate) struct SystemTransport;
 impl Transport for SystemTransport {
     fn git(&self, repo: &Path, args: &[&str], custom_ssh: bool) -> Result<String> {
-        transport::git(repo, args, custom_ssh)
+        system::git(repo, args, custom_ssh)
     }
     fn git_raw(&self, repo: &Path, args: &[&str], custom_ssh: bool) -> Result<Vec<u8>> {
-        transport::git_raw(repo, args, custom_ssh)
+        system::git_raw(repo, args, custom_ssh)
     }
     fn git_with_input(
         &self,
@@ -57,19 +54,16 @@ impl Transport for SystemTransport {
         input: Vec<u8>,
         custom_ssh: bool,
     ) -> Result<()> {
-        transport::git_with_input(repo, args, input, custom_ssh)
-    }
-    fn git_config_defined(&self, key: &str, start_error: &str) -> Result<bool> {
-        transport::git_config_defined(key, Error::Auth, start_error)
+        system::git_with_input(repo, args, input, custom_ssh)
     }
     fn ls_remote(&self, source: &str, custom_ssh: bool, start_error: &str) -> Result<LsRemote> {
-        transport::ls_remote(source, custom_ssh, start_error)
+        system::ls_remote(source, custom_ssh, start_error)
     }
     fn ls_remote_refs(&self, source: &str, custom_ssh: bool) -> Result<RemoteRefs> {
-        transport::ls_remote_refs(source, custom_ssh)
+        system::ls_remote_refs(source, custom_ssh)
     }
     fn http_get(&self, url: &str) -> Result<Option<Vec<u8>>> {
-        transport::http_get(url)
+        system::http_get(url)
     }
     fn clone_repo(
         &self,
@@ -78,7 +72,7 @@ impl Transport for SystemTransport {
         destination: &str,
         custom_ssh: bool,
     ) -> Result<()> {
-        transport::git(
+        system::git(
             parent,
             &["clone", "--no-local", "--", source, destination],
             custom_ssh,
@@ -93,10 +87,10 @@ impl Transport for SystemTransport {
                     args.extend(["--prune", "--prune-tags"]);
                 }
                 args.extend(["--force", "--tags"]);
-                transport::git(repo, &args, custom_ssh)?;
+                system::git(repo, &args, custom_ssh)?;
             }
             Fetch::RecordTags { remote, namespace } => {
-                transport::git(
+                system::git(
                     repo,
                     &[
                         "fetch",
@@ -112,10 +106,58 @@ impl Transport for SystemTransport {
         }
         Ok(())
     }
+    fn set_remote_head(&self, repo: &Path, remote: &str, custom_ssh: bool) -> Result<()> {
+        system::git(repo, &["remote", "set-head", remote, "--auto"], custom_ssh)?;
+        Ok(())
+    }
     fn remote_tags(&self, repo: &Path, remote: &str, custom_ssh: bool) -> Result<String> {
-        transport::git(repo, &["ls-remote", "--tags", remote], custom_ssh)
+        system::git(repo, &["ls-remote", "--tags", remote], custom_ssh)
     }
 }
 
 #[cfg(test)]
-mod message_tests;
+mod boundary_tests;
+#[cfg(test)]
+mod network;
+
+pub(crate) fn git(repo: &Path, args: &[&str], custom_ssh: bool) -> Result<String> {
+    SystemTransport.git(repo, args, custom_ssh)
+}
+pub(crate) fn git_raw(repo: &Path, args: &[&str], custom_ssh: bool) -> Result<Vec<u8>> {
+    SystemTransport.git_raw(repo, args, custom_ssh)
+}
+pub(crate) fn git_with_input(
+    repo: &Path,
+    args: &[&str],
+    input: Vec<u8>,
+    custom_ssh: bool,
+) -> Result<()> {
+    SystemTransport.git_with_input(repo, args, input, custom_ssh)
+}
+pub(crate) fn ls_remote(source: &str, custom_ssh: bool, start_error: &str) -> Result<LsRemote> {
+    SystemTransport.ls_remote(source, custom_ssh, start_error)
+}
+pub(crate) fn ls_remote_refs(source: &str, custom_ssh: bool) -> Result<RemoteRefs> {
+    SystemTransport.ls_remote_refs(source, custom_ssh)
+}
+pub(crate) fn http_get(url: &str) -> Result<Option<Vec<u8>>> {
+    SystemTransport.http_get(url)
+}
+pub(crate) fn clone_repo(
+    parent: &Path,
+    source: &str,
+    destination: &str,
+    custom_ssh: bool,
+) -> Result<()> {
+    SystemTransport.clone_repo(parent, source, destination, custom_ssh)
+}
+pub(crate) fn fetch(repo: &Path, request: Fetch<'_>, custom_ssh: bool) -> Result<()> {
+    SystemTransport.fetch(repo, request, custom_ssh)
+}
+pub(crate) fn remote_tags(repo: &Path, remote: &str, custom_ssh: bool) -> Result<String> {
+    SystemTransport.remote_tags(repo, remote, custom_ssh)
+}
+
+pub(crate) fn set_remote_head(repo: &Path, remote: &str, custom_ssh: bool) -> Result<()> {
+    SystemTransport.set_remote_head(repo, remote, custom_ssh)
+}

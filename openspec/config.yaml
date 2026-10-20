@@ -119,7 +119,7 @@ rules:
     - Error cases name the stable error kind (for example `local_changes`, `has_dependents`).
     - Thin CLI (TILR-33) - Domain rules and option combinations live in the library; CLI specs cover argv/env parsing, printing, TTY prompts and hints per error kind; every CLI capability has an FFI equivalent.
   design:
-    - Keep subprocess, printing and environment access out of the library design; route git/curl through the exec module.
+    - Keep subprocess, printing and environment access out of the library design; route git/curl through the transport module.
     - Thin CLI (TILR-29..33): the CLI only parses argv and environment, calls the library, prints results, asks TTY prompts and adds command hints per error kind; library messages stay neutral (no CLI command names, no host or hosting names), and every CLI capability has an FFI equivalent.
     - No backward compatibility before 1.0 (TILR-38): no aliases, legacy formats, migrations or compatibility shims; mark the break BREAKING instead.
     - Spec deltas a design produces name no internal names (private functions, constants, source files); internal names belong in design.md and tasks.md only.

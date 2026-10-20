@@ -1,61 +1,33 @@
-use gitpm_transport::{Fetch, SystemTransport, Transport};
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    process::Command,
-};
-
-struct Fixture(PathBuf);
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
+use super::{Fetch, SystemTransport, Transport};
+use crate::test_support::{TempDir, git as fixture_git};
+use std::{fs, path::Path};
 fn git(repo: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args([
-            "-c",
-            "user.name=Test",
-            "-c",
-            "user.email=test@example.invalid",
-            "-c",
-            "commit.gpgsign=false",
-            "-c",
-            "tag.gpgsign=false",
-            "-c",
-            "core.hooksPath=/dev/null",
-        ])
-        .args(args)
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8(out.stdout).unwrap().trim().into()
+    fixture_git(repo, args).trim().to_owned()
 }
 #[test]
 fn typed_network_operations_preserve_refs_and_pruning() {
-    let root = Fixture(
-        std::env::temp_dir().join(format!("gitpm-transport-network-{}", std::process::id())),
-    );
-    fs::create_dir(&root.0).unwrap();
-    let origin = root.0.join("origin");
+    let root = TempDir::new("transport-network");
+    let origin = root.join("origin");
     fs::create_dir(&origin).unwrap();
     git(&origin, &["init", "-q", "-b", "main"]);
     fs::write(origin.join("data"), "one").unwrap();
     git(&origin, &["add", "."]);
     git(&origin, &["commit", "-qm", "first"]);
     git(&origin, &["tag", "v1"]);
+    git(&origin, &["branch", "other"]);
     let transport: &dyn Transport = &SystemTransport;
     let source = origin.to_str().unwrap();
     transport
-        .clone_repo(&root.0, source, "clone", false)
+        .clone_repo(root.path(), source, "clone", false)
         .unwrap();
-    let cloned = root.0.join("clone");
+    let cloned = root.join("clone");
+    git(&origin, &["symbolic-ref", "HEAD", "refs/heads/other"]);
+    transport.set_remote_head(&cloned, "origin", false).unwrap();
+    assert_eq!(
+        git(&cloned, &["symbolic-ref", "refs/remotes/origin/HEAD"]),
+        "refs/remotes/origin/other"
+    );
+    git(&origin, &["symbolic-ref", "HEAD", "refs/heads/main"]);
     let first = git(&cloned, &["rev-parse", "refs/tags/v1"]);
     assert_eq!(
         transport.ls_remote_refs(source, false).unwrap().tags["v1"],
@@ -119,8 +91,24 @@ fn typed_network_operations_preserve_refs_and_pruning() {
         )
         .unwrap();
     assert!(git(&cloned, &["tag", "--list"]).is_empty());
+    git(
+        &cloned,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            root.join("missing").to_str().unwrap(),
+        ],
+    );
+    assert_eq!(
+        transport
+            .set_remote_head(&cloned, "origin", false)
+            .unwrap_err()
+            .kind(),
+        "git"
+    );
     let error = transport
-        .clone_repo(&root.0, "--upload-pack=invalid", "bad", false)
+        .clone_repo(root.path(), "--upload-pack=invalid", "bad", false)
         .unwrap_err();
     assert_eq!(error.kind(), "git");
 }
