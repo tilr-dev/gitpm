@@ -5,7 +5,7 @@
 //! Everything here reads committed trees (`git ls-tree`/`git show` at a commit), never a
 //! working tree: the package set of a release is the one in its tagged commit.
 use crate::error::{Error, Result, ensure};
-use crate::{Manifest, exec::git, exec::git_raw, valid_id};
+use crate::{Manifest, transport::git, transport::git_raw, valid_id};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fs, path::Path};
 

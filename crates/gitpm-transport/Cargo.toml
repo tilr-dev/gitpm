@@ -1,0 +1,12 @@
+[package]
+name = "gitpm-transport"
+version = "0.5.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Bounded Git and HTTP transport for gitpm"
+
+[dependencies]
+libc = "0.2"
+thiserror = "2"

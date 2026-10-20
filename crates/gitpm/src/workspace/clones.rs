@@ -97,12 +97,14 @@ pub(super) fn fetch_tags(
 /// clone mirrors the origin's tags), then record those tags as the origin's tags of the
 /// last fetch ([`lost_work::record_origin_tags`]).
 pub(super) fn fetch_origin(repo: &Path, prune: bool, custom_ssh: bool) -> Result<()> {
-    let mut args = vec!["fetch", "origin"];
-    if prune {
-        args.extend(["--prune", "--prune-tags"]);
-    }
-    args.extend(["--force", "--tags"]);
-    git(repo, &args, custom_ssh)?;
+    crate::transport::fetch(
+        repo,
+        crate::transport::Fetch::Tags {
+            remote: "origin",
+            prune,
+        },
+        custom_ssh,
+    )?;
     lost_work::record_origin_tags(repo, custom_ssh)
 }
 

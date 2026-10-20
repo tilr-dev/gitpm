@@ -11,14 +11,13 @@ use crate::{
     ForkOf, Installed, InstalledPackage, LostWork, Manifest, Mode, Replaces, Revision, State,
     catalog,
     check::{self, CheckRow},
-    deps,
-    exec::git,
-    identity,
+    deps, identity,
     lost_work::{self, clean},
     model::{
         manifest, manifest_json, package_manifest, resolve_ref, resolve_upstream_ref, revision,
     },
     packages, releases, scaffold,
+    transport::git,
     txn::{self, Txn},
     valid_id,
 };
@@ -571,7 +570,7 @@ pub(crate) fn export_folder(
         "revision {commit} has no folder {}",
         if path.is_empty() { "(root)" } else { path }
     );
-    let tar = crate::exec::git_raw(repo, &["archive", "--format=tar", &tree], custom_ssh)?;
+    let tar = crate::transport::git_raw(repo, &["archive", "--format=tar", &tree], custom_ssh)?;
     fs::create_dir_all(target)?;
     let mut archive = tar::Archive::new(&tar[..]);
     for entry in archive.entries()? {
@@ -2779,11 +2778,7 @@ fn clone_revision(txn: &Txn, fetch: &Fetch, name: &str, custom_ssh: bool) -> Res
     let repo = txn.scratch(name);
     let parent = repo.parent().unwrap();
     fs::create_dir_all(parent)?;
-    git(
-        parent,
-        &["clone", "--no-local", "--", fetch.source, name],
-        custom_ssh,
-    )?;
+    crate::transport::clone_repo(parent, fetch.source, name, custom_ssh)?;
     // A fresh clone has exactly the origin's tags.
     lost_work::record_origin_tags(&repo, custom_ssh)?;
     let mut skipped = Vec::new();

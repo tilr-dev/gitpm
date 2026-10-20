@@ -3,9 +3,8 @@
 use crate::catalog::version_key;
 use crate::error::{Context, Error, Result, ensure, fail};
 use crate::{
-    Manifest,
-    exec::{git, git_with_input},
-    identity, model, packages,
+    Manifest, identity, model, packages,
+    transport::{git, git_with_input},
 };
 use std::{
     fs,

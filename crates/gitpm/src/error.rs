@@ -512,7 +512,10 @@ mod tests {
             ("deps.rs", include_str!("deps.rs")),
             ("error.rs", include_str!("error.rs")),
             ("lib.rs", include_str!("lib.rs")),
-            ("exec.rs", include_str!("exec.rs")),
+            (
+                "transport.rs",
+                include_str!("../../gitpm-transport/src/transport.rs"),
+            ),
             ("identity.rs", include_str!("identity.rs")),
             ("list.rs", include_str!("list.rs")),
             ("lock.rs", include_str!("lock.rs")),
@@ -653,5 +656,18 @@ mod tests {
             ("catalog", "missing".into())
         );
         assert_eq!(Some(2).require(Error::Catalog, "unused").unwrap(), 2);
+    }
+}
+
+impl From<gitpm_transport::Error> for Error {
+    fn from(error: gitpm_transport::Error) -> Self {
+        use gitpm_transport::Error as TransportError;
+        match error {
+            TransportError::Git(s) => Self::Git(s),
+            TransportError::Http(s) => Self::Http(s),
+            TransportError::Auth(s) => Self::Auth(s),
+            TransportError::Io(s) => Self::Io(s),
+            TransportError::InvalidData(s) => Self::InvalidData(s),
+        }
     }
 }

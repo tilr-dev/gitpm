@@ -278,6 +278,7 @@ dependencies = [
 name = "gitpm"
 version = "0.5.0"
 dependencies = [
+ "gitpm-transport",
  "libc",
  "pubgrub",
  "semver",
@@ -304,6 +305,14 @@ dependencies = [
  "gitpm",
  "thiserror",
  "uniffi",
+]
+
+[[package]]
+name = "gitpm-transport"
+version = "0.5.0"
+dependencies = [
+ "libc",
+ "thiserror",
 ]
 
 [[package]]
