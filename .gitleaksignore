@@ -1,0 +1,4 @@
+# Synthetic password for the loopback Git HTTP server created by UC-049.
+# Confirmed 2026-10-20: setup/helper share it; revocation changes the server's password.
+# Only this historical finding is ignored; the file and generic-api-key rule stay scanned.
+bbe8cf6511b9cb96d858f7c65f046e0c06dc9295:itests/scenarios/uc_049.py:generic-api-key:25
