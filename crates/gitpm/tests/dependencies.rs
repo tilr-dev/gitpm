@@ -567,6 +567,39 @@ fn update_of_a_disabled_package_pulls_disabled_dependencies() {
     assert!(f.path("workspace/dist/lib/more/index.js").is_file());
 }
 
+/// A dependency an update pulls that cannot be installed is named in the refusal;
+/// the updated package's ID is not put on it.
+#[test]
+fn update_refusal_from_a_pulled_dependency_names_the_dependency() {
+    let f = Fixture::new();
+    let cat = f.catalog("catalog");
+    f.publish(&cat, "app/a", "1.0.0", &[]);
+    let m = f.open(&cat);
+    m.install_from_catalog("app/a", None).unwrap();
+    f.publish(&cat, "lib/extra", "1.0.0", &[]);
+    f.publish(&cat, "app/a", "1.1.0", &[("lib/extra", "^1")]);
+    // The catalog points lib/extra at a commit whose plugin.json is broken.
+    let author = f.path("authors/lib/extra");
+    fs::write(author.join("plugin.json"), "{ broken").unwrap();
+    git(&author, &["commit", "-qam", "break"]);
+    let broken = git(&author, &["rev-parse", "HEAD"]);
+    let release = Path::new(&cat).join("namespaces/lib/extra/versions/1.0.0/release.json");
+    let mut value: Value = serde_json::from_slice(&fs::read(&release).unwrap()).unwrap();
+    value["commit"] = json!(broken.trim());
+    fs::write(&release, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+    let error = m.update("app/a").unwrap_err();
+    assert!(
+        matches!(&error, Error::InvalidManifest { id: Some(id), .. } if id == "lib/extra"),
+        "{error:?}"
+    );
+    assert!(
+        error
+            .to_string()
+            .starts_with("lib/extra: invalid plugin.json"),
+        "{error}"
+    );
+}
+
 /// Install over a download fills `available`/`requested_mode` and warns that the
 /// recorded mode is kept.
 #[test]

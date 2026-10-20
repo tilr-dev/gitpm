@@ -75,6 +75,10 @@ Errors about a package SHALL name its ID (and version where relevant) in the lib
 - **WHEN** an update of `acme/greeter` is refused because its newest release tag is broken or its recorded origin branch no longer exists
 - **THEN** the `version_conflict` message names `acme/greeter` and the FFI error carries its `id`
 
+#### Scenario: Refusal from a pulled dependency
+- **WHEN** an update of `acme/greeter` pulls the new dependency `acme/lib` and the catalog release of `acme/lib` has a broken `plugin.json`
+- **THEN** the `invalid_manifest` message starts with `acme/lib:` and the FFI error carries `id` `acme/lib`, not `acme/greeter` (`update_refusal_from_a_pulled_dependency_names_the_dependency`)
+
 ### Requirement: Failing operations leave the workspace unchanged
 Every failing `Manager` operation, update and rollback included, SHALL leave the workspace byte-identical (tree hash: files and state) with no transaction directory left behind. This requirement is the single source for that guarantee; the staging and journal mechanism is in transactions-locking. Verified by `workspace::every_operation_rejects_invalid_ids_without_changes` and `workspace::every_operation_on_a_missing_id_fails_without_changes`.
 

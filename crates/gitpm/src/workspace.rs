@@ -1163,22 +1163,26 @@ impl Manager {
         let origin = protecting_catalog_at(location, state)?;
         let mut installed = Vec::new();
         for (number, (id, version)) in missing.iter().enumerate() {
-            let release = catalog::lookup(location, id, Some(&version.to_string()))?;
-            catalog::validate_release(&release, id, &release.manifest.version)?;
-            let cloned = clone_revision(
-                txn,
-                &Fetch::release(&release),
-                &format!("dependency-{number}"),
-            )?;
-            check_new_id(txn.root(), state, &cloned.manifest)?;
-            let result = adopt(
-                txn,
-                state,
-                cloned,
-                release.source.clone(),
-                origin.clone(),
-                enabled,
-            )?;
+            // A dependency's own refusal names the dependency, not the package that pulled it.
+            let mut install = || {
+                let release = catalog::lookup(location, id, Some(&version.to_string()))?;
+                catalog::validate_release(&release, id, &release.manifest.version)?;
+                let cloned = clone_revision(
+                    txn,
+                    &Fetch::release(&release),
+                    &format!("dependency-{number}"),
+                )?;
+                check_new_id(txn.root(), state, &cloned.manifest)?;
+                adopt(
+                    txn,
+                    state,
+                    cloned,
+                    release.source.clone(),
+                    origin.clone(),
+                    enabled,
+                )
+            };
+            let result = install().map_err(|error| error.with_package(id))?;
             installed.push(InstalledDependency {
                 id: result.id,
                 source: result.source,
@@ -1200,12 +1204,13 @@ impl Manager {
         catalog: Option<&str>,
     ) -> Result<()> {
         for (original, fork) in &state.replacements {
-            ensure!(
-                fork != id || m.replaces.as_ref().is_some_and(|r| r.id == *original),
-                VersionConflict,
-                "{id} {} no longer declares that it replaces {original}, which it replaces now",
-                m.version
-            );
+            if fork == id && m.replaces.as_ref().is_none_or(|r| r.id != *original) {
+                return Err(Error::version_conflict(format!(
+                    "version {} no longer declares that it replaces {original}, which it replaces now",
+                    m.version
+                ))
+                .with_package(id));
+            }
         }
         let mut next = state.clone();
         let entry = next
@@ -1784,7 +1789,7 @@ impl Manager {
                     let commit = resolve_ref(&repo, &format!("refs/remotes/origin/{branch}"))
                         .map_err(|_| {
                             Error::version_conflict(format!(
-                                "the origin no longer has the branch {branch} that {id} follows; automatic update refused"
+                                "the origin no longer has the branch {branch} it follows; automatic update refused"
                             ))
                         })?;
                     (commit, p.mode.clone())
@@ -1916,7 +1921,7 @@ impl Manager {
             if state.is_active(id) {
                 deps::refuse_inactive_dependencies(state, id, "update", false)?;
             }
-            txn.deploy(id, &relative, path.as_deref(), &next.commit).map_err(|error| error.with_package(id))?;
+            txn.deploy(id, &relative, path.as_deref(), &next.commit)?;
             Ok(RevisionChange {
                 id: id.into(),
                 major: deps::is_major_text(&p.current.version, &next.version),
@@ -6447,7 +6452,7 @@ mod tests {
         let error = ws.refuses("version_conflict", || m.update("dan/a"));
         assert_eq!(
             error.to_string(),
-            "dan/a: the origin no longer has the branch feature that dan/a follows; automatic update refused"
+            "dan/a: the origin no longer has the branch feature it follows; automatic update refused"
         );
         let plan = m.update_all().unwrap();
         assert_eq!(plan.updates.len(), 1, "{plan:?}");
