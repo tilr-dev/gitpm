@@ -18,15 +18,24 @@ A workspace root SHALL contain `state.json` (installed packages, replacement bin
 - **THEN** the workspace root is created with `packages/`, `dist/` and a `state.json` of `{"format": 3, "packages": {}}`, and the workspace lock file (transactions-locking, "Workspace lock") is created beside it
 
 ### Requirement: Foreign directories are refused
-Opening a non-empty directory that has no `state.json` SHALL fail with `workspace` ("refusing nonempty directory without state.json") and change nothing inside that directory (its parent folder and the workspace lock file beside it may already exist). Single source for a corrupt `state.json`: it SHALL block every operation with `invalid_data` and MUST NOT be overwritten. Verified by `workspace::open_refuses_foreign_directories_and_bad_state` and `robustness::corrupt_state_is_not_overwritten`.
+Opening a non-empty directory (one holding anything but `.DS_Store`) that has no `state.json` SHALL fail with `workspace` ("refusing nonempty directory without state.json") and change nothing inside that directory (its parent folder and the workspace lock file beside it may already exist). Single source for a corrupt `state.json`: it SHALL block every operation with `invalid_data` and MUST NOT be overwritten. Verified by `workspace::open_refuses_foreign_directories_and_bad_state`, `robustness::corrupt_state_is_not_overwritten`, `workspace::open_ds_store_only_root` and `workspace::open_ds_store_with_other_content_is_refused`.
 
 #### Scenario: Pointing the workspace at a project folder
 - **WHEN** the workspace root is an existing non-empty folder without `state.json`
-- **THEN** opening fails with `workspace` and no file is created in it
+- **THEN** opening fails with `workspace` and no file is created in it (its parent and the lock file beside it may already exist)
 
 #### Scenario: Corrupt state
 - **WHEN** `state.json` is not valid JSON
 - **THEN** every operation fails with `invalid_data` and the file keeps its bytes
+
+#### Scenario: Folder with only .DS_Store
+- **WHEN** the workspace root exists and holds only `.DS_Store`
+- **THEN** opening treats it as empty and creates the workspace in it
+- **AND** `.DS_Store` keeps its bytes
+
+#### Scenario: Folder with .DS_Store and other content
+- **WHEN** the workspace root holds `.DS_Store` and another file without `state.json`
+- **THEN** opening fails with `workspace` and changes nothing inside it
 
 ### Requirement: State format versions
 `state.json` SHALL carry `"format": 3` and keep installed packages under the key `packages`. A file with any other format, or without one, SHALL be refused with `unsupported` and MUST NOT be rewritten; there is no migration. The format SHALL be bumped with every change that an older gitpm would misread. Verified by `model::state_format_other_than_current_is_refused`.
