@@ -525,10 +525,7 @@ mod tests {
             ("deps.rs", include_str!("deps.rs")),
             ("error.rs", include_str!("error.rs")),
             ("lib.rs", include_str!("lib.rs")),
-            (
-                "transport.rs",
-                include_str!("../../gitpm-transport/src/transport.rs"),
-            ),
+            ("transport.rs", include_str!("transport.rs")),
             ("identity.rs", include_str!("identity.rs")),
             ("list.rs", include_str!("list.rs")),
             ("lock.rs", include_str!("lock.rs")),

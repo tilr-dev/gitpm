@@ -1,4 +1,3 @@
-
 /// String literals of `source` outside comments and the test module.
 fn literals(source: &str) -> Vec<String> {
     let code = source.split("\n#[cfg(test)]\nmod tests").next().unwrap();

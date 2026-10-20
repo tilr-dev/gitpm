@@ -7,4 +7,4 @@
 - [x] Exercise typed clone/fetch/lookup and HTTP bounds with deterministic tests.
 
 ## 3. Validation
-- [ ] Self-review, full checks including Dagger, and finish.
+- [x] Self-review, full checks including Dagger, and finish.
