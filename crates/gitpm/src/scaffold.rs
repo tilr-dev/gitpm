@@ -69,7 +69,7 @@ fn create_repo(directory: &Path, id: &str, release: bool) -> Result<PathBuf> {
             ),
         )?;
         git(&directory, &["init", "-b", "main"])?;
-        identity(&directory, true)?;
+        require_identity(&directory, true)?;
         git(&directory, &["add", "--all", "--", "."])?;
         git(
             &directory,
@@ -93,7 +93,7 @@ pub fn shell_quote(value: &str) -> String {
 
 /// Check both identities without Git's login/host fallback. Only repositories newly
 /// created by gitpm may receive a local demo identity, and configured values stay intact.
-pub(crate) fn identity(repo: &Path, created: bool) -> Result<()> {
+pub(crate) fn require_identity(repo: &Path, created: bool) -> Result<()> {
     let configured = || {
         git(
             repo,
@@ -112,22 +112,24 @@ pub(crate) fn identity(repo: &Path, created: bool) -> Result<()> {
         })
         .is_ok()
     };
-    if created && !configured() {
-        if git(repo, &["config", "user.name"]).is_err() {
-            git(repo, &["config", "--local", "user.name", "Package Demo"])?;
+    if !configured() {
+        if created {
+            if git(repo, &["config", "user.name"]).is_err() {
+                git(repo, &["config", "--local", "user.name", "Package Demo"])?;
+            }
+            if git(repo, &["config", "user.email"]).is_err() {
+                git(
+                    repo,
+                    &["config", "--local", "user.email", "demo@example.invalid"],
+                )?;
+            }
         }
-        if git(repo, &["config", "user.email"]).is_err() {
-            git(
-                repo,
-                &["config", "--local", "user.email", "demo@example.invalid"],
-            )?;
-        }
+        ensure!(
+            configured(),
+            InvalidArgument,
+            "no Git identity configured; set user.name and user.email"
+        );
     }
-    ensure!(
-        configured(),
-        InvalidArgument,
-        "no Git identity configured; set user.name and user.email"
-    );
     Ok(())
 }
 
@@ -234,7 +236,7 @@ pub fn commit_package(repo: &Path, version: &str, package: Option<&str>) -> Resu
             tag,
         });
     }
-    identity(&repo, false)?;
+    require_identity(&repo, false)?;
     // A failed commit (hook, signing) must leave the manifest and the index as they were.
     let original = fs::read(repo.join(&manifest_path))?;
     let index = PathBuf::from(git(
@@ -508,7 +510,7 @@ fn add_package(
             }
         }
         // gitpm never writes an identity into a user's repository; a new one is its own.
-        identity(&repo, created)?;
+        require_identity(&repo, created)?;
         // A failed commit (hook, signing) must leave the index as it was, too.
         let index = PathBuf::from(git(
             &repo,
@@ -680,6 +682,11 @@ mod tests {
             "{}{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "expected one child test to pass: {}",
+            String::from_utf8_lossy(&output.stdout)
         );
         true
     }
