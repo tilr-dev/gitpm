@@ -36,3 +36,7 @@ Sources and recheck commands:
 Both existing checks fail before the configuration fix and must pass after it.
 The full default `bin/check` suite verifies the rest of the workspace. No product
 code changes or new runtime tests are needed for these scoped configuration fixes.
+
+Result on 2026-10-20: both targeted checks passed after the fix. Full `bin/check`
+on clean commit daca17a passed all seven default checks (gitleaks, openspec, fmt,
+clippy, test, smoke, deny) and produced a full green receipt.
