@@ -4546,7 +4546,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .starts_with("latest release tag is broken")
+                .starts_with("dan/demo1: latest release tag is broken")
         );
     }
 
@@ -6444,7 +6444,7 @@ mod tests {
         let error = ws.refuses("version_conflict", || m.update("dan/a"));
         assert_eq!(
             error.to_string(),
-            "the origin no longer has the branch feature that dan/a follows; automatic update refused"
+            "dan/a: the origin no longer has the branch feature that dan/a follows; automatic update refused"
         );
         let plan = m.update_all().unwrap();
         assert_eq!(plan.updates.len(), 1, "{plan:?}");

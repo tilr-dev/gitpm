@@ -14,3 +14,7 @@ Errors about a package SHALL name its ID (and version where relevant) in the lib
 #### Scenario: Local work in update all
 - **WHEN** `update all` is refused because the clone of `acme/greeter` has unpublished local work
 - **THEN** the `local_changes` message names `acme/greeter` and its items, and the CLI prints it unchanged
+
+#### Scenario: Remaining release and branch refusals
+- **WHEN** an update of `acme/greeter` is refused because its newest release tag is broken or its recorded origin branch no longer exists
+- **THEN** the `version_conflict` message names `acme/greeter` and the FFI error carries its `id`
