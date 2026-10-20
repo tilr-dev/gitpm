@@ -18,3 +18,7 @@ Depends on: the 2026-10-18 chain through `host-compatibility` (`no-backward-comp
 ## Impact
 
 `txn.rs` (commit), README rules (crash definition). Tracker: TILR-54. Split from the former shared change `robustness-fixes` (2026-10-20: one task, one change).
+
+## Implementation
+
+Implemented in commit `1f9f658` (TILR-54). Staged payloads and all parent entries are synced as required for power-loss durability; sync failures preserve the published recovery decision.

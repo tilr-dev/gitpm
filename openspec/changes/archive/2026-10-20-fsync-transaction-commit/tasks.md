@@ -7,4 +7,4 @@
 ## 2. Specs, tests, docs
 
 - [x] 2.1 README rules: definition of a crash (process death or power loss); verify by reading against the specs
-- [ ] 2.2 Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace`
+- [x] 2.2 Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace`
