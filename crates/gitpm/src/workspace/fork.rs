@@ -1174,16 +1174,13 @@ fn install_order(packages: &[(&str, BTreeSet<String>)]) -> Result<Vec<usize>> {
 /// changes in their folders once (the whole repository for a root package, like
 /// `commit`), then create all release tags together using the shared authoring path.
 fn release_packages(fork: &PackageFork, version: Option<&str>) -> Result<()> {
-    let paths: Vec<String> = fork
+    let releases: Vec<(Option<&str>, &str)> = fork
         .packages
         .iter()
-        .map(|p| manifest_path(&p.path))
-        .collect();
-    let releases: Vec<(&str, &str)> = fork
-        .packages
-        .iter()
-        .zip(&paths)
-        .map(|(package, path)| (path.as_str(), version.unwrap_or(&package.version)))
+        .map(|p| {
+            let folder = (!p.path.is_empty()).then_some(p.path.as_str());
+            (folder, version.unwrap_or(&p.version))
+        })
         .collect();
     let folders: Vec<&str> = fork.packages.iter().map(|p| pathspec(&p.path)).collect();
     scaffold::release_packages(&fork.path, &releases, &folders, true)

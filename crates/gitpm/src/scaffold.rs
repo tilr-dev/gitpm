@@ -275,7 +275,8 @@ pub(crate) fn commit_package_with_ssh(
             tag,
         });
     }
-    release_packages(&repo, &[(&manifest_path, version)], &["."], false)?;
+    let folder = manifest_path.strip_suffix("/plugin.json");
+    release_packages(&repo, &[(folder, version)], &["."], false)?;
     Ok(Commit {
         package: m.id,
         version: version.to_owned(),
@@ -284,10 +285,11 @@ pub(crate) fn commit_package_with_ssh(
 }
 
 /// Shared authoring transaction for a single commit or a multi-package fork release.
+/// `releases` are (package folder, `None` for the root package; version) pairs.
 /// `only` limits fork commits to package folders and allows an unchanged initial commit.
 pub(crate) fn release_packages(
     repo: &Path,
-    releases: &[(&str, &str)],
+    releases: &[(Option<&str>, &str)],
     folders: &[&str],
     only: bool,
 ) -> Result<()> {
@@ -296,12 +298,13 @@ pub(crate) fn release_packages(
     let mut tags = Vec::new();
     let mut names = Vec::new();
     // Validate and snapshot every manifest before changing any of them.
-    for &(path, version) in releases {
+    for &(folder, version) in releases {
         version_key(version)?;
-        let original = fs::read(repo.join(path))?;
-        let mut manifest: Manifest = serde_json::from_slice(&original)
-            .map_err(|error| Error::InvalidManifest(format!("invalid {path}: {error}")))?;
+        // The loader validates the IDs and the package path before any git call.
+        let mut manifest = model::package_manifest(repo, folder)?;
         manifest.metadata_strict()?;
+        let path = repo.join(folder.unwrap_or("")).join("plugin.json");
+        let original = fs::read(&path)?;
         let tag = identity::release_tag(&manifest.id, version);
         ensure!(
             git(repo, &["tag", "--list", "--", &tag])?.is_empty(),
@@ -316,7 +319,7 @@ pub(crate) fn release_packages(
             manifest.version = version.to_owned();
             model::manifest_json(&manifest)?.into_bytes()
         };
-        manifests.push((repo.join(path), original, updated));
+        manifests.push((path, original, updated));
     }
     let index = PathBuf::from(git(
         repo,
@@ -1081,6 +1084,24 @@ mod tests {
         assert!(error.to_string().contains("restored"), "{error}");
         assert_eq!(model::manifest(&repo).unwrap().version, "0.1.0");
         assert_eq!(fixture_git(&repo, &["status", "--porcelain"]), status);
+        assert_eq!(fixture_git(&repo, &["tag", "--list"]), "dan/demo1@0.1.0");
+    }
+
+    #[test]
+    fn release_refuses_an_invalid_manifest_id_before_any_change() {
+        let dir = TempDir::new("scaffold");
+        let repo = new_repo(&dir, "demo1");
+        // A manifest edited by hand after the fork wrote it.
+        let path = repo.join("plugin.json");
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        json["id"] = "-x/demo1".into();
+        fs::write(&path, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+        fixture_git(&repo, &["commit", "-qam", "hand edit"]);
+        let before = tree_hash(&repo);
+        let error = release_packages(&repo, &[(None, "0.2.0")], &["."], true).unwrap_err();
+        assert_eq!(error.kind(), "invalid_id", "{error}");
+        assert_eq!(tree_hash(&repo), before);
         assert_eq!(fixture_git(&repo, &["tag", "--list"]), "dan/demo1@0.1.0");
     }
 
