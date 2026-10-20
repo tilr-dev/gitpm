@@ -1,0 +1,34 @@
+## ADDED Requirements
+
+### Requirement: Linked packages report releases without automatic replacement
+Single-package update, update all and check SHALL retain link records and report link mode explicitly. They SHALL discover releases under existing source/selection policies without modifying the author repository and report a newer version with dev-linked, unchanged status. This overrides recorded-mode update and clone lost-work rules for links. An explicit target MUST NOT silently convert a link into a managed installation.
+
+#### Scenario: A new release is available
+- **WHEN** a dev-linked package declares version 0.3.0 and its release source offers 0.4.0
+- **THEN** check, update and update all report version 0.4.0 available, explicit dev-link mode and no package update, leaving the target and its files unchanged
+
+#### Scenario: No newer release
+- **WHEN** discovery finds no newer release for a linked package
+- **THEN** results still identify it as dev-linked and unchanged
+
+### Requirement: Link discovery failures stay explicit
+When release discovery fails, results SHALL preserve link status and describe the availability problem without claiming the package is up to date.
+
+#### Scenario: Release source unavailable
+- **WHEN** a linked package's release source cannot be read
+- **THEN** its result retains link mode and an explicit discovery problem rather than reporting up to date
+
+### Requirement: Joint updates keep link constraints and visibility
+The joint update solver SHALL keep each linked package's recorded version and dependencies as fixed constraints, never replace its contents or install dependencies on its behalf. Link disposition SHALL remain visible alongside dependency or availability problems. Dry-run results SHALL carry the same link disposition and release availability without writes. Healthy managed packages SHALL continue to update according to their own constraints and modes.
+
+#### Scenario: Mixed managed and linked packages
+- **WHEN** update all considers one linked package and a managed package with a compatible newer release
+- **THEN** the linked package is explicitly reported unchanged and dev-linked, while the managed package can update
+
+#### Scenario: Link constrains a managed dependency
+- **WHEN** a linked package's recorded dependency excludes a newer managed dependency version
+- **THEN** the joint solution respects that constraint without changing the author's files
+
+#### Scenario: Preview
+- **WHEN** update all runs in dry-run mode with a linked package
+- **THEN** it reports the same dev-link status and discovered release information without modifying state or deployed entries
