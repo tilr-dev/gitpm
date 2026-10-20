@@ -424,8 +424,7 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   every command. Auth checks and workspace Git commands share one batch SSH policy
   with keepalives and `StrictHostKeyChecking=accept-new`. The library never reads
   these environment variables. Standalone operations offer `*_with_options` variants;
-  their existing entry points use default options.
-
+  their existing entry points use default options. FFI `check` takes `customSsh`.
 - Package IDs are always `namespace/name`; an unscoped ID (`demo`) is refused with
   `invalid_id` everywhere (manifests, dependencies, state, commands). `update all` is
   always the joint upgrade, as no ID can be `all`. Migration: re-create the package
@@ -1506,7 +1505,7 @@ records have the names of the library types `gitpm::ForkReplacement`, `PackageFo
 `PackageForkReplacement`, `PendingReplacement`, `ForkedPackage`, `DependencyRewrite`,
 `ForkStep`. Free functions, which read without opening, locking or creating the
 workspace: `list(root, provides)` and `readState(root)` (`ListView`: `format`,
-`packages`, `replacements`, `forgotten`, `resolved`), `check(root, catalog)`
+`packages`, `replacements`, `forgotten`, `resolved`), `check(root, catalog, customSsh)`
 (`CheckReport`: rows with `source` `.catalog`/`.origin` and `problem`, fork `upstream`
 with its `source`, replacements, unsatisfied dependencies; `catalog` may be `nil`), `catalogLinks(location)`,
 `authCheck(source, customSsh)`, `browseCatalog`, `catalogRelease`, `describeLostWork`,

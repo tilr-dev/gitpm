@@ -1771,10 +1771,18 @@ pub fn read_state(root: String) -> Result<ListView> {
 }
 
 /// Compare the installed versions with a catalog (what `gitpm check` prints), without
-/// opening the workspace. An empty workspace needs no catalog.
+/// opening the workspace. An empty workspace needs no catalog. `custom_ssh` is the
+/// same setting as `ManagerOptions.customSsh`.
 #[uniffi::export]
-pub fn check(root: String, catalog: Option<String>) -> Result<CheckReport> {
-    Ok(pm::check::check(std::path::Path::new(&root), catalog.as_deref())?.into())
+pub fn check(root: String, catalog: Option<String>, custom_ssh: bool) -> Result<CheckReport> {
+    let options = pm::Options {
+        custom_ssh,
+        ..Default::default()
+    };
+    Ok(
+        pm::check::check_with_options(std::path::Path::new(&root), catalog.as_deref(), &options)?
+            .into(),
+    )
 }
 
 /// The directory links at one catalog level (what `gitpm catalog` prints).
@@ -1821,7 +1829,7 @@ mod tests {
             manager.uninstall_plan("a/b".into()),
             Err(PmError::RepositoryNotFound { .. })
         ));
-        let report = check(root.to_string_lossy().into(), None).unwrap();
+        let report = check(root.to_string_lossy().into(), None, false).unwrap();
         assert!(report.rows.is_empty() && report.unsatisfied.is_empty());
         assert!(matches!(
             PackageManager::open(root.to_string_lossy().into(), ManagerOptions::default()),
@@ -3064,7 +3072,7 @@ mod tests {
         assert!(view.packages.is_empty() && view.resolved.is_empty());
         assert!(list(missing.to_string_lossy().into(), Some("theme".into())).is_ok());
         assert!(
-            check(missing.to_string_lossy().into(), None)
+            check(missing.to_string_lossy().into(), None, false)
                 .unwrap()
                 .rows
                 .is_empty()
@@ -3135,7 +3143,7 @@ mod tests {
                 reference: "acme/greeter@0.1.0".into()
             })
         );
-        let report = check(root.to_string_lossy().into(), None).unwrap();
+        let report = check(root.to_string_lossy().into(), None, false).unwrap();
         assert!(matches!(report.rows[0].status, CheckStatus::Pinned));
         drop(manager);
         let _ = std::fs::remove_dir_all(&dir);
@@ -3179,7 +3187,7 @@ mod tests {
         assert_eq!(manager.root(), root.to_string_lossy());
         assert_eq!(manager.list().unwrap()[0].current.version, "1.0.0");
         // Without a catalog check asks the origin; "s" is unreachable: a row, no error.
-        let report = check(root.to_string_lossy().into(), None).unwrap();
+        let report = check(root.to_string_lossy().into(), None, true).unwrap();
         assert!(matches!(
             report.rows[0].status,
             CheckStatus::OriginUnreachable

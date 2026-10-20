@@ -1066,7 +1066,13 @@ impl Manager {
                 // release of its version; then it becomes protected.
                 let protect = match (&origin, &installed.catalog) {
                     (Some(location), None) => {
-                        verify_installed_release(&cloned.repo, &m.id, installed, location, self.options.custom_ssh)?;
+                        verify_installed_release(
+                            &cloned.repo,
+                            &m.id,
+                            installed,
+                            location,
+                            self.options.custom_ssh,
+                        )?;
                         Some(location.clone())
                     }
                     _ => None,
@@ -1157,7 +1163,15 @@ impl Manager {
                 self.options.catalog.as_deref(),
             )?;
             let skipped = cloned.skipped.clone();
-            let mut result = adopt(txn, state, cloned, source.clone(), origin.clone(), enabled, self.options.custom_ssh)?;
+            let mut result = adopt(
+                txn,
+                state,
+                cloned,
+                source.clone(),
+                origin.clone(),
+                enabled,
+                self.options.custom_ssh,
+            )?;
             if enabled && !force && state.is_active(&m.id) {
                 deps::refuse_inactive_dependencies(state, &m.id, "install", true)?;
             }
@@ -1804,7 +1818,8 @@ impl Manager {
                 "local commits detected; update would discard them",
                 "local branches, tags or stash hold unpublished work; keep or remove them before updating",
                 true,
-             self.options.custom_ssh)?;
+                self.options.custom_ssh,
+            )?;
             let repo = txn.repo(&relative, &live)?;
             // Mirror the origin's tags exactly: a deleted release disappears, a moved one
             // is seen at its new commit (tags are not policed; the installed revision is
