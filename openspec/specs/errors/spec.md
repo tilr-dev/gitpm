@@ -76,8 +76,8 @@ Errors about a package SHALL name its ID (and version where relevant) in the lib
 - **THEN** the `version_conflict` message names `acme/greeter` and the FFI error carries its `id`
 
 #### Scenario: Refusal from a pulled dependency
-- **WHEN** `update acme/greeter` or `update all` pulls the new dependency `acme/lib` and the catalog release of `acme/lib` has a broken `plugin.json`
-- **THEN** the `invalid_manifest` message starts with `acme/lib:` and the FFI error carries `id` `acme/lib`, not `acme/greeter` (`update_refusal_from_a_pulled_dependency_names_the_dependency`, `update_all_refusal_from_a_pulled_dependency_names_the_dependency`)
+- **WHEN** `update acme/greeter` or `update all` pulls the new dependency `acme/lib` and the catalog release of `acme/lib` has a broken `plugin.json` or an invalid version requirement
+- **THEN** the `invalid_manifest` message starts with `acme/lib:` and the FFI error carries `id` `acme/lib`, not `acme/greeter` (`update_refusal_from_a_pulled_dependency_names_the_dependency`, `update_all_refusal_from_a_pulled_dependency_names_the_dependency`, `update_refusal_from_a_pulled_dependency_requirement_names_the_dependency`)
 
 #### Scenario: Invalid requirement in a newer revision
 - **WHEN** `update all` finds a newer release tag, branch commit or catalog release of `acme/greeter` whose manifest has an invalid version requirement

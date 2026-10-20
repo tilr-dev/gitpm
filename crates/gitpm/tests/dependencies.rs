@@ -607,6 +607,41 @@ fn update_refusal_from_a_pulled_dependency_names_the_dependency() {
     );
 }
 
+/// A dependency an update pulls whose catalog release has an invalid version
+/// requirement is named in the refusal, not the updated package.
+#[test]
+fn update_refusal_from_a_pulled_dependency_requirement_names_the_dependency() {
+    let f = Fixture::new();
+    let cat = f.catalog("catalog");
+    f.publish(&cat, "app/a", "1.0.0", &[]);
+    let m = f.open(&cat);
+    m.install_from_catalog("app/a", None).unwrap();
+    f.publish(&cat, "lib/core", "1.0.0", &[]);
+    f.publish(&cat, "lib/extra", "1.0.0", &[("lib/core", "^1")]);
+    f.publish(&cat, "app/a", "1.1.0", &[("lib/extra", "^1")]);
+    // register refuses such a manifest; a hand-edited catalog can still carry one.
+    let release = Path::new(&cat).join("namespaces/lib/extra/versions/1.0.0/release.json");
+    let mut value: Value = serde_json::from_slice(&fs::read(&release).unwrap()).unwrap();
+    value["manifest"]["dependencies"] = json!({ "lib/core": "^1 || ^2" });
+    fs::write(&release, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+    for error in [
+        m.update("app/a").unwrap_err(),
+        m.update_all_plan().unwrap_err(),
+        m.update_all().unwrap_err(),
+    ] {
+        assert!(
+            matches!(&error, Error::InvalidManifest { id: Some(id), .. } if id == "lib/extra"),
+            "{error:?}"
+        );
+        assert!(
+            error
+                .to_string()
+                .starts_with("lib/extra: invalid version requirement"),
+            "{error}"
+        );
+    }
+}
+
 /// `update all`: a dependency it pulls that cannot be installed is named in the
 /// refusal, as with `update ID`.
 #[test]
