@@ -8,4 +8,4 @@
 
 ## 3. Validation
 - [x] 3.1 Show regression fails without the fix and passes with it; verify cache reuse.
-- [ ] 3.2 Run required checks and self-review, then finish for Review.
+- [x] 3.2 Run required checks and self-review, then prepare for Review.
