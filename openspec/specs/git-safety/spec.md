@@ -7,7 +7,7 @@ Defines how gitpm talks to system `git` and `curl` safely: one subprocess bounda
 ## Requirements
 
 ### Requirement: One subprocess boundary
-All subprocesses of the library (system `git` and `curl`) SHALL be started from one internal module, the planned switch point to embedded implementations; no other library module SHALL start processes. Single source for the library's I/O rule: the library SHALL NOT print, prompt, read stdin or read environment variables itself; a setting that depends on the environment is passed in by the caller. Verified by `no_env::garbage_pm_environment_is_ignored`.
+All subprocesses of the library (system `git` and `curl`) SHALL be started from the `gitpm-transport` crate, the planned switch point to embedded implementations; no gitpm library module SHALL start processes. Single source for the library's I/O rule: the library SHALL NOT print, prompt, read stdin or read environment variables itself; a setting that depends on the environment is passed in by the caller. Verified by `no_env::garbage_pm_environment_is_ignored`.
 
 #### Scenario: SSH setting from the environment
 - **WHEN** `GIT_SSH_COMMAND` or `GIT_SSH` is set and the user runs any gitpm command
@@ -18,12 +18,12 @@ All subprocesses of the library (system `git` and `curl`) SHALL be started from 
 - **THEN** results are the same as with a clean environment
 
 ### Requirement: Git never waits for input
-Repository git commands SHALL use closed stdin, `GIT_TERMINAL_PROMPT=0`, empty `GIT_ASKPASS`, `credential.interactive=never`, `http.lowSpeedLimit=1`/`http.lowSpeedTime=20`, and the "Batch SSH command" policy. The `auth check` ls-remote and `core.sshCommand` probe SHALL be killed after 10 s (`git`, "timed out after 10s"). Verified by `exec::git_never_reads_stdin_or_prompts`.
+Repository git commands SHALL use closed stdin, `GIT_TERMINAL_PROMPT=0`, empty `GIT_ASKPASS`, `credential.interactive=never`, `http.lowSpeedLimit=1`/`http.lowSpeedTime=20`, and the "Batch SSH command" policy. The `auth check` ls-remote and `core.sshCommand` probe SHALL be killed after 10 s (`git`, "timed out after 10s"). Verified by `gitpm_transport::transport::tests::git_never_reads_stdin_or_prompts`.
 
 #### Scenario: Wedged git
 - **WHEN** a git subprocess hangs for 10 minutes
 - **THEN** it SHALL be killed and the operation SHALL fail with `git` ("timed out after 600s")
-- **AND** this is covered by `exec::wedged_subprocess_is_killed_at_the_limit`
+- **AND** this is covered by `gitpm_transport::transport::tests::wedged_subprocess_is_killed_at_the_limit`
 
 #### Scenario: User's GIT_SSH_COMMAND
 - **WHEN** the inherited environment has `GIT_SSH_COMMAND`
@@ -63,7 +63,7 @@ Exception to "Git never waits for input": a Git ref transaction (`update-ref --s
 #### Scenario: Git exits before reading the input
 - **WHEN** the Git process closes its input before the library has written it
 - **THEN** the command fails with `git` ("cannot write git input") and no SIGPIPE reaches the host process, which may keep the default SIGPIPE action (FFI)
-- **AND** verified by `exec::input_to_a_child_that_closed_stdin_fails_without_sigpipe`
+- **AND** verified by `gitpm_transport::transport::tests::input_to_a_child_that_closed_stdin_fails_without_sigpipe`
 
 ### Requirement: No option injection
 Single source for option-like input: ID components starting with `-` SHALL be refused with `invalid_id` before any git call, and user refs starting with `-` with `invalid_argument` ("invalid git ref") before they reach git; user refs (install, update, register) SHALL be resolved with `rev-parse --verify --end-of-options`, and positional names (sources, tags, paths) SHALL be passed after `--`. Verified by `identity::valid_part_accepts_1_to_80_safe_ascii_characters`.
@@ -142,7 +142,7 @@ The Rust tests run by `cargo test` SHALL NOT inherit the developer's `GITPM_*`/`
 - **THEN** `cargo test` in this repository is unaffected
 
 ### Requirement: Origin tag lookup is bounded and restricted
-The repository-less `git ls-remote --tags --heads -- SOURCE` of `check` SHALL run in `exec.rs` with the bounds of every repository command plus `LC_ALL=C`, the OS temp dir as working directory and a transport allowlist (file, git, http, https, ssh), and only on a source that passes `auth::validate_recorded`; nothing is fetched or written. Verified by `exec::ls_remote_refs_lists_tags_with_peeled_commits_and_branches_and_fails_as_git`.
+The repository-less `git ls-remote --tags --heads -- SOURCE` of `check` SHALL run in the `gitpm-transport` crate with the bounds of every repository command plus `LC_ALL=C`, the OS temp dir as working directory and a transport allowlist (file, git, http, https, ssh), and only on a source that passes `auth::validate_recorded`; nothing is fetched or written. Verified by `gitpm_transport::transport::tests::ls_remote_refs_lists_tags_with_peeled_commits_and_branches_and_fails_as_git`.
 
 #### Scenario: Bounds
 - **WHEN** `check` reads an origin's tags and branches
@@ -180,3 +180,15 @@ Standalone catalog and check operations, which reach remotes, SHALL offer `*_wit
 #### Scenario: Default standalone options
 - **WHEN** an existing standalone entry point is used
 - **THEN** its SSH behavior is equivalent to its `*_with_options` variant with `Options::default()`
+
+### Requirement: Typed network transport
+The transport crate SHALL expose a Transport trait with typed methods for clone, fetch, remote ref lookup, read-only access probes and HTTP GET. Network call sites in gitpm SHALL use these methods rather than assemble raw network Git commands. Raw local Git commands SHALL remain available through the same boundary for subsequent migration tasks. Transport failures SHALL retain the existing gitpm error kinds and messages.
+
+#### Scenario: Clone and fetch through the interface
+- **WHEN** gitpm clones a repository or fetches tags, a ref or a fork branch
+- **THEN** it invokes the typed transport operation with the same options, refspecs and SSH setting as before, with no library subprocess creation
+
+#### Scenario: Streamed catalog size bound
+- **WHEN** a catalog response has no declared size
+- **THEN** the transport reads at most 16 MiB plus the four-byte status trailer plus one overflow byte, kills curl on overflow, and retains the existing 200/404/error semantics
+- **AND** both loopback streamed-response tests run inside the transport crate

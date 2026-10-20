@@ -12,7 +12,7 @@ All subprocesses of the library (system `git` and `curl`) SHALL be started from 
 - **THEN** results are the same as with a clean environment
 
 ### Requirement: Git never waits for input
-Repository git commands SHALL use closed stdin, `GIT_TERMINAL_PROMPT=0`, empty `GIT_ASKPASS`, `credential.interactive=never`, `http.lowSpeedLimit=1`/`http.lowSpeedTime=20`, and the "Batch SSH command" policy. Verified by `gitpm_transport::transport::tests::git_never_reads_stdin_or_prompts`.
+Repository git commands SHALL use closed stdin, `GIT_TERMINAL_PROMPT=0`, empty `GIT_ASKPASS`, `credential.interactive=never`, `http.lowSpeedLimit=1`/`http.lowSpeedTime=20`, and the "Batch SSH command" policy. The `auth check` ls-remote and `core.sshCommand` probe SHALL be killed after 10 s (`git`, "timed out after 10s"). Verified by `gitpm_transport::transport::tests::git_never_reads_stdin_or_prompts`.
 
 #### Scenario: Wedged git
 - **WHEN** a git subprocess hangs for 10 minutes
@@ -29,11 +29,14 @@ Repository git commands SHALL use closed stdin, `GIT_TERMINAL_PROMPT=0`, empty `
 
 #### Scenario: Access check ls-remote
 - **WHEN** `auth check` runs `git ls-remote`
-- **THEN** it has closed stdin, `GIT_TERMINAL_PROMPT=0`, empty `GIT_ASKPASS`, `credential.interactive=never`, the lowSpeed limits and the same batch SSH command as every other git command (not set when `Options.custom_ssh` is set or the Git config defines `core.sshCommand`), and no wall-clock kill
+- **THEN** it has closed stdin, `GIT_TERMINAL_PROMPT=0`, empty `GIT_ASKPASS`, `credential.interactive=never`, the lowSpeed limits and the same batch SSH command as every other git command (not set when `Options.custom_ssh` is set or the Git config defines `core.sshCommand`), and is killed after 10 seconds with `git` ("timed out after 10s")
+- **AND** this is covered by `auth::access_check_is_bounded`
 
 #### Scenario: Probe of the user's SSH setting
 - **WHEN** gitpm checks whether `core.sshCommand` is configured
-- **THEN** `git -c credential.interactive=never config --get core.sshCommand` runs with empty `GIT_ASKPASS`, closed stdin, and without a timeout
+- **THEN** `git -c credential.interactive=never config --get core.sshCommand` runs with empty `GIT_ASKPASS`, closed stdin, and is killed after 10 seconds (`git`, "timed out after 10s")
+- **AND** a timed-out probe stops `auth check` before `ls-remote`; it cannot be treated as a configured SSH command
+- **AND** this is covered by `auth_check_reports_config_probe_timeout_without_running_ls_remote`
 
 #### Scenario: Catalog download
 - **WHEN** a remote catalog file is fetched
