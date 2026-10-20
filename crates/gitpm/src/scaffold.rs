@@ -244,7 +244,7 @@ pub(crate) fn commit_package_with_ssh(
     custom_ssh: bool,
 ) -> Result<Commit> {
     version_key(version)?;
-    let (repo, manifest_path, m) = locate(repo, package)?;
+    let (repo, manifest_path, m) = locate(repo, package, custom_ssh)?;
     // Authoring is strict about metadata types; installing is lenient.
     m.metadata_strict()?;
     let tag = identity::release_tag(&m.id, version);
@@ -276,7 +276,7 @@ pub(crate) fn commit_package_with_ssh(
         });
     }
     let folder = manifest_path.strip_suffix("/plugin.json");
-    release_packages(&repo, &[(folder, version)], &["."], false)?;
+    release_packages(&repo, &[(folder, version)], &["."], false, custom_ssh)?;
     Ok(Commit {
         package: m.id,
         version: version.to_owned(),
@@ -292,8 +292,9 @@ pub(crate) fn release_packages(
     releases: &[(Option<&str>, &str)],
     folders: &[&str],
     only: bool,
+    custom_ssh: bool,
 ) -> Result<()> {
-    require_identity(repo, false)?;
+    require_identity(repo, false, custom_ssh)?;
     let mut manifests = Vec::new();
     let mut tags = Vec::new();
     let mut names = Vec::new();
@@ -307,7 +308,7 @@ pub(crate) fn release_packages(
         let original = fs::read(&path)?;
         let tag = identity::release_tag(&manifest.id, version);
         ensure!(
-            git(repo, &["tag", "--list", "--", &tag])?.is_empty(),
+            git(repo, &["tag", "--list", "--", &tag], custom_ssh)?.is_empty(),
             VersionConflict,
             "tag already exists: {tag}"
         );
@@ -324,6 +325,7 @@ pub(crate) fn release_packages(
     let index = PathBuf::from(git(
         repo,
         &["rev-parse", "--path-format=absolute", "--git-path", "index"],
+        custom_ssh,
     )?);
     let saved_index = match fs::read(&index) {
         Ok(bytes) => Some(bytes),
@@ -338,11 +340,11 @@ pub(crate) fn release_packages(
         }
         let mut args = vec!["add", "--all", "--"];
         args.extend_from_slice(folders);
-        git(repo, &args)?;
+        git(repo, &args, custom_ssh)?;
         if only {
             let mut args = vec!["status", "--porcelain", "--"];
             args.extend_from_slice(folders);
-            if git(repo, &args)?.is_empty() {
+            if git(repo, &args, custom_ssh)?.is_empty() {
                 return Ok(());
             }
         }
@@ -352,7 +354,7 @@ pub(crate) fn release_packages(
             args.extend(["-q", "--only", "--"]);
             args.extend_from_slice(folders);
         }
-        git(repo, &args).map(drop)
+        git(repo, &args, custom_ssh).map(drop)
     })();
     if let Err(error) = committed {
         for (path, original, _) in manifests {
@@ -379,16 +381,21 @@ pub(crate) fn release_packages(
     };
     let tagged = if tags.len() == 1 {
         // Keep the existing single-package tag behavior, including Git config.
-        git(repo, &["tag", "--", &tags[0]]).map(drop)
+        git(repo, &["tag", "--", &tags[0]], custom_ssh).map(drop)
     } else {
-        let head = git(repo, &["rev-parse", "HEAD"])?;
+        let head = git(repo, &["rev-parse", "HEAD"], custom_ssh)?;
         // update-ref applies the whole batch as one transaction. `create` refuses
         // a tag that appeared after validation rather than overwriting it.
         let input: String = tags
             .iter()
             .map(|tag| format!("create refs/tags/{tag} {head}\n"))
             .collect();
-        git_with_input(repo, &["update-ref", "--stdin"], input.into_bytes())
+        git_with_input(
+            repo,
+            &["update-ref", "--stdin"],
+            input.into_bytes(),
+            custom_ssh,
+        )
     };
     tagged.context(Error::Git, tag_failure)
 }
@@ -1101,7 +1108,7 @@ mod tests {
         fs::write(&path, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
         fixture_git(&repo, &["commit", "-qam", "hand edit"]);
         let before = tree_hash(&repo);
-        let error = release_packages(&repo, &[(None, "0.2.0")], &["."], true).unwrap_err();
+        let error = release_packages(&repo, &[(None, "0.2.0")], &["."], true, false).unwrap_err();
         assert_eq!(error.kind(), "invalid_id", "{error}");
         assert_eq!(tree_hash(&repo), before);
         assert_eq!(fixture_git(&repo, &["tag", "--list"]), "dan/demo1@0.1.0");

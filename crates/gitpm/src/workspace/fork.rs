@@ -333,7 +333,7 @@ impl Manager {
                 }
             })
             .collect();
-        if let Err(error) = release_packages(&fork, version) {
+        if let Err(error) = release_packages(&fork, version, self.options.custom_ssh) {
             // The packages are released together: nothing is installed unless all are.
             for result in &mut results {
                 result.failed = Some(ForkStep::Release);
@@ -1173,7 +1173,7 @@ fn install_order(packages: &[(&str, BTreeSet<String>)]) -> Result<Vec<usize>> {
 /// Release the forked packages: set `version` (when given) in each manifest, commit the
 /// changes in their folders once (the whole repository for a root package, like
 /// `commit`), then create all release tags together using the shared authoring path.
-fn release_packages(fork: &PackageFork, version: Option<&str>) -> Result<()> {
+fn release_packages(fork: &PackageFork, version: Option<&str>, custom_ssh: bool) -> Result<()> {
     let releases: Vec<(Option<&str>, &str)> = fork
         .packages
         .iter()
@@ -1183,7 +1183,7 @@ fn release_packages(fork: &PackageFork, version: Option<&str>) -> Result<()> {
         })
         .collect();
     let folders: Vec<&str> = fork.packages.iter().map(|p| pathspec(&p.path)).collect();
-    scaffold::release_packages(&fork.path, &releases, &folders, true)
+    scaffold::release_packages(&fork.path, &releases, &folders, true, custom_ssh)
 }
 
 #[cfg(test)]
