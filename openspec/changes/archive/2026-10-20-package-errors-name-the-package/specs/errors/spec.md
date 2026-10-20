@@ -8,9 +8,13 @@ Errors about a package SHALL name its ID (and version where relevant) in the lib
 - **THEN** the second error message contains `acme/greeter`
 
 #### Scenario: Update and rollback refusals
-- **WHEN** `update acme/greeter --ref COMMIT` names a commit with the installed version, a branch-mode update finds diverged history, a rollback finds a manifest that does not match the recorded revision, or the origin's manifest declares another ID
-- **THEN** each message names `acme/greeter` (for example "acme/greeter: COMMIT changed without a version bump", "acme/greeter: history of main diverged; automatic update refused", "acme/greeter: rollback manifest mismatch", "acme/greeter: package id changed upstream to acme/other"), and the FFI error carries `id` `acme/greeter`
+- **WHEN** a branch-mode update finds diverged history, a rollback finds a manifest that does not match the recorded revision, or the origin's manifest declares another ID
+- **THEN** each message names `acme/greeter` (for example "acme/greeter: history of main diverged; automatic update refused", "acme/greeter: rollback manifest mismatch", "acme/greeter: package id changed upstream to acme/other"), and the FFI error carries `id` `acme/greeter`
 
 #### Scenario: Local work in update all
 - **WHEN** `update all` is refused because the clone of `acme/greeter` has unpublished local work
 - **THEN** the `local_changes` message names `acme/greeter` and its items, and the CLI prints it unchanged
+
+#### Scenario: Remaining release and branch refusals
+- **WHEN** an update of `acme/greeter` is refused because its newest release tag is broken or its recorded origin branch no longer exists
+- **THEN** the `version_conflict` message names `acme/greeter` and the FFI error carries its `id`

@@ -47,7 +47,7 @@ pub fn discover_all(repo: &Path, expected_id: Option<&str>) -> Result<Discovery>
         None => {
             let head: Manifest = serde_json::from_str(&git(repo, &["show", "HEAD:plugin.json"])?)
                 .map_err(|e| {
-                Error::InvalidManifest(format!("invalid plugin.json at repository HEAD: {e}"))
+                Error::invalid_manifest(format!("invalid plugin.json at repository HEAD: {e}"))
             })?;
             default_id = head.id;
             &default_id
@@ -82,7 +82,7 @@ pub fn discover_all(repo: &Path, expected_id: Option<&str>) -> Result<Discovery>
         let (manifest, path) = match layout {
             Ok(None) => {
                 match git(repo, &["show", &format!("{commit}:plugin.json")]).and_then(|text| {
-                    serde_json::from_str(&text).map_err(|e| Error::InvalidManifest(e.to_string()))
+                    serde_json::from_str(&text).map_err(|e| Error::invalid_manifest(e.to_string()))
                 }) {
                     Ok(manifest) => (manifest, String::new()),
                     Err(e) => {
@@ -195,7 +195,7 @@ impl Discovery {
             .filter(|s| version_key(&s.version).is_ok_and(|key| key > latest))
             .max_by_key(|s| version_key(&s.version).ok())
         {
-            return Err(Error::VersionConflict(format!(
+            return Err(Error::version_conflict(format!(
                 "latest release tag is broken: {}",
                 newer.reason
             )));

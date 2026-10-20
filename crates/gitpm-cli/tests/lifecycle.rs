@@ -3,7 +3,7 @@
 //! and Git config, and every GITPM_* path inside its own temp directory.
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -67,10 +67,13 @@ impl Fixture {
         command
     }
     fn git(&self, args: &[&str]) {
+        self.git_in(&self.repo, args);
+    }
+    fn git_in(&self, repo: &Path, args: &[&str]) {
         let out = self
             .command("git")
             .arg("-C")
-            .arg(&self.repo)
+            .arg(repo)
             .args(args)
             .output()
             .unwrap();
@@ -1283,20 +1286,7 @@ fn uninstall_without_tty_refuses_and_lists_lost_work_including_stash() {
     let f = Fixture::new();
     f.install();
     let repo = f.root.join("packages/dan/hello");
-    let git = |args: &[&str]| {
-        let out = f
-            .command("git")
-            .arg("-C")
-            .arg(&repo)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-    };
+    let git = |args: &[&str]| f.git_in(&repo, args);
     git(&["config", "user.name", "Test"]);
     git(&["config", "user.email", "test@example.invalid"]);
     fs::write(repo.join("dist/index.js"), "stashed edit").unwrap();
@@ -2337,5 +2327,32 @@ fn catalog_package_with_pre_releases_only() {
     assert!(
         out.contains("installed dan/hello@2.0.0-beta.1 from"),
         "{out}"
+    );
+}
+
+#[test]
+fn update_all_local_work_prints_the_library_message_unchanged() {
+    let f = Fixture::new();
+    f.install();
+    let repo = f.root.join("packages/dan/hello");
+    let git = |args: &[&str]| f.git_in(&repo, args);
+    fs::write(repo.join("local.txt"), "local work").unwrap();
+    git(&["add", "local.txt"]);
+    git(&["commit", "-qm", "local"]);
+    git(&["tag", "local-only"]);
+    git(&["reset", "--hard", "HEAD~1"]);
+    let error = {
+        let manager = gitpm::Manager::open(&f.root).unwrap();
+        manager.update_all().unwrap_err()
+    };
+    let (ok, out, err) = f.output(&["update", "all"]);
+    assert!(!ok);
+    assert!(out.is_empty(), "{out}");
+    assert_eq!(err, format!("Error: {error}\nError kind: local_changes\n"));
+    assert!(
+        err.contains(
+            "dan/hello: unpublished local work blocks update all; unpublished tag: local-only"
+        ),
+        "{err}"
     );
 }

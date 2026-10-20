@@ -30,6 +30,7 @@ fn main() {
             | PmError::HasDependents {
                 lost_work: items, ..
             } = pm_error
+                && !matches!(invocation.command.as_str(), "update" | "rollback")
             {
                 for item in items {
                     eprintln!("  - {}", item.describe());

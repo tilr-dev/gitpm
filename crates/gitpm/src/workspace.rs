@@ -631,6 +631,23 @@ pub(crate) fn export_dist(
     );
     export_folder(repo, commit, &folder, target)
 }
+/// Locate an updated package, retaining the requested and upstream identities.
+fn updated_package(repo: &Path, commit: &str, id: &str) -> Result<packages::Package> {
+    packages::find_at(repo, commit, Some(id)).map_err(|error| {
+        let error = match error {
+            Error::InvalidArgument(message) => {
+                let message = match packages::find_at(repo, commit, None) {
+                    Ok(found) => format!("package id changed upstream to {}", found.manifest.id),
+                    Err(_) => format!("package id changed upstream; {message}"),
+                };
+                Error::invalid_manifest(message)
+            }
+            other => other,
+        };
+        error.with_package(id)
+    })
+}
+
 /// Each component of `id` exists under `base` with exactly this spelling. On a
 /// case-insensitive file system `Vendor/Module` must not resolve to `vendor/module`.
 fn exact_path(base: &Path, id: &str) -> Result<bool> {
@@ -1148,19 +1165,18 @@ impl Manager {
         let origin = protecting_catalog_at(location, state)?;
         let mut installed = Vec::new();
         for (number, (id, version)) in missing.iter().enumerate() {
-            let release = catalog::lookup(location, id, Some(&version.to_string()))?;
-            catalog::validate_release(&release, id, &release.manifest.version)?;
-            let cloned = clone_revision(
-                txn,
-                &Fetch::release(&release),
-                &format!("dependency-{number}"),
-            )?;
-            check_new_id(txn.root(), state, &cloned.manifest)?;
-            let result = adopt(
+            let release = catalog::lookup(location, id, Some(&version.to_string()))
+                .and_then(|release| {
+                    catalog::validate_release(&release, id, &release.manifest.version)?;
+                    Ok(release)
+                })
+                .map_err(|error| error.with_package(id))?;
+            let result = install_pulled(
                 txn,
                 state,
-                cloned,
-                release.source.clone(),
+                id,
+                &release,
+                &format!("dependency-{number}"),
                 origin.clone(),
                 enabled,
             )?;
@@ -1185,12 +1201,13 @@ impl Manager {
         catalog: Option<&str>,
     ) -> Result<()> {
         for (original, fork) in &state.replacements {
-            ensure!(
-                fork != id || m.replaces.as_ref().is_some_and(|r| r.id == *original),
-                VersionConflict,
-                "{id} {} no longer declares that it replaces {original}, which it replaces now",
-                m.version
-            );
+            if fork == id && m.replaces.as_ref().is_none_or(|r| r.id != *original) {
+                return Err(Error::version_conflict(format!(
+                    "version {} no longer declares that it replaces {original}, which it replaces now",
+                    m.version
+                ))
+                .with_package(id));
+            }
         }
         let mut next = state.clone();
         let entry = next
@@ -1229,12 +1246,15 @@ impl Manager {
         let mut txn = Txn::begin(&self.root)?;
         let mut state = self.state()?;
         self.prepare_update_all(&mut txn, &mut state)
+            .map_err(Error::listing_lost_work)
     }
 
     /// Resolve and apply a joint upgrade in one recoverable transaction.
     /// Local work blocks the operation. No merge, deletion or downgrade is attempted.
     pub fn update_all(&self) -> Result<UpdateAllPlan> {
-        let (plan, dist) = self.transaction(|txn, state| self.prepare_update_all(txn, state))?;
+        let (plan, dist) = self
+            .transaction(|txn, state| self.prepare_update_all(txn, state))
+            .map_err(Error::listing_lost_work)?;
         Ok(UpdateAllPlan { dist, ..plan })
     }
 
@@ -1302,7 +1322,8 @@ impl Manager {
                 "local commits detected; update would discard them",
                 "unpublished local work blocks update all",
                 true,
-            )?;
+            )
+            .map_err(|error| error.with_package(first))?;
             // Scratch copies ensure even held-back repositories keep their original refs.
             let repo = txn.scratch(&format!("upgrade-{number}"));
             copy_tree(&live, &repo, true)?;
@@ -1319,7 +1340,9 @@ impl Manager {
                 // clone's HEAD may be another package's revision, and a root package may
                 // have moved into a package folder since.
                 let current_manifest =
-                    packages::find_at(&repo, &installed.current.commit, Some(id))?.manifest;
+                    packages::find_at(&repo, &installed.current.commit, Some(id))
+                        .map_err(|error| error.with_package(id))?
+                        .manifest;
                 versions.insert(
                     current.clone(),
                     catalog::Release {
@@ -1386,13 +1409,7 @@ impl Manager {
                                     },
                                 );
                             } else {
-                                let found = match packages::find_at(&repo, &head, Some(id)) {
-                                    Ok(found) => found,
-                                    Err(Error::InvalidArgument(_)) => {
-                                        fail!(InvalidManifest, "package id changed upstream")
-                                    }
-                                    Err(error) => return Err(error),
-                                };
+                                let found = updated_package(&repo, &head, id)?;
                                 let version = deps::version(&found.manifest.version)?;
                                 let dropped = no_longer_replaces(state, id, &found.manifest);
                                 if let Some(original) = dropped.clone()
@@ -1404,7 +1421,8 @@ impl Manager {
                                 // The branch commit is the identity: at the installed
                                 // version it takes the installed revision's place.
                                 if version >= current && dropped.is_none() {
-                                    deps::validate(&found.manifest)?;
+                                    deps::validate(&found.manifest)
+                                        .map_err(|error| error.with_package(id))?;
                                     newest = newest.max(version.clone());
                                     versions.insert(
                                         version,
@@ -1463,7 +1481,8 @@ impl Manager {
                             }
                             continue;
                         }
-                        deps::validate(&release.manifest)?;
+                        deps::validate(&release.manifest)
+                            .map_err(|error| error.with_package(id))?;
                         versions.insert(version, release);
                     }
                     if let Some(reason) =
@@ -1502,7 +1521,7 @@ impl Manager {
                         }
                         continue;
                     }
-                    deps::validate(&tag.manifest)?;
+                    deps::validate(&tag.manifest).map_err(|error| error.with_package(id))?;
                     versions.insert(
                         version,
                         catalog::Release {
@@ -1554,7 +1573,7 @@ impl Manager {
                 let protected = installed.catalog.is_some();
                 if protected {
                     ensure_release_commit(&repo, release)?;
-                    let found = packages::find_at(&repo, &release.commit, Some(id))?;
+                    let found = updated_package(&repo, &release.commit, id)?;
                     ensure!(
                         found.subdir() == release.path.as_deref(),
                         Catalog,
@@ -1565,15 +1584,16 @@ impl Manager {
                     );
                 }
                 git(&repo, &["checkout", "--detach", &release.commit])?;
-                let actual = package_manifest(&repo, release.path.as_deref())?;
+                let actual = package_manifest(&repo, release.path.as_deref())
+                    .map_err(|error| error.with_package(id))?;
                 if protected {
                     verify_catalog_release(&repo, &actual, release)?;
                 }
-                ensure!(
-                    serde_json::to_value(&actual)? == serde_json::to_value(m)?,
-                    VersionConflict,
-                    "release manifest changed for {id}"
-                );
+                if serde_json::to_value(&actual)? != serde_json::to_value(m)? {
+                    return Err(
+                        Error::version_conflict("release manifest changed".into()).with_package(id)
+                    );
+                }
                 let next = revision(&repo, m)?;
                 let installed = state.packages.get_mut(id).unwrap();
                 plan.updates.push(RevisionChange {
@@ -1597,23 +1617,19 @@ impl Manager {
                 if txn.staged_repo(&relative).is_none() {
                     txn.add_repo(&relative, &repo)?;
                 }
-                txn.deploy(id, &relative, path.as_deref(), &release.commit)?;
+                txn.deploy(id, &relative, path.as_deref(), &release.commit)
+                    .map_err(|error| error.with_package(id))?;
             } else {
                 let origin = protecting_catalog_at(
                     catalog.require(Error::InvalidArgument, check::NO_CATALOG)?,
                     state,
                 )?;
-                let cloned = clone_revision(
-                    txn,
-                    &Fetch::release(release),
-                    &format!("upgrade-new-{number}"),
-                )?;
-                check_new_id(txn.root(), state, &cloned.manifest)?;
-                plan.installs.push(adopt(
+                plan.installs.push(install_pulled(
                     txn,
                     state,
-                    cloned,
-                    release.source.clone(),
+                    id,
+                    release,
+                    &format!("upgrade-new-{number}"),
                     origin,
                     // Enabled only when an active package pulls it (as `update ID`).
                     active_new.contains(id),
@@ -1766,8 +1782,8 @@ impl Manager {
                 (Target::Recorded, Mode::Branch(branch)) => {
                     let commit = resolve_ref(&repo, &format!("refs/remotes/origin/{branch}"))
                         .map_err(|_| {
-                            Error::VersionConflict(format!(
-                                "the origin no longer has the branch {branch} that {id} follows; automatic update refused"
+                            Error::version_conflict(format!(
+                                "the origin no longer has the branch {branch} it follows; automatic update refused"
                             ))
                         })?;
                     (commit, p.mode.clone())
@@ -1849,18 +1865,12 @@ impl Manager {
                     &["merge-base", "--is-ancestor", &p.current.commit, &next_commit],
                 )
                 .context(
-                    Error::VersionConflict,
+                    Error::version_conflict,
                     format!("history of {branch} diverged; automatic update refused"),
                 )?;
             }
             // The package can move to another folder (or into a multi-package layout).
-            let path = match packages::find_at(&repo, &next_commit, Some(id)) {
-                Ok(found) => found.subdir().map(str::to_owned),
-                Err(Error::InvalidArgument(_)) => {
-                    fail!(InvalidManifest, "package id changed upstream")
-                }
-                Err(error) => return Err(error),
-            };
+            let path = updated_package(&repo, &next_commit, id)?.subdir().map(str::to_owned);
             if let Some(release) = &expected {
                 ensure!(
                     path == release.path,
@@ -1873,7 +1883,7 @@ impl Manager {
             }
             git(&repo, &["checkout", "--detach", &next_commit])?;
             let m = package_manifest(&repo, path.as_deref())?;
-            ensure!(m.id == id, InvalidManifest, "package id changed upstream");
+            ensure!(m.id == id, InvalidManifest, "package id changed upstream to {}", m.id);
             if let Some(release) = &expected {
                 verify_catalog_release(&repo, &m, release)?;
             }
@@ -1919,7 +1929,7 @@ impl Manager {
                 detached,
                 dist: DistSync::default(),
             })
-        })?;
+        }).map_err(|error| error.with_package(id).listing_lost_work())?;
         Ok(RevisionChange { dist, ..change })
     }
     /// Swap current and previous version (offline). Refused if it breaks a dependent.
@@ -1996,7 +2006,7 @@ impl Manager {
                 detached: None,
                 dist: DistSync::default(),
             })
-        })?;
+        }).map_err(|error| error.with_package(id).listing_lost_work())?;
         Ok(RevisionChange { dist, ..change })
     }
     pub fn set_enabled(&self, id: &str, enabled: bool) -> Result<DistSync> {
@@ -2796,6 +2806,24 @@ fn adopt(
     })
 }
 
+/// Install `release` of dependency `id` that an update pulls; its refusal names the
+/// dependency, not the package that pulled it.
+fn install_pulled(
+    txn: &mut Txn,
+    state: &mut State,
+    id: &str,
+    release: &catalog::Release,
+    name: &str,
+    catalog: Option<String>,
+    enabled: bool,
+) -> Result<InstallResult> {
+    (|| {
+        let cloned = clone_revision(txn, &Fetch::release(release), name)?;
+        check_new_id(txn.root(), state, &cloned.manifest)?;
+        adopt(txn, state, cloned, release.source.clone(), catalog, enabled)
+    })()
+    .map_err(|error| error.with_package(id))
+}
 /// [`Manager::protecting_catalog`] for the catalog at `location`.
 fn protecting_catalog_at(location: &str, state: &State) -> Result<Option<String>> {
     if !catalog::is_verified(location)? {
@@ -4327,6 +4355,74 @@ mod tests {
     }
 
     #[test]
+    fn rollback_manifest_mismatch_names_the_package() {
+        let id = "dan/demo1";
+        let (ws, m) = Ws::installed(id);
+        ws.author.release("0.2.0");
+        m.update(id).unwrap();
+        // Corrupt the recorded previous version, while its commit still exists.
+        let path = ws.root.join("state.json");
+        let mut state: serde_json::Value = serde_json::from_str(&read(&path)).unwrap();
+        state["packages"][id]["previous"]["version"] = "0.0.9".into();
+        fs::write(&path, state.to_string()).unwrap();
+        let error = ws.refuses("invalid_manifest", || m.rollback(id));
+        assert_eq!(error.to_string(), "dan/demo1: rollback manifest mismatch");
+        assert!(matches!(error, Error::InvalidManifest { id: Some(package), .. } if package == id));
+        // Point the previous revision at a valid commit declaring another package.
+        write_manifest(&ws.author.path, &make_manifest("dan/renamed", "0.3.0"));
+        fixture_git(&ws.author.path, &["commit", "-qam", "rename"]);
+        let renamed = ws.author.head();
+        fixture_git(&ws.repo(), &["fetch", ws.author.source(), &renamed]);
+        state["packages"][id]["previous"]["commit"] = renamed.into();
+        state["packages"][id]["previous"]["version"] = "0.3.0".into();
+        fs::write(&path, state.to_string()).unwrap();
+        let error = ws.refuses("invalid_manifest", || m.rollback(id));
+        assert_eq!(error.to_string(), "dan/demo1: rollback manifest mismatch");
+        assert!(matches!(error, Error::InvalidManifest { id: Some(package), .. } if package == id));
+    }
+
+    #[test]
+    fn update_all_upstream_identity_refusal_names_the_package() {
+        let id = "dan/demo1";
+        let ws = Ws::new(id);
+        let m = ws.open();
+        m.install_package(ws.author.source(), None, InstallTarget::Dev)
+            .unwrap();
+        write_manifest(&ws.author.path, &make_manifest("dan/renamed", "0.2.0"));
+        fixture_git(&ws.author.path, &["commit", "-qam", "rename"]);
+        for error in [
+            ws.refuses("invalid_manifest", || m.update_all()),
+            ws.refuses("invalid_manifest", || m.update_all_plan()),
+        ] {
+            assert_eq!(
+                error.to_string(),
+                "dan/demo1: package id changed upstream to dan/renamed"
+            );
+            assert!(
+                matches!(error, Error::InvalidManifest { id: Some(package), .. } if package == id)
+            );
+        }
+    }
+
+    #[test]
+    fn update_all_local_work_names_the_package_and_items() {
+        let (ws, m) = Ws::installed("dan/demo1");
+        let repo = ws.repo();
+        fs::write(repo.join("local.txt"), "local work").unwrap();
+        fixture_git(&repo, &["add", "local.txt"]);
+        fixture_git(&repo, &["commit", "-qm", "local"]);
+        fixture_git(&repo, &["tag", "local-only"]);
+        fixture_git(&repo, &["reset", "--hard", "HEAD~1"]);
+        let error = ws.refuses("local_changes", || m.update_all());
+        assert_eq!(
+            error.to_string(),
+            "dan/demo1: unpublished local work blocks update all; unpublished tag: local-only"
+        );
+        assert!(matches!(error, Error::LocalChanges { id, items, .. }
+            if id == "dan/demo1" && items == [LostWork::UnpublishedTag { name: "local-only".into() }]));
+    }
+
+    #[test]
     fn update_refusals_leave_the_workspace_unchanged() {
         let id = "dan/demo1";
         let (ws, m) = Ws::installed(id);
@@ -4349,7 +4445,11 @@ mod tests {
         let error = ws.refuses("invalid_manifest", || {
             m.update_to(id, Target::Ref(String::from(&renamed)))
         });
-        assert_eq!(error.to_string(), "package id changed upstream");
+        assert_eq!(
+            error.to_string(),
+            "dan/demo1: package id changed upstream to dan/renamed"
+        );
+        assert!(matches!(error, Error::InvalidManifest { id: Some(package), .. } if package == id));
     }
 
     /// New upstream commit that keeps the manifest version.
@@ -4499,7 +4599,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .starts_with("latest release tag is broken")
+                .starts_with("dan/demo1: latest release tag is broken")
         );
     }
 
@@ -4631,6 +4731,34 @@ mod tests {
     }
 
     #[test]
+    fn update_all_invalid_requirement_on_the_branch_names_the_package() {
+        let id = "dan/demo1";
+        let ws = Ws::new(id);
+        let m = ws.open();
+        m.install_package(ws.author.source(), None, InstallTarget::Dev)
+            .unwrap();
+        let mut next = make_manifest(id, "0.2.0");
+        next.dependencies
+            .insert("dan/lib".into(), "^1 || ^2".into());
+        write_manifest(&ws.author.path, &next);
+        fixture_git(&ws.author.path, &["commit", "-qam", "bad requirement"]);
+        for error in [
+            ws.refuses("invalid_manifest", || m.update_all()),
+            ws.refuses("invalid_manifest", || m.update_all_plan()),
+        ] {
+            assert!(
+                error
+                    .to_string()
+                    .starts_with("dan/demo1: invalid version requirement"),
+                "{error}"
+            );
+            assert!(
+                matches!(error, Error::InvalidManifest { id: Some(package), .. } if package == id)
+            );
+        }
+    }
+
+    #[test]
     fn branch_mode_follows_origin_head_and_refuses_diverged_history() {
         let id = "dan/demo1";
         let ws = Ws::new(id);
@@ -4662,8 +4790,11 @@ mod tests {
             assert!(
                 error
                     .to_string()
-                    .starts_with("history of main diverged; automatic update refused"),
+                    .starts_with("dan/demo1: history of main diverged; automatic update refused"),
                 "{error}"
+            );
+            assert!(
+                matches!(error, Error::VersionConflict { id: Some(package), .. } if package == id)
             );
         }
         // An explicit ref is the user's choice: no ancestry needed.
@@ -6394,7 +6525,7 @@ mod tests {
         let error = ws.refuses("version_conflict", || m.update("dan/a"));
         assert_eq!(
             error.to_string(),
-            "the origin no longer has the branch feature that dan/a follows; automatic update refused"
+            "dan/a: the origin no longer has the branch feature it follows; automatic update refused"
         );
         let plan = m.update_all().unwrap();
         assert_eq!(plan.updates.len(), 1, "{plan:?}");

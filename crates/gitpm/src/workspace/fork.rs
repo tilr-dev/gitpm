@@ -1155,7 +1155,7 @@ fn release_packages(
             Ok(_) => {
                 return fail(
                     &tagged,
-                    Error::VersionConflict(format!("tag already exists: {tag}")),
+                    Error::version_conflict(format!("tag already exists: {tag}")),
                 );
             }
             Err(error) => return fail(&tagged, error),

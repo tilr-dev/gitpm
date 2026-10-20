@@ -130,7 +130,7 @@ pub fn config_at(repo: &Path, commit: &str) -> Result<Option<Config>> {
         return Ok(None);
     }
     let config: Config = serde_json::from_str(&show(repo, commit, CONFIG)?)
-        .map_err(|e| Error::InvalidManifest(format!("invalid {CONFIG}: {e}")))?;
+        .map_err(|e| Error::invalid_manifest(format!("invalid {CONFIG}: {e}")))?;
     for pattern in &config.packages {
         validate_pattern(pattern)?;
     }
@@ -231,7 +231,7 @@ fn read_folder(
     let manifest: Manifest = show(repo, commit, &path)
         .and_then(|text| {
             serde_json::from_str(&text)
-                .map_err(|e| Error::InvalidManifest(format!("invalid {path}: {e}")))
+                .map_err(|e| Error::invalid_manifest(format!("invalid {path}: {e}")))
         })
         .map_err(|e| (None, e))?;
     let id = Some(manifest.id.clone());
@@ -247,7 +247,7 @@ fn read_folder(
         None => {
             return Err((
                 id,
-                Error::InvalidManifest(format!(
+                Error::invalid_manifest(format!(
                     "package {folder} must contain a ready dist/ directory"
                 )),
             ));
@@ -294,7 +294,7 @@ pub fn layout_at(repo: &Path, commit: &str) -> Result<Option<Layout>> {
                     a.path.clone(),
                     (
                         Some(a.manifest.id.clone()),
-                        Error::InvalidManifest(format!(
+                        Error::invalid_manifest(format!(
                             "package ID {} appears in both {} and {}",
                             a.manifest.id, first.path, second.path
                         )),
@@ -314,7 +314,7 @@ pub fn layout_at(repo: &Path, commit: &str) -> Result<Option<Layout>> {
                 a.path.clone(),
                 (
                     Some(a.manifest.id.clone()),
-                    Error::InvalidManifest(format!(
+                    Error::invalid_manifest(format!(
                         "package {inner} is nested inside package {outer}"
                     )),
                 ),
@@ -378,7 +378,7 @@ pub fn find_at(repo: &Path, commit: &str, id: Option<&str>) -> Result<Package> {
             "missing plugin.json in the repository root (and no {CONFIG} listing packages)"
         );
         let manifest: Manifest = serde_json::from_str(&show(repo, commit, "plugin.json")?)
-            .map_err(|e| Error::InvalidManifest(format!("invalid plugin.json: {e}")))?;
+            .map_err(|e| Error::invalid_manifest(format!("invalid plugin.json: {e}")))?;
         if let Some(id) = id {
             ensure!(
                 manifest.id == id,
@@ -422,7 +422,7 @@ pub fn read_config(repo: &Path) -> Result<Option<Config>> {
         return Ok(None);
     }
     let config: Config = serde_json::from_slice(&fs::read(&path)?)
-        .map_err(|e| Error::InvalidManifest(format!("invalid {CONFIG}: {e}")))?;
+        .map_err(|e| Error::invalid_manifest(format!("invalid {CONFIG}: {e}")))?;
     for pattern in &config.packages {
         validate_pattern(pattern)?;
     }
@@ -479,7 +479,7 @@ pub fn packages_in(repo: &Path) -> Result<Option<Vec<Package>>> {
     for path in folders {
         let manifest: Manifest =
             serde_json::from_slice(&fs::read(repo.join(&path).join("plugin.json"))?)
-                .map_err(|e| Error::InvalidManifest(format!("invalid {path}/plugin.json: {e}")))?;
+                .map_err(|e| Error::invalid_manifest(format!("invalid {path}/plugin.json: {e}")))?;
         packages.push(Package { path, manifest });
     }
     Ok(Some(packages))

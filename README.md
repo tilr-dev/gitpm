@@ -154,7 +154,7 @@ down). A tag or commit may go back to an older version or keep the installed one
 another commit (an explicit `--ref` of a moved release tag warns `release tag ID@V now
 points to COMMIT`); a
 branch whose history no longer contains the installed commit, or that the origin no
-longer has, is refused (`version_conflict`, "history of main diverged; automatic update
+longer has, is refused (`version_conflict`, "ID: history of main diverged; automatic update
 refused"); `update ID --ref BRANCH` follows it again after a force-push. `previous`
 records the mode it had, so `rollback` restores revision and mode together. `update all`
 takes no `--ref`, `--dev` or `--release`: it follows each package's mode (pinned ones
@@ -345,7 +345,8 @@ commands, JSON for `list`, `catalog` and `register`); everything else goes to st
 `Warning: …` lines taken from the result (ignored metadata keys, skipped release tags,
 the dist report), `[y/N]` prompts with what they list, and failures. A failure prints
 `Error: MESSAGE`, for a library error also `Error kind: KIND` (and one `  - item` line
-per lost item for `local_changes`, and for an uninstall's `has_dependents`) and, where a gitpm command helps, one `Hint: …` line
+per lost item for `local_changes` outside update and rollback, whose message already
+lists them, and for an uninstall's `has_dependents`) and, where a gitpm command helps, one `Hint: …` line
 naming it; the exit status is 1. The CLI checks only the command line (unknown, repeated
 or misplaced options, value sets, argument counts); domain rules and option
 combinations are the library's, which also returns everything the CLI prints, so a host

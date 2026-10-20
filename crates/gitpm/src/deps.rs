@@ -378,7 +378,7 @@ fn comparator(
 /// `||`, hyphen ranges and other wildcards are refused with `invalid_manifest`.
 pub fn requirement(text: &str) -> Result<Range> {
     let invalid = |reason: String| {
-        Error::InvalidManifest(format!("invalid version requirement {text:?}: {reason}"))
+        Error::invalid_manifest(format!("invalid version requirement {text:?}: {reason}"))
     };
     if text.contains(',') {
         return Err(invalid(
@@ -748,16 +748,16 @@ impl DependencyProvider for Provider<'_> {
                 .iter()
                 .map(|(id, v)| (Package::Id(id.clone()), Range::singleton(v.clone())))
                 .collect(),
+            // A refusal from a package's own manifest names that package.
             Package::Id(id) => match self.fixed.get(id) {
-                Some(fixed) => self.constraints(&fixed.dependencies)?,
-                None => {
-                    let location = self
-                        .catalog
-                        .ok_or_else(|| Error::Catalog("no catalog configured".into()))?;
-                    let release = catalog::lookup(location, id, Some(&version.to_string()))?;
-                    self.constraints(&release.manifest.dependencies)?
-                }
-            },
+                Some(fixed) => self.constraints(&fixed.dependencies),
+                None => self
+                    .catalog
+                    .ok_or_else(|| Error::Catalog("no catalog configured".into()))
+                    .and_then(|location| catalog::lookup(location, id, Some(&version.to_string())))
+                    .and_then(|release| self.constraints(&release.manifest.dependencies)),
+            }
+            .map_err(|error| error.with_package(id))?,
         }))
     }
 }

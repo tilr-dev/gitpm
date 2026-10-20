@@ -220,7 +220,7 @@ pub fn commit_package(repo: &Path, version: &str, package: Option<&str>) -> Resu
         let head: Manifest =
             serde_json::from_str(&git(&repo, &["show", &format!("HEAD:{manifest_path}")])?)
                 .map_err(|e| {
-                    Error::InvalidManifest(format!("invalid {manifest_path} at HEAD: {e}"))
+                    Error::invalid_manifest(format!("invalid {manifest_path} at HEAD: {e}"))
                 })?;
         ensure!(
             head.version == version

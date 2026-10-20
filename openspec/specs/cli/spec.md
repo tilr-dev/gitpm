@@ -130,11 +130,15 @@ The CLI SHALL print every warning a library result carries (ignored metadata key
 - **THEN** stderr contains the same `Warning: skipped release tag NAME: reason` line, taken from `RevisionChange.skipped` (`update ID`) or `UpdateAllPlan.skipped` (`update all`, also for packages that stay unchanged or kept back)
 
 ### Requirement: Errors and exit codes
-On failure the CLI SHALL print `Error: MESSAGE` to stderr, for a library error also `Error kind: KIND` (and one `  - item` line per lost item of `local_changes` or `has_dependents`) and, for kinds where a gitpm command helps, one `Hint: …` line naming that command; CLI usage errors print no kind. It SHALL exit with status 1 on failure and 0 on success. Verified by `uninstall_without_tty_refuses_and_lists_lost_work_including_stash`.
+On failure the CLI SHALL print `Error: MESSAGE` to stderr, for a library error also `Error kind: KIND` (and one `  - item` line per lost item of `local_changes` outside update and rollback, or `has_dependents`) and, where a gitpm command helps, one `Hint: …` line naming it; usage errors print no kind. It SHALL exit with status 1 on failure, 0 on success. Verified by `uninstall_without_tty_refuses_and_lists_lost_work_including_stash`, `update_all_local_work_prints_the_library_message_unchanged`.
 
 #### Scenario: Unknown ID
 - **WHEN** the user runs `gitpm update acme/none`
 - **THEN** stderr has `Error: package acme/none is not installed` and `Error kind: not_installed`, and the exit status is 1
+
+#### Scenario: Lost work in the update message
+- **WHEN** `gitpm update all` is refused because the clone of `acme/greeter` holds an unpublished tag `local-only`
+- **THEN** stderr has `Error: acme/greeter: unpublished local work blocks update all; unpublished tag: local-only` and `Error kind: local_changes`, with no `  - item` line
 
 #### Scenario: Command hint
 - **WHEN** the user installs `acme/greeter` again after forgetting it while its clone is retained
