@@ -359,6 +359,55 @@ mkdir -p .git/refs/tags/me
 }
 
 #[test]
+#[cfg(unix)]
+fn fork_replace_single_package_tag_failure_gives_no_commit_retry_hint() {
+    let f = Fixture::new();
+    f.ok(&["install", f.source(), "tilr/store"]);
+    // Without --version nothing changes after the fork commit, so the release makes no
+    // commit of its own. The fork commit skips commit hooks; reference-transaction still
+    // runs and places the lock that makes `git tag` fail.
+    use std::os::unix::fs::PermissionsExt;
+    release_hooks(&f, ":", ":");
+    let hook = f.dir.join("hooks/reference-transaction");
+    fs::write(
+        &hook,
+        r#"#!/bin/sh
+set -eu
+case "$PWD" in
+*/forks/me/mono)
+    mkdir -p .git/refs/tags/me
+    : > .git/refs/tags/me/store@1.0.0.lock
+    ;;
+esac
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(hook, fs::Permissions::from_mode(0o755)).unwrap();
+    let out = f.run(&[
+        "fork",
+        "tilr/store",
+        "--ns",
+        "me",
+        "--into",
+        "forks/me/mono",
+        "--replace",
+    ]);
+    assert!(!out.status.success(), "release must fail");
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("me/store: the release step failed"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("no release tags were created"), "{stderr}");
+    assert!(!stderr.contains("commit succeeded"), "{stderr}");
+    assert!(
+        !stderr.contains("releasing the same version again"),
+        "{stderr}"
+    );
+    assert!(f.state()["packages"].get("me/store").is_none());
+}
+
+#[test]
 fn two_packages_of_one_repository_share_one_clone_and_update_independently() {
     let f = Fixture::new();
     // Positional ID and --package are equivalent.

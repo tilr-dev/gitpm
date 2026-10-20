@@ -370,10 +370,12 @@ pub(crate) fn release_packages(
             "commit failed; plugin.json and the index were restored, your edits remain: {error}"
         )));
     }
-    let tag_failure = if tags.len() == 1 {
-        "commit succeeded but tag creation failed; releasing the same version again creates the tag"
+    // A fork release may skip its commit (nothing changed after the fork commit), and
+    // `commit` cannot retry the tag on a commit it did not make: no retry advice there.
+    let tag_failure = if only {
+        "tag creation failed; no release tags were created"
     } else {
-        "commit succeeded but tag creation failed; no release tags were created"
+        "commit succeeded but tag creation failed; releasing the same version again creates the tag"
     };
     let tagged = if tags.len() == 1 {
         // Keep the existing single-package tag behavior, including Git config.
