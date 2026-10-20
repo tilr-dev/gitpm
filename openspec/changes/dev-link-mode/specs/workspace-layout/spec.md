@@ -11,6 +11,13 @@ State SHALL support explicit link records with canonical absolute package and in
 - **WHEN** the author edits the linked package manifest after linking
 - **THEN** state keeps its last validated manifest snapshot until an explicit validated relink refreshes it
 
+### Requirement: Link record format
+A link record SHALL hold `mode` as `{"link": {"packageRoot": PATH, "target": PATH}}`, plus `source` (when available), `enabled`, `version` (declared), `dependencies` and `metadata`. It MUST NOT hold `current`, `previous`, `clone`, `path`, `catalog`, `forkOf` or `replaces`.
+
+#### Scenario: Link record fields
+- **WHEN** a package is linked
+- **THEN** its record has `mode.link.packageRoot` and `mode.link.target` and no `current`, `previous` or `clone`
+
 ### Requirement: Link state has an explicit format boundary
 **BREAKING**: the state format SHALL be bumped when link support is implemented, without migration. Foreign formats SHALL be refused with `unsupported` unchanged; README SHALL document workspace recreation.
 

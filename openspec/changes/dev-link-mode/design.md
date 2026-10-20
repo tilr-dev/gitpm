@@ -67,7 +67,7 @@ link must reuse. Until that contract exists, implementation cannot finalize the
 resolver. The research/delta can be reviewed independently.
 
 Resolve an existing directory to a canonical absolute target; reject paths that
-would create a workspace/self-reference cycle. Validate identity and manifest
+would create a workspace/self-reference cycle. Validate identity and manifest (`invalid_manifest`)
 before staging anything. Record an absolute path so CLI cwd changes cannot retarget
 a link. A missing configured output is an error, not an instruction to run a build.
 No build script or hook from the package is executed. Existing source validation
@@ -84,18 +84,20 @@ details are recommendations for implementation review, not new owner decisions.
 
 Dan requires an explicit link marker and delegates the concrete format to this
 design. Recommend a discriminated package record: managed packages retain their
-revision/mode history; link records carry a `mode: link` discriminant and a link
-descriptor with canonical package and installation paths. Do not fake a clone key,
+revision/mode history; link records carry `mode` as `{"link": {...}}` — the same object
+shape as the current `{"pinned": REF}` / `{"branch": NAME}` — with canonical
+package and installation paths. Do not fake a clone key,
 commit or `previous` revision for a linked folder.
 
-Illustrative link arm (final field spelling is an implementation detail):
+Link record format (decided here, as Dan delegated):
 
 ```json
 {
-  "mode": "link",
-  "link": {
-    "packageRoot": "/work/author/packages/example",
-    "target": "/work/author/packages/example/build"
+  "mode": {
+    "link": {
+      "packageRoot": "/work/author/packages/example",
+      "target": "/work/author/packages/example/build"
+    }
   },
   "enabled": true,
   "version": "0.3.0",
@@ -105,8 +107,10 @@ Illustrative link arm (final field spelling is an implementation detail):
 }
 ```
 
-The snippet is one package record, not a complete state document or a finalized
-metadata schema. The manifest identity/version/dependencies/metadata are a
+The snippet is one package record, not a complete state document. Required:
+`mode.link.packageRoot`, `mode.link.target`, `enabled`, `version` (declared),
+`dependencies`, `metadata`; `source` when available. Absent: `current`,
+`previous`, `clone`, `path`, `catalog`, `forkOf`, `replaces`. The manifest identity/version/dependencies/metadata are a
 validated snapshot at link time; file content stays live. They do not silently
 change the dependency graph when the author edits the manifest. An explicit
 relink refreshes that snapshot after validation and dependency checks. A displayed
@@ -119,9 +123,9 @@ This is **BREAKING**: change the state format from the version current at
 implementation time, refuse foreign formats unchanged, document workspace
 recreation. On the inspected baseline it is format 3; do not hard-code the next
 number now. No migration reader. Forgotten link records retain the link descriptor,
-not an owned-clone assumption. Rollback does not roll back external files;
-recommend `no_previous_version` for a link until an explicit conversion history
-contract exists.
+not an owned-clone assumption. Rollback does not roll back external files:
+rollback of a link fails with `no_previous_version` and changes nothing, until an
+explicit conversion history contract exists (install-uninstall delta).
 
 ## Deployment, transactions and lost work (original question 2)
 
@@ -208,10 +212,7 @@ hermetic local repositories and fixture directories, not public services.
 - Keep managed install/update/deploy/lost-work regression coverage; document the
   new format and command alongside the implementation.
 
-## Handoff constraint
+## Handoff
 
-`bin/finish` currently requires every change task checked and archives it into the
-main specs. That conflicts with both this task's research-only acceptance criteria
-and `openspec/config.yaml` (specs describe current code). TILR-35 should finish with
-this active implementation change, not with false completion marks or future
-behavior in current specs. The workflow exception needs Dan's instruction.
+TILR-35 is research: this change stays active and is not archived (Dan,
+2026-10-20, TILR-35 «Решения»). Implementation and archive are TILR-185.

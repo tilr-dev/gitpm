@@ -31,7 +31,7 @@ its tests land; do not archive it into `openspec/specs/` as research completion.
 
 ## Out of scope
 
-- Implementing link in this research task.
+- Implementing link in this research task (implementation and archive: TILR-185).
 - Build commands, watchers, downloadable builds and the manifest installation
   folder schema (TILR-142). This change consumes that schema once defined.
 - Changing `--dev` or reintroducing channels; branch following remains available.

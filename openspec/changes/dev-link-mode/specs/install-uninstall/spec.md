@@ -12,11 +12,22 @@ gitpm SHALL provide a library link operation and equivalent FFI and CLI entry po
 - **THEN** the link identifies that package and resolves its installation folder relative to its package folder
 
 ### Requirement: Invalid link targets leave no changes
-Linking SHALL refuse invalid manifests with `invalid_data` and missing installation folders, workspace cycles or targets in workspace managed storage with `workspace`, without changing state or the author folder.
+Linking SHALL refuse invalid manifests with `invalid_manifest` (unparsable JSON with `invalid_data`) and missing installation folders, workspace cycles or targets in workspace managed storage with `workspace`, without changing state or the author folder.
 
 #### Scenario: Missing build output
 - **WHEN** the manifest's installation folder does not exist
 - **THEN** linking fails with `workspace`, leaving state and the author tree unchanged, without running a build
+
+#### Scenario: Invalid manifest
+- **WHEN** the package manifest has no valid identifier
+- **THEN** linking fails with `invalid_manifest`, leaving state and the author tree unchanged
+
+### Requirement: Rollback refuses linked packages
+`rollback` of a linked package SHALL fail with `no_previous_version`, leaving the symlink, state and the external folder unchanged: a link keeps no previous revision.
+
+#### Scenario: Roll back a link
+- **WHEN** rollback is requested for a linked package
+- **THEN** it fails with `no_previous_version` and the symlink, state and external folder are unchanged
 
 ### Requirement: Link removal preserves all author work
 For a link record, removal plans SHALL describe only owned workspace entries and state changes. The external repository and installation folder MUST NOT appear in `deletes` and MUST NOT be deleted, reset or cleaned, including with force or lost-work confirmation. External dirty files, staged files, ignored files, unpublished refs and stashes SHALL NOT prevent removal of the link, since removal cannot lose them. Managed-clone lost-work checks SHALL remain unchanged.
