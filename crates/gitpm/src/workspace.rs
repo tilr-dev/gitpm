@@ -6048,7 +6048,7 @@ mod tests {
     fn a_submodule_in_dist_is_refused() {
         let (ws, m) = Ws::installed("dan/demo1");
         let bad = ws.other_author("bad", "dan/bad");
-        let sha = git(&bad.path, &["rev-parse", "HEAD"]).unwrap();
+        let sha = git(&bad.path, &["rev-parse", "HEAD"], false).unwrap();
         fixture_git(
             &bad.path,
             &[
