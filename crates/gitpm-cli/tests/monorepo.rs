@@ -143,6 +143,178 @@ impl Drop for Fixture {
     }
 }
 
+/// Hooks live outside the copied repository and apply to its initial and release commits.
+#[cfg(unix)]
+fn release_hooks(f: &Fixture, post_commit: &str, pre_commit: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let hooks = f.dir.join("hooks");
+    fs::create_dir_all(&hooks).unwrap();
+    for (name, script) in [("post-commit", post_commit), ("pre-commit", pre_commit)] {
+        let path = hooks.join(name);
+        fs::write(&path, format!("#!/bin/sh\nset -eu\n{script}\n")).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    f.git(
+        &f.mono,
+        &[
+            "config",
+            "--global",
+            "core.hooksPath",
+            hooks.to_str().unwrap(),
+        ],
+    );
+}
+
+fn release_failure(f: &Fixture) -> (PathBuf, String) {
+    let out = f.run(&[
+        "fork",
+        "tilr/store",
+        "tilr/theme",
+        "--ns",
+        "me",
+        "--into",
+        "forks/me/mono",
+        "--replace",
+        "--version",
+        "2.0.0",
+    ]);
+    assert!(!out.status.success(), "release must fail");
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    for id in ["me/store", "me/theme"] {
+        assert!(
+            stderr.contains(&format!("{id}: the release step failed")),
+            "{stderr}"
+        );
+        assert!(f.state()["packages"].get(id).is_none());
+    }
+    assert!(f.state().get("replacements").is_none());
+    assert_eq!(f.dist("tilr/store"), "store 1.0.0");
+    assert_eq!(f.dist("tilr/theme"), "theme 1.0.0");
+    let fork = f.dir.join("forks/me/mono");
+    let tags = f
+        .command("git")
+        .arg("-C")
+        .arg(&fork)
+        .arg("tag")
+        .arg("--list")
+        .arg("me/*")
+        .output()
+        .unwrap();
+    assert!(tags.status.success());
+    assert!(
+        tags.stdout.is_empty(),
+        "partial tags: {}",
+        String::from_utf8_lossy(&tags.stdout)
+    );
+    (fork, stderr)
+}
+
+#[test]
+#[cfg(unix)]
+fn fork_replace_release_rejecting_hook_restores_manifests_and_index() {
+    let f = Fixture::new();
+    f.ok(&["install", f.source(), "tilr/store"]);
+    f.ok(&["install", f.source(), "tilr/theme"]);
+    release_hooks(
+        &f,
+        r#"
+case "$(git log -1 --format=%s)" in
+    Fork*)
+        printf 'staged before release' > unrelated.txt
+        git add unrelated.txt
+        cp packages/store/plugin.json .git/store.before
+        cp packages/theme/plugin.json .git/theme.before
+        cp .git/index .git/index.before
+        ;;
+esac
+"#,
+        "exit 1",
+    );
+    let (fork, stderr) = release_failure(&f);
+    assert!(stderr.contains("kind: git"), "{stderr}");
+    for name in ["store", "theme"] {
+        assert_eq!(
+            fs::read(fork.join(format!("packages/{name}/plugin.json"))).unwrap(),
+            fs::read(fork.join(format!(".git/{name}.before"))).unwrap()
+        );
+    }
+    // Read raw index before any Git status invocation can refresh its stat cache.
+    assert!(
+        fs::read(fork.join(".git/index")).unwrap()
+            == fs::read(fork.join(".git/index.before")).unwrap(),
+        "index differs from its pre-release snapshot"
+    );
+    let staged = f
+        .command("git")
+        .arg("-C")
+        .arg(&fork)
+        .args(["diff", "--cached", "--name-only"])
+        .output()
+        .unwrap();
+    assert!(staged.status.success());
+    assert_eq!(
+        String::from_utf8(staged.stdout).unwrap().trim(),
+        "unrelated.txt"
+    );
+    let log = f
+        .command("git")
+        .arg("-C")
+        .arg(&fork)
+        .args(["log", "-1", "--format=%s"])
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&log.stdout).starts_with("Fork"));
+}
+
+#[test]
+fn fork_replace_release_rejects_wrong_metadata_type() {
+    let f = Fixture::new();
+    // Lenient install accepts this metadata; strict release must reject it even
+    // when it belongs to the last package in the batch.
+    f.write("theme", "1.0.0", r#", "tags": 42"#);
+    f.git(&f.mono, &["add", "--all"]);
+    f.git(&f.mono, &["commit", "-q", "-m", "bad metadata"]);
+    f.git(&f.mono, &["tag", "-f", "tilr/theme@1.0.0"]);
+    f.ok(&["install", f.source(), "tilr/store"]);
+    f.ok(&["install", f.source(), "tilr/theme"]);
+    let (fork, stderr) = release_failure(&f);
+    assert!(stderr.contains("kind: invalid_manifest"), "{stderr}");
+    for name in ["store", "theme"] {
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &fs::read(fork.join(format!("packages/{name}/plugin.json"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(manifest["version"], "1.0.0");
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn fork_replace_release_late_tag_lock_leaves_no_tags() {
+    let f = Fixture::new();
+    f.ok(&["install", f.source(), "tilr/store"]);
+    f.ok(&["install", f.source(), "tilr/theme"]);
+    release_hooks(
+        &f,
+        ":",
+        r#"
+mkdir -p .git/refs/tags/me
+: > .git/refs/tags/me/theme@2.0.0.lock
+"#,
+    );
+    let (fork, stderr) = release_failure(&f);
+    assert!(stderr.contains("kind: git"), "{stderr}");
+    assert!(stderr.contains("theme@2.0.0.lock"), "{stderr}");
+    let log = f
+        .command("git")
+        .arg("-C")
+        .arg(&fork)
+        .args(["log", "-1", "--format=%s"])
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&log.stdout).starts_with("Release"));
+}
+
 #[test]
 fn two_packages_of_one_repository_share_one_clone_and_update_independently() {
     let f = Fixture::new();

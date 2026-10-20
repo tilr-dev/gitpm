@@ -240,7 +240,7 @@ pub(crate) fn commit_package_with_ssh(
     custom_ssh: bool,
 ) -> Result<Commit> {
     version_key(version)?;
-    let (repo, manifest_path, mut m) = locate(repo, package, custom_ssh)?;
+    let (repo, manifest_path, m) = locate(repo, package)?;
     // Authoring is strict about metadata types; installing is lenient.
     m.metadata_strict()?;
     let tag = identity::release_tag(&m.id, version);
@@ -271,45 +271,134 @@ pub(crate) fn commit_package_with_ssh(
             tag,
         });
     }
-    require_identity(&repo, false, custom_ssh)?;
-    // A failed commit (hook, signing) must leave the manifest and the index as they were.
-    let original = fs::read(repo.join(&manifest_path))?;
-    let index = PathBuf::from(git(
-        &repo,
-        &["rev-parse", "--path-format=absolute", "--git-path", "index"],
-        custom_ssh,
-    )?);
-    let saved_index = fs::read(&index).ok();
-    m.version = version.to_owned();
-    fs::write(repo.join(&manifest_path), model::manifest_json(&m)?)?;
-    let committed = git(&repo, &["add", "--all", "--", "."], custom_ssh).and_then(|_| {
-        git(
-            &repo,
-            &["commit", "-m", &format!("Release {} {version}", m.id)],
-            custom_ssh,
-        )
-    });
-    if let Err(error) = committed {
-        fs::write(repo.join(&manifest_path), original)?;
-        match saved_index {
-            Some(bytes) => fs::write(&index, bytes)?,
-            None => {
-                let _ = fs::remove_file(&index);
-            }
-        }
-        return Err(Error::Git(format!(
-            "commit failed; plugin.json and the index were restored, your edits remain: {error}"
-        )));
-    }
-    git(&repo, &["tag", "--", &tag], custom_ssh).context(
-        Error::Git,
-        "commit succeeded but tag creation failed; releasing the same version again creates the tag",
-    )?;
+    release_packages(&repo, &[(&manifest_path, version)], &["."], false)?;
     Ok(Commit {
         package: m.id,
         version: version.to_owned(),
         tag,
     })
+}
+
+/// Shared authoring transaction for a single commit or a multi-package fork release.
+/// `only` limits fork commits to package folders and allows an unchanged initial commit.
+pub(crate) fn release_packages(
+    repo: &Path,
+    releases: &[(&str, &str)],
+    folders: &[&str],
+    only: bool,
+) -> Result<()> {
+    require_identity(repo, false)?;
+    let mut manifests = Vec::new();
+    let mut tags = Vec::new();
+    let mut names = Vec::new();
+    // Validate and snapshot every manifest before changing any of them.
+    for &(path, version) in releases {
+        version_key(version)?;
+        let original = fs::read(repo.join(path))?;
+        let mut manifest: Manifest = serde_json::from_slice(&original)
+            .map_err(|error| Error::InvalidManifest(format!("invalid {path}: {error}")))?;
+        manifest.metadata_strict()?;
+        let tag = identity::release_tag(&manifest.id, version);
+        ensure!(
+            git(repo, &["tag", "--list", "--", &tag])?.is_empty(),
+            VersionConflict,
+            "tag already exists: {tag}"
+        );
+        names.push(format!("{} {version}", manifest.id));
+        tags.push(tag);
+        let updated = if manifest.version == version {
+            original.clone()
+        } else {
+            manifest.version = version.to_owned();
+            model::manifest_json(&manifest)?.into_bytes()
+        };
+        manifests.push((repo.join(path), original, updated));
+    }
+    let index = PathBuf::from(git(
+        repo,
+        &["rev-parse", "--path-format=absolute", "--git-path", "index"],
+    )?);
+    let saved_index = match fs::read(&index) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+    let committed = (|| {
+        for (path, original, updated) in &manifests {
+            if original != updated {
+                fs::write(path, updated)?;
+            }
+        }
+        let mut args = vec!["add", "--all", "--"];
+        args.extend_from_slice(folders);
+        git(repo, &args)?;
+        if only {
+            let mut args = vec!["status", "--porcelain", "--"];
+            args.extend_from_slice(folders);
+            if git(repo, &args)?.is_empty() {
+                return Ok(());
+            }
+        }
+        let message = format!("Release {}", names.join(", "));
+        let mut args = vec!["commit", "-m", &message];
+        if only {
+            args.extend(["-q", "--only", "--"]);
+            args.extend_from_slice(folders);
+        }
+        git(repo, &args).map(drop)
+    })();
+    if let Err(error) = committed {
+        for (path, original, _) in manifests {
+            fs::write(path, original)?;
+        }
+        match saved_index {
+            Some(bytes) => fs::write(index, bytes)?,
+            None => match fs::remove_file(index) {
+                Ok(()) => (),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                Err(error) => return Err(error.into()),
+            },
+        }
+        return Err(Error::Git(format!(
+            "commit failed; plugin.json and the index were restored, your edits remain: {error}"
+        )));
+    }
+    let tag_failure = if tags.len() == 1 {
+        "commit succeeded but tag creation failed; releasing the same version again creates the tag"
+    } else {
+        "commit succeeded but tag creation failed; no release tags were created"
+    };
+    let tagged = if tags.len() == 1 {
+        // Keep the existing single-package tag behavior, including Git config.
+        git(repo, &["tag", "--", &tags[0]]).map(drop)
+    } else {
+        let head = git(repo, &["rev-parse", "HEAD"])?;
+        let refs: Vec<String> = tags
+            .iter()
+            .map(|tag| format!("{head}:refs/tags/{tag}"))
+            .collect();
+        // Fetching our own HEAD can atomically create several refs with closed
+        // stdin. Suppress fetch side effects: this release needs no network,
+        // pruning, FETCH_HEAD, submodules or repository maintenance.
+        let mut args = vec![
+            "-c",
+            "fetch.bundleURI=",
+            "fetch",
+            "--atomic",
+            "--no-tags",
+            "--no-write-fetch-head",
+            "--no-prune",
+            "--no-prune-tags",
+            "--no-recurse-submodules",
+            "--no-auto-maintenance",
+            "--no-write-commit-graph",
+            "--",
+            ".",
+        ];
+        args.extend(refs.iter().map(String::as_str));
+        git(repo, &args).map(drop)
+    };
+    tagged.context(Error::Git, tag_failure)
 }
 
 /// HEAD is the commit that set `version` of package `id` and only lacks its tag: a

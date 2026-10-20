@@ -1036,7 +1036,10 @@ packages/theme/dist/…
     `version` set in each manifest when `--version` is given) and one tag
     `NAMESPACE/NAME@VERSION` per package, then each package is installed (dependencies
     first; a dependency cycle between the forked packages is refused before anything is
-    created) and replaces its original. If the release fails, nothing is installed. A
+    created) and replaces its original. Release metadata is checked strictly
+    (`invalid_manifest` for a wrong type). A failed release commit restores the
+    manifests and index; release tags are created all or none. If the release fails,
+    nothing is installed. A
     failed install or replace of one package does not stop the others; the fork is never
     removed, the command prints per package what failed and how to finish or undo, and
     exits with status 1 and the first error's kind.
@@ -1105,8 +1108,9 @@ published, never drop versions from an index, and do not delete objects as part 
 gitpm only stores and reports them; it never interprets them (no exclusivity, no
 "one theme at a time": that is up to the host, which can, for example, group installed
 packages into slots by what they `provide`, without cloning or running anything).
-Authoring is strict, everything else lenient: `commit` refuses a key of another type
-(`invalid_manifest`); installing, updating, rolling back, forking, publishing to a
+Authoring is strict, everything else lenient: `commit` and the release step of
+`fork --replace` refuse a key of another type (`invalid_manifest`); installing,
+updating, rolling back, forking without releasing, publishing to a
 catalog and listing treat such a key (and `null`) as absent, so such packages keep
 working (`install`/`update` warn: `Warning: ID VERSION: plugin.json tags
 must be an array of strings; ignored`; the library reports it in

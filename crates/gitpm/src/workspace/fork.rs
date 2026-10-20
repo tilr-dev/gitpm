@@ -333,10 +333,9 @@ impl Manager {
                 }
             })
             .collect();
-        if let Err((tagged, error)) = release_packages(&fork, version, self.options.custom_ssh) {
+        if let Err(error) = release_packages(&fork, version) {
             // The packages are released together: nothing is installed unless all are.
             for result in &mut results {
-                result.tag = tagged.get(&result.id).cloned();
                 result.failed = Some(ForkStep::Release);
                 result.error = Some(error.clone());
             }
@@ -1173,83 +1172,21 @@ fn install_order(packages: &[(&str, BTreeSet<String>)]) -> Result<Vec<usize>> {
 
 /// Release the forked packages: set `version` (when given) in each manifest, commit the
 /// changes in their folders once (the whole repository for a root package, like
-/// `commit`), then tag each `ID@VERSION`. On failure: the tags created so far and the
-/// error.
-fn release_packages(
-    fork: &PackageFork,
-    version: Option<&str>,
-    custom_ssh: bool,
-) -> std::result::Result<(), (BTreeMap<String, String>, Error)> {
-    let repo = &fork.path;
-    let mut tagged = BTreeMap::new();
-    let fail = |tagged: &BTreeMap<String, String>, error| Err((tagged.clone(), error));
-    let mut tags = Vec::new();
-    for package in &fork.packages {
-        let tag = identity::release_tag(&package.id, version.unwrap_or(&package.version));
-        match git(repo, &["tag", "--list", "--", &tag], custom_ssh) {
-            Ok(found) if found.is_empty() => tags.push((package.id.clone(), tag)),
-            Ok(_) => {
-                return fail(
-                    &tagged,
-                    Error::version_conflict(format!("tag already exists: {tag}")),
-                );
-            }
-            Err(error) => return fail(&tagged, error),
-        }
-    }
+/// `commit`), then create all release tags together using the shared authoring path.
+fn release_packages(fork: &PackageFork, version: Option<&str>) -> Result<()> {
+    let paths: Vec<String> = fork
+        .packages
+        .iter()
+        .map(|p| manifest_path(&p.path))
+        .collect();
+    let releases: Vec<(&str, &str)> = fork
+        .packages
+        .iter()
+        .zip(&paths)
+        .map(|(package, path)| (path.as_str(), version.unwrap_or(&package.version)))
+        .collect();
     let folders: Vec<&str> = fork.packages.iter().map(|p| pathspec(&p.path)).collect();
-    let committed = (|| {
-        let mut saved = Vec::new();
-        if let Some(version) = version {
-            for package in fork.packages.iter().filter(|p| p.version != version) {
-                let path = repo.join(manifest_path(&package.path));
-                let original = fs::read(&path)?;
-                let subdir = (!package.path.is_empty()).then_some(package.path.as_str());
-                let mut m = package_manifest(repo, subdir)?;
-                m.version = version.to_owned();
-                fs::write(&path, manifest_json(&m)?)?;
-                saved.push((path, original));
-            }
-        }
-        let result = (|| {
-            let mut args = vec!["add", "--all", "--"];
-            args.extend(&folders);
-            git(repo, &args, custom_ssh)?;
-            let mut args = vec!["status", "--porcelain", "--"];
-            args.extend(&folders);
-            if git(repo, &args, custom_ssh)?.is_empty() {
-                return Ok(());
-            }
-            let names: Vec<String> = fork
-                .packages
-                .iter()
-                .map(|p| format!("{} {}", p.id, version.unwrap_or(&p.version)))
-                .collect();
-            let message = format!("Release {}", names.join(", "));
-            let mut args = vec!["commit", "-q", "--only", "-m", &message, "--"];
-            args.extend(&folders);
-            git(repo, &args, custom_ssh).map(drop)
-        })();
-        if let Err(error) = result {
-            for (path, bytes) in saved {
-                let _ = fs::write(path, bytes);
-            }
-            return Err(Error::Git(format!(
-                "release commit failed; the manifests were restored: {error}"
-            )));
-        }
-        Ok(())
-    })();
-    if let Err(error) = committed {
-        return fail(&tagged, error);
-    }
-    for (id, tag) in tags {
-        if let Err(error) = git(repo, &["tag", "--", &tag], custom_ssh) {
-            return fail(&tagged, error);
-        }
-        tagged.insert(id, tag);
-    }
-    Ok(())
+    scaffold::release_packages(&fork.path, &releases, &folders, true)
 }
 
 #[cfg(test)]
