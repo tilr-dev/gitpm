@@ -2,7 +2,11 @@
 //! Never pushes and never touches a workspace.
 use crate::catalog::version_key;
 use crate::error::{Context, Error, Result, ensure, fail};
-use crate::{Manifest, exec::git, identity, model, packages};
+use crate::{
+    Manifest,
+    exec::{git, git_with_input},
+    identity, model, packages,
+};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -240,7 +244,7 @@ pub(crate) fn commit_package_with_ssh(
     custom_ssh: bool,
 ) -> Result<Commit> {
     version_key(version)?;
-    let (repo, manifest_path, mut m) = locate(repo, package, custom_ssh)?;
+    let (repo, manifest_path, m) = locate(repo, package, custom_ssh)?;
     // Authoring is strict about metadata types; installing is lenient.
     m.metadata_strict()?;
     let tag = identity::release_tag(&m.id, version);
@@ -271,45 +275,129 @@ pub(crate) fn commit_package_with_ssh(
             tag,
         });
     }
-    require_identity(&repo, false, custom_ssh)?;
-    // A failed commit (hook, signing) must leave the manifest and the index as they were.
-    let original = fs::read(repo.join(&manifest_path))?;
-    let index = PathBuf::from(git(
-        &repo,
-        &["rev-parse", "--path-format=absolute", "--git-path", "index"],
-        custom_ssh,
-    )?);
-    let saved_index = fs::read(&index).ok();
-    m.version = version.to_owned();
-    fs::write(repo.join(&manifest_path), model::manifest_json(&m)?)?;
-    let committed = git(&repo, &["add", "--all", "--", "."], custom_ssh).and_then(|_| {
-        git(
-            &repo,
-            &["commit", "-m", &format!("Release {} {version}", m.id)],
-            custom_ssh,
-        )
-    });
-    if let Err(error) = committed {
-        fs::write(repo.join(&manifest_path), original)?;
-        match saved_index {
-            Some(bytes) => fs::write(&index, bytes)?,
-            None => {
-                let _ = fs::remove_file(&index);
-            }
-        }
-        return Err(Error::Git(format!(
-            "commit failed; plugin.json and the index were restored, your edits remain: {error}"
-        )));
-    }
-    git(&repo, &["tag", "--", &tag], custom_ssh).context(
-        Error::Git,
-        "commit succeeded but tag creation failed; releasing the same version again creates the tag",
-    )?;
+    let folder = manifest_path.strip_suffix("/plugin.json");
+    release_packages(&repo, &[(folder, version)], &["."], false, custom_ssh)?;
     Ok(Commit {
         package: m.id,
         version: version.to_owned(),
         tag,
     })
+}
+
+/// Shared authoring transaction for a single commit or a multi-package fork release.
+/// `releases` are (package folder, `None` for the root package; version) pairs.
+/// `only` limits fork commits to package folders and allows an unchanged initial commit.
+pub(crate) fn release_packages(
+    repo: &Path,
+    releases: &[(Option<&str>, &str)],
+    folders: &[&str],
+    only: bool,
+    custom_ssh: bool,
+) -> Result<()> {
+    require_identity(repo, false, custom_ssh)?;
+    let mut manifests = Vec::new();
+    let mut tags = Vec::new();
+    let mut names = Vec::new();
+    // Validate and snapshot every manifest before changing any of them.
+    for &(folder, version) in releases {
+        version_key(version)?;
+        // The loader validates the IDs and the package path before any git call.
+        let mut manifest = model::package_manifest(repo, folder)?;
+        manifest.metadata_strict()?;
+        let path = repo.join(folder.unwrap_or("")).join("plugin.json");
+        let original = fs::read(&path)?;
+        let tag = identity::release_tag(&manifest.id, version);
+        ensure!(
+            git(repo, &["tag", "--list", "--", &tag], custom_ssh)?.is_empty(),
+            VersionConflict,
+            "tag already exists: {tag}"
+        );
+        names.push(format!("{} {version}", manifest.id));
+        tags.push(tag);
+        let updated = if manifest.version == version {
+            original.clone()
+        } else {
+            manifest.version = version.to_owned();
+            model::manifest_json(&manifest)?.into_bytes()
+        };
+        manifests.push((path, original, updated));
+    }
+    let index = PathBuf::from(git(
+        repo,
+        &["rev-parse", "--path-format=absolute", "--git-path", "index"],
+        custom_ssh,
+    )?);
+    let saved_index = match fs::read(&index) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+    let committed = (|| {
+        for (path, original, updated) in &manifests {
+            if original != updated {
+                fs::write(path, updated)?;
+            }
+        }
+        let mut args = vec!["add", "--all", "--"];
+        args.extend_from_slice(folders);
+        git(repo, &args, custom_ssh)?;
+        if only {
+            let mut args = vec!["status", "--porcelain", "--"];
+            args.extend_from_slice(folders);
+            if git(repo, &args, custom_ssh)?.is_empty() {
+                return Ok(());
+            }
+        }
+        let message = format!("Release {}", names.join(", "));
+        let mut args = vec!["commit", "-m", &message];
+        if only {
+            args.extend(["-q", "--only", "--"]);
+            args.extend_from_slice(folders);
+        }
+        git(repo, &args, custom_ssh).map(drop)
+    })();
+    if let Err(error) = committed {
+        for (path, original, _) in manifests {
+            fs::write(path, original)?;
+        }
+        match saved_index {
+            Some(bytes) => fs::write(index, bytes)?,
+            None => match fs::remove_file(index) {
+                Ok(()) => (),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                Err(error) => return Err(error.into()),
+            },
+        }
+        return Err(Error::Git(format!(
+            "commit failed; plugin.json and the index were restored, your edits remain: {error}"
+        )));
+    }
+    // A fork release may skip its commit (nothing changed after the fork commit), and
+    // `commit` cannot retry the tag on a commit it did not make: no retry advice there.
+    let tag_failure = if only {
+        "tag creation failed; no release tags were created"
+    } else {
+        "commit succeeded but tag creation failed; releasing the same version again creates the tag"
+    };
+    let tagged = if tags.len() == 1 {
+        // Keep the existing single-package tag behavior, including Git config.
+        git(repo, &["tag", "--", &tags[0]], custom_ssh).map(drop)
+    } else {
+        let head = git(repo, &["rev-parse", "HEAD"], custom_ssh)?;
+        // update-ref applies the whole batch as one transaction. `create` refuses
+        // a tag that appeared after validation rather than overwriting it.
+        let input: String = tags
+            .iter()
+            .map(|tag| format!("create refs/tags/{tag} {head}\n"))
+            .collect();
+        git_with_input(
+            repo,
+            &["update-ref", "--stdin"],
+            input.into_bytes(),
+            custom_ssh,
+        )
+    };
+    tagged.context(Error::Git, tag_failure)
 }
 
 /// HEAD is the commit that set `version` of package `id` and only lacks its tag: a
@@ -1005,6 +1093,24 @@ mod tests {
         assert!(error.to_string().contains("restored"), "{error}");
         assert_eq!(model::manifest(&repo).unwrap().version, "0.1.0");
         assert_eq!(fixture_git(&repo, &["status", "--porcelain"]), status);
+        assert_eq!(fixture_git(&repo, &["tag", "--list"]), "dan/demo1@0.1.0");
+    }
+
+    #[test]
+    fn release_refuses_an_invalid_manifest_id_before_any_change() {
+        let dir = TempDir::new("scaffold");
+        let repo = new_repo(&dir, "demo1");
+        // A manifest edited by hand after the fork wrote it.
+        let path = repo.join("plugin.json");
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        json["id"] = "-x/demo1".into();
+        fs::write(&path, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+        fixture_git(&repo, &["commit", "-qam", "hand edit"]);
+        let before = tree_hash(&repo);
+        let error = release_packages(&repo, &[(None, "0.2.0")], &["."], true, false).unwrap_err();
+        assert_eq!(error.kind(), "invalid_id", "{error}");
+        assert_eq!(tree_hash(&repo), before);
         assert_eq!(fixture_git(&repo, &["tag", "--list"]), "dan/demo1@0.1.0");
     }
 

@@ -19,3 +19,16 @@ Depends on: the 2026-10-18 chain through `host-compatibility` (`no-backward-comp
 ## Impact
 
 `workspace/fork.rs` (release step), shared release code with `commit`. Tracker: TILR-57. Split from the former shared change `robustness-fixes` (2026-10-20: one task, one change).
+
+## Implementation
+
+Implemented under Task: TILR-57.
+
+The fork release previously skipped strict metadata validation, restored only
+manifests after staging failed commits, and created tags one by one. The shared
+authoring path validates all manifests before writes, restores manifests and the
+index on commit failure, and creates batch tags atomically with an update-ref transaction.
+Release manifests are read by the validating loader (IDs, `forkOf`, package path)
+before any git call, and library-owned Git input never raises SIGPIPE in the host.
+Hooks and a locked second tag reproduce the failures deterministically; all three
+new integration tests fail on the original code.
