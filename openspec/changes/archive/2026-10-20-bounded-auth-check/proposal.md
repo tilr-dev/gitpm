@@ -6,7 +6,7 @@
 
 ## What Changes
 
-- The `auth check` ls-remote gets SSH keepalives and is killed after 10 seconds (`git`, "timed out after 10s").
+- The `auth check` ls-remote uses the shared batch SSH policy with keepalives and is killed after 10 seconds (`git`, "timed out after 10s").
 - The `git config --get core.sshCommand` probe gets closed stdin and the same 10-second kill.
 - Error kind: an `auth check` that hits the limit fails with `git` (before: `auth` once git gave up on its own, or no failure at all while git kept waiting); every other failing check stays `auth`.
 
@@ -19,4 +19,4 @@ Shared requirement: git-safety "Git never waits for input" is also modified by `
 
 ## Impact
 
-`exec.rs` (ls-remote for `auth check`, the `core.sshCommand` probe), `auth.rs` (SSH command), `openspec/config.yaml` context. Tracker: TILR-24. Split from the former shared change `robustness-fixes` (2026-10-20: one task, one change).
+`exec.rs` (ls-remote for `auth check`, the `core.sshCommand` probe), `auth.rs` (silent-server regression test), `openspec/config.yaml` context. Tracker: TILR-24. Split from the former shared change `robustness-fixes` (2026-10-20: one task, one change).

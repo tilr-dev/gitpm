@@ -347,9 +347,13 @@ mod tests {
         // ref advertisement forever unless the check kills it.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let source = format!("git://{}/silent.git", listener.local_addr().unwrap());
-        std::thread::spawn(move || {
-            let held: Vec<_> = listener.incoming().collect();
-            drop(held);
+        let (accepted_tx, accepted_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let server = std::thread::spawn(move || {
+            let (connection, _) = listener.accept().unwrap();
+            accepted_tx.send(()).unwrap();
+            let _ = release_rx.recv();
+            drop(connection);
         });
         let (sender, receiver) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -359,6 +363,11 @@ mod tests {
         let result = receiver
             .recv_timeout(std::time::Duration::from_secs(60))
             .expect("auth check against a silent server did not finish");
+        accepted_rx
+            .try_recv()
+            .expect("git never connected to the silent server");
+        drop(release_tx);
+        server.join().unwrap();
         let error = result.unwrap_err();
         assert_eq!(error.kind(), "git");
         assert!(error.to_string().contains("timed out after 10s"), "{error}");

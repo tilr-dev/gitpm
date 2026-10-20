@@ -2,7 +2,7 @@
 
 ## 1. Library
 
-- [x] 1.1 `auth check` ls-remote and the `core.sshCommand` probe get a 10-second kill, and the `auth check` SSH command gets keepalives (TILR-24); verify `exec::git_never_reads_stdin_or_prompts` (probe args/timeout asserted) and `auth::access_check_is_bounded` against a silent server (fails with a timeout in about 10 seconds)
+- [x] 1.1 `auth check` ls-remote and the `core.sshCommand` probe get a 10-second kill, and `auth check` uses the shared SSH policy with keepalives (TILR-24); verify `exec::git_never_reads_stdin_or_prompts` (probe args/timeout asserted) and `auth::access_check_is_bounded` against a silent server (fails with a timeout in about 10 seconds)
 
 ## 2. Specs, tests, docs
 

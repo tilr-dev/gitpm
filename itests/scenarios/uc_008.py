@@ -94,11 +94,26 @@ def auth_check_against_a_silent_server(t: T):
     server = socket.socket()
     server.bind(("127.0.0.1", 0))
     server.listen()
-    held = []
-    threading.Thread(target=lambda: held.extend(iter(server.accept, None)), daemon=True).start()
+    accepted = threading.Event()
+    release = threading.Event()
+
+    def hold_connection():
+        connection, _ = server.accept()
+        with connection:
+            accepted.set()
+            release.wait()
+
+    worker = threading.Thread(target=hold_connection, daemon=True)
+    worker.start()
     source = f"git://127.0.0.1:{server.getsockname()[1]}/silent.git"
     before = t.snap(t.root, git=True)
     # The timeout only guards the run; gitpm must stop on its own 10-second limit.
-    t.gitpm_err("auth", "check", source, kind="git", contains="timed out after 10s", timeout=60)
-    t.same(before, "workspace, catalog and repositories")
-    server.close()
+    try:
+        t.gitpm_err("auth", "check", source, kind="git", contains="timed out after 10s", timeout=60)
+        t.ok(accepted.is_set(), "git connected to the silent server")
+        t.same(before, "workspace, catalog and repositories")
+    finally:
+        release.set()
+        server.close()
+        if accepted.is_set():
+            worker.join()

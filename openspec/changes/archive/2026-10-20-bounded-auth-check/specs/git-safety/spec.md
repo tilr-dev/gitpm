@@ -41,7 +41,7 @@ Repository git commands SHALL use closed stdin, `GIT_TERMINAL_PROMPT=0`, empty `
 - **THEN** the check fails with `invalid_argument` before git starts; a git that cannot be started fails with `auth`
 
 #### Scenario: Unknown host key
-- **WHEN** SSH reports `Host key verification failed`
+- **WHEN** SSH reports `Host key verification failed` (a changed key; a new host's key is accepted and recorded in `known_hosts` by `StrictHostKeyChecking=accept-new`)
 - **THEN** the check fails with `auth`, the message says to set up known_hosts with plain SSH and does not include git's stderr
 - **AND** this is covered by `auth::diagnoses_failures_without_echoing_secrets`, `auth::failure_maps_every_category_and_hides_stderr`, `auth_check_is_read_only_and_accepts_empty_repositories`
 
