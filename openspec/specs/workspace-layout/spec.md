@@ -15,7 +15,7 @@ A workspace root SHALL contain `state.json` (installed packages, replacement bin
 
 #### Scenario: Opening a new workspace
 - **WHEN** a Manager opens a root that does not exist
-- **THEN** the workspace root is created with `packages/`, `dist/` and a `state.json` of `{"format": 3, "packages": {}}` written to a temporary file and renamed into place, and the workspace lock file (transactions-locking, "Workspace lock") is created beside it
+- **THEN** the workspace root is created with `packages/`, `dist/` and a `state.json` of `{"format": 1, "packages": {}}` written to a temporary file and renamed into place, and the workspace lock file (transactions-locking, "Workspace lock") is created beside it
 
 #### Scenario: Crash while creating state.json
 - **WHEN** the process dies while a new workspace's `state.json` is written
@@ -49,7 +49,12 @@ Verified by `workspace::open_ds_store_with_other_content_is_refused`.
 - **THEN** opening fails with `workspace` and changes nothing inside it
 
 ### Requirement: State format versions
-`state.json` SHALL carry `"format": 3` and keep installed packages under the key `packages`. A file with any other format, or without one, SHALL be refused with `unsupported` and MUST NOT be rewritten; there is no migration. The format SHALL be bumped with every change that an older gitpm would misread. Verified by `model::state_format_other_than_current_is_refused`.
+`state.json` SHALL carry `"format": 1` and keep installed packages under `packages`. Other or missing formats SHALL fail with `unsupported` without rewriting or migration. Before the first public release, changes SHALL stay in format 1 without backward compatibility. Later, only changes gitpm from the previous public release would misread SHALL cause a bump. Verified by `model::state_format_other_than_current_is_refused`.
+
+#### Scenario: Release format bump
+- **WHEN** a change would be misread by gitpm from the previous public release
+- **THEN** the format is bumped as a separate step in the release milestone, at most once per release
+- **AND** before the first public release, changes are made in place under format 1 without bumps or backward compatibility
 
 #### Scenario: Workspace from gitpm 0.3
 - **WHEN** a Manager opens a workspace whose `state.json` has no `format`

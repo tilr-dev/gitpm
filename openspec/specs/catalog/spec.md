@@ -6,11 +6,11 @@ Defines the static JSON catalog: its single format, a tree of static files, rele
 
 ## Requirements
 
-### Requirement: Catalog v2 is a tree of static files
-A catalog SHALL be a tree of JSON files holding only links: `catalog.json` and directory files `{"schema": 2, "directories": {…}}`, a catalog package index `namespaces/<ns>/<name>/plugin.json` `{"schema": 2, "id", "source", "versions"}` per package, and one `versions/<V>/release.json` per version. Lookup by ID SHALL NOT walk the tree. Any other schema value, a v1 monolithic `catalog.json` included, SHALL be refused with `catalog`.
+### Requirement: Catalog is a tree of static files
+A catalog SHALL be a tree of JSON files holding only links: `catalog.json` and directory files `{"schema": 1, "directories": {…}}`, a catalog package index `namespaces/<ns>/<name>/plugin.json` `{"schema": 1, "id", "source", "versions"}` per package, and one `versions/<V>/release.json` per version. Lookup by ID SHALL NOT walk the tree. Any other schema value, a v1 monolithic `catalog.json` included, SHALL be refused with `catalog`.
 
 #### Scenario: Unknown schema
-- **WHEN** a directory file or catalog package index has `"schema": 3`
+- **WHEN** a directory file or catalog package index has `"schema": 2`
 - **THEN** reading it fails with `catalog` ("unsupported catalog schema", or "unsupported package schema" for the index; a `state.json` of another format is `unsupported` instead, see errors)
 
 #### Scenario: v1 catalog
