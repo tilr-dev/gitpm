@@ -1097,6 +1097,56 @@ fn stable_install_and_update_ignore_untagged_head_and_sort_versions() {
 }
 
 #[test]
+fn catalog_index_summary_is_published_and_used_by_the_cli() {
+    let f = Fixture::new();
+    fs::write(f.repo.join("plugin.json"), r#"{"id":"dan/hello","version":"1.10.0","title":"Newest","description":"Details","provides":"theme","tags":["ui"]}"#).unwrap();
+    f.git(&["add", "."]);
+    f.git(&["commit", "-m", "release metadata"]);
+    f.git(&["tag", "dan/hello@1.10.0"]);
+    fs::write(f.dir.join("sources.txt"), "./upstream\n").unwrap();
+    f.cli(&["catalog", "update"], true);
+    let path = f.dir.join("catalog/namespaces/dan/hello/plugin.json");
+    let bytes = fs::read(&path).unwrap();
+    let index: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(index["schema"], 2);
+    assert_eq!(
+        index["latest"],
+        serde_json::json!({
+            "version": "1.10.0", "title": "Newest", "description": "Details",
+            "provides": ["theme"], "tags": ["ui"],
+        })
+    );
+    // Register an older version: the generation and registration paths agree.
+    f.cli(
+        &[
+            "catalog",
+            "register",
+            f.repo.to_str().unwrap(),
+            "--ref",
+            "dan/hello@1.0.0",
+        ],
+        true,
+    );
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+    f.git(&["tag", "dan/hello@9.0.0"]); // The newest tag has a mismatched manifest.
+    f.cli(&["catalog", "update"], false);
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        bytes,
+        "failed generation leaves index intact"
+    );
+    fs::write(
+        f.dir
+            .join("catalog/namespaces/dan/hello/versions/1.10.0/release.json"),
+        "{broken",
+    )
+    .unwrap();
+    let overview = f.cli(&["catalog", "show"], true);
+    assert!(overview.contains("Title: Newest"), "{overview}");
+    assert!(overview.contains("Provides: theme"), "{overview}");
+}
+
+#[test]
 fn catalog_update_keeps_published_records_when_tags_move() {
     use gitpm::catalog;
     let f = Fixture::new();

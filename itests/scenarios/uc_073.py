@@ -157,11 +157,43 @@ def info_shows_latest_release_metadata(t: T):
 
 
 @case(spec=["plugin-metadata/metadata-in-the-catalog"])
-def broken_latest_release_only_drops_metadata(t: T):
-    """A broken latest release.json leaves only that package without metadata in info."""
+def broken_latest_release_keeps_index_metadata(t: T):
+    """A broken release record does not affect display metadata from the index."""
     t.new_package(THEME, "1.0.0", extra=THEME_META)
     t.gitpm_ok("register", t.repo(THEME), "--ref", f"{THEME}@1.0.0")
     t.catalog_release(THEME, "1.0.0").write_text("{broken")
     out = t.gitpm_ok("info").out
     t.has(out, f"{THEME} — latest: 1.0.0")
-    t.lacks(out, "Title: Theme")
+    t.has(out, "Title: Theme")
+
+
+@case(spec=["plugin-metadata/metadata-in-the-catalog#overview-without-per-package-release-reads",
+            "plugin-metadata/metadata-in-the-catalog#one-broken-summary", "catalog/bounded-overview"])
+def browse_reads_only_indexes(t: T):
+    """A remote overview reads 40 indexes once each, no releases; bad summaries stay local."""
+    t.catalog.mkdir(parents=True, exist_ok=True)
+    directories = {}
+    for n in range(45):
+        name = f"p{n:02}"
+        directories[name] = f"{name}/"
+        folder = t.catalog / name
+        folder.mkdir()
+        summary = {"version": "1.0.0", "title": name, "description": None, "provides": [], "tags": []}
+        if n == 0:
+            summary["provides"] = False
+        index = {"schema": 2, "id": f"tilr/{name}", "source": "https://example.invalid/source.git",
+                 "versions": {"1.0.0": "versions/1.0.0/release.json"}, "latest": summary}
+        if n == 1:
+            del index["latest"]
+        (folder / "plugin.json").write_text(json.dumps(index))
+    (t.catalog / "catalog.json").write_text(json.dumps({"schema": 2, "directories": directories}))
+    server = t.serve(t.catalog)
+    try:
+        out = t.gitpm_ok("--catalog", server.url, "info").out
+        paths = server.take()
+    finally:
+        server.httpd.shutdown()
+        server.httpd.server_close()
+    t.eq(paths, ["/catalog.json"] + [f"/p{n:02}/plugin.json" for n in range(40)], "bounded index requests only")
+    t.has(out, "tilr/p00", "tilr/p01", "Title: p02", "Title: p39")
+    t.lacks(out, "Title: p00", "Title: p01", "tilr/p40")

@@ -1,15 +1,15 @@
 ## MODIFIED Requirements
 
 ### Requirement: Catalog v2 is a tree of static files
-A catalog SHALL be a tree of JSON files holding only links and summaries: `catalog.json` and directory files `{"schema": 2, "directories": {…}}`, a catalog package index `namespaces/<ns>/<name>/plugin.json` per package (`schema` 3, `id`, `source`, `versions` and `latest`, the summary of the newest release: `version`, `title`, `description`, `provides`, `tags`), and one `versions/<V>/release.json` per version. Lookup by ID SHALL NOT walk the tree. Any other schema value, an index of schema 2 and a v1 monolithic `catalog.json` included, SHALL be refused with `catalog`; there is no reader for older layouts.
+A catalog SHALL be a tree of JSON files: schema-2 directory links, a schema-2 package index `namespaces/<ns>/<name>/plugin.json` with `id`, `source`, `versions` and `latest`, and one `versions/<V>/release.json` per version. `latest` SHALL summarize the selected release's version and metadata. Lookup by ID SHALL NOT walk the tree. Any other schema value, a v1 monolithic `catalog.json` included, SHALL be refused with `catalog`.
 
 #### Scenario: Unknown schema
-- **WHEN** a directory file or catalog package index has a schema value this gitpm does not write (for example an index of `"schema": 2` from gitpm 0.5)
-- **THEN** reading it fails with `catalog` ("unsupported catalog schema", or "unsupported package schema" for the index; a `state.json` of another format is `unsupported` instead, see errors); the user regenerates the catalog with `catalog update`
+- **WHEN** a directory file or catalog package index has `"schema": 3`
+- **THEN** reading it fails with `catalog` ("unsupported catalog schema", or "unsupported package schema" for the index; a `state.json` of another format is `unsupported` instead, see errors)
 
 #### Scenario: v1 catalog
 - **WHEN** the catalog location is a monolithic v1 `catalog.json`
-- **THEN** every catalog read fails with `catalog` and nothing is written; the user regenerates the catalog with `catalog-update`
+- **THEN** every catalog read fails with `catalog` and nothing is written; the user regenerates the catalog with `catalog update`
 
 #### Scenario: Too deep
 - **WHEN** the directory links of a catalog nest more than 8 levels
@@ -22,4 +22,9 @@ A catalog SHALL be a tree of JSON files holding only links and summaries: `catal
 
 #### Scenario: Release summary in the index
 - **WHEN** a catalog is generated and the latest release of `tilr/theme` has a title and provides
-- **THEN** `namespaces/tilr/theme/plugin.json` holds `latest` with that version, title and provides, equal to the manifest in its `release.json`; directory files carry no summaries
+- **THEN** `namespaces/tilr/theme/plugin.json` holds `latest {version, title, description, provides, tags}`, equal to the normalized manifest metadata in its `release.json`; directory files `{"schema": 2, "directories": {…}}` carry only links
+
+#### Scenario: Summary selection and regeneration
+- **WHEN** a catalog is generated or a release is registered, including an older version or an already published version
+- **THEN** the index summary matches the newest stable release, or the newest prerelease if no stable release exists, and its schema number remains unchanged
+- **AND** a failed generation leaves the existing index unchanged
