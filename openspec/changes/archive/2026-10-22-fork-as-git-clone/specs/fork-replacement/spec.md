@@ -7,14 +7,6 @@
 - **WHEN** the user runs `gitpm fork acme/hello --ns me --into hello-fork`
 - **THEN** `hello-fork` is a Git clone whose `plugin.json` has `id` `me/hello`, the output contains `me/hello forked from acme/hello (repository root)`, and `acme/hello` is still installed
 
-#### Scenario: Unsupported recorded source
-- **WHEN** installation metadata names a remote helper or a relative source
-- **THEN** fork refuses it with `invalid_argument` and leaves no destination
-
-#### Scenario: Installed clone has local work
-- **WHEN** the installed clone has local commits and staged, unstaged or untracked edits
-- **THEN** the fork uses the recorded source at the installed revision and leaves all local work in the installation unchanged
-
 ### Requirement: Fork requires explicit namespace and destination
 `fork` SHALL require explicit `--ns NAMESPACE` and `--into DIR`. DIR MUST be new, outside the workspace and the source repository, without `..`. Existing destinations SHALL be refused unchanged. A failed fork SHALL remove directories it created.
 
@@ -33,10 +25,6 @@
 #### Scenario: Destination inside the workspace
 - **WHEN** `--into` points inside the workspace root
 - **THEN** the fork fails with `invalid_argument` ("fork destination must be outside the managed workspace") and nothing is created
-
-#### Scenario: Existing destination
-- **WHEN** `--into` names an existing directory, including an existing multi-package fork
-- **THEN** the command fails with `invalid_argument` and leaves it unchanged
 
 ### Requirement: Fork metadata
 The fork manifest SHALL get `forkOf` `{id, version, commit, source}` and `replaces` `{id, version}` from the installed revision of the cloned source; `source` SHALL be the recorded source. Metadata and unknown keys SHALL be kept. HEAD SHALL be attached to a new branch `fork` (`fork-2`, … when taken).
@@ -62,3 +50,19 @@ Forking SHALL keep the existing installation model: install the fork's committed
 #### Scenario: Install a fork with dist
 - **WHEN** a package has source files and committed dist and the user forks it with `--replace`
 - **THEN** the fork contains the source tree and only its committed dist is deployed under the fork ID
+
+### Requirement: Fork isolates source and destination state
+Fork SHALL exclude local installation work and use only the recorded source at installed revisions. It SHALL reject unsupported recorded sources and existing destinations without changing the installation or an existing destination.
+
+#### Scenario: Unsupported recorded source
+- **WHEN** installation metadata names a remote helper or a relative source
+- **THEN** fork refuses it with `invalid_argument` and leaves no destination
+
+#### Scenario: Installed clone has local work
+- **WHEN** the installed clone has local commits and staged, unstaged or untracked edits
+- **THEN** the fork uses the recorded source at the installed revision and leaves all local work in the installation unchanged
+
+#### Scenario: Existing destination
+- **WHEN** `--into` names an existing directory, including an existing multi-package fork
+- **THEN** the command fails with `invalid_argument` and leaves it unchanged
+
