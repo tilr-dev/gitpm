@@ -20,7 +20,7 @@ def catalog_group_runs_every_subcommand(t: T):
     show = t.run("gitpm", "catalog", "show", check=True)
     t.has(show.out, "dan/hello", "latest: 0.2.0")
     links = t.run("gitpm", "catalog", "links", check=True)
-    t.eq(json.loads(links.out)["schema"], 2, "catalog links")
+    t.eq(json.loads(links.out)["schema"], 1, "catalog links")
     t.ok(not t.ws.exists(), "catalog operations create no workspace")
 
 

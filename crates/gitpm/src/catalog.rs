@@ -70,12 +70,12 @@ fn folder(id: &str) -> Result<String> {
     valid_id(id)?;
     Ok(format!("namespaces/{id}"))
 }
-/// The root `catalog.json` at `location` as a v2 directory file; anything else (a v1
+/// The root `catalog.json` at `location` as a directory file; anything else (a v1
 /// monolithic catalog included) is refused with `catalog`.
 fn root_directory(location: &str) -> Result<Directory> {
     directory_of(list(location)?)
 }
-/// A directory file `{"schema": 2, "directories": {…}}`.
+/// A directory file `{"schema": 1, "directories": {…}}`.
 fn directory_of(value: serde_json::Value) -> Result<Directory> {
     ensure!(
         value.get("plugins").is_none(),
@@ -84,7 +84,7 @@ fn directory_of(value: serde_json::Value) -> Result<Directory> {
     );
     let directory: Directory =
         serde_json::from_value(value).context(Error::Catalog, "invalid directory catalog")?;
-    ensure!(directory.schema == 2, Catalog, "unsupported catalog schema");
+    ensure!(directory.schema == 1, Catalog, "unsupported catalog schema");
     Ok(directory)
 }
 /// Lowercase hex of a digest (sha2 0.11 output no longer implements `LowerHex`).
@@ -416,7 +416,7 @@ fn read_json(location: &str, relative: &str) -> Result<Option<serde_json::Value>
         serde_json::from_slice(&bytes).context(Error::Catalog, "invalid catalog JSON")?,
     ))
 }
-/// The directory links at one catalog level: its root `catalog.json` (schema 2).
+/// The directory links at one catalog level: its root `catalog.json` (schema 1).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CatalogLinks {
     pub schema: u32,
@@ -424,7 +424,7 @@ pub struct CatalogLinks {
     pub directories: BTreeMap<String, String>,
 }
 /// [`CatalogLinks`] of the catalog level at `location` (refused with `catalog` when its
-/// `catalog.json` is missing or not a v2 directory file).
+/// `catalog.json` is missing or not a directory file).
 pub fn links(location: &str) -> Result<CatalogLinks> {
     let directory = root_directory(location)?;
     Ok(CatalogLinks {
@@ -452,7 +452,7 @@ fn package_index(location: &str, id: &str) -> Result<Option<PackageIndex>> {
     };
     let index: PackageIndex = serde_json::from_value(value)?;
     ensure!(
-        index.schema == 2 && index.id == id,
+        index.schema == 1 && index.id == id,
         Catalog,
         "invalid package index"
     );
@@ -619,11 +619,11 @@ fn link_directory(path: &Path, name: &str, link: &str) -> Result<()> {
         serde_json::from_slice(&fs::read(path)?)?
     } else {
         Directory {
-            schema: 2,
+            schema: 1,
             ..Default::default()
         }
     };
-    ensure!(directory.schema == 2, Catalog, "unsupported catalog schema");
+    ensure!(directory.schema == 1, Catalog, "unsupported catalog schema");
     if directory.directories.get(name).is_some_and(|s| s == link) {
         return Ok(());
     }
@@ -645,14 +645,14 @@ fn write_release(root: &Path, release: &Release) -> Result<()> {
         serde_json::from_slice(&fs::read(&path)?)?
     } else {
         PackageIndex {
-            schema: 2,
+            schema: 1,
             id: id.clone(),
             source: release.source.clone(),
             versions: BTreeMap::new(),
         }
     };
     ensure!(
-        index.schema == 2 && index.id == *id && index.source == release.source,
+        index.schema == 1 && index.id == *id && index.source == release.source,
         Catalog,
         "package {id} is registered from a different source or identity"
     );
@@ -688,7 +688,7 @@ fn prepare_root(path: &Path) -> Result<()> {
         return atomic_json(
             path,
             &Directory {
-                schema: 2,
+                schema: 1,
                 ..Default::default()
             },
         );
@@ -1022,7 +1022,7 @@ pub struct SkippedSourceTag {
 }
 
 /// `catalog-update` never writes into a verified catalog (an existing top-level
-/// `catalog.json` must also be a valid v2 directory file).
+/// `catalog.json` must also be a valid directory file).
 fn refuse_verified(location: &str) -> Result<()> {
     if let Some(value) = read_json(location, "catalog.json")? {
         ensure!(
@@ -1339,7 +1339,7 @@ pub fn browse(location: &str) -> Result<CatalogOverview> {
             });
             if let Some(value) = read_json(location, &format!("{child}plugin.json"))? {
                 let plugin: PackageIndex = serde_json::from_value(value)?;
-                ensure!(plugin.schema == 2, Catalog, "unsupported package schema");
+                ensure!(plugin.schema == 1, Catalog, "unsupported package schema");
                 for (version, link) in &plugin.versions {
                     version_key(version)?;
                     ensure!(
@@ -1770,19 +1770,19 @@ pub(crate) mod tests {
         let dirs = |p: &str| read(&cat.join(p));
         assert_eq!(
             dirs("catalog.json"),
-            json!({"schema": 2, "directories": {"namespaces": "namespaces/"}})
+            json!({"schema": 1, "directories": {"namespaces": "namespaces/"}})
         );
         assert_eq!(
             dirs("namespaces/catalog.json"),
-            json!({"schema": 2, "directories": {"dan": "dan/"}})
+            json!({"schema": 1, "directories": {"dan": "dan/"}})
         );
         assert_eq!(
             dirs("namespaces/dan/catalog.json"),
-            json!({"schema": 2, "directories": {"demo1": "demo1/"}})
+            json!({"schema": 1, "directories": {"demo1": "demo1/"}})
         );
         assert_eq!(
             dirs("namespaces/dan/demo1/plugin.json"),
-            json!({"schema": 2, "id": "dan/demo1", "source": SOURCE,
+            json!({"schema": 1, "id": "dan/demo1", "source": SOURCE,
                    "versions": {"0.1.0": "versions/0.1.0/release.json"}})
         );
         assert_eq!(
@@ -1799,11 +1799,11 @@ pub(crate) mod tests {
         );
         assert_eq!(
             dirs("catalog.json"),
-            json!({"schema": 2, "directories": {"namespaces": "namespaces/"}})
+            json!({"schema": 1, "directories": {"namespaces": "namespaces/"}})
         );
         assert_eq!(
             dirs("namespaces/dan/catalog.json"),
-            json!({"schema": 2, "directories": {"demo1": "demo1/", "demo2": "demo2/"}})
+            json!({"schema": 1, "directories": {"demo1": "demo1/", "demo2": "demo2/"}})
         );
         assert_eq!(
             dirs("namespaces/dan/demo1/plugin.json")["versions"],
@@ -2032,7 +2032,7 @@ pub(crate) mod tests {
         let original_index = read(&index);
         let original_release = read(&release_path);
         let index_cases = [
-            (json!({"schema": 3}), "catalog"),
+            (json!({"schema": 2}), "catalog"),
             (json!({"id": "dan/other"}), "catalog"),
             (
                 json!({"versions": {"0.1.0": "../../evil/release.json"}}),
@@ -2249,7 +2249,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn existing_root_must_be_a_v2_directory() {
+    fn existing_root_must_be_a_directory() {
         let dir = TempDir::new("catalog");
         let cat = dir.join("catalog");
         let path = cat.join("catalog.json");
@@ -2261,15 +2261,15 @@ pub(crate) mod tests {
             "{error}"
         );
         assert_eq!(fs::read(&path).unwrap(), b"{garbage");
-        write_json(&path, &json!({"schema": 1, "directories": {}}));
+        write_json(&path, &json!({"schema": 2, "directories": {}}));
         let error = save_release(&path, &release("dan/demo1", "0.1.0", SOURCE, 'a')).unwrap_err();
         assert_eq!(error.kind(), "catalog");
-        // An empty folder gets a fresh v2 root.
+        // An empty folder gets a fresh root.
         let fresh = dir.join("fresh");
         save(&fresh, &release("dan/demo1", "0.1.0", SOURCE, 'a'));
         assert_eq!(
             read(&fresh.join("catalog.json")),
-            json!({"schema": 2, "directories": {"namespaces": "namespaces/"}})
+            json!({"schema": 1, "directories": {"namespaces": "namespaces/"}})
         );
     }
 
@@ -2282,7 +2282,7 @@ pub(crate) mod tests {
         let items = |cat: &Path| browse(loc(cat)).unwrap().items;
         write_json(
             &cat.join("catalog.json"),
-            &json!({"schema": 2, "directories": {}}),
+            &json!({"schema": 1, "directories": {}}),
         );
         assert!(matches!(
             items(&cat)[..],
@@ -2329,21 +2329,21 @@ pub(crate) mod tests {
             write_json(&root, &value);
             browse(loc(&cat)).unwrap_err()
         };
-        let error = error_of(json!({"schema": 2, "directories": {"up": "../"}}));
+        let error = error_of(json!({"schema": 1, "directories": {"up": "../"}}));
         assert_eq!(
             (error.kind(), error.to_string()),
             ("catalog", "invalid directory link: ../".into())
         );
         assert_eq!(
-            error_of(json!({"schema": 2, "directories": {"a b": "a b/"}})).kind(),
+            error_of(json!({"schema": 1, "directories": {"a b": "a b/"}})).kind(),
             "invalid_id"
         );
         assert_eq!(
-            error_of(json!({"schema": 1, "directories": {}})).kind(),
+            error_of(json!({"schema": 2, "directories": {}})).kind(),
             "catalog"
         );
-        assert_eq!(error_of(json!({"schema": 2})).kind(), "catalog");
-        let error = error_of(json!({"schema": 2, "directories": {"gone": "gone/"}}));
+        assert_eq!(error_of(json!({"schema": 1})).kind(), "catalog");
+        let error = error_of(json!({"schema": 1, "directories": {"gone": "gone/"}}));
         assert!(
             error
                 .to_string()
@@ -2357,12 +2357,12 @@ pub(crate) mod tests {
 
         // Nesting deeper than 8 levels is refused.
         let mut path = cat.clone();
-        write_json(&root, &json!({"schema": 2, "directories": {"a": "a/"}}));
+        write_json(&root, &json!({"schema": 1, "directories": {"a": "a/"}}));
         for _ in 0..9 {
             path = path.join("a");
             write_json(
                 &path.join("catalog.json"),
-                &json!({"schema": 2, "directories": {"a": "a/"}}),
+                &json!({"schema": 1, "directories": {"a": "a/"}}),
             );
         }
         let error = browse(loc(&cat)).unwrap_err();
@@ -2376,20 +2376,20 @@ pub(crate) mod tests {
             directories.insert(name.clone(), json!(format!("{name}/")));
             write_json(
                 &wide.join(format!("namespaces/dan/{name}/plugin.json")),
-                &json!({"schema": 2, "id": format!("dan/{name}"), "source": SOURCE, "versions": {}}),
+                &json!({"schema": 1, "id": format!("dan/{name}"), "source": SOURCE, "versions": {}}),
             );
         }
         write_json(
             &wide.join("catalog.json"),
-            &json!({"schema": 2, "directories": {"namespaces": "namespaces/"}}),
+            &json!({"schema": 1, "directories": {"namespaces": "namespaces/"}}),
         );
         write_json(
             &wide.join("namespaces/catalog.json"),
-            &json!({"schema": 2, "directories": {"dan": "dan/"}}),
+            &json!({"schema": 1, "directories": {"dan": "dan/"}}),
         );
         write_json(
             &wide.join("namespaces/dan/catalog.json"),
-            &json!({"schema": 2, "directories": directories}),
+            &json!({"schema": 1, "directories": directories}),
         );
         let overview = browse(loc(&wide)).unwrap();
         assert!(overview.truncated);

@@ -61,7 +61,7 @@ $ cat gitpm-workspace/dist/acme/greeter/index.js
 export const greeting = "greeter v1";
 $ gitpm list
 {
-  "format": 3,
+  "format": 1,
   "packages": {
     "acme/greeter": {
       "source": "/…/greeter",
@@ -414,6 +414,9 @@ Changed in 0.5:
 
 Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING**):
 
+- **BREAKING:** Catalog directory files (`catalog.json`) and package indexes use
+  schema 1 (gitpm 0.5 wrote schema 2). Any other schema is refused with `catalog`.
+  Migration: regenerate the catalog with `gitpm catalog update` into an empty folder.
 - Catalog commands: `info` → `catalog show`, bare `catalog` → `catalog links`,
   `catalog-update` → `catalog update`, `register` → `catalog register`. Old spellings
   have no aliases.
@@ -445,7 +448,7 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   single- and multi-package repositories, and are ignored without a warning (a
   repository with only `v1.0.0` fails install with `no_releases`); `init`, `commit` and
   `fork --replace` never create them. Migration: tag `ID@VERSION` on the release commits.
-- `state.json` format 3: installed packages are under `packages` (was `plugins`), own
+- `state.json` format 1: installed packages are under `packages` (was `plugins`), own
   clones in the workspace folder `packages/` (was `plugins/`). Any other format, or a
   file without `format`, is refused with `unsupported` and never rewritten; there is no
   migration. Migration: re-create the workspace (install its packages again into a new
@@ -462,7 +465,7 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   | `catalog::PluginSummary` | `catalog::PackageSummary` |
   | `catalog::Plugin`, `Catalog.plugins` (result of `selected`) | `catalog::Package`, `Catalog.packages` |
   | `catalog::OverviewItem::Plugin { depth, plugin }` | `OverviewItem::Package { depth, package }` |
-  | `catalog::CatalogFormat`, `CatalogOverview.format` | removed (only the v2 tree exists) |
+  | `catalog::CatalogFormat`, `CatalogOverview.format` | removed (only the static file tree exists) |
   | `State::installed_in(root)` (read metadata from the clone) | removed; use `State::installed()` |
   | `Installed.metadata: Option<Metadata>` | `Installed.metadata: Metadata`, required in `state.json` (`invalid_data` without it) |
   | FFI `PluginManager` | `PackageManager` |
@@ -478,7 +481,7 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   regenerate the catalog with `catalog update` into an empty folder.
 - The CLI alias `create` is removed (`init` only); `create` and `migrate-catalog` fail
   with `unknown command: X; use --help`.
-- `list` takes metadata only from the state record; `metadata` is required in every format-3 record (a record without it is `invalid_data`).
+- `list` takes metadata only from the state record; `metadata` is required in every format-1 record (a record without it is `invalid_data`).
 - A new fork no longer gets the Git config keys `pm.forkBase`/`pm.forkVersion` (nothing
   read them); `forkOf` in the manifest is the only fork provenance.
 - `gitpm-ffi` carries the library version (0.6.0 with this release) and promises no
@@ -490,9 +493,9 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   `check`, `catalog show`/`browse`, `catalog links`, `catalog_release`/`lookup` on a missing local
   location fail with `invalid_argument` (was `catalog` "catalog not found"). Migration:
   create the catalog folder (`catalog update`/`catalog register` create it) or drop the setting.
-- `gitpm catalog links` prints the library's typed directory links `{"schema": 2,
+- `gitpm catalog links` prints the library's typed directory links `{"schema": 1,
   "directories": {…}}` (`catalog::links`, the same as FFI `catalogLinks`) instead of the
-  raw `catalog.json`; a v1 or otherwise invalid root fails with `catalog`.
+  raw `catalog.json`; a monolithic (v1) catalog or otherwise invalid root fails with `catalog`.
 - `uninstall` and `forget` of a recorded package whose clone is gone drop its record and
   `dist/` without confirmation (was `repository_not_found`; `forget` keeps no `forgotten`
   record then); the CLI warning for such a package says `uninstall or forget ID to drop
@@ -596,7 +599,7 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   `branch_gone` in `update all`; `ID already installed (V, pinned at REF)` names the
   recorded mode, and `--ref`/`--dev` asking for another mode adds the update hint.
 - `state.json` records gain `mode` (omitted in release mode, else `{"pinned": REF}` or
-  `{"branch": NAME}`); the format stays 3 (no released gitpm wrote format 3 without it).
+  `{"branch": NAME}`); the format stays 1 (no released gitpm wrote format 1 without it).
   `forgotten` now keeps the record of every forgotten package, own clones included.
 - `restore` records the forgotten package as it was: revisions (`previous` kept),
   `catalog`, `enabled` and mode, for own and shared clones alike (an own clone used to be
@@ -842,7 +845,7 @@ Catalog commands (`catalog show`, `catalog links`, `catalog update`, `catalog re
 ## Workspace layout and `dist/`
 
 ```text
-state.json              {"format": 3, "packages": …}: installed packages, replacements, forgotten records
+state.json              {"format": 1, "packages": …}: installed packages, replacements, forgotten records
 packages/<ns>/<name>/   own clone of a root package
 repos/<name>-<hash>/    shared clone of a multi-package source
 dist/<ns>/<name>/       deployed files of an active package
@@ -1202,20 +1205,21 @@ $ gitpm list --provides theme | jq '.resolved[] | {id, title, description, provi
   defines `core.sshCommand`. Hosts pass `custom_ssh` explicitly; Git subprocesses
   inherit the host environment.
 - No backward compatibility before 1.0: package IDs are always `namespace/name`, release
-  tags always `ID@VERSION`, catalogs always the v2 tree; there are no aliases,
+  tags always `ID@VERSION`, catalogs always the static file tree; there are no aliases,
   migrations or compatibility readers, and the FFI promises no stability. Every breaking
   change is listed under "Changed in X.Y".
 - `state.json` carries `"format"` (`gitpm::STATE_FORMAT`). A gitpm reads and writes
   exactly its own format: any other one (or a file without `format`) is refused with
   `unsupported` and never rewritten, in either direction (no downgrade, no migration). A
   workspace of another format is re-created: install its packages again into a new
-  workspace root. The format is bumped with every change an older gitpm would misread.
+  workspace root. Before the first public release, all gitpm file formats stay at version 1
+  and evolve in place without backward compatibility or bumps. Afterward, bump a format
+  only when gitpm from the previous public release would misread the change. Bump it as
+  a separate step in the release milestone, at most once per release.
 
   | gitpm | state format |
   | --- | --- |
-  | 0.3 and earlier | none (no `format` key), packages under `plugins` |
-  | 0.4, 0.5 | 2 (`clone`/`path`, `forgotten`), packages under `plugins`, clones in `plugins/` |
-  | 0.6 | 3: packages under `packages`, own clones in `packages/` |
+  | Before the first public release | 1: packages under `packages`, own clones in `packages/` |
 
 ## API overview
 

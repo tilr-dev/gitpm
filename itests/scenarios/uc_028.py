@@ -1,4 +1,4 @@
-"""UC-028: Catalog v2 tree and hashes (P0).
+"""UC-028: Catalog tree and hashes (P0).
 
 Fixture g4_tree_catalog: namespaces dan, acme and old, two versions each,
 nested and binary dist files. Hashes are recomputed independently from Git blobs.
@@ -37,18 +37,18 @@ def committed_files(repo: Path, rev: str) -> dict:
     return out
 
 
-@case(fixture="g4_tree_catalog", spec=["catalog/catalog-v2-is-a-tree-of-static-files"])
-def schema2_directories_and_links_resolve(t: T):
-    """Every directory catalog.json is schema 2 with only `name/` links that resolve to a
+@case(fixture="g4_tree_catalog", spec=["catalog/catalog-is-a-tree-of-static-files"])
+def schema1_directories_and_links_resolve(t: T):
+    """Every directory catalog.json is schema 1 with only `name/` links that resolve to a
     child catalog.json or plugin.json; package indexes link every version to its release."""
     t.eq(load(t.catalog / "catalog.json"),
-         {"schema": 2, "directories": {"namespaces": "namespaces/"}}, "root")
+         {"schema": 1, "directories": {"namespaces": "namespaces/"}}, "root")
     t.eq(load(t.catalog / "namespaces/catalog.json"),
-         {"schema": 2, "directories": {"acme": "acme/", "dan": "dan/", "old": "old/"}}, "namespaces/")
-    t.eq(load(t.catalog / "namespaces/dan/catalog.json"), {"schema": 2, "directories": {"hello": "hello/"}}, "dan/")
-    t.eq(load(t.catalog / "namespaces/acme/catalog.json"), {"schema": 2, "directories": {"widget": "widget/"}},
+         {"schema": 1, "directories": {"acme": "acme/", "dan": "dan/", "old": "old/"}}, "namespaces/")
+    t.eq(load(t.catalog / "namespaces/dan/catalog.json"), {"schema": 1, "directories": {"hello": "hello/"}}, "dan/")
+    t.eq(load(t.catalog / "namespaces/acme/catalog.json"), {"schema": 1, "directories": {"widget": "widget/"}},
          "acme/")
-    t.eq(load(t.catalog / "namespaces/old/catalog.json"), {"schema": 2, "directories": {"oldie": "oldie/"}}, "old/")
+    t.eq(load(t.catalog / "namespaces/old/catalog.json"), {"schema": 1, "directories": {"oldie": "oldie/"}}, "old/")
 
     seen = set()
 
@@ -62,7 +62,7 @@ def schema2_directories_and_links_resolve(t: T):
             if (child / "plugin.json").is_file():
                 index = load(child / "plugin.json")
                 seen.add(child / "plugin.json")
-                t.eq(index["schema"], 2, f"{child} plugin.json schema")
+                t.eq(index["schema"], 1, f"{child} plugin.json schema")
                 for version, rel in index["versions"].items():
                     t.eq(rel, f"versions/{version}/release.json", f"{index['id']} {version} link")
                     t.ok((child / rel).is_file(), f"{index['id']} {version} release resolves")
@@ -76,7 +76,7 @@ def schema2_directories_and_links_resolve(t: T):
     t.eq(sorted(str(p) for p in on_disk - seen), [], "files not reachable from the root")
     for id, (versions, _) in PACKAGES.items():
         index = load(folder(t, id) / "plugin.json")
-        t.eq(index, {"schema": 2, "id": id, "source": str(t.repo(id)),
+        t.eq(index, {"schema": 1, "id": id, "source": str(t.repo(id)),
                      "versions": {v: f"versions/{v}/release.json" for v in versions}}, f"{id} index")
 
 

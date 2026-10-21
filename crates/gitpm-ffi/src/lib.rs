@@ -3138,7 +3138,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(
             root.join("state.json"),
-            r#"{"format":3,"packages":{"acme/greeter":{"source":"s","current":{"version":"0.1.0","commit":"c"},"previous":null,"enabled":false,"mode":{"pinned":"acme/greeter@0.1.0"},"metadata":{}}}}"#,
+            r#"{"format":1,"packages":{"acme/greeter":{"source":"s","current":{"version":"0.1.0","commit":"c"},"previous":null,"enabled":false,"mode":{"pinned":"acme/greeter@0.1.0"},"metadata":{}}}}"#,
         )
         .unwrap();
         let manager =
@@ -3187,7 +3187,7 @@ mod tests {
         );
         std::fs::write(
             root.join("state.json"),
-            r#"{"format":3,"packages":{"me/x":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":false,"forkOf":{"id":"vendor/x","version":"0.9.0","commit":"f"},"metadata":{}}}}"#,
+            r#"{"format":1,"packages":{"me/x":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":false,"forkOf":{"id":"vendor/x","version":"0.9.0","commit":"f"},"metadata":{}}}}"#,
         )
         .unwrap();
         let view = read_state(root.to_string_lossy().into()).unwrap();
@@ -3195,7 +3195,7 @@ mod tests {
         assert_eq!(list.len(), 1);
         assert_eq!((list[0].id.as_str(), list[0].enabled), ("me/x", false));
         assert_eq!(list[0].fork_of.as_ref().unwrap().id, "vendor/x");
-        assert_eq!(view.format, 3);
+        assert_eq!(view.format, 1);
         assert_eq!(view.packages["me/x"].current.version, "1.0.0");
 
         let manager =

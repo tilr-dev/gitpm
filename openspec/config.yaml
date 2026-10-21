@@ -39,11 +39,15 @@ context: |
 
   Compatibility: no backward compatibility before 1.0 (owner decision 2026-10-18, TILR-38):
   package IDs are always namespace/name, release tags always ID@VERSION, catalogs always the
-  v2 tree; there are no CLI aliases, migrations or compatibility readers, and the FFI
+  static file tree; there are no CLI aliases, migrations or compatibility readers, and the FFI
   promises no stability (gitpm-ffi carries the library version). state.json carries
-  "format": 3; a gitpm reads and writes only its own format, any other one (or none) is
-  refused with `unsupported` and never rewritten. The format is bumped on any change an
-  older reader would misread (no migration). Every breaking CLI/API/FFI/file-format change
+  "format": 1; a gitpm reads and writes only its own format, any other one (or none) is
+  refused with `unsupported` and never rewritten. Before the first public release, all gitpm
+  file formats stay at version 1 and evolve in place without backward compatibility or
+  version bumps. Afterward, bump a format only when gitpm from the previous public
+  release would misread the change, in one separate
+  step in the release milestone, at most once per release (no migration). Every breaking
+  CLI/API/FFI/file-format change
   is marked BREAKING and documented in README "Changed in X.Y".
 
   Git flow: work happens on `dev` (or feature branches off `dev`) and is tested locally.
