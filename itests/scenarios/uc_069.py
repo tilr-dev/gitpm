@@ -153,6 +153,10 @@ def gitlinks_warn_at_publication_and_deploy(t: T):
     t.gitpm_ok("disable", id)
     warned(t.gitpm_ok("enable", id))
     t.eq(list(vendor.iterdir()), [], "enable uses the same exporter")
+    shutil.rmtree(t.dist(id))
+    warned(t.gitpm_ok("sync-dist"))
+    t.ok(vendor.is_dir(), "explicit reconcile restores the gitlink directory")
+    t.eq(list(vendor.iterdir()), [], "reconciled gitlink remains empty")
 
 
 @case(fixture="g2_demos_installed", spec=["dist/forget-restore-and-uninstall-settle-dist",

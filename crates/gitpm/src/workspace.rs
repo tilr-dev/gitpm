@@ -2554,7 +2554,7 @@ impl Manager {
     /// for it) is reported in `skipped` and the others are still synced: the transaction
     /// commits, then the call fails with [`Error::NotDeployed`] carrying the report.
     pub fn sync_dist(&self) -> Result<DistSync> {
-        let (plan, _) = self.transaction(|txn, state| {
+        let (mut plan, report) = self.transaction(|txn, state| {
             let mut plan = dist_drift(txn.root(), state, self.options.custom_ssh)?;
             let mut deployed = Vec::new();
             for id in std::mem::take(&mut plan.deployed) {
@@ -2575,6 +2575,7 @@ impl Manager {
             plan.skipped.sort_by(|a, b| a.id.cmp(&b.id));
             Ok(plan)
         })?;
+        plan.warnings = report.warnings;
         if plan.skipped.is_empty() {
             return Ok(plan);
         }
@@ -6091,6 +6092,23 @@ mod tests {
                 .iter()
                 .any(|warning| warning.contains("dist/vendor is a Git submodule"))
         );
+        fs::remove_dir_all(ws.root.join("dist/dan/bad")).unwrap();
+        let synced = m.sync_dist().unwrap();
+        assert_eq!(synced.warnings, result.dist.warnings);
+        assert!(ws.root.join("dist/dan/bad/vendor").is_dir());
+        fs::remove_dir_all(ws.root.join("dist/dan/bad")).unwrap();
+        fs::remove_dir_all(ws.dist()).unwrap();
+        let state = m.state().unwrap();
+        fs::remove_dir_all(
+            ws.root
+                .join(state.packages["dan/demo1"].clone_folder("dan/demo1")),
+        )
+        .unwrap();
+        let Error::NotDeployed { sync, .. } = m.sync_dist().unwrap_err() else {
+            panic!("missing clone must produce a partial reconciliation report");
+        };
+        assert_eq!(sync.warnings, result.dist.warnings);
+        assert!(ws.root.join("dist/dan/bad/vendor").is_dir());
     }
 
     #[test]
