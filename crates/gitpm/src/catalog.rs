@@ -1198,7 +1198,6 @@ pub(crate) fn update_sources_with_ssh(
     let _lock = lock(&path)?;
     refuse_verified(location)?;
     // Check every source and immutable version before writing any release.
-    let mut warnings = Vec::new();
     for ((id, version), release) in &mut pending {
         if let Some(index) = package_index(location, id)? {
             ensure!(
@@ -2789,6 +2788,28 @@ pub(crate) mod tests {
         let before = tree_hash(&cat);
         update_sources(loc(&cat), &list, &mut |_| {}).unwrap();
         assert_eq!(tree_hash(&cat), before);
+    }
+
+    #[test]
+    fn summary_generation_preserves_export_warnings() {
+        let dir = TempDir::new("catalog-summary");
+        let author = Author::new(dir.join("author"), "dan/demo1");
+        let entry = format!("160000,{},dist/vendor", author.head());
+        fixture_git(
+            &author.path,
+            &["update-index", "--add", "--cacheinfo", &entry],
+        );
+        fixture_git(&author.path, &["commit", "-q", "-m", "add gitlink"]);
+        fixture_git(&author.path, &["tag", "-f", "dan/demo1@0.1.0"]);
+        let cat = dir.join("catalog");
+        let list = sources(dir.path(), "author\n");
+        let report = update_sources(loc(&cat), &list, &mut |_| {}).unwrap();
+        assert_eq!(report.warnings.len(), 1);
+        assert!(report.warnings[0].contains("dist/vendor is a Git submodule"));
+        assert_eq!(
+            read(&cat.join("namespaces/dan/demo1/plugin.json"))["latest"]["version"],
+            "0.1.0"
+        );
     }
 
     #[test]
