@@ -6,7 +6,7 @@ use crate::error::{Error, Result};
 use crate::{
     ForkOf, Installed, Mode, State,
     catalog::{Catalog, version_key},
-    exec,
+    transport,
 };
 use serde::Serialize;
 use std::{
@@ -400,7 +400,7 @@ fn upstream(
 
 /// Tags and branches per origin, read once per distinct source with `git ls-remote`.
 #[derive(Default)]
-struct Origins(BTreeMap<String, std::result::Result<exec::RemoteRefs, String>>);
+struct Origins(BTreeMap<String, std::result::Result<transport::RemoteRefs, String>>);
 impl Origins {
     /// Tags and branches of `source`; `Err` is the classified reason the origin was
     /// unreadable.
@@ -408,7 +408,7 @@ impl Origins {
         &mut self,
         source: &str,
         custom_ssh: bool,
-    ) -> std::result::Result<&exec::RemoteRefs, String> {
+    ) -> std::result::Result<&transport::RemoteRefs, String> {
         self.0
             .entry(source.to_owned())
             .or_insert_with(|| {
@@ -417,7 +417,7 @@ impl Origins {
                 if let Err(e) = crate::auth::validate_recorded(source) {
                     return Err(format!("source not queried: {e}"));
                 }
-                exec::ls_remote_refs(source, custom_ssh).map_err(|e| {
+                transport::ls_remote_refs(source, custom_ssh).map_err(|e| {
                     // Classify git's message only, not the command line with the source.
                     let text = e.to_string();
                     let stderr = text.split_once(": ").map_or(text.as_str(), |(_, s)| s);

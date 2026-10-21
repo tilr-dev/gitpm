@@ -1,8 +1,8 @@
 //! Catalog client and author operations. The catalog stores metadata, never code.
 use crate::error::{Context, Error, Require, Result, ensure, fail};
 use crate::{
-    Manifest, exec, exec::git, identity, model::package_manifest, model::resolve_ref, packages,
-    valid_id,
+    Manifest, identity, model::package_manifest, model::resolve_ref, packages, transport,
+    transport::git, valid_id,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -380,7 +380,7 @@ fn read_json(location: &str, relative: &str) -> Result<Option<serde_json::Value>
         } else {
             format!("{base}/{relative}")
         };
-        match exec::http_get(&url)? {
+        match transport::http_get(&url)? {
             Some(bytes) => bytes,
             None => return Ok(None),
         }
@@ -865,11 +865,7 @@ pub(crate) fn register_package_with_ssh(
         source.to_owned()
     };
     let temp = Scratch::new("pm-register")?;
-    git(
-        &temp.0,
-        &["clone", "--no-local", "--", &source, "repo"],
-        custom_ssh,
-    )?;
+    transport::clone_repo(&temp.0, &source, "repo", custom_ssh)?;
     let repo = temp.0.join("repo");
     let commit = resolve_ref(&repo, reference, custom_ssh)?;
     let found = packages::find_at_with_ssh(
@@ -1046,15 +1042,10 @@ pub(crate) fn update_sources_with_ssh(
             source: source.clone(),
         });
         let repo = temp.0.join(number.to_string());
-        git(
+        transport::clone_repo(
             &temp.0,
-            &[
-                "clone",
-                "--no-local",
-                "--",
-                source,
-                repo.to_str().require(Error::Io, "invalid temporary path")?,
-            ],
+            source,
+            repo.to_str().require(Error::Io, "invalid temporary path")?,
             custom_ssh,
         )?;
         let mut tags = Vec::new();

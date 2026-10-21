@@ -1,6 +1,6 @@
 //! Persistent formats: package manifest and workspace state. Byte-compatible with the stand.
 use crate::error::{Error, Result, ensure};
-use crate::{exec::git, identity};
+use crate::{identity, transport::git};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fs, path::Path};
 

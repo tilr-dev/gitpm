@@ -19,7 +19,6 @@ pub mod catalog;
 pub mod check;
 pub mod deps;
 mod error;
-mod exec;
 pub mod identity;
 pub mod list;
 mod lock;
@@ -30,6 +29,7 @@ pub mod releases;
 pub mod scaffold;
 #[cfg(test)]
 mod test_support;
+mod transport;
 mod txn;
 mod upgrade;
 mod workspace;

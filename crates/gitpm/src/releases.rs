@@ -1,7 +1,7 @@
 //! Release tags are the shared source of truth for installs and catalog generation.
 use crate::catalog::version_key;
 use crate::error::{Error, Result, ensure};
-use crate::{Manifest, exec::git, model::resolve_ref, packages, valid_id};
+use crate::{Manifest, model::resolve_ref, packages, transport::git, valid_id};
 use std::{collections::BTreeMap, path::Path};
 
 #[derive(Clone, Debug)]

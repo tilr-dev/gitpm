@@ -1,6 +1,6 @@
 //! Detection of local work that deleting or replacing a package clone would lose.
 use crate::error::{Error, Result};
-use crate::exec::{git, git_raw};
+use crate::transport::{git, git_raw};
 use serde::Serialize;
 use std::path::Path;
 
@@ -181,16 +181,12 @@ pub(crate) const ORIGIN_TAGS: &str = "refs/origin-tags/";
 /// from local tags, so a tag made by hand never counts as published), pruning records of
 /// tags the origin deleted. Called after every clone and every fetch from the origin.
 pub(crate) fn record_origin_tags(repo: &Path, custom_ssh: bool) -> Result<()> {
-    git(
+    crate::transport::fetch(
         repo,
-        &[
-            "fetch",
-            "--quiet",
-            "--prune",
-            "--no-tags",
-            "origin",
-            &format!("+refs/tags/*:{ORIGIN_TAGS}*"),
-        ],
+        crate::transport::Fetch::RecordTags {
+            remote: "origin",
+            namespace: ORIGIN_TAGS,
+        },
         custom_ssh,
     )?;
     Ok(())
@@ -234,7 +230,7 @@ fn hidden(repo: &Path, check_remote: bool, custom_ssh: bool) -> Result<Vec<LostW
     let published = if tags.is_empty() || !check_remote {
         String::new()
     } else {
-        git(repo, &["ls-remote", "--tags", "origin"], custom_ssh)?
+        crate::transport::remote_tags(repo, "origin", custom_ssh)?
     };
     for (name, _) in tags {
         let reference = format!("refs/tags/{name}");

@@ -1,6 +1,6 @@
 //! Check repository read access using the user's existing Git credentials.
 use crate::error::{Result, ensure, fail};
-use crate::{Options, exec};
+use crate::{Options, transport};
 use serde::Serialize;
 use std::path::Path;
 
@@ -145,7 +145,7 @@ pub(crate) fn failure(stderr: &str) -> &'static str {
 /// A successful check also covers an empty repository with no refs.
 pub fn check(source: &str, options: &Options) -> Result<AuthCheck> {
     validate(source)?;
-    let output = exec::ls_remote(
+    let output = transport::ls_remote(
         source,
         options.custom_ssh,
         "cannot start git; check the Git installation and PATH",

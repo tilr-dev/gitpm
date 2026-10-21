@@ -191,13 +191,13 @@ fn output_with_input_within(
 }
 
 /// `git -C repo ARGS`, noninteractive. Returns trimmed stdout.
-pub(crate) fn git(repo: &Path, args: &[&str], custom_ssh: bool) -> Result<String> {
+pub fn git(repo: &Path, args: &[&str], custom_ssh: bool) -> Result<String> {
     let output = git_raw(repo, args, custom_ssh)?;
     Ok(String::from_utf8(output)?.trim().to_owned())
 }
 
 /// Raw stdout (untrimmed) for NUL-separated output such as `status -z`.
-pub(crate) fn git_raw(repo: &Path, args: &[&str], custom_ssh: bool) -> Result<Vec<u8>> {
+pub fn git_raw(repo: &Path, args: &[&str], custom_ssh: bool) -> Result<Vec<u8>> {
     let what = format!("git {}", args.join(" "));
     let output = output_within(
         git_command(repo, args, custom_ssh)?,
@@ -216,12 +216,7 @@ pub(crate) fn git_raw(repo: &Path, args: &[&str], custom_ssh: bool) -> Result<Ve
 }
 
 /// Run Git with library-owned input, never inherited user stdin. Input closes at EOF.
-pub(crate) fn git_with_input(
-    repo: &Path,
-    args: &[&str],
-    input: Vec<u8>,
-    custom_ssh: bool,
-) -> Result<()> {
+pub fn git_with_input(repo: &Path, args: &[&str], input: Vec<u8>, custom_ssh: bool) -> Result<()> {
     let what = format!("git {}", args.join(" "));
     let output = output_with_input_within(
         git_command(repo, args, custom_ssh)?,
@@ -243,12 +238,12 @@ pub(crate) fn git_with_input(
 
 /// Tags and branches of a remote, as `git ls-remote` lists them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct RemoteRefs {
+pub struct RemoteRefs {
     /// Tag name (without `refs/tags/`, peeled `^{}` entries folded into their tag) →
     /// the commit it points to.
-    pub(crate) tags: BTreeMap<String, String>,
+    pub tags: BTreeMap<String, String>,
     /// Branch name (without `refs/heads/`) → its HEAD commit.
-    pub(crate) heads: BTreeMap<String, String>,
+    pub heads: BTreeMap<String, String>,
 }
 
 /// Tags and branches of a remote: `git ls-remote --tags --heads -- SOURCE` with the
@@ -257,7 +252,7 @@ pub(crate) struct RemoteRefs {
 /// stderr (`LC_ALL=C`, so it can be classified). Runs in the OS temp dir with only the
 /// file, git, http(s) and ssh transports; callers validate the source first
 /// (`auth::validate_recorded`): a URL or an absolute path, no remote helper.
-pub(crate) fn ls_remote_refs(source: &str, custom_ssh: bool) -> Result<RemoteRefs> {
+pub fn ls_remote_refs(source: &str, custom_ssh: bool) -> Result<RemoteRefs> {
     let what = format!("git ls-remote --tags --heads -- {source}");
     let mut command = git_base(custom_ssh, Error::Git)?;
     // Outside any repository: a bare word is a path, never a remote name of the cwd.
@@ -309,7 +304,7 @@ pub(crate) fn ls_remote_refs(source: &str, custom_ssh: bool) -> Result<RemoteRef
 }
 
 /// Whether the user's Git configuration (outside any repository) defines `key`.
-fn git_config_defined(
+pub fn git_config_defined(
     key: &str,
     start_kind: fn(String) -> Error,
     start_error: &str,
@@ -328,13 +323,13 @@ fn config_probe(key: &str) -> (Command, Duration) {
 }
 
 /// Outcome of a read-only `git ls-remote`.
-pub(crate) struct LsRemote {
+pub struct LsRemote {
     pub success: bool,
     pub stderr: String,
 }
 
 /// `git ls-remote -- SOURCE` without cloning; stdout is discarded.
-pub(crate) fn ls_remote(source: &str, custom_ssh: bool, start_error: &str) -> Result<LsRemote> {
+pub fn ls_remote(source: &str, custom_ssh: bool, start_error: &str) -> Result<LsRemote> {
     let what = format!("git ls-remote -- {source}");
     let output = output_with_input_within(
         ls_remote_command(source, custom_ssh)?,
@@ -364,7 +359,7 @@ fn ls_remote_command(source: &str, custom_ssh: bool) -> Result<Command> {
 /// HTTP GET result. `None` body means HTTP 404. Redirects are not followed (a 3xx
 /// is an error, so a catalog cannot be moved to another host silently) and bodies
 /// over 16 MiB are refused.
-pub(crate) fn http_get(url: &str) -> Result<Option<Vec<u8>>> {
+pub fn http_get(url: &str) -> Result<Option<Vec<u8>>> {
     let mut command = Command::new("curl");
     command.args([
         "--disable",
