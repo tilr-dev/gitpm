@@ -22,7 +22,7 @@ The deployed folder `dist/<namespace>/<name>/` SHALL exist exactly when the pack
 - **THEN** `dist/acme/greeter/` does not exist, `dist/me/greeter/` does, and `acme/greeter` stays `enabled: true` with `active: false` in `list`
 
 ### Requirement: Deploys copy the committed tree
-Every deploy (install, update, rollback, restore, `replace --back`, enable, reconcile) SHALL copy the package dist `<path>/dist` of the resolved commit from the clone's Git objects, never from the working tree. Nested folders and the executable bit SHALL be kept; symlinks SHALL be refused with `unsupported` before anything is deployed. Submodules (gitlinks) SHALL become empty directories without fetching their contents, with a warning naming the package-relative path, explaining that its files will not be installed, that this is probably a mistake, and advising committing built files to dist instead. Verified by `every_deploy_copies_the_committed_tree_with_nested_files_and_exec_bits` and `a_submodule_in_dist_deploys_an_empty_folder`.
+Every deploy SHALL copy the resolved commit’s package `<path>/dist` from Git objects, never the working tree, preserving nested folders and executable bits. Symlinks SHALL fail with `unsupported`. Gitlinks SHALL become empty directories without fetching submodules, with an actionable warning naming the path and advising committing built files instead.
 
 #### Scenario: Symlink inside dist
 - **WHEN** a release's package dist contains a symlink
