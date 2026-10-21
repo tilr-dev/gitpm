@@ -13,9 +13,7 @@ use crate::{
     check::{self, CheckRow},
     deps, identity,
     lost_work::{self, clean},
-    model::{
-        manifest, manifest_json, package_manifest, resolve_ref, resolve_upstream_ref, revision,
-    },
+    model::{manifest_json, package_manifest, resolve_ref, resolve_upstream_ref, revision},
     packages, releases, scaffold,
     transport::git,
     txn::{self, Txn},
@@ -5908,8 +5906,8 @@ mod tests {
     fn fork_creates_an_independent_author_checkout() {
         let (ws, m) = Ws::installed("vendor/demo1");
         let base = ws.author.head();
-        // A branch named `fork` already exists in the installed clone.
-        fixture_git(&ws.repo(), &["branch", "fork"]);
+        // Branch naming considers the recorded source, not local installation refs.
+        fixture_git(&ws.author.path, &["branch", "fork"]);
         let before = tree_hash(&ws.root);
         let path = m
             .fork_in_namespace("vendor/demo1", &ws.dir.join("forks/demo1"), "me")
@@ -5989,9 +5987,7 @@ mod tests {
         fs::create_dir_all(&dest).unwrap();
         let error = ws.refuses("invalid_argument", || m.fork_in_namespace(id, &dest, "me"));
         assert!(
-            error
-                .to_string()
-                .starts_with("destination already exists and is not a multi-package repository"),
+            error.to_string().starts_with("destination already exists"),
             "{error}"
         );
         fs::remove_dir(&dest).unwrap();
@@ -6628,7 +6624,7 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains("already exists"), "{error}");
         assert_eq!(error.kind(), "invalid_argument");
-        // Adding needs the touched files of the target repository clean.
+        // Dirty existing targets are also refused without touching their files.
         let single = mono.dir.join("forks/single");
         m.fork_packages(&["tilr/store"], &single, "s").unwrap();
         let before = fixture_git(&single, &["rev-parse", "HEAD"]);
@@ -6638,7 +6634,10 @@ mod tests {
         )
         .unwrap();
         let error = m.fork_packages(&["tilr/theme"], &single, "s").unwrap_err();
-        assert!(error.to_string().contains("commit or discard"), "{error}");
+        assert!(
+            error.to_string().contains("destination already exists"),
+            "{error}"
+        );
         assert!(!single.join("packages/theme").exists());
         assert_eq!(fixture_git(&single, &["rev-parse", "HEAD"]), before);
         assert_eq!(fixture_git(&destination, &["rev-parse", "HEAD"]), head);
@@ -6672,8 +6671,8 @@ mod tests {
         );
         // A release whose tag exists fails for every package; the fork stays.
         let third = mono.dir.join("forks/third");
-        let fork = m.fork_packages(&["tilr/store"], &third, "ns3").unwrap();
-        fixture_git(&fork.path, &["tag", "ns3/theme@1.0.0"]);
+        // The source already carries this name in a different namespace.
+        fixture_git(&mono.repo, &["tag", "ns3/theme@1.0.0"]);
         let result = m
             .fork_packages_replace(&["tilr/theme"], &third, "ns3", None, false)
             .unwrap();
@@ -7346,7 +7345,7 @@ mod tests {
     }
 
     #[test]
-    fn a_fork_never_drops_edits_of_a_package_installed_at_an_older_revision() {
+    fn a_fork_ignores_local_edits_and_uses_each_installed_revision() {
         // B10: store is installed at the first commit, its folder changed since.
         let mono = Mono::new();
         let m = mono.open();
@@ -7359,17 +7358,15 @@ mod tests {
         let clone = mono.clone_dir();
         fs::write(clone.join("packages/store/dist/index.js"), "store edit").unwrap();
         let destination = mono.dir.join("forks/both");
-        let error = mono.refuses("local_changes", || {
-            m.fork_packages(&["tilr/store", "tilr/theme"], &destination, "me")
-        });
-        assert!(error.to_string().contains("older revision"), "{error}");
-        assert!(!destination.exists());
-        fixture_git(&clone, &["checkout", "-q", "--", "packages/store"]);
         m.fork_packages(&["tilr/store", "tilr/theme"], &destination, "me")
             .unwrap();
         assert_eq!(
             read(&destination.join("packages/store/dist/index.js")),
             "store 1.0.0"
+        );
+        assert_eq!(
+            read(&clone.join("packages/store/dist/index.js")),
+            "store edit"
         );
         // A missing installed revision is reported as such, not as diverged history.
         let mut state: serde_json::Value =
@@ -7392,72 +7389,83 @@ mod tests {
     }
 
     #[test]
-    fn a_submodule_outside_dist_does_not_block_adding_to_a_fork() {
+    fn a_submodule_outside_dist_is_preserved_at_its_source_revision() {
         let mono = Mono::new();
-        let sha = head_of(&mono.repo);
+        // Use a real repository and a relative URL, then advance it after recording
+        // the link: initialization must use the recorded commit, not its latest HEAD.
+        let module = mono.dir.join("vendor");
+        fs::create_dir_all(&module).unwrap();
+        fixture_git(&module, &["init", "-q"]);
+        fixture_git(&module, &["config", "user.name", "Test"]);
+        fixture_git(&module, &["config", "user.email", "test@example.invalid"]);
+        fs::write(module.join("source.txt"), "recorded").unwrap();
+        fixture_git(&module, &["add", "."]);
+        fixture_git(&module, &["commit", "-qm", "module"]);
+        let sha = head_of(&module);
         fixture_git(
             &mono.repo,
             &[
-                "update-index",
-                "--add",
-                "--cacheinfo",
-                &format!("160000,{sha},packages/theme/src/vendor"),
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                "../vendor",
+                "packages/theme/src/vendor",
             ],
         );
-        fixture_git(
-            &mono.repo,
-            &["commit", "-q", "-m", "submodule outside dist"],
-        );
-        fixture_git(&mono.repo, &["tag", "-f", "tilr/theme@1.0.0"]);
-        let m = mono.open();
-        for id in ["tilr/store", "tilr/theme"] {
-            m.install_package(mono.source(), Some(id), InstallTarget::Release)
-                .unwrap();
-        }
-        let destination = mono.dir.join("forks/me");
-        m.fork_packages(&["tilr/store"], &destination, "me")
-            .unwrap();
-        m.fork_packages(&["tilr/theme"], &destination, "me")
-            .expect("a submodule outside dist must not block adding to a fork");
-        assert!(destination.join("packages/theme/src/vendor").is_dir());
-        let manifest = manifest(&destination.join("packages/theme")).unwrap();
-        assert_eq!(manifest.id, "me/theme");
-    }
-
-    #[test]
-    fn adding_to_a_fork_leaves_no_temporary_folder_in_the_repository() {
-        // B12: a symlink in theme's folder makes its export fail after the checks.
-        let mono = Mono::new();
-        mono.write("theme", "1.0.1", &[]);
-        std::os::unix::fs::symlink("plugin.json", mono.repo.join("packages/theme/link")).unwrap();
-        mono.commit("link");
+        mono.commit("source submodule");
         mono.tag("theme", "1.0.1");
+        // Use this revision as theme's installed revision.
         let m = mono.open();
-        for id in ["tilr/store", "tilr/theme"] {
-            m.install_package(mono.source(), Some(id), InstallTarget::Release)
-                .unwrap();
-        }
-        let destination = mono.dir.join("forks/me");
-        m.fork_packages(&["tilr/store"], &destination, "me")
+        m.install_package(
+            mono.source(),
+            Some("tilr/theme"),
+            InstallTarget::Ref("HEAD".into()),
+        )
+        .unwrap();
+        fs::write(module.join("source.txt"), "newer").unwrap();
+        fixture_git(&module, &["commit", "-qam", "newer module"]);
+        // A newer sibling revision removes the module. Theme must restore both the
+        // gitlink and configuration from its older installed revision.
+        fixture_git(&mono.repo, &["rm", "-f", "packages/theme/src/vendor"]);
+        mono.release("store", "1.1.0");
+        m.install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
             .unwrap();
-        let head = head_of(&destination);
-        let before = tree_hash(&destination);
-        let error = m
-            .fork_packages(&["tilr/theme"], &destination, "me")
-            .unwrap_err();
-        assert_eq!(error.kind(), "unsupported", "{error}");
-        assert_eq!(head_of(&destination), head);
-        assert_eq!(
-            tree_hash(&destination),
-            before,
-            "repository changed by a failed add"
+        let destination = mono.dir.join("forks/me");
+        m.fork_packages(&["tilr/store", "tilr/theme"], &destination, "me")
+            .unwrap();
+        let link = fixture_git(
+            &destination,
+            &["ls-tree", "HEAD", "packages/theme/src/vendor"],
         );
-        assert!(fs::read_dir(&destination).unwrap().all(|e| {
-            !e.unwrap()
-                .file_name()
-                .to_string_lossy()
-                .starts_with(".gitpm")
-        }),);
+        assert!(link.starts_with(&format!("160000 commit {sha}")), "{link}");
+        fixture_git(
+            &destination,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "update",
+                "--init",
+            ],
+        );
+        assert_eq!(head_of(&destination.join("packages/theme/src/vendor")), sha);
+        assert_eq!(
+            read(&destination.join("packages/theme/src/vendor/source.txt")),
+            "recorded"
+        );
+        assert_eq!(
+            crate::model::manifest(&destination.join("packages/theme"))
+                .unwrap()
+                .id,
+            "me/theme"
+        );
+        let before = snapshot(&destination);
+        let error = m
+            .fork_packages(&["tilr/store"], &destination, "me")
+            .unwrap_err();
+        assert_eq!(error.kind(), "invalid_argument");
+        assert_eq!(snapshot(&destination), before);
     }
 
     #[test]
@@ -7545,13 +7553,6 @@ mod tests {
     fn snapshot(repo: &Path) -> String {
         crate::test_support::tree_hash_except(repo, &[".git/objects"])
     }
-    fn failing_hook(repo: &Path) {
-        let hook = repo.join(".git/hooks/pre-commit");
-        fs::create_dir_all(hook.parent().unwrap()).unwrap();
-        fs::write(&hook, "#!/bin/sh\necho refused by hook >&2\nexit 1\n").unwrap();
-        fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-    }
-
     #[test]
     fn installed_revisions_of_a_shared_clone_survive_upstream_rewrites_and_gc() {
         let mono = Mono::new();
@@ -7797,50 +7798,6 @@ mod tests {
         let state = m.state().unwrap();
         assert!(state.forgotten.is_empty() && state.packages.is_empty());
         assert!(!mono.root.join("dist/tilr/store").exists());
-    }
-
-    #[test]
-    fn adding_to_a_fork_refuses_a_failing_commit_and_a_missing_identity_untouched() {
-        let mono = Mono::new();
-        let m = mono.open();
-        for id in ["tilr/store", "tilr/theme"] {
-            m.install_package(mono.source(), Some(id), InstallTarget::Release)
-                .unwrap();
-        }
-        let destination = mono.dir.join("forks/me");
-        // The new fork repository is gitpm's own: the user's hooks do not run there.
-        m.fork_packages(&["tilr/store"], &destination, "me")
-            .unwrap();
-        // In the author's repository a pre-commit hook that fails refuses the add.
-        failing_hook(&destination);
-        let before = snapshot(&destination);
-        let error = m
-            .fork_packages(&["tilr/theme"], &destination, "me")
-            .unwrap_err();
-        assert_eq!(error.kind(), "git", "{error}");
-        assert!(
-            error.to_string().contains("the repository was restored")
-                && error.to_string().contains("refused by hook"),
-            "{error}"
-        );
-        assert_eq!(snapshot(&destination), before, "repository changed");
-        fs::remove_file(destination.join(".git/hooks/pre-commit")).unwrap();
-        // Without a Git identity gitpm refuses instead of writing one.
-        fixture_git(&destination, &["config", "user.name", ""]);
-        let before = snapshot(&destination);
-        let error = m
-            .fork_packages(&["tilr/theme"], &destination, "me")
-            .unwrap_err();
-        assert_eq!(error.kind(), "invalid_argument", "{error}");
-        assert_eq!(
-            error.to_string(),
-            "no Git identity configured; set user.name and user.email"
-        );
-        assert_eq!(snapshot(&destination), before, "repository changed");
-        assert_eq!(
-            fixture_git(&destination, &["config", "--local", "user.name"]),
-            ""
-        );
     }
 
     /// A recorded package whose clone was deleted by hand: uninstall and forget drop the

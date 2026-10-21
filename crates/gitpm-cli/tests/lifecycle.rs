@@ -598,7 +598,7 @@ fn init_requires_a_namespace_and_never_prompts_or_reads_the_environment() {
 }
 
 #[test]
-fn fork_preserves_history_edits_and_original_installation() {
+fn fork_clones_recorded_source_and_preserves_original_installation() {
     let f = Fixture::new();
     f.install();
     let installed = f.root.join("packages/dan/hello");
@@ -641,12 +641,9 @@ fn fork_preserves_history_edits_and_original_installation() {
     );
     assert_eq!(
         fs::read_to_string(destination.join("dist/index.js")).unwrap(),
-        "local edit"
+        "hello v1"
     );
-    assert_eq!(
-        fs::read_to_string(destination.join("notes.txt")).unwrap(),
-        "untracked work"
-    );
+    assert!(!destination.join("notes.txt").exists());
     assert_eq!(fs::read(f.root.join("state.json")).unwrap(), state);
     assert_eq!(f.content(), "hello v1");
     fs::write(destination.join("dist/index.js"), "independent edit").unwrap();

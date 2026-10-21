@@ -300,17 +300,16 @@ acme/hello detached from catalog /…/catalog/catalog.json; it now follows its o
 acme/hello updated 0.1.1 → 0.2.0 (major)
 ```
 
-`gitpm fork ID --ns NAMESPACE --into DIR` copies an installed package (with its Git
-history and local edits) into the fork repository `DIR` under the ID `NAMESPACE/<same
-name>`: only the namespace changes, so the original and the fork can be installed side by
-side. `DIR` is always given (a new folder; or an existing repository with `gitpm.json`,
-see below); it is never derived from the ID. The output lists the next steps (commit and
+`gitpm fork ID --ns NAMESPACE --into DIR` clones the recorded source of an installed
+package with Git history at its installed revision into `DIR` under the ID
+`NAMESPACE/<same name>`: only the namespace changes, so the original and the fork can be installed side by
+side. `DIR` must be a new folder; it is never derived from the ID. The output lists the next steps (commit and
 tag, install, replace):
 
 ```console
 $ gitpm fork acme/hello --ns me --into hello-fork
 Fork created: /…/hello-fork
-Git history and local edits are kept; the original repository is the upstream remote.
+Git history is cloned from the recorded source; the original repository is the upstream remote.
 me/hello forked from acme/hello (repository root)
 forkOf records each origin; replaces says the fork can stand in for it (used only
 after an explicit replace). The original installations are unchanged.
@@ -328,8 +327,7 @@ acme/hello uninstalled
 ```
 
 `fork ID --ns NAMESPACE --into DIR --replace` does all of it at once: fork, release the
-fork right away (tag `NAMESPACE/NAME@VERSION`; `--version V`, default the forked version;
-local edits of the installed copy are committed with it), install it and replace `ID`
+fork right away (tag `NAMESPACE/NAME@VERSION`; `--version V`, default the forked version), install it and replace `ID`
 with it for every consumer. Incompatible consumers are handled as by `replace`: asked on a
 TTY, otherwise only with `--force`. The fork folder is never removed again: when the
 release, install or replace step fails, the command says per package what is left and how
@@ -426,10 +424,14 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   have no aliases.
 
 
-- `commit`, `init` into an existing repository, and adding to an existing fork now
+- `commit` and `init` into an existing repository now
   refuse a missing configured Git identity with `invalid_argument` instead of using
   a name or email derived by Git. Migration: set `user.name` and `user.email` in Git
   config (or provide both author and committer identity environment variables).
+- `fork` clones the recorded source at installed revisions and keeps submodule links.
+  Local installation edits are excluded. An existing `--into` repository now fails
+  with `invalid_argument` (exit 1, previously success with exit 0). Fork the selected
+  packages together into a new folder instead.
 - `auth::check` now takes `&Options`; the separate `AuthOptions` was removed.
   `Options` now includes `custom_ssh` (UniFFI `ManagerOptions.customSsh`, default false).
   Set it when the host supplies `GIT_SSH` or `GIT_SSH_COMMAND`; the CLI does this for
@@ -1020,7 +1022,7 @@ packages/theme/dist/…
   tag fails, the commit stays and the error names the tag to create. gitpm never writes
   a Git identity into an existing repository: without configured `user.name` and
   `user.email` (or author and committer identity environment variables), `commit`,
-  `init` into it, and adding to an existing fork fail with `invalid_argument` and
+  `init` into it, and fork into an existing folder fail with `invalid_argument` and
   `no Git identity configured; set user.name and user.email`. Git's inferred login
   name and host email are not accepted. A retry that only creates a failed release
   tag needs no identity. Only a
@@ -1032,37 +1034,26 @@ packages/theme/dist/…
   repository into the fork repository `DIR`; each gets the ID `NAMESPACE/<same name>`.
   One package is the one-package case of the same command. All IDs must be installed
   from the same repository (otherwise the error lists each ID with its source).
-  - `DIR`: has a `gitpm.json` → the packages are added to it; does not exist → the fork
-    is created there; anything else is refused, as are a `DIR` inside the workspace, with
-    `..`, the source repository itself or a folder inside it. A failed new fork leaves no
-    folder behind (parents it created included).
-  - New fork: a copy of the source repository with history and local edits (upstream
-    remote = the source), on a new `fork` branch (attached HEAD) starting at the newest
-    installed revision of the forked packages (the others must be its ancestors); a
-    package installed at an older revision gets its folder from that revision (refused
-    if that folder has local edits in the clone, which belong to another revision). The
-    folders of packages that are not forked are **removed** from the tree, not just
-    unlisted, and `gitpm.json` lists exactly the forked folders, so the fork cannot
-    release a sibling ID even after someone edits `gitpm.json`. One commit `Fork A, B as
-    me/A, me/B` records it (hooks are not run in this repository gitpm creates); local
-    edits stay uncommitted. A root package (no
-    `gitpm.json`) stays the root of its fork: only its `plugin.json` changes (local
-    commits on top of its installed revision are kept), and it cannot be added to a
-    multi-package repository.
-  - Adding to an existing fork: the package folders (files of the installed revisions,
-    plain files only) are added at their original folders (refused if a folder or ID is
-    already there) and to `gitpm.json` unless a pattern covers them, in one commit of only
-    those paths. `gitpm.json` and the manifests that change must have no uncommitted
-    changes. Remotes and other files are left alone; nothing temporary is written into
-    the repository, and a failed commit (a hook, say) restores it.
-  - Dependencies: a dependency on a package forked in the same command, or (when adding)
-    on an original that a package already in the repository forks (`forkOf` or
-    `replaces`), is rewritten to the fork; packages already in the repository that depend
-    on a newly forked original are rewritten too. The requirement is kept when the fork's
-    version (its manifest version, or `--version V`) satisfies it, else it becomes `^V`;
-    each rewrite is printed (`Dependency: me/panel now depends on me/theme ^1.0 (was
-    tilr/theme)`). Dependencies on packages that are not forked keep the original ID. A
-    manifest that depends on both an original and its fork is refused.
+  - `DIR` must be a new folder outside the workspace, without `..`, and outside
+    the source repository. Existing destinations are refused. A failed fork leaves no
+    folder behind, including parents it created. To include more packages, fork them
+    together into a new folder.
+  - Git clones the source recorded in the installation metadata with its history,
+    using the original source as `upstream`. The new attached `fork` branch starts at
+    the newest installed revision (the others must be its ancestors); each selected
+    package's folder comes from its installed revision. Local commits and edits of
+    the installed clone are ignored and left unchanged. Unforked sibling folders are
+    removed and `gitpm.json` lists exactly the selected folders. One commit records
+    the new IDs and metadata; user hooks are not run for this initial commit.
+    A root package stays at the repository root.
+  - Submodules remain Git links at their recorded commits with `.gitmodules`
+    configuration. Run `git -C DIR submodule update --init` to populate them.
+    Installation still deploys committed package `dist/`; fork does not build sources
+    or enable dev mode.
+  - Dependencies on packages forked together are rewritten to their fork IDs. The
+    requirement is kept when satisfied by the fork's version (or `--version V`), else
+    it becomes `^V`; each rewrite is printed. Dependencies on other packages keep
+    their original IDs. Depending on both an original and its fork is refused.
   - `--replace [--version V] [--force]`: one release commit of the forked folders (with
     `version` set in each manifest when `--version` is given) and one tag
     `NAMESPACE/NAME@VERSION` per package, then each package is installed (dependencies
@@ -1078,16 +1069,12 @@ packages/theme/dist/…
 ```console
 $ gitpm fork tilr/theme tilr/panel --ns me --into forks/me-packages
 Fork created: /…/forks/me-packages
-Git history and local edits are kept; the original repository is the upstream remote.
+Git history is cloned from the recorded source; the original repository is the upstream remote.
 Only the forked packages are left in the tree and in gitpm.json.
 me/theme forked from tilr/theme (packages/theme)
 me/panel forked from tilr/panel (packages/panel)
 Dependency: me/panel now depends on me/theme ^1.0 (was tilr/theme)
 …
-$ gitpm fork tilr/dock --ns me --into forks/me-packages   # add one more later
-Packages added to: /…/forks/me-packages
-me/dock forked from tilr/dock (packages/dock)
-Dependency: me/dock now depends on me/theme ^1.0 (was tilr/theme)
 ```
 
 ```console
@@ -1254,11 +1241,11 @@ if let Some(refusal) = plan.refusal() { return Err(refusal) } // has_dependents 
 let confirmed = if user_said_yes { plan.lost_work.clone() } else { Vec::new() };
 let dist = pm.uninstall(id, &confirmed, /* force: ignore dependents */ false)?;
 // Every mutating result carries its dist report (`dist`, or the returned `DistSync`).
-// Forks: the fork repository is always explicit (new folder, or a repo with gitpm.json).
+// Forks: the fork repository is always explicit (new folder).
 pm.fork_in_namespace(id, Path::new("/work/demo1-fork"), "me")?;   // sets forkOf + replaces
 let done = pm.fork_replace(id, Path::new("/work/demo1-fork"), "me", None, confirm)?; // + release, install, replace
 if let Some(step) = done.failed { /* fork folder kept; done.error says why */ }
-let repo = Path::new("/work/forks/me-packages");               // created, or added to
+let repo = Path::new("/work/forks/me-packages");               // created as a new folder
 let fork = pm.fork_packages(&["tilr/theme", "tilr/panel"], repo, "me")?; // one repo, deps rewritten
 let done = pm.fork_packages_replace(&ids, repo, "me", Some("2.0.0"), confirm)?; // per-package results
 if let Some(error) = done.error() { /* fork kept; done.packages[i].failed says where */ }

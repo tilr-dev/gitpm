@@ -58,26 +58,6 @@ pub(super) fn sync_refs(repo: &Path, state: &State, key: &str, custom_ssh: bool)
     Ok(())
 }
 
-/// Remove the workspace's own refs, `refs/gitpm/` and the recorded origin tags
-/// (`refs/origin-tags/`), from a copy of a clone that is not one of its clones.
-pub(super) fn drop_refs(repo: &Path, custom_ssh: bool) -> Result<()> {
-    for name in git(
-        repo,
-        &[
-            "for-each-ref",
-            "--format=%(refname)",
-            KEEP,
-            lost_work::ORIGIN_TAGS,
-        ],
-        custom_ssh,
-    )?
-    .lines()
-    {
-        git(repo, &["update-ref", "-d", name], custom_ssh)?;
-    }
-    Ok(())
-}
-
 /// Fetch the origin's tags into a shared clone as they are there (a moved tag is taken
 /// at its new commit; with `prune`, deleted ones go), after protecting every installed
 /// revision with [`sync_refs`]. Tags are not policed: installed revisions are kept by

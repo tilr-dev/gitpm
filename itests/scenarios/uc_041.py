@@ -96,15 +96,13 @@ def repository_symlink_is_kept_not_followed(t: T):
 
 @case(fixture="hello_installed", spec=["errors/failing-operations-leave-the-workspace-unchanged"])
 def fifo_in_clone_is_refused_without_hanging(t: T):
-    """A FIFO in the installed clone: fork (copies the clone) refuses it as an unsupported
-    file and leaves no destination; update (stages a copy of the clone; git does not
-    report FIFOs) refuses it the same way; nothing blocks."""
+    """Fork ignores local FIFOs; update still refuses copying unsupported files."""
     outside = sentinels(t)
     os.mkfifo(t.clone(ID) / "pipe")
     before = t.snap(t.ws)
     fork = t.root / "forks/hello"
-    t.gitpm_err("fork", ID, "--ns", "mine", "--into", fork, kind="unsupported", contains="unsupported file", timeout=30)
-    t.ok(not fork.exists(), "no partial fork destination")
+    t.gitpm_ok("fork", ID, "--ns", "mine", "--into", fork)
+    t.ok(not (fork / "pipe").exists(), "local FIFO excluded from fork")
     t.release(ID, "0.1.1")
     t.gitpm_err("update", ID, kind="unsupported", contains="unsupported file: /fx/ws/packages/dan/hello/pipe", timeout=30)
     t.same(before, "workspace")
