@@ -22,8 +22,9 @@ context: |
   derives `Options.custom_ssh` from GIT_SSH_COMMAND/GIT_SSH for every command), prompts and
   bindings.
 
-  Subprocesses: every git and curl invocation lives in crates/gitpm/src/exec.rs (the planned
-  switch point to gix/ureq). Every git command on a repository (`git -C`) is noninteractive
+  Subprocesses: every git and curl invocation lives in the transport module at
+  crates/gitpm/src/transport/, behind Transport/SystemTransport (the planned switch point
+  to gix/ureq). Every git command on a repository (`git -C`) is noninteractive
   and bounded: closed stdin, GIT_TERMINAL_PROMPT=0, one BatchMode SSH command with keepalives and StrictHostKeyChecking=accept-new unless
   Options.custom_ssh is set or the user configured core.sshCommand, http.lowSpeed limits, a 10-minute wall-clock kill. Exceptions:
   the `auth check` ls-remote uses the same SSH policy and, like the `git config --get core.sshCommand` probe, has
