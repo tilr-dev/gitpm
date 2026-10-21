@@ -1147,6 +1147,27 @@ fn catalog_index_summary_is_published_and_used_by_the_cli() {
 }
 
 #[test]
+fn catalog_update_restores_summary_when_a_moved_tag_is_kept() {
+    let f = Fixture::new();
+    fs::write(f.dir.join("sources.txt"), "./upstream\n").unwrap();
+    f.cli(&["catalog", "update"], true);
+    let package = f.dir.join("catalog/namespaces/dan/hello");
+    let release_path = package.join("versions/1.0.0/release.json");
+    let original_release = fs::read(&release_path).unwrap();
+    let index_path = package.join("plugin.json");
+    let mut index: serde_json::Value =
+        serde_json::from_slice(&fs::read(&index_path).unwrap()).unwrap();
+    let original_summary = index.as_object_mut().unwrap().remove("latest").unwrap();
+    fs::write(&index_path, serde_json::to_vec(&index).unwrap()).unwrap();
+    f.release("1.0.0", "replacement under a moved tag");
+    f.cli(&["catalog", "update"], true);
+    let restored: serde_json::Value =
+        serde_json::from_slice(&fs::read(&index_path).unwrap()).unwrap();
+    assert_eq!(restored["latest"], original_summary);
+    assert_eq!(fs::read(&release_path).unwrap(), original_release);
+}
+
+#[test]
 fn catalog_update_keeps_published_records_when_tags_move() {
     use gitpm::catalog;
     let f = Fixture::new();

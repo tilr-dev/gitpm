@@ -1198,7 +1198,7 @@ pub(crate) fn update_sources_with_ssh(
     let _lock = lock(&path)?;
     refuse_verified(location)?;
     // Check every source and immutable version before writing any release.
-    let mut kept = Vec::new();
+    let mut warnings = Vec::new();
     for ((id, version), release) in &mut pending {
         if let Some(index) = package_index(location, id)? {
             ensure!(
@@ -1233,14 +1233,13 @@ pub(crate) fn update_sources_with_ssh(
                         "release {id}@{version} differs from the published record; the published record is kept"
                     )
                 });
-                kept.push((id.clone(), version.clone()));
+                // Re-publish the index from the immutable record as well: an old
+                // catalog may still need its display summary regenerated.
+                *release = old;
             }
         }
     }
     let releases = pending.len();
-    for key in &kept {
-        pending.remove(key);
-    }
     prepare_root(&path)?;
     for release in pending.values() {
         write_release(path.parent().unwrap(), release)?;
