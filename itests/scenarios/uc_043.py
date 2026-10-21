@@ -84,7 +84,7 @@ def branch_setup(t, c):
 
 
 def branch_verify(t, f):
-    t.eq(t.run("git", "-C", f, "show-ref", "--verify", "refs/heads/local-work").code, 1, "local branch excluded")
+    t.eq(t.run("git", "-C", f, "show-ref", "--quiet", "--verify", "refs/heads/local-work").code, 1, "local branch excluded")
 
 
 def tag_setup(t, c):
@@ -95,7 +95,7 @@ def tag_setup(t, c):
 
 
 def tag_verify(t, f):
-    t.eq(t.run("git", "-C", f, "show-ref", "--verify", "refs/tags/local-tag").code, 1, "local tag excluded")
+    t.eq(t.run("git", "-C", f, "show-ref", "--quiet", "--verify", "refs/tags/local-tag").code, 1, "local tag excluded")
 
 
 KINDS = {

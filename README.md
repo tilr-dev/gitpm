@@ -1022,7 +1022,7 @@ packages/theme/dist/…
   tag fails, the commit stays and the error names the tag to create. gitpm never writes
   a Git identity into an existing repository: without configured `user.name` and
   `user.email` (or author and committer identity environment variables), `commit`,
-  `init` into it, and fork into an existing folder fail with `invalid_argument` and
+  and `init` into it fail with `invalid_argument` and
   `no Git identity configured; set user.name and user.email`. Git's inferred login
   name and host email are not accepted. A retry that only creates a failed release
   tag needs no identity. Only a
