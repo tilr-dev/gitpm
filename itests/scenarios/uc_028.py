@@ -1,4 +1,4 @@
-"""UC-028: Catalog catalog tree and hashes (P0).
+"""UC-028: Catalog tree and hashes (P0).
 
 Fixture g4_tree_catalog: namespaces dan, acme and old, two versions each,
 nested and binary dist files. Hashes are recomputed independently from Git blobs.

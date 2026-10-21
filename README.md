@@ -414,6 +414,9 @@ Changed in 0.5:
 
 Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING**):
 
+- **BREAKING:** Catalog directory files (`catalog.json`) and package indexes use
+  schema 1 (gitpm 0.5 wrote schema 2). Any other schema is refused with `catalog`.
+  Migration: regenerate the catalog with `gitpm catalog update` into an empty folder.
 - Catalog commands: `info` → `catalog show`, bare `catalog` → `catalog links`,
   `catalog-update` → `catalog update`, `register` → `catalog register`. Old spellings
   have no aliases.
@@ -490,7 +493,7 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   create the catalog folder (`catalog update`/`catalog register` create it) or drop the setting.
 - `gitpm catalog links` prints the library's typed directory links `{"schema": 1,
   "directories": {…}}` (`catalog::links`, the same as FFI `catalogLinks`) instead of the
-  raw `catalog.json`; a v1 or otherwise invalid root fails with `catalog`.
+  raw `catalog.json`; a monolithic (v1) catalog or otherwise invalid root fails with `catalog`.
 - `uninstall` and `forget` of a recorded package whose clone is gone drop its record and
   `dist/` without confirmation (was `repository_not_found`; `forget` keeps no `forgotten`
   record then); the CLI warning for such a package says `uninstall or forget ID to drop
@@ -1203,10 +1206,9 @@ $ gitpm list --provides theme | jq '.resolved[] | {id, title, description, provi
   `unsupported` and never rewritten, in either direction (no downgrade, no migration). A
   workspace of another format is re-created: install its packages again into a new
   workspace root. Before the first public release, all gitpm file formats stay at version 1
-  and evolve
-  in place without backward compatibility or bumps. Afterward, bump a format only when
-  gitpm from the previous public release would misread the change. Bump it as a separate
-  step in the release milestone, at most once per release.
+  and evolve in place without backward compatibility or bumps. Afterward, bump a format
+  only when gitpm from the previous public release would misread the change. Bump it as
+  a separate step in the release milestone, at most once per release.
 
   | gitpm | state format |
   | --- | --- |
