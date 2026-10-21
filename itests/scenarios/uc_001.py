@@ -65,7 +65,7 @@ def ds_store_root(t: T):
     t.gitpm_ok("--root", root, "sync-dist")
     t.eq(metadata.read_bytes(), b"Finder metadata", ".DS_Store preserved")
     t.eq(json.loads((root / "state.json").read_text()),
-         {"format": 3, "packages": {}}, "initial state")
+         {"format": 1, "packages": {}}, "initial state")
     t.ok((root / "packages").is_dir(), "packages created")
     t.ok((root / "dist").is_dir(), "dist created")
 

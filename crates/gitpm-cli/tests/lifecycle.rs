@@ -1265,13 +1265,13 @@ fn info_shows_directory_tree_without_installing() {
     assert!(!f.root.exists());
     fs::write(
         dir.join("catalog.json"),
-        r#"{"schema":2,"directories":{"escape":"../"}}"#,
+        r#"{"schema":1,"directories":{"escape":"../"}}"#,
     )
     .unwrap();
     assert!(info(location).is_err());
     fs::write(
         dir.join("catalog.json"),
-        r#"{"schema":2,"directories":{"missing":"missing/"}}"#,
+        r#"{"schema":1,"directories":{"missing":"missing/"}}"#,
     )
     .unwrap();
     assert!(info(location).is_err());
@@ -2637,7 +2637,7 @@ fn catalog_group_runs_every_subcommand() {
     );
     let links = f.cli(&["--catalog", location, "catalog", "links"], true);
     let links: serde_json::Value = serde_json::from_str(&links).unwrap();
-    assert_eq!(links["schema"], 2);
+    assert_eq!(links["schema"], 1);
     assert!(!f.root.exists());
 }
 
@@ -2700,4 +2700,52 @@ fn catalog_update_http_error_has_a_command_hint() {
         "{err}"
     );
     assert!(!f.root.exists());
+}
+
+#[test]
+fn file_formats_use_version_one_and_refuse_other_versions() {
+    let f = Fixture::new();
+    fs::write(f.dir.join("sources.txt"), f.repo.to_str().unwrap()).unwrap();
+    f.cli(&["catalog", "update"], true);
+    f.cli(&["install", f.repo.to_str().unwrap()], true);
+    for (path, field, args, kind) in [
+        (
+            f.root.join("state.json"),
+            "format",
+            vec!["list"],
+            "unsupported",
+        ),
+        (
+            f.dir.join("catalog/catalog.json"),
+            "schema",
+            vec!["catalog", "links"],
+            "catalog",
+        ),
+        (
+            f.dir.join("catalog/namespaces/dan/hello/plugin.json"),
+            "schema",
+            vec!["catalog", "show"],
+            "catalog",
+        ),
+    ] {
+        let original = fs::read(&path).unwrap();
+        let mut value: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        assert_eq!(value[field], 1, "{}", path.display());
+        f.cli(&args, true);
+        for version in [0, 2, 3, 99] {
+            value[field] = version.into();
+            let bytes = serde_json::to_vec_pretty(&value).unwrap();
+            fs::write(&path, &bytes).unwrap();
+            let out = f.pm().args(&args).output().unwrap();
+            assert!(!out.status.success(), "{args:?}: version {version}");
+            let error = String::from_utf8(out.stderr).unwrap();
+            assert!(error.contains(kind), "{error}");
+            assert_eq!(
+                fs::read(&path).unwrap(),
+                bytes,
+                "input must not be rewritten"
+            );
+        }
+        fs::write(&path, original).unwrap();
+    }
 }

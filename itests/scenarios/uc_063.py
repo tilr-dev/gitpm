@@ -130,20 +130,20 @@ def uninstall_flag_order_is_irrelevant(t: T):
 
 
 def v2_catalog(t: T, name: str, n: int):
-    """A v2 tree namespaces/dan/pNN with n package folders: n + 2 overview entries."""
+    """A catalog tree namespaces/dan/pNN with n package folders: n + 2 overview entries."""
     root = t.root / name
     ns = root / "namespaces/dan"
     ns.mkdir(parents=True)
-    (root / "catalog.json").write_text(json.dumps({"schema": 2, "directories": {"namespaces": "namespaces/"}}))
-    (root / "namespaces/catalog.json").write_text(json.dumps({"schema": 2, "directories": {"dan": "dan/"}}))
+    (root / "catalog.json").write_text(json.dumps({"schema": 1, "directories": {"namespaces": "namespaces/"}}))
+    (root / "namespaces/catalog.json").write_text(json.dumps({"schema": 1, "directories": {"dan": "dan/"}}))
     dirs = {}
     for i in range(n):
         name = f"p{i:02}"
         dirs[name] = f"{name}/"
         (ns / name).mkdir()
         (ns / name / "plugin.json").write_text(json.dumps(
-            {"schema": 2, "id": f"dan/{name}", "source": f"https://example.invalid/{name}.git", "versions": {}}))
-    (ns / "catalog.json").write_text(json.dumps({"schema": 2, "directories": dirs}))
+            {"schema": 1, "id": f"dan/{name}", "source": f"https://example.invalid/{name}.git", "versions": {}}))
+    (ns / "catalog.json").write_text(json.dumps({"schema": 1, "directories": dirs}))
     return root
 
 
@@ -164,7 +164,7 @@ def info_at_the_limit_shows_hint(t: T):
 
 @case(spec=["catalog/bounded-overview"])
 def info_v2_more_than_40_entries(t: T):
-    """6. A v2 tree with 45 package folders is truncated with the hint."""
+    """6. A catalog tree with 45 package folders is truncated with the hint."""
     out = t.gitpm_ok("--catalog", v2_catalog(t, "v2", 45), "info").out
     t.has(out, "dan/p00", "Overview limit: 40 entries")
     t.lacks(out, "dan/p44")

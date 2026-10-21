@@ -1067,7 +1067,7 @@ mod tests {
         assert!(check(&root, Some("ftp://invalid")).unwrap().rows.is_empty());
         assert!(check(&root, None).unwrap().rows.is_empty());
         fs::create_dir(&root).unwrap();
-        fs::write(root.join("state.json"), r#"{"format":3,"packages":{}}"#).unwrap();
+        fs::write(root.join("state.json"), r#"{"format":1,"packages":{}}"#).unwrap();
         assert!(check(&root, Some("ftp://invalid")).unwrap().rows.is_empty());
 
         let (state, _) = fixture();

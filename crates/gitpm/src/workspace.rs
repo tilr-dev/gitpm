@@ -3649,7 +3649,7 @@ mod tests {
         assert_eq!(m.options().catalog.as_deref(), Some(catalog.as_str()));
         assert_eq!(
             read(&root.join("state.json")),
-            "{\n  \"format\": 3,\n  \"packages\": {}\n}"
+            "{\n  \"format\": 1,\n  \"packages\": {}\n}"
         );
         assert!(root.join("packages").is_dir() && root.join("dist").is_dir());
         assert!(!root.join("plugins").exists());
@@ -3736,7 +3736,7 @@ mod tests {
             assert!(manager.list().unwrap().is_empty());
             assert_eq!(
                 read(&root.join("state.json")),
-                "{\n  \"format\": 3,\n  \"packages\": {}\n}"
+                "{\n  \"format\": 1,\n  \"packages\": {}\n}"
             );
             assert!(root.join("packages").is_dir() && root.join("dist").is_dir());
             assert!(
@@ -3811,15 +3811,15 @@ mod tests {
         for (text, kind) in [
             ("{truncated", "invalid_data"),
             (
-                r#"{"format":3,"packages":{"../evil":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true,"metadata":{}}}}"#,
+                r#"{"format":1,"packages":{"../evil":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true,"metadata":{}}}}"#,
                 "invalid_id",
             ),
             (
-                r#"{"format":3,"packages":{"a/b/c":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true,"metadata":{}}}}"#,
+                r#"{"format":1,"packages":{"a/b/c":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true,"metadata":{}}}}"#,
                 "invalid_id",
             ),
             (
-                r#"{"format":3,"packages":{"demo1":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true,"metadata":{}}}}"#,
+                r#"{"format":1,"packages":{"demo1":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true,"metadata":{}}}}"#,
                 "invalid_id",
             ),
         ] {
@@ -7468,7 +7468,7 @@ mod tests {
             let before = tree_hash(ws.dir.path());
             let error = reopen(&ws.root).err().unwrap();
             assert_eq!(error.kind(), "unsupported", "{format:?}");
-            assert!(error.to_string().contains("only format 3"), "{error}");
+            assert!(error.to_string().contains("only format 1"), "{error}");
             assert_eq!(
                 tree_hash(ws.dir.path()),
                 before,

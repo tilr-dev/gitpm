@@ -85,7 +85,7 @@ def check_with_a_missing_latest_release_fails_then_recovers(t: T):
     t.has(next(l for l in out.splitlines() if l.startswith(HELLO)), "update available")
 
 
-@case(fixture="catalog", spec=["catalog/catalog-v2-is-a-tree-of-static-files#direct-lookup",
+@case(fixture="catalog", spec=["catalog/catalog-is-a-tree-of-static-files#direct-lookup",
                                "install-uninstall/install-from-the-catalog"])
 def release_uploaded_before_the_index(t: T):
     """dan/hello 0.3.0 registered, then the old index is served (release.json uploaded, index

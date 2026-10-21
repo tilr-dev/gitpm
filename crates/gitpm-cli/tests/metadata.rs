@@ -233,7 +233,7 @@ fn list_reports_metadata_present_or_absent_and_filters_by_provides() {
         "metadata follows the installed revision"
     );
 
-    // metadata is required in a format-3 record: a record without it is invalid data,
+    // metadata is required in a format-1 record: a record without it is invalid data,
     // and state.json is not rewritten.
     let path = f.dir.join("workspace/state.json");
     let mut state = f.json(&path);

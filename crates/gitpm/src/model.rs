@@ -199,7 +199,7 @@ pub struct Installed {
     /// Package folder inside the repository (from `gitpm.json`); `None`: the root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
-    /// Descriptive metadata of the current revision's manifest. Required in format 3: a
+    /// Descriptive metadata of the current revision's manifest. Required in format 1: a
     /// record without it is `invalid_data`.
     pub metadata: Metadata,
 }
@@ -227,10 +227,10 @@ impl Installed {
     }
 }
 
-/// Version of the `state.json` layout this library reads and writes. It is bumped with
-/// every change an older gitpm would misread; any other format is refused and never
-/// rewritten (no migration). 3 (gitpm 0.6): installed packages under `packages`.
-pub const STATE_FORMAT: u32 = 3;
+/// Version of the `state.json` layout this library reads and writes. Stays 1 before
+/// the first public release. Later, bump once per release only when the previous public
+/// release would misread a change; any other format is refused without migration.
+pub const STATE_FORMAT: u32 = 1;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct State {
@@ -1047,7 +1047,7 @@ mod tests {
 
     /// Byte format of `state.json` (`serde_json::to_vec_pretty`, no newline).
     const STATE: &str = r#"{
-  "format": 3,
+  "format": 1,
   "packages": {
     "dan/demo1": {
       "source": "git@github.com:dan/demo1.git",
@@ -1150,7 +1150,7 @@ mod tests {
         // Default state is the file a new workspace starts with.
         assert_eq!(
             serde_json::to_string_pretty(&State::default()).unwrap(),
-            "{\n  \"format\": 3,\n  \"packages\": {}\n}"
+            "{\n  \"format\": 1,\n  \"packages\": {}\n}"
         );
     }
 
@@ -1158,17 +1158,17 @@ mod tests {
     fn state_format_other_than_current_is_refused() {
         // gitpm 0.3: no `format`; gitpm 0.4/0.5: format 2 with `plugins`; a newer one.
         let none = STATE
-            .replace("  \"format\": 3,\n", "")
+            .replace("  \"format\": 1,\n", "")
             .replace("\"packages\"", "\"plugins\"");
         let two = STATE
-            .replace("\"format\": 3", "\"format\": 2")
+            .replace("\"format\": 1", "\"format\": 2")
             .replace("\"packages\"", "\"plugins\"");
-        let four = STATE.replace("\"format\": 3", "\"format\": 4");
-        let text = STATE.replace("\"format\": 3", "\"format\": \"3\"");
+        let three = STATE.replace("\"format\": 1", "\"format\": 3");
+        let text = STATE.replace("\"format\": 1", "\"format\": \"3\"");
         for (old, found) in [
             (none, "no format"),
             (two, "format 2"),
-            (four, "format 4"),
+            (three, "format 3"),
             (text, "format \"3\""),
         ] {
             let bytes = old.clone().into_bytes();
@@ -1176,10 +1176,10 @@ mod tests {
             assert_eq!(error.kind(), "unsupported", "{old}");
             let message = error.to_string();
             assert!(message.contains(found), "{message}");
-            assert!(message.contains("only format 3"), "{message}");
+            assert!(message.contains("only format 1"), "{message}");
             assert_eq!(bytes, old.as_bytes(), "bytes unchanged");
         }
-        // Format 3 with the old key is not a valid state.
+        // Format 1 with the old key is not a valid state.
         let mixed = STATE.replace("\"packages\"", "\"plugins\"");
         assert_eq!(
             State::parse(mixed.as_bytes()).unwrap_err().kind(),
@@ -1210,7 +1210,7 @@ mod tests {
             assert!(error.to_string().contains("invalid clone name"), "{error}");
         }
         let entry = r#"{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true,"clone":"../evil","path":"packages/x","metadata":{}}"#;
-        let text = format!(r#"{{"format":3,"packages":{{"a/b":{entry}}}}}"#);
+        let text = format!(r#"{{"format":1,"packages":{{"a/b":{entry}}}}}"#);
         assert_eq!(
             State::parse(text.as_bytes()).unwrap_err().kind(),
             "invalid_data"
@@ -1218,12 +1218,12 @@ mod tests {
         // A forgotten record needs a shared clone and must not also be installed.
         let entry = entry.replace("../evil", "x-0123456789abcdef");
         let both =
-            format!(r#"{{"format":3,"packages":{{"a/b":{entry}}},"forgotten":{{"a/b":{entry}}}}}"#);
+            format!(r#"{{"format":1,"packages":{{"a/b":{entry}}},"forgotten":{{"a/b":{entry}}}}}"#);
         assert_eq!(
             State::parse(both.as_bytes()).unwrap_err().kind(),
             "invalid_data"
         );
-        let ok = format!(r#"{{"format":3,"packages":{{}},"forgotten":{{"a/b":{entry}}}}}"#);
+        let ok = format!(r#"{{"format":1,"packages":{{}},"forgotten":{{"a/b":{entry}}}}}"#);
         assert_eq!(State::parse(ok.as_bytes()).unwrap().forgotten.len(), 1);
     }
 
@@ -1231,16 +1231,16 @@ mod tests {
     fn state_requires_core_fields() {
         for broken in [
             r#"{}"#,
-            r#"{"format":3,"packages":{"a":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null}}}"#,
-            r#"{"format":3,"packages":{"a":{"current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true}}}"#,
-            r#"{"format":3,"packages":{"a":{"source":"s","current":{"version":"1.0.0"},"previous":null,"enabled":true}}}"#,
+            r#"{"format":1,"packages":{"a":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null}}}"#,
+            r#"{"format":1,"packages":{"a":{"current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true}}}"#,
+            r#"{"format":1,"packages":{"a":{"source":"s","current":{"version":"1.0.0"},"previous":null,"enabled":true}}}"#,
         ] {
             assert!(serde_json::from_str::<State>(broken).is_err(), "{broken}");
         }
         // forkOf is optional; previous may be null.
-        let ok = r#"{"format":3,"packages":{"a":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true,"metadata":{}}}}"#;
+        let ok = r#"{"format":1,"packages":{"a":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true,"metadata":{}}}}"#;
         assert!(serde_json::from_str::<State>(ok).is_ok());
-        // metadata is required in format 3: a record without it is invalid data.
+        // metadata is required in format 1: a record without it is invalid data.
         let no_metadata = ok.replace(r#","metadata":{}"#, "");
         assert!(serde_json::from_str::<State>(&no_metadata).is_err());
         let no_metadata = no_metadata.replace(r#""a":"#, r#""dan/a":"#);

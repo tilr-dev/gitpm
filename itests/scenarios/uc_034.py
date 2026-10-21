@@ -41,7 +41,7 @@ def assert_packages(t: T, out: str):
           "old/oldie — latest: 0.2.0, versions: 2", f"Git: {t.repo('old/oldie')}")
 
 
-@case(fixture="g4_tree_catalog", spec=["catalog/catalog-v2-is-a-tree-of-static-files",
+@case(fixture="g4_tree_catalog", spec=["catalog/catalog-is-a-tree-of-static-files",
                                       "cli/settings-come-from-flags-environment-defaults", "catalog/bounded-overview#overview-lines"])
 def info_local_root(t: T):
     """`info` on the local v2 root (from GITPM_CATALOG): catalog address, local type,
@@ -55,7 +55,7 @@ def info_local_root(t: T):
     t.lacks(out, "Overview limit")
 
 
-@case(fixture="g4_tree_catalog", spec=["catalog/catalog-v2-is-a-tree-of-static-files#direct-lookup"])
+@case(fixture="g4_tree_catalog", spec=["catalog/catalog-is-a-tree-of-static-files#direct-lookup"])
 def info_branch_path(t: T):
     """`info` on <catalog>/namespaces shows only that branch; --catalog wins over GITPM_CATALOG."""
     out = readonly(t, lambda: gitpm_env(t, "--catalog", t.catalog / "namespaces", "info").out)
@@ -65,15 +65,15 @@ def info_branch_path(t: T):
 
 
 @case(fixture="g4_tree_catalog", spec=["cli/json-output-for-state-and-catalog",
-                                      "catalog/catalog-v2-is-a-tree-of-static-files"])
+                                      "catalog/catalog-is-a-tree-of-static-files"])
 def catalog_prints_current_level_only(t: T):
     """`catalog` prints only the directory links of the given level (JSON)."""
     root = readonly(t, lambda: gitpm_env(t, "--catalog", t.catalog, "catalog").json())
-    t.eq(root, {"schema": 2, "directories": {"namespaces": "namespaces/"}}, "root level")
+    t.eq(root, {"schema": 1, "directories": {"namespaces": "namespaces/"}}, "root level")
     branch = readonly(t, lambda: gitpm_env(t, "--catalog", t.catalog / "namespaces", "catalog").json())
-    t.eq(branch, {"schema": 2, "directories": {"acme": "acme/", "dan": "dan/", "old": "old/"}}, "namespaces level")
+    t.eq(branch, {"schema": 1, "directories": {"acme": "acme/", "dan": "dan/", "old": "old/"}}, "namespaces level")
     leaf = readonly(t, lambda: gitpm_env(t, "--catalog", t.catalog / "namespaces/dan", "catalog").json())
-    t.eq(leaf, {"schema": 2, "directories": {"hello": "hello/"}}, "dan level")
+    t.eq(leaf, {"schema": 1, "directories": {"hello": "hello/"}}, "dan level")
 
 
 @case(fixture="g4_tree_catalog", spec=["catalog/catalog-locations-and-transport"])
@@ -88,12 +88,12 @@ def info_and_catalog_over_loopback_http(t: T):
     t.has(branch, "dan/hello — latest: 0.1.1")
     t.lacks(branch, "oldie")
     t.eq(readonly(t, lambda: gitpm_env(t, "--catalog", srv.url, "catalog").json()),
-         {"schema": 2, "directories": {"namespaces": "namespaces/"}}, "catalog over HTTP")
+         {"schema": 1, "directories": {"namespaces": "namespaces/"}}, "catalog over HTTP")
     t.eq(readonly(t, lambda: gitpm_env(t, "--catalog", srv.url + "/namespaces/", "catalog").json())["directories"],
          {"acme": "acme/", "dan": "dan/", "old": "old/"}, "branch over HTTP")
 
 
-@case(fixture="g4_v1", spec=["catalog/catalog-v2-is-a-tree-of-static-files"])
+@case(fixture="g4_v1", spec=["catalog/catalog-is-a-tree-of-static-files"])
 def info_v1_is_refused(t: T):
     """`info` and `catalog` on a v1 catalog fail with `catalog` and read it as data only (the library's
     typed v2 links are all `catalog` prints)."""
@@ -116,23 +116,23 @@ def info_without_a_catalog_names_it(t: T):
 
 def crafted_v2(root: Path, count: int):
     root.mkdir(parents=True)
-    (root / "catalog.json").write_text(json.dumps({"schema": 2, "directories": {"namespaces": "namespaces/"}}))
+    (root / "catalog.json").write_text(json.dumps({"schema": 1, "directories": {"namespaces": "namespaces/"}}))
     dirs = {f"n{i:02}": f"n{i:02}/" for i in range(count)}
     (root / "namespaces").mkdir()
-    (root / "namespaces/catalog.json").write_text(json.dumps({"schema": 2, "directories": dirs}))
+    (root / "namespaces/catalog.json").write_text(json.dumps({"schema": 1, "directories": dirs}))
     for name in dirs:
         (root / "namespaces" / name).mkdir()
         (root / "namespaces" / name / "catalog.json").write_text(
-            json.dumps({"schema": 2, "directories": {"p": "p/"}}))
+            json.dumps({"schema": 1, "directories": {"p": "p/"}}))
         (root / "namespaces" / name / "p").mkdir()
         (root / "namespaces" / name / "p/plugin.json").write_text(json.dumps(
-            {"schema": 2, "id": f"{name}/p", "source": f"https://git.example.invalid/{name}/p.git",
+            {"schema": 1, "id": f"{name}/p", "source": f"https://git.example.invalid/{name}/p.git",
              "versions": {"1.0.0": "versions/1.0.0/release.json"}}))
 
 
 @case(fixture="g4_tree_catalog", spec=["catalog/bounded-overview#large-catalog"])
 def overview_limit_v2(t: T):
-    """More than 40 entries in a v2 tree: output stops at 40 and prints the limit hint."""
+    """More than 40 entries in a catalog tree: output stops at 40 and prints the limit hint."""
     big = t.root / "big"
     crafted_v2(big, 45)
     out = readonly(t, lambda: gitpm_env(t, "--catalog", big, "info").out, big)
