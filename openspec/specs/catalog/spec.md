@@ -28,7 +28,7 @@ A catalog SHALL be a tree of JSON files: schema-1 directory links, a schema-1 pa
 
 #### Scenario: Release summary in the index
 - **WHEN** a catalog is generated and the latest release of `tilr/theme` has a title and provides
-- **THEN** `namespaces/tilr/theme/plugin.json` holds `latest {version, title, description, provides, tags}`, equal to the normalized manifest metadata in its `release.json`; directory files `{"schema": 2, "directories": {…}}` carry only links
+- **THEN** `namespaces/tilr/theme/plugin.json` holds `latest {version, title, description, provides, tags}`, equal to the normalized manifest metadata in its `release.json`; directory files `{"schema": 1, "directories": {…}}` carry only links
 
 #### Scenario: Summary selection and regeneration
 - **WHEN** a catalog is generated or a release is registered, including an older version or an already published version

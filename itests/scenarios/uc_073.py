@@ -181,12 +181,12 @@ def browse_reads_only_indexes(t: T):
         summary = {"version": "1.0.0", "title": name, "description": None, "provides": [], "tags": []}
         if n == 0:
             summary["provides"] = False
-        index = {"schema": 2, "id": f"tilr/{name}", "source": "https://example.invalid/source.git",
+        index = {"schema": 1, "id": f"tilr/{name}", "source": "https://example.invalid/source.git",
                  "versions": {"1.0.0": "versions/1.0.0/release.json"}, "latest": summary}
         if n == 1:
             del index["latest"]
         (folder / "plugin.json").write_text(json.dumps(index))
-    (t.catalog / "catalog.json").write_text(json.dumps({"schema": 2, "directories": directories}))
+    (t.catalog / "catalog.json").write_text(json.dumps({"schema": 1, "directories": directories}))
     server = t.serve(t.catalog)
     try:
         out = t.gitpm_ok("--catalog", server.url, "info").out

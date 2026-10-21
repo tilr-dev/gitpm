@@ -1108,7 +1108,7 @@ fn catalog_index_summary_is_published_and_used_by_the_cli() {
     let path = f.dir.join("catalog/namespaces/dan/hello/plugin.json");
     let bytes = fs::read(&path).unwrap();
     let index: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(index["schema"], 2);
+    assert_eq!(index["schema"], 1);
     assert_eq!(
         index["latest"],
         serde_json::json!({

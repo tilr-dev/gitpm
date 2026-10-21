@@ -2328,7 +2328,7 @@ pub(crate) mod tests {
         let index_path = cat.join("namespaces/dan/demo1/plugin.json");
         let check = |version: &str| {
             let index = read(&index_path);
-            assert_eq!(index["schema"], 2);
+            assert_eq!(index["schema"], 1);
             let stored = lookup(loc(&cat), "dan/demo1", Some(version)).unwrap();
             let metadata = stored.metadata();
             assert_eq!(

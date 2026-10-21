@@ -18,7 +18,7 @@ A catalog SHALL be a tree of JSON files: schema-1 directory links, a schema-1 pa
 #### Scenario: Direct lookup
 - **WHEN** the directory indexes are damaged but `namespaces/dan/demo1/` is intact
 - **THEN** `install-catalog dan/demo1` still finds the release
-- **AND** this is covered by `catalog::layout_links_directories_bottom_up` and `split_catalog_hashes_and_direct_lookup_are_independent_of_directory_indexes`
+- **AND** this is covered by `catalog::v2_layout_links_directories_bottom_up` and `split_catalog_hashes_and_direct_lookup_are_independent_of_directory_indexes`
 
 #### Scenario: Release summary in the index
 - **WHEN** a catalog is generated and the latest release of `tilr/theme` has a title and provides

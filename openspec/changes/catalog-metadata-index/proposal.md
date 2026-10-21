@@ -14,7 +14,7 @@ The catalog overview reads the latest `release.json` of every listed package to 
 ## Capabilities
 
 ### Modified Capabilities
-- `catalog`: "Catalog v2 is a tree of static files".
+- `catalog`: "Catalog is a tree of static files".
 - `plugin-metadata`: "Metadata in the catalog".
 
 ## Out of scope
