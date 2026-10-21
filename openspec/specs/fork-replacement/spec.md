@@ -240,4 +240,3 @@ Fork SHALL exclude local installation work and use only the recorded source at i
 #### Scenario: Existing destination
 - **WHEN** `--into` names an existing directory, including an existing multi-package fork
 - **THEN** the command fails with `invalid_argument` and leaves it unchanged
-
