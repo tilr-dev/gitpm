@@ -420,6 +420,7 @@ fn print_dist_sync(sync: &DistSync, dry_run: bool) {
 /// The dist report of a result: folders under dist/ gitpm leaves alone, and active
 /// packages left without their deployed folder.
 fn warn_dist(sync: &DistSync) {
+    warn(&sync.warnings);
     for path in &sync.unmanaged {
         eprintln!("Warning: {path} belongs to no known package or is not a folder; left as it is");
     }
@@ -1336,17 +1337,16 @@ fn run(invocation: &mut Invocation) -> Result<()> {
             let reference = reference
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("catalog register requires --ref TAG_OR_COMMIT"))?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&catalog::register_package_with_options(
-                    &url,
-                    id,
-                    reference,
-                    package.as_deref(),
-                    build,
-                    &ssh_options,
-                )?)?
-            );
+            let report = catalog::register_package_report_with_options(
+                &url,
+                id,
+                reference,
+                package.as_deref(),
+                build,
+                &ssh_options,
+            )?;
+            warn(&report.warnings);
+            println!("{}", serde_json::to_string_pretty(&report.release)?);
             return Ok(());
         }
         "remote" => {

@@ -79,7 +79,7 @@ def outside_dist_symlink_does_not_break_any_operation(t: T):
 def symlink_inside_dist_is_refused_at_install(t: T):
     symlinked_plugin(t, "dan/alias", {"dist/alias.js": "index.js"})
     before = t.snap(t.ws)
-    t.gitpm_err("install", t.repo("dan/alias"), kind="unsupported", contains="symlinks and submodules are not supported")
+    t.gitpm_err("install", t.repo("dan/alias"), kind="unsupported", contains="symlinks are not supported")
     t.not_installed("dan/alias")
     t.same(before, "workspace")
 

@@ -431,8 +431,10 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   these environment variables. Standalone catalog and check operations offer
   `*_with_options` variants; their existing entry points use default options. FFI
   `check` takes `customSsh`.
-- Submodules (gitlinks) inside a package's `dist/` are refused with `unsupported`
-  before deploying anything, instead of silently creating an empty directory.
+- Submodules (gitlinks) inside a package's `dist/` become empty directories without
+  fetching their contents. Registration, catalog update and every deploy warn that
+  their files will not be installed, probably a mistake: commit built files to
+  `dist/` instead of a submodule.
   Migration: include the dependency's files in the committed `dist/` tree.
 - Package IDs are always `namespace/name`; an unscoped ID (`demo`) is refused with
   `invalid_id` everywhere (manifests, dependencies, state, commands). `update all` is
@@ -866,8 +868,9 @@ not derive it. `enabled` is not `active`: a replaced package stays `enabled: tru
 - Every deploy (install, update, rollback, restore, `replace --back`, enable, reconcile)
   copies `<path>/dist` of the resolved commit from the clone's Git objects using
   `git ls-tree` and `git cat-file`, never the working tree: uncommitted edits in a clone are not deployed,
-  nested folders and the executable bit are kept, symlinks and submodules are refused
-  with `unsupported` before deploying anything, and a revision
+  nested folders and the executable bit are kept. Symlinks are refused with
+  `unsupported`; submodules become empty directories and produce an actionable
+  warning (also during catalog registration and update). A revision
   without that folder is refused (`invalid_manifest`, "release … has no dist/ folder")
   instead of deploying an empty folder.
   Git attributes such as `export-ignore` and `export-subst` are not applied: all
@@ -914,7 +917,7 @@ drop its record` (both drop a record whose clone is gone without asking; `sync-d
 re-clones), decided by `SkippedDist.clone_missing`; a missing installed commit gets only
 `Warning: ID: dist not deployed (installed commit missing from its clone)`.
 Any other deploy error fails the command. Every mutating result carries this report as
-`dist` (`DistSync`: `deployed`, `removed`, `unmanaged`, `skipped`; `enable`, `disable`,
+`dist` (`DistSync`: `deployed`, `removed`, `unmanaged`, `skipped`, `warnings`; `enable`, `disable`,
 `forget` and `uninstall` return it directly); the CLI prints its warnings from there and
 an FFI host reads the same fields.
 Read-only commands, `list` and `check`, never reconcile `dist/` and open nothing: they
@@ -1522,7 +1525,7 @@ replacement that needs confirmation in `pending`), forkPackages
 `ForkReplacement` per package and the `pending` list), forkReplaceResume(pending,
 confirm; `ForkResume`: `applied` plans and the first `failed` one), replacePlan, replace, switchBackPlan, switchBack(confirm, force) (`ReplacementPlan` with
 `installedVersion`, `dist`), syncDistPlan, syncDist (`DistSync`: deployed,
-removed, unmanaged, skipped)); every mutating call returns its `DistSync` report
+removed, unmanaged, skipped, warnings)); every mutating call returns its `DistSync` report
 (`enable`/`disable`/`uninstall` return it, `forget` returns `ForgetResult { cloneKept,
 dist }`, `InstallResult`, `RevisionChange`,
 `ReplacementPlan` and `UpdateAllPlan` carry it as `dist`); `InstallResult` and

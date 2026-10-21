@@ -444,6 +444,9 @@ pub struct DistSync {
     /// Active packages whose missing `dist/<id>` is not deployed, with the reason (clone
     /// or installed commit missing, a blocked namespace, or another error in `sync_dist`).
     pub skipped: Vec<SkippedDist>,
+    /// Actionable warnings from committed dist exports.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 /// An active package left without `dist/` (see [`DistSync::skipped`]).
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -570,7 +573,8 @@ pub(crate) fn export_folder(
         "revision {commit} has no folder {}",
         if path.is_empty() { "(root)" } else { path }
     );
-    let entries = crate::transport::git_raw(repo, &["ls-tree", "-r", "-t", "-z", &tree], custom_ssh)?;
+    let entries =
+        crate::transport::git_raw(repo, &["ls-tree", "-r", "-t", "-z", &tree], custom_ssh)?;
     fs::create_dir_all(target)?;
     for entry in entries
         .split(|byte| *byte == 0)
@@ -590,7 +594,8 @@ pub(crate) fn export_folder(
         match (mode, kind) {
             ("040000", "tree") | ("160000", "commit") => fs::create_dir_all(&destination)?,
             ("100644" | "100755", "blob") => {
-                let bytes = crate::transport::git_raw(repo, &["cat-file", "blob", oid], custom_ssh)?;
+                let bytes =
+                    crate::transport::git_raw(repo, &["cat-file", "blob", oid], custom_ssh)?;
                 fs::create_dir_all(destination.parent().unwrap())?;
                 fs::write(&destination, bytes)?;
                 if mode == "100755" {
@@ -600,7 +605,7 @@ pub(crate) fn export_folder(
             }
             _ => fail!(
                 Unsupported,
-                "symlinks and submodules are not supported: {}",
+                "symlinks are not supported: {}",
                 if path.is_empty() {
                     name.to_owned()
                 } else {
@@ -614,14 +619,14 @@ pub(crate) fn export_folder(
 /// Fill `target` with the package's `dist/` (package folder `package`, `None`: the
 /// root) at `commit` of `repo`, from Git objects (never the working tree). A revision
 /// without that folder is refused ([`Error::InvalidManifest`]), never deployed empty.
-/// Gitlinks are refused before any files are exported.
+/// Gitlinks become empty directories; returned warnings explain their missing contents.
 pub(crate) fn export_dist(
     repo: &Path,
     commit: &str,
     package: Option<&str>,
     target: &Path,
     custom_ssh: bool,
-) -> Result<()> {
+) -> Result<Vec<String>> {
     let folder = match package {
         Some(path) => format!("{path}/dist"),
         None => "dist".to_owned(),
@@ -636,21 +641,18 @@ pub(crate) fn export_dist(
         InvalidManifest,
         "release {commit} has no {folder}/ folder"
     );
-    // Refuse gitlinks before export_folder can materialize them as empty directories.
-    // Inspect the committed tree before creating or writing any deployment files.
+    let mut warnings = Vec::new();
     let tree = format!("{commit}:{folder}");
     let entries = crate::transport::git_raw(repo, &["ls-tree", "-r", "-z", &tree], custom_ssh)?;
     for entry in entries.split(|byte| *byte == 0) {
         if entry.starts_with(b"160000 ") {
             let name =
                 String::from_utf8_lossy(entry.splitn(2, |byte| *byte == b'\t').nth(1).unwrap());
-            fail!(
-                Unsupported,
-                "symlinks and submodules are not supported: {folder}/{name}"
-            );
+            warnings.push(format!("{folder}/{name} is a Git submodule; its files will not be installed and the directory will be empty. This is probably a mistake: commit built files to dist instead of a submodule."));
         }
     }
-    export_folder(repo, commit, &folder, target, custom_ssh)
+    export_folder(repo, commit, &folder, target, custom_ssh)?;
+    Ok(warnings)
 }
 /// Locate an updated package, retaining the requested and upstream identities.
 fn updated_package(
@@ -871,7 +873,10 @@ impl Manager {
         let before = state.clone();
         let value = action(&mut txn, &mut state)?;
         settle_dist(&mut txn, &before, &state, self.options.custom_ssh)?;
-        let mut report = DistSync::default();
+        let mut report = DistSync {
+            warnings: txn.warnings.clone(),
+            ..Default::default()
+        };
         for id in txn.staged_dists() {
             if txn.deploys_dist(&id) {
                 report.deployed.push(id);
@@ -2865,7 +2870,9 @@ fn clone_revision(txn: &Txn, fetch: &Fetch, name: &str, custom_ssh: bool) -> Res
                 path.as_deref(),
                 &txn.scratch("verify-dist"),
                 custom_ssh,
-            )? == *expected_files,
+            )?
+            .files
+                == *expected_files,
             Catalog,
             "catalog file hashes do not match git dist"
         );
@@ -6057,7 +6064,7 @@ mod tests {
     }
 
     #[test]
-    fn a_submodule_in_dist_is_refused() {
+    fn a_submodule_in_dist_deploys_an_empty_folder() {
         let (ws, m) = Ws::installed("dan/demo1");
         let bad = ws.other_author("bad", "dan/bad");
         let sha = git(&bad.path, &["rev-parse", "HEAD"], false).unwrap();
@@ -6072,14 +6079,18 @@ mod tests {
         );
         fixture_git(&bad.path, &["commit", "-q", "-m", "submodule in dist"]);
         fixture_git(&bad.path, &["tag", "-f", "dan/bad@0.1.0"]);
-        let error = ws.refuses("unsupported", || m.install(bad.source()));
+        let result = m.install(bad.source()).unwrap();
+        let vendor = ws.root.join("dist/dan/bad/vendor");
+        assert!(vendor.is_dir());
+        assert_eq!(fs::read_dir(vendor).unwrap().count(), 0);
+        assert_eq!(result.id, "dan/bad");
         assert!(
-            error
-                .to_string()
-                .contains("symlinks and submodules are not supported: dist/vendor"),
-            "{error}"
+            result
+                .dist
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("dist/vendor is a Git submodule"))
         );
-        assert!(!ws.root.join("dist/dan/bad/vendor").exists());
     }
 
     #[test]
