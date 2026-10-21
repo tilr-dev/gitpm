@@ -444,6 +444,9 @@ pub struct DistSync {
     /// Active packages whose missing `dist/<id>` is not deployed, with the reason (clone
     /// or installed commit missing, a blocked namespace, or another error in `sync_dist`).
     pub skipped: Vec<SkippedDist>,
+    /// Actionable warnings from committed dist exports.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 /// An active package left without `dist/` (see [`DistSync::skipped`]).
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -550,9 +553,9 @@ pub(crate) fn copy_tree(from: &Path, to: &Path, symlinks: bool) -> Result<()> {
     Ok(())
 }
 /// Copy the folder `path` (`""`: the root) of `commit` from `repo` into `target`: one
-/// `git archive` of that tree (`COMMIT:PATH`, a literal path, never a pattern), unpacked
-/// in process. The executable bit is kept; symlinks are refused. Gitlinks become
-/// empty directories in the archive. The folder must exist.
+/// `git ls-tree`/`cat-file` of that tree (`COMMIT:PATH`, a literal path, never a pattern).
+/// Plain files and folders only, the executable bit is kept; symlinks are
+/// refused (a submodule comes out as an empty folder). The folder must exist.
 pub(crate) fn export_folder(
     repo: &Path,
     commit: &str,
@@ -570,46 +573,41 @@ pub(crate) fn export_folder(
         "revision {commit} has no folder {}",
         if path.is_empty() { "(root)" } else { path }
     );
-    let tar = crate::transport::git_raw(repo, &["archive", "--format=tar", &tree], custom_ssh)?;
+    let entries =
+        crate::transport::git_raw(repo, &["ls-tree", "-r", "-t", "-z", &tree], custom_ssh)?;
     fs::create_dir_all(target)?;
-    let mut archive = tar::Archive::new(&tar[..]);
-    for entry in archive.entries()? {
-        let mut entry = entry?;
-        let kind = entry.header().entry_type();
-        if matches!(
-            kind,
-            tar::EntryType::XGlobalHeader | tar::EntryType::XHeader
-        ) {
-            continue;
-        }
-        let name = entry
-            .path()?
-            .to_string_lossy()
-            .trim_end_matches('/')
-            .to_owned();
-        if name.is_empty() {
-            continue;
-        }
-        packages::validate_path(&name)?;
-        let destination = target.join(&name);
-        match kind {
-            tar::EntryType::Directory => fs::create_dir_all(&destination)?,
-            tar::EntryType::Regular => {
-                let executable = entry.header().mode()? & 0o111 != 0;
-                let mut bytes = Vec::new();
-                std::io::Read::read_to_end(&mut entry, &mut bytes)?;
+    for entry in entries
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+    {
+        let entry = std::str::from_utf8(entry)
+            .map_err(|_| Error::InvalidData("non-UTF8 build path".into()))?;
+        let (meta, name) = entry
+            .split_once('\t')
+            .ok_or_else(|| Error::InvalidData("invalid Git tree entry".into()))?;
+        let mut meta = meta.split(' ');
+        let (Some(mode), Some(kind), Some(oid)) = (meta.next(), meta.next(), meta.next()) else {
+            fail!(InvalidData, "invalid Git tree entry")
+        };
+        packages::validate_path(name)?;
+        let destination = target.join(name);
+        match (mode, kind) {
+            ("040000", "tree") | ("160000", "commit") => fs::create_dir_all(&destination)?,
+            ("100644" | "100755", "blob") => {
+                let bytes =
+                    crate::transport::git_raw(repo, &["cat-file", "blob", oid], custom_ssh)?;
                 fs::create_dir_all(destination.parent().unwrap())?;
                 fs::write(&destination, bytes)?;
-                if executable {
+                if mode == "100755" {
                     use std::os::unix::fs::PermissionsExt;
                     fs::set_permissions(&destination, fs::Permissions::from_mode(0o755))?;
                 }
             }
             _ => fail!(
                 Unsupported,
-                "symlinks and submodules are not supported: {}",
+                "symlinks are not supported: {}",
                 if path.is_empty() {
-                    name
+                    name.to_owned()
                 } else {
                     format!("{path}/{name}")
                 }
@@ -621,14 +619,14 @@ pub(crate) fn export_folder(
 /// Fill `target` with the package's `dist/` (package folder `package`, `None`: the
 /// root) at `commit` of `repo`, from Git objects (never the working tree). A revision
 /// without that folder is refused ([`Error::InvalidManifest`]), never deployed empty.
-/// Gitlinks are refused before any files are exported.
+/// Gitlinks become empty directories; returned warnings explain their missing contents.
 pub(crate) fn export_dist(
     repo: &Path,
     commit: &str,
     package: Option<&str>,
     target: &Path,
     custom_ssh: bool,
-) -> Result<()> {
+) -> Result<Vec<String>> {
     let folder = match package {
         Some(path) => format!("{path}/dist"),
         None => "dist".to_owned(),
@@ -643,21 +641,18 @@ pub(crate) fn export_dist(
         InvalidManifest,
         "release {commit} has no {folder}/ folder"
     );
-    // Archive represents gitlinks as ordinary empty directories, losing their type.
-    // Inspect the committed tree before creating or writing any deployment files.
+    let mut warnings = Vec::new();
     let tree = format!("{commit}:{folder}");
     let entries = crate::transport::git_raw(repo, &["ls-tree", "-r", "-z", &tree], custom_ssh)?;
     for entry in entries.split(|byte| *byte == 0) {
         if entry.starts_with(b"160000 ") {
             let name =
                 String::from_utf8_lossy(entry.splitn(2, |byte| *byte == b'\t').nth(1).unwrap());
-            fail!(
-                Unsupported,
-                "symlinks and submodules are not supported: {folder}/{name}"
-            );
+            warnings.push(format!("{folder}/{name} is a Git submodule; its files will not be installed and the directory will be empty. This is probably a mistake: commit built files to dist instead of a submodule."));
         }
     }
-    export_folder(repo, commit, &folder, target, custom_ssh)
+    export_folder(repo, commit, &folder, target, custom_ssh)?;
+    Ok(warnings)
 }
 /// Locate an updated package, retaining the requested and upstream identities.
 fn updated_package(
@@ -878,7 +873,10 @@ impl Manager {
         let before = state.clone();
         let value = action(&mut txn, &mut state)?;
         settle_dist(&mut txn, &before, &state, self.options.custom_ssh)?;
-        let mut report = DistSync::default();
+        let mut report = DistSync {
+            warnings: txn.warnings.clone(),
+            ..Default::default()
+        };
         for id in txn.staged_dists() {
             if txn.deploys_dist(&id) {
                 report.deployed.push(id);
@@ -1113,13 +1111,7 @@ impl Manager {
                 // release of its version; then it becomes protected.
                 let protect = match (&origin, &installed.catalog) {
                     (Some(location), None) => {
-                        verify_installed_release(
-                            &cloned.repo,
-                            &m.id,
-                            installed,
-                            location,
-                            self.options.custom_ssh,
-                        )?;
+                        verify_installed_release(txn, &cloned.repo, &m.id, installed, location, self.options.custom_ssh)?;
                         Some(location.clone())
                     }
                     _ => None,
@@ -1700,7 +1692,7 @@ impl Manager {
                 let actual = package_manifest(&repo, release.path.as_deref())
                     .map_err(|error| error.with_package(id))?;
                 if protected {
-                    verify_catalog_release(&repo, &actual, release)?;
+                    verify_catalog_manifest(&actual, release)?;
                 }
                 if serde_json::to_value(&actual)? != serde_json::to_value(m)? {
                     return Err(
@@ -1730,14 +1722,18 @@ impl Manager {
                 if txn.staged_repo(&relative).is_none() {
                     txn.add_repo(&relative, &repo)?;
                 }
-                txn.deploy(
-                    id,
-                    &relative,
-                    path.as_deref(),
-                    &release.commit,
-                    self.options.custom_ssh,
-                )
-                .map_err(|error| error.with_package(id))?;
+                let staged = txn
+                    .deploy(
+                        id,
+                        &relative,
+                        path.as_deref(),
+                        &release.commit,
+                        self.options.custom_ssh,
+                    )
+                    .map_err(|error| error.with_package(id))?;
+                if protected {
+                    verify_catalog_release(&actual, release, &staged)?;
+                }
             } else {
                 let origin = protecting_catalog_at(
                     catalog.require(Error::InvalidArgument, check::NO_CATALOG)?,
@@ -2010,7 +2006,7 @@ impl Manager {
             let m = package_manifest(&repo, path.as_deref())?;
             ensure!(m.id == id, InvalidManifest, "package id changed upstream to {}", m.id);
             if let Some(release) = &expected {
-                verify_catalog_release(&repo, &m, release)?;
+                verify_catalog_manifest(&m, release)?;
             }
             // Tags are not policed: an explicit tag or commit may keep the installed version
             // at another commit; when it is the moved release tag of that version, say so.
@@ -2040,7 +2036,10 @@ impl Manager {
             if state.is_active(id) {
                 deps::refuse_inactive_dependencies(state, id, "update", false)?;
             }
-            txn.deploy(id, &relative, path.as_deref(), &next.commit, self.options.custom_ssh)?;
+            let staged = txn.deploy(id, &relative, path.as_deref(), &next.commit, self.options.custom_ssh)?;
+            if let Some(release) = &expected {
+                verify_catalog_release(&m, release, &staged)?;
+            }
             Ok(RevisionChange {
                 id: id.into(),
                 major: deps::is_major_text(&p.current.version, &next.version),
@@ -2555,7 +2554,7 @@ impl Manager {
     /// for it) is reported in `skipped` and the others are still synced: the transaction
     /// commits, then the call fails with [`Error::NotDeployed`] carrying the report.
     pub fn sync_dist(&self) -> Result<DistSync> {
-        let (plan, _) = self.transaction(|txn, state| {
+        let (mut plan, report) = self.transaction(|txn, state| {
             let mut plan = dist_drift(txn.root(), state, self.options.custom_ssh)?;
             let mut deployed = Vec::new();
             for id in std::mem::take(&mut plan.deployed) {
@@ -2576,6 +2575,7 @@ impl Manager {
             plan.skipped.sort_by(|a, b| a.id.cmp(&b.id));
             Ok(plan)
         })?;
+        plan.warnings = report.warnings;
         if plan.skipped.is_empty() {
             return Ok(plan);
         }
@@ -2626,7 +2626,8 @@ fn deploy_committed(txn: &mut Txn, id: &str, p: &Installed, custom_ssh: bool) ->
         p.path.as_deref(),
         &p.current.commit,
         custom_ssh,
-    )
+    )?;
+    Ok(())
 }
 
 /// Compare `dist/` with the active packages of `state` (read-only).
@@ -2768,6 +2769,7 @@ struct Cloned {
     manifest: Manifest,
     /// Package folder (`None`: the repository root).
     path: Option<String>,
+    expected_files: Option<BTreeMap<String, catalog::FileDigest>>,
     skipped: Vec<releases::SkippedTag>,
     /// The mode the install records.
     mode: Mode,
@@ -2862,12 +2864,16 @@ fn clone_revision(txn: &Txn, fetch: &Fetch, name: &str, custom_ssh: bool) -> Res
         );
     }
     if let Some(expected_files) = fetch.files {
-        let dist = match &path {
-            Some(path) => repo.join(path).join("dist"),
-            None => repo.join("dist"),
-        };
         ensure!(
-            catalog::hash_files(&dist)? == *expected_files,
+            catalog::hash_exported_dist(
+                &repo,
+                &commit,
+                path.as_deref(),
+                &txn.scratch("verify-dist"),
+                custom_ssh,
+            )?
+            .files
+                == *expected_files,
             Catalog,
             "catalog file hashes do not match git dist"
         );
@@ -2876,6 +2882,7 @@ fn clone_revision(txn: &Txn, fetch: &Fetch, name: &str, custom_ssh: bool) -> Res
         repo,
         manifest: m,
         path,
+        expected_files: fetch.files.cloned(),
         skipped,
         mode,
     })
@@ -2933,13 +2940,20 @@ fn adopt(
     let m = &cloned.manifest;
     let current = revision(&staged, m, custom_ssh)?;
     if enabled {
-        txn.deploy(
+        let staged = txn.deploy(
             &m.id,
             &relative,
             cloned.path.as_deref(),
             &current.commit,
             custom_ssh,
         )?;
+        if let Some(expected) = &cloned.expected_files {
+            ensure!(
+                catalog::hash_files(&staged)? == *expected,
+                Catalog,
+                "catalog file hashes do not match git dist"
+            );
+        }
     }
     let mut installed = Installed {
         source: source.clone(),
@@ -3082,6 +3096,7 @@ fn catalog_candidates(
 /// verified catalog at `location`: the same source and commit, and (checked out in
 /// `repo`, a clone of that source) the same package folder, manifest and file hashes.
 fn verify_installed_release(
+    txn: &Txn,
     repo: &Path,
     id: &str,
     installed: &Installed,
@@ -3106,7 +3121,18 @@ fn verify_installed_release(
     );
     git(repo, &["checkout", "--detach", &release.commit], custom_ssh)?;
     let actual = package_manifest(repo, release.path.as_deref())?;
-    verify_catalog_release(repo, &actual, &release)
+    let staged = txn.scratch("verify-installed-dist");
+    if staged.exists() {
+        fs::remove_dir_all(&staged)?;
+    }
+    export_dist(
+        repo,
+        &release.commit,
+        release.path.as_deref(),
+        &staged,
+        custom_ssh,
+    )?;
+    verify_catalog_release(&actual, &release, &staged)
 }
 /// The commit of a catalog release must be in `repo` (the clone after fetching its origin).
 fn ensure_release_commit(repo: &Path, release: &catalog::Release, custom_ssh: bool) -> Result<()> {
@@ -3125,25 +3151,27 @@ fn ensure_release_commit(repo: &Path, release: &catalog::Release, custom_ssh: bo
     );
     Ok(())
 }
-/// The checked-out revision in `repo` (manifest `actual`) must be exactly the catalog
-/// release: the same manifest and dist file hashes (`catalog` otherwise).
-fn verify_catalog_release(
-    repo: &Path,
-    actual: &Manifest,
-    release: &catalog::Release,
-) -> Result<()> {
+/// The checked-out manifest must match the catalog release.
+fn verify_catalog_manifest(actual: &Manifest, release: &catalog::Release) -> Result<()> {
     let name = format!("{}@{}", release.manifest.id, release.manifest.version);
     ensure!(
         serde_json::to_value(actual)? == serde_json::to_value(&release.manifest)?,
         Catalog,
         "catalog manifest does not match git revision of {name}: the release differs from the one added to the catalog"
     );
-    let dist = match &release.path {
-        Some(path) => repo.join(path).join("dist"),
-        None => repo.join("dist"),
-    };
+    Ok(())
+}
+
+/// Verify catalog hashes against the exported tree staged for deployment.
+fn verify_catalog_release(
+    actual: &Manifest,
+    release: &catalog::Release,
+    staged: &Path,
+) -> Result<()> {
+    verify_catalog_manifest(actual, release)?;
+    let name = format!("{}@{}", release.manifest.id, release.manifest.version);
     ensure!(
-        catalog::hash_files(&dist)? == release.files,
+        catalog::hash_files(staged)? == release.files,
         Catalog,
         "catalog file hashes do not match git dist of {name}: the release differs from the one added to the catalog"
     );
@@ -6037,7 +6065,7 @@ mod tests {
     }
 
     #[test]
-    fn a_submodule_in_dist_is_refused() {
+    fn a_submodule_in_dist_deploys_an_empty_folder() {
         let (ws, m) = Ws::installed("dan/demo1");
         let bad = ws.other_author("bad", "dan/bad");
         let sha = git(&bad.path, &["rev-parse", "HEAD"], false).unwrap();
@@ -6052,14 +6080,35 @@ mod tests {
         );
         fixture_git(&bad.path, &["commit", "-q", "-m", "submodule in dist"]);
         fixture_git(&bad.path, &["tag", "-f", "dan/bad@0.1.0"]);
-        let error = ws.refuses("unsupported", || m.install(bad.source()));
+        let result = m.install(bad.source()).unwrap();
+        let vendor = ws.root.join("dist/dan/bad/vendor");
+        assert!(vendor.is_dir());
+        assert_eq!(fs::read_dir(vendor).unwrap().count(), 0);
+        assert_eq!(result.id, "dan/bad");
         assert!(
-            error
-                .to_string()
-                .contains("symlinks and submodules are not supported: dist/vendor"),
-            "{error}"
+            result
+                .dist
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("dist/vendor is a Git submodule"))
         );
-        assert!(!ws.root.join("dist/dan/bad/vendor").exists());
+        fs::remove_dir_all(ws.root.join("dist/dan/bad")).unwrap();
+        let synced = m.sync_dist().unwrap();
+        assert_eq!(synced.warnings, result.dist.warnings);
+        assert!(ws.root.join("dist/dan/bad/vendor").is_dir());
+        fs::remove_dir_all(ws.root.join("dist/dan/bad")).unwrap();
+        fs::remove_dir_all(ws.dist()).unwrap();
+        let state = m.state().unwrap();
+        fs::remove_dir_all(
+            ws.root
+                .join(state.packages["dan/demo1"].clone_folder("dan/demo1")),
+        )
+        .unwrap();
+        let Error::NotDeployed { sync, .. } = m.sync_dist().unwrap_err() else {
+            panic!("missing clone must produce a partial reconciliation report");
+        };
+        assert_eq!(sync.warnings, result.dist.warnings);
+        assert!(ws.root.join("dist/dan/bad/vendor").is_dir());
     }
 
     #[test]

@@ -57,6 +57,12 @@ Single source for the release record: a release SHALL record the whole `manifest
 - **WHEN** the sources file lists the same repository twice, also in another spelling of its path
 - **THEN** `catalog update` reads it once and indexes each release once
 
+
+#### Scenario: Submodule inside dist
+- **WHEN** the release contains a Git submodule at `dist/vendor`
+- **THEN** publication succeeds, hashing the staged export with an empty `vendor/` directory
+- **AND** the author is warned that `dist/vendor` is a Git submodule whose files will not be installed, probably a mistake; commit built files to dist instead of a submodule
+
 ### Requirement: Published versions are immutable
 A published version SHALL NOT change; a rejected `catalog register` or `catalog update` writes nothing. `catalog register` SHALL fail with `version_conflict` when the release JSON (except `reference`) differs. `catalog update` SHALL keep a differing published record and warn. A package ID SHALL stay bound to the source that first registered it. Verified by `catalog::published_versions_are_immutable` and `catalog_update_keeps_published_records_when_tags_move`.
 
@@ -83,6 +89,12 @@ A published version SHALL NOT change; a rejected `catalog register` or `catalog 
 #### Scenario: Invalid build metadata
 - **WHEN** `--build-url` is `http://…` or the SHA-256 is malformed
 - **THEN** catalog register fails with `catalog` ("build URL must use HTTPS" / "invalid build SHA-256") and no release is published (an empty top-level `catalog.json` may already have been created)
+
+
+#### Scenario: Submodule inside dist
+- **WHEN** the release contains a Git submodule at `dist/vendor`
+- **THEN** publication succeeds, hashing the staged export with an empty `vendor/` directory
+- **AND** the author is warned that `dist/vendor` is a Git submodule whose files will not be installed, probably a mistake; commit built files to dist instead of a submodule
 
 ### Requirement: Catalog locations and transport
 A catalog location SHALL be a local folder, a path to a `*.json` file (normally `catalog.json`), or an HTTP(S) URL. Remote catalogs MUST use HTTPS; `http://` SHALL be accepted only for loopback hosts (`localhost`, loopback IPs, not `localhost.evil.example` or `user@host`), else `invalid_argument`. Requests SHALL not follow redirects and SHALL refuse a body over 16 MiB, announced or not. HTTP catalogs SHALL be read-only. Verified by `catalog::locations_are_local_paths_or_http_urls`.

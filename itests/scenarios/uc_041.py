@@ -55,7 +55,7 @@ def dist_symlink_refused_at_install(t: T):
     for id, target in [("dan/rel", "index.js"), ("dan/abs", str(OUTSIDE / "sentinel.txt"))]:
         symlinked_plugin(t, id, {"dist/link.js": target})
         before = t.snap(t.ws)
-        t.gitpm_err("install", t.repo(id), kind="unsupported", contains="symlinks and submodules are not supported")
+        t.gitpm_err("install", t.repo(id), kind="unsupported", contains="symlinks are not supported")
         t.not_installed(id)
         t.same(before, "workspace")
     t.same(outside, "outside sentinels")

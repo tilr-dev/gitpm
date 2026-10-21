@@ -146,6 +146,33 @@ pub fn hash_files(dist: &Path) -> Result<BTreeMap<String, FileDigest>> {
     walk(dist, dist, &mut result)?;
     Ok(result)
 }
+
+pub(crate) struct HashedDist {
+    pub files: BTreeMap<String, FileDigest>,
+    pub warnings: Vec<String>,
+}
+
+/// Hash the same committed export that a workspace stages at `dist/<id>`.
+pub(crate) fn hash_exported_dist(
+    repo: &Path,
+    commit: &str,
+    package: Option<&str>,
+    staged: &Path,
+    custom_ssh: bool,
+) -> Result<HashedDist> {
+    if staged.exists() {
+        fs::remove_dir_all(staged)?;
+    }
+    let warnings = crate::workspace::export_dist(repo, commit, package, staged, custom_ssh)
+        .map_err(|error| match error {
+            Error::Unsupported(_) => Error::Unsupported("build contains a symlink".into()),
+            other => other,
+        })?;
+    Ok(HashedDist {
+        files: hash_files(staged)?,
+        warnings,
+    })
+}
 fn valid_hash(hash: &str) -> bool {
     hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit())
 }
@@ -853,6 +880,37 @@ pub(crate) fn register_package_with_ssh(
     build: Option<Build>,
     custom_ssh: bool,
 ) -> Result<Release> {
+    Ok(register_package_report_with_options(
+        url,
+        source,
+        reference,
+        package,
+        build,
+        &crate::Options {
+            custom_ssh,
+            ..Default::default()
+        },
+    )?
+    .release)
+}
+
+/// Publication result; warnings are not stored in the catalog release.
+#[derive(Debug, Clone, Serialize)]
+pub struct RegisterReport {
+    pub release: Release,
+    pub warnings: Vec<String>,
+}
+
+/// Register a committed package and report warnings about omitted submodule contents.
+pub fn register_package_report_with_options(
+    url: &str,
+    source: &str,
+    reference: &str,
+    package: Option<&str>,
+    build: Option<Build>,
+    ssh_options: &crate::Options,
+) -> Result<RegisterReport> {
+    let custom_ssh = ssh_options.custom_ssh;
     let catalog_path = local_file(url)?.require(Error::InvalidArgument, WRITE_NEEDS_LOCAL)?;
     ensure!(
         !source.starts_with('-'),
@@ -878,24 +936,28 @@ pub(crate) fn register_package_with_ssh(
     git(&repo, &["checkout", "--detach", &commit], custom_ssh)?;
     let manifest = package_manifest(&repo, path.as_deref())?;
     version_key(&manifest.version)?;
+    let exported = hash_exported_dist(
+        &repo,
+        &commit,
+        path.as_deref(),
+        &temp.0.join("staged-dist"),
+        custom_ssh,
+    )?;
     let release = Release {
         manifest,
         source,
         commit,
         reference: reference.to_owned(),
-        files: hash_files(&package_dir(&repo, path.as_deref()).join("dist"))?,
+        files: exported.files,
         build,
         path,
     };
-    save_release(&catalog_path, &release)
+    Ok(RegisterReport {
+        release: save_release(&catalog_path, &release)?,
+        warnings: exported.warnings,
+    })
 }
 
-fn package_dir(repo: &Path, path: Option<&str>) -> PathBuf {
-    match path {
-        Some(path) => repo.join(path),
-        None => repo.to_path_buf(),
-    }
-}
 /// Packages whose releases a source publishes: `[None]` (the root package) for a
 /// single-package repository, every package listed at HEAD for a `gitpm.json` one. As
 /// for a root package, HEAD decides the identity: tags a fork keeps from its upstream
@@ -946,6 +1008,7 @@ pub struct UpdateSourcesReport {
     pub skipped: Vec<SkippedSourceTag>,
     /// Published versions whose regenerated release differs from the record (a moved
     /// tag, or a manifest or file hashes that changed): the published record is kept.
+    /// Also includes warnings about submodules whose contents are not installed.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
 }
@@ -1034,6 +1097,7 @@ pub(crate) fn update_sources_with_ssh(
         "sources file has no repositories"
     );
     let temp = Scratch::new("pm-generate")?;
+    let mut warnings = Vec::new();
     let mut pending = BTreeMap::new();
     let mut owners = BTreeMap::new();
     let mut skipped = Vec::new();
@@ -1049,8 +1113,8 @@ pub(crate) fn update_sources_with_ssh(
             custom_ssh,
         )?;
         let mut tags = Vec::new();
-        let (ids, warnings) = source_packages(&repo, custom_ssh)?;
-        skipped.extend(warnings.into_iter().map(|tag| SkippedSourceTag {
+        let (ids, source_warnings) = source_packages(&repo, custom_ssh)?;
+        skipped.extend(source_warnings.into_iter().map(|tag| SkippedSourceTag {
             source: source.clone(),
             tag,
         }));
@@ -1079,12 +1143,20 @@ pub(crate) fn update_sources_with_ssh(
             }
             git(&repo, &["checkout", "--detach", &tag.commit], custom_ssh)?;
             let path = (!tag.path.is_empty()).then_some(tag.path);
+            let exported = hash_exported_dist(
+                &repo,
+                &tag.commit,
+                path.as_deref(),
+                &temp.0.join("staged-dist"),
+                custom_ssh,
+            )?;
+            warnings.extend(exported.warnings);
             let release = Release {
                 manifest: package_manifest(&repo, path.as_deref())?,
                 source: source.clone(),
                 commit: tag.commit,
                 reference: tag.name,
-                files: hash_files(&package_dir(&repo, path.as_deref()).join("dist"))?,
+                files: exported.files,
                 build: None,
                 path,
             };
@@ -1095,7 +1167,6 @@ pub(crate) fn update_sources_with_ssh(
     let _lock = lock(&path)?;
     refuse_verified(location)?;
     // Check every source and immutable version before writing any release.
-    let mut warnings = Vec::new();
     let mut kept = Vec::new();
     for ((id, version), release) in &mut pending {
         if let Some(index) = package_index(location, id)? {

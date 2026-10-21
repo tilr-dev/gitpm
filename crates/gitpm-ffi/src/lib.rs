@@ -86,7 +86,10 @@ pub enum PmError {
     /// `syncDist` committed what it could; `sync` is its report (as `syncDist` returns
     /// it), whose `skipped` are the active packages left without their deployed folder.
     #[error("{message}")]
-    NotDeployed { message: String, sync: DistSync },
+    NotDeployed {
+        message: String,
+        sync: Box<DistSync>,
+    },
     #[error("{message}")]
     InvalidData { message: String },
     #[error("{message}")]
@@ -140,7 +143,7 @@ impl From<pm::Error> for PmError {
             },
             pm::Error::NotDeployed { sync, .. } => PmError::NotDeployed {
                 message,
-                sync: (*sync).into(),
+                sync: Box::new((*sync).into()),
             },
             pm::Error::IncompatibleReplacement { id, consumers, .. } => {
                 PmError::IncompatibleReplacement {
@@ -797,6 +800,8 @@ pub struct DistSync {
     pub unmanaged: Vec<String>,
     /// Active packages left without `dist/`, with the reason (clone missing, …).
     pub skipped: Vec<SkippedDist>,
+    /// Actionable warnings from committed dist exports.
+    pub warnings: Vec<String>,
 }
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct SkippedDist {
@@ -811,6 +816,7 @@ impl From<pm::DistSync> for DistSync {
             deployed: s.deployed,
             removed: s.removed,
             unmanaged: s.unmanaged,
+            warnings: s.warnings,
             skipped: s
                 .skipped
                 .into_iter()
@@ -829,6 +835,7 @@ impl From<DistSync> for pm::DistSync {
             deployed: s.deployed,
             removed: s.removed,
             unmanaged: s.unmanaged,
+            warnings: s.warnings,
             skipped: s
                 .skipped
                 .into_iter()
@@ -2379,6 +2386,7 @@ mod tests {
             deployed: vec!["me/x".into()],
             removed: vec!["vendor/x".into()],
             unmanaged: vec!["dist/custom".into()],
+            warnings: vec!["submodule warning".into()],
             skipped: vec![pm::SkippedDist {
                 id: "me/y".into(),
                 reason: "clone missing".into(),
@@ -2394,6 +2402,7 @@ mod tests {
                 )
             );
             assert_eq!(dist.unmanaged, ["dist/custom"]);
+            assert_eq!(dist.warnings, ["submodule warning"]);
             assert_eq!(
                 (dist.skipped[0].id.as_str(), dist.skipped[0].reason.as_str()),
                 ("me/y", "clone missing")
