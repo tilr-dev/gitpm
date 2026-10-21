@@ -1209,6 +1209,11 @@ pub(crate) fn update_sources_with_ssh(
             if index.versions.contains_key(version) {
                 read_release(location, id, version, &index)?;
             }
+            // Summary regeneration can also read a published version whose tag
+            // disappeared upstream. Validate it before publishing any package.
+            if let Some(latest) = summary_version(index.versions.keys().map(String::as_str)) {
+                read_release(location, id, latest, &index)?;
+            }
         }
         let old = read_json(
             location,
@@ -2784,6 +2789,32 @@ pub(crate) mod tests {
         let before = tree_hash(&cat);
         update_sources(loc(&cat), &list, &mut |_| {}).unwrap();
         assert_eq!(tree_hash(&cat), before);
+    }
+
+    #[test]
+    fn failed_summary_regeneration_leaves_catalog_unchanged() {
+        let dir = TempDir::new("catalog-summary");
+        let first = Author::new(dir.join("first"), "dan/a");
+        let second = Author::new(dir.join("second"), "dan/b");
+        second.release("0.2.0");
+        let cat = dir.join("catalog");
+        let list = sources(dir.path(), "first\nsecond\n");
+        update_sources(loc(&cat), &list, &mut |_| {}).unwrap();
+        first.release("0.2.0");
+        fixture_git(&second.path, &["tag", "-d", "dan/b@0.2.0"]);
+        // The published newest release is no longer part of source discovery.
+        fs::write(
+            cat.join("namespaces/dan/b/versions/0.2.0/release.json"),
+            "{broken",
+        )
+        .unwrap();
+        let before = tree_hash(&cat);
+        assert!(update_sources(loc(&cat), &list, &mut |_| {}).is_err());
+        assert_eq!(
+            tree_hash(&cat),
+            before,
+            "preflight must finish before any publication"
+        );
     }
 
     #[test]
