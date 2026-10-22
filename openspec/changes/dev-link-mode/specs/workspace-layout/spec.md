@@ -39,7 +39,7 @@ Link record schema changes SHALL follow workspace-layout "State format versions"
 ## MODIFIED Requirements
 
 ### Requirement: Installed package record
-Each `state.json` `packages.<id>` managed record (single source for its format; link records: "Link record format") SHALL hold `source`, `current` and `previous` revisions (`version`, `commit`; `previous` also `mode`), `enabled`, `mode` (`{"pinned": REF}`, `{"branch": NAME}`, omitted for releases), and when present `forkOf`, `dependencies`, `replaces`, `catalog` (protecting verified catalog), `clone` (shared-clone key), `path` and `metadata`. At most one `previous` SHALL be kept.
+Each `state.json` `packages.<id>` managed record SHALL hold `source`, `current`, at most one `previous`, `enabled`, and optional `mode`, `forkOf`, `dependencies`, `replaces`, `catalog`, `clone`, `path`, `metadata`. Revisions contain `version` and `commit`; `previous` also retains mode. Links follow "Link record format". Verified by `model::state_round_trips_byte_for_byte`.
 
 #### Scenario: Fresh install has no previous revision
 - **WHEN** a package was just installed
@@ -56,3 +56,7 @@ Each `state.json` `packages.<id>` managed record (single source for its format; 
 #### Scenario: Previous revision keeps its mode
 - **WHEN** a package in branch mode `main` is updated with `--release`
 - **THEN** `previous` is `{"version": …, "commit": …, "mode": {"branch": "main"}}` (a `previous` in release mode has no `mode`), so `rollback` restores both
+
+#### Scenario: Managed field semantics
+- **WHEN** a managed package record includes optional fields
+- **THEN** mode is `{"pinned": REF}` or `{"branch": NAME}` (omitted for releases), catalog protects a verified catalog installation, and clone is the shared-clone key

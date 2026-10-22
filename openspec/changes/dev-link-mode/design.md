@@ -3,8 +3,9 @@
 ## Status and evidence
 
 Research dated 2026-10-20; implementation is separate.
-Owner decisions are comments #833–836 (2026-10-19) and the unified publishing-folder decision (2026-10-20).
-Their text is copied into the issue's `Решения` section. Recommendations below
+Owner decisions of 2026-10-19 select live links and structured reporting.
+The publishing-folder decision of 2026-10-23 retains the existing `"dist"` default
+and supersedes the package-root default selected on 2026-10-20. Recommendations below
 are technical proposals, not additional owner decisions.
 
 Baseline inspected: gitpm dev commit `e31c1ac` (2026-10-22). Recheck with `git rev-parse HEAD`
@@ -27,12 +28,11 @@ limitations or workarounds:
 - `crates/gitpm/src/check.rs:86`, `crates/gitpm/src/workspace.rs:113` and
   `crates/gitpm-ffi/src/lib.rs:303`: mode and update/check reasons already cross
   public boundaries, but none represents a live link. Adding a CLI-only warning
-  would not satisfy comment #836.
+  would not satisfy the owner decision on structured library/FFI reporting.
 
-Prior owner decisions retained: one fixed workspace layout (Basic Memory decision
-2026-10-18, "gitpm — настраиваемые Layout, Options и TagScheme не делаем") and
-packages as folders in multi-package repositories (decision 2026-10-16,
-"gitpm — несколько пакетов-папок в одном репо через gitpm.json"). Link keeps
+Prior owner decisions retained: one fixed workspace layout (2026-10-18) and
+packages as folders in multi-package repositories selected through `gitpm.json`
+(2026-10-16). Link keeps
 `dist/<namespace>/<name>` and resolves a selected package folder, not necessarily
 the repository root.
 
@@ -60,22 +60,18 @@ domain errors; CLI only parses paths and prints results. No remote URL is a link
 target. A selected package folder inside a multi-package repository is supported.
 
 Dan selected a unified publishing-folder model for managed install and link:
-use `plugin.json.dist` when configured, otherwise the package root (the repository
-root for a root package). For a multi-package repository, resolve the configured
-path relative to the selected package folder. The existing field accepts `"."`
-for the root and validates package-relative paths; reuse that schema and its
+use `plugin.json.dist` when configured, otherwise `"dist"`. An explicit `"."`
+selects the package root. For a multi-package repository, resolve the path
+relative to the selected package folder. Reuse the existing path validation and
 `buildCommand` / `buildRequired` metadata. gitpm never runs builds or watchers.
-
-The inspected baseline defaults `dist` to `"dist"`, including the requirements
-"Package folder contents" and "Known manifest keys" in package-manifest.
-The selected root default is a future behavior change for both managed install
-and link, not a description of current behavior. The package-manifest and dist deltas align
-those requirements and the missing-output refusal for future implementation. Existing packages needing `dist/` must declare `dist: "dist"` explicitly.
+Existing packages keep their current layout; no managed default or manifest
+requirement changes are needed.
 
 Resolve an existing directory to a canonical absolute target; reject paths that
 would create a workspace/self-reference cycle. Validate identity and manifest (`invalid_manifest`)
 before staging anything. Record an absolute path so CLI cwd changes cannot retarget
-a link. A missing configured output is an error, not an instruction to run a build.
+a link. A missing local link output fails with `workspace`; the managed-revision
+missing-output rule remains `invalid_manifest`. Neither case instructs gitpm to run a build.
 No build script or hook from the package is executed. Existing source validation
 rules still govern any optional origin used for release discovery.
 
