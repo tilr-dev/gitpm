@@ -130,6 +130,8 @@ class MCPContract(unittest.TestCase):
             client = checker.MCP('fixture-credential')
         self.assertEqual('session', client.session)
         self.assertEqual('session', request.call_args_list[2].args[0].get_header('Mcp-session-id'))
+        for call in request.call_args_list:
+            self.assertEqual(checker.USER_AGENT, call.args[0].get_header('User-agent'))
 
     def test_comment_pagination_is_complete_and_ordered(self):
         client = checker.MCP.__new__(checker.MCP)
