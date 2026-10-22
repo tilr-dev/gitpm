@@ -75,4 +75,3 @@ A revision without its declared output folder (default package root) SHALL fail 
 #### Scenario: Missing required build output
 - **WHEN** a package declares `dist: "output"`, `buildRequired: true` and `buildCommand: "npm run build"` but output is absent
 - **THEN** install or fork fails with invalid_manifest naming output and npm run build, without running the command or deploying an empty package
-
