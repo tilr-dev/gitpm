@@ -13,6 +13,8 @@ import urllib.request
 DAN = 'Iu7nTn6V69XRWEmaZjjjeNVn9JyMwdsA'
 INTAKE = 'de530293-4ccc-44bc-8d3d-d24a781a8351'
 ENDPOINT = 'https://api-plan.rexuni.dev/mcp'
+# Cloudflare in front of Plan answers 403 to the default Python-urllib User-Agent.
+USER_AGENT = 'tilr-spec-change/1'
 REQUIREMENT = re.compile(r'^### Requirement: (.+?)\s*$')
 ENTRY = re.compile(r'^- ([\w-]+): (?:specs/([^\s]+) — «(.+)»: (modify|remove|rename)|changes/([^\s:]+): (edit|archive))\s*$')
 
@@ -208,7 +210,7 @@ class MCP:
         body = {'jsonrpc': '2.0', 'method': method, 'params': params or {}}
         if not notification:
             body['id'] = self.counter
-        headers = {'Authorization': 'Bearer ' + self.token, 'Accept': 'application/json, text/event-stream', 'Content-Type': 'application/json'}
+        headers = {'Authorization': 'Bearer ' + self.token, 'Accept': 'application/json, text/event-stream', 'Content-Type': 'application/json', 'User-Agent': USER_AGENT}
         if self.session:
             headers['Mcp-Session-Id'] = self.session
             headers['MCP-Protocol-Version'] = self.protocol
