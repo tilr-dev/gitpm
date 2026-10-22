@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import unicodedata
 import urllib.request
 
 DAN = 'Iu7nTn6V69XRWEmaZjjjeNVn9JyMwdsA'
@@ -36,10 +37,13 @@ def trusted_scope(comments):
         return None
     # Latest intake scope supersedes earlier ready comments.
     scope = scopes[-1]
-    own = set(re.findall(r'\bchange\s+`?([a-z0-9][a-z0-9-]*)`?', scope))
-    if not own:
-        raise CheckError('Spec scope does not identify an own change')
-    return own
+    # Only `change <id>` inside a single own (...) names the own change; "spec-change" is not the word.
+    word = r'(?<![\w-])change\s+`?([a-z0-9][a-z0-9-]*)`?'
+    groups = re.findall(r'\bown\s*\(([^()]*)\)', scope)
+    own = re.findall(word, groups[0]) if len(groups) == 1 else []
+    if len(own) != 1 or len(re.findall(word, scope)) != 1:
+        raise CheckError('Spec scope does not identify exactly one own change')
+    return set(own)
 
 
 def permissions(comments, component):
@@ -83,10 +87,13 @@ def changed_requirements(old, new):
     for tag, i, j, k, l in difflib.SequenceMatcher(None, before, after, autojunk=False).get_opcodes():
         if tag == 'equal':
             for old_index, new_index in zip(range(i, j), range(k, l)):
-                name = requirement_at(before, old_index)
-                if (before[old_index].strip() and name in names_before and name in names_after
-                        and name != requirement_at(after, new_index)):
-                    result.add((name, 'modify'))
+                name, owner = requirement_at(before, old_index), requirement_at(after, new_index)
+                if before[old_index].strip() and name in names_before and name != owner:
+                    if name in names_after:
+                        result.add((name, 'modify'))
+                    if owner in names_before:
+                        # Text that moves under another existing requirement modifies that one too.
+                        result.add((owner, 'modify'))
             continue
         for index in range(i, j):
             name = requirement_at(before, index)
@@ -119,11 +126,13 @@ def is_heading_rename(old, new, name):
         for candidate, lines in after.items())
 
 
-def delta_operations(body):
+def delta_operations(body, existing):
     section = None
     operations = []
     renamed_from = None
-    originals = {}
+    identities = {name: name for name in existing}
+    histories = {name: {name} for name in existing}
+    renames = []
     for line in body.splitlines():
         match = re.fullmatch(r'## (ADDED|MODIFIED|REMOVED|RENAMED) Requirements\s*', line)
         if match:
@@ -135,26 +144,42 @@ def delta_operations(body):
             match = re.fullmatch(r'- FROM: `### Requirement: (.+)`\s*', line)
             if match:
                 renamed_from = match[1]
-                operations.append((renamed_from, 'rename'))
             match = re.fullmatch(r'- TO: `### Requirement: (.+)`\s*', line)
             if match and renamed_from:
                 target = match[1]
-                if target in originals and originals[target] != renamed_from:
+                original = identities.get(renamed_from, renamed_from)
+                history = histories.setdefault(original, {renamed_from})
+                if target in history:
+                    raise CheckError('Cyclic requirement rename: ' + target)
+                if target in identities:
                     raise CheckError('Ambiguous requirement rename: ' + target)
-                originals[target] = renamed_from
+                history.add(target)
+                identities.pop(renamed_from, None)
+                identities[target] = original
+                renames.append((original, 'rename'))
                 renamed_from = None
-    resolved = {}
-    for target in originals:
-        name = target
-        seen = set()
-        while name in originals:
-            if name in seen:
-                raise CheckError('Cyclic requirement rename: ' + name)
-            seen.add(name)
-            name = originals[name]
-        resolved[target] = name
+    yield from renames
     for name, operation in operations:
-        yield resolved.get(name, name), operation
+        yield identities.get(name, name), operation
+
+
+def capability_key(name):
+    """Capability folders that differ only by case or Unicode form collide on checkout."""
+    return unicodedata.normalize('NFC', unicodedata.normalize('NFC', name).casefold())
+
+
+def capabilities(tree):
+    return {m[1] for path in tree if (m := re.match(r'openspec/specs/([^/]+)/', path))}
+
+
+def capability_collisions(base, head):
+    """New capability folders may not differ from others only by case or Unicode form."""
+    existing, current = capabilities(base), capabilities(head)
+    key = capability_key
+    for name in sorted(current - existing):
+        clash = sorted(other for other in existing | current if other != name and key(other) == key(name))
+        if clash:
+            raise CheckError(f'Capability {name} collides with {clash[0]} by case or Unicode form')
 
 
 def check(base, head, comments, component):
@@ -162,6 +187,7 @@ def check(base, head, comments, component):
     own = trusted_scope(comments)
     if own is None:
         return []
+    capability_collisions(base, head)
     allowed = permissions(comments, component)
     uncovered = set()
     for path in sorted(base.keys() | head.keys()):
@@ -185,9 +211,12 @@ def check(base, head, comments, component):
             uncovered.add(f'{component}: unsupported OpenSpec path {path}')
             continue
         change, suffix = match.groups()
-        if change not in own:
+        is_archive = path.startswith('openspec/changes/archive/')
+        # An archive already in dev is foreign even when it carries the own change name.
+        folder = '/'.join(path.split('/')[:4]) + '/'
+        is_own = change in own and not (is_archive and any(p.startswith(folder) for p in base))
+        if not is_own:
             # An unchanged archive copy still needs the archive grant for its source.
-            is_archive = path.startswith('openspec/changes/archive/')
             archived = (path not in base and is_archive) or (not is_archive and any(
                 re.fullmatch(r'openspec/changes/archive/\d{4}-\d{2}-\d{2}-' + re.escape(change + '/' + suffix), p)
                 for p in head.keys() - base.keys()))
@@ -203,11 +232,15 @@ def check(base, head, comments, component):
                     if ('change', change, 'edit') not in allowed:
                         uncovered.add(f'{component}: changes/{change}: edit')
         delta = re.fullmatch(r'specs/([^/]+)/spec\.md', suffix)
-        if change in own and delta:
+        if is_own and delta:
             capability = delta[1]
+            clash = sorted(other for other in capabilities(base)
+                           if other != capability and capability_key(other) == capability_key(capability))
+            if clash:
+                raise CheckError(f'Delta capability {capability} collides with {clash[0]} by case or Unicode form')
             baseline = base.get(f'openspec/specs/{capability}/spec.md', '')
             existing = {m[1] for line in baseline.splitlines() if (m := REQUIREMENT.fullmatch(line))}
-            for name, operation in delta_operations(new):
+            for name, operation in delta_operations(new, existing):
                 if name in existing and ('spec', capability, name, operation) not in allowed:
                     uncovered.add(f'{component}: specs/{capability} — «{name}»: {operation} (delta {change})')
     return sorted(uncovered)
