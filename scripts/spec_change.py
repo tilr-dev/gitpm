@@ -82,6 +82,11 @@ def changed_requirements(old, new):
     result = set()
     for tag, i, j, k, l in difflib.SequenceMatcher(None, before, after, autojunk=False).get_opcodes():
         if tag == 'equal':
+            for old_index, new_index in zip(range(i, j), range(k, l)):
+                name = requirement_at(before, old_index)
+                if (before[old_index].strip() and name in names_before and name in names_after
+                        and name != requirement_at(after, new_index)):
+                    result.add((name, 'modify'))
             continue
         for index in range(i, j):
             name = requirement_at(before, index)

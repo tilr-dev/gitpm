@@ -58,6 +58,15 @@ class AuthorizationFixtures(unittest.TestCase):
                 self.assertEqual([], checker.check({SPEC: ORIGINAL}, {SPEC: head},
                                  [ready(), grant('specs/terminal — «Existing»: modify')], 'gitpm'))
 
+    def test_new_requirement_cannot_take_existing_scenario(self):
+        scenario = '\n#### Scenario: Second behavior\n- **WHEN** called again\n- **THEN** it still works\n'
+        old = ORIGINAL + scenario
+        new = ORIGINAL + '\n### Requirement: New\nThe system SHALL add behavior.\n' + scenario
+        self.assertEqual(['gitpm: specs/terminal — «Existing»: modify'],
+                         checker.check({SPEC: old}, {SPEC: new}, [ready()], 'gitpm'))
+        self.assertEqual([], checker.check({SPEC: old}, {SPEC: new},
+                         [ready(), grant('specs/terminal — «Existing»: modify')], 'gitpm'))
+
     def test_new_requirements_are_free_at_each_boundary(self):
         added = '### Requirement: New\nThe system SHALL add behavior.\n\n'
         for head in [added + ORIGINAL, ORIGINAL + '\n' + added,
