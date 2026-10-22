@@ -609,10 +609,7 @@ mod tests {
         let author = Author::new(dir.join("repo"), "dan/demo1");
         let first = author.head();
         let second = author.commit("0.2.0");
-        crate::test_support::git(
-            &author.path,
-            &["tag", "-a", "-m", "release", "dan/demo1@0.2.0"],
-        );
+        crate::test_support::git(&author.path, &["tag", "-a", "-m", "release", "v0.2.0"]);
         let refs = ls_remote_refs(author.source(), false).unwrap();
         assert_eq!(
             refs.heads,
@@ -620,10 +617,7 @@ mod tests {
         );
         assert_eq!(
             refs.tags,
-            BTreeMap::from([
-                ("dan/demo1@0.1.0".to_owned(), first),
-                ("dan/demo1@0.2.0".to_owned(), second),
-            ])
+            BTreeMap::from([("v0.1.0".to_owned(), first), ("v0.2.0".to_owned(), second),])
         );
         // Remote helpers are refused by git itself, even if a caller forgot to validate.
         let marker = dir.join("pwned");

@@ -323,7 +323,7 @@ pub(crate) fn release_packages(
     ensure!(
         releases.iter().all(|r| r.1 == version),
         VersionConflict,
-        "packages have different versions; pass --version to release one repository version"
+        "packages have different versions; specify one repository release version"
     );
     let tag = identity::release_tag(version);
     ensure!(
