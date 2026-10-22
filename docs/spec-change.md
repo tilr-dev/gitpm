@@ -76,8 +76,9 @@ and [required check evaluation](https://docs.github.com/en/pull-requests/how-tos
 
 ## Required-check source binding
 
-The workflow files are prepared but have not been deployed. Protecting workflow
-code and binding the required result to that workflow are separate controls.
+The trusted workflows and required dev checks are deployed in gitpm, cloud, and
+desktop-mac. The tilrd activation follows its release from dev to main. Protecting
+workflow code and binding the required result to that workflow are separate controls.
 GitHub's [ruleset troubleshooting documentation](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/troubleshooting-rules)
 says that required status checks identify jobs by name and ignore the workflow
 and event type. Restricting the source to the GitHub Actions app still permits
@@ -98,8 +99,13 @@ jobs:
       - run: 'true'
 ```
 
-The inferred risk is that this check can satisfy the same required context even
-when the trusted checker fails. This has not been tested on a live pull request.
+The same-name collision was tested on 2026-10-22 in
+[gitpm PR #42](https://github.com/tilr-dev/gitpm/pull/42): an unauthorized change to
+the Branch flow requirement failed the trusted check while the independent
+Probe job succeeded. GitHub reported the PR as BLOCKED. The probe commit was
+then removed and the PR restored to draft. The trusted
+[run 39761729014](https://github.com/tilr-dev/gitpm/actions/runs/39761729014)
+reported the uncovered requirement. This experiment did not bypass the gate.
 GitHub also documents that [test-merge results take precedence over head results](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks#conflicts-between-head-commit-and-test-merge-commit).
 A content digest protects the checker executable, but does not bind the required
 context to that executable.
