@@ -625,17 +625,7 @@ pub(crate) fn export_dist(
     target: &Path,
     custom_ssh: bool,
 ) -> Result<Vec<String>> {
-    let manifest_path = match package.filter(|p| !p.is_empty()) {
-        Some(path) => format!("{path}/plugin.json"),
-        None => "plugin.json".to_owned(),
-    };
-    let manifest: Manifest = serde_json::from_str(&git(
-        repo,
-        &["show", &format!("{commit}:{manifest_path}")],
-        custom_ssh,
-    )?)
-    .map_err(|e| Error::invalid_manifest(format!("invalid {manifest_path}: {e}")))?;
-    manifest.validate_dist()?;
+    let manifest = crate::packages::manifest_at(repo, commit, package, custom_ssh)?;
     let folder = manifest.dist_path(package);
     if !git(
         repo,

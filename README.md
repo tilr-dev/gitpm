@@ -17,7 +17,10 @@ A package is a folder in a Git repository with a `plugin.json` manifest (`id`, `
 `dependencies`, optional `forkOf` and `replaces`, descriptive
 [metadata](#package-metadata); other keys are kept as they are) and a
 ready output folder (`dist/` by default): the repository root, or one of several folders a root `gitpm.json`
-lists ([multi-package repositories](#multi-package-repositories)). Installing clones the
+lists ([multi-package repositories](#multi-package-repositories)). `dist` selects the output
+folder (default `"dist"`, `"."` means the package root); `buildCommand` is descriptive only;
+with `buildRequired` (default false), a missing folder is refused with `invalid_manifest`
+naming the build command when supplied. Installing clones the
 repository into a workspace and copies the package's declared output folder; nothing is built or executed.
 Releases are Git tags `namespace/name@VERSION`.
 The catalog is a tree of static JSON files (local folder or HTTP) with exact commits and
@@ -412,7 +415,7 @@ Changed in 0.5:
 
 Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING**):
 
-- Manifests accept `dist` (a package-relative folder, default `"dist"`; `"."` selects
+- **BREAKING:** Manifests accept `dist` (a package-relative folder, default `"dist"`; `"."` selects
   the package root), `buildCommand` (a descriptive string) and `buildRequired`
   (boolean, default false). Deploys and catalog hashes use the committed selected
   folder. Missing required build output fails with `invalid_manifest` and names
@@ -886,12 +889,13 @@ not derive it. `enabled` is not `active`: a replaced package stays `enabled: tru
 `active: false`. `list --provides SERVICE` keeps inactive packages (it is a status view).
 
 - Every deploy (install, update, rollback, restore, `replace --back`, enable, reconcile)
-  copies `<path>/dist` of the resolved commit from the clone's Git objects using
+  copies the folder its committed manifest selects with `dist` (default `<path>/dist`)
+  from the clone's Git objects using
   `git ls-tree` and `git cat-file`, never the working tree: uncommitted edits in a clone are not deployed,
   nested folders and the executable bit are kept. Symlinks are refused with
   `unsupported`; submodules become empty directories and produce an actionable
   warning (also during catalog registration and update). A revision
-  without that folder is refused (`invalid_manifest`, "release … has no dist/ folder")
+  without that folder is refused (`invalid_manifest`, "release … has no <folder>/ folder")
   instead of deploying an empty folder.
   Git attributes such as `export-ignore` and `export-subst` are not applied: all
   committed files keep their committed bytes. Catalog hashes are calculated from
@@ -956,7 +960,7 @@ and run `gitpm sync-dist` again; uninstall/forget advice applies only to a missi
 
 One repository can hold several packages. A root `gitpm.json` lists the package folders
 as glob patterns (as in npm or Cargo workspaces); each folder has its own `plugin.json`
-and committed `dist/`:
+and a committed output folder:
 
 ```text
 gitpm.json                {"packages": ["packages/*"]}
