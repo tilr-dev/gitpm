@@ -39,6 +39,13 @@ A crash means process death or power loss, including interruption before a call 
 - **AND** each rename syncs destination and source parent chains before proceeding
 - **AND** transaction cleanup is persisted before returning success
 
+#### Scenario: Workspace ancestors
+- **WHEN** a workspace is created under missing parent directories
+- **THEN** creation syncs each new directory and its parent, stopping after the first pre-existing parent
+- **AND** subsequent commits sync directory chains only within the workspace
+- **AND** a pre-existing ancestor above the workspace parent need not be readable
+- **AND** this is covered by `txn::workspace_creation_syncs_only_new_ancestors` and `commit_under_an_unreadable_ancestor`
+
 #### Scenario: Open after interruption
 - **WHEN** a workspace is opened after an interrupted transaction
 - **THEN** a committed journal is rolled forward and an uncommitted transaction discarded
