@@ -30,25 +30,23 @@ Every package SHALL need a `namespace/name` ID unique in the repository in any l
 - **WHEN** `packages/theme` has no `dist/` and the user installs `tilr/store` from the same repository
 - **THEN** the install succeeds
 
-### Requirement: Per-package releases
-Releases SHALL be per package with tags `ID@VERSION` (package-ids, "Release tag names"), and the package set SHALL be read from `gitpm.json` at the tagged commit so a package may move between releases. A tag whose commit lacks its package SHALL be skipped as a broken tag (package-ids). Other tags, `vVERSION` included, are not releases and SHALL be ignored without a warning. Verified by `a_package_can_move_to_another_folder_between_releases`.
+### Requirement: Repository releases
+All packages of a repository SHALL share one version and the single release tag `vVERSION` (package-ids, "Release tag names"). The package set SHALL be read from `gitpm.json` at the tagged commit so a package may move between releases. A tag whose commit lacks a selected package SHALL be skipped as a broken tag (package-ids). Legacy `ID@VERSION` tags and other non-release tags SHALL be ignored without a warning.
 
 #### Scenario: Newest tag lacks its package
-- **WHEN** the newest tag `tilr/store@0.3.0` points to a commit without `tilr/store`
+- **WHEN** the newest tag `v0.3.0` points to a commit without the selected package `tilr/store`
 - **THEN** it is skipped ("tag NAME points to commit … without package ID") and, being the newest, makes selecting the latest release fail with `version_conflict` as package-ids specifies; an older such tag only produces the warning
-- **AND** this is covered by `a_tag_on_a_commit_without_its_package_is_a_clear_error`
 
 #### Scenario: Independent releases
-- **WHEN** `tilr/store@0.2.0` is tagged while `tilr/theme` stays at 0.1.0
-- **THEN** `update tilr/store` moves it to 0.2.0 and `tilr/theme` is untouched
+- **WHEN** `v0.2.0` releases both `tilr/store` and `tilr/theme` at 0.2.0, and the user updates only installed `tilr/store` with no dependency requiring an update of `tilr/theme`
+- **THEN** `tilr/store` moves to 0.2.0 and `tilr/theme` keeps its installed revision
 
 #### Scenario: vVERSION tag in a multi-package repository
-- **WHEN** a multi-package repository also has the tag `v0.2.0`
-- **THEN** it is no release of any package and install, update and `catalog update` print no warning about it
-- **AND** this is covered by `a_v_version_tag_in_a_multi_package_repository_is_ignored_without_a_warning`
+- **WHEN** a multi-package repository has tag `v0.2.0` and every listed package has version 0.2.0 at its commit
+- **THEN** it is a release of each listed package, and install, update and `catalog update` discover it
 
 ### Requirement: Choosing a package at install
-`install REPO ID` (or `--package ID`) SHALL install one package. Without an ID a repository with several packages SHALL be refused with `invalid_argument` and the list of its packages, as SHALL an ID that is not a package of the repository; one with a single listed package needs none; an `--ref ID@VERSION` tag names the package itself. Verified by `installing_a_monorepo_without_a_package_id_lists_the_packages`.
+`install REPO ID` (or `--package ID`) SHALL install one package. Without an ID a repository with several packages SHALL be refused with `invalid_argument` and the list of its packages, as SHALL an ID that is not a package of the repository; one with a single listed package needs none; a repository release tag passed with `--ref vVERSION` SHALL NOT select a package by itself. Verified by `installing_a_monorepo_without_a_package_id_lists_the_packages`.
 
 #### Scenario: Missing package ID
 - **WHEN** the user runs `gitpm install ./tilr-packages` on a repository with two packages

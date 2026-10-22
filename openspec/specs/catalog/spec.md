@@ -51,25 +51,28 @@ Single source for the release record: a release SHALL record the whole `manifest
 - **THEN** catalog generation and verification hash exactly the same committed files as deployment
 
 ### Requirement: Catalog generated from Git release tags
-`catalog update [--sources FILE]` SHALL read the repositories listed in the sources file (one per line, relative to the file; blank and `#` lines skipped), discover every release tag, pin each tag's commit, hash its package dist and write the tree. For a multi-package repository it SHALL publish only the packages listed in `gitpm.json` at HEAD. Broken historical tags are skipped as in package-ids. It SHALL validate every source before writing anything and retain releases of removed sources.
+`catalog update [--sources FILE]` SHALL read the repositories listed in the sources file (one per line, relative to the file; blank and `#` lines skipped), discover every `vVERSION` repository release tag, pin each tag's commit, hash each released package's dist and write the tree.
+
+#### Scenario: Catalog generated from Git release tags contract
+- **WHEN** catalog generation processes repository releases
+- **THEN** For a multi-package repository it SHALL publish only the packages listed in `gitpm.json` at HEAD. Broken historical tags are skipped as in package-ids. It SHALL validate every source before writing anything and retain releases of removed sources.
 
 #### Scenario: Empty sources file
 - **WHEN** the sources file has only comments and blank lines
 - **THEN** `catalog update` fails with `invalid_argument` ("sources file has no repositories")
 
 #### Scenario: Two releases
-- **WHEN** `sources.txt` lists `./greeter` with tags 0.1.0 and 0.2.0
+- **WHEN** `sources.txt` lists `./greeter` with tags `v0.1.0` and `v0.2.0`
 - **THEN** `catalog update` prints `Catalog ready: 2 release(s) checked from sources.`
 - **AND** this is covered by `catalog_update_keeps_published_records_when_tags_move` and `catalog_update_validates_every_source_before_writing_and_retains_removed_sources`
 
 #### Scenario: Package removed from gitpm.json at HEAD
-- **WHEN** a multi-package repository tagged `tilr/old@0.1.0` but no longer lists `packages/old` in `gitpm.json` at HEAD, and the catalog has no `tilr/old` yet
+- **WHEN** a multi-package repository tagged `v0.1.0` with package `tilr/old` but no longer lists `packages/old` in `gitpm.json` at HEAD, and the catalog has no `tilr/old` yet
 - **THEN** `catalog update` publishes the releases of the packages listed at HEAD and no release of `tilr/old`
 
 #### Scenario: Duplicate source lines
 - **WHEN** the sources file lists the same repository twice, also in another spelling of its path
 - **THEN** `catalog update` reads it once and indexes each release once
-
 
 #### Scenario: Submodule inside dist
 - **WHEN** the release contains a Git submodule at `dist/vendor`
@@ -77,7 +80,11 @@ Single source for the release record: a release SHALL record the whole `manifest
 - **AND** the author is warned that `dist/vendor` is a Git submodule whose files will not be installed, probably a mistake; commit built files to dist instead of a submodule
 
 ### Requirement: Published versions are immutable
-A published version SHALL NOT change; a rejected `catalog register` or `catalog update` writes nothing. `catalog register` SHALL fail with `version_conflict` when the release JSON (except `reference`) differs. `catalog update` SHALL keep a differing published record and warn. A package ID SHALL stay bound to the source that first registered it. Verified by `catalog::published_versions_are_immutable` and `catalog_update_keeps_published_records_when_tags_move`.
+A published package version SHALL NOT change; its repository tag is `vVERSION` while package-version display names remain `ID@VERSION`.
+
+#### Scenario: Published versions are immutable contract
+- **WHEN** a catalog command attempts to publish an existing package version
+- **THEN** A rejected `catalog register` or `catalog update` writes nothing. `catalog register` SHALL fail with `version_conflict` when the release JSON (except `reference`) differs. `catalog update` SHALL keep a differing published record and warn. A package ID SHALL stay bound to the source that first registered it. Verified by `catalog::published_versions_are_immutable` and `catalog_update_keeps_published_records_when_tags_move`.
 
 #### Scenario: Register with another build
 - **WHEN** a published version is registered again with different `--build-url`
@@ -102,7 +109,6 @@ A published version SHALL NOT change; a rejected `catalog register` or `catalog 
 #### Scenario: Invalid build metadata
 - **WHEN** `--build-url` is `http://…` or the SHA-256 is malformed
 - **THEN** catalog register fails with `catalog` ("build URL must use HTTPS" / "invalid build SHA-256") and no release is published (an empty top-level `catalog.json` may already have been created)
-
 
 #### Scenario: Submodule inside dist
 - **WHEN** the release contains a Git submodule at `dist/vendor`
@@ -192,9 +198,9 @@ Single source for working without a catalog: a direct install SHALL record its s
 - **AND** this is covered by `check_shows_fork_upstream_and_other_catalogs`; the read-only and partial-failure rules by `check::read_state_never_creates_or_locks_a_workspace` and `check::check_reports_invalid_release_without_hiding_healthy_plugins`
 
 #### Scenario: Origin row
-- **WHEN** `acme/greeter` 0.1.0 was installed from `./greeter`, which now also has the tag `acme/greeter@0.2.0`, and no catalog is given (or the catalog does not list it)
+- **WHEN** `acme/greeter` 0.1.0 was installed from `./greeter`, which now also has the tag `v0.2.0`, and no catalog is given (or the catalog does not list it)
 - **THEN** its row is `update_available` with latest `0.2.0` and source `origin`
-- **AND** the origin's release tags are read with `git ls-remote` without fetching or changing the clone; the newest `ID@VERSION` tag counts by name, and its manifest is verified only when updating
+- **AND** the origin's release tags are read with `git ls-remote` without fetching or changing the clone; the newest `vVERSION` tag counts by name, and its manifest is verified only when updating
 - **AND** tags are compared by name: an origin tag of the installed version that points to another commit is `up_to_date` (stated limitation; the commit is not compared)
 
 #### Scenario: Recorded modes in check
@@ -202,7 +208,7 @@ Single source for working without a catalog: a direct install SHALL record its s
 - **THEN** the pinned row is `pinned` with its ref and needs no origin query, and the branch row compares the installed commit with the HEAD of `main` on the origin (`up_to_date`, or `update_available` when it moved); release-mode packages are compared by release as above
 
 #### Scenario: Protected package with a newer upstream
-- **WHEN** `acme/greeter` 0.2.0 is protected by a verified catalog whose latest is 0.2.0 and its origin has the tag `acme/greeter@0.3.0`
+- **WHEN** `acme/greeter` 0.2.0 is protected by a verified catalog whose latest is 0.2.0 and its origin has the tag `v0.3.0`
 - **THEN** its row is `upstream_not_in_catalog` ("upstream 0.3.0 not in catalog", the origin's version in `origin_latest`), `latest` is the catalog's 0.2.0 and no update is offered, with or without the catalog given
 - **AND** this is covered by `workspace::check_compares_protected_packages_with_their_catalog`
 
@@ -246,7 +252,7 @@ A local catalog location given in `Options.catalog` that does not exist SHALL ma
 A catalog whose top-level `catalog.json` has `"verified": true` SHALL be verified; any other is unverified and serves discovery only. Writers SHALL keep the flag. A verified catalog SHALL take new versions only through `catalog register`; `catalog update` into it SHALL fail with `invalid_argument`. Verified by `catalog::verified_catalog_takes_only_registered_versions` and `verified_catalog_protects_updates_and_detach_drops_it`.
 
 #### Scenario: Register into a verified catalog
-- **WHEN** the owner set `"verified": true` and runs `catalog register ./greeter --ref acme/greeter@0.2.0`
+- **WHEN** the owner set `"verified": true` and runs `catalog register ./greeter --ref v0.2.0`
 - **THEN** the version is published and `catalog.json` still has `"verified": true`
 
 #### Scenario: Bulk generation refused
@@ -277,7 +283,7 @@ Catalog versions SHALL be ordered by SemVer precedence (package-ids, "Version fo
 - **THEN** `catalog show` shows `latest: pre-releases only`, `install-catalog acme/beta` fails with `catalog` and `install-catalog acme/beta --version 1.0.0-beta.1` installs it
 
 #### Scenario: Origin rows
-- **WHEN** a package without a catalog is at 1.1.0 and its origin has the tags `ID@2.0.0-beta.1` and later `ID@2.0.0`
+- **WHEN** a package without a catalog is at 1.1.0 and its origin has the tags `v2.0.0-beta.1` and later `v2.0.0`
 - **THEN** `check` first shows `up to date; pre-release 2.0.0-beta.1`, then LATEST `2.0.0 (major)` with `update available`
 
 ### Requirement: Local release history remains bounded in execution time
