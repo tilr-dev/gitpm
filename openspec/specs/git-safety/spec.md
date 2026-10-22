@@ -112,12 +112,12 @@ gitpm SHALL rely on the user's Git credentials (SSH keys, agents, credential hel
 - **AND** this is covered by `auth::access_check_is_bounded`
 
 ### Requirement: Untracked files are detected regardless of git config
-Local-work detection SHALL see untracked and ignored files whatever the repository's `status.showUntrackedFiles` setting (every status listing passes `--untracked-files=all`), and SHALL bound the listing of unpublished commits. Verified by `fork::dirty_sees_untracked_files_whatever_the_status_config_says` (the check before adding packages to an existing fork) and `lost_work::unpublished_commit_listing_is_bounded`.
+Local-work detection SHALL see untracked and ignored files whatever the repository's `status.showUntrackedFiles` setting (every status listing passes `--untracked-files=all`), and SHALL bound the listing of unpublished commits. Verified by `lost_work::changed_paths_sees_untracked_files_whatever_the_status_config_says` and `lost_work::unpublished_commit_listing_is_bounded`.
 
 #### Scenario: Hidden untracked file
 - **WHEN** the clone sets `status.showUntrackedFiles=no` and has an untracked file
-- **THEN** the check before adding packages to an existing fork still reports it as an uncommitted change
-- **AND** uninstall planning uses the same status listing but has no test with that setting
+- **THEN** local-work detection still reports it as an uncommitted change
+- **AND** uninstall planning uses the same status listing
 
 ### Requirement: URL rewrites do not hide clones
 Origin checks of shared clones SHALL compare sources so that a `url.*.insteadOf` rewrite in the user's Git config does not hide an existing clone. Verified by `a_url_rewrite_in_the_git_config_does_not_hide_the_shared_clone`.
