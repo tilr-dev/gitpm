@@ -9,4 +9,4 @@
 
 ## 3. Validation
 - [x] 3.1 Run focused integration coverage and formatting/lint checks.
-- [ ] 3.2 Complete self-review and required repository validation.
+- [x] 3.2 Complete self-review and required repository validation.

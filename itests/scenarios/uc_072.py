@@ -71,7 +71,7 @@ def two_packages_share_one_clone(t: T):
     t.ok(not t.dist(PANEL).exists(), "panel not installed")
 
 
-@case(fixture="fork_suite_installed", spec=["multi-package-repos/per-package-releases"])
+@case(fixture="fork_suite_installed", spec=["multi-package-repos/repository-releases"])
 def repository_release_and_individual_updates(t: T):
     """Publishing a version bumps all manifests; installed packages can update separately."""
     t.write(suite(t), {"packages/store/dist/index.js": "export const greeting = 'store 0.2.0';\n"})
@@ -109,7 +109,7 @@ def uninstall_one_of_two_keeps_shared_clone(t: T):
 
 
 @case(fixture="fork_suite", spec=["catalog/register-one-version", "catalog/catalog-generated-from-git-release-tags",
-                                  "multi-package-repos/per-package-releases"])
+                                  "multi-package-repos/repository-releases"])
 def register_package_and_catalog_update(t: T):
     """`register SRC --ref TAG --package ID` adds one package's release; `catalog-update` from a
     sources list naming the repository publishes every package; install-catalog uses the shared clone."""

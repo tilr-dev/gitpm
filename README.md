@@ -232,11 +232,11 @@ $ gitpm init acme/hello --into hello
 
 Created: /…/hello
 ID: acme/hello
-Version 0.1.0: Git commit and tag -m "Release v0.1.0." v0.1.0.
+Version 0.1.0: Git commit and tag v0.1.0.
 …
 $ echo 'export const greeting = "hello v2";' > hello/dist/index.js
 $ gitpm commit hello 0.1.1
-acme/hello committed 0.1.1 (local commit and tag -m "Release v0.1.1" v0.1.1)
+acme/hello committed 0.1.1 (local commit and tag v0.1.1)
 $ echo './hello' >> sources.txt
 $ gitpm catalog update
 Reading releases: /…/greeter
