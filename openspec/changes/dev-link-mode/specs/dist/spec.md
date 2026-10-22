@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Linked deployments expose the author installation folder
-For link records, gitpm SHALL deploy `dist/<id>` as a symlink to the author-owned installation folder. It SHALL use the manifest installation-folder contract: package root by default, or the configured folder. gitpm MUST NOT build, watch, copy or change its contents.
+For link records, gitpm SHALL deploy `dist/<id>` as a symlink to the author-owned installation folder. It SHALL use the same `plugin.json.dist` folder selection as managed install: package root by default, or the configured package-relative folder. gitpm MUST NOT build, watch, copy or change its contents.
 
 #### Scenario: Uncommitted author edits
 - **WHEN** an active linked package's author edits a file in its installation folder
@@ -25,11 +25,11 @@ Enable, disable, replacement, forget, restore, uninstall and reconciliation SHAL
 ## MODIFIED Requirements
 
 ### Requirement: Deploys copy the committed tree
-Every managed deploy (install, update, rollback, restore, `replace --back`, enable, reconcile) SHALL copy the package dist `<path>/dist` of the resolved commit from the clone's Git objects, never from the working tree; links deploy as "Linked deployments expose the author installation folder". Nested folders and the executable bit SHALL be kept; symlinks SHALL be refused with `unsupported`, while a submodule comes out as an empty folder. Verified by `every_deploy_copies_the_committed_tree_with_nested_files_and_exec_bits`.
+Managed deploys SHALL copy the committed manifest's `dist` folder (default package root) from Git objects, preserving nested folders and executable bits. Links follow "Linked deployments expose the author installation folder". Managed-output symlinks SHALL fail with `unsupported`; Gitlinks SHALL become empty directories without fetching submodules, with a warning naming the path and advising committed built files.
 
 #### Scenario: Symlink inside dist
 - **WHEN** a release's package dist contains a symlink
-- **THEN** the deploy fails with `unsupported` ("symlinks and submodules are not supported: PATH"; the message also names submodules, which are not refused)
+- **THEN** the deploy fails with `unsupported` ("symlinks are not supported: PATH")
 
 #### Scenario: Uncommitted edits are not deployed
 - **WHEN** a clone has uncommitted changes in `dist/` and the package is re-deployed by `enable`
@@ -37,27 +37,42 @@ Every managed deploy (install, update, rollback, restore, `replace --back`, enab
 
 #### Scenario: Submodule inside dist
 - **WHEN** a release's `dist/vendor` is a submodule
-- **THEN** the deploy succeeds and `dist/<id>/vendor/` is an empty folder
+- **THEN** install (and every other deploy) succeeds with an empty `dist/<id>/vendor/` folder and warns that `dist/vendor` is a Git submodule whose files will not be installed, probably a mistake; commit built files to dist instead of a submodule
 
 #### Scenario: Executable file
 - **WHEN** a release's `dist/bin/run` has the executable bit
 - **THEN** the deployed `dist/<id>/bin/run` is executable
 
+#### Scenario: export-ignore in the package repository
+- **WHEN** the release commit's `.gitattributes` marks `dist/debug.js` `export-ignore`
+- **THEN** `dist/<id>/debug.js` is deployed and `export-subst` placeholders stay as committed
+- **AND** catalog creation, `install-catalog`, protected-package update, and `verify_catalog_release` hash or verify the staged `dist/<id>` export after `export_dist` and before committing the transaction, so each hash covers the deployed bytes
+
+#### Scenario: Root or arbitrary output folder
+- **WHEN** a release declares `dist: "."` or `dist: "output/vtf"`
+- **THEN** install and subsequent deploys copy that committed folder, relative to the package root, including nested files and executable bits
+- **AND** uncommitted edits and files outside the selected folder are not deployed
+
 ### Requirement: A revision without dist is refused
-Single source for the missing package dist refusal: a managed revision whose package folder has no `dist/` SHALL be refused with `invalid_manifest` and SHALL NOT be deployed as an empty folder. The message names where it was detected (see the scenarios). Verified by `workspace::a_revision_without_dist_is_never_deployed_empty` and `packages::invalid_package_sets_are_refused`.
+A revision without its declared output folder (default package root) SHALL fail with invalid_manifest, never deploying an empty folder. Messages SHALL name the missing folder and detection context as below; substitute the declared path for dist in default messages. With buildRequired, errors SHALL explain that a committed build result is required and name buildCommand when supplied. gitpm SHALL NOT run builds.
 
 #### Scenario: Deploy from Git objects
-- **WHEN** the commit being deployed has no `[PATH/]dist` tree
+- **WHEN** the commit being deployed has no configured `dist` output tree (for example `dist: "dist"`)
 - **THEN** the error is "release COMMIT has no [PATH/]dist/ folder"
 
 #### Scenario: Checked-out root package
-- **WHEN** a root package's checked-out folder has no `dist/`
+- **WHEN** a root package's checked-out folder lacks its configured `dist: "dist"` output
 - **THEN** the error is "package must contain a ready dist/ directory"
 
 #### Scenario: Package folder of a multi-package repository
-- **WHEN** a folder listed by `gitpm.json` has no `dist/`
+- **WHEN** a folder listed by `gitpm.json` lacks its configured `dist: "dist"` output
 - **THEN** that package is defective with "package FOLDER must contain a ready dist/ directory" (siblings are handled as in multi-package-repos)
 
 #### Scenario: Release without dist
-- **WHEN** the latest tag points at a commit without `dist/`
+- **WHEN** the latest tag points at a commit without its declared output folder
 - **THEN** install fails with `invalid_manifest` and the workspace is unchanged
+
+#### Scenario: Missing required build output
+- **WHEN** a package declares `dist: "output"`, `buildRequired: true` and `buildCommand: "npm run build"` but output is absent
+- **THEN** install or fork fails with invalid_manifest naming output and npm run build, without running the command or deploying an empty package
+

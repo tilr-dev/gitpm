@@ -32,7 +32,7 @@ A link record SHALL hold `mode` as `{"link": {"packageRoot": PATH, "target": PAT
 ## MODIFIED Requirements
 
 ### Requirement: Installed package record
-Each `state.json` `packages.<id>` managed record (single source for its format; link records: "Link record format") SHALL hold `source`, `current` and `previous` revisions (`version`, `commit`; `previous` also `mode`), `enabled`, `mode` (`{"pinned": REF}`, `{"branch": NAME}`, omitted for releases), and when present `forkOf`, `dependencies`, `replaces`, `catalog` (protecting verified catalog), `clone` (shared-clone key), `path` and `metadata`. At most one `previous` SHALL be kept. Verified by `model::state_round_trips_byte_for_byte`.
+Each `state.json` `packages.<id>` managed record (single source for its format; link records: "Link record format") SHALL hold `source`, `current` and `previous` revisions (`version`, `commit`; `previous` also `mode`), `enabled`, `mode` (`{"pinned": REF}`, `{"branch": NAME}`, omitted for releases), and when present `forkOf`, `dependencies`, `replaces`, `catalog` (protecting verified catalog), `clone` (shared-clone key), `path` and `metadata`. At most one `previous` SHALL be kept.
 
 #### Scenario: Fresh install has no previous revision
 - **WHEN** a package was just installed

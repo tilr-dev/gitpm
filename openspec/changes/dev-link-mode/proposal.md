@@ -2,7 +2,7 @@
 
 ## Why
 
-TILR-35 asks for research into live, uncommitted author changes. Dan selected
+The research asks into live, uncommitted author changes. Dan selected
 variant (b), a link to the author's working folder, in task comments #833–834
 (2026-10-19). Comments #835–836 require explicit new-release reporting and
 structured library/FFI results. The archived `single-ref-mode` change already
@@ -15,6 +15,8 @@ working trees. These are different operations.
   identifies contract conflicts and proposes implementation boundaries.
 - Future implementation: an explicit link operation publishes an author-owned
   installation folder as `dist/<id>` without copying, building or watching it.
+- Managed install and link select the manifest `dist` folder, defaulting to the
+  package root; the current managed default is `dist/` and must change.
 - State distinguishes linked packages from managed clones; list, check and
   update results carry link status and release availability through library/FFI.
 - Transactions manage the symlink entry, never the author's folder or contents.
@@ -24,16 +26,16 @@ working trees. These are different operations.
 
 ## Scope and status
 
-TILR-35 delivers research and opens this change, as its acceptance criteria
+This task delivers research and opens this change, as its acceptance criteria
 request. No link behavior has been implemented. The deltas are a future contract,
 not a claim about current code. Keep this change active until implementation and
 its tests land; do not archive it into `openspec/specs/` as research completion.
 
 ## Out of scope
 
-- Implementing link in this research task (implementation and archive: TILR-185).
-- Build commands, watchers, downloadable builds and the manifest installation
-  folder schema (TILR-142). This change consumes that schema once defined.
+- Implementing link in this research task (implementation and archive belong to a separate task).
+- Executing build commands, running watchers and downloading builds. Reuse the
+  existing manifest `dist` field for the unified publishing-folder model.
 - Changing `--dev` or reintroducing channels; branch following remains available.
 - Host-specific loading, hot reload, cache invalidation or lifecycle management.
 - Editing, cleaning, fetching, checking out or deleting the author's working tree.

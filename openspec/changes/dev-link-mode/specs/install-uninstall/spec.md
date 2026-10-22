@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Explicit local linking is distinct from branch following
-gitpm SHALL provide a library link operation and equivalent FFI and CLI entry points for a local author package. It SHALL validate identity and resolve the installation folder before publishing a symlink or changing state, using the same manifest folder contract as package installation. It MUST NOT redefine `--dev`, which continues to follow the origin default branch.
+gitpm SHALL provide a library link operation and equivalent FFI and CLI entry points for a local author package. It SHALL validate identity and resolve the installation folder before publishing a symlink or changing state, using the same `plugin.json.dist` selection as managed installation (package root when omitted). It MUST NOT redefine `--dev`, which continues to follow the origin default branch.
 
 #### Scenario: Link a package folder
 - **WHEN** a valid local package folder is linked

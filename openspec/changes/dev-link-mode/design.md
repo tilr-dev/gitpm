@@ -2,12 +2,12 @@
 
 ## Status and evidence
 
-Research for TILR-35, 2026-10-20; implementation is not part of this task.
-Owner decisions are TILR-35 comments #833, #834, #835 and #836, all 2026-10-19.
+Research dated 2026-10-20; implementation is separate.
+Owner decisions are comments #833–836 (2026-10-19) and the unified publishing-folder decision (2026-10-20).
 Their text is copied into the issue's `Решения` section. Recommendations below
 are technical proposals, not additional owner decisions.
 
-Baseline inspected: gitpm commit `5a91935`. Recheck with `git rev-parse HEAD`
+Baseline inspected: gitpm dev commit `e31c1ac` (2026-10-22). Recheck with `git rev-parse HEAD`
 and the paths below when implementing; these observations are not environment
 limitations or workarounds:
 
@@ -15,7 +15,8 @@ limitations or workarounds:
   and `crates/gitpm/src/model.rs:159`: `--dev` is origin-default-branch following;
   state Mode has Release, Pinned and Branch. The old channel problem is resolved.
 - `openspec/specs/dist/spec.md`, "Deploys copy the committed tree": managed
-  deployments use `<path>/dist` from Git objects, not live files. A link is an
+  deployments select the committed manifest `dist` folder (currently defaulting to
+  `<path>/dist`) from Git objects, not live files. A link is an
   explicit exception, not an alternate implementation of that copy operation.
 - `openspec/specs/workspace-layout/spec.md`, "Installed package record", and
   `crates/gitpm/src/model.rs:133`: current/previous revisions assume an exact
@@ -39,7 +40,7 @@ the repository root.
 
 | Variant | Data exposed to the host | Refresh | Assessment |
 | --- | --- | --- | --- |
-| (a) Follow origin HEAD | Committed package dist at the fetched branch commit | Explicit update | Already available through `--dev` / branch mode; cannot expose uncommitted edits |
+| (a) Follow origin HEAD | Committed manifest-selected folder at the fetched branch commit | Explicit update | Already available through `--dev` / branch mode; cannot expose uncommitted edits |
 | (b) Link author working tree | Author's installation folder through a symlink | File edits become visible through the path immediately | Selected by Dan; author handles build/watch |
 | (c) Both under one dev/channel switch | Either of the above depending on source | Ambiguous | Keep both capabilities with explicit distinct operations, not an overloaded switch |
 
@@ -58,13 +59,19 @@ following. The library validates and resolves the local package and returns all
 domain errors; CLI only parses paths and prints results. No remote URL is a link
 target. A selected package folder inside a multi-package repository is supported.
 
-As decided in #834, the installation folder is the package root when the package
-occupies the repository root and has no configured build folder, or the manifest's
-installation/build folder when configured. For a package in a multi-package
-repository, resolve relative to that package's folder. **Do not invent a manifest
-key here**: TILR-142 defines the installation-folder schema and validation, which
-link must reuse. Until that contract exists, implementation cannot finalize the
-resolver. The research/delta can be reviewed independently.
+Dan selected a unified publishing-folder model for managed install and link:
+use `plugin.json.dist` when configured, otherwise the package root (the repository
+root for a root package). For a multi-package repository, resolve the configured
+path relative to the selected package folder. The existing field accepts `"."`
+for the root and validates package-relative paths; reuse that schema and its
+`buildCommand` / `buildRequired` metadata. gitpm never runs builds or watchers.
+
+The inspected baseline defaults `dist` to `"dist"`, including the requirements
+"Package folder contents" and "Known manifest keys" in package-manifest.
+The selected root default is a future behavior change for both managed install
+and link, not a description of current behavior. Its implementation must align
+those requirements and the missing-output refusal with the dist deployment
+contract. Existing packages needing `dist/` must declare `dist: "dist"` explicitly.
 
 Resolve an existing directory to a canonical absolute target; reject paths that
 would create a workspace/self-reference cycle. Validate identity and manifest (`invalid_manifest`)
@@ -214,5 +221,5 @@ hermetic local repositories and fixture directories, not public services.
 
 ## Handoff
 
-TILR-35 is research: this change stays active and is not archived (Dan,
-2026-10-20, TILR-35 «Решения»). Implementation and archive are TILR-185.
+This research opens the change without archiving it (Dan, 2026-10-20).
+A separate implementation task owns the remaining work and archive.
