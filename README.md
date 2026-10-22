@@ -19,9 +19,12 @@ in [Specification authorization checker](docs/spec-change.md), including local u
 A package is a folder in a Git repository with a `plugin.json` manifest (`id`, `version`,
 `dependencies`, optional `forkOf` and `replaces`, descriptive
 [metadata](#package-metadata); other keys are kept as they are) and a
-ready `dist/` folder: the repository root, or one of several folders a root `gitpm.json`
-lists ([multi-package repositories](#multi-package-repositories)). Installing clones the
-repository into a workspace and copies the package's `dist/`; nothing is built or executed.
+ready output folder (`dist/` by default): the repository root, or one of several folders a root `gitpm.json`
+lists ([multi-package repositories](#multi-package-repositories)). `dist` selects the output
+folder (default `"dist"`, `"."` means the package root); `buildCommand` is descriptive only;
+with `buildRequired` (default false), a missing folder is refused with `invalid_manifest`
+naming the build command when supplied. Installing clones the
+repository into a workspace and copies the package's declared output folder; nothing is built or executed.
 Releases are Git tags `namespace/name@VERSION`.
 The catalog is a tree of static JSON files (local folder or HTTP) with exact commits and
 file hashes. It is optional: without one, packages are installed and updated straight
@@ -48,7 +51,7 @@ From this repository: `cargo install --path crates/gitpm-cli`.
 Everything below works on local folders: package repositories and the catalog are plain
 directories, nothing is pushed or uploaded.
 
-A package is a Git repository with `plugin.json` and a ready `dist/` folder; a release is
+A package is a Git repository with `plugin.json` and a ready output folder (`dist/` by default); a release is
 a `namespace/name@VERSION` tag. Package IDs always have a namespace.
 Repositories are plain folders named by you (`./greeter`); gitpm never derives a folder
 from an ID:
@@ -414,6 +417,12 @@ Changed in 0.5:
   upgrading) run `gitpm sync-dist` (FFI `syncDist`) once.
 
 Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING**):
+
+- **BREAKING:** Manifests accept `dist` (a package-relative folder, default `"dist"`; `"."` selects
+  the package root), `buildCommand` (a descriptive string) and `buildRequired`
+  (boolean, default false). Deploys and catalog hashes use the committed selected
+  folder. Missing required build output fails with `invalid_manifest` and names
+  the build command when supplied. gitpm never runs build commands.
 
 - **BREAKING:** Catalog directory files (`catalog.json`) and package indexes use
   schema 1 (gitpm 0.5 wrote schema 2). Any other schema is refused with `catalog`.
@@ -883,12 +892,13 @@ not derive it. `enabled` is not `active`: a replaced package stays `enabled: tru
 `active: false`. `list --provides SERVICE` keeps inactive packages (it is a status view).
 
 - Every deploy (install, update, rollback, restore, `replace --back`, enable, reconcile)
-  copies `<path>/dist` of the resolved commit from the clone's Git objects using
+  copies the folder its committed manifest selects with `dist` (default `<path>/dist`)
+  from the clone's Git objects using
   `git ls-tree` and `git cat-file`, never the working tree: uncommitted edits in a clone are not deployed,
   nested folders and the executable bit are kept. Symlinks are refused with
   `unsupported`; submodules become empty directories and produce an actionable
   warning (also during catalog registration and update). A revision
-  without that folder is refused (`invalid_manifest`, "release … has no dist/ folder")
+  without that folder is refused (`invalid_manifest`, "release … has no <folder>/ folder")
   instead of deploying an empty folder.
   Git attributes such as `export-ignore` and `export-subst` are not applied: all
   committed files keep their committed bytes. Catalog hashes are calculated from
@@ -953,7 +963,7 @@ and run `gitpm sync-dist` again; uninstall/forget advice applies only to a missi
 
 One repository can hold several packages. A root `gitpm.json` lists the package folders
 as glob patterns (as in npm or Cargo workspaces); each folder has its own `plugin.json`
-and committed `dist/`:
+and a committed output folder:
 
 ```text
 gitpm.json                {"packages": ["packages/*"]}
@@ -969,7 +979,7 @@ packages/theme/dist/…
   `*` never matches a hidden folder). Without `gitpm.json` the repository root is the only
   package, exactly as before; with it, a root `plugin.json` is not a package.
 - Every package needs a `namespace/name` ID, unique in the repository (in any letter
-  case), a `plugin.json` file (not a symlink) and a committed `dist/` folder (not a
+  case), a `plugin.json` file (not a symlink) and a committed output folder selected by manifest `dist` (not a
   symlink); packages cannot nest. Deployed files must be plain files, as for a root
   package. Only the package being installed, updated or registered must be valid at its
   commit: a defective sibling folder (no `dist/`, bad ID, …) does not block it
@@ -987,7 +997,7 @@ packages/theme/dist/…
   branch) work per package, and each package records its own mode.
 - Workspace: the packages of one source share one clone, `repos/<name>-<hash of the
   source>`; state records `clone` (the cache key of that clone) and `path` (the package
-  folder) per package, and only `<path>/dist` is deployed to `dist/<namespace>/<name>`.
+  folder) per package, and only the manifest-selected output folder relative to `<path>` is deployed to `dist/<namespace>/<name>`.
   Updating, rolling back or uninstalling one package leaves the other packages alone; the
   clone is removed with the last package that uses it (its local work is guarded then,
   as for any clone). Since the clone has one HEAD for all its packages, HEAD only counts
@@ -1057,7 +1067,7 @@ packages/theme/dist/…
     A root package stays at the repository root.
   - Submodules remain Git links at their recorded commits with `.gitmodules`
     configuration. Run `git -C DIR submodule update --init` to populate them.
-    Installation still deploys committed package `dist/`; fork does not build sources
+    Installation deploys the committed package output selected by `dist`; fork does not build sources
     or enable dev mode.
   - Dependencies between all packages in the repository are rewritten to their fork IDs. The
     requirement is kept when satisfied by the fork's version (or `--version V`), else

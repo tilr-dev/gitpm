@@ -10,6 +10,28 @@ use std::{collections::BTreeMap, fs, path::Path};
 pub struct Manifest {
     pub id: String,
     pub version: String,
+    /// Package-relative committed output folder; absent means `dist`, `.` means root.
+    #[serde(
+        default,
+        deserialize_with = "optional_string",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub dist: Option<String>,
+    /// Describes how to build the package. gitpm never executes this command.
+    #[serde(
+        default,
+        rename = "buildCommand",
+        deserialize_with = "optional_string",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub build_command: Option<String>,
+    /// Missing output should explain that a committed build result is required.
+    #[serde(
+        default,
+        rename = "buildRequired",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub build_required: bool,
     /// Other packages by ID with an npm-style version range (see [`crate::deps::requirement`]).
     #[serde(default)]
     pub dependencies: BTreeMap<String, String>,
@@ -24,7 +46,51 @@ pub struct Manifest {
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
+// Serde defaults handle absent fields; a present value must be a string, never null.
+fn optional_string<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<String>, D::Error> {
+    String::deserialize(deserializer).map(Some)
+}
+
 impl Manifest {
+    /// The selected output folder, relative to the package root.
+    pub fn dist_folder(&self) -> &str {
+        self.dist.as_deref().unwrap_or("dist")
+    }
+
+    pub(crate) fn validate_dist(&self) -> Result<()> {
+        let folder = self.dist_folder();
+        ensure!(
+            folder == "." || crate::packages::validate_path(folder).is_ok(),
+            InvalidManifest,
+            "invalid manifest dist path: {folder:?}"
+        );
+        Ok(())
+    }
+
+    /// Output tree path relative to the repository root (empty for its root).
+    pub(crate) fn dist_path(&self, package: Option<&str>) -> String {
+        match (package.filter(|p| !p.is_empty()), self.dist_folder()) {
+            (Some(package), ".") => package.to_owned(),
+            (None, ".") => String::new(),
+            (Some(package), folder) => format!("{package}/{folder}"),
+            (None, folder) => folder.to_owned(),
+        }
+    }
+
+    pub(crate) fn missing_dist(&self, message: impl Into<String>) -> Error {
+        let mut message = message.into();
+        if self.build_required {
+            message.push_str("; this package requires a committed build result");
+            if let Some(command) = &self.build_command {
+                message.push_str(&format!("; buildCommand: {command}"));
+            }
+            message.push_str(" (gitpm does not run builds)");
+        }
+        Error::invalid_manifest(message)
+    }
+
     /// The descriptive metadata of this manifest (`title`, `description`, `provides`,
     /// `tags`), read from the kept top-level keys. These keys stay in [`Manifest::extra`]
     /// so they are written back exactly as they were (order and the string form of
@@ -496,11 +562,23 @@ pub(crate) fn manifest(repo: &Path) -> Result<Manifest> {
         crate::catalog::version_key(&replaces.version)?;
     }
     crate::deps::validate(&m)?;
-    ensure!(
-        repo.join("dist").is_dir(),
-        InvalidManifest,
-        "package must contain a ready dist/ directory"
-    );
+    m.validate_dist()?;
+    let folder = m.dist_folder();
+    if !repo.join(folder).is_dir() {
+        return Err(m.missing_dist(format!("package must contain a ready {folder}/ directory")));
+    }
+    if folder != "." {
+        let mut current = repo.to_path_buf();
+        for component in folder.split('/') {
+            current.push(component);
+            ensure!(
+                !fs::symlink_metadata(&current)?.file_type().is_symlink(),
+                Unsupported,
+                "symlinks are not supported: {}",
+                current.display()
+            );
+        }
+    }
     Ok(m)
 }
 

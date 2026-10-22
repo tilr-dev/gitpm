@@ -7,9 +7,9 @@ context: |
   as are library messages and CLI output. Discussions with the owner may be in Russian.
 
   Product boundary: gitpm is a host-agnostic package manager where a package is a folder in
-  a Git repository (plugin.json + committed dist/). The library (crates/gitpm) knows nothing
+  a Git repository (plugin.json + committed output folder selected by dist, default dist/). The library (crates/gitpm) knows nothing
   about Tilr or any other host: no host names, no slot/theme/exclusivity semantics, no build
-  step, nothing is executed. Host concerns (which provider of a service is active, load
+  step (buildCommand describes a build only), nothing is executed. Host concerns (which provider of a service is active, load
   order, plugins.json generation, UI) stay in the host. Tilr is only the first consumer.
 
   Library contract: the library never prints, prompts, reads stdin or reads environment
