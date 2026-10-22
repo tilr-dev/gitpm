@@ -18,8 +18,8 @@ A link record SHALL hold `mode` as `{"link": {"packageRoot": PATH, "target": PAT
 - **WHEN** a package is linked
 - **THEN** its record has `mode.link.packageRoot` and `mode.link.target` and no `current`, `previous` or `clone`
 
-### Requirement: Link state has an explicit format boundary
-**BREAKING**: the state format SHALL be bumped when link support is implemented, without migration. Foreign formats SHALL be refused with `unsupported` unchanged; README SHALL document workspace recreation.
+### Requirement: Link records follow the workspace format policy
+Link record schema changes SHALL follow workspace-layout "State format versions": format 1 in place before the first public release; later bumps only under its release-milestone policy. No migration or compatibility reader SHALL be added. Foreign formats SHALL be refused with `unsupported` unchanged; README SHALL document workspace recreation.
 
 #### Scenario: Old workspace reader
 - **WHEN** a gitpm opens state of another format

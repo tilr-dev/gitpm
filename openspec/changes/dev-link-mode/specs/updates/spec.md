@@ -7,6 +7,10 @@ Single-package update, update all and check SHALL retain link records and report
 - **WHEN** a dev-linked package declares version 0.3.0 and its release source offers 0.4.0
 - **THEN** check, update and update all report version 0.4.0 available, explicit dev-link mode and no package update, leaving the target and its files unchanged
 
+#### Scenario: Explicit update target preserves a link
+- **WHEN** update of a linked package requests `--ref`, `--dev` or `--release`
+- **THEN** its structured result reports dev-linked and unchanged, preserving its descriptor, symlink and author files rather than switching to managed installation
+
 #### Scenario: No newer release
 - **WHEN** discovery finds no newer release for a linked package
 - **THEN** results still identify it as dev-linked and unchanged
@@ -36,7 +40,7 @@ The joint update solver SHALL keep each linked package's recorded version and de
 ## MODIFIED Requirements
 
 ### Requirement: update follows the recorded mode
-`update ID` without a target SHALL follow the package's recorded mode (links: "Linked packages report releases without automatic replacement"): release mode moves to the newest release, branch mode to the branch HEAD, and a pinned package SHALL stay unchanged with reason `pinned` (CLI: `ID pinned at V (REF)`). `--ref REF` and `--dev` SHALL move the package and record the new mode as at install (install-uninstall); `--release` SHALL return it to release mode at the newest release.
+`update ID` without a target SHALL follow the package's recorded mode (links: "Linked packages report releases without automatic replacement"): release mode moves to the newest release, branch mode to the branch HEAD, and a pinned package SHALL stay unchanged with reason `pinned` (CLI: `ID pinned at V (REF)`). For managed packages, `--ref REF` and `--dev` SHALL move the package and record the new mode as at install (install-uninstall); `--release` SHALL return the managed package to release mode at the newest release.
 
 #### Scenario: Pinned package
 - **WHEN** `acme/greeter` was installed with `--ref acme/greeter@0.1.0`, 0.2.0 is released and the user runs `update acme/greeter`

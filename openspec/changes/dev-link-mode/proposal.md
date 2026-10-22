@@ -20,9 +20,10 @@ working trees. These are different operations.
 - State distinguishes linked packages from managed clones; list, check and
   update results carry link status and release availability through library/FFI.
 - Transactions manage the symlink entry, never the author's folder or contents.
-- **BREAKING (future implementation):** new state representation/format and
-  expanded library/FFI records and enums. Re-create workspaces for the new format;
-  no migration, aliases or compatibility reader. Document in README when shipped.
+- **BREAKING (future implementation):** new state representation and expanded
+  library/FFI records and enums. Follow the existing release format policy
+  (format 1 before first public release); no migration, aliases or compatibility
+  reader. Document schema changes and foreign-format recreation in README.
 
 ## Scope and status
 

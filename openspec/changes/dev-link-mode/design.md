@@ -125,10 +125,12 @@ the release-discovery repository; it is not proof of workspace ownership. When
 there is no usable origin, return an availability problem instead of inventing a
 latest release. A local repository path may be a valid source under existing rules.
 
-This is **BREAKING**: change the state format from the version current at
-implementation time, refuse foreign formats unchanged, document workspace
-recreation. On the inspected baseline it is format 3; do not hard-code the next
-number now. No migration reader. Forgotten link records retain the link descriptor,
+The representation and public API changes are **BREAKING**, but follow the
+existing state format policy: the inspected baseline uses format 1, and schema
+changes stay in format 1 before the first public release without backward
+compatibility. Later, a bump belongs to the release milestone, at most once per
+release when the previous public version would misread the new state. Refuse
+foreign formats unchanged and document recreation, without a migration reader. Forgotten link records retain the link descriptor,
 not an owned-clone assumption. Rollback does not roll back external files:
 rollback of a link fails with `no_previous_version` and changes nothing, until an
 explicit conversion history contract exists (install-uninstall delta).
@@ -216,7 +218,7 @@ hermetic local repositories and fixture directories, not public services.
   results for check/update/update-all/dry-run, CLI rendering and unchanged link.
   Include unreachable source, no newer release and dependency-constrained updates.
 - Keep managed install/update/deploy/lost-work regression coverage; document the
-  new format and command alongside the implementation.
+  state representation and command alongside the implementation.
 
 ## Handoff
 
