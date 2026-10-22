@@ -111,17 +111,27 @@ def is_heading_rename(old, new, name):
 
 def delta_operations(body):
     section = None
+    operations = []
+    renamed_from = None
+    originals = {}
     for line in body.splitlines():
         match = re.fullmatch(r'## (ADDED|MODIFIED|REMOVED|RENAMED) Requirements\s*', line)
         if match:
             section = match[1]
         match = REQUIREMENT.fullmatch(line)
         if match and section in ('MODIFIED', 'REMOVED'):
-            yield match[1], 'modify' if section == 'MODIFIED' else 'remove'
+            operations.append((match[1], 'modify' if section == 'MODIFIED' else 'remove'))
         if section == 'RENAMED':
             match = re.fullmatch(r'- FROM: `### Requirement: (.+)`\s*', line)
             if match:
-                yield match[1], 'rename'
+                renamed_from = match[1]
+                operations.append((renamed_from, 'rename'))
+            match = re.fullmatch(r'- TO: `### Requirement: (.+)`\s*', line)
+            if match and renamed_from:
+                originals[match[1]] = renamed_from
+                renamed_from = None
+    for name, operation in operations:
+        yield originals.get(name, name) if operation != 'rename' else name, operation
 
 
 def check(base, head, comments, component):
@@ -160,6 +170,13 @@ def check(base, head, comments, component):
             operation = 'archive' if archived else 'edit'
             if ('change', change, operation) not in allowed:
                 uncovered.add(f'{component}: changes/{change}: {operation}')
+            if archived:
+                source = f'openspec/changes/{change}/{suffix}'
+                targets = [p for p in head.keys() - base.keys() if re.fullmatch(
+                    r'openspec/changes/archive/\d{4}-\d{2}-\d{2}-' + re.escape(change + '/' + suffix), p)]
+                if any(source not in base or head[p] != base[source] for p in targets):
+                    if ('change', change, 'edit') not in allowed:
+                        uncovered.add(f'{component}: changes/{change}: edit')
         delta = re.fullmatch(r'specs/([^/]+)/spec\.md', suffix)
         if change in own and delta:
             capability = delta[1]
