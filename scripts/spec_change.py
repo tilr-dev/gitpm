@@ -119,11 +119,13 @@ def is_heading_rename(old, new, name):
         for candidate, lines in after.items())
 
 
-def delta_operations(body):
+def delta_operations(body, existing):
     section = None
     operations = []
     renamed_from = None
-    originals = {}
+    identities = {name: name for name in existing}
+    histories = {name: {name} for name in existing}
+    renames = []
     for line in body.splitlines():
         match = re.fullmatch(r'## (ADDED|MODIFIED|REMOVED|RENAMED) Requirements\s*', line)
         if match:
@@ -135,26 +137,23 @@ def delta_operations(body):
             match = re.fullmatch(r'- FROM: `### Requirement: (.+)`\s*', line)
             if match:
                 renamed_from = match[1]
-                operations.append((renamed_from, 'rename'))
             match = re.fullmatch(r'- TO: `### Requirement: (.+)`\s*', line)
             if match and renamed_from:
                 target = match[1]
-                if target in originals and originals[target] != renamed_from:
+                original = identities.get(renamed_from, renamed_from)
+                history = histories.setdefault(original, {renamed_from})
+                if target in history:
+                    raise CheckError('Cyclic requirement rename: ' + target)
+                if target in identities:
                     raise CheckError('Ambiguous requirement rename: ' + target)
-                originals[target] = renamed_from
+                history.add(target)
+                identities.pop(renamed_from, None)
+                identities[target] = original
+                renames.append((original, 'rename'))
                 renamed_from = None
-    resolved = {}
-    for target in originals:
-        name = target
-        seen = set()
-        while name in originals:
-            if name in seen:
-                raise CheckError('Cyclic requirement rename: ' + name)
-            seen.add(name)
-            name = originals[name]
-        resolved[target] = name
+    yield from renames
     for name, operation in operations:
-        yield resolved.get(name, name), operation
+        yield identities.get(name, name), operation
 
 
 def check(base, head, comments, component):
@@ -207,7 +206,7 @@ def check(base, head, comments, component):
             capability = delta[1]
             baseline = base.get(f'openspec/specs/{capability}/spec.md', '')
             existing = {m[1] for line in baseline.splitlines() if (m := REQUIREMENT.fullmatch(line))}
-            for name, operation in delta_operations(new):
+            for name, operation in delta_operations(new, existing):
                 if name in existing and ('spec', capability, name, operation) not in allowed:
                     uncovered.add(f'{component}: specs/{capability} — «{name}»: {operation} (delta {change})')
     return sorted(uncovered)

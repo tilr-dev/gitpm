@@ -131,6 +131,27 @@ class AuthorizationFixtures(unittest.TestCase):
                 self.assertEqual([], checker.check(base, {**base, path: delta},
                                  auth + [grant(f'specs/terminal — «Existing»: {operation}')], 'gitpm'))
 
+    def test_reused_rename_source_preserves_requirement_identity(self):
+        path = 'openspec/changes/add-check/specs/terminal/spec.md'
+        base = {SPEC: ORIGINAL + '\n### Requirement: Other\nThe system SHALL do other work.\n'}
+        renames = ('## RENAMED Requirements\n'
+                   '- FROM: `### Requirement: Existing`\n'
+                   '- TO: `### Requirement: Final`\n'
+                   '- FROM: `### Requirement: Other`\n'
+                   '- TO: `### Requirement: Existing`\n')
+        auth = [ready(), grant('specs/terminal — «Other»: rename'),
+                grant('specs/terminal — «Other»: modify')]
+        for section, operation in [('MODIFIED', 'modify'), ('REMOVED', 'remove')]:
+            delta = renames + f'## {section} Requirements\n### Requirement: Final\nThe system SHALL change.\n'
+            with self.subTest(operation=operation):
+                self.assertEqual([
+                    f'gitpm: specs/terminal — «Existing»: {operation} (delta add-check)',
+                    'gitpm: specs/terminal — «Existing»: rename (delta add-check)',
+                ], checker.check(base, {**base, path: delta}, auth, 'gitpm'))
+                self.assertEqual([], checker.check(base, {**base, path: delta}, auth + [
+                    grant('specs/terminal — «Existing»: rename'),
+                    grant(f'specs/terminal — «Existing»: {operation}')], 'gitpm'))
+
     def test_invalid_rename_graph_fails_closed(self):
         for pairs in [[('Existing', 'Next'), ('Next', 'Existing')],
                       [('Existing', 'Final'), ('Other', 'Final')]]:
