@@ -169,9 +169,10 @@ def check(base, head, comments, component):
         change, suffix = match.groups()
         if change not in own:
             # An unchanged archive copy still needs the archive grant for its source.
-            archived = (path not in base and path.startswith('openspec/changes/archive/')) or any(
+            is_archive = path.startswith('openspec/changes/archive/')
+            archived = (path not in base and is_archive) or (not is_archive and any(
                 re.fullmatch(r'openspec/changes/archive/\d{4}-\d{2}-\d{2}-' + re.escape(change + '/' + suffix), p)
-                for p in head.keys() - base.keys())
+                for p in head.keys() - base.keys()))
             operation = 'archive' if archived else 'edit'
             if ('change', change, operation) not in allowed:
                 uncovered.add(f'{component}: changes/{change}: {operation}')
