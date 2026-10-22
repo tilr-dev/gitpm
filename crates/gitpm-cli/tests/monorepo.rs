@@ -149,7 +149,10 @@ fn release_hooks(f: &Fixture, post_commit: &str, pre_commit: &str) {
     use std::os::unix::fs::PermissionsExt;
     let hooks = f.dir.join("hooks");
     fs::create_dir_all(&hooks).unwrap();
-    for (name, script) in [("post-commit", post_commit), ("pre-commit", pre_commit)] {
+    for (name, script) in [
+        ("prepare-commit-msg", post_commit),
+        ("pre-commit", pre_commit),
+    ] {
         let path = hooks.join(name);
         fs::write(&path, format!("#!/bin/sh\nset -eu\n{script}\n")).unwrap();
         fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
@@ -215,47 +218,22 @@ fn fork_replace_release_rejecting_hook_restores_manifests_and_index() {
     let f = Fixture::new();
     f.ok(&["install", f.source(), "tilr/store"]);
     f.ok(&["install", f.source(), "tilr/theme"]);
-    release_hooks(
-        &f,
-        r#"
-case "$(git log -1 --format=%s)" in
-    Fork*)
-        printf 'staged before release' > unrelated.txt
-        git add unrelated.txt
-        cp packages/store/plugin.json .git/store.before
-        cp packages/theme/plugin.json .git/theme.before
-        cp .git/index .git/index.before
-        ;;
-esac
-"#,
-        "exit 1",
-    );
+    release_hooks(&f, ":", "exit 1");
     let (fork, stderr) = release_failure(&f);
     assert!(stderr.contains("kind: git"), "{stderr}");
     for name in ["store", "theme"] {
-        assert_eq!(
-            fs::read(fork.join(format!("packages/{name}/plugin.json"))).unwrap(),
-            fs::read(fork.join(format!(".git/{name}.before"))).unwrap()
-        );
+        let path = format!("packages/{name}/plugin.json");
+        let expected = f
+            .command("git")
+            .arg("-C")
+            .arg(&fork)
+            .args(["show", &format!("HEAD:{path}")])
+            .output()
+            .unwrap();
+        assert!(expected.status.success());
+        assert_eq!(fs::read(fork.join(&path)).unwrap(), expected.stdout);
     }
-    // Read raw index before any Git status invocation can refresh its stat cache.
-    assert!(
-        fs::read(fork.join(".git/index")).unwrap()
-            == fs::read(fork.join(".git/index.before")).unwrap(),
-        "index differs from its pre-release snapshot"
-    );
-    let staged = f
-        .command("git")
-        .arg("-C")
-        .arg(&fork)
-        .args(["diff", "--cached", "--name-only"])
-        .output()
-        .unwrap();
-    assert!(staged.status.success());
-    assert_eq!(
-        String::from_utf8(staged.stdout).unwrap().trim(),
-        "unrelated.txt"
-    );
+    f.git(&fork, &["diff", "--cached", "--exit-code"]);
     let log = f
         .command("git")
         .arg("-C")
@@ -294,6 +272,30 @@ fn fork_replace_release_without_file_transport() {
     let f = Fixture::new();
     f.ok(&["install", f.source(), "tilr/store"]);
     f.ok(&["install", f.source(), "tilr/theme"]);
+    use std::os::unix::fs::PermissionsExt;
+    // Cloning the recorded local-path source needs file transport; disable it after checkout.
+    let hooks = f.dir.join("transport-hooks");
+    fs::create_dir_all(&hooks).unwrap();
+    let hook = hooks.join("post-checkout");
+    fs::write(
+        &hook,
+        "#!/bin/sh\ngit config --global protocol.file.allow never\n",
+    )
+    .unwrap();
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    f.git(
+        &f.mono,
+        &["config", "--global", "protocol.file.allow", "always"],
+    );
+    f.git(
+        &f.mono,
+        &[
+            "config",
+            "--global",
+            "core.hooksPath",
+            hooks.to_str().unwrap(),
+        ],
+    );
     let output = f
         .command(env!("CARGO_BIN_EXE_gitpm"))
         .current_dir(&f.dir)
@@ -363,12 +365,11 @@ mkdir -p .git/refs/tags/me
 fn fork_replace_single_package_tag_failure_gives_no_commit_retry_hint() {
     let f = Fixture::new();
     f.ok(&["install", f.source(), "tilr/store"]);
-    // Without --version nothing changes after the fork commit, so the release makes no
-    // commit of its own. The fork commit skips commit hooks; reference-transaction still
-    // runs and places the lock that makes `git tag` fail.
+    // A checkout hook places a tag lock after the clone has been created.
+    // It runs on checkout of the fork branch, before the initial commit.
     use std::os::unix::fs::PermissionsExt;
     release_hooks(&f, ":", ":");
-    let hook = f.dir.join("hooks/reference-transaction");
+    let hook = f.dir.join("hooks/post-checkout");
     fs::write(
         &hook,
         r#"#!/bin/sh
@@ -697,7 +698,7 @@ fn fork_replace_releases_installs_and_replaces_in_one_step() {
     let consumer = consumer(&f);
     f.ok(&["install", consumer.to_str().unwrap()]);
     assert_eq!(provider(&f.state()), "tilr/theme");
-    // Local edits of the installed package go into the fork's first release.
+    // Local installation edits stay local; the fork releases the recorded source.
     let clone = fs::read_dir(f.dir.join("workspace/repos"))
         .unwrap()
         .next()
@@ -722,15 +723,29 @@ fn fork_replace_releases_installs_and_replaces_in_one_step() {
     );
     let fork = f.dir.join("forks/me/theme");
     assert!(fork.join("packages/theme/plugin.json").is_file());
-    assert_eq!(f.dist("me/theme"), "my theme");
+    assert_eq!(f.dist("me/theme"), "theme 1.0.0");
+    assert_eq!(
+        fs::read_to_string(clone.join("packages/theme/dist/index.js")).unwrap(),
+        "my theme"
+    );
     // dist/ holds only active packages: the replaced original is not deployed.
     assert!(!f.dir.join("workspace/dist/tilr/theme").exists());
     let state = f.state();
     assert_eq!(state["replacements"]["tilr/theme"], "me/theme");
     assert_eq!(provider(&state), "me/theme");
+    assert_eq!(state["packages"]["me/store"]["current"]["version"], "1.0.0");
+    assert_eq!(f.dist("me/store"), "store 1.0.0");
+    assert!(state["packages"].get("tilr/store").is_none());
+    assert!(state["replacements"].get("tilr/store").is_none());
     // A later fork release with another version shows the installed version.
     fs::write(fork.join("packages/theme/dist/index.js"), "my theme 2").unwrap();
-    f.ok(&["commit", fork.to_str().unwrap(), "1.5.0"]);
+    f.ok(&[
+        "commit",
+        fork.to_str().unwrap(),
+        "1.5.0",
+        "--package",
+        "me/theme",
+    ]);
     f.ok(&["update", "me/theme"]);
     let out = f.ok(&["replace", "tilr/theme", "--with", "me/theme"]);
     assert!(
@@ -771,9 +786,8 @@ fn fork_replace_keeps_the_fork_and_says_how_to_finish_when_a_step_fails() {
     f.git(&legacy, &["commit", "-q", "-m", "hello"]);
     f.git(&legacy, &["tag", "acme/hello@1.0.0"]);
     f.ok(&["install", legacy.to_str().unwrap()]);
-    // A symlink in the edited dist gets released with the fork but cannot be installed.
-    let installed = f.dir.join("workspace/packages/acme/hello");
-    std::os::unix::fs::symlink("index.js", installed.join("dist/link.js")).unwrap();
+    // A release hook introduces an uninstallable dist after the source clone.
+    release_hooks(&f, ":", "ln -s index.js dist/link.js\ngit add dist/link.js");
     let error = f.fails(&[
         "fork",
         "acme/hello",
@@ -782,6 +796,8 @@ fn fork_replace_keeps_the_fork_and_says_how_to_finish_when_a_step_fails() {
         "--into",
         "me/hello",
         "--replace",
+        "--version",
+        "1.0.1",
     ]);
     assert!(
         error.contains("me/hello: the install step failed"),
@@ -798,8 +814,8 @@ fn fork_replace_keeps_the_fork_and_says_how_to_finish_when_a_step_fails() {
     let state = f.state();
     assert!(state["packages"].get("me/hello").is_none());
     assert!(state.get("replacements").is_none());
+    release_hooks(&f, ":", ":");
     // Without --replace the output names the next steps.
-    fs::remove_file(installed.join("dist/link.js")).unwrap();
     let out = f.ok(&["fork", "acme/hello", "--ns", "me", "--into", "other"]);
     assert!(
         out.contains("Next steps") && out.contains("gitpm replace acme/hello --with me/hello"),
@@ -937,7 +953,7 @@ fn provider_of(state: &serde_json::Value, consumer: &str) -> String {
 }
 
 #[test]
-fn fork_of_two_packages_keeps_exactly_those_and_rewrites_their_dependency() {
+fn fork_ids_select_the_repository_and_rewrite_all_package_dependencies() {
     let f = Fixture::new();
     three_installed(&f);
     let out = f.ok(&[
@@ -962,14 +978,8 @@ fn fork_of_two_packages_keeps_exactly_those_and_rewrites_their_dependency() {
         out.contains("Dependency: me/panel now depends on me/theme ^1.0 (was tilr/theme)"),
         "{out}"
     );
-    assert_eq!(
-        config(&fork)["packages"],
-        serde_json::json!(["packages/panel", "packages/theme"])
-    );
-    assert!(
-        !fork.join("packages/store").exists(),
-        "unforked sibling removed"
-    );
+    assert_eq!(config(&fork)["packages"], serde_json::json!(["packages/*"]));
+    assert_eq!(manifest(&fork.join("packages/store"))["id"], "me/store");
     let panel = manifest(&fork.join("packages/panel"));
     assert_eq!(panel["id"], "me/panel");
     assert_eq!(
@@ -993,30 +1003,85 @@ fn fork_of_two_packages_keeps_exactly_those_and_rewrites_their_dependency() {
         "{}",
         String::from_utf8_lossy(&out.stdout)
     );
-    // The fork lists only its two packages.
+    // Every package in the source repository is available in the fork.
     let error = f.fails(&["install", fork.to_str().unwrap(), "--dev"]);
     assert!(
         error.contains("me/panel (packages/panel)")
             && error.contains("me/theme (packages/theme)")
-            && !error.contains("store"),
+            && error.contains("me/store (packages/store)"),
         "{error}"
     );
     f.ok(&["install", fork.to_str().unwrap(), "me/theme", "--dev"]);
     f.ok(&["install", fork.to_str().unwrap(), "me/panel", "--dev"]);
     assert_eq!(f.dist("me/panel"), "panel 1.0.0");
 
-    // Forking only the dependent package keeps its dependency on the original.
+    // A single ID selects the same repository and rewrites every internal dependency.
     f.ok(&["fork", "tilr/panel", "--ns", "solo", "--into", "forks/solo"]);
     let solo = f.dir.join("forks/solo");
-    assert_eq!(
-        config(&solo)["packages"],
-        serde_json::json!(["packages/panel"])
-    );
+    assert_eq!(config(&solo)["packages"], serde_json::json!(["packages/*"]));
     assert_eq!(
         manifest(&solo.join("packages/panel"))["dependencies"],
-        serde_json::json!({"tilr/theme": "^1.0"})
+        serde_json::json!({"solo/theme": "^1.0"})
     );
-    assert!(!solo.join("packages/theme").exists());
+    assert_eq!(manifest(&solo.join("packages/theme"))["id"], "solo/theme");
+    assert_eq!(manifest(&solo.join("packages/store"))["id"], "solo/store");
+}
+
+#[test]
+fn fork_one_id_preserves_uninstalled_siblings_layout_and_installed_revisions() {
+    let f = Fixture::new();
+    f.ok(&["install", f.source(), "tilr/store"]);
+    let store_commit = f.state()["packages"]["tilr/store"]["current"]["commit"].clone();
+    f.write("store", "1.1.0", "");
+    f.write("theme", "1.1.0", r#","dependencies":{"tilr/store":"^1.0"}"#);
+    f.write("panel", "1.0.0", r#","dependencies":{"tilr/theme":"^1.0"}"#);
+    fs::create_dir_all(f.mono.join("tools")).unwrap();
+    fs::create_dir_all(f.mono.join("packages/support")).unwrap();
+    fs::write(f.mono.join("tools/build.sh"), "echo build\n").unwrap();
+    fs::write(f.mono.join("packages/support/data.txt"), "shared data\n").unwrap();
+    f.git(&f.mono, &["add", "--all"]);
+    f.git(
+        &f.mono,
+        &["commit", "-q", "-m", "Add siblings and shared tooling"],
+    );
+    f.git(&f.mono, &["tag", "tilr/theme@1.1.0"]);
+    f.ok(&["install", f.source(), "tilr/theme"]);
+    let before = f.state();
+    let theme_commit = before["packages"]["tilr/theme"]["current"]["commit"].clone();
+    assert!(before["packages"].get("tilr/panel").is_none());
+
+    f.ok(&["fork", "tilr/store", "--ns", "me", "--into", "forks/whole"]);
+    let fork = f.dir.join("forks/whole");
+    assert_eq!(config(&fork), config(&f.mono));
+    assert_eq!(
+        fs::read(fork.join("tools/build.sh")).unwrap(),
+        b"echo build\n"
+    );
+    assert_eq!(
+        fs::read(fork.join("packages/support/data.txt")).unwrap(),
+        b"shared data\n"
+    );
+    let store = manifest(&fork.join("packages/store"));
+    let theme = manifest(&fork.join("packages/theme"));
+    let panel = manifest(&fork.join("packages/panel"));
+    assert_eq!(store["id"], "me/store");
+    assert_eq!(store["version"], "1.0.0");
+    assert_eq!(store["forkOf"]["commit"], store_commit);
+    assert_eq!(theme["id"], "me/theme");
+    assert_eq!(theme["version"], "1.1.0");
+    assert_eq!(theme["forkOf"]["commit"], theme_commit);
+    assert_eq!(
+        theme["dependencies"],
+        serde_json::json!({"me/store": "^1.0"})
+    );
+    assert_eq!(panel["id"], "me/panel");
+    assert_eq!(panel["forkOf"]["id"], "tilr/panel");
+    assert_eq!(panel["forkOf"]["commit"], theme_commit);
+    assert_eq!(
+        panel["dependencies"],
+        serde_json::json!({"me/theme": "^1.0"})
+    );
+    assert_eq!(f.state(), before);
 }
 
 #[test]
@@ -1090,10 +1155,7 @@ fn packages_forked_together_must_come_from_one_repository() {
     // ...but cannot be added to a multi-package repository.
     f.ok(&["fork", "tilr/store", "--ns", "me", "--into", "me/mono"]);
     let error = f.fails(&["fork", "acme/hello", "--ns", "you", "--into", "me/mono"]);
-    assert!(
-        error.contains("is the root package of its repository"),
-        "{error}"
-    );
+    assert!(error.contains("destination already exists"), "{error}");
 }
 
 #[test]
@@ -1142,6 +1204,7 @@ fn fork_replace_of_two_packages_replaces_both_and_switches_back() {
     assert_eq!(manifest(&fork.join("packages/theme"))["version"], "2.0.0");
     f.ok(&["replace", "tilr/theme", "--back"]);
     f.ok(&["replace", "tilr/panel", "--back"]);
+    f.ok(&["replace", "tilr/store", "--back"]);
     let state = f.state();
     assert_eq!(provider_of(&state, "app/uses-theme"), "tilr/theme");
     assert_eq!(provider_of(&state, "app/uses-panel"), "tilr/panel");
@@ -1149,15 +1212,9 @@ fn fork_replace_of_two_packages_replaces_both_and_switches_back() {
 }
 
 #[test]
-fn packages_are_added_to_an_existing_fork_with_dependencies_rewritten_both_ways() {
+fn an_existing_fork_is_refused_without_rewriting_dependencies() {
     let f = Fixture::new();
     three_installed(&f);
-    f.write("dock", "1.0.0", r#","dependencies":{"tilr/theme":"^1.0"}"#);
-    f.git(&f.mono, &["add", "--all"]);
-    f.git(&f.mono, &["commit", "-q", "-m", "dock"]);
-    f.git(&f.mono, &["tag", "tilr/dock@1.0.0"]);
-    f.ok(&["install", f.source(), "tilr/dock"]);
-    // Only the dependent first: it keeps depending on the original.
     f.ok(&[
         "fork",
         "tilr/panel",
@@ -1167,62 +1224,8 @@ fn packages_are_added_to_an_existing_fork_with_dependencies_rewritten_both_ways(
         "forks/me/mono",
     ]);
     let fork = f.dir.join("forks/me/mono");
-    assert_eq!(
-        manifest(&fork.join("packages/panel"))["dependencies"],
-        serde_json::json!({"tilr/theme": "^1.0"})
-    );
-    // Adding the dependency later rewrites the existing package (explicit repository).
-    let out = f.ok(&[
-        "fork",
-        "tilr/theme",
-        "--ns",
-        "me",
-        "--into",
-        fork.to_str().unwrap(),
-    ]);
-    assert!(
-        out.contains("Packages added to: /") && out.contains("forks/me/mono\n"),
-        "{out}"
-    );
-    assert!(
-        out.contains("Dependency: me/panel now depends on me/theme ^1.0 (was tilr/theme)"),
-        "{out}"
-    );
-    assert_eq!(
-        manifest(&fork.join("packages/panel"))["dependencies"],
-        serde_json::json!({"me/theme": "^1.0"})
-    );
-    assert_eq!(
-        config(&fork)["packages"],
-        serde_json::json!(["packages/panel", "packages/theme"])
-    );
-    // A new package depending on an original that the fork already has: rewritten to the
-    // fork.
-    let out = f.ok(&["fork", "tilr/dock", "--ns", "me", "--into", "forks/me/mono"]);
-    assert!(out.contains("Packages added to"), "{out}");
-    let dock = manifest(&fork.join("packages/dock"));
-    assert_eq!(dock["id"], "me/dock");
-    assert_eq!(dock["forkOf"]["id"], "tilr/dock");
-    assert_eq!(
-        dock["dependencies"],
-        serde_json::json!({"me/theme": "^1.0"})
-    );
-    assert_eq!(
-        config(&fork)["packages"],
-        serde_json::json!(["packages/panel", "packages/theme", "packages/dock"])
-    );
-    let out = f
-        .command("git")
-        .arg("-C")
-        .arg(&fork)
-        .args(["log", "--format=%s", "-3"])
-        .output()
-        .unwrap();
-    assert_eq!(
-        String::from_utf8_lossy(&out.stdout),
-        "Fork tilr/dock as me/dock\nFork tilr/theme as me/theme\nFork tilr/panel as me/panel\n"
-    );
-    // IDs stay unique.
+    let before = fs::read(fork.join("packages/panel/plugin.json")).unwrap();
+    let config_before = fs::read(fork.join("gitpm.json")).unwrap();
     let error = f.fails(&[
         "fork",
         "tilr/theme",
@@ -1231,31 +1234,29 @@ fn packages_are_added_to_an_existing_fork_with_dependencies_rewritten_both_ways(
         "--into",
         "forks/me/mono",
     ]);
-    assert!(error.contains("me/theme already exists"), "{error}");
-    // The added packages release and install like any other.
-    f.ok(&[
-        "commit",
-        fork.to_str().unwrap(),
-        "1.0.1",
-        "--package",
-        "me/theme",
-    ]);
-    f.ok(&["install", fork.to_str().unwrap(), "me/theme"]);
-    assert_eq!(f.dist("me/theme"), "theme 1.0.0");
+    assert!(error.contains("destination already exists"), "{error}");
+    assert_eq!(
+        fs::read(fork.join("packages/panel/plugin.json")).unwrap(),
+        before
+    );
+    assert_eq!(fs::read(fork.join("gitpm.json")).unwrap(), config_before);
+    assert_eq!(manifest(&fork.join("packages/theme"))["id"], "me/theme");
+    assert_eq!(
+        manifest(&fork.join("packages/panel"))["dependencies"],
+        serde_json::json!({"me/theme": "^1.0"})
+    );
 }
 
 #[test]
 fn fork_replace_of_several_packages_reports_each_failure_and_keeps_the_fork() {
     let f = Fixture::new();
     three_installed(&f);
-    // A symlink in panel's edited dist is released with the fork but cannot be installed.
-    let clone = fs::read_dir(f.dir.join("workspace/repos"))
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
-    std::os::unix::fs::symlink("index.js", clone.join("packages/panel/dist/link.js")).unwrap();
+    // Introduce an uninstallable dist only during the release, after source cloning.
+    release_hooks(
+        &f,
+        ":",
+        "ln -s index.js packages/panel/dist/link.js\ngit add packages/panel/dist/link.js",
+    );
     let out = f.run(&[
         "fork",
         "tilr/theme",
@@ -1265,16 +1266,18 @@ fn fork_replace_of_several_packages_reports_each_failure_and_keeps_the_fork() {
         "--into",
         "me/mono",
         "--replace",
+        "--version",
+        "1.0.1",
     ]);
     assert!(!out.status.success());
     let (stdout, stderr) = (
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr),
     );
-    assert!(stdout.contains("Released: me/theme@1.0.0"), "{stdout}");
-    assert!(stdout.contains("Released: me/panel@1.0.0"), "{stdout}");
+    assert!(stdout.contains("Released: me/theme@1.0.1"), "{stdout}");
+    assert!(stdout.contains("Released: me/panel@1.0.1"), "{stdout}");
     assert!(
-        stdout.contains("tilr/theme replaced by me/theme 1.0.0"),
+        stdout.contains("tilr/theme replaced by me/theme 1.0.1"),
         "{stdout}"
     );
     assert!(

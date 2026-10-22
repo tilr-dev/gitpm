@@ -106,7 +106,7 @@ Operations on an installed package SHALL match the ID exactly as recorded in `st
 - **THEN** the command fails with `repository_not_found` and `vendor/module` is untouched
 
 ### Requirement: Case-colliding IDs are refused
-Single source for IDs that differ only in letter case, refused independent of the file system's case sensitivity: installing or restoring a package whose ID differs only in case from an installed or retained package, or from an existing workspace path, SHALL fail with `workspace`; `fork`, `init` into a multi-package repository and adding packages to an existing fork SHALL fail with `invalid_argument`. Verified by `workspace::ids_differing_only_in_case_are_refused`.
+Single source for IDs that differ only in letter case, refused independent of the file system's case sensitivity: installing or restoring a package whose ID differs only in case from an installed or retained package, or from an existing workspace path, SHALL fail with `workspace`; `fork` and `init` into a multi-package repository SHALL fail with `invalid_argument`. Verified by `workspace::ids_differing_only_in_case_are_refused`.
 
 #### Scenario: Case variants inside one repository
 - **WHEN** a multi-package repository lists two packages whose IDs differ only in letter case

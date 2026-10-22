@@ -533,19 +533,17 @@ fn print_change(change: &gitpm::RevisionChange, verb: &str) {
     }
     warn_dist(&change.dist);
 }
-/// What a fork created or added, and the rewritten dependencies.
+/// The cloned fork and its rewritten dependencies.
 fn print_package_fork(fork: &gitpm::PackageFork) {
     let root = fork.packages.iter().any(|p| p.path.is_empty());
-    if fork.created {
-        println!("Fork created: {}", fork.path.display());
+    println!("Fork created: {}", fork.path.display());
+    println!(
+        "Git history is cloned from the recorded source; the original repository is the upstream remote."
+    );
+    if !root {
         println!(
-            "Git history and local edits are kept; the original repository is the upstream remote."
+            "All repository packages are forked; the complete tree and gitpm.json are preserved."
         );
-        if !root {
-            println!("Only the forked packages are left in the tree and in gitpm.json.");
-        }
-    } else {
-        println!("Packages added to: {}", fork.path.display());
     }
     for package in &fork.packages {
         println!(
@@ -811,10 +809,12 @@ Workspace (installed packages):",
         commands: &["fork"],
         text: "  fork ID [ID...] --ns NS --into DIR  fork installed packages of one repository as
                                    NS/<same name> into the fork repository DIR: a new
-                                   folder becomes a copy of the source (history, local
-                                   edits; unforked sibling packages removed), a repository
-                                   with gitpm.json gets the packages added; anything else
-                                   is refused. Dependencies between forks are rewritten
+                                   folder clones the recorded source with Git history
+                                   at installed revisions; local installation edits are
+                                   ignored. All repository packages are renamed;
+                                   all files and the package layout are retained.
+                                   Existing destinations are refused. Dependencies
+                                   between packages forked together are rewritten
     [--replace [--version V] [--force]]  then release each fork (tag NS/NAME@V, V defaults
                                    to the forked version), install it and replace ID with
                                    it for every consumer",
