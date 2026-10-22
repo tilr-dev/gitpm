@@ -45,6 +45,27 @@ class AuthorizationFixtures(unittest.TestCase):
     def test_removed_blank_base_line_also_requires_authorization(self):
         self.assertTrue(checker.check({SPEC: ORIGINAL}, {SPEC: ORIGINAL.replace('work.\n\n', 'work.\n')}, [ready()], 'gitpm'))
 
+    def test_insertions_into_existing_requirement_need_modify(self):
+        additions = [
+            ORIGINAL.replace('work.\n', 'work.\nThe check MAY be skipped by any user.\n'),
+            ORIGINAL + '- **AND** nothing is enforced\n',
+            ORIGINAL + '\n#### Scenario: Bypass\n- **THEN** skip enforcement\n',
+        ]
+        for head in additions:
+            with self.subTest(head=head):
+                self.assertEqual(['gitpm: specs/terminal — «Existing»: modify'],
+                                 checker.check({SPEC: ORIGINAL}, {SPEC: head}, [ready()], 'gitpm'))
+                self.assertEqual([], checker.check({SPEC: ORIGINAL}, {SPEC: head},
+                                 [ready(), grant('specs/terminal — «Existing»: modify')], 'gitpm'))
+
+    def test_new_requirements_are_free_at_each_boundary(self):
+        added = '### Requirement: New\nThe system SHALL add behavior.\n\n'
+        for head in [added + ORIGINAL, ORIGINAL + '\n' + added,
+                     ORIGINAL.replace('### Requirement: Existing', added + '### Requirement: Existing'),
+                     ORIGINAL + '\n\n']:
+            with self.subTest(head=head):
+                self.assertEqual([], checker.check({SPEC: ORIGINAL}, {SPEC: head}, [ready()], 'gitpm'))
+
     def test_operation_and_component_are_exact(self):
         modified = ORIGINAL.replace('it works', 'it fails')
         for line in ['specs/terminal — «Existing»: remove', 'specs/other — «Existing»: modify']:

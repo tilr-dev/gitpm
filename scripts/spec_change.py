@@ -75,17 +75,22 @@ def requirement_at(lines, index):
 
 
 def changed_requirements(old, new):
-    """Map removed base lines to their requirement, retaining exact old headings."""
+    """Map edits, including inserted content, to existing requirements."""
     before, after = old.splitlines(), new.splitlines()
+    names_before = {m[1] for line in before if (m := REQUIREMENT.fullmatch(line))}
     names_after = {m[1] for line in after if (m := REQUIREMENT.fullmatch(line))}
     result = set()
-    for tag, i, j, _, _ in difflib.SequenceMatcher(None, before, after, autojunk=False).get_opcodes():
-        if tag not in ('delete', 'replace'):
+    for tag, i, j, k, l in difflib.SequenceMatcher(None, before, after, autojunk=False).get_opcodes():
+        if tag == 'equal':
             continue
         for index in range(i, j):
             name = requirement_at(before, index)
             operation = 'modify' if name in names_after else 'remove'
             result.add((name, operation))
+        for index in range(k, l):
+            name = requirement_at(after, index)
+            if after[index].strip() and name in names_before:
+                result.add((name, 'modify'))
     return result
 
 

@@ -36,7 +36,8 @@ spec-change:
 - cloud: changes/session-rework: archive
 ```
 
-Changing an existing line requires a matching operation. Adding a requirement or
+Changing an existing line or inserting content into an existing requirement
+requires a matching operation. Adding a requirement or
 editing the own change declared in intake scope needs no block. A MODIFIED,
 REMOVED or RENAMED delta in that own change still requires authorization for
 existing requirements. Foreign changes require `edit` or `archive`; rewriting contents during an archive
@@ -51,27 +52,24 @@ Run the deterministic fixture, real Git diff/CLI and mocked MCP contract tests:
 python3 -m unittest discover -s scripts -p test_spec_change.py
 ```
 
-## Deployment decision
+## Trusted deployment
 
 A required status check must run trusted code. A `pull_request` workflow is
 loaded from the candidate merge commit, so a PR can replace the checker job with
 a successful no-op or capture the read-only task token. Checking out a trusted
 script does not protect the workflow file itself.
 
-The prepared `pull_request_target` workflow uses the default branch's workflow,
+The deployed `pull_request_target` workflow uses the default branch's workflow,
 downloads a shared checker with a pinned SHA-256 digest, and fetches candidate
 Git objects into a bare repository solely for inspection. It targets PRs into dev, has `contents: read`, supplies only the
 read-only task token to the checker, and never executes candidate files. Its job
 is named `spec-change`, with no path filter or skip condition. The existing main
 checks remain as they are; the desktop workflow limits full PR CI to main.
 
-GitHub loads `pull_request_target` from the default branch, so deployment must
-include that branch. On 2026-10-21 all four default branches are main (verify with
-`gh api repos/tilr-dev/REPO --jq .default_branch`). The one-time bootstrap into main has been authorized. Required-check
-activation also needs a bootstrap order: publish the shared checker, deploy the
-trusted workflows, observe the check, then add `spec-change` to each dev ruleset
-while preserving all existing rules and main protections. Adding the rule first
-would strand the bootstrap PR without its new workflow.
+The shared checker and trusted workflows are deployed in main for gitpm, cloud,
+and desktop-mac, with `spec-change` required by their dev rulesets. The tilrd
+rollout follows its release from dev to main. Existing main protections remain
+in place.
 
 See GitHub's [trusted event behavior](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target)
 and [required check evaluation](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks).
@@ -111,15 +109,3 @@ reported the uncovered requirement. This experiment did not bypass the gate.
 GitHub also documents that [test-merge results take precedence over head results](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks#conflicts-between-head-commit-and-test-merge-commit).
 A content digest protects the checker executable, but does not bind the required
 context to that executable.
-
-The deployment order is: bootstrap the trusted workflows and shared checker into
-main, activate the required check in each dev ruleset, then validate this behavior
-against the active protection. Before creating or closing the disposable,
-non-merged test PR, obtain separate explicit authorization. The test PR must
-remain unmergeable with both an unauthorized spec edit and an independent
-successful job named `spec-change`. Deployment alone does not complete this
-verification. If the bypass is confirmed, enforcement changes need a new decision.
-The [required-workflow rule](https://docs.github.com/en/enterprise-cloud%40latest/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets#require-workflows-to-pass-before-merging)
-is documented for Enterprise Cloud. On 2026-10-21 the organization reports Team
-(`gh api orgs/tilr-dev --jq .plan.name`). Changing the enforcement architecture or
-accepting this limitation requires an explicit decision.
