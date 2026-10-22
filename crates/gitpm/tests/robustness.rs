@@ -328,3 +328,29 @@ fn explicit_fork_toggle_update_rollback_does_not_replace_original_identity() {
     );
     // Enabled flags are not dependency replacement: that is a separate acceptance requirement.
 }
+
+#[test]
+fn commit_under_an_unreadable_ancestor() {
+    use std::os::unix::fs::PermissionsExt;
+    struct RestorePermissions(PathBuf);
+    impl Drop for RestorePermissions {
+        fn drop(&mut self) {
+            fs::set_permissions(&self.0, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+    }
+    let f = Fixture::new();
+    let ancestor = f.dir.join("search-only");
+    let parent = ancestor.join("existing");
+    fs::create_dir_all(&parent).unwrap();
+    let _restore = RestorePermissions(ancestor.clone());
+    fs::set_permissions(&ancestor, fs::Permissions::from_mode(0o311)).unwrap();
+    // The workspace's immediate parent stays readable and writable for the lock.
+    let root = parent.join("workspace");
+    let m = Manager::open(&root).unwrap();
+    m.install(f.author.to_str().unwrap()).unwrap();
+    assert!(root.join("dist/vendor/module/index.js").is_file());
+    drop(m);
+    let m = Manager::open(&root).unwrap();
+    m.disable("vendor/module").unwrap();
+    assert!(!root.join("dist/vendor/module").exists());
+}

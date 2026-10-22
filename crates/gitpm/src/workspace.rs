@@ -769,7 +769,7 @@ impl Manager {
         if let Some(location) = &options.catalog {
             catalog::validate_location(location)?;
         }
-        fs::create_dir_all(parent)?;
+        txn::create_workspace_dirs(parent)?;
         // Keyed by the real path: a symlinked spelling of the root or of its parent is
         // the same workspace and must take the same lock.
         let real = if fs::symlink_metadata(&root).is_ok() {
@@ -822,7 +822,7 @@ impl Manager {
             }
         }
         if !root.join("state.json").exists() {
-            fs::create_dir_all(&root)?;
+            txn::create_workspace_dirs(&root)?;
             write_initial_state(&real)?;
         }
         fs::create_dir_all(root.join("packages"))?;
