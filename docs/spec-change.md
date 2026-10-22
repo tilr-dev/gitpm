@@ -26,7 +26,9 @@ pages through the read-only MCP endpoint. It accepts scope declarations from the
 Intake Bot identity and authorization blocks from Dan's member identity, using
 stable user IDs rather than display names. It does not use task descriptions or
 bot-authored blocks as permission. Comment arrays must be complete and preserve
-activity metadata. Malformed scope or incomplete reads fail closed.
+activity metadata. Malformed scope or incomplete reads fail closed. The own
+change is the single `change <id>` inside `own (...)` of the latest `Spec scope:`
+line; no id, several ids, or a `change <id>` outside `own (...)` fail closed.
 
 Authorization blocks use exact component, capability, requirement and operation:
 
@@ -43,8 +45,12 @@ REMOVED or RENAMED delta in that own change still requires authorization for
 existing requirements. Foreign changes require `edit` or `archive`; rewriting contents during an archive
 requires both. A rename followed by a modification in an own delta requires
 `modify` authorization for the original requirement name. Renaming a
-requirement is authorized only when its body is preserved. Changes outside a
-recognized specification/change layout fail closed.
+requirement is authorized only when its body is preserved. Removing only a
+requirement heading, so that its text falls under an existing requirement,
+requires `modify` for that requirement. An archive already in dev counts as a
+foreign change even when it carries the own change name. A new capability whose
+name equals another one after case folding and Unicode NFC normalization fails
+closed. Changes outside a recognized specification/change layout fail closed.
 
 Run the deterministic fixture, real Git diff/CLI and mocked MCP contract tests:
 
@@ -59,8 +65,11 @@ loaded from the candidate merge commit, so a PR can replace the checker job with
 a successful no-op or capture the read-only task token. Checking out a trusted
 script does not protect the workflow file itself.
 
-The deployed `pull_request_target` workflow uses the default branch's workflow,
-downloads a shared checker with a pinned SHA-256 digest, and fetches candidate
+The deployed `pull_request_target` workflow `.github/workflows/spec-change.yml`
+exists only in each component's main branch: GitHub loads `pull_request_target`
+workflows from the default branch, so dev trees and task branches carry no copy
+and cannot change it. It downloads the shared checker from gitpm main, verifies a
+SHA-256 digest pinned in main's workflow, and fetches candidate
 Git objects into a bare repository solely for inspection. It targets PRs into dev, has `contents: read`, supplies only the
 read-only task token to the checker, and never executes candidate files. Its job
 is named `spec-change`, with no path filter or skip condition. The existing main
@@ -68,8 +77,13 @@ checks remain as they are; the desktop workflow limits full PR CI to main.
 
 The shared checker and trusted workflows are deployed in main for gitpm, cloud,
 and desktop-mac, with `spec-change` required by their dev rulesets. The tilrd
-rollout follows its release from dev to main. Existing main protections remain
-in place.
+rollout follows once its main carries the workflow. Existing main protections
+remain in place.
+
+A checker change reaches CI in two steps: the new `scripts/spec_change.py`
+lands in gitpm main, and a pull request into main of each component updates the
+pinned digest (`shasum -a 256 scripts/spec_change.py`) in its workflow. Until the
+digest is updated, the download fails the check closed.
 
 See GitHub's [trusted event behavior](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target)
 and [required check evaluation](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks).
@@ -77,7 +91,7 @@ and [required check evaluation](https://docs.github.com/en/pull-requests/how-tos
 ## Required-check source binding
 
 The trusted workflows and required dev checks are deployed in gitpm, cloud, and
-desktop-mac. The tilrd activation follows its release from dev to main. Protecting
+desktop-mac. The tilrd activation follows once its main carries the workflow. Protecting
 workflow code and binding the required result to that workflow are separate controls.
 GitHub's [ruleset troubleshooting documentation](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/troubleshooting-rules)
 says that required status checks identify jobs by name and ignore the workflow
