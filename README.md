@@ -1194,6 +1194,9 @@ $ gitpm list --provides theme | jq '.resolved[] | {id, title, description, provi
   and its parents before moving managed paths. Each move syncs destination and source
   parents; transaction cleanup is persisted before success. A published journal is
   rolled forward on reopen, so successful commits survive subsequent power loss.
+  Creating a workspace syncs new directories and their parents, stopping after the
+  first pre-existing parent. Later commits sync parent chains only within the
+  workspace; unchanged ancestors outside it are not opened for syncing.
   Sync errors are returned to the caller.
 
 - Not interactive: no printing, prompts, stdin or environment variables. Every path and

@@ -120,6 +120,30 @@ fn sync_path(path: &Path) -> Result<()> {
     record(DurabilityEvent::Sync(path.into()));
     Ok(())
 }
+/// Persist directory creation, including the entry in the first existing parent.
+/// Existing ancestors above that boundary are neither changed nor opened.
+pub(crate) fn create_workspace_dirs(path: &Path) -> Result<()> {
+    let mut missing = Vec::new();
+    let mut current = path;
+    loop {
+        match fs::metadata(current) {
+            Ok(_) => break,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                missing.push(current);
+                current = current.parent().ok_or(e)?;
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    fs::create_dir_all(path)?;
+    if !missing.is_empty() {
+        for directory in missing {
+            sync_path(directory)?;
+        }
+        sync_path(current)?;
+    }
+    Ok(())
+}
 /// Persist new ancestors child-first. Missing directories may have been pruned.
 fn sync_parents(root: &Path, path: &Path) -> Result<()> {
     for parent in path.ancestors().take_while(|p| p.starts_with(root)) {
@@ -270,10 +294,6 @@ impl Txn {
         remove(&self.dir.join("scratch"))?;
         // Payload data, symlink entries and state must survive before the decision.
         sync_tree(&self.dir)?;
-        // The workspace itself may have been created by this operation.
-        for parent in self.root.ancestors().skip(1) {
-            sync_path(parent)?;
-        }
         let temporary = self.dir.join("journal.tmp");
         fs::write(&temporary, serde_json::to_vec_pretty(&self.journal)?)?;
         sync_path(&temporary)?;
@@ -440,9 +460,10 @@ fn commit_syncs_journal_state_and_parents() {
     let journal = sync_index(&root.join(DIR).join("journal.tmp"));
     let state = sync_index(&root.join(DIR).join("state.json"));
     assert!(state < journal);
-    for parent in root.ancestors().skip(1) {
-        assert!(sync_index(parent) < journal);
-    }
+    assert!(events.iter().all(|event| match event {
+        DurabilityEvent::Sync(path) => path.starts_with(root),
+        _ => true,
+    }));
     for relative in ["dist/new/plugin", "packages/existing/plugin"] {
         assert!(sync_index(&root.join(DIR).join("new").join(relative).join("payload")) < journal);
     }
@@ -587,4 +608,30 @@ fn commit_syncs_symlink_entries_without_following_targets() {
         assert!(events.contains(&DurabilityEvent::Sync(staged.clone())));
         assert!(!events.contains(&DurabilityEvent::Sync(staged.join("link"))));
     });
+}
+
+#[cfg(test)]
+#[test]
+fn workspace_creation_syncs_only_new_ancestors() {
+    let temp = crate::test_support::TempDir::new("txn-new-ancestors");
+    let existing = temp.join("existing");
+    fs::create_dir(&existing).unwrap();
+    let parent = existing.join("new");
+    let root = parent.join("workspace");
+    let _capture = Capture::new();
+    // Exercise the public creation path, including parents made before locking.
+    let manager = crate::Manager::open(&root).unwrap();
+    let events = DURABILITY_EVENTS.with(|events| events.borrow_mut().take().unwrap());
+    let synced: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            DurabilityEvent::Sync(path) => Some(path),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(synced, [&parent, &existing, &root, &parent]);
+    DURABILITY_EVENTS.with(|events| *events.borrow_mut() = Some(Vec::new()));
+    drop(manager);
+    let _manager = crate::Manager::open(&root).unwrap();
+    assert!(DURABILITY_EVENTS.with(|events| events.borrow().as_ref().unwrap().is_empty()));
 }
