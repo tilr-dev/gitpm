@@ -90,3 +90,63 @@ fn boundary_detects_imports_aliases_and_qualified_calls() {
     }
     assert!(violations("#[cfg(test)] mod tests { use std::process::Command; }").is_empty());
 }
+
+/// The staged migration permits raw helpers elsewhere, but workspace callers
+/// must express operations through the typed transport API. Checking identifiers
+/// also catches imports renamed locally and inherited calls through `super::*`.
+#[derive(Default)]
+struct WorkspaceBoundary(Vec<String>);
+impl<'ast> Visit<'ast> for WorkspaceBoundary {
+    fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+        if !test_only(&item.attrs) {
+            visit::visit_item_mod(self, item);
+        }
+    }
+    fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
+        if !test_only(&item.attrs) {
+            visit::visit_item_fn(self, item);
+        }
+    }
+    fn visit_ident(&mut self, ident: &'ast syn::Ident) {
+        let name = ident.to_string();
+        if matches!(
+            name.as_str(),
+            "git" | "git_raw" | "git_with_input" | "http_get"
+        ) {
+            self.0.push(name);
+        }
+    }
+}
+fn workspace_violations(source: &str) -> Vec<String> {
+    let mut boundary = WorkspaceBoundary::default();
+    boundary.visit_file(&syn::parse_file(source).unwrap());
+    boundary.0
+}
+#[test]
+fn workspace_uses_typed_transport() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    for file in ["workspace.rs", "workspace/clones.rs", "workspace/fork.rs"] {
+        let found = workspace_violations(&fs::read_to_string(root.join(file)).unwrap());
+        assert!(found.is_empty(), "{file} uses raw transport: {found:?}");
+    }
+}
+#[test]
+fn workspace_boundary_detects_raw_calls_and_imports() {
+    for source in [
+        "use crate::transport::git as run;",
+        "use crate::{transport::{git_raw as read}};",
+        "fn run() { crate::transport::git_with_input(); }",
+        "use super::*; fn run() { git(); }",
+        "fn run() { backend.git(); }",
+        "fn run() { crate::transport::http_get(); }",
+    ] {
+        assert!(!workspace_violations(source).is_empty(), "{source}");
+    }
+    assert!(
+        workspace_violations(
+            "#[cfg(test)] mod tests { use crate::test_support::git; fn setup() { git(); } }"
+        )
+        .is_empty()
+    );
+    assert!(workspace_violations("fn run() { SystemTransport.head_commit(); }").is_empty());
+}
