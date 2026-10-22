@@ -75,17 +75,22 @@ def requirement_at(lines, index):
 
 
 def changed_requirements(old, new):
-    """Map removed base lines to their requirement, retaining exact old headings."""
+    """Map edits, including inserted content, to existing requirements."""
     before, after = old.splitlines(), new.splitlines()
+    names_before = {m[1] for line in before if (m := REQUIREMENT.fullmatch(line))}
     names_after = {m[1] for line in after if (m := REQUIREMENT.fullmatch(line))}
     result = set()
-    for tag, i, j, _, _ in difflib.SequenceMatcher(None, before, after, autojunk=False).get_opcodes():
-        if tag not in ('delete', 'replace'):
+    for tag, i, j, k, l in difflib.SequenceMatcher(None, before, after, autojunk=False).get_opcodes():
+        if tag == 'equal':
             continue
         for index in range(i, j):
             name = requirement_at(before, index)
             operation = 'modify' if name in names_after else 'remove'
             result.add((name, operation))
+        for index in range(k, l):
+            name = requirement_at(after, index)
+            if after[index].strip() and name in names_before:
+                result.add((name, 'modify'))
     return result
 
 
@@ -164,9 +169,10 @@ def check(base, head, comments, component):
         change, suffix = match.groups()
         if change not in own:
             # An unchanged archive copy still needs the archive grant for its source.
-            archived = (path not in base and path.startswith('openspec/changes/archive/')) or any(
+            is_archive = path.startswith('openspec/changes/archive/')
+            archived = (path not in base and is_archive) or (not is_archive and any(
                 re.fullmatch(r'openspec/changes/archive/\d{4}-\d{2}-\d{2}-' + re.escape(change + '/' + suffix), p)
-                for p in head.keys() - base.keys())
+                for p in head.keys() - base.keys()))
             operation = 'archive' if archived else 'edit'
             if ('change', change, operation) not in allowed:
                 uncovered.add(f'{component}: changes/{change}: {operation}')
@@ -174,7 +180,8 @@ def check(base, head, comments, component):
                 source = f'openspec/changes/{change}/{suffix}'
                 targets = [p for p in head.keys() - base.keys() if re.fullmatch(
                     r'openspec/changes/archive/\d{4}-\d{2}-\d{2}-' + re.escape(change + '/' + suffix), p)]
-                if any(source not in base or head[p] != base[source] for p in targets):
+                source_edited = source in head and head[source] != base.get(source, '')
+                if source_edited or any(source not in base or head[p] != base[source] for p in targets):
                     if ('change', change, 'edit') not in allowed:
                         uncovered.add(f'{component}: changes/{change}: edit')
         delta = re.fullmatch(r'specs/([^/]+)/spec\.md', suffix)
