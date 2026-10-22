@@ -369,6 +369,11 @@ fn a_package_of_a_shared_clone_is_deployed_from_its_own_commit() {
     ]);
     assert_eq!(f.dist("tilr/theme"), None);
     assert_eq!(f.dist("me/theme").as_deref(), Some("theme 1.0.0"));
+    assert_eq!(f.dist("tilr/store"), None);
+    assert_eq!(f.dist("me/store").as_deref(), Some("store 1.0.0"));
+    // The whole repository was forked and replaced. Keep theme's fork active but
+    // restore store's original provider to exercise independent dist revisions.
+    f.ok(&["replace", "tilr/store", "--back"]);
     assert_eq!(f.dist("tilr/store").as_deref(), Some("store 1.0.0"));
     // theme 1.1.0 is installed while replaced; then store moves the shared clone's HEAD
     // to a commit whose theme files differ from theme's installed revision.
