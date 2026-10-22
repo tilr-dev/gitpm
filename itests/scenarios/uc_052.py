@@ -27,17 +27,17 @@ def normalized(t: T, id: str) -> dict:
 
 
 def rev(t: T, version: str) -> dict:
-    return {"version": version, "commit": t.rev(HELLO, f"{HELLO}@{version}")}
+    return {"version": version, "commit": t.rev(HELLO, f"v{version}")}
 
 
 @case(fixture="hello_releases", spec=["install-uninstall/three-removal-levels#forget-then-restore", "fork-replacement/fork-copies-an-installed-package#fork-one-package", "dist/forget-restore-and-uninstall-settle-dist"])
 def lifecycle_matches_library_contract(t: T):
     """install / update / rollback / enable / disable / forget / restore / fork / uninstall."""
-    t.gitpm_ok("install", t.repo(HELLO), "--ref", f"{HELLO}@0.1.0")
+    t.gitpm_ok("install", t.repo(HELLO), "--ref", f"v0.1.0")
     t.eq(normalized(t, HELLO), {"current": rev(t, "0.1.0"), "previous": None, "enabled": True,
                                 "forkOf": None, "replaces": None, "dependencies": None}, "install")
-    t.gitpm_ok("update", HELLO, "--ref", f"{HELLO}@0.1.1")
-    t.eq(t.package(HELLO)["previous"].get("mode"), {"pinned": f"{HELLO}@0.1.0"}, "previous keeps its mode")
+    t.gitpm_ok("update", HELLO, "--ref", f"v0.1.1")
+    t.eq(t.package(HELLO)["previous"].get("mode"), {"pinned": f"v0.1.0"}, "previous keeps its mode")
     t.eq((normalized(t, HELLO)["current"], normalized(t, HELLO)["previous"]), (rev(t, "0.1.1"), rev(t, "0.1.0")),
          "update: current/previous")
     t.has((t.dist(HELLO) / "index.js").read_text(), "dan/hello 0.1.1")
@@ -58,7 +58,7 @@ def lifecycle_matches_library_contract(t: T):
     t.has((t.dist(HELLO) / "index.js").read_text(), "dan/hello 0.1.0")
     fork = t.root / "forks/hello"
     r = t.gitpm_ok("fork", HELLO, "--ns", "mine", "--into", fork)
-    t.has(r.out, "mine/hello forked from dan/hello (repository root)", "Next steps (or all at once: add --replace):")
+    t.has(r.out, "mine/hello forked from dan/hello (repository root)", "Next steps (or all at once: add --replace --version NEW_VERSION):")
     m = json.loads((fork / "plugin.json").read_text())
     t.eq((m["id"], m["forkOf"]["id"], m["forkOf"]["commit"], m["replaces"]),
          ("mine/hello", HELLO, rev(t, "0.1.0")["commit"], {"id": HELLO, "version": "0.1.0"}), "fork manifest")
@@ -110,8 +110,8 @@ def replace_and_switch_back(t: T):
 def bad_manifest_kind(t: T):
     """A release without dist/ and one with broken plugin.json: invalid_manifest, nothing installed."""
     t.commit(HELLO, "no dist", {"dist/index.js": None, "plugin.json": json.dumps({"id": HELLO, "version": "0.2.0"})})
-    t.tag(HELLO, f"{HELLO}@0.2.0")
-    t.gitpm_err("install", t.repo(HELLO), "--ref", f"{HELLO}@0.2.0", kind="invalid_manifest",
+    t.tag(HELLO, f"v0.2.0")
+    t.gitpm_err("install", t.repo(HELLO), "--ref", f"v0.2.0", kind="invalid_manifest",
              contains="dist/ directory")
     t.not_installed(HELLO)
     t.commit(HELLO, "broken", {"plugin.json": '{"id": ', "dist/index.js": "x\n"})
@@ -174,8 +174,8 @@ def side_by_side_library_run(t: T):
     """Run a lifecycle through the public API and CLI, comparing state and deployed bytes after each step."""
     paired = t.root / "api-workspace"
     steps = [
-        ("install", str(t.repo(HELLO)), f"{HELLO}@0.1.0"),
-        ("update", HELLO, f"{HELLO}@0.1.1"),
+        ("install", str(t.repo(HELLO)), f"v0.1.0"),
+        ("update", HELLO, f"v0.1.1"),
         ("rollback", HELLO), ("disable", HELLO), ("enable", HELLO),
         ("forget", HELLO), ("restore", HELLO),
     ]

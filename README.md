@@ -25,7 +25,7 @@ folder (default `"dist"`, `"."` means the package root); `buildCommand` is descr
 with `buildRequired` (default false), a missing folder is refused with `invalid_manifest`
 naming the build command when supplied. Installing clones the
 repository into a workspace and copies the package's declared output folder; nothing is built or executed.
-Releases are Git tags `namespace/name@VERSION`.
+All packages in one Git repository share one version and one annotated release tag `vVERSION`. Git honors `tag.gpgSign` when creating it.
 The catalog is a tree of static JSON files (local folder or HTTP) with exact commits and
 file hashes. It is optional: without one, packages are installed and updated straight
 from their Git sources ([working without a catalog](#working-without-a-catalog)).
@@ -52,7 +52,7 @@ Everything below works on local folders: package repositories and the catalog ar
 directories, nothing is pushed or uploaded.
 
 A package is a Git repository with `plugin.json` and a ready output folder (`dist/` by default); a release is
-a `namespace/name@VERSION` tag. Package IDs always have a namespace.
+a repository `vVERSION` tag. Package IDs always have a namespace.
 Repositories are plain folders named by you (`./greeter`); gitpm never derives a folder
 from an ID:
 
@@ -60,7 +60,7 @@ from an ID:
 $ mkdir -p greeter/dist && cd greeter && git init -q -b main
 $ echo '{"id": "acme/greeter", "version": "0.1.0"}' > plugin.json
 $ echo 'export const greeting = "greeter v1";' > dist/index.js
-$ git add . && git commit -qm "greeter 0.1.0" && git tag acme/greeter@0.1.0 && cd ..
+$ git add . && git commit -qm "greeter 0.1.0" && git tag -m "Release v0.1.0" v0.1.0 && cd ..
 $ gitpm install ./greeter
 installed acme/greeter@0.1.0 from /…/greeter
 $ cat gitpm-workspace/dist/acme/greeter/index.js
@@ -82,7 +82,7 @@ Release 0.2.0, update, roll back (one previous version is kept):
 ```console
 $ echo 'export const greeting = "greeter v2";' > greeter/dist/index.js
 $ echo '{"id": "acme/greeter", "version": "0.2.0"}' > greeter/plugin.json
-$ git -C greeter commit -qam "greeter 0.2.0" && git -C greeter tag acme/greeter@0.2.0
+$ git -C greeter commit -qam "greeter 0.2.0" && git -C greeter tag -m "Release v0.2.0" v0.2.0
 $ gitpm update acme/greeter
 acme/greeter updated 0.1.0 → 0.2.0 (major)
 $ cat gitpm-workspace/dist/acme/greeter/index.js
@@ -144,7 +144,7 @@ release mode), and `update ID` follows it:
 | Install | Mode (`state.json`) | `update ID` |
 | --- | --- | --- |
 | `install SRC` | release (no `mode`) | newest release |
-| `install SRC --ref acme/greeter@0.1.0` or `--ref COMMIT` | `{"pinned": "acme/greeter@0.1.0"}` (a commit in full) | stays: `acme/greeter pinned at 0.1.0 (acme/greeter@0.1.0)` |
+| `install SRC --ref v0.1.0` or `--ref COMMIT` | `{"pinned": "v0.1.0"}` (a commit in full) | stays: `acme/greeter pinned at 0.1.0 (v0.1.0)` |
 | `install SRC --ref feature` | `{"branch": "feature"}` | HEAD of `origin/feature`, by commit (no version bump needed) |
 | `install SRC --dev` | `{"branch": "main"}` (the origin's default branch, by name) | HEAD of `origin/main` |
 
@@ -157,7 +157,7 @@ record the new mode the same way (a new mode at the installed commit is a change
 `ID pinned at V (REF)`); `update ID --release` returns it to release mode at the newest
 release, even when that is below the installed version (a plain `update` never goes
 down). A tag or commit may go back to an older version or keep the installed one at
-another commit (an explicit `--ref` of a moved release tag warns `release tag ID@V now
+another commit (an explicit `--ref` of a moved release tag warns `release tag vV now
 points to COMMIT`); a
 branch whose history no longer contains the installed commit, or that the origin no
 longer has, is refused (`version_conflict`, "ID: history of main diverged; automatic update
@@ -173,7 +173,7 @@ asking its origin and compares a branch-mode package with the branch HEAD on the
 gitpm does not police release tags: every fetch takes the origin's tags as they are (a
 moved tag at its new commit, a deleted one gone), and the installed revision is kept by
 commit. A release-mode `update ID` or `update all` compares versions only, so a moved tag
-of the installed version prints `ID up to date (V)` with `Warning: release tag ID@V now
+of the installed version prints `ID up to date (V)` with `Warning: release tag vV now
 points to COMMIT; the installed commit is kept`, and a retracted installed release (its
 tag deleted, only older ones left) `ID up to date (V)` with `Warning: installed release
 ID@V no longer exists on the origin`; a tag moved onto a commit of another version is a
@@ -184,10 +184,10 @@ after its tag went) fails with `no_previous_version` ("previous revision COMMIT 
 no longer available").
 
 ```console
-$ gitpm install ./greeter --ref acme/greeter@0.1.0
+$ gitpm install ./greeter --ref v0.1.0
 installed acme/greeter@0.1.0 from /…/greeter
 $ gitpm update acme/greeter
-acme/greeter pinned at 0.1.0 (acme/greeter@0.1.0)
+acme/greeter pinned at 0.1.0 (v0.1.0)
 $ gitpm update acme/greeter --release
 acme/greeter updated 0.1.0 → 0.2.0 (major)
 ```
@@ -206,7 +206,7 @@ A catalog is generated from the release tags of the repositories listed in a sou
 file (paths are relative to that file). `gitpm init NAMESPACE/NAME --into DIR`
 scaffolds the package with its first release: a new `DIR` becomes a package
 repository, a repository with `gitpm.json` gets a package folder. The namespace and `DIR`
-are required, there are no defaults. `gitpm commit` bumps the version, commits
+are required, there are no defaults. `gitpm commit` bumps every package to the same repository version, commits
 everything and tags:
 
 ```console
@@ -232,11 +232,11 @@ $ gitpm init acme/hello --into hello
 
 Created: /…/hello
 ID: acme/hello
-Version 0.1.0: Git commit and tag acme/hello@0.1.0.
+Version 0.1.0: Git commit and tag -m "Release v0.1.0." v0.1.0.
 …
 $ echo 'export const greeting = "hello v2";' > hello/dist/index.js
 $ gitpm commit hello 0.1.1
-acme/hello committed 0.1.1 (local commit and tag acme/hello@0.1.1)
+acme/hello committed 0.1.1 (local commit and tag -m "Release v0.1.1" v0.1.1)
 $ echo './hello' >> sources.txt
 $ gitpm catalog update
 Reading releases: /…/greeter
@@ -320,8 +320,8 @@ me/hello forked from acme/hello (repository root)
 forkOf records each origin; replaces says the fork can stand in for it (used only
 after an explicit replace). The original installations are unchanged.
 
-Next steps (or all at once: add --replace):
-  gitpm commit '/…/hello-fork' NEW_VERSION --package me/hello   commit local edits, tag me/hello@NEW_VERSION
+Next steps (or all at once: add --replace --version NEW_VERSION):
+  gitpm commit '/…/hello-fork' NEW_VERSION --package me/hello   commit local edits, tag vNEW_VERSION
   gitpm install '/…/hello-fork' me/hello
   gitpm replace acme/hello --with me/hello
 Set your own origin with: gitpm remote '/…/hello-fork' GIT_URL
@@ -333,7 +333,7 @@ acme/hello uninstalled
 ```
 
 `fork ID --ns NAMESPACE --into DIR --replace` does all of it at once: fork, release the
-fork right away (tag `NAMESPACE/NAME@VERSION`; `--version V`, default the forked version), install it and replace `ID`
+fork right away (tag `vVERSION`; `--version V`, default the shared forked version when not already tagged), install it and replace `ID`
 with it for every consumer. Incompatible consumers are handled as by `replace`: asked on a
 TTY, otherwise only with `--force`. The fork folder is never removed again: when the
 release, install or replace step fails, the command says per package what is left and how
@@ -466,10 +466,13 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   always the joint upgrade, as no ID can be `all`. Migration: re-create the package
   under a namespace (`gitpm init NAMESPACE/NAME --into DIR`, or change `id` in
   `plugin.json` and tag it).
-- Release tags are only `ID@VERSION`. `vVERSION` tags are no releases any more, in
-  single- and multi-package repositories, and are ignored without a warning (a
-  repository with only `v1.0.0` fails install with `no_releases`); `init`, `commit` and
-  `fork --replace` never create them. Migration: tag `ID@VERSION` on the release commits.
+- Release tags are only `vVERSION`, in single- and multi-package repositories. All
+  package manifests share that version at each release. Legacy `ID@VERSION` tags
+  are ignored without a warning; there is no compatibility reader. `init` starts a
+  new repository at `v0.1.0`; adding a package inherits the current repository version
+  without tagging. Run `gitpm commit REPO NEW_VERSION` to release every package.
+  `--package ID` selects the result ID only. Existing tags, including upstream tags
+  retained by a fork, are never moved: choose a new version for a fork release.
 - `state.json` format 1: installed packages are under `packages` (was `plugins`), own
   clones in the workspace folder `packages/` (was `plugins/`). Any other format, or a
   file without `format`, is refused with `unsupported` and never rewritten; there is no
@@ -759,7 +762,7 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   tags no longer block it. Migration: scripts that expected `version_conflict` on a
   retagged release read the warning instead. An explicit `--ref TAG|COMMIT` with the
   installed version at another commit is accepted and pinned ("upstream changed without
-  a version bump" is gone; a moved release tag of that version warns `release tag ID@V
+  a version bump" is gone; a moved release tag of that version warns `release tag vV
   now points to COMMIT`).
 - Protected catalogs ([Verified catalogs](#verified-catalogs)): only a catalog whose
   top-level `catalog.json` has `"verified": true` binds packages. An unverified catalog no
@@ -831,7 +834,7 @@ installed (and enabled, unless downloading) and otherwise fails with
 `check` needs no catalog either. Every installed package gets one row: from the catalog
 when one is given and lists the package (column `SOURCE` `catalog`), otherwise from its
 recorded origin (`origin`): `git ls-remote --tags --heads` of `packages.<id>.source`, read once per
-source, without fetching or changing the clone. The newest `ID@VERSION` tag counts by name
+source, without fetching or changing the clone. The newest `vVERSION` tag counts by name
 (its manifest is verified only when updating). Origin rows say `up to date`, `update
 available`, `newer than origin`, `no releases on origin` or `origin unreachable` (with a
 hint such as "The Git server is unreachable. …"; git's own output is never shown), or
@@ -984,15 +987,14 @@ packages/theme/dist/…
   package. Only the package being installed, updated or registered must be valid at its
   commit: a defective sibling folder (no `dist/`, bad ID, …) does not block it
   (`catalog update` reports it as a warning and publishes the other packages).
-- Releases are per package: tag `ID@VERSION` (`tilr/store@1.2.0`), so the packages of one
-  repository release independently. The package set is read from `gitpm.json` at the
-  tagged commit, so a package may move to another folder between releases. Other tags
-  (`vVERSION` included) are not releases and are ignored without a warning; a newest
-  tag whose commit lacks its package fails the install clearly.
+- Releases belong to the repository: one `vVERSION` tag releases every package at
+  that version. The package set is read from `gitpm.json` at the tagged commit,
+  so a package may move between releases. Legacy `ID@VERSION` tags are ignored.
+  Installing or updating one package leaves its siblings at their installed revisions.
 - `gitpm install REPO ID` (or `--package ID`) installs one package. Without an ID a
   repository with several packages is refused with the list of its packages (`tilr/store
   (packages/store), tilr/theme (packages/theme)`); one with a single listed package
-  needs none; an `--ref ID@VERSION` tag names the package itself. For a single-package
+  needs none; `--ref vVERSION` still requires a package ID when several are listed. For a single-package
   repository a given ID must match its manifest. `--ref` and `--dev` (the origin's default
   branch) work per package, and each package records its own mode.
 - Workspace: the packages of one source share one clone, `repos/<name>-<hash of the
@@ -1022,32 +1024,31 @@ packages/theme/dist/…
   If the clone is gone, `uninstall` drops the record, and `restore` says so.
 - Catalog: a release of a package carries `"path": "packages/store"` next to `source` and
   `commit` (absent for a root package). `catalog update` publishes every package listed in
-  `gitpm.json` at the source's HEAD from its `ID@VERSION` tags (one source line, all
-  packages); `catalog register SRC --ref REF --package ID` registers one (an `ID@VERSION` ref names
-  it).
-- Authoring: `gitpm init NAMESPACE/NAME --into DIR` adds a package with release 0.1.0
+  `gitpm.json` at the source's HEAD from its repository `vVERSION` tags (one source line, all
+  packages); `catalog register SRC --ref REF --package ID` registers one (the repository ref does not select a package).
+- Authoring: `gitpm init NAMESPACE/NAME --into DIR` adds a package at the current shared version without a tag
   to a repository with `gitpm.json`; an existing repository without `gitpm.json` gets that
   file (`{"packages": ["packages/*"]}`), unless its root already is a package (moving it
   into a folder is up to you); a folder that does not exist becomes a single-package
   repository instead, or with `--multi` a multi-package one (`gitpm.json` and
   `packages/NAME`; also for an empty folder that is not a repository yet), so later
   `init --into DIR` calls add packages to it. `--no-release` makes only the commit, no
-  tag; `gitpm commit DIR 0.1.0 [--package ID]` releases it later. The folder is `PREFIX/NAME` for the first `PREFIX/*` pattern, else
+  tag; `gitpm commit DIR NEW_VERSION [--package ID]` releases all packages later;
+  the first commit after a new `init --no-release` may use 0.1.0. The folder is `PREFIX/NAME` for the first `PREFIX/*` pattern, else
   `packages/NAME` (added to `gitpm.json` when no pattern matches it): folders are named
   after the name part of the ID, so `a/ui` and `b/ui` cannot share a repository (the
   second `init` is refused naming the package that has the folder). Only `gitpm.json` and
-  the new folder are committed; `gitpm.json` must have no uncommitted changes. If only the
-  tag fails, the commit stays and the error names the tag to create. gitpm never writes
+  the new folder are committed; `gitpm.json` must have no uncommitted changes. Adding a package never creates a tag. gitpm never writes
   a Git identity into an existing repository: without configured `user.name` and
   `user.email` (or author and committer identity environment variables), `commit`,
   and `init` into it fail with `invalid_argument` and
   `no Git identity configured; set user.name and user.email`. Git's inferred login
   name and host email are not accepted. A retry that only creates a failed release
-  tag needs no identity. Only a
+  tag requires identity for the annotated or signed tag too. Only a
   repository it creates itself (a new `init` folder, a new fork) gets a local demo identity
-  when the user has none. `gitpm commit REPO VERSION --package ID` releases one
-  package: like for a root package it stages ALL changes of the repository (not only
-  that folder), commits and tags `ID@VERSION`.
+  when the user has none. `gitpm commit REPO VERSION [--package ID]` sets every package
+  version, stages ALL changes of the repository, commits and creates `vVERSION`.
+  The selector chooses only the package ID in the result.
 - `gitpm fork ID [ID...] --ns NAMESPACE --into DIR` forks the entire source
   repository into `DIR`; every package gets the ID `NAMESPACE/<same name>`, including
   packages that are not installed. The IDs identify the source, never a subset of
@@ -1074,13 +1075,13 @@ packages/theme/dist/…
     it becomes `^V`; each rewrite is printed. Dependencies on other packages keep
     their original IDs. Depending on both an original and its fork is refused.
   - `--replace [--version V] [--force]`: one release commit of the forked folders (with
-    `version` set in each manifest when `--version` is given) and one tag
-    `NAMESPACE/NAME@VERSION` per package, then each package is installed (dependencies
+    `version` set in each manifest when `--version` is given) and one repository tag
+    `vVERSION` shared by all packages, then each package is installed (dependencies
     first; a dependency cycle between the forked packages is refused before anything is
     created) and replaces its original when that original is installed. Uninstalled
     siblings are installed without creating a replacement binding. Release metadata is checked strictly
     (`invalid_manifest` for a wrong type). A failed release commit restores the
-    manifests and index; release tags are created all or none. If the release fails,
+    manifests and index; the one tag is created with a message and honors `tag.gpgSign`. If the release fails,
     nothing is installed. A
     failed install or replace of one package does not stop the others; the fork is never
     removed, the command prints per package what failed and how to finish or undo, and
@@ -1101,16 +1102,17 @@ Dependency: me/panel now depends on me/theme ^1.0 (was tilr/theme)
 $ git init -q tilr-packages
 $ gitpm init tilr/store --into ./tilr-packages
 $ gitpm init tilr/theme --into ./tilr-packages
+$ gitpm commit ./tilr-packages 0.1.1
 $ gitpm install ./tilr-packages
 Error: repository has 2 packages at commit 4b377fe1c0de; choose one by ID: tilr/store (packages/store), tilr/theme (packages/theme)
 $ gitpm install ./tilr-packages tilr/store && gitpm install ./tilr-packages tilr/theme
-installed tilr/store@0.1.0 from /…/tilr-packages
-installed tilr/theme@0.1.0 from /…/tilr-packages
+installed tilr/store@0.1.1 from /…/tilr-packages
+installed tilr/theme@0.1.1 from /…/tilr-packages
 $ echo 'export const v = 2;' > tilr-packages/packages/store/dist/index.js
 $ gitpm commit ./tilr-packages 0.2.0 --package tilr/store
-tilr/store committed 0.2.0 (local commit and tag tilr/store@0.2.0)
-$ gitpm update tilr/store       # tilr/theme stays at 0.1.0
-tilr/store updated 0.1.0 → 0.2.0 (major)
+tilr/store committed 0.2.0 (local commit and tag v0.2.0)
+$ gitpm update tilr/store       # tilr/theme stays at 0.1.1
+tilr/store updated 0.1.1 → 0.2.0 (major)
 ```
 
 Settings: each has a flag, an environment variable and a default (`gitpm --help` lists
@@ -1231,7 +1233,7 @@ $ gitpm list --provides theme | jq '.resolved[] | {id, title, description, provi
   defines `core.sshCommand`. Hosts pass `custom_ssh` explicitly; Git subprocesses
   inherit the host environment.
 - No backward compatibility before 1.0: package IDs are always `namespace/name`, release
-  tags always `ID@VERSION`, catalogs always the static file tree; there are no aliases,
+  tags always `vVERSION`, catalogs always the static file tree; there are no aliases,
   migrations or compatibility readers, and the FFI promises no stability. Every breaking
   change is listed under "Changed in X.Y".
 - `state.json` carries `"format"` (`gitpm::STATE_FORMAT`). A gitpm reads and writes

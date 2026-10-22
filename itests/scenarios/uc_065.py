@@ -38,7 +38,7 @@ def symlinked_plugin(t: T, id: str, links: dict[str, str], version: str = "0.1.0
         os.symlink(target, repo / path)
     t.git(repo, "add", "--all")
     t.git(repo, "commit", "-q", "-m", f"{id} {version}")
-    t.git(repo, "tag", f"{id}@{version}")
+    t.git(repo, "tag", f"v{version}")
     return t.rev(repo)
 
 

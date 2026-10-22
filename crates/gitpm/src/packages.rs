@@ -547,12 +547,6 @@ pub fn packages_in(repo: &Path) -> Result<Option<Vec<Package>>> {
     Ok(Some(packages))
 }
 
-/// The package ID a release tag names (`namespace/name@VERSION`), if it looks like one.
-pub(crate) fn tag_id(tag: &str) -> Option<&str> {
-    let (id, version) = tag.rsplit_once('@')?;
-    (valid_id(id).is_ok() && crate::catalog::version_key(version).is_ok()).then_some(id)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -595,14 +589,6 @@ mod tests {
             assert!(validate_path(bad).is_err(), "{bad:?}");
         }
         assert!(validate_path("packages/store").is_ok());
-    }
-
-    #[test]
-    fn tag_ids_need_a_namespace_and_a_version() {
-        assert_eq!(tag_id("tilr/store@1.2.3"), Some("tilr/store"));
-        assert_eq!(tag_id("v1.2.3"), None);
-        assert_eq!(tag_id("store@1.2.3"), None);
-        assert_eq!(tag_id("tilr/store@banana"), None);
     }
 
     fn package(repo: &Path, folder: &str, id: &str) {

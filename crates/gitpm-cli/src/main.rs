@@ -570,7 +570,7 @@ fn print_package_fork(fork: &gitpm::PackageFork) {
         }
     }
 }
-/// `fork ID... --ns NAMESPACE --into DIR --replace`: per package release, install,
+/// `fork ID... --ns NAMESPACE --into DIR --replace`: repository release, then per-package install,
 /// replace (one package or several, same output). A replacement the library left
 /// pending (incompatible consumers) is confirmed on a TTY and applied with
 /// `fork_replace_resume`. The fork is never removed; every package that did not finish
@@ -815,9 +815,9 @@ Workspace (installed packages):",
                                    all files and the package layout are retained.
                                    Existing destinations are refused. Dependencies
                                    between packages forked together are rewritten
-    [--replace [--version V] [--force]]  then release each fork (tag NS/NAME@V, V defaults
-                                   to the forked version), install it and replace ID with
-                                   it for every consumer",
+    [--replace [--version V] [--force]]  then release the repository (tag vV, V defaults
+                                   to its shared version; use a new V if tagged), then
+                                   install and replace ID for every consumer",
     },
     Help {
         commands: &["replace"],
@@ -846,18 +846,20 @@ Authoring:",
     },
     Help {
         commands: &["init"],
-        text: "  init NAMESPACE/NAME --into DIR   create the package with release 0.1.0:
+        text: "  init NAMESPACE/NAME --into DIR   create a package (0.1.0 in a new repository):
                                    a new DIR becomes a single-package repository; a
                                    repository DIR with gitpm.json (or without one and no
-                                   root package) gets the folder PREFIX/NAME
+                                   root package) gets PREFIX/NAME at the repository
+                                   version, without creating a release tag
     [--multi] [--no-release]       --multi: a new (or empty) DIR becomes a multi-package
                                    repository (gitpm.json, packages/NAME); --no-release:
                                    commit only, no tag (release later with commit)",
     },
     Help {
         commands: &["commit"],
-        text: "  commit REPO VERSION              stage ALL changes, commit, create a release tag;
-    [--package ID]                 --package picks the package of a multi-package repo",
+        text: "  commit REPO VERSION              set ALL package versions, stage ALL changes,
+                                   commit and create one vVERSION release tag;
+    [--package ID]                 --package picks only the package ID in the result",
     },
     Help {
         commands: &["remote"],
@@ -1253,6 +1255,17 @@ fn run(invocation: &mut Invocation) -> Result<()> {
                 None => String::new(),
                 Some(_) => format!(" --package {id}"),
             };
+            let package_version = &created.version;
+            let next_version = if created.new_repository {
+                "0.1.1"
+            } else {
+                "NEW_VERSION"
+            };
+            let first_version = if created.new_repository {
+                "0.1.0"
+            } else {
+                "NEW_VERSION"
+            };
             let version = match &created.tag {
                 Some(tag) => format!("Git commit and tag {tag}"),
                 None => "Git commit, no release tag yet".to_owned(),
@@ -1260,19 +1273,21 @@ fn run(invocation: &mut Invocation) -> Result<()> {
             let install = match &created.tag {
                 Some(_) => String::new(),
                 None => {
-                    format!("  gitpm commit {source} 0.1.0{package}   release the first version\n")
+                    format!(
+                        "  gitpm commit {source} {first_version}{package}   release all repository packages\n"
+                    )
                 }
             };
             match &created.folder {
                 None => println!(
-                    "\nCreated: {}\nID: {id}\nVersion 0.1.0: {version}.\nEdit: {}/dist/index.js\n\nInstall:\n{install}  gitpm --root {root} install {source}\n\nNew release after editing:\n  gitpm commit {source} 0.1.1\n\nGit uses your configured identity; if there is none, the repository gets a local\nPackage Demo <demo@example.invalid>.",
+                    "\nCreated: {}\nID: {id}\nVersion {package_version}: {version}.\nEdit: {}/dist/index.js\n\nInstall:\n{install}  gitpm --root {root} install {source}\n\nNew release after editing:\n  gitpm commit {source} {next_version}\n\nGit uses your configured identity; if there is none, the repository gets a local\nPackage Demo <demo@example.invalid>.",
                     created.repo.display(),
                     created.repo.display()
                 ),
                 Some(folder) => {
                     let path = created.repo.join(folder);
                     println!(
-                        "\nCreated: {}\nID: {id}\nVersion 0.1.0: {version} (only gitpm.json and this folder are committed).\nEdit: {}/dist/index.js\n\nInstall:\n{install}  gitpm --root {root} install {source} {id}\n\nNew release after editing (stages ALL changes of the repository):\n  gitpm commit {source} 0.1.1{package}",
+                        "\nCreated: {}\nID: {id}\nVersion {package_version}: {version} (only gitpm.json and this folder are committed).\nEdit: {}/dist/index.js\n\nInstall:\n{install}  gitpm --root {root} install {source} {id}\n\nNew release after editing (stages ALL changes of the repository):\n  gitpm commit {source} {next_version}{package}",
                         path.display(),
                         path.display()
                     );
@@ -1395,12 +1410,12 @@ fn run(invocation: &mut Invocation) -> Result<()> {
                 print_package_fork(&fork);
                 let quoted = scaffold::shell_quote(&fork.path.to_string_lossy());
                 println!(
-                    "forkOf records each origin; replaces says the fork can stand in for it (used only\nafter an explicit replace). The original installations are unchanged.\n\nNext steps (or all at once: add --replace):"
+                    "forkOf records each origin; replaces says the fork can stand in for it (used only\nafter an explicit replace). The original installations are unchanged.\n\nNext steps (or all at once: add --replace --version NEW_VERSION):"
                 );
                 for package in &fork.packages {
                     println!(
-                        "  gitpm commit {quoted} NEW_VERSION --package {}   commit local edits, tag {}@NEW_VERSION",
-                        package.id, package.id
+                        "  gitpm commit {quoted} NEW_VERSION --package {}   commit local edits, tag vNEW_VERSION",
+                        package.id
                     );
                 }
                 for package in &fork.packages {

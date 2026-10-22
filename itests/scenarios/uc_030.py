@@ -19,7 +19,7 @@ def new_release(t: T) -> str:
     return t.release(ID, "0.3.0")
 
 
-def register(t: T, *extra, ref=f"{ID}@0.3.0"):
+def register(t: T, *extra, ref=f"v0.3.0"):
     return ("register", t.repo(ID), "--ref", ref, *extra)
 
 
@@ -103,7 +103,7 @@ def changing_existing_build_is_rejected(t: T):
 def adding_build_to_existing_release_is_rejected(t: T):
     """dan/hello 0.2.0 was registered without build; adding build metadata later is refused."""
     before = t.snap(t.catalog)
-    t.gitpm_err(*register(t, "--build-url", URL, "--build-sha256", SHA, ref=f"{ID}@0.2.0"),
+    t.gitpm_err(*register(t, "--build-url", URL, "--build-sha256", SHA, ref=f"v0.2.0"),
              kind="version_conflict", contains="immutable")
     t.same(before, "catalog")
     t.ok("build" not in stored(t, "0.2.0"), "0.2.0 still without build")
@@ -125,6 +125,6 @@ def install_ignores_unreachable_build(t: T):
     p = t.package(ID)
     t.eq(p["current"], {"version": "0.3.0", "commit": commit}, "installed from Git at the catalog commit")
     t.eq(t.rev(t.clone(ID)), commit, "clone HEAD")
-    t.eq((t.dist(ID) / "index.js").read_text(), t.git(ID, "show", f"{ID}@0.3.0:dist/index.js") + "\n", "dist bytes")
+    t.eq((t.dist(ID) / "index.js").read_text(), t.git(ID, "show", f"v0.3.0:dist/index.js") + "\n", "dist bytes")
     t.ok(not log.exists(), "no HTTP request (curl never called)")
     t.eq(sorted(p.name for p in t.dist(ID).iterdir()), ["index.js"], "no archive in dist")

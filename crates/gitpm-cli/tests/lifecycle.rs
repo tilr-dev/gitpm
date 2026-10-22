@@ -93,7 +93,7 @@ impl Fixture {
         fs::write(self.repo.join("dist/index.js"), contents).unwrap();
         self.git(&["add", "."]);
         self.git(&["commit", "-m", version]);
-        self.git(&["tag", "-f", &format!("dan/hello@{version}")]);
+        self.git(&["tag", "-f", &format!("v{version}")]);
     }
     fn cli(&self, args: &[&str], success: bool) -> String {
         let out = self
@@ -241,7 +241,7 @@ fn failed_update_keeps_files_and_state() {
     .unwrap();
     f.git(&["add", "."]);
     f.git(&["commit", "-m", "dependency"]);
-    f.git(&["tag", "dan/hello@2.0.0"]);
+    f.git(&["tag", "v2.0.0"]);
     f.cli(&["update", "dan/hello"], false);
     assert_eq!(f.state(), before);
     assert_eq!(f.content(), "hello v1");
@@ -300,12 +300,12 @@ impl Fixture {
 #[test]
 fn direct_git_refs_and_local_author_commit() {
     let f = Fixture::new();
-    f.git(&["tag", "-f", "dan/hello@1.0.0"]);
+    f.git(&["tag", "-f", "v1.0.0"]);
     let repo = f.repo.to_str().unwrap();
-    f.cli(&["install", repo, "--ref", "dan/hello@1.0.0"], true);
+    f.cli(&["install", repo, "--ref", "v1.0.0"], true);
     assert_eq!(
         f.state()["packages"]["dan/hello"]["mode"],
-        serde_json::json!({"pinned": "dan/hello@1.0.0"})
+        serde_json::json!({"pinned": "v1.0.0"})
     );
     fs::write(f.repo.join("dist/index.js"), "author release").unwrap();
     f.cli(&["commit", repo, "1.0.1"], true);
@@ -313,7 +313,7 @@ fn direct_git_refs_and_local_author_commit() {
     // Pinned: update says so and changes nothing; --release returns to releases.
     assert_eq!(
         f.cli(&["update", "dan/hello"], true),
-        "dan/hello pinned at 1.0.0 (dan/hello@1.0.0)\n"
+        "dan/hello pinned at 1.0.0 (v1.0.0)\n"
     );
     assert_eq!(f.content(), "hello v1");
     assert_eq!(
@@ -322,7 +322,7 @@ fn direct_git_refs_and_local_author_commit() {
     );
     assert!(f.state()["packages"]["dan/hello"].get("mode").is_none());
     assert_eq!(f.content(), "author release");
-    f.cli(&["update", "dan/hello", "--ref", "dan/hello@1.0.1"], true);
+    f.cli(&["update", "dan/hello", "--ref", "v1.0.1"], true);
     assert_eq!(f.content(), "author release");
     let sha = f.state()["packages"]["dan/hello"]["current"]["commit"]
         .as_str()
@@ -419,7 +419,7 @@ mod scaffold {
 #[test]
 fn catalog_manifest_is_verified_before_install() {
     let f = Fixture::new();
-    f.git(&["tag", "-f", "dan/hello@1.0.0"]);
+    f.git(&["tag", "-f", "v1.0.0"]);
     let manager = gitpm::Manager::open(&f.root).unwrap();
     let wrong = gitpm::catalog::Release {
         manifest: gitpm::Manifest {
@@ -432,7 +432,7 @@ fn catalog_manifest_is_verified_before_install() {
             f.command("git")
                 .arg("-C")
                 .arg(&f.repo)
-                .args(["rev-parse", "dan/hello@1.0.0"])
+                .args(["rev-parse", "v1.0.0"])
                 .output()
                 .unwrap()
                 .stdout,
@@ -440,7 +440,7 @@ fn catalog_manifest_is_verified_before_install() {
         .unwrap()
         .trim()
         .to_owned(),
-        reference: "dan/hello@99.0.0".into(),
+        reference: "v99.0.0".into(),
         files: Default::default(),
         build: None,
         path: None,
@@ -454,12 +454,12 @@ fn catalog_manifest_is_verified_before_install() {
 fn explicit_same_commit_and_numeric_versions_sort_correctly() {
     let f = Fixture::new();
     f.install();
-    f.git(&["tag", "-f", "dan/hello@1.0.0"]);
-    f.cli(&["update", "dan/hello", "--ref", "dan/hello@1.0.0"], true);
+    f.git(&["tag", "-f", "v1.0.0"]);
+    f.cli(&["update", "dan/hello", "--ref", "v1.0.0"], true);
     assert!(f.state()["packages"]["dan/hello"].get("pinned").is_none());
     use gitpm::catalog::version_key;
     assert!(version_key("1.10.0").unwrap() > version_key("1.9.0").unwrap());
-    for invalid in ["01.0.0", "dan/hello@1.0.0", "1.0", "1.0.0+dev", "-1.0.0"] {
+    for invalid in ["01.0.0", "v1.0.0", "1.0", "1.0.0+dev", "-1.0.0"] {
         assert!(version_key(invalid).is_err());
     }
     assert!(version_key("1.0.0-dev").unwrap() < version_key("1.0.0").unwrap());
@@ -506,12 +506,7 @@ fn init_takes_an_explicit_id_and_repository_folder() {
         assert_eq!(m["id"], id);
         assert!(repo.join(".git").is_dir());
         f.cli(
-            &[
-                "install",
-                repo.to_str().unwrap(),
-                "--ref",
-                &format!("{id}@0.1.0"),
-            ],
+            &["install", repo.to_str().unwrap(), "--ref", "v0.1.0"],
             true,
         );
         assert_eq!(f.state()["packages"][id]["current"]["version"], "0.1.0");
@@ -779,7 +774,7 @@ fn namespaced_fork_and_original_coexist_and_release_independently() {
     assert_eq!(f.state()["packages"]["dan/demo"]["forkOf"], m["forkOf"]);
     fs::write(fork.join("dist/index.js"), "fork release").unwrap();
     f.cli(&["commit", fork.to_str().unwrap(), "0.1.1"], true);
-    f.cli(&["update", "dan/demo", "--ref", "dan/demo@0.1.1"], true);
+    f.cli(&["update", "dan/demo", "--ref", "v0.1.1"], true);
     assert_eq!(
         fs::read_to_string(f.root.join("dist/dan/demo/index.js")).unwrap(),
         "fork release"
@@ -1066,8 +1061,8 @@ fn stable_install_and_update_ignore_untagged_head_and_sort_versions() {
     let f = Fixture::new();
     f.release("1.9.0", "nine");
     f.release("1.10.0", "ten");
-    f.git(&["tag", "-d", "dan/hello@1.10.0"]);
-    f.git(&["tag", "-a", "dan/hello@1.10.0", "-m", "annotated release"]);
+    f.git(&["tag", "-d", "v1.10.0"]);
+    f.git(&["tag", "-a", "v1.10.0", "-m", "annotated release"]);
     // A newer-looking version on the branch is not a release.
     fs::write(
         f.repo.join("plugin.json"),
@@ -1099,7 +1094,7 @@ fn catalog_index_summary_is_published_and_used_by_the_cli() {
     fs::write(f.repo.join("plugin.json"), r#"{"id":"dan/hello","version":"1.10.0","title":"Newest","description":"Details","provides":"theme","tags":["ui"]}"#).unwrap();
     f.git(&["add", "."]);
     f.git(&["commit", "-m", "release metadata"]);
-    f.git(&["tag", "dan/hello@1.10.0"]);
+    f.git(&["tag", "v1.10.0"]);
     fs::write(f.dir.join("sources.txt"), "./upstream\n").unwrap();
     f.cli(&["catalog", "update"], true);
     let path = f.dir.join("catalog/namespaces/dan/hello/plugin.json");
@@ -1120,12 +1115,12 @@ fn catalog_index_summary_is_published_and_used_by_the_cli() {
             "register",
             f.repo.to_str().unwrap(),
             "--ref",
-            "dan/hello@1.0.0",
+            "v1.0.0",
         ],
         true,
     );
     assert_eq!(fs::read(&path).unwrap(), bytes);
-    f.git(&["tag", "dan/hello@9.0.0"]); // The newest tag has a mismatched manifest.
+    f.git(&["tag", "v9.0.0"]); // The newest tag has a mismatched manifest.
     f.cli(&["catalog", "update"], false);
     assert_eq!(
         fs::read(&path).unwrap(),
@@ -1245,7 +1240,7 @@ fn catalog_update_validates_every_source_before_writing_and_retains_removed_sour
         f.command("git")
             .arg("-C")
             .arg(&no_tags)
-            .args(["tag", "-d", "dan/no-tags@0.1.0"])
+            .args(["tag", "-d", "v0.1.0"])
             .output()
             .unwrap()
             .status
@@ -1277,13 +1272,13 @@ fn release_manifest_must_match_tag_and_update_warns_on_retagging() {
     assert!(ok, "{err}");
     assert_eq!(out.trim(), "dan/hello up to date (1.0.0)");
     assert!(
-        err.contains("Warning: release tag dan/hello@1.0.0 now points to ")
+        err.contains("Warning: release tag v1.0.0 now points to ")
             && err.contains("; the installed commit is kept"),
         "{err}"
     );
     assert_eq!(f.state(), before);
     assert_eq!(f.content(), "hello v1");
-    f.git(&["tag", "dan/hello@8.0.0"]); // manifest still says 1.0.0
+    f.git(&["tag", "v8.0.0"]); // manifest still says 1.0.0
     let dir = f.dir.join("generated");
     fs::write(f.dir.join("sources.txt"), "./upstream\n").unwrap();
     f.cli(
@@ -1298,7 +1293,7 @@ fn update_after_a_deleted_release_tag_is_up_to_date_with_a_warning() {
     let f = Fixture::new();
     f.install();
     let before = f.state();
-    f.git(&["tag", "-d", "dan/hello@1.0.0"]);
+    f.git(&["tag", "-d", "v1.0.0"]);
     let (ok, out, err) = f.output(&["update", "dan/hello"]);
     assert!(ok, "{err}");
     assert_eq!(out.trim(), "dan/hello up to date (1.0.0)");
@@ -1905,7 +1900,7 @@ fn custom_ssh_is_shared_by_auth_install_catalog_and_check() {
             vec!["install", source],
             vec!["check"],
             vec!["catalog", "update"],
-            vec!["catalog", "register", source, "--ref", "dan/hello@1.0.0"],
+            vec!["catalog", "register", source, "--ref", "v1.0.0"],
         ] {
             let mut command = f.pm();
             command
@@ -2076,13 +2071,13 @@ fn install_again_reports_already_installed_and_changes_nothing() {
     assert!(f.state()["packages"]["dan/hello"]["previous"].is_null());
     // An explicit --ref or --dev is named in the hint, never silently ignored.
     assert_eq!(
-        f.cli(&["install", source, "--ref", "dan/hello@1.1.0"], true),
-        "dan/hello already installed (1.0.0); requested --ref dan/hello@1.1.0 — run update dan/hello --ref dan/hello@1.1.0\n"
+        f.cli(&["install", source, "--ref", "v1.1.0"], true),
+        "dan/hello already installed (1.0.0); requested --ref v1.1.0 — run update dan/hello --ref v1.1.0\n"
     );
     // Same revision, another mode (the tag would pin it): named too.
     assert_eq!(
-        f.cli(&["install", source, "--ref", "dan/hello@1.0.0"], true),
-        "dan/hello already installed (1.0.0); requested --ref dan/hello@1.0.0 — run update dan/hello --ref dan/hello@1.0.0\n"
+        f.cli(&["install", source, "--ref", "v1.0.0"], true),
+        "dan/hello already installed (1.0.0); requested --ref v1.0.0 — run update dan/hello --ref v1.0.0\n"
     );
     assert_eq!(
         f.cli(&["install", source, "--dev"], true),
@@ -2131,12 +2126,12 @@ fn mutating_commands_print_one_line_per_package_and_no_ok_lines() {
             "dan/hello rolled back 1.1.0 → 1.0.0\n",
         ),
         (
-            &["update", "dan/hello", "--ref", "dan/hello@1.0.0"][..],
-            "dan/hello pinned at 1.0.0 (dan/hello@1.0.0)\n",
+            &["update", "dan/hello", "--ref", "v1.0.0"][..],
+            "dan/hello pinned at 1.0.0 (v1.0.0)\n",
         ),
         (
             &["update", "dan/hello"][..],
-            "dan/hello pinned at 1.0.0 (dan/hello@1.0.0)\n",
+            "dan/hello pinned at 1.0.0 (v1.0.0)\n",
         ),
         (
             &["update", "dan/hello", "--release"][..],
@@ -2295,7 +2290,7 @@ fn a_missing_catalog_is_a_library_error_and_targets_are_exclusive() {
         assert!(!f.root.exists(), "{args:?} created the workspace");
     }
     // A tag pins the package.
-    let (ok, stdout, stderr) = f.output(&["install", source, "--ref", "dan/hello@1.0.0"]);
+    let (ok, stdout, stderr) = f.output(&["install", source, "--ref", "v1.0.0"]);
     assert!(ok, "{stderr}");
     assert!(
         stdout.starts_with("installed dan/hello@1.0.0 from "),
@@ -2354,13 +2349,13 @@ fn update_past_a_broken_historical_tag_warns_about_it() {
     fs::write(f.repo.join("plugin.json"), "{broken").unwrap();
     f.git(&["add", "."]);
     f.git(&["commit", "-m", "broken"]);
-    f.git(&["tag", "dan/hello@1.5.0"]);
+    f.git(&["tag", "v1.5.0"]);
     f.release("2.0.0", "hello v2");
     let (ok, stdout, stderr) = f.output(&["update", "dan/hello"]);
     assert!(ok, "{stderr}");
     assert_eq!(stdout, "dan/hello updated 1.0.0 → 2.0.0 (major)\n");
     assert!(
-        stderr.contains("Warning: skipped release tag dan/hello@1.5.0: invalid manifest"),
+        stderr.contains("Warning: skipped release tag v1.5.0: invalid manifest"),
         "{stderr}"
     );
     f.cli(&["rollback", "dan/hello"], true);
@@ -2372,7 +2367,7 @@ fn update_past_a_broken_historical_tag_warns_about_it() {
         "{stdout}"
     );
     assert!(
-        stderr.contains("Warning: skipped release tag dan/hello@1.5.0: invalid manifest"),
+        stderr.contains("Warning: skipped release tag v1.5.0: invalid manifest"),
         "{stderr}"
     );
 }
@@ -2382,7 +2377,7 @@ fn update_past_a_broken_historical_tag_warns_about_it() {
 fn refs_are_exact_and_the_mode_is_named() {
     let f = Fixture::new();
     let source = f.repo.to_str().unwrap();
-    for bad in ["HEAD~1", "main~1", "dan/hello@1.0.0~1"] {
+    for bad in ["HEAD~1", "main~1", "v1.0.0~1"] {
         let (ok, _, stderr) = f.output(&["install", source, "--ref", bad]);
         assert!(!ok, "{bad}");
         assert!(
@@ -2390,14 +2385,14 @@ fn refs_are_exact_and_the_mode_is_named() {
             "{bad}: {stderr}"
         );
     }
-    f.cli(&["install", source, "--ref", "dan/hello@1.0.0"], true);
+    f.cli(&["install", source, "--ref", "v1.0.0"], true);
     assert_eq!(
-        f.cli(&["install", source, "--ref", "dan/hello@1.0.0"], true),
-        "dan/hello already installed (1.0.0, pinned at dan/hello@1.0.0)\n"
+        f.cli(&["install", source, "--ref", "v1.0.0"], true),
+        "dan/hello already installed (1.0.0, pinned at v1.0.0)\n"
     );
     assert_eq!(
         f.cli(&["install", source, "--ref", "HEAD"], true),
-        "dan/hello already installed (1.0.0, pinned at dan/hello@1.0.0); requested --ref HEAD — run update dan/hello --ref HEAD\n"
+        "dan/hello already installed (1.0.0, pinned at v1.0.0); requested --ref HEAD — run update dan/hello --ref HEAD\n"
     );
     assert_eq!(
         f.cli(&["update", "dan/hello", "--ref", "HEAD"], true),
@@ -2419,7 +2414,7 @@ fn verified_catalog_protects_updates_and_detach_drops_it() {
             "register",
             repo,
             "--ref",
-            "dan/hello@1.0.0",
+            "v1.0.0",
         ],
         true,
     );
@@ -2526,11 +2521,7 @@ fn update_lines_mark_major_updates() {
     other.release("1.1.0-rc.1", "hello rc1");
     other.release("1.1.0-rc.2", "hello rc2");
     let repo = other.repo.to_str().unwrap();
-    for tag in [
-        "dan/hello@1.0.0",
-        "dan/hello@1.1.0-rc.1",
-        "dan/hello@1.1.0-rc.2",
-    ] {
+    for tag in ["v1.0.0", "v1.1.0-rc.1", "v1.1.0-rc.2"] {
         other.cli(
             &[
                 "--catalog",
@@ -2584,7 +2575,7 @@ fn update_lines_mark_major_updates() {
 #[test]
 fn catalog_package_with_pre_releases_only() {
     let f = Fixture::new();
-    f.git(&["tag", "-d", "dan/hello@1.0.0"]);
+    f.git(&["tag", "-d", "v1.0.0"]);
     f.release("2.0.0-beta.1", "hello beta");
     let location = f.dir.join("cat");
     let location = location.to_str().unwrap();
@@ -2597,7 +2588,7 @@ fn catalog_package_with_pre_releases_only() {
             "register",
             repo,
             "--ref",
-            "dan/hello@2.0.0-beta.1",
+            "v2.0.0-beta.1",
         ],
         true,
     );
@@ -2686,7 +2677,7 @@ fn catalog_group_runs_every_subcommand() {
             "register",
             f.repo.to_str().unwrap(),
             "--ref",
-            "dan/hello@1.2.0",
+            "v1.2.0",
             "--package",
             "dan/hello",
             "--build-url",

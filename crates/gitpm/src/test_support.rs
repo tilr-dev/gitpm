@@ -110,7 +110,7 @@ pub(crate) struct Author {
     pub(crate) id: String,
 }
 impl Author {
-    /// Create, commit and tag `id@0.1.0`.
+    /// Create, commit and tag `v0.1.0`.
     pub(crate) fn new(path: PathBuf, id: &str) -> Self {
         let author = Self::untagged(path, id, "0.1.0");
         author.tag("0.1.0");
@@ -154,10 +154,7 @@ impl Author {
         commit
     }
     pub(crate) fn tag(&self, version: &str) {
-        git(
-            &self.path,
-            &["tag", &crate::identity::release_tag(&self.id, version)],
-        );
+        git(&self.path, &["tag", &crate::identity::release_tag(version)]);
     }
     pub(crate) fn head(&self) -> String {
         git(&self.path, &["rev-parse", "HEAD"])
@@ -209,13 +206,13 @@ pub(crate) fn tree_hash_except(root: &Path, skip: &[&str]) -> String {
     crate::catalog::hex(&hasher.finalize())
 }
 
-/// A syntactically valid catalog release for `id@version` (no Git needed).
+/// A syntactically valid catalog release for `vVERSION` (no Git needed).
 pub(crate) fn release(id: &str, version: &str, source: &str, commit_char: char) -> Release {
     Release {
         manifest: manifest(id, version),
         source: source.into(),
         commit: commit_char.to_string().repeat(40),
-        reference: crate::identity::release_tag(id, version),
+        reference: crate::identity::release_tag(version),
         files: BTreeMap::from([(
             "index.js".to_owned(),
             FileDigest {

@@ -19,9 +19,9 @@ def g3_trio(t: T):
 
 @g3_trio.check
 def _(t: T):
-    t.eq(t.git("dan/a", "tag", "--list").split(), ["dan/a@0.1.0", "dan/a@0.1.1"], "dan/a tags")
-    t.eq(t.git("dan/b", "tag", "--list"), "dan/b@0.1.0", "dan/b tags")
-    t.eq(t.git("other/c", "tag", "--list"), "other/c@0.1.0", "other/c tags")
+    t.eq(t.git("dan/a", "tag", "--list").split(), ["v0.1.0", "v0.1.1"], "dan/a tags")
+    t.eq(t.git("dan/b", "tag", "--list"), "v0.1.0", "dan/b tags")
+    t.eq(t.git("other/c", "tag", "--list"), "v0.1.0", "other/c tags")
     for id in ["dan/a", "dan/b", "other/c"]:
         t.eq(t.git(id, "status", "--porcelain"), "", f"{id} clean")
         t.eq((t.repo(id) / ".gitignore").read_text(), "node_modules/\n", f"{id} .gitignore")
@@ -32,7 +32,7 @@ def g3_trio_installed(t: T):
     """dan/a installed at 0.1.0 and updated to 0.1.1 (previous 0.1.0); dan/b 0.1.0 and
     other/c 0.1.0 installed directly from Git. No catalog."""
     # The ref pins dan/a; --release returns it to release mode at 0.1.1.
-    t.gitpm_ok("install", t.repo("dan/a"), "--ref", "dan/a@0.1.0")
+    t.gitpm_ok("install", t.repo("dan/a"), "--ref", "v0.1.0")
     t.gitpm_ok("update", "dan/a", "--release")
     t.gitpm_ok("install", t.repo("dan/b"))
     t.gitpm_ok("install", t.repo("other/c"))
@@ -41,9 +41,9 @@ def g3_trio_installed(t: T):
 @g3_trio_installed.check
 def _(t: T):
     a = t.package("dan/a")
-    t.eq(a["current"], {"version": "0.1.1", "commit": t.rev("dan/a", "dan/a@0.1.1")}, "dan/a current")
-    t.eq(a["previous"], {"version": "0.1.0", "commit": t.rev("dan/a", "dan/a@0.1.0"),
-                         "mode": {"pinned": "dan/a@0.1.0"}}, "dan/a previous (with the mode it had)")
+    t.eq(a["current"], {"version": "0.1.1", "commit": t.rev("dan/a", "v0.1.1")}, "dan/a current")
+    t.eq(a["previous"], {"version": "0.1.0", "commit": t.rev("dan/a", "v0.1.0"),
+                         "mode": {"pinned": "v0.1.0"}}, "dan/a previous (with the mode it had)")
     for id in ["dan/b", "other/c"]:
         p = t.package(id)
         t.eq(p["current"]["version"], "0.1.0", f"{id} version")
@@ -65,7 +65,7 @@ def g3_vendor(t: T):
 
 @g3_vendor.check
 def _(t: T):
-    t.eq(t.git("vendor/demo", "tag", "--list"), "vendor/demo@0.1.0", "tags")
+    t.eq(t.git("vendor/demo", "tag", "--list"), "v0.1.0", "tags")
     t.eq(t.git("vendor/demo", "status", "--porcelain"), "", "clean")
 
 
@@ -78,7 +78,7 @@ def g3_vendor_installed(t: T):
 @g3_vendor_installed.check
 def _(t: T):
     p = t.package("vendor/demo")
-    t.eq(p["current"], {"version": "0.1.0", "commit": t.rev("vendor/demo", "vendor/demo@0.1.0")}, "current")
+    t.eq(p["current"], {"version": "0.1.0", "commit": t.rev("vendor/demo", "v0.1.0")}, "current")
     t.eq(p["source"], str(t.repo("vendor/demo")), "source")
     t.ok("forkOf" not in p, "no forkOf")
     t.eq(t.rev(t.clone("vendor/demo")), p["current"]["commit"], "clone HEAD")
@@ -88,7 +88,7 @@ def _(t: T):
 @fixture()
 def g3_legacy(t: T):
     """Unscoped repository `demo` at /fx/repos/demo with tags v0.1.0 and v0.1.1: the
-    legacy shape gitpm refuses (no package ID namespace, no ID@VERSION tags)."""
+    legacy shape gitpm refuses (no package ID namespace)."""
     repo = t.repo("demo")
     (repo / "dist").mkdir(parents=True)
     t.git(repo, "init", "-q", "-b", "main")
@@ -112,14 +112,14 @@ def g3_vendor_p(t: T):
 
 @g3_vendor_p.check
 def _(t: T):
-    t.eq(t.git("vendor/p", "tag", "--list"), "vendor/p@1.0.0", "tags")
+    t.eq(t.git("vendor/p", "tag", "--list"), "v1.0.0", "tags")
 
 
 @fixture(requires=["g3_vendor_p"], gitpm=True)
 def g3_fork_catalog(t: T):
     """vendor/p 1.0.0 registered in /fx/catalog and installed from it; forked as mine/p
     into /fx/repos/mine/p; fork release mine/p@1.0.1 made with `gitpm commit` and installed."""
-    t.gitpm_ok("register", t.repo("vendor/p"), "--ref", "vendor/p@1.0.0")
+    t.gitpm_ok("register", t.repo("vendor/p"), "--ref", "v1.0.0")
     t.gitpm_ok("install-catalog", "vendor/p", "--version", "1.0.0")
     t.gitpm_ok("fork", "vendor/p", "--ns", "mine", "--into", t.repo("mine/p"))
     t.gitpm_ok("commit", t.repo("mine/p"), "1.0.1")
@@ -129,11 +129,11 @@ def g3_fork_catalog(t: T):
 @g3_fork_catalog.check
 def _(t: T):
     vendor = t.package("vendor/p")
-    base = t.rev("vendor/p", "vendor/p@1.0.0")
+    base = t.rev("vendor/p", "v1.0.0")
     t.eq(vendor["current"], {"version": "1.0.0", "commit": base}, "vendor/p current")
     t.ok("forkOf" not in vendor and "replaces" not in vendor, "vendor/p has no fork fields")
     mine = t.package("mine/p")
-    t.eq(mine["current"], {"version": "1.0.1", "commit": t.rev("mine/p", "mine/p@1.0.1")}, "mine/p current")
+    t.eq(mine["current"], {"version": "1.0.1", "commit": t.rev("mine/p", "v1.0.1")}, "mine/p current")
     t.eq(mine["forkOf"], {"id": "vendor/p", "version": "1.0.0", "commit": base,
                           "source": str(t.repo("vendor/p"))}, "mine/p forkOf")
     t.eq(mine["replaces"], {"id": "vendor/p", "version": "1.0.0"}, "mine/p replaces")

@@ -216,7 +216,7 @@ def register_to_http_catalog_refused(t: T):
     srv, served = setup(t)
     t.release(HELLO, "0.3.0")
     before = t.snap(served, t.catalog)
-    t.gitpm_err("--catalog", srv.url, "register", t.repo(HELLO), "--ref", f"{HELLO}@0.3.0",
+    t.gitpm_err("--catalog", srv.url, "register", t.repo(HELLO), "--ref", f"v0.3.0",
              kind="invalid_argument", contains="local catalog")
     t.same(before, "served and local catalogs")
 

@@ -16,13 +16,6 @@ pub(crate) enum Fetch<'a> {
 pub(crate) trait Transport {
     fn git(&self, repo: &Path, args: &[&str], custom_ssh: bool) -> Result<String>;
     fn git_raw(&self, repo: &Path, args: &[&str], custom_ssh: bool) -> Result<Vec<u8>>;
-    fn git_with_input(
-        &self,
-        repo: &Path,
-        args: &[&str],
-        input: Vec<u8>,
-        custom_ssh: bool,
-    ) -> Result<()>;
     fn ls_remote(&self, source: &str, custom_ssh: bool, start_error: &str) -> Result<LsRemote>;
     fn ls_remote_refs(&self, source: &str, custom_ssh: bool) -> Result<RemoteRefs>;
     fn http_get(&self, url: &str) -> Result<Option<Vec<u8>>>;
@@ -46,15 +39,6 @@ impl Transport for SystemTransport {
     }
     fn git_raw(&self, repo: &Path, args: &[&str], custom_ssh: bool) -> Result<Vec<u8>> {
         system::git_raw(repo, args, custom_ssh)
-    }
-    fn git_with_input(
-        &self,
-        repo: &Path,
-        args: &[&str],
-        input: Vec<u8>,
-        custom_ssh: bool,
-    ) -> Result<()> {
-        system::git_with_input(repo, args, input, custom_ssh)
     }
     fn ls_remote(&self, source: &str, custom_ssh: bool, start_error: &str) -> Result<LsRemote> {
         system::ls_remote(source, custom_ssh, start_error)
@@ -125,14 +109,6 @@ pub(crate) fn git(repo: &Path, args: &[&str], custom_ssh: bool) -> Result<String
 }
 pub(crate) fn git_raw(repo: &Path, args: &[&str], custom_ssh: bool) -> Result<Vec<u8>> {
     SystemTransport.git_raw(repo, args, custom_ssh)
-}
-pub(crate) fn git_with_input(
-    repo: &Path,
-    args: &[&str],
-    input: Vec<u8>,
-    custom_ssh: bool,
-) -> Result<()> {
-    SystemTransport.git_with_input(repo, args, input, custom_ssh)
 }
 pub(crate) fn ls_remote(source: &str, custom_ssh: bool, start_error: &str) -> Result<LsRemote> {
     SystemTransport.ls_remote(source, custom_ssh, start_error)

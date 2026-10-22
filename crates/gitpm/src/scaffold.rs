@@ -2,10 +2,7 @@
 //! Never pushes and never touches a workspace.
 use crate::catalog::version_key;
 use crate::error::{Context, Error, Result, ensure, fail};
-use crate::{
-    Manifest, identity, model, packages,
-    transport::{git, git_with_input},
-};
+use crate::{Manifest, identity, model, packages, transport::git};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -45,8 +42,8 @@ fn create_repo(directory: &Path, id: &str, release: bool, custom_ssh: bool) -> R
         ),
     )?;
     let result = (|| {
-        let tag = identity::release_tag(id, "0.1.0");
-        let next_tag = identity::release_tag(id, "0.1.1");
+        let tag = identity::release_tag("0.1.0");
+        let next_tag = identity::release_tag("0.1.1");
         let source = shell_quote(&fs::canonicalize(&directory)?.to_string_lossy());
         let m = new_manifest(id, name);
         fs::write(directory.join("plugin.json"), model::manifest_json(&m)?)?;
@@ -80,7 +77,11 @@ fn create_repo(directory: &Path, id: &str, release: bool, custom_ssh: bool) -> R
             custom_ssh,
         )?;
         if release {
-            git(&directory, &["tag", "--", &tag], custom_ssh)?;
+            git(
+                &directory,
+                &["tag", "-m", &format!("Release {tag}"), "--", &tag],
+                custom_ssh,
+            )?;
         }
         Ok(fs::canonicalize(&directory)?)
     })();
@@ -160,7 +161,20 @@ fn locate(
         crate::valid_id(package)?;
     }
     let folder = match packages::packages_in(&repo)? {
-        Some(found) => Some(packages::choose(found, package, "")?.path),
+        Some(mut found) => {
+            let selected = match package {
+                Some(_) => packages::choose(found, package, "")?,
+                None => {
+                    ensure!(
+                        !found.is_empty(),
+                        InvalidArgument,
+                        "repository has no packages"
+                    );
+                    found.remove(0)
+                }
+            };
+            Some(selected.path)
+        }
         None => None,
     };
     let manifest_path = match &folder {
@@ -180,7 +194,7 @@ fn locate(
 }
 
 /// Release the version the package's manifest already has: commit ALL changes (if
-/// there are any) as `Release ID VERSION` and tag it. For a fresh fork, which keeps
+/// there are any) as `Release VERSION` and tag it. For a fresh fork, which keeps
 /// the version it started from. Never pushes.
 pub fn release_current(repo: &Path, package: Option<&str>) -> Result<String> {
     release_current_with_ssh(repo, package, false)
@@ -192,21 +206,16 @@ pub(crate) fn release_current_with_ssh(
     custom_ssh: bool,
 ) -> Result<String> {
     let (repo, _, m) = locate(repo, package, custom_ssh)?;
-    let tag = identity::release_tag(&m.id, &m.version);
-    ensure!(
-        git(&repo, &["tag", "--list", "--", &tag], custom_ssh)?.is_empty(),
-        VersionConflict,
-        "tag already exists: {tag}"
-    );
-    if !git(&repo, &["status", "--porcelain"], custom_ssh)?.is_empty() {
-        git(&repo, &["add", "--all", "--", "."], custom_ssh)?;
-        git(
-            &repo,
-            &["commit", "-m", &format!("Release {} {}", m.id, m.version)],
-            custom_ssh,
-        )?;
-    }
-    git(&repo, &["tag", "--", &tag], custom_ssh)?;
+    let found = packages::packages_in(&repo)?;
+    let releases: Vec<_> = match &found {
+        Some(packages) => packages
+            .iter()
+            .map(|p| (Some(p.path.as_str()), p.manifest.version.as_str()))
+            .collect(),
+        None => vec![(None, m.version.as_str())],
+    };
+    release_packages(&repo, &releases, &["."], true, custom_ssh)?;
+    let tag = identity::release_tag(&m.version);
     Ok(tag)
 }
 
@@ -215,7 +224,7 @@ pub(crate) fn release_current_with_ssh(
 pub struct Commit {
     pub package: String,
     pub version: String,
-    /// Release tag `ID@VERSION`.
+    /// Repository release tag `vVERSION`.
     pub tag: String,
 }
 
@@ -229,7 +238,7 @@ pub(crate) fn commit_with_ssh(repo: &Path, version: &str, custom_ssh: bool) -> R
 }
 
 /// [`commit`] for one package: in a repository with `gitpm.json`, `package` picks the
-/// package by ID (optional when it lists only one) and the tag is `ID@VERSION`. Like
+/// package ID returned in the result; all packages share the tag `vVERSION`. Like
 /// [`commit`] it stages ALL changes of the repository, not only the package folder.
 /// For a single-package repository a given `package` must match the root manifest.
 pub fn commit_package(repo: &Path, version: &str, package: Option<&str>) -> Result<Commit> {
@@ -244,9 +253,10 @@ pub(crate) fn commit_package_with_ssh(
 ) -> Result<Commit> {
     version_key(version)?;
     let (repo, manifest_path, m) = locate(repo, package, custom_ssh)?;
-    // Authoring is strict about metadata types; installing is lenient.
+    // Annotated and signed tags require identity, including tag-only retries.
+    require_identity(&repo, false, custom_ssh)?;
     m.metadata_strict()?;
-    let tag = identity::release_tag(&m.id, version);
+    let tag = identity::release_tag(version);
     ensure!(
         git(&repo, &["tag", "--list", "--", &tag], custom_ssh)?.is_empty(),
         VersionConflict,
@@ -262,20 +272,32 @@ pub(crate) fn commit_package_with_ssh(
         .map_err(|e| Error::invalid_manifest(format!("invalid {manifest_path} at HEAD: {e}")))?;
         ensure!(
             head.version == version
+                && repository_version_is(&repo, version, custom_ssh)?
                 && git(&repo, &["status", "--porcelain"], custom_ssh)?.is_empty()
                 && released_by_head(&repo, &m.id, version, custom_ssh)?,
             VersionConflict,
             "choose a new version"
         );
-        git(&repo, &["tag", "--", &tag], custom_ssh)?;
+        git(
+            &repo,
+            &["tag", "-m", &format!("Release {tag}"), "--", &tag],
+            custom_ssh,
+        )?;
         return Ok(Commit {
             package: m.id,
             version: version.to_owned(),
             tag,
         });
     }
-    let folder = manifest_path.strip_suffix("/plugin.json");
-    release_packages(&repo, &[(folder, version)], &["."], false, custom_ssh)?;
+    let packages = packages::packages_in(&repo)?;
+    let releases: Vec<(Option<&str>, &str)> = match &packages {
+        Some(packages) => packages
+            .iter()
+            .map(|p| (Some(p.path.as_str()), version))
+            .collect(),
+        None => vec![(None, version)],
+    };
+    release_packages(&repo, &releases, &["."], false, custom_ssh)?;
     Ok(Commit {
         package: m.id,
         version: version.to_owned(),
@@ -294,9 +316,22 @@ pub(crate) fn release_packages(
     custom_ssh: bool,
 ) -> Result<()> {
     require_identity(repo, false, custom_ssh)?;
+    let version = releases
+        .first()
+        .map(|r| r.1)
+        .ok_or_else(|| Error::InvalidArgument("repository has no packages".into()))?;
+    ensure!(
+        releases.iter().all(|r| r.1 == version),
+        VersionConflict,
+        "packages have different versions; pass --version to release one repository version"
+    );
+    let tag = identity::release_tag(version);
+    ensure!(
+        git(repo, &["tag", "--list", "--", &tag], custom_ssh)?.is_empty(),
+        VersionConflict,
+        "tag already exists: {tag}"
+    );
     let mut manifests = Vec::new();
-    let mut tags = Vec::new();
-    let mut names = Vec::new();
     // Validate and snapshot every manifest before changing any of them.
     for &(folder, version) in releases {
         version_key(version)?;
@@ -305,14 +340,6 @@ pub(crate) fn release_packages(
         manifest.metadata_strict()?;
         let path = repo.join(folder.unwrap_or("")).join("plugin.json");
         let original = fs::read(&path)?;
-        let tag = identity::release_tag(&manifest.id, version);
-        ensure!(
-            git(repo, &["tag", "--list", "--", &tag], custom_ssh)?.is_empty(),
-            VersionConflict,
-            "tag already exists: {tag}"
-        );
-        names.push(format!("{} {version}", manifest.id));
-        tags.push(tag);
         let updated = if manifest.version == version {
             original.clone()
         } else {
@@ -347,7 +374,7 @@ pub(crate) fn release_packages(
                 return Ok(());
             }
         }
-        let message = format!("Release {}", names.join(", "));
+        let message = format!("Release {version}");
         let mut args = vec!["commit", "-m", &message];
         if only {
             args.extend(["-q", "--only", "--"]);
@@ -378,37 +405,49 @@ pub(crate) fn release_packages(
     } else {
         "commit succeeded but tag creation failed; releasing the same version again creates the tag"
     };
-    let tagged = if tags.len() == 1 {
-        // Keep the existing single-package tag behavior, including Git config.
-        git(repo, &["tag", "--", &tags[0]], custom_ssh).map(drop)
-    } else {
-        let head = git(repo, &["rev-parse", "HEAD"], custom_ssh)?;
-        // update-ref applies the whole batch as one transaction. `create` refuses
-        // a tag that appeared after validation rather than overwriting it.
-        let input: String = tags
-            .iter()
-            .map(|tag| format!("create refs/tags/{tag} {head}\n"))
-            .collect();
-        git_with_input(
-            repo,
-            &["update-ref", "--stdin"],
-            input.into_bytes(),
-            custom_ssh,
-        )
-    };
+    let tagged = git(
+        repo,
+        &["tag", "-m", &format!("Release {version}"), "--", &tag],
+        custom_ssh,
+    )
+    .map(drop);
     tagged.context(Error::Git, tag_failure)
 }
 
 /// HEAD is the commit that set `version` of package `id` and only lacks its tag: a
-/// `Release ID VERSION` commit whose tag failed, or the initial commit of `init
+/// `Release VERSION` commit whose tag failed, or the initial commit of `init
 /// --no-release` (`Create NAME 0.1.0` / `Create ID 0.1.0`).
 fn released_by_head(repo: &Path, id: &str, version: &str, custom_ssh: bool) -> Result<bool> {
     let subject = git(repo, &["log", "-1", "--format=%s"], custom_ssh)?;
     let name = id.rsplit('/').next().unwrap_or(id);
-    Ok(subject == format!("Release {id} {version}")
+    Ok(subject == format!("Release {version}")
         || (version == "0.1.0"
+            && git(repo, &["rev-list", "--count", "HEAD"], custom_ssh)? == "1"
             && (subject == format!("Create {name} 0.1.0")
-                || subject == format!("Create {id} 0.1.0"))))
+                || subject == format!("Create {id} {version}"))))
+}
+
+/// Every manifest must already have this version before a tag-only retry.
+fn repository_version_is(repo: &Path, version: &str, custom_ssh: bool) -> Result<bool> {
+    let paths: Vec<String> = match packages::packages_in(repo)? {
+        Some(packages) => packages
+            .into_iter()
+            .map(|p| format!("{}/plugin.json", p.path))
+            .collect(),
+        None => vec!["plugin.json".into()],
+    };
+    for path in paths {
+        let current: Manifest = serde_json::from_slice(&fs::read(repo.join(&path))?)
+            .map_err(|e| Error::invalid_manifest(e.to_string()))?;
+        current.metadata_strict()?;
+        let head: Manifest =
+            serde_json::from_str(&git(repo, &["show", &format!("HEAD:{path}")], custom_ssh)?)
+                .map_err(|e| Error::invalid_manifest(e.to_string()))?;
+        if current.version != version || head.version != version {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// Folder for a new package `name` in a repository with this config: under the first
@@ -432,7 +471,11 @@ pub struct Init {
     /// The package folder inside `repo`; `None`: a new single-package repository whose
     /// root is the package.
     pub folder: Option<String>,
-    /// The release tag `ID@0.1.0`; `None` with [`InitOptions::release`] off.
+    /// Version inherited by the new package.
+    pub version: String,
+    /// Whether init created a repository, rather than adding a package.
+    pub new_repository: bool,
+    /// The release tag `v0.1.0`; absent when adding a package or skipping release.
     pub tag: Option<String>,
 }
 
@@ -443,7 +486,7 @@ pub struct InitOptions {
     /// becomes a multi-package repository (`gitpm.json` with `["packages/*"]`, the
     /// package in `packages/<name>`) instead of a single-package one.
     pub multi: bool,
-    /// Tag the initial commit as release `ID@0.1.0` (default). Off: only the commit;
+    /// Tag a new repository as release `v0.1.0` (default). Off: only the commit;
     /// release it later with [`commit_package`] (version 0.1.0 or a new one).
     pub release: bool,
 }
@@ -460,7 +503,7 @@ impl Default for InitOptions {
 /// repository is always given; it is never derived from the ID:
 ///
 /// - `dir` does not exist: a new single-package repository there (the root is the
-///   package, tag `ID@0.1.0`).
+///   package, tag `v0.1.0`).
 /// - `dir` is a repository with `gitpm.json`, or one without it whose root is no
 ///   package: the package is added as a folder (see [`create_package`]).
 /// - `dir` is a single-package repository (root `plugin.json`): refused, as is a folder
@@ -492,12 +535,14 @@ pub(crate) fn init_with_with_ssh(
     custom_ssh: bool,
 ) -> Result<Init> {
     let id = identity::qualified(namespace, name)?;
-    let tag = options.release.then(|| identity::release_tag(&id, "0.1.0"));
+    let tag = options.release.then(|| identity::release_tag("0.1.0"));
     let missing = fs::symlink_metadata(dir).is_err();
     if missing && !options.multi {
         return Ok(Init {
             repo: create_repo(dir, &id, options.release, custom_ssh)?,
             folder: None,
+            version: "0.1.0".into(),
+            new_repository: true,
             tag,
         });
     }
@@ -525,10 +570,13 @@ pub(crate) fn init_with_with_ssh(
         .ok()
         .and_then(|p| p.to_str())
         .map(str::to_owned);
+    let version = model::package_manifest(&folder, None)?.version;
     Ok(Init {
+        version,
+        new_repository: missing || empty,
         repo,
         folder: relative,
-        tag,
+        tag: if missing || empty { tag } else { None },
     })
 }
 
@@ -544,7 +592,7 @@ pub fn suggests_multi(dir: &Path) -> bool {
         || (is_repo && dir.join("plugin.json").is_file() && !dir.join(packages::CONFIG).exists())
 }
 
-/// Add the package `namespace/name` with release 0.1.0 (commit + tag `ID@0.1.0`) to the
+/// Add the package `namespace/name` at the repository version (without a tag) to the
 /// multi-package repository `repo`. A missing `repo` becomes a new repository with
 /// `gitpm.json` (`["packages/*"]`). In an existing repository without `gitpm.json` one is
 /// created, unless the root already is a package (`plugin.json`): moving it is up to the
@@ -553,7 +601,7 @@ pub fn suggests_multi(dir: &Path) -> bool {
 /// it). Only `gitpm.json` and the new folder are committed; other changes stay as they
 /// are, and uncommitted changes to `gitpm.json` are refused. In an existing repository
 /// a missing Git identity is refused (never written); a failed commit restores the
-/// repository; a failed tag keeps the commit and the error names the tag to create.
+/// repository. Adding to an existing repository never creates a tag.
 /// Returns the package folder.
 pub fn create_package(repo: &Path, namespace: &str, name: &str) -> Result<PathBuf> {
     create_package_with_ssh(repo, namespace, name, false)
@@ -631,12 +679,17 @@ fn add_package(
                 other.path
             );
         }
-        let tag = identity::release_tag(&id, "0.1.0");
+        let version = existing
+            .first()
+            .map(|p| p.manifest.version.as_str())
+            .unwrap_or("0.1.0");
         ensure!(
-            git(&repo, &["tag", "--list", "--", &tag], custom_ssh)?.is_empty(),
+            existing.iter().all(|p| p.manifest.version == version),
             VersionConflict,
-            "tag already exists: {tag}"
+            "packages have different versions; release one repository version before adding a package"
         );
+        version_key(version)?;
+        let tag = identity::release_tag(version);
         let folder = package_folder(&config, name);
         if !config
             .packages
@@ -680,12 +733,13 @@ fn add_package(
             .to_path_buf();
         let written = (|| {
             fs::create_dir_all(directory.join("dist"))?;
-            let m = new_manifest(&id, name);
+            let mut m = new_manifest(&id, name);
+            m.version = version.to_owned();
             fs::write(directory.join("plugin.json"), model::manifest_json(&m)?)?;
             fs::write(
                 directory.join("dist/index.js"),
                 format!(
-                    "// Ready-to-copy demo artifact. No build step required.\nexport const greeting = \"Hello from {name} 0.1.0\";\n"
+                    "// Ready-to-copy demo artifact. No build step required.\nexport const greeting = \"Hello from {name} {version}\";\n"
                 ),
             )?;
             fs::write(
@@ -696,7 +750,7 @@ fn add_package(
             if created {
                 git(
                     &repo,
-                    &["commit", "-m", &format!("Create {id} 0.1.0")],
+                    &["commit", "-m", &format!("Create {id} {version}")],
                     custom_ssh,
                 )?;
             } else {
@@ -705,7 +759,7 @@ fn add_package(
                     &[
                         "commit",
                         "-m",
-                        &format!("Create {id} 0.1.0"),
+                        &format!("Create {id} {version}"),
                         "--",
                         packages::CONFIG,
                         &folder,
@@ -742,19 +796,14 @@ fn add_package(
             return Err(error);
         }
         // The commit stays: the working tree is left as it is, only the tag is missing.
-        if !release {
+        if !release || !created {
             return Ok(directory);
         }
-        if let Err(error) = git(&repo, &["tag", "--", &tag], custom_ssh) {
-            if created {
-                return Err(error);
-            }
-            fail!(
-                Git,
-                "{id} 0.1.0 was committed in {} but not tagged ({error}); create the tag {tag} on that commit (git tag {tag}) to release it",
-                repo.display()
-            );
-        }
+        git(
+            &repo,
+            &["tag", "-m", &format!("Release {tag}"), "--", &tag],
+            custom_ssh,
+        )?;
         Ok(directory)
     })();
     if result.is_err() && created {
@@ -888,7 +937,7 @@ mod tests {
         assert_eq!(repo, dir.join("nested/hello"));
         let m = model::manifest(&repo).unwrap();
         assert_eq!((m.id.as_str(), m.version.as_str()), ("dan/demo1", "0.1.0"));
-        assert_eq!(fixture_git(&repo, &["tag", "--list"]), "dan/demo1@0.1.0");
+        assert_eq!(fixture_git(&repo, &["tag", "--list"]), "v0.1.0");
         assert_eq!(
             fixture_git(&repo, &["status", "--porcelain", "--ignored"]),
             ""
@@ -902,16 +951,13 @@ mod tests {
         let files = fixture_git(&repo, &["ls-files"]);
         assert_eq!(files, ".gitignore\nREADME.md\ndist/index.js\nplugin.json");
         let readme = fs::read_to_string(repo.join("README.md")).unwrap();
-        assert!(readme.contains("--ref dan/demo1@0.1.0"), "{readme}");
-        assert!(readme.contains("--ref dan/demo1@0.1.1"), "{readme}");
+        assert!(readme.contains("--ref v0.1.0"), "{readme}");
+        assert!(readme.contains("--ref v0.1.1"), "{readme}");
         assert!(readme.contains("\ngitpm install "), "{readme}");
         assert!(readme.contains("gitpm --catalog ./catalog catalog-update"));
         assert!(!readme.contains("./pm"), "{readme}");
         assert!(readme.contains(&shell_quote(repo.to_str().unwrap())));
-        assert_eq!(
-            crate::releases::latest(&repo, None).unwrap().name,
-            "dan/demo1@0.1.0"
-        );
+        assert_eq!(crate::releases::latest(&repo, None).unwrap().name, "v0.1.0");
     }
 
     #[test]
@@ -992,7 +1038,7 @@ mod tests {
             Commit {
                 package: "dan/demo1".into(),
                 version: "0.2.0".into(),
-                tag: "dan/demo1@0.2.0".into(),
+                tag: "v0.2.0".into(),
             }
         );
     }
@@ -1004,16 +1050,16 @@ mod tests {
         fs::write(repo.join("dist/index.js"), "v2").unwrap();
         fs::write(repo.join("dist/new.js"), "new").unwrap();
         let tag = commit(&repo, "0.2.0").unwrap().tag;
-        assert_eq!(tag, "dan/demo1@0.2.0");
+        assert_eq!(tag, "v0.2.0");
         assert_eq!(model::manifest(&repo).unwrap().version, "0.2.0");
         assert_eq!(fixture_git(&repo, &["status", "--porcelain"]), "");
         assert_eq!(
             fixture_git(&repo, &["rev-parse", "HEAD"]),
-            fixture_git(&repo, &["rev-parse", &tag])
+            fixture_git(&repo, &["rev-parse", &format!("{tag}^{{}}")])
         );
         assert_eq!(
             fixture_git(&repo, &["log", "-1", "--format=%s"]),
-            "Release dan/demo1 0.2.0"
+            "Release 0.2.0"
         );
         let latest = crate::releases::latest(&repo, None).unwrap();
         assert_eq!(latest.manifest.version, "0.2.0");
@@ -1025,10 +1071,7 @@ mod tests {
         // A pre-release is released like any version and is a release tag, but not
         // the latest release.
         fs::write(repo.join("dist/index.js"), "v3 beta").unwrap();
-        assert_eq!(
-            commit(&repo, "0.3.0-beta.1").unwrap().tag,
-            "dan/demo1@0.3.0-beta.1"
-        );
+        assert_eq!(commit(&repo, "0.3.0-beta.1").unwrap().tag, "v0.3.0-beta.1");
         let found = crate::releases::discover(&repo, None).unwrap();
         assert_eq!(found.last().unwrap().manifest.version, "0.3.0-beta.1");
         assert_eq!(
@@ -1046,7 +1089,7 @@ mod tests {
         let repo = new_repo(&dir, "demo1");
         fs::write(repo.join("dist/index.js"), "pending edit").unwrap();
         // A tag for the next version already exists (for example created by hand).
-        fixture_git(&repo, &["tag", "dan/demo1@0.3.0"]);
+        fixture_git(&repo, &["tag", "v0.3.0"]);
         let before = tree_hash(&repo);
         let cases = [
             ("0.1.0", "version_conflict"),
@@ -1092,7 +1135,7 @@ mod tests {
         assert!(error.to_string().contains("restored"), "{error}");
         assert_eq!(model::manifest(&repo).unwrap().version, "0.1.0");
         assert_eq!(fixture_git(&repo, &["status", "--porcelain"]), status);
-        assert_eq!(fixture_git(&repo, &["tag", "--list"]), "dan/demo1@0.1.0");
+        assert_eq!(fixture_git(&repo, &["tag", "--list"]), "v0.1.0");
     }
 
     #[test]
@@ -1110,7 +1153,7 @@ mod tests {
         let error = release_packages(&repo, &[(None, "0.2.0")], &["."], true, false).unwrap_err();
         assert_eq!(error.kind(), "invalid_id", "{error}");
         assert_eq!(tree_hash(&repo), before);
-        assert_eq!(fixture_git(&repo, &["tag", "--list"]), "dan/demo1@0.1.0");
+        assert_eq!(fixture_git(&repo, &["tag", "--list"]), "v0.1.0");
     }
 
     #[test]
@@ -1119,7 +1162,7 @@ mod tests {
         let repo = new_repo(&dir, "demo1");
         fs::write(repo.join("dist/index.js"), "v2").unwrap();
         // A stale ref lock makes tag creation fail after the commit.
-        let lock = repo.join(".git/refs/tags/dan/demo1@0.2.0.lock");
+        let lock = repo.join(".git/refs/tags/v0.2.0.lock");
         fs::create_dir_all(lock.parent().unwrap()).unwrap();
         fs::write(&lock, "").unwrap();
         let error = commit(&repo, "0.2.0").unwrap_err();
@@ -1131,8 +1174,8 @@ mod tests {
         );
         let head = fixture_git(&repo, &["rev-parse", "HEAD"]);
         fs::remove_file(&lock).unwrap();
-        assert_eq!(commit(&repo, "0.2.0").unwrap().tag, "dan/demo1@0.2.0");
-        assert_eq!(fixture_git(&repo, &["rev-parse", "dan/demo1@0.2.0"]), head);
+        assert_eq!(commit(&repo, "0.2.0").unwrap().tag, "v0.2.0");
+        assert_eq!(fixture_git(&repo, &["rev-parse", "v0.2.0^{}"]), head);
         // Once tagged, the same version is a conflict again.
         assert_eq!(
             commit(&repo, "0.2.0").unwrap_err().kind(),
@@ -1140,7 +1183,7 @@ mod tests {
         );
         // An edited tree after the release commit is not a retry.
         fs::write(repo.join("dist/index.js"), "v3").unwrap();
-        fixture_git(&repo, &["tag", "-d", "dan/demo1@0.2.0"]);
+        fixture_git(&repo, &["tag", "-d", "v0.2.0"]);
         assert_eq!(
             commit(&repo, "0.2.0").unwrap_err().kind(),
             "version_conflict"
@@ -1212,7 +1255,7 @@ mod tests {
         // A missing folder becomes a new repository with gitpm.json.
         let store = create_package(&repo, "tilr", "store").unwrap();
         assert!(store.ends_with("packages/store"));
-        assert_eq!(fixture_git(&repo, &["tag", "--list"]), "tilr/store@0.1.0");
+        assert_eq!(fixture_git(&repo, &["tag", "--list"]), "v0.1.0");
         let theme = create_package(&repo, "tilr", "theme").unwrap();
         assert!(theme.join("dist/index.js").is_file());
         assert_eq!(
@@ -1233,17 +1276,14 @@ mod tests {
         );
         fs::remove_file(repo.join("notes.txt")).unwrap();
 
-        // commit needs the package when several exist; the tag is ID@VERSION.
+        // Selecting the result package still releases the entire repository.
         fs::write(theme.join("dist/index.js"), "theme v2").unwrap();
-        let error = commit(&repo, "0.2.0").unwrap_err();
-        assert_eq!(error.kind(), "invalid_argument");
-        assert!(error.to_string().contains("tilr/store"), "{error}");
         assert_eq!(
             commit_package(&repo, "0.2.0", Some("tilr/theme")).unwrap(),
             Commit {
                 package: "tilr/theme".into(),
                 version: "0.2.0".into(),
-                tag: "tilr/theme@0.2.0".into(),
+                tag: "v0.2.0".into(),
             }
         );
         let m = model::package_manifest(&repo, Some("packages/theme")).unwrap();
@@ -1326,42 +1366,33 @@ mod tests {
     }
 
     #[test]
-    fn create_package_keeps_the_commit_when_only_the_tag_fails() {
+    fn adding_a_package_never_attempts_a_tag() {
         let dir = TempDir::new("scaffold");
         let repo = dir.join("mono");
         create_package(&repo, "tilr", "store").unwrap();
-        fs::write(repo.join("notes.txt"), "draft").unwrap();
-        let before = fixture_git(&repo, &["rev-parse", "HEAD"]);
-        // A stale ref lock makes tag creation fail after the commit.
-        let lock = repo.join(".git/refs/tags/tilr/theme@0.1.0.lock");
-        fs::create_dir_all(lock.parent().unwrap()).unwrap();
+        commit(&repo, "1.2.0").unwrap();
+        let lock = repo.join(".git/refs/tags/v1.2.0.lock");
         fs::write(&lock, "").unwrap();
-        let error = create_package(&repo, "tilr", "theme").unwrap_err();
-        assert_eq!(error.kind(), "git");
-        assert!(
-            error.to_string().contains("was committed")
-                && error.to_string().contains("git tag tilr/theme@0.1.0"),
-            "{error}"
-        );
-        // The working tree is untouched: clean against the new commit, edits kept.
+        let theme = create_package(&repo, "tilr", "theme").unwrap();
         assert_eq!(
-            fixture_git(&repo, &["rev-parse", "HEAD~1"]),
-            before,
-            "one new commit"
+            model::package_manifest(&theme, None).unwrap().version,
+            "1.2.0"
         );
+        assert_eq!(fixture_git(&repo, &["tag", "--list"]), "v0.1.0\nv1.2.0");
         assert_eq!(
-            fixture_git(&repo, &["status", "--porcelain"]),
-            "?? notes.txt"
+            commit(&repo, "1.2.0").unwrap_err().kind(),
+            "version_conflict"
         );
-        assert!(repo.join("packages/theme/plugin.json").is_file());
-        fs::remove_file(&lock).unwrap();
-        fixture_git(&repo, &["tag", "tilr/theme@0.1.0"]);
-        assert_eq!(
-            crate::releases::latest(&repo, Some("tilr/theme"))
-                .unwrap()
-                .name,
-            "tilr/theme@0.1.0"
-        );
+        fs::remove_file(lock).unwrap();
+        assert_eq!(commit(&repo, "1.3.0").unwrap().tag, "v1.3.0");
+        for name in ["store", "theme"] {
+            assert_eq!(
+                model::package_manifest(&repo, Some(&format!("packages/{name}")))
+                    .unwrap()
+                    .version,
+                "1.3.0"
+            );
+        }
     }
 
     #[test]

@@ -133,11 +133,11 @@ def same_catalog_concurrent_registrations(t: T):
     for patch in range(5):
         v = f"0.3.{patch}"
         expected[("dan/hello", v)] = t.release(ID, v)
-        jobs.append(["register", t.repo(ID), "--ref", f"{ID}@{v}"])
+        jobs.append(["register", t.repo(ID), "--ref", f"v{v}"])
     for n in range(1, 4):
         id = f"dan/n{n}"
         expected[(id, "0.1.0")] = t.new_package(id, "0.1.0")
-        jobs.append(["register", t.repo(id), "--ref", f"{id}@0.1.0"])
+        jobs.append(["register", t.repo(id), "--ref", f"v0.1.0"])
     settle(t, jobs, race(t, jobs), "catalog locked")
     index = json.loads(t.catalog_index(ID).read_text())
     t.eq(sorted(index["versions"]), sorted(["0.1.0", "0.1.1", "0.2.0"] + [f"0.3.{p}" for p in range(5)]),
@@ -164,7 +164,7 @@ def independent_workspaces_and_catalogs_run_in_parallel(t: T):
         t.has((root / "dist" / ID / "index.js").read_text(), "dan/hello 0.1.1")
         clean_txn(t, root)
     catalogs = [t.root / f"cat{i}" for i in range(1, 5)]
-    jobs = [["--catalog", c, "register", t.repo(ID), "--ref", f"{ID}@0.2.0"] for c in catalogs]
+    jobs = [["--catalog", c, "register", t.repo(ID), "--ref", f"v0.2.0"] for c in catalogs]
     results = race(t, jobs)
     t.eq([r.code for r in results], [0] * len(jobs), "no refusal across different catalogs")
     reference = t.catalog_release(ID, "0.2.0").read_text()

@@ -260,7 +260,7 @@ impl Manager {
 
     /// [`Manager::fork_packages`], then release every forked package at once (one commit
     /// of the changes in their folders, `version` set in each manifest when given, one
-    /// `ID@VERSION` tag per package), install them (dependencies first) and replace each
+    /// `vVERSION` tag for the repository), install them (dependencies first) and replace each
     /// original for every consumer (`confirm` as in [`Manager::replace`]). Errors before
     /// the fork exists are returned as errors and leave nothing behind; after that the
     /// fork is kept and every package reports its own `failed` step and `error`. A failed
@@ -327,7 +327,7 @@ impl Manager {
                     .map(|p| p.version.clone())
                     .unwrap_or_default()
             });
-            result.tag = Some(identity::release_tag(&result.id, &version));
+            result.tag = Some(identity::release_tag(&version));
             match self.install_package(&source, Some(&result.id), InstallTarget::Release) {
                 Ok(installed) => result.installed = Some(installed),
                 Err(error) => {
@@ -994,7 +994,7 @@ fn install_order(packages: &[(&str, BTreeSet<String>)]) -> Result<Vec<usize>> {
 
 /// Release the forked packages: set `version` (when given) in each manifest, commit the
 /// changes in their folders once (the whole repository for a root package, like
-/// `commit`), then create all release tags together using the shared authoring path.
+/// `commit`), then create the single repository release tag using the shared authoring path.
 fn release_packages(fork: &PackageFork, version: Option<&str>, custom_ssh: bool) -> Result<()> {
     let releases: Vec<(Option<&str>, &str)> = fork
         .packages

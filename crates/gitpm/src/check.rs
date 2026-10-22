@@ -31,7 +31,7 @@ pub enum CheckStatus {
     OtherCatalog,
     /// Origin row: the installed version is newer than every release tag of the origin.
     NewerThanOrigin,
-    /// Origin row: the origin has no `ID@VERSION` release tag of the package.
+    /// Origin row: the origin has no `vVERSION` release tag of the package.
     NoReleases,
     /// Origin row: the origin could not be read; see [`CheckRow::problem`].
     OriginUnreachable,
@@ -427,7 +427,7 @@ impl Origins {
             .as_ref()
             .map_err(Clone::clone)
     }
-    /// The versions of the `ID@VERSION` tags on `source` by name (their manifests are
+    /// The versions of the `vVERSION` tags on `source` by name (their manifests are
     /// verified only when updating); `Err` is the classified reason the origin was
     /// unreadable.
     fn versions(
@@ -437,10 +437,10 @@ impl Origins {
         custom_ssh: bool,
     ) -> std::result::Result<Vec<String>, String> {
         let tags = &self.refs(source, custom_ssh)?.tags;
-        let prefix = format!("{id}@");
+        let _ = id;
         Ok(tags
             .keys()
-            .filter_map(|name| name.strip_prefix(&prefix))
+            .filter_map(|name| name.strip_prefix('v'))
             .filter(|version| version_key(version).is_ok())
             .map(str::to_owned)
             .collect())
@@ -776,7 +776,7 @@ mod tests {
                         } else {
                             "b".repeat(40)
                         },
-                        reference: format!("vendor/demo@{version}"),
+                        reference: format!("v{version}"),
                         files: Default::default(),
                         build: None,
                         path: None,
@@ -1164,12 +1164,8 @@ mod tests {
         let branch = Author::new(dir.join("branch"), "acme/branch");
         let m = Manager::open_with(&root, Options::default()).unwrap();
         m.install(released.source()).unwrap();
-        m.install_package(
-            pinned.source(),
-            None,
-            InstallTarget::Ref("acme/pinned@0.1.0".into()),
-        )
-        .unwrap();
+        m.install_package(pinned.source(), None, InstallTarget::Ref("v0.1.0".into()))
+            .unwrap();
         m.install_package(branch.source(), None, InstallTarget::Dev)
             .unwrap();
         drop(m);
@@ -1181,7 +1177,7 @@ mod tests {
                 .map(|r| (r.id, r.status, r.mode))
                 .collect()
         };
-        let pinned_mode = Mode::Pinned("acme/pinned@0.1.0".into());
+        let pinned_mode = Mode::Pinned("v0.1.0".into());
         let branch_mode = Mode::Branch("main".into());
         assert_eq!(
             summary(&root),
@@ -1285,9 +1281,9 @@ mod tests {
         // Every origin status, each distinct origin read once.
         let newer = Author::new(dir.join("newer"), "acme/newer");
         let untagged = Author::untagged(dir.join("untagged"), "acme/untagged", "0.1.0");
-        // Tags of other packages and non-release names do not count.
+        // Legacy package tags and non-release names do not count.
         crate::test_support::git(&untagged.path, &["tag", "acme/other@9.0.0"]);
-        crate::test_support::git(&untagged.path, &["tag", "v9.0.0"]);
+        crate::test_support::git(&untagged.path, &["tag", "acme/untagged@9.0.0"]);
         crate::test_support::git(&untagged.path, &["tag", "acme/untagged@banana"]);
         let state = State {
             packages: [

@@ -872,7 +872,7 @@ pub(crate) fn register_build_with_ssh(
     register_package_with_ssh(url, source, reference, None, build, custom_ssh)
 }
 /// [`register_build`] of one package of a multi-package repository: `package` picks it
-/// (an `ID@VERSION` reference names it too); for a single-package repository a given
+/// (a repository tag does not select a package); for a single-package repository a given
 /// `package` must match the root manifest.
 pub fn register_package(
     url: &str,
@@ -957,12 +957,7 @@ pub fn register_package_report_with_options(
     transport::clone_repo(&temp.0, &source, "repo", custom_ssh)?;
     let repo = temp.0.join("repo");
     let commit = resolve_ref(&repo, reference, custom_ssh)?;
-    let found = packages::find_at_with_ssh(
-        &repo,
-        &commit,
-        package.or_else(|| packages::tag_id(reference)),
-        custom_ssh,
-    )?;
+    let found = packages::find_at_with_ssh(&repo, &commit, package, custom_ssh)?;
     let path = found.subdir().map(str::to_owned);
     git(&repo, &["checkout", "--detach", &commit], custom_ssh)?;
     let manifest = package_manifest(&repo, path.as_deref())?;
@@ -1729,7 +1724,7 @@ pub(crate) mod tests {
                 "manifest": {"id": "dan/demo1", "version": "0.1.2", "dependencies": {}},
                 "source": "git@github.com:x/demo1.git",
                 "commit": "3".repeat(40),
-                "reference": "dan/demo1@0.1.2"
+                "reference": "v0.1.2"
             })
         );
         let back: Release = serde_json::from_value(value).unwrap();
@@ -1737,7 +1732,7 @@ pub(crate) mod tests {
 
         let full = json!({
             "manifest": {"id": "dan/demo1", "version": "0.1.0", "dependencies": {}},
-            "source": SOURCE, "commit": "a".repeat(40), "reference": "dan/demo1@0.1.0",
+            "source": SOURCE, "commit": "a".repeat(40), "reference": "v0.1.0",
             "files": {"index.js": {"sha256": ABC, "size": 3}},
             "build": {"url": "https://pkg.example/x.tar.zst", "sha256": ABC}
         });
@@ -1876,7 +1871,7 @@ pub(crate) mod tests {
         let mut alias = original.clone();
         alias.reference = "a".repeat(40);
         let stored = save(&cat, &alias);
-        assert_eq!(stored.reference, "dan/demo1@0.1.0");
+        assert_eq!(stored.reference, "v0.1.0");
         assert_eq!(tree_hash(&cat), before);
 
         let path = cat.join("catalog.json");
@@ -2585,9 +2580,9 @@ pub(crate) mod tests {
         fs::write(author.path.join("dist/index.js"), "uncommitted").unwrap();
         fs::write(author.path.join("dist/extra.js"), "uncommitted").unwrap();
         let cat = dir.join("catalog");
-        let r = register(loc(&cat), author.source(), "dan/demo1@0.1.0").unwrap();
+        let r = register(loc(&cat), author.source(), "v0.1.0").unwrap();
         assert_eq!(r.commit, commit);
-        assert_eq!(r.reference, "dan/demo1@0.1.0");
+        assert_eq!(r.reference, "v0.1.0");
         assert_eq!(r.source, author.source());
         assert_eq!(r.files.keys().collect::<Vec<_>>(), ["index.js"]);
         assert_eq!(r.files["index.js"].size, committed.len() as u64);
@@ -2598,7 +2593,7 @@ pub(crate) mod tests {
         );
         // Same commit through another ref: accepted, the stored reference is kept.
         let again = register(loc(&cat), author.source(), &commit).unwrap();
-        assert_eq!(again.reference, "dan/demo1@0.1.0");
+        assert_eq!(again.reference, "v0.1.0");
     }
 
     #[test]
@@ -2662,7 +2657,7 @@ pub(crate) mod tests {
         let dir = TempDir::new("catalog");
         let author = Author::new(dir.join("repo"), "dan/demo1");
         let cat = dir.join("catalog");
-        register(loc(&cat), author.source(), "dan/demo1@0.1.0").unwrap();
+        register(loc(&cat), author.source(), "v0.1.0").unwrap();
         assert!(!is_verified(loc(&cat)).unwrap());
         assert!(!browse(loc(&cat)).unwrap().verified);
         crate::test_support::verify_catalog(&cat);
@@ -2670,7 +2665,7 @@ pub(crate) mod tests {
         assert!(browse(loc(&cat)).unwrap().verified);
         // register keeps the flag.
         author.release("0.2.0");
-        register(loc(&cat), author.source(), "dan/demo1@0.2.0").unwrap();
+        register(loc(&cat), author.source(), "v0.2.0").unwrap();
         assert_eq!(read(&cat.join("catalog.json"))["verified"], json!(true));
         assert_eq!(versions(loc(&cat), "dan/demo1").unwrap().len(), 2);
         // Bulk generation is refused before anything is read or written.
@@ -2687,7 +2682,7 @@ pub(crate) mod tests {
         // The ID stays bound to its first source (namespace ownership).
         let other = Author::new(dir.join("other"), "dan/demo1");
         other.release("0.4.0");
-        let error = register(loc(&cat), other.source(), "dan/demo1@0.4.0").unwrap_err();
+        let error = register(loc(&cat), other.source(), "v0.4.0").unwrap_err();
         assert_eq!(error.kind(), "catalog");
         assert!(error.to_string().contains("different source"), "{error}");
         assert_eq!(tree_hash(&cat), before);
@@ -2703,7 +2698,7 @@ pub(crate) mod tests {
         let dir = TempDir::new("catalog");
         let author = Author::new(dir.join("repo"), "dan/demo1");
         // Old tag pointing at a commit whose manifest says another version.
-        fixture_git(&author.path, &["tag", "dan/demo1@0.0.9"]);
+        fixture_git(&author.path, &["tag", "v0.0.9"]);
         author.release("0.2.0");
         let cat = dir.join("catalog");
         let list = sources(dir.path(), "repo\n");
@@ -2711,7 +2706,7 @@ pub(crate) mod tests {
         assert_eq!(report.releases, 2);
         assert_eq!(report.skipped.len(), 1);
         assert_eq!(report.skipped[0].source, author.source());
-        assert_eq!(report.skipped[0].tag.name, "dan/demo1@0.0.9");
+        assert_eq!(report.skipped[0].tag.name, "v0.0.9");
         assert_eq!(
             lookup(loc(&cat), "dan/demo1", None)
                 .unwrap()
@@ -2746,7 +2741,8 @@ pub(crate) mod tests {
         let source = repo.to_str().unwrap();
         let error = register(loc(&other), source, "main").unwrap_err();
         assert_eq!(error.kind(), "invalid_argument");
-        let release = register(loc(&other), source, "tilr/theme@0.1.0").unwrap();
+        let release =
+            register_package(loc(&other), source, "v0.2.0", Some("tilr/theme"), None).unwrap();
         assert_eq!(release.path.as_deref(), Some("packages/theme"));
         let release =
             register_package(loc(&other), source, "main", Some("tilr/store"), None).unwrap();
@@ -2778,11 +2774,11 @@ pub(crate) mod tests {
         assert_eq!(seen, report.sources);
         let latest = lookup(loc(&cat), "dan/demo1", None).unwrap();
         assert_eq!(latest.manifest.version, "1.10.0");
-        assert_eq!(latest.reference, "dan/demo1@1.10.0");
+        assert_eq!(latest.reference, "v1.10.0");
         assert_eq!(latest.files.len(), 1);
         assert_eq!(
             lookup(loc(&cat), "acme/demo2", None).unwrap().reference,
-            "acme/demo2@0.1.0"
+            "v0.1.0"
         );
         // A second run changes nothing.
         let before = tree_hash(&cat);
@@ -2800,7 +2796,7 @@ pub(crate) mod tests {
             &["update-index", "--add", "--cacheinfo", &entry],
         );
         fixture_git(&author.path, &["commit", "-q", "-m", "add gitlink"]);
-        fixture_git(&author.path, &["tag", "-f", "dan/demo1@0.1.0"]);
+        fixture_git(&author.path, &["tag", "-f", "v0.1.0"]);
         let cat = dir.join("catalog");
         let list = sources(dir.path(), "author\n");
         let report = update_sources(loc(&cat), &list, &mut |_| {}).unwrap();
@@ -2822,7 +2818,7 @@ pub(crate) mod tests {
         let list = sources(dir.path(), "first\nsecond\n");
         update_sources(loc(&cat), &list, &mut |_| {}).unwrap();
         first.release("0.2.0");
-        fixture_git(&second.path, &["tag", "-d", "dan/b@0.2.0"]);
+        fixture_git(&second.path, &["tag", "-d", "v0.2.0"]);
         // The published newest release is no longer part of source discovery.
         fs::write(
             cat.join("namespaces/dan/b/versions/0.2.0/release.json"),
@@ -2847,7 +2843,7 @@ pub(crate) mod tests {
             url: "https://pkg.example/x.tar.zst".into(),
             sha256: ABC.into(),
         };
-        register_build(loc(&cat), author.source(), "dan/demo1@0.1.0", Some(build)).unwrap();
+        register_build(loc(&cat), author.source(), "v0.1.0", Some(build)).unwrap();
         let list = sources(dir.path(), "author\n");
         update_sources(loc(&cat), &list, &mut |_| {}).unwrap();
         let stored = lookup(loc(&cat), "dan/demo1", Some("0.1.0")).unwrap();
@@ -2863,7 +2859,7 @@ pub(crate) mod tests {
         fs::write(author.path.join("dist/index.js"), "rewritten").unwrap();
         fixture_git(&author.path, &["commit", "-q", "-am", "rewrite"]);
         let moved = author.head();
-        fixture_git(&author.path, &["tag", "-f", "dan/demo1@0.1.0"]);
+        fixture_git(&author.path, &["tag", "-f", "v0.1.0"]);
         author.release("0.2.0");
         let report = update_sources(loc(&cat), &list, &mut |_| {}).unwrap();
         assert_eq!(report.releases, 2);
@@ -2885,10 +2881,7 @@ pub(crate) mod tests {
 
         // The release commit is unchanged but the record's file hashes differ (a manual
         // edit): kept as well.
-        fixture_git(
-            &author.path,
-            &["tag", "-f", "dan/demo1@0.1.0", &stored.commit],
-        );
+        fixture_git(&author.path, &["tag", "-f", "v0.1.0", &stored.commit]);
         let mut edited: serde_json::Value = serde_json::from_slice(&published).unwrap();
         let files = edited["files"].as_object_mut().unwrap();
         let first = files.keys().next().unwrap().clone();

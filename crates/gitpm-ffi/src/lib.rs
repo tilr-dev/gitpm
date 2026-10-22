@@ -1482,7 +1482,7 @@ impl PackageManager {
     }
     /// Install `target` from a Git source (URL or local path) and record its mode.
     /// `package` picks a package of a repository with `gitpm.json` (needed when it lists
-    /// several, unless the ref is an `ID@VERSION` tag); for a single-package repository
+    /// several, including with a repository release tag); for a single-package repository
     /// it must match. A dependency provided only by a disabled package refuses with
     /// `DependencyConflict` unless `force` (which enables only this package); over a
     /// download from the same source the install enables it.
@@ -2196,7 +2196,7 @@ mod tests {
             original: "vendor/x".into(),
             id: "me/x".into(),
             path: "/forks/me/x".into(),
-            tag: Some("me/x@1.0.0".into()),
+            tag: Some("v1.0.0".into()),
             installed: None,
             replacement: None,
             failed: Some(pm::ForkStep::Install),
@@ -2211,7 +2211,7 @@ mod tests {
         );
         assert_eq!(
             (result.path.as_str(), result.tag.as_deref()),
-            ("/forks/me/x", Some("me/x@1.0.0"))
+            ("/forks/me/x", Some("v1.0.0"))
         );
     }
 
@@ -2296,7 +2296,7 @@ mod tests {
                 update_available: false,
                 status: pm::check::CheckStatus::OriginUnreachable,
                 source: pm::check::CheckSource::Origin,
-                mode: pm::Mode::Pinned("me/x@1.0.0".into()),
+                mode: pm::Mode::Pinned("v1.0.0".into()),
                 problem: Some("unreachable".into()),
                 origin_latest: Some("1.2.0".into()),
                 major: true,
@@ -2338,7 +2338,7 @@ mod tests {
         assert_eq!(
             row.mode,
             Mode::Pinned {
-                reference: "me/x@1.0.0".into()
+                reference: "v1.0.0".into()
             }
         );
         assert_eq!(
@@ -2376,7 +2376,7 @@ mod tests {
 
         let skipped = || {
             vec![pm::releases::SkippedTag {
-                name: "me/x@0.5.0".into(),
+                name: "v0.5.0".into(),
                 version: "0.5.0".into(),
                 reason: "invalid manifest".into(),
             }]
@@ -2468,7 +2468,7 @@ mod tests {
                 result.skipped[0].version.as_str(),
                 result.skipped[0].reason.as_str()
             ),
-            ("me/x@0.5.0", "0.5.0", "invalid manifest")
+            ("v0.5.0", "0.5.0", "invalid manifest")
         );
         assert_eq!(
             result.warnings,
@@ -2485,9 +2485,9 @@ mod tests {
             warnings: vec!["w".into()],
             skipped: skipped(),
             unchanged_reason: Some(pm::UnchangedReason::Pinned {
-                reference: "me/x@1.0.0".into(),
+                reference: "v1.0.0".into(),
             }),
-            mode: pm::Mode::Pinned("me/x@1.0.0".into()),
+            mode: pm::Mode::Pinned("v1.0.0".into()),
             detached: Some("/catalogs/a".into()),
             dist: report(),
         });
@@ -2512,13 +2512,13 @@ mod tests {
         assert_eq!(
             change.mode,
             Mode::Pinned {
-                reference: "me/x@1.0.0".into()
+                reference: "v1.0.0".into()
             }
         );
         assert_eq!(
             change.unchanged_reason,
             Some(UnchangedReason::Pinned {
-                reference: "me/x@1.0.0".into()
+                reference: "v1.0.0".into()
             })
         );
         assert_eq!(
@@ -2526,7 +2526,7 @@ mod tests {
             ("1.0.0", "2.0.0")
         );
         assert_eq!(change.warnings, ["w"]);
-        assert_eq!(change.skipped[0].name, "me/x@0.5.0");
+        assert_eq!(change.skipped[0].name, "v0.5.0");
         check_report(&change.dist);
 
         let plan = UpdateAllPlan::from(pm::UpdateAllPlan {
@@ -2616,7 +2616,7 @@ mod tests {
         );
         assert_eq!(plan.unchanged[2].reason, None);
         check_report(&plan.dist);
-        assert_eq!(plan.skipped[0].name, "me/x@0.5.0");
+        assert_eq!(plan.skipped[0].name, "v0.5.0");
 
         let replacement = pm::ReplacementPlan {
             original: "vendor/x".into(),
@@ -2651,7 +2651,7 @@ mod tests {
             original: "vendor/x".into(),
             id: "me/x".into(),
             path: "/forks/me/x".into(),
-            tag: Some("me/x@0.3.0".into()),
+            tag: Some("v0.3.0".into()),
             installed: None,
             replacement: None,
             failed: Some(pm::ForkStep::Replace),
@@ -2979,7 +2979,7 @@ mod tests {
             },
             source: "src".into(),
             commit: "c".repeat(40),
-            reference: "me/x@1.0.0".into(),
+            reference: "v1.0.0".into(),
             files,
             build: Some(Build {
                 url: "https://pkg.example/x.tar.zst".into(),
@@ -2995,7 +2995,7 @@ mod tests {
             ),
             ("me/x", "1.0.0", 2)
         );
-        assert_eq!(release.reference, "me/x@1.0.0");
+        assert_eq!(release.reference, "v1.0.0");
         assert_eq!(release.path.as_deref(), Some("packages/x"));
         assert_eq!(release.fork_of.unwrap().id, "vendor/x");
         assert_eq!(
@@ -3103,7 +3103,7 @@ mod tests {
             .unwrap()
             .repo;
         let catalog = dir.join("catalog").to_string_lossy().into_owned();
-        pm::catalog::register(&catalog, repo.to_str().unwrap(), "dan/hello@0.1.0").unwrap();
+        pm::catalog::register(&catalog, repo.to_str().unwrap(), "v0.1.0").unwrap();
         let manager = PackageManager::open(
             dir.join("workspace").to_string_lossy().into(),
             ManagerOptions {
@@ -3137,13 +3137,13 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(
             root.join("state.json"),
-            r#"{"format":1,"packages":{"acme/greeter":{"source":"s","current":{"version":"0.1.0","commit":"c"},"previous":null,"enabled":false,"mode":{"pinned":"acme/greeter@0.1.0"},"metadata":{}}}}"#,
+            r#"{"format":1,"packages":{"acme/greeter":{"source":"s","current":{"version":"0.1.0","commit":"c"},"previous":null,"enabled":false,"mode":{"pinned":"v0.1.0"},"metadata":{}}}}"#,
         )
         .unwrap();
         let manager =
             PackageManager::open(root.to_string_lossy().into(), ManagerOptions::default()).unwrap();
         let pinned = Mode::Pinned {
-            reference: "acme/greeter@0.1.0".into(),
+            reference: "v0.1.0".into(),
         };
         assert_eq!(manager.list().unwrap()[0].mode, pinned);
         let view = read_state(root.to_string_lossy().into()).unwrap();
@@ -3155,7 +3155,7 @@ mod tests {
         assert_eq!(
             change.unchanged_reason,
             Some(UnchangedReason::Pinned {
-                reference: "acme/greeter@0.1.0".into()
+                reference: "v0.1.0".into()
             })
         );
         let report = check(root.to_string_lossy().into(), None, false).unwrap();

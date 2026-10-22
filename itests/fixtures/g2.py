@@ -15,7 +15,7 @@ def g2_demos(t: T):
 @g2_demos.check
 def _(t: T):
     for id in ["vendor/demo", "author/demo"]:
-        t.eq(t.git(id, "tag", "--list"), f"{id}@0.1.0", f"{id} tags")
+        t.eq(t.git(id, "tag", "--list"), f"v0.1.0", f"{id} tags")
         t.has(t.git(id, "show", "HEAD:dist/index.js"), f"{id} 0.1.0")
 
 
@@ -41,14 +41,14 @@ def _reverse(t: T, id: str, annotated_first: bool):
     """1.10.0 committed and tagged first, 1.9.0 on top, then an untagged 1.11.0 HEAD."""
     t.new_package(id, "1.10.0", tag=False)
     if annotated_first:
-        t.git(id, "tag", "-a", f"{id}@1.10.0", "-m", "release 1.10.0")
+        t.git(id, "tag", "-a", f"v1.10.0", "-m", "release 1.10.0")
     else:
-        t.tag(id, f"{id}@1.10.0")
+        t.tag(id, f"v1.10.0")
     t.release(id, "1.9.0", tag=False)
     if annotated_first:
-        t.tag(id, f"{id}@1.9.0")
+        t.tag(id, f"v1.9.0")
     else:
-        t.git(id, "tag", "-a", f"{id}@1.9.0", "-m", "release 1.9.0")
+        t.git(id, "tag", "-a", f"v1.9.0", "-m", "release 1.9.0")
     t.release(id, "1.11.0", tag=False)
 
 
@@ -63,10 +63,10 @@ def g2_reverse_tags(t: T):
 @g2_reverse_tags.check
 def _(t: T):
     for id, kinds in [("dan/rev", ("tag", "commit")), ("dan/rev2", ("commit", "tag"))]:
-        t.eq(sorted(t.git(id, "tag", "--list").split()), [f"{id}@1.10.0", f"{id}@1.9.0"], f"{id} tags")
-        t.eq((t.git(id, "cat-file", "-t", f"refs/tags/{id}@1.10.0"),
-              t.git(id, "cat-file", "-t", f"refs/tags/{id}@1.9.0")), kinds, f"{id} tag object types")
-        old, new = t.rev(id, f"{id}@1.10.0"), t.rev(id, f"{id}@1.9.0")
+        t.eq(sorted(t.git(id, "tag", "--list").split()), [f"v1.10.0", f"v1.9.0"], f"{id} tags")
+        t.eq((t.git(id, "cat-file", "-t", f"refs/tags/v1.10.0"),
+              t.git(id, "cat-file", "-t", f"refs/tags/v1.9.0")), kinds, f"{id} tag object types")
+        old, new = t.rev(id, f"v1.10.0"), t.rev(id, f"v1.9.0")
         t.eq(t.git(id, "rev-list", "--count", f"{old}..{new}"), "1", f"{id}: 1.9.0 is committed after 1.10.0")
         t.has(t.git(id, "show", "HEAD:plugin.json"), '"version": "1.11.0"')
         t.eq(t.git(id, "tag", "--points-at", "HEAD"), "", f"{id} HEAD untagged")
@@ -84,8 +84,8 @@ def g2_hello_history(t: T):
 @g2_hello_history.check
 def _(t: T):
     p = t.package(HELLO)
-    t.eq(p["current"], {"version": "0.1.2", "commit": t.rev(HELLO, f"{HELLO}@0.1.2")}, "current")
-    t.eq(p["previous"], {"version": "0.1.1", "commit": t.rev(HELLO, f"{HELLO}@0.1.1")}, "previous")
+    t.eq(p["current"], {"version": "0.1.2", "commit": t.rev(HELLO, f"v0.1.2")}, "current")
+    t.eq(p["previous"], {"version": "0.1.1", "commit": t.rev(HELLO, f"v0.1.1")}, "previous")
     t.eq(p["enabled"], True, "enabled")
     t.eq(t.rev(t.clone(HELLO)), p["current"]["commit"], "clone HEAD")
     t.has((t.dist(HELLO) / "index.js").read_text(), "dan/hello 0.1.2")
@@ -106,7 +106,7 @@ def _(t: T):
     p = t.package(HELLO)
     t.eq((p["current"]["version"], p["previous"]["version"]), ("0.1.2", "0.1.1"), "dan/hello history")
     t.eq(t.package("dan/other")["current"]["version"], "0.1.0", "dan/other installed")
-    t.has(t.git(HELLO, "tag", "--list"), f"{HELLO}@0.1.3")
+    t.has(t.git(HELLO, "tag", "--list"), f"v0.1.3")
     for id in [HELLO, "dan/other"]:
         t.eq(t.git(t.clone(id), "status", "--porcelain", "--ignored"), "", f"{id} clean clone")
         t.eq(t.git(t.clone(id), "stash", "list"), "", f"{id} no stash")

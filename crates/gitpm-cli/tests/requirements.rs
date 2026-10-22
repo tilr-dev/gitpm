@@ -90,7 +90,7 @@ fn required_dependent_plugin_installation() {
     for args in [
         &["add", "."][..],
         &["commit", "-m", "dependent consumer"][..],
-        &["tag", "app/consumer@0.1.1"][..],
+        &["tag", "v0.1.1"][..],
     ] {
         git(&dir, &consumer, args);
     }
@@ -122,7 +122,7 @@ fn release(dir: &Path, repo: &Path, manifest: serde_json::Value) {
     let id = manifest["id"].as_str().unwrap();
     let version = manifest["version"].as_str().unwrap();
     fs::write(repo.join("dist/index.js"), format!("{id} {version}")).unwrap();
-    let tag = format!("{id}@{version}");
+    let tag = format!("v{version}");
     for args in [
         &["add", "--all"][..],
         &["commit", "-q", "-m", version][..],
@@ -145,12 +145,8 @@ fn required_global_fork_replacement_through_the_cli() {
             manifest[k] = v.clone();
         }
         release(&dir, &repo, manifest);
-        gitpm::catalog::register(
-            catalog.to_str().unwrap(),
-            repo.to_str().unwrap(),
-            &format!("{id}@1.0.0"),
-        )
-        .unwrap();
+        gitpm::catalog::register(catalog.to_str().unwrap(), repo.to_str().unwrap(), "v1.0.0")
+            .unwrap();
         repo
     };
     author("vendor/base", serde_json::json!({}), serde_json::json!({}));
@@ -305,12 +301,8 @@ fn download_then_enable_through_the_cli() {
             &repo,
             serde_json::json!({"id": id, "version": "1.0.0", "dependencies": deps}),
         );
-        gitpm::catalog::register(
-            catalog.to_str().unwrap(),
-            repo.to_str().unwrap(),
-            &format!("{id}@1.0.0"),
-        )
-        .unwrap();
+        gitpm::catalog::register(catalog.to_str().unwrap(), repo.to_str().unwrap(), "v1.0.0")
+            .unwrap();
     }
     let out = pm(&dir, &["download-catalog", "app/a"]);
     assert!(out.status.success(), "{out:?}");
@@ -378,12 +370,7 @@ fn download_then_enable_through_the_cli() {
         &repo,
         serde_json::json!({"id": "app/b", "version": "1.0.0", "dependencies": {"lib/core": "^1"}}),
     );
-    gitpm::catalog::register(
-        catalog.to_str().unwrap(),
-        repo.to_str().unwrap(),
-        "app/b@1.0.0",
-    )
-    .unwrap();
+    gitpm::catalog::register(catalog.to_str().unwrap(), repo.to_str().unwrap(), "v1.0.0").unwrap();
     assert!(!pm(&dir, &["install-catalog", "app/b"]).status.success());
     let out = pm(&dir, &["install-catalog", "app/b", "--force"]);
     assert!(out.status.success(), "{out:?}");

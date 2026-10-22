@@ -12,9 +12,9 @@ from pathlib import Path
 from gitpmtest import T, case
 
 PACKAGES = {
-    "dan/hello": (["0.1.0", "0.1.1"], "dan/hello@{}"),
-    "acme/widget": (["1.0.0", "1.1.0"], "acme/widget@{}"),
-    "old/oldie": (["0.1.0", "0.2.0"], "old/oldie@{}"),
+    "dan/hello": (["0.1.0", "0.1.1"], "v{}"),
+    "acme/widget": (["1.0.0", "1.1.0"], "v{}"),
+    "old/oldie": (["0.1.0", "0.2.0"], "v{}"),
 }
 
 
@@ -108,7 +108,7 @@ def adding_release_preserves_previous_records(t: T):
     """Registering dan/hello 0.2.0 adds only its release.json and plugin.json entry; previous
     releases, other packages and directory catalogs keep their bytes."""
     before = t.snap(t.catalog)
-    t.gitpm_ok("register", t.repo("dan/hello"), "--ref", "dan/hello@0.2.0")
+    t.gitpm_ok("register", t.repo("dan/hello"), "--ref", "v0.2.0")
     after = t.snap(t.catalog)
     new = str(folder(t, "dan/hello") / "versions/0.2.0/release.json")
     index = str(folder(t, "dan/hello") / "plugin.json")
@@ -117,4 +117,4 @@ def adding_release_preserves_previous_records(t: T):
     t.eq(load(Path(index))["versions"],
          {v: f"versions/{v}/release.json" for v in ["0.1.0", "0.1.1", "0.2.0"]}, "hello versions")
     release = load(Path(new))
-    t.eq(release["files"], committed_files(t.repo("dan/hello"), t.rev("dan/hello", "dan/hello@0.2.0")), "new hashes")
+    t.eq(release["files"], committed_files(t.repo("dan/hello"), t.rev("dan/hello", "v0.2.0")), "new hashes")

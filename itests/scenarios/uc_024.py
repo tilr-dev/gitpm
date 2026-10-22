@@ -22,7 +22,7 @@ def fork(t: T):
 def fork_release(t: T, dest, version: str) -> str:
     t.write(dest, {"dist/index.js": f"export const greeting = 'fork {version}';\n"})
     t.gitpm_ok("commit", dest, version)
-    return t.rev(dest, f"{NEW}@{version}")
+    return t.rev(dest, f"v{version}")
 
 
 @case(fixture="g3_vendor_installed", spec=["fork-replacement/fork-metadata"])
@@ -48,38 +48,37 @@ def single_existing_fork_branch(t: T):
 def inherited_vendor_tags_are_not_fork_releases(t: T):
     """A fork without its own release tag has no stable release (vendor tags do not count)."""
     dest = fork(t)
-    t.has(t.git(dest, "tag", "--list"), "vendor/demo@0.1.0")
-    t.gitpm_err("install", dest, kind="no_releases")
+    t.has(t.git(dest, "tag", "--list"), "v0.1.0")
+    t.gitpm_err("install", dest, kind="version_conflict")
     t.not_installed(NEW)
 
 
 @case(fixture="g3_vendor_installed", spec=["package-ids/release-tag-names", "install-uninstall/install-the-latest-release-of-a-git-source"])
-def newer_vendor_tag_is_ignored(t: T):
-    """Inherited vendor/demo@0.3.0 is newer than the fork release author/demo@0.2.0: stable
-    install of the fork picks 0.2.0."""
+def fork_release_uses_a_new_repository_version(t: T):
+    """The fork publishes 0.4.0 after inheriting the upstream repository tag v0.3.0."""
     t.release(ID, "0.3.0")
     t.gitpm_ok("update", ID)
     dest = fork(t)
-    t.has(t.git(dest, "tag", "--list"), "vendor/demo@0.3.0")
-    commit = fork_release(t, dest, "0.2.0")
+    t.has(t.git(dest, "tag", "--list"), "v0.3.0")
+    commit = fork_release(t, dest, "0.4.0")
     t.gitpm_ok("install", dest)
-    t.eq(t.package(NEW)["current"], {"version": "0.2.0", "commit": commit}, "fork current")
+    t.eq(t.package(NEW)["current"], {"version": "0.4.0", "commit": commit}, "fork current")
 
 
 def both_released(t: T):
-    """Fork releases author/demo@0.1.1; vendor releases vendor/demo@0.1.1 too, fetched into the fork."""
+    """The fork releases v0.1.2 and retains the upstream v0.1.1 tag after fetching."""
     dest = fork(t)
-    mine = fork_release(t, dest, "0.1.1")
+    mine = fork_release(t, dest, "0.1.2")
     theirs = t.release(ID, "0.1.1")
     t.git(dest, "fetch", "-q", "upstream", "--tags")
     return dest, mine, theirs
 
 
 @case(fixture="g3_vendor_installed", spec=["package-ids/release-tag-names#scoped-tag"])
-def scoped_tags_do_not_conflict(t: T):
+def distinct_repository_tags_do_not_conflict(t: T):
     dest, mine, theirs = both_released(t)
-    t.eq(t.rev(dest, f"{NEW}@0.1.1"), mine, "fork tag")
-    t.eq(t.rev(dest, f"{ID}@0.1.1"), theirs, "vendor tag in the fork")
+    t.eq(t.rev(dest, "v0.1.2"), mine, "fork tag")
+    t.eq(t.rev(dest, f"v0.1.1"), theirs, "vendor tag in the fork")
     t.ok(mine != theirs, "different commits")
 
 
@@ -90,13 +89,13 @@ def fork_installs_alongside_without_replacement(t: T):
     vendor_before = t.snap(t.clone(ID), t.dist(ID), git=True)
     t.gitpm_ok("install", dest)
     p = t.package(NEW)
-    t.eq(p["current"], {"version": "0.1.1", "commit": mine}, "fork current")
+    t.eq(p["current"], {"version": "0.1.2", "commit": mine}, "fork current")
     t.eq(p["forkOf"], {"id": ID, "version": "0.1.0", "commit": base["commit"], "source": t.package(ID)["source"]}, "forkOf")
     t.eq(t.package(ID)["current"], base, "original still at 0.1.0")
     t.ok("forkOf" not in t.package(ID), "original has no forkOf")
     t.ok(not t.state().get("replacements"), "no replacement")
     t.same(vendor_before, "original clone and dist")
-    t.has((t.dist(NEW) / "index.js").read_text(), "fork 0.1.1")
+    t.has((t.dist(NEW) / "index.js").read_text(), "fork 0.1.2")
 
 
 @case(fixture="g3_vendor_installed", spec=["fork-replacement/fork-copies-an-installed-package", "updates/stable-update-moves-to-the-newest-release"])
@@ -120,11 +119,11 @@ def updating_fork_leaves_original(t: T):
     vendor_before = t.snap(t.clone(ID), t.dist(ID), git=True)
     vendor_state = t.package(ID)
     forkof = t.package(NEW)["forkOf"]
-    newer = fork_release(t, dest, "0.1.2")
+    newer = fork_release(t, dest, "0.1.3")
     t.gitpm_ok("update", NEW)
     p = t.package(NEW)
-    t.eq(p["current"], {"version": "0.1.2", "commit": newer}, "fork current")
-    t.eq(p["previous"], {"version": "0.1.1", "commit": mine}, "fork previous")
+    t.eq(p["current"], {"version": "0.1.3", "commit": newer}, "fork current")
+    t.eq(p["previous"], {"version": "0.1.2", "commit": mine}, "fork previous")
     t.eq(p["forkOf"], forkof, "provenance kept")
     t.eq(t.package(ID), vendor_state, "original state")
     t.same(vendor_before, "original clone and dist")

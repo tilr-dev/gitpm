@@ -43,7 +43,7 @@ def symlinked_plugin(t: T, id: str, links: dict[str, str], version: str = "0.1.0
         os.symlink(target, repo / path)
     t.git(repo, "add", "--all")
     t.git(repo, "commit", "-q", "-m", f"{id} {version}")
-    t.git(repo, "tag", f"{id}@{version}")
+    t.git(repo, "tag", f"v{version}")
     return t.rev(repo)
 
 
@@ -66,7 +66,7 @@ def dist_symlink_refused_at_register(t: T):
     outside = sentinels(t)
     symlinked_plugin(t, "dan/abs", {"dist/link.js": str(OUTSIDE / "sentinel.txt")})
     before = t.snap(t.catalog)
-    t.gitpm_err("register", t.repo("dan/abs"), "--ref", "dan/abs@0.1.0", kind="unsupported",
+    t.gitpm_err("register", t.repo("dan/abs"), "--ref", "v0.1.0", kind="unsupported",
              contains="build contains a symlink")
     t.same(before, "catalog")
     t.same(outside, "outside sentinels")

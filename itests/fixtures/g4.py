@@ -41,8 +41,8 @@ def g4_oldie(t: T):
 
 @g4_oldie.check
 def _(t: T):
-    t.eq(sorted(t.git("old/oldie", "tag", "--list").split()), ["old/oldie@0.1.0", "old/oldie@0.2.0"], "oldie tags")
-    t.has(t.git("old/oldie", "show", "old/oldie@0.1.0:plugin.json"), '"id": "old/oldie"', '"version": "0.1.0"')
+    t.eq(sorted(t.git("old/oldie", "tag", "--list").split()), ["v0.1.0", "v0.2.0"], "oldie tags")
+    t.has(t.git("old/oldie", "show", "v0.1.0:plugin.json"), '"id": "old/oldie"', '"version": "0.1.0"')
 
 
 # ------------------------------------------------------------------ catalog tree
@@ -64,16 +64,16 @@ def g4_tree(t: T):
 @g4_tree.check
 def _(t: T):
     t.eq(sorted(t.git("acme/widget", "tag", "--list").split()),
-         ["acme/widget@1.0.0", "acme/widget@1.1.0"], "widget tags")
-    files = committed_files(t.repo("acme/widget"), "acme/widget@1.1.0")
+         ["v1.0.0", "v1.1.0"], "widget tags")
+    files = committed_files(t.repo("acme/widget"), "v1.1.0")
     t.eq(sorted(files), ["assets/img/logo.bin", "empty.txt", "index.js", "lib/deep/nested/util.js"], "widget dist")
     t.eq(files["empty.txt"]["size"], 0, "empty file size")
 
 
 G4_TREE_RELEASES = [
-    ("dan/hello", "dan/hello", ["0.1.0", "0.1.1"], "dan/hello@{}"),
-    ("acme/widget", "acme/widget", ["1.0.0", "1.1.0"], "acme/widget@{}"),
-    ("old/oldie", "old/oldie", ["0.1.0", "0.2.0"], "old/oldie@{}"),
+    ("dan/hello", "dan/hello", ["0.1.0", "0.1.1"], "v{}"),
+    ("acme/widget", "acme/widget", ["1.0.0", "1.1.0"], "v{}"),
+    ("old/oldie", "old/oldie", ["0.1.0", "0.2.0"], "v{}"),
 ]
 
 
@@ -113,8 +113,8 @@ def v1_release(t: T, id: str, repo: str, version: str, tag: str, with_files: boo
 
 
 V1_PACKAGES = [
-    ("old/oldie", ["0.1.0", "0.2.0"], "old/oldie@{}", False),
-    ("dan/hello", ["0.1.0", "0.1.1"], "dan/hello@{}", True),
+    ("old/oldie", ["0.1.0", "0.2.0"], "v{}", False),
+    ("dan/hello", ["0.1.0", "0.1.1"], "v{}", True),
 ]
 
 
@@ -156,7 +156,7 @@ def g4_sources(t: T):
     init_repo(t, repo)
     t.release("dan/spaced", "1.0.0", repo=repo)
     t.release("dan/spaced", "1.1.0", repo=repo, tag=False)
-    t.git(repo, "tag", "-a", "-m", "annotated release", "dan/spaced@1.1.0")
+    t.git(repo, "tag", "-a", "-m", "annotated release", "v1.1.0")
     t.commit(repo, "unreleased", {"dist/index.js": "dev\n"})
     (t.root / "lists").mkdir()
     (t.root / "lists/sources.txt").write_text(
@@ -174,9 +174,9 @@ def g4_sources(t: T):
 @g4_sources.check
 def _(t: T):
     repo = t.root / SPACED
-    t.eq(t.git(repo, "cat-file", "-t", "dan/spaced@1.1.0"), "tag", "1.1.0 is annotated")
-    t.eq(t.git(repo, "cat-file", "-t", "dan/spaced@1.0.0"), "commit", "1.0.0 is lightweight")
-    t.ok(t.rev(repo) != t.rev(repo, "dan/spaced@1.1.0"), "HEAD past the last release")
+    t.eq(t.git(repo, "cat-file", "-t", "v1.1.0"), "tag", "1.1.0 is annotated")
+    t.eq(t.git(repo, "cat-file", "-t", "v1.0.0"), "commit", "1.0.0 is lightweight")
+    t.ok(t.rev(repo) != t.rev(repo, "v1.1.0"), "HEAD past the last release")
     t.has((t.root / "lists/sources.txt").read_text(), "# package sources", SPACED)
 
 
@@ -210,9 +210,9 @@ def g4_xp(t: T):
 
 @g4_xp.check
 def _(t: T):
-    t.eq(t.rev(t.root / "mirror/x/p", "x/p@1.1.0"), t.rev("x/p", "x/p@1.1.0"), "mirror has the same releases")
+    t.eq(t.rev(t.root / "mirror/x/p", "v1.1.0"), t.rev("x/p", "v1.1.0"), "mirror has the same releases")
     for id in ["y/q", "z/r"]:
-        t.eq(t.git(id, "tag", "--list"), f"{id}@1.0.0", f"{id} tags")
+        t.eq(t.git(id, "tag", "--list"), f"v1.0.0", f"{id} tags")
 
 
 @fixture(requires=["g4_xp"], gitpm=True)
@@ -221,12 +221,12 @@ def g4_two_catalogs(t: T):
     x/p 1.0.0 + 1.1.0 from /fx/mirror/x/p (a different source), y/q 1.0.0, z/r 1.0.0 (same
     source and commit as in A). Both are verified (`"verified": true`). Empty workspace."""
     a, b = t.root / "catA", t.root / "catB"
-    t.gitpm_ok("--catalog", a, "register", t.repo("x/p"), "--ref", "x/p@1.0.0")
-    t.gitpm_ok("--catalog", a, "register", t.repo("z/r"), "--ref", "z/r@1.0.0")
+    t.gitpm_ok("--catalog", a, "register", t.repo("x/p"), "--ref", "v1.0.0")
+    t.gitpm_ok("--catalog", a, "register", t.repo("z/r"), "--ref", "v1.0.0")
     for v in ["1.0.0", "1.1.0"]:
-        t.gitpm_ok("--catalog", b, "register", t.root / "mirror/x/p", "--ref", f"x/p@{v}")
-    t.gitpm_ok("--catalog", b, "register", t.repo("y/q"), "--ref", "y/q@1.0.0")
-    t.gitpm_ok("--catalog", b, "register", t.repo("z/r"), "--ref", "z/r@1.0.0")
+        t.gitpm_ok("--catalog", b, "register", t.root / "mirror/x/p", "--ref", f"v{v}")
+    t.gitpm_ok("--catalog", b, "register", t.repo("y/q"), "--ref", "v1.0.0")
+    t.gitpm_ok("--catalog", b, "register", t.repo("z/r"), "--ref", "v1.0.0")
     # Both owners mark their catalog verified by hand.
     for catalog in [a, b]:
         t.edit_json(catalog / "catalog.json", lambda c: c.update(verified=True))

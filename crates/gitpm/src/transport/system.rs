@@ -215,27 +215,6 @@ pub fn git_raw(repo: &Path, args: &[&str], custom_ssh: bool) -> Result<Vec<u8>> 
     Ok(output.stdout)
 }
 
-/// Run Git with library-owned input, never inherited user stdin. Input closes at EOF.
-pub fn git_with_input(repo: &Path, args: &[&str], input: Vec<u8>, custom_ssh: bool) -> Result<()> {
-    let what = format!("git {}", args.join(" "));
-    let output = output_with_input_within(
-        git_command(repo, args, custom_ssh)?,
-        Some(input),
-        GIT_TIMEOUT,
-        &what,
-        Error::Git,
-        "cannot start git",
-        Stdio::piped(),
-    )?;
-    ensure!(
-        output.status.success(),
-        Git,
-        "{what}: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    Ok(())
-}
-
 /// Tags and branches of a remote, as `git ls-remote` lists them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RemoteRefs {

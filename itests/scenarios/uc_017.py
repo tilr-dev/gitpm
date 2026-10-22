@@ -10,7 +10,7 @@ ID = "dan/hello"
 
 
 def tagged(t: T, version: str) -> str:
-    return t.rev(ID, f"{ID}@{version}")
+    return t.rev(ID, f"v{version}")
 
 
 def at(t: T, current: str, previous: str | None):

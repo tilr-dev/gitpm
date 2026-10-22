@@ -12,7 +12,7 @@ ID = "dan/hello"
 
 
 def payload(t: T, version: str) -> str:
-    return t.run("git", "-C", t.repo(ID), "show", f"{ID}@{version}:dist/index.js", check=True, quiet=True).out
+    return t.run("git", "-C", t.repo(ID), "show", f"v{version}:dist/index.js", check=True, quiet=True).out
 
 
 def check_row(t: T) -> str:
@@ -28,7 +28,7 @@ def at(t: T, version: str, previous: str | None, enabled: bool = True, catalog: 
     p = t.package(ID)
     if catalog:
         t.eq(p.get("catalog"), "/fx/catalog/catalog.json", "catalog origin")
-    commit = t.rev(ID, f"{ID}@{version}")
+    commit = t.rev(ID, f"v{version}")
     t.eq(p["current"], {"version": version, "commit": commit}, "current")
     t.eq(p["previous"]["version"] if p["previous"] else None, previous, "previous")
     if previous:
@@ -45,7 +45,7 @@ def author_releases(t: T):
     """Author releases 0.1.1 and the catalog is updated; the consumer does not change."""
     before = t.snap(t.ws)
     t.release(ID, "0.1.1")
-    t.gitpm_ok("register", t.repo(ID), "--ref", f"{ID}@0.1.1")
+    t.gitpm_ok("register", t.repo(ID), "--ref", f"v0.1.1")
     t.same(before, "workspace (a catalog update alone)")
 
 
