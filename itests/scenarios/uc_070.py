@@ -93,3 +93,22 @@ def undeployable_package_is_named_and_others_synced(t: T):
     t.gitpm_ok("sync-dist")
     t.ok(not t.dist(A).exists(), "dist/A removed")
     t.ok(not t.dist(B).exists(), "dist/B not fabricated")
+
+
+@case(fixture="g2_demos_installed", spec=["dist/unknown-paths-are-left-alone"])
+def blocked_namespace_with_sync_dist(t: T):
+    """An active package below a blocked namespace is reported while another is repaired."""
+    blocked = t.dist(A).parent
+    shutil.rmtree(blocked)
+    blocked.write_text("blocked")
+    shutil.rmtree(t.dist(B).parent)
+
+    r = t.gitpm_err("sync-dist", kind="not_deployed", contains=f"Error: 1 package(s) not deployed: {A}")
+    t.has(r.err, f"Warning: {A}: dist not deployed (dist/vendor is not a folder)")
+    t.has(r.err, "Hint: remove or rename `dist/vendor` and run `gitpm sync-dist` again")
+    t.ok(blocked.read_text() == "blocked", "blocked namespace file preserved")
+    t.ok(t.dist(B).exists(), "unrelated active package deployed")
+
+    blocked.unlink()
+    t.gitpm_ok("sync-dist")
+    t.ok(t.dist(A).exists(), "removing the obstruction allows deployment")

@@ -7,11 +7,6 @@ behaves like a passphrase-protected key without an agent: with BatchMode=yes it 
 like OpenSSH ("Permission denied (publickey)"), otherwise it prompts on /dev/tty and
 blocks — run under script(1), a prompt would hang the case into its timeout.
 
-Known defect (expected failure until change catalog-streaming-size-limit):
-* oversized_streamed_catalog_response_is_refused — a catalog response of 50 MB
-  without Content-Length is accepted: the 16 MiB limit is curl --max-filesize, which
-  curl 7.88 (Debian bookworm) applies only when the size is announced up front
-  (exec.rs http_get).
 """
 
 import json
@@ -84,7 +79,7 @@ def outside_dist_symlink_does_not_break_any_operation(t: T):
 def symlink_inside_dist_is_refused_at_install(t: T):
     symlinked_plugin(t, "dan/alias", {"dist/alias.js": "index.js"})
     before = t.snap(t.ws)
-    t.gitpm_err("install", t.repo("dan/alias"), kind="unsupported", contains="symlinks and submodules are not supported")
+    t.gitpm_err("install", t.repo("dan/alias"), kind="unsupported", contains="symlinks are not supported")
     t.not_installed("dan/alias")
     t.same(before, "workspace")
 
@@ -252,7 +247,7 @@ def oversized_catalog_response_is_refused(t: T):
     t.not_installed(ID)
 
 
-@case(fixture="catalog", spec=["catalog/catalog-locations-and-transport"], xfail="catalog-streaming-size-limit")
+@case(fixture="catalog", spec=["catalog/catalog-locations-and-transport"])
 def oversized_streamed_catalog_response_is_refused(t: T):
     """50 MB without Content-Length (streamed until close): the 16 MiB limit must still
     refuse it."""
@@ -260,6 +255,7 @@ def oversized_streamed_catalog_response_is_refused(t: T):
     r = timed(t, "--catalog", huge.url, "install-catalog", ID, limit=30)
     print(f"  server sent {huge.sent} bytes")
     t.ok(r.code != 0, f"a {Huge.SIZE // 2**20} MiB response is refused (16 MiB limit)")
+    t.has(r.err, "Error kind: http")
     t.not_installed(ID)
 
 
@@ -311,7 +307,7 @@ def silent_git_server_fails_in_bounded_time(t: T):
     t.has(r.err, "Error kind: git")
     r = timed(t, "auth", "check", url, limit=120)
     t.ok(r.code != 0, "auth check failed")
-    t.has(r.err, "Error kind: auth")
+    t.has(r.err, "Error kind: git", "timed out after 10s")
     t.ok(len(silent.conns) >= 2, "the server really accepted the connections")
     t.same(before, "workspace")
     t.gitpm_ok("disable", ID)  # lock released right after

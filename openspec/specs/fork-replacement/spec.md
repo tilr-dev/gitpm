@@ -7,14 +7,14 @@ Defines forking an installed package into an author repository under a new names
 ## Requirements
 
 ### Requirement: Fork copies an installed package
-`fork ID [ID...] --ns NAMESPACE --into DIR` SHALL copy installed packages (with Git history and local edits of the installed clone) into the fork repository `DIR` under the IDs `NAMESPACE/<same name>`; the original installation SHALL be unchanged and the original repository SHALL become the `upstream` remote. Only installed IDs are accepted. Verified by `fork_preserves_history_edits_and_original_installation`.
+`fork ID [ID...] --ns NAMESPACE --into DIR` SHALL Git-clone the recorded installation source with history at installed revisions, into a new repository with every package renamed to `NAMESPACE/<same name>`. It SHALL leave the installation unchanged, set the source as `upstream`, accept only installed IDs, and exclude local installation work.
 
 #### Scenario: Fork one package
 - **WHEN** the user runs `gitpm fork acme/hello --ns me --into hello-fork`
-- **THEN** `hello-fork` is a Git repository whose `plugin.json` has `id` `me/hello`, the output contains `me/hello forked from acme/hello (repository root)`, and `acme/hello` is still installed
+- **THEN** `hello-fork` is a Git clone whose `plugin.json` has `id` `me/hello`, the output contains `me/hello forked from acme/hello (repository root)`, and `acme/hello` is still installed
 
 ### Requirement: Fork requires explicit namespace and destination
-`fork` SHALL require `--ns NAMESPACE` and `--into DIR`; nothing SHALL be derived from an ID. `DIR` MUST be a new folder or an existing repository with `gitpm.json`; anything else, a `DIR` inside the workspace, a path with `..`, the source repository itself or a folder inside it SHALL be refused, and a failed new fork SHALL leave no folder behind. Verified by `fork_rejects_managed_destinations_and_unknown_plugins` and `workspace::fork_refusals_create_nothing`.
+`fork` SHALL require explicit `--ns NAMESPACE` and `--into DIR`. DIR MUST be new, outside the workspace and the source repository, without `..`. Existing destinations SHALL be refused unchanged. A failed fork SHALL remove directories it created.
 
 #### Scenario: Same namespace
 - **WHEN** the user runs `gitpm fork acme/hello --ns acme --into x`
@@ -33,13 +33,12 @@ Defines forking an installed package into an author repository under a new names
 - **THEN** the fork fails with `invalid_argument` ("fork destination must be outside the managed workspace") and nothing is created
 
 ### Requirement: Fork metadata
-The fork's manifest SHALL get `forkOf` `{id, version, commit, source}` of the forked revision (`source`: the original's recorded source) and `replaces` `{id, version}` at the forked version; metadata and unknown keys SHALL be kept (package-manifest, "Unknown keys are preserved"; plugin-metadata, "Metadata survives rewrites"). The fork SHALL be on a new branch `fork` (`fork-2`, … when taken) with attached HEAD. Verified by `fork_records_local_head_preserves_index_and_immediate_parent`.
+The fork manifest SHALL get `forkOf` `{id, version, commit, source}` and `replaces` `{id, version}` from its revision of the cloned source (the installed revision for installed packages from that source, the starting revision for other packages); `source` SHALL be the recorded source. Metadata and unknown keys SHALL be kept. HEAD SHALL be attached to a new branch `fork` (`fork-2`, … when taken).
 
 #### Scenario: Fork manifest
 - **WHEN** `acme/hello` 1.0.0, installed from `https://git.example/acme/hello.git`, is forked into namespace `me`
 - **THEN** the fork's `plugin.json` has `forkOf.id` `acme/hello`, `forkOf.version` `1.0.0`, `forkOf.source` `https://git.example/acme/hello.git` and `replaces` `{"id": "acme/hello", "version": "1.0.0"}`
 - **AND** metadata keys are carried unchanged; this is covered by `metadata::fork_and_commit_carry_the_metadata_unchanged`
-- **AND** `forkOf.source` is left out when the original's source is not a Git URL or an absolute path, or names a remote helper
 
 ### Requirement: Fork output names the next steps
 Without `--replace`, the CLI SHALL print the fork lines and the next steps per package (the strings below are the common forms): `gitpm commit DIR NEW_VERSION --package ID` (commit local edits, tag), `gitpm install DIR ID`, `gitpm replace ORIGINAL --with ID`, and for a new fork `gitpm remote DIR GIT_URL`.
@@ -49,11 +48,22 @@ Without `--replace`, the CLI SHALL print the fork lines and the next steps per p
 - **THEN** the output contains `Next steps (or all at once: add --replace):` followed by the commit, install and replace commands
 
 ### Requirement: Fork and replace in one step
-`fork … --replace [--version V] [--force]` SHALL make one release commit of the forked folders (setting `version` when `--version` is given) and one release tag per package (`NAMESPACE/NAME@VERSION`, package-ids), then install each fork (dependencies first) and replace its original. If the release fails nothing SHALL be installed; a failed install or replace of one package SHALL NOT stop the others. Verified by `fork_replace_releases_installs_and_replaces_in_one_step`.
+`fork … --replace [--version V] [--force]` SHALL release the forked folders under the rules of `commit` (authoring): one commit (`version` set by `--version`) and one tag per package (`NAMESPACE/NAME@VERSION`, package-ids), then install each fork (dependencies first) and replace its original. If the release fails nothing SHALL be installed; a failed install or replace of one package SHALL NOT stop the others. Verified by `fork_replace_releases_installs_and_replaces_in_one_step`.
+
+#### Scenario: Release without file transport
+- **WHEN** a multi-package fork is released while Git's file transport is disabled
+- **THEN** all release tags are created at the release commit without using a transport
+- **AND** verified by `fork_replace_release_without_file_transport`
 
 #### Scenario: One-step fork
 - **WHEN** the user runs `gitpm fork acme/hello --ns me --into f --replace`
 - **THEN** `me/hello@<forked version>` is tagged, installed and replaces `acme/hello`, so only `dist/me/hello/` is deployed
+
+#### Scenario: Failed release commit
+- **WHEN** a pre-commit hook rejects the release commit of `fork … --replace`
+- **THEN** the forked manifests and the index are as before the release, no tag exists (tags are created all or none), nothing is installed, and the result reports the failed `release` step
+- **AND** a wrong-typed metadata key fails the release step with `invalid_manifest` (plugin-metadata)
+- **AND** verified by `fork_replace_release_rejecting_hook_restores_manifests_and_index` and `fork_replace_release_rejects_wrong_metadata_type`
 
 ### Requirement: Fork folder is never removed after a partial failure
 When a step of `fork --replace` fails, the fork folder SHALL be kept and the steps that succeeded SHALL stay: the library reports the failed step in its result instead of failing, an exception to errors ("Failing operations leave the workspace unchanged"). The CLI SHALL print per package which step failed and how to finish or undo, and SHALL fail with exit status 1 and the first failing step's `Error kind`. Verified by `fork_replace_keeps_the_fork_and_says_how_to_finish_when_a_step_fails`.
@@ -201,3 +211,45 @@ When the replace step of `fork --replace` needs confirmation (incompatible consu
 #### Scenario: Fork version differs from the declared one
 - **WHEN** `me/greeter` 0.3.0 declares `replaces: acme/greeter 1.4.0` and the user replaces `acme/greeter` with it
 - **THEN** the plan has `version` `1.4.0` and `installed_version` `0.3.0`, and the line is `acme/greeter replaced by me/greeter 0.3.0 (as acme/greeter 1.4.0) for: …`
+
+### Requirement: Fork preserves source submodules
+A fork SHALL preserve submodules outside dist as Git links at their recorded commits with the corresponding `.gitmodules` configuration, including when a requested package comes from an older installed revision. The user SHALL be able to populate them with `git submodule update --init`; package files SHALL NOT be exported through archive.
+
+#### Scenario: Source submodule
+- **WHEN** an installed package's recorded source has a submodule outside dist
+- **THEN** its fork retains the gitlink and configuration and initializing it checks out the recorded submodule commit
+
+### Requirement: Fork installs committed dist
+Forking SHALL keep the existing installation model: install the fork's committed package dist without automatically building sources or enabling dev mode. With `--replace`, every forked package SHALL be released and installed; a replacement binding SHALL be created only for originals that are installed.
+
+#### Scenario: Install a fork with dist
+- **WHEN** a package has source files and committed dist and the user forks it with `--replace`
+- **THEN** the fork contains the source tree and only its committed dist is deployed under the fork ID
+
+#### Scenario: Replace a repository with an uninstalled sibling
+- **WHEN** only one original package is installed and its repository has another package, and the user forks with `--replace`
+- **THEN** both fork packages are released and installed, only the installed original gets a replacement binding, and no `not_installed` error is reported
+
+#### Scenario: Single-ID replacement API
+- **WHEN** a host calls `fork_replace` or FFI `forkAndReplace` with one installed ID from a multi-package repository
+- **THEN** it receives `PackageForkReplacement` with every package outcome, including sibling errors and pending confirmations
+
+### Requirement: Fork isolates source and destination state
+Fork SHALL exclude local installation work and use only the recorded source at installed revisions. It SHALL reject unsupported recorded sources and existing destinations without changing the installation or an existing destination.
+
+#### Scenario: Unsupported recorded source
+- **WHEN** installation metadata names a remote helper or a relative source
+- **THEN** fork refuses it with `invalid_argument` and leaves no destination
+
+#### Scenario: Installed clone has local work
+- **WHEN** the installed clone has local commits and staged, unstaged or untracked edits
+- **THEN** the fork uses the recorded source at the installed revision and leaves all local work in the installation unchanged
+
+#### Scenario: Existing destination
+- **WHEN** `--into` names an existing directory, including an existing multi-package fork
+- **THEN** the command fails with `invalid_argument` and leaves it unchanged
+
+#### Scenario: Repository starting revision
+- **WHEN** one or more IDs identify a source with packages installed at different revisions
+- **THEN** the fork starts at the newest installed revision of all packages from that source, restores every installed package folder at its recorded revision, and keeps uninstalled packages at the starting revision
+- **AND** one commit `Fork A, B as me/A, me/B` records all renamed packages without running user hooks

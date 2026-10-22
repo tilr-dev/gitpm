@@ -6,7 +6,7 @@ upstream so a non-refusing update would really change the clone.
 
 Per kind of local work two cases: `<kind>_refused` (update, rollback, uninstall without
 TTY, uninstall on a TTY answered N and EOF — the prompt must list the work —, then fork
-preserves it; every refusal leaves every byte of the workspace and author repos intact)
+leaves it in the installed clone; every refusal leaves every byte of the workspace and author repos intact)
 and `<kind>_confirmed` (TTY answer y removes only dan/a). `forced_uninstall` covers
 --force with all kinds at once.
 """
@@ -36,7 +36,7 @@ def ignored_setup(t, c):
 
 
 def ignored_verify(t, f):
-    t.eq((f / "node_modules/private.txt").read_text(), "secret\n", "ignored file in fork")
+    t.ok(not (f / "node_modules/private.txt").exists(), "ignored file excluded")
     t.eq(t.git(f, "check-ignore", "node_modules/private.txt"), "node_modules/private.txt", "still ignored")
 
 
@@ -45,8 +45,8 @@ def tracked_setup(t, c):
 
 
 def tracked_verify(t, f):
-    t.eq((f / "dist/index.js").read_text(), "export const greeting = 'edited';\n", "edit in fork")
-    t.has(t.run("git", "-C", f, "status", "--porcelain").out, " M dist/index.js\n")
+    expected = t.git(t.clone(A), "show", f"{installed(t)}:dist/index.js")
+    t.eq((f / "dist/index.js").read_text().strip(), expected, "committed source bytes")
 
 
 def untracked_setup(t, c):
@@ -54,8 +54,7 @@ def untracked_setup(t, c):
 
 
 def untracked_verify(t, f):
-    t.eq((f / "notes/todo.txt").read_text(), "todo\n", "untracked file in fork")
-    t.has(t.git(f, "status", "--porcelain", "--untracked-files=all"), "?? notes/todo.txt")
+    t.ok(not (f / "notes/todo.txt").exists(), "untracked file excluded")
 
 
 def staged_setup(t, c):
@@ -64,8 +63,8 @@ def staged_setup(t, c):
 
 
 def staged_verify(t, f):
-    t.eq(t.git(f, "diff", "--cached", "--name-only"), "staged.txt", "still staged in fork")
-    t.eq((f / "staged.txt").read_text(), "staged\n", "staged file bytes")
+    t.eq(t.git(f, "diff", "--cached", "--name-only"), "", "clean fork index")
+    t.ok(not (f / "staged.txt").exists(), "staged file excluded")
 
 
 def stash_setup(t, c):
@@ -74,8 +73,7 @@ def stash_setup(t, c):
 
 
 def stash_verify(t, f):
-    t.has(t.git(f, "stash", "list"), "keep-this")
-    t.has(t.git(f, "stash", "show", "-p", "stash@{0}"), "stashed")
+    t.eq(t.git(f, "stash", "list"), "", "local stash excluded")
 
 
 def branch_setup(t, c):
@@ -86,7 +84,7 @@ def branch_setup(t, c):
 
 
 def branch_verify(t, f):
-    t.has(t.git(f, "log", "-1", "--format=%s", "local-work"), "local branch work")
+    t.eq(t.run("git", "-C", f, "show-ref", "--quiet", "--verify", "refs/heads/local-work").code, 1, "local branch excluded")
 
 
 def tag_setup(t, c):
@@ -97,7 +95,7 @@ def tag_setup(t, c):
 
 
 def tag_verify(t, f):
-    t.has(t.git(f, "log", "-1", "--format=%s", "local-tag"), "local tag work")
+    t.eq(t.run("git", "-C", f, "show-ref", "--quiet", "--verify", "refs/tags/local-tag").code, 1, "local tag excluded")
 
 
 KINDS = {
@@ -142,11 +140,13 @@ def refused_case(kind: str):
         fork = t.root / "forks/a"
         t.gitpm_ok("fork", A, "--ns", "mine", "--into", fork)
         verify(t, fork)
+        t.eq(t.rev(fork, "HEAD~1"), installed(t), "fork uses recorded installed revision")
+        t.eq(t.git(fork, "status", "--porcelain", "--untracked-files=all"), "", "clean fork")
         t.same(before, "everything after fork")
 
     fn.__name__ = f"{kind}_refused"
     fn.__doc__ = (f"{kind}: update/rollback/uninstall (no TTY, TTY N/empty/EOF) refuse without "
-                  f"changes, the prompt lists {needle!r}; fork preserves it.")
+                  f"changes, the prompt lists {needle!r}; fork leaves it in the installation.")
     return case(fixture="g3_trio_installed", spec=["install-uninstall/uninstall-is-planned-and-confirmed",
                                                    "updates/local-work-blocks-update-and-rollback",
                                                    "install-uninstall/cli-confirmation-flow-for-uninstall",

@@ -10,7 +10,10 @@ Fixtures: g2_demos_installed (A = vendor/demo, B = author/demo, unrelated), g6_f
 replacement), g6_replaced (the same with `replace vendor/base --with mine/base`).
 """
 
+import hashlib
+import json
 import shutil
+import subprocess
 
 from gitpmtest import T, case
 
@@ -60,6 +63,100 @@ def enable_deploys_committed_tree_not_working_tree(t: T):
     t.gitpm_ok("enable", A)
     deployed(t, A)
     t.lacks((t.dist(A) / "index.js").read_text(), "uncommitted")
+
+
+@case(fixture="catalog", spec=["dist/deploys-copy-the-committed-tree#export-ignore-in-the-package-repository"])
+def export_ignore_deploys_and_hashes_committed_bytes(t: T):
+    """Catalog registration, protected install and update use the deployed Git blobs."""
+    id = "attrs/demo"
+    attributes = "dist/debug.js export-ignore\ndist/subst.txt export-subst\n"
+    dist_attributes = "debug.js export-ignore\nsubst.txt export-subst\n"
+    literal = "$Format:%H$\n"
+    first = t.new_package(id, "1.0.0", files={
+        ".gitattributes": attributes,
+        "dist/.gitattributes": dist_attributes,
+        "dist/debug.js": "debug one\n",
+        "dist/subst.txt": literal,
+    })
+    second = t.release(id, "1.1.0", files={
+        "dist/debug.js": "debug two\n",
+        "dist/subst.txt": literal,
+    })
+    for version, commit in [("1.0.0", first), ("1.1.0", second)]:
+        t.gitpm_ok("register", t.repo(id), "--ref", f"{id}@{version}")
+        release = json.loads(t.catalog_release(id, version).read_text())
+        blobs = {}
+        for name in (".gitattributes", "debug.js", "index.js", "subst.txt"):
+            data = subprocess.run(
+                ["git", "-C", str(t.repo(id)), "cat-file", "blob", f"{commit}:dist/{name}"],
+                capture_output=True, check=True,
+            ).stdout
+            blobs[name] = data
+        t.eq(release["files"], {
+            name: {"sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
+            for name, data in blobs.items()
+        }, f"catalog hashes committed bytes at {version}")
+        t.eq(blobs["subst.txt"], literal.encode(), "export-subst placeholder is literal")
+        if version == "1.0.0":
+            first_blobs = blobs
+        else:
+            second_blobs = blobs
+
+    t.edit_json(t.catalog / "catalog.json", lambda c: c.update(verified=True))
+    t.gitpm_ok("install-catalog", id, "--version", "1.0.0")
+    for name, data in first_blobs.items():
+        t.eq((t.dist(id) / name).read_bytes(), data, f"installed {name} equals hashed blob")
+    t.gitpm_ok("update", id)
+    for name, data in second_blobs.items():
+        t.eq((t.dist(id) / name).read_bytes(), data, f"updated {name} equals hashed blob")
+
+
+@case(fixture="catalog", spec=["catalog/register-one-version#submodule-inside-dist",
+                               "catalog/catalog-generated-from-git-release-tags#submodule-inside-dist",
+                               "dist/deploys-copy-the-committed-tree#submodule-inside-dist"])
+def gitlinks_warn_at_publication_and_deploy(t: T):
+    """Authors and users see warnings; protected deploys keep gitlinks empty."""
+    id = "links/demo"
+    t.new_package(id, "1.0.0")
+    repo = t.repo(id)
+    sha = t.rev(repo)
+    t.git(repo, "update-index", "--add", "--cacheinfo", f"160000,{sha},dist/vendor")
+    t.git(repo, "commit", "-q", "-m", "gitlink in dist")
+    t.git(repo, "tag", "-f", f"{id}@1.0.0")
+
+    def warned(result):
+        t.has(result.err, "Warning:", "dist/vendor is a Git submodule",
+              "its files will not be installed", "directory will be empty",
+              "probably a mistake", "commit built files to dist instead of a submodule")
+
+    warned(t.gitpm_ok("register", repo, "--ref", f"{id}@1.0.0"))
+    registered = json.loads(t.catalog_release(id, "1.0.0").read_text())
+    t.eq(sorted(registered["files"]), ["index.js"], "gitlink has no file digest")
+    sources = t.root / "gitlink-sources.txt"
+    t.write(sources.parent, {sources.name: str(repo) + "\n"})
+    generated = t.root / "gitlink-catalog"
+    warned(t.gitpm_ok("catalog-update", "--catalog", generated, "--sources", sources))
+    record = t.catalog_release(id, "1.0.0", generated)
+    t.eq(json.loads(record.read_text())["files"], registered["files"], "publication paths hash identical bytes")
+    t.edit_json(t.catalog / "catalog.json", lambda c: c.update(verified=True))
+    warned(t.gitpm_ok("install-catalog", id))
+    vendor = t.dist(id) / "vendor"
+    t.ok(vendor.is_dir(), "protected install keeps the empty gitlink directory")
+    t.eq(list(vendor.iterdir()), [], "no submodule files installed")
+    t.edit_json(repo / "plugin.json", lambda m: m.update(version="1.1.0"))
+    t.git(repo, "add", "plugin.json")
+    t.git(repo, "commit", "-q", "-m", "next release with gitlink")
+    t.git(repo, "tag", f"{id}@1.1.0")
+    warned(t.gitpm_ok("register", repo, "--ref", f"{id}@1.1.0"))
+    warned(t.gitpm_ok("update", id))
+    t.eq(list(vendor.iterdir()), [], "protected update keeps gitlink empty")
+    t.gitpm_ok("disable", id)
+    warned(t.gitpm_ok("enable", id))
+    t.eq(list(vendor.iterdir()), [], "enable uses the same exporter")
+    shutil.rmtree(t.dist(id))
+    warned(t.gitpm_ok("sync-dist"))
+    t.ok(vendor.is_dir(), "explicit reconcile restores the gitlink directory")
+    t.eq(list(vendor.iterdir()), [], "reconciled gitlink remains empty")
 
 
 @case(fixture="g2_demos_installed", spec=["dist/forget-restore-and-uninstall-settle-dist",

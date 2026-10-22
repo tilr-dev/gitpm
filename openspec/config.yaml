@@ -7,9 +7,9 @@ context: |
   as are library messages and CLI output. Discussions with the owner may be in Russian.
 
   Product boundary: gitpm is a host-agnostic package manager where a package is a folder in
-  a Git repository (plugin.json + committed dist/). The library (crates/gitpm) knows nothing
+  a Git repository (plugin.json + committed output folder selected by dist, default dist/). The library (crates/gitpm) knows nothing
   about Tilr or any other host: no host names, no slot/theme/exclusivity semantics, no build
-  step, nothing is executed. Host concerns (which provider of a service is active, load
+  step (buildCommand describes a build only), nothing is executed. Host concerns (which provider of a service is active, load
   order, plugins.json generation, UI) stay in the host. Tilr is only the first consumer.
 
   Library contract: the library never prints, prompts, reads stdin or reads environment
@@ -19,16 +19,16 @@ context: |
   failures are gitpm::Error with a stable snake_case kind() that never changes for an
   existing variant. The CLI (crates/gitpm-cli) and the UniFFI wrapper (crates/gitpm-ffi)
   only add presentation, env defaults (GITPM_ROOT/GITPM_CATALOG/GITPM_SOURCES; the CLI
-  also derives `custom_ssh` for `auth check` from GIT_SSH_COMMAND/GIT_SSH), prompts and
+  derives `Options.custom_ssh` from GIT_SSH_COMMAND/GIT_SSH for every command), prompts and
   bindings.
 
-  Subprocesses: every git and curl invocation lives in crates/gitpm/src/exec.rs (the planned
-  switch point to gix/ureq). Every git command on a repository (`git -C`) is noninteractive
-  and bounded: closed stdin, GIT_TERMINAL_PROMPT=0, BatchMode SSH with keepalives unless the
-  user configured their own, http.lowSpeed limits, a 10-minute wall-clock kill. Exceptions:
-  the `auth check` ls-remote uses its own SSH command (BatchMode, StrictHostKeyChecking=yes,
-  no keepalives) and has no wall-clock kill; the `git config --get core.sshCommand` probe has
-  no timeout. The repository-less `check` ls-remote (`ls_remote_refs`) has the repository
+  Subprocesses: every git and curl invocation lives in the transport module at
+  crates/gitpm/src/transport/, behind Transport/SystemTransport (the planned switch point
+  to gix/ureq). Every git command on a repository (`git -C`) is noninteractive
+  and bounded: closed stdin, GIT_TERMINAL_PROMPT=0, one BatchMode SSH command with keepalives and StrictHostKeyChecking=accept-new unless
+  Options.custom_ssh is set or the user configured core.sshCommand, http.lowSpeed limits, a 10-minute wall-clock kill. Exceptions:
+  the `auth check` ls-remote uses the same SSH policy and, like the `git config --get core.sshCommand` probe, has
+  closed stdin and a 10-second wall-clock kill. The repository-less `check` ls-remote (`ls_remote_refs`) has the repository
   bounds plus LC_ALL=C, the temp dir as cwd and a transport allowlist (file, git, http(s),
   ssh; never remote helpers), and runs only on sources passing `auth::validate_recorded`. curl has --connect-timeout 5 and --max-time 20. IDs and refs are validated
   before they reach git, and positional names go after `--`.
@@ -39,11 +39,15 @@ context: |
 
   Compatibility: no backward compatibility before 1.0 (owner decision 2026-10-18, TILR-38):
   package IDs are always namespace/name, release tags always ID@VERSION, catalogs always the
-  v2 tree; there are no CLI aliases, migrations or compatibility readers, and the FFI
+  static file tree; there are no CLI aliases, migrations or compatibility readers, and the FFI
   promises no stability (gitpm-ffi carries the library version). state.json carries
-  "format": 3; a gitpm reads and writes only its own format, any other one (or none) is
-  refused with `unsupported` and never rewritten. The format is bumped on any change an
-  older reader would misread (no migration). Every breaking CLI/API/FFI/file-format change
+  "format": 1; a gitpm reads and writes only its own format, any other one (or none) is
+  refused with `unsupported` and never rewritten. Before the first public release, all gitpm
+  file formats stay at version 1 and evolve in place without backward compatibility or
+  version bumps. Afterward, bump a format only when gitpm from the previous public
+  release would misread the change, in one separate
+  step in the release milestone, at most once per release (no migration). Every breaking
+  CLI/API/FFI/file-format change
   is marked BREAKING and documented in README "Changed in X.Y".
 
   Git flow: work happens on `dev` (or feature branches off `dev`) and is tested locally.
@@ -120,7 +124,7 @@ rules:
     - Error cases name the stable error kind (for example `local_changes`, `has_dependents`).
     - Thin CLI (TILR-33) - Domain rules and option combinations live in the library; CLI specs cover argv/env parsing, printing, TTY prompts and hints per error kind; every CLI capability has an FFI equivalent.
   design:
-    - Keep subprocess, printing and environment access out of the library design; route git/curl through the exec module.
+    - Keep subprocess, printing and environment access out of the library design; route git/curl through the transport module.
     - Thin CLI (TILR-29..33): the CLI only parses argv and environment, calls the library, prints results, asks TTY prompts and adds command hints per error kind; library messages stay neutral (no CLI command names, no host or hosting names), and every CLI capability has an FFI equivalent.
     - No backward compatibility before 1.0 (TILR-38): no aliases, legacy formats, migrations or compatibility shims; mark the break BREAKING instead.
     - Spec deltas a design produces name no internal names (private functions, constants, source files); internal names belong in design.md and tasks.md only.

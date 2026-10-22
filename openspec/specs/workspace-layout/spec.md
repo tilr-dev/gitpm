@@ -15,21 +15,46 @@ A workspace root SHALL contain `state.json` (installed packages, replacement bin
 
 #### Scenario: Opening a new workspace
 - **WHEN** a Manager opens a root that does not exist
-- **THEN** the workspace root is created with `packages/`, `dist/` and a `state.json` of `{"format": 3, "packages": {}}`, and the workspace lock file (transactions-locking, "Workspace lock") is created beside it
+- **THEN** the workspace root is created with `packages/`, `dist/` and a `state.json` of `{"format": 1, "packages": {}}` written to a temporary file and renamed into place, and the workspace lock file (transactions-locking, "Workspace lock") is created beside it
+
+#### Scenario: Crash while creating state.json
+- **WHEN** the process dies while a new workspace's `state.json` is written
+- **THEN** the root holds no partial `state.json`, and the next open creates it again
+- **AND** incomplete state is staged inside the root as `.state.json-<pid>-<counter>.tmp`, so the rename stays on one filesystem even when the root is a mount point
+- **AND** a root that holds only such files (and possibly `.DS_Store`) is not a foreign directory: the next open removes them while holding the workspace lock and creates `state.json`; any other entry refuses the directory as "Foreign directories are refused" says, and nothing inside it is removed
+- **AND** `.DS_Store` beside them keeps its bytes
 
 ### Requirement: Foreign directories are refused
-Opening a non-empty directory that has no `state.json` SHALL fail with `workspace` ("refusing nonempty directory without state.json") and change nothing inside that directory (its parent folder and the workspace lock file beside it may already exist). Single source for a corrupt `state.json`: it SHALL block every operation with `invalid_data` and MUST NOT be overwritten. Verified by `workspace::open_refuses_foreign_directories_and_bad_state` and `robustness::corrupt_state_is_not_overwritten`.
+Opening a non-empty directory (one holding anything but `.DS_Store` and gitpm's own staged state `.state.json-<pid>-<counter>.tmp`, see "Workspace folders") that has no `state.json` SHALL fail with `workspace` ("refusing nonempty directory without state.json") and change nothing inside that directory (its parent folder and the workspace lock file beside it may already exist). Single source for a corrupt `state.json`: it SHALL block every operation with `invalid_data` and MUST NOT be overwritten.
 
 #### Scenario: Pointing the workspace at a project folder
+Verified by `workspace::open_refuses_foreign_directories_and_bad_state`.
 - **WHEN** the workspace root is an existing non-empty folder without `state.json`
-- **THEN** opening fails with `workspace` and no file is created in it
+- **THEN** opening fails with `workspace` and no file is created in it (its parent and the lock file beside it may already exist)
 
 #### Scenario: Corrupt state
+Verified by `robustness::corrupt_state_is_not_overwritten`.
 - **WHEN** `state.json` is not valid JSON
 - **THEN** every operation fails with `invalid_data` and the file keeps its bytes
 
+#### Scenario: Folder with only .DS_Store
+Verified by `workspace::open_ds_store_only_root`.
+- **WHEN** the workspace root exists and holds only `.DS_Store`
+- **THEN** opening treats it as empty and creates the workspace in it
+- **AND** `.DS_Store` keeps its bytes
+
+#### Scenario: Folder with .DS_Store and other content
+Verified by `workspace::open_ds_store_with_other_content_is_refused`.
+- **WHEN** the workspace root holds `.DS_Store` and another file without `state.json`
+- **THEN** opening fails with `workspace` and changes nothing inside it
+
 ### Requirement: State format versions
-`state.json` SHALL carry `"format": 3` and keep installed packages under the key `packages`. A file with any other format, or without one, SHALL be refused with `unsupported` and MUST NOT be rewritten; there is no migration. The format SHALL be bumped with every change that an older gitpm would misread. Verified by `model::state_format_other_than_current_is_refused`.
+`state.json` SHALL carry `"format": 1` and keep installed packages under `packages`. Other or missing formats SHALL fail with `unsupported` without rewriting or migration. Before the first public release, changes SHALL stay in format 1 without backward compatibility. Later, only changes gitpm from the previous public release would misread SHALL cause a bump. Verified by `model::state_format_other_than_current_is_refused`.
+
+#### Scenario: Release format bump
+- **WHEN** a change would be misread by gitpm from the previous public release
+- **THEN** the format is bumped as a separate step in the release milestone, at most once per release
+- **AND** before the first public release, changes are made in place under format 1 without bumps or backward compatibility
 
 #### Scenario: Workspace from gitpm 0.3
 - **WHEN** a Manager opens a workspace whose `state.json` has no `format`

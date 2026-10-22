@@ -113,7 +113,7 @@ def malformed_and_truncated_json(t: T):
     failing(t, srv, "--catalog", srv.url, "catalog", kinds=("catalog", "invalid_data"))
     failing(t, srv, "--catalog", srv.url, "info", kinds=("catalog", "invalid_data"))
     del srv.overrides["/catalog.json"]
-    srv.overrides["/namespaces/dan/hello/plugin.json"] = (200, {}, b'{"schema": 2, "id": ')
+    srv.overrides["/namespaces/dan/hello/plugin.json"] = (200, {}, b'{"schema": 1, "id": ')
     failing(t, srv, "--catalog", srv.url, "install-catalog", HELLO, kinds=("catalog", "invalid_data"))
     del srv.overrides["/namespaces/dan/hello/plugin.json"]
     release = (served / "namespaces/dan/num/versions/1.10.0/release.json").read_bytes()
@@ -122,15 +122,15 @@ def malformed_and_truncated_json(t: T):
     t.not_installed(HELLO)
 
 
-@case(fixture="catalog", spec=["catalog/catalog-v2-is-a-tree-of-static-files"])
+@case(fixture="catalog", spec=["catalog/catalog-is-a-tree-of-static-files"])
 def unsupported_schema(t: T):
-    """schema 3 in a directory catalog and in a package index: refused (catalog/invalid_data)."""
+    """schema 2 in a directory catalog and in a package index: refused (catalog/invalid_data)."""
     srv, served = setup(t)
-    srv.overrides["/catalog.json"] = (200, {}, json.dumps({"schema": 3, "directories": {"namespaces": "namespaces/"}}).encode())
+    srv.overrides["/catalog.json"] = (200, {}, json.dumps({"schema": 2, "directories": {"namespaces": "namespaces/"}}).encode())
     failing(t, srv, "--catalog", srv.url, "info", kinds=("catalog", "invalid_data"))
     del srv.overrides["/catalog.json"]
     index = json.loads((served / "namespaces/dan/hello/plugin.json").read_text())
-    index["schema"] = 3
+    index["schema"] = 2
     srv.overrides["/namespaces/dan/hello/plugin.json"] = (200, {}, json.dumps(index).encode())
     failing(t, srv, "--catalog", srv.url, "install-catalog", HELLO, kinds=("catalog", "invalid_data"))
     t.not_installed(HELLO)
@@ -167,7 +167,7 @@ def redirect_is_not_followed(t: T):
 def response_over_16_mib_refused(t: T):
     """A 17 MiB catalog.json / package index is refused."""
     srv, _ = setup(t)
-    big = b'{"schema": 2, "directories": {}, "pad": "' + b"x" * (17 * 1024 * 1024) + b'"}'
+    big = b'{"schema": 1, "directories": {}, "pad": "' + b"x" * (17 * 1024 * 1024) + b'"}'
     srv.overrides["/catalog.json"] = (200, {}, big)
     failing(t, srv, "--catalog", srv.url, "catalog", kinds=("http",))
     del srv.overrides["/catalog.json"]
@@ -176,19 +176,19 @@ def response_over_16_mib_refused(t: T):
     t.not_installed(HELLO)
 
 
-@case(fixture="catalog", spec=["catalog/catalog-v2-is-a-tree-of-static-files"])
+@case(fixture="catalog", spec=["catalog/catalog-is-a-tree-of-static-files"])
 def unsafe_directory_links_refused(t: T):
     """Directory links with `..`, an absolute path or another host are refused (kind catalog)
     and never followed."""
     srv, _ = setup(t)
     evil = t.serve(t.catalog)
     for link in ["../", "../../etc/", "/etc/", "/namespaces/", evil.url + "/namespaces/", "//evil.example/x/"]:
-        srv.overrides["/catalog.json"] = (200, {}, json.dumps({"schema": 2, "directories": {"namespaces": link}}).encode())
+        srv.overrides["/catalog.json"] = (200, {}, json.dumps({"schema": 1, "directories": {"namespaces": link}}).encode())
         failing(t, srv, "--catalog", srv.url, "info", contains="invalid directory link")
     t.eq(evil.requests, [], "foreign host never requested")
 
 
-@case(fixture="catalog", spec=["catalog/catalog-v2-is-a-tree-of-static-files"])
+@case(fixture="catalog", spec=["catalog/catalog-is-a-tree-of-static-files"])
 def unsafe_release_links_refused(t: T):
     """Release links in a package index with `..`, an absolute path or another host are
     refused (kind catalog) by install-catalog, check and info."""

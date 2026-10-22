@@ -30,11 +30,42 @@ Every mutating operation SHALL prepare new clones, deployed folders and the next
 - **THEN** nothing staged has been moved into the live workspace and `.pm-txn` is gone
 
 ### Requirement: Crash recovery
-On open and at the start of a transaction, a committed journal SHALL be rolled forward and an uncommitted transaction discarded. Verified by `workspace::open_rolls_an_interrupted_commit_forward`, `workspace::open_discards_an_uncommitted_transaction` and `update_all_recovers_every_plugin_after_an_interrupted_commit`.
+A crash means process death or power loss, including interruption before a call returns. Commit SHALL durably persist staged contents, journal, state and changed directory entries before success. On open and at transaction start, a committed journal SHALL be rolled forward and an uncommitted transaction discarded. Sync failures SHALL return errors without losing the recovery decision.
+
+#### Scenario: Durable commit ordering
+- **WHEN** a transaction commits
+- **THEN** staged files and directories, including `state.json`, are synced before journal publication
+- **AND** the journal and its parent directories are synced before the first managed-path rename
+- **AND** each rename syncs destination and source parent chains before proceeding
+- **AND** transaction cleanup is persisted before returning success
+
+#### Scenario: Workspace ancestors
+- **WHEN** a workspace is created under missing parent directories
+- **THEN** creation syncs each new directory and its parent, stopping after the first pre-existing parent
+- **AND** subsequent commits sync directory chains only within the workspace
+- **AND** a pre-existing ancestor above the workspace parent need not be readable
+- **AND** this is covered by `txn::workspace_creation_syncs_only_new_ancestors` and `commit_under_an_unreadable_ancestor`
+
+#### Scenario: Open after interruption
+- **WHEN** a workspace is opened after an interrupted transaction
+- **THEN** a committed journal is rolled forward and an uncommitted transaction discarded
+- **AND** recovery is verified by `workspace::open_rolls_an_interrupted_commit_forward`, `workspace::open_discards_an_uncommitted_transaction` and `update_all_recovers_every_plugin_after_an_interrupted_commit`
 
 #### Scenario: Crash during commit
-- **WHEN** the process dies after the journal is written but before all renames
+- **WHEN** a crash occurs after the journal is durably published but before all renames
 - **THEN** the next open completes the commit and state and `dist/` are consistent
+
+#### Scenario: Power loss after success
+- **WHEN** an install returned successfully and the machine loses power right after
+- **THEN** after reboot `state.json`, the clone and `dist/<id>` of the install are present
+- **AND** this is covered by `txn::commit_syncs_journal_state_and_parents` (fsync calls observed); recovery of `update all` by `update_all_recovers_every_plugin_after_an_interrupted_commit`
+
+#### Scenario: Sync failure
+- **WHEN** a sync fails during commit
+- **THEN** commit returns the error
+- **AND** before journal publication the live workspace is unchanged
+- **AND** after journal publication the next open rolls the transaction forward, even when a rename already succeeded
+- **AND** this is covered by `txn::sync_errors_preserve_the_commit_decision_and_recovery`
 
 ### Requirement: Neighbouring folders are never touched
 Recovery SHALL only touch `.pm-txn` inside the workspace root, never folders beside the workspace named like old stage folders. Verified by `workspace::neighbours_named_like_old_stage_folders_are_never_touched`.
@@ -55,11 +86,23 @@ Single source for which commands open a workspace: a Manager SHALL hold an exclu
 - **THEN** the second fails with `locked`, while `gitpm list` in the meantime succeeds and reports the last committed `state.json`
 
 ### Requirement: Locks are process-owned and survive crashes
-The lock SHALL be a POSIX record lock owned by the process, not inherited by child processes (git subprocesses never keep it alive), released when the owner dies, and tracked in a process-wide set so a second lock attempt in the same process is refused. The lock file itself SHALL be kept. Verified by `lock::lock_is_exclusive_across_processes_and_released_by_a_dead_owner` and `lock::released_lock_is_free_while_other_threads_spawn_subprocesses`.
+Workspace and catalog locks SHALL be process-owned POSIX record locks, not inherited by children and released when the owner dies. A process-wide set keyed by canonical path SHALL refuse repeated attempts before opening the file, preserving the held lock. Lock files SHALL be kept.
 
 #### Scenario: Killed owner
 - **WHEN** the process holding the lock is killed
 - **THEN** the next open succeeds immediately
+
+#### Scenario: Refused second Manager in the same process
+- **WHEN** a host holds a Manager on a workspace, opens a second Manager on the same workspace in the same process (also through a symlinked spelling or a lock-file symlink whose target was initially missing), gets `locked`, and another process then opens the workspace
+- **THEN** the other process still fails with `locked`, because the refused attempt did not release the first Manager's lock
+
+#### Scenario: Refused second catalog writer in the same process
+- **WHEN** a catalog write holds `.<catalog name>.catalog.lock` and the same process starts a second write to that catalog, which fails with `locked`
+- **THEN** a writer in another process still fails with `locked` until the first write ends
+
+#### Scenario: Lock regression coverage
+- **WHEN** lock behavior is tested
+- **THEN** `lock::lock_is_exclusive_across_processes_and_released_by_a_dead_owner`, `lock::released_lock_is_free_while_other_threads_spawn_subprocesses`, `lock::refused_second_open_keeps_the_first_lock`, and `catalog::tests::refused_second_catalog_writer_keeps_the_first_lock` verify process ownership, release, and refused attempts
 
 ### Requirement: One Manager serializes its operations
 `Manager` SHALL be `Send + Sync` and SHALL serialize its operations internally; the API is blocking and callers run it off the UI thread. Verified by `workspace::manager_is_send_and_sync` and `workspace::one_handle_serializes_concurrent_operations`.
@@ -69,8 +112,12 @@ The lock SHALL be a POSIX record lock owned by the process, not inherited by chi
 - **THEN** they run one after the other and state is consistent
 
 ### Requirement: Managed paths are never followed through symlinks
-Every directory between the root and a managed path (`packages`, `packages/<ns>`, `repos`, `dist`, `dist/<ns>`) MUST be a real directory; a symlinked or non-directory managed parent SHALL fail with `workspace` and nothing SHALL be written or deleted through it. Verified by `workspace::symlinked_namespace_directory_is_never_followed`.
+Every directory between the root and a managed path (`packages`, `packages/<ns>`, `repos`, `dist`, `dist/<ns>`) MUST be a real directory; a symlinked or non-directory managed parent SHALL fail with `workspace` and nothing SHALL be written or deleted through it. Verified by `workspace::symlinked_namespace_directory_is_never_followed` and `a_namespace_path_that_is_not_a_folder_blocks_nothing_else`.
 
 #### Scenario: Symlinked namespace
 - **WHEN** `packages/dan` is a symlink to a folder outside the workspace
 - **THEN** install and `uninstall --force` of `dan/x` refuse and nothing outside the workspace root changes
+
+#### Scenario: Blocked dist namespace
+- **WHEN** `dist/acme` is a file or symlink and `acme/greeter` is active
+- **THEN** an operation that deploys or removes `acme/greeter` fails with `workspace` and does not write or delete through `dist/acme`, while a command on an unrelated package can proceed

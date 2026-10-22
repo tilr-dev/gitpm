@@ -74,12 +74,12 @@ def defaults_in_isolated_cwd(t: T):
     t.eq(r.code, 0, "install exit")
     t.ok(ID in json.loads((iso / "gitpm-workspace/state.json").read_text())["packages"], "./gitpm-workspace")
     (iso / "sources.txt").write_text(f"{t.repo(ID)}\n")
-    r = t.run(*without_gitpm_env("gitpm", "--catalog", "cat", "catalog-update"), cwd=iso)
+    r = t.run(*without_gitpm_env("gitpm", "--catalog", "cat", "catalog", "update"), cwd=iso)
     t.eq(r.code, 0, "catalog-update exit")
     t.ok(t.catalog_index(ID, iso / "cat").is_file(), "./sources.txt read by default")
-    r = t.run(*without_gitpm_env("gitpm", "info"), cwd=iso)
+    r = t.run(*without_gitpm_env("gitpm", "catalog", "show"), cwd=iso)
     t.ok(r.code != 0, "info without a catalog fails")
-    t.has(r.err, "info needs a catalog: pass --catalog DIR_OR_JSON_OR_URL or set GITPM_CATALOG")
+    t.has(r.err, "catalog show needs a catalog: pass --catalog DIR_OR_JSON_OR_URL or set GITPM_CATALOG")
     for p in (t.ws, t.root / "sources.txt"):
         t.ok(not p.exists(), f"environment path {p} untouched")
     t.ok(t.catalog_empty(), f"environment path {t.catalog} untouched")
@@ -102,9 +102,9 @@ def catalog_commands_without_catalog(t: T):
     """Catalog commands without --catalog/GITPM_CATALOG name the missing catalog and create nothing."""
     iso = t.root / "iso"
     iso.mkdir()
-    for argv in (["info"], ["catalog"], ["catalog-update"],
-                 ["register", "/fx/none", "--ref", "x"], ["install-catalog", ID]):
+    for argv in (["catalog", "show"], ["catalog", "links"], ["catalog", "update"],
+                 ["catalog", "register", "/fx/none", "--ref", "x"], ["install-catalog", ID]):
         r = t.run(*without_gitpm_env("gitpm", *argv), cwd=iso)
         t.ok(r.code != 0, f"{argv[0]} fails")
-        t.has(r.err, f"{argv[0]} needs a catalog: pass --catalog DIR_OR_JSON_OR_URL or set GITPM_CATALOG")
+        t.has(r.err, f"{' '.join(argv[:2]) if argv[0] == 'catalog' else argv[0]} needs a catalog: pass --catalog DIR_OR_JSON_OR_URL or set GITPM_CATALOG")
     t.eq(sorted(p.name for p in iso.iterdir()), [], "nothing created")

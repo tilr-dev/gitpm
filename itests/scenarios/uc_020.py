@@ -5,6 +5,7 @@ A = vendor/demo and B = author/demo.
 """
 
 import json
+import shutil
 
 from gitpmtest import T, case
 
@@ -40,7 +41,7 @@ def disable_changes_only_enabled_flag(t: T):
     t.ok(not (t.ws / "dist/vendor").exists(), "empty namespace folder dist/vendor removed")
 
 
-@case(fixture="g2_demos_installed", spec=["dist/enable-and-disable-deploy-and-remove"])
+@case(fixture="g2_demos_installed", spec=["dist/enable-and-disable-deploy-and-remove", "dist/repeating-enable-and-disable-is-idempotent#repeat-disable"])
 def repeated_disable_is_noop(t: T):
     """disable A twice: the second call exits 0 and changes nothing."""
     t.gitpm_ok("disable", A)
@@ -50,7 +51,7 @@ def repeated_disable_is_noop(t: T):
     t.eq(t.package(A)["enabled"], False, "A disabled")
 
 
-@case(fixture="g2_demos_installed", spec=["dist/enable-and-disable-deploy-and-remove#disable-and-enable"])
+@case(fixture="g2_demos_installed", spec=["dist/enable-and-disable-deploy-and-remove#disable-and-enable", "dist/repeating-enable-and-disable-is-idempotent#repeat-enable"])
 def enable_restores_and_repeated_enable_is_noop(t: T):
     """disable then enable A restores state.json byte for byte; a second enable changes nothing."""
     original, payload = state_text(t), files(t)
@@ -65,12 +66,24 @@ def enable_restores_and_repeated_enable_is_noop(t: T):
     t.same(payload, "clones and dist of A and B")
 
 
-@case(fixture="g2_demos_installed", spec=["dist/enable-and-disable-deploy-and-remove"])
+@case(fixture="g2_demos_installed", spec=["dist/enable-and-disable-deploy-and-remove", "dist/repeating-enable-and-disable-is-idempotent#repeat-enable"])
 def enable_of_enabled_plugin_is_noop(t: T):
     """enable an already enabled A: exit 0, nothing changes."""
     before = t.snap(t.ws, git=True)
     t.gitpm_ok("enable", A)
     t.same(before, "workspace")
+
+
+@case(fixture="g2_demos_installed", spec=["dist/repeating-enable-and-disable-is-idempotent#repeat-enable-repairs-missing-dist"])
+def repeated_enable_repairs_missing_dist(t: T):
+    """enable an already enabled A while dist/B is missing: dist/B comes back, state.json and clones unchanged."""
+    state, payload = state_text(t), files(t)
+    clones = t.snap(t.clone(A), t.clone(B), git=True)
+    shutil.rmtree(t.dist(B))
+    t.gitpm_ok("enable", A)
+    t.eq(state_text(t), state, "state.json unchanged")
+    t.same(clones, "clones of A and B")
+    t.same(payload, "clones and dist of A and B (dist/B restored)")
 
 
 @case(fixture="g2_demos_installed", spec=["errors/stable-error-kinds#kind-of-a-missing-package"])

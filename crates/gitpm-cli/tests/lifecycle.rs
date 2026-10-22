@@ -3,7 +3,7 @@
 //! and Git config, and every GITPM_* path inside its own temp directory.
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -67,10 +67,13 @@ impl Fixture {
         command
     }
     fn git(&self, args: &[&str]) {
+        self.git_in(&self.repo, args);
+    }
+    fn git_in(&self, repo: &Path, args: &[&str]) {
         let out = self
             .command("git")
             .arg("-C")
-            .arg(&self.repo)
+            .arg(repo)
             .args(args)
             .output()
             .unwrap();
@@ -332,6 +335,87 @@ fn direct_git_refs_and_local_author_commit() {
     assert_eq!(f.content(), "author release");
 }
 
+mod scaffold {
+    use super::*;
+
+    #[test]
+    fn derived_identity_is_refused() {
+        let f = Fixture::new();
+        fs::write(
+            f.dir.join("home/.gitconfig"),
+            "[init]\n\tdefaultBranch = main\n[commit]\n\tgpgsign = false\n[tag]\n\tgpgsign = false\n",
+        )
+        .unwrap();
+        f.git(&["config", "--unset", "user.name"]);
+        f.git(&["config", "--unset", "user.email"]);
+        fs::write(f.repo.join("dist/index.js"), "next release").unwrap();
+
+        // Names are explicit, but EMAIL is Git's implicit email fallback. Plain
+        // `git var` accepts it; user.useConfigOnly rejects it.
+        for variable in ["GIT_AUTHOR_IDENT", "GIT_COMMITTER_IDENT"] {
+            let ident = f
+                .command("git")
+                .arg("-C")
+                .arg(&f.repo)
+                .args(["var", variable])
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("EMAIL", "derived@example.invalid")
+                .output()
+                .unwrap();
+            assert!(
+                ident.status.success(),
+                "{}",
+                String::from_utf8_lossy(&ident.stderr)
+            );
+        }
+
+        let git_output = |args: &[&str]| {
+            let out = f
+                .command("git")
+                .arg("-C")
+                .arg(&f.repo)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            out.stdout
+        };
+        let state = || {
+            (
+                git_output(&["rev-parse", "HEAD"]),
+                git_output(&["status", "--porcelain"]),
+                git_output(&["tag", "--list"]),
+                fs::read(f.repo.join("plugin.json")).unwrap(),
+                fs::read(f.repo.join("dist/index.js")).unwrap(),
+                fs::read(f.repo.join(".git/config")).unwrap(),
+                fs::read(f.repo.join(".git/index")).unwrap(),
+            )
+        };
+        let before = state();
+        let out = f
+            .pm()
+            .args(["commit", f.repo.to_str().unwrap(), "1.0.1"])
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("EMAIL", "derived@example.invalid")
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        let stderr = String::from_utf8(out.stderr).unwrap();
+        assert!(stderr.contains("invalid_argument"), "{stderr}");
+        assert!(
+            stderr.contains("no Git identity configured; set user.name and user.email"),
+            "{stderr}"
+        );
+        assert_eq!(state(), before);
+    }
+}
+
 #[test]
 fn catalog_manifest_is_verified_before_install() {
     let f = Fixture::new();
@@ -514,7 +598,7 @@ fn init_requires_a_namespace_and_never_prompts_or_reads_the_environment() {
 }
 
 #[test]
-fn fork_preserves_history_edits_and_original_installation() {
+fn fork_clones_recorded_source_and_preserves_original_installation() {
     let f = Fixture::new();
     f.install();
     let installed = f.root.join("packages/dan/hello");
@@ -557,12 +641,9 @@ fn fork_preserves_history_edits_and_original_installation() {
     );
     assert_eq!(
         fs::read_to_string(destination.join("dist/index.js")).unwrap(),
-        "local edit"
+        "hello v1"
     );
-    assert_eq!(
-        fs::read_to_string(destination.join("notes.txt")).unwrap(),
-        "untracked work"
-    );
+    assert!(!destination.join("notes.txt").exists());
     assert_eq!(fs::read(f.root.join("state.json")).unwrap(), state);
     assert_eq!(f.content(), "hello v1");
     fs::write(destination.join("dist/index.js"), "independent edit").unwrap();
@@ -739,17 +820,33 @@ fn local_catalog_register_read_install_and_immutable_versions() {
     let location = catalog_dir.to_str().unwrap();
     let repo = f.repo.to_str().unwrap();
     f.cli(
-        &["--catalog", location, "register", repo, "--ref", "HEAD"],
+        &[
+            "--catalog",
+            location,
+            "catalog",
+            "register",
+            repo,
+            "--ref",
+            "HEAD",
+        ],
         true,
     );
     let file = catalog_dir.join("catalog.json");
     let original = fs::read(&file).unwrap();
     assert!(
-        f.cli(&["--catalog", location, "catalog"], true)
+        f.cli(&["--catalog", location, "catalog", "links"], true)
             .contains("namespaces")
     );
     f.cli(
-        &["--catalog", location, "register", repo, "--ref", "HEAD"],
+        &[
+            "--catalog",
+            location,
+            "catalog",
+            "register",
+            repo,
+            "--ref",
+            "HEAD",
+        ],
         true,
     );
     assert_eq!(fs::read(&file).unwrap(), original);
@@ -774,13 +871,29 @@ fn local_catalog_register_read_install_and_immutable_versions() {
     f.git(&["add", "."]);
     f.git(&["commit", "-m", "same version different commit"]);
     f.cli(
-        &["--catalog", location, "register", repo, "--ref", "HEAD"],
+        &[
+            "--catalog",
+            location,
+            "catalog",
+            "register",
+            repo,
+            "--ref",
+            "HEAD",
+        ],
         false,
     );
     assert_eq!(fs::read(&file).unwrap(), original);
     fs::write(&file, "not JSON").unwrap();
     f.cli(
-        &["--catalog", location, "register", repo, "--ref", "HEAD"],
+        &[
+            "--catalog",
+            location,
+            "catalog",
+            "register",
+            repo,
+            "--ref",
+            "HEAD",
+        ],
         false,
     );
     assert_eq!(fs::read_to_string(&file).unwrap(), "not JSON");
@@ -788,6 +901,7 @@ fn local_catalog_register_read_install_and_immutable_versions() {
         &[
             "--catalog",
             "https://example.invalid/catalog",
+            "catalog",
             "register",
             repo,
             "--ref",
@@ -893,17 +1007,18 @@ fn v1_catalog_is_refused_and_left_unchanged() {
         "catalog"
     );
     for args in [
-        &["--catalog", location, "info"][..],
+        &["--catalog", location, "catalog", "show"][..],
         &["--catalog", location, "install-catalog", "dan/hello"][..],
         &[
             "--catalog",
             location,
+            "catalog",
             "register",
             f.repo.to_str().unwrap(),
             "--ref",
             "HEAD",
         ][..],
-        &["--catalog", location, "catalog-update"][..],
+        &["--catalog", location, "catalog", "update"][..],
     ] {
         f.cli(args, false);
     }
@@ -979,6 +1094,77 @@ fn stable_install_and_update_ignore_untagged_head_and_sort_versions() {
 }
 
 #[test]
+fn catalog_index_summary_is_published_and_used_by_the_cli() {
+    let f = Fixture::new();
+    fs::write(f.repo.join("plugin.json"), r#"{"id":"dan/hello","version":"1.10.0","title":"Newest","description":"Details","provides":"theme","tags":["ui"]}"#).unwrap();
+    f.git(&["add", "."]);
+    f.git(&["commit", "-m", "release metadata"]);
+    f.git(&["tag", "dan/hello@1.10.0"]);
+    fs::write(f.dir.join("sources.txt"), "./upstream\n").unwrap();
+    f.cli(&["catalog", "update"], true);
+    let path = f.dir.join("catalog/namespaces/dan/hello/plugin.json");
+    let bytes = fs::read(&path).unwrap();
+    let index: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(index["schema"], 1);
+    assert_eq!(
+        index["latest"],
+        serde_json::json!({
+            "version": "1.10.0", "title": "Newest", "description": "Details",
+            "provides": ["theme"], "tags": ["ui"],
+        })
+    );
+    // Register an older version: the generation and registration paths agree.
+    f.cli(
+        &[
+            "catalog",
+            "register",
+            f.repo.to_str().unwrap(),
+            "--ref",
+            "dan/hello@1.0.0",
+        ],
+        true,
+    );
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+    f.git(&["tag", "dan/hello@9.0.0"]); // The newest tag has a mismatched manifest.
+    f.cli(&["catalog", "update"], false);
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        bytes,
+        "failed generation leaves index intact"
+    );
+    fs::write(
+        f.dir
+            .join("catalog/namespaces/dan/hello/versions/1.10.0/release.json"),
+        "{broken",
+    )
+    .unwrap();
+    let overview = f.cli(&["catalog", "show"], true);
+    assert!(overview.contains("Title: Newest"), "{overview}");
+    assert!(overview.contains("Provides: theme"), "{overview}");
+}
+
+#[test]
+fn catalog_update_restores_summary_when_a_moved_tag_is_kept() {
+    let f = Fixture::new();
+    fs::write(f.dir.join("sources.txt"), "./upstream\n").unwrap();
+    f.cli(&["catalog", "update"], true);
+    let package = f.dir.join("catalog/namespaces/dan/hello");
+    let release_path = package.join("versions/1.0.0/release.json");
+    let original_release = fs::read(&release_path).unwrap();
+    let index_path = package.join("plugin.json");
+    let mut index: serde_json::Value =
+        serde_json::from_slice(&fs::read(&index_path).unwrap()).unwrap();
+    let original_summary = index.as_object_mut().unwrap().remove("latest").unwrap();
+    fs::write(&index_path, serde_json::to_vec(&index).unwrap()).unwrap();
+    f.release("1.0.0", "replacement under a moved tag");
+    f.cli(&["catalog", "update"], true);
+    let restored: serde_json::Value =
+        serde_json::from_slice(&fs::read(&index_path).unwrap()).unwrap();
+    assert_eq!(restored["latest"], original_summary);
+    assert_eq!(fs::read(&release_path).unwrap(), original_release);
+}
+
+#[test]
 fn catalog_update_keeps_published_records_when_tags_move() {
     use gitpm::catalog;
     let f = Fixture::new();
@@ -987,7 +1173,7 @@ fn catalog_update_keeps_published_records_when_tags_move() {
     // Paths are relative to the list file, and duplicate lines are harmless.
     let sources = f.dir.join("sources.txt");
     fs::write(&sources, "# Git sources\n\n./upstream\n./upstream\n").unwrap();
-    f.cli(&["--catalog", location, "catalog-update"], true);
+    f.cli(&["--catalog", location, "catalog", "update"], true);
     let first = catalog::lookup(location, "dan/hello", None).unwrap();
     assert_eq!(first.manifest.version, "1.0.0");
     assert!(!first.files.is_empty());
@@ -997,7 +1183,8 @@ fn catalog_update_keeps_published_records_when_tags_move() {
         &[
             "--catalog",
             location,
-            "catalog-update",
+            "catalog",
+            "update",
             "--sources",
             sources.to_str().unwrap(),
         ],
@@ -1016,13 +1203,13 @@ fn catalog_update_keeps_published_records_when_tags_move() {
     );
     let index = catalog_dir.join("namespaces/dan/hello/plugin.json");
     let original_index = fs::read(&index).unwrap();
-    f.cli(&["--catalog", location, "catalog-update"], true);
+    f.cli(&["--catalog", location, "catalog", "update"], true);
     assert_eq!(fs::read(&index).unwrap(), original_index);
     f.release("2.0.0", "two");
     // Move an old tag to a different commit with the same manifest version: the
     // published record is kept with a warning, the new version is published.
     f.release("1.0.0", "replacement");
-    let (ok, out, err) = f.output(&["--catalog", location, "catalog-update"]);
+    let (ok, out, err) = f.output(&["--catalog", location, "catalog", "update"]);
     assert!(ok, "{err}");
     assert!(
         out.contains("Catalog ready: 3 release(s) checked from sources."),
@@ -1065,16 +1252,16 @@ fn catalog_update_validates_every_source_before_writing_and_retains_removed_sour
             .success()
     );
     fs::write(&sources, "./upstream\n./dan/no-tags\n").unwrap();
-    f.cli(&["--catalog", location, "catalog-update"], false);
+    f.cli(&["--catalog", location, "catalog", "update"], false);
     assert!(!directory.exists());
     // Stable installs have no implicit fallback to the development branch.
     f.cli(&["install", no_tags.to_str().unwrap()], false);
     f.cli(&["install", no_tags.to_str().unwrap(), "--dev"], true);
     fs::write(&sources, "./upstream\n").unwrap();
-    f.cli(&["--catalog", location, "catalog-update"], true);
+    f.cli(&["--catalog", location, "catalog", "update"], true);
     f.cli(&["init", "dan/second", "--into", "dan/second"], true);
     fs::write(&sources, "./dan/second\n").unwrap();
-    f.cli(&["--catalog", location, "catalog-update"], true);
+    f.cli(&["--catalog", location, "catalog", "update"], true);
     assert!(directory.join("namespaces/dan/hello/plugin.json").exists());
     assert!(directory.join("namespaces/dan/second/plugin.json").exists());
 }
@@ -1100,7 +1287,7 @@ fn release_manifest_must_match_tag_and_update_warns_on_retagging() {
     let dir = f.dir.join("generated");
     fs::write(f.dir.join("sources.txt"), "./upstream\n").unwrap();
     f.cli(
-        &["--catalog", dir.to_str().unwrap(), "catalog-update"],
+        &["--catalog", dir.to_str().unwrap(), "catalog", "update"],
         false,
     );
     assert!(!dir.exists());
@@ -1137,7 +1324,7 @@ fn info_shows_directory_tree_without_installing() {
     let dir = f.dir.join("catalog");
     let location = dir.to_str().unwrap();
     let release = catalog::register(location, f.repo.to_str().unwrap(), "HEAD").unwrap();
-    let result = f.cli(&["--catalog", location, "info"], true);
+    let result = f.cli(&["--catalog", location, "catalog", "show"], true);
     assert!(result.contains("Directories and packages:"));
     assert!(result.contains("namespaces/"));
     assert!(result.contains("hello/"));
@@ -1146,13 +1333,13 @@ fn info_shows_directory_tree_without_installing() {
     assert!(!f.root.exists());
     fs::write(
         dir.join("catalog.json"),
-        r#"{"schema":2,"directories":{"escape":"../"}}"#,
+        r#"{"schema":1,"directories":{"escape":"../"}}"#,
     )
     .unwrap();
     assert!(info(location).is_err());
     fs::write(
         dir.join("catalog.json"),
-        r#"{"schema":2,"directories":{"missing":"missing/"}}"#,
+        r#"{"schema":1,"directories":{"missing":"missing/"}}"#,
     )
     .unwrap();
     assert!(info(location).is_err());
@@ -1202,20 +1389,7 @@ fn uninstall_without_tty_refuses_and_lists_lost_work_including_stash() {
     let f = Fixture::new();
     f.install();
     let repo = f.root.join("packages/dan/hello");
-    let git = |args: &[&str]| {
-        let out = f
-            .command("git")
-            .arg("-C")
-            .arg(&repo)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-    };
+    let git = |args: &[&str]| f.git_in(&repo, args);
     git(&["config", "user.name", "Test"]);
     git(&["config", "user.email", "test@example.invalid"]);
     fs::write(repo.join("dist/index.js"), "stashed edit").unwrap();
@@ -1344,6 +1518,49 @@ fn usage_errors_name_the_problem_and_create_nothing() {
     let f = Fixture::new();
     for (args, message) in [
         (&["bogus", "qa/demo"][..], "unknown command: bogus"),
+        (
+            &["catalog", "show", "extra"][..],
+            "catalog show: expected 0 argument(s), got 1",
+        ),
+        (
+            &["catalog", "links", "extra"][..],
+            "catalog links: expected 0 argument(s), got 1",
+        ),
+        (
+            &["catalog", "update", "extra"][..],
+            "catalog update: expected 0 argument(s), got 1",
+        ),
+        (
+            &["catalog", "register"][..],
+            "catalog register: expected 1 argument(s), got 0",
+        ),
+        (
+            &["catalog", "show", "--sources", "list.txt"][..],
+            "--sources requires catalog update",
+        ),
+        (
+            &["catalog", "links", "--ref", "HEAD"][..],
+            "--ref is not valid for catalog links",
+        ),
+        (
+            &["catalog", "update", "--package", "qa/demo"][..],
+            "--package requires install/download/commit/catalog register",
+        ),
+        (
+            &[
+                "catalog",
+                "show",
+                "--build-url",
+                "https://example.invalid/build",
+                "--build-sha256",
+                "a",
+            ][..],
+            "build options require catalog register",
+        ),
+        (
+            &["catalog", "register", "source"][..],
+            "catalog register requires --ref",
+        ),
         (&["list", "--bogus"][..], "unknown option: --bogus"),
         (
             &["update", "qa/demo", "--ref", "a", "--ref", "b"][..],
@@ -1434,10 +1651,10 @@ fn usage_errors_name_the_problem_and_create_nothing() {
 fn catalog_commands_name_the_missing_catalog_and_create_nothing() {
     let f = Fixture::new();
     for args in [
-        &["info"][..],
-        &["catalog"][..],
-        &["catalog-update"][..],
-        &["register", "x", "--ref", "HEAD"][..],
+        &["catalog", "show"][..],
+        &["catalog", "links"][..],
+        &["catalog", "update"][..],
+        &["catalog", "register", "x", "--ref", "HEAD"][..],
         &["install-catalog", "qa/demo"][..],
         &["download-catalog", "qa/demo"][..],
     ] {
@@ -1451,7 +1668,14 @@ fn catalog_commands_name_the_missing_catalog_and_create_nothing() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(!out.status.success(), "{args:?} succeeded");
         assert!(
-            stderr.contains("needs a catalog: pass --catalog"),
+            stderr.contains(&format!(
+                "{} needs a catalog: pass --catalog",
+                if args[0] == "catalog" {
+                    format!("catalog {}", args[1])
+                } else {
+                    args[0].to_owned()
+                }
+            )),
             "{args:?}: {stderr}"
         );
         assert!(!f.root.exists(), "{args:?} created the workspace");
@@ -1540,7 +1764,7 @@ fn legacy_pm_variables_are_ignored() {
             .join("gitpm-workspace/dist/dan/hello/index.js")
             .exists()
     );
-    let out = cli(&["info"]);
+    let out = cli(&["catalog", "show"]);
     assert!(!out.status.success());
     assert!(
         String::from_utf8_lossy(&out.stderr)
@@ -1603,6 +1827,118 @@ fn init_install_and_fork_into_explicit_folders() {
 }
 
 #[test]
+fn missing_git_keeps_auth_and_repository_error_kinds() {
+    let f = Fixture::new();
+    let empty = f.dir.join("empty-path");
+    fs::create_dir(&empty).unwrap();
+    for (args, kind) in [
+        (
+            vec!["auth", "check", "https://example.invalid/repo.git"],
+            "auth",
+        ),
+        (vec!["install", f.repo.to_str().unwrap()], "git"),
+    ] {
+        let output = f.pm().env("PATH", &empty).args(&args).output().unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{args:?}");
+        assert!(
+            stderr.contains(&format!("Error kind: {kind}")),
+            "{args:?}: {stderr}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn auth_check_reports_config_probe_timeout_without_running_ls_remote() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    let bin = f.dir.join("fakebin");
+    fs::create_dir(&bin).unwrap();
+    let fifo = f.dir.join("probe.fifo");
+    assert!(f.command("mkfifo").arg(&fifo).status().unwrap().success());
+    let wrapper = bin.join("git");
+    // With no writer, opening the FIFO blocks until gitpm kills the probe.
+    fs::write(&wrapper, "#!/bin/sh\ncase \" $* \" in\n*' config --get core.sshCommand '*) exec /bin/cat \"$GITPMT_PROBE_FIFO\";;\n*' ls-remote '*) printf fallback > \"$GITPMT_FALLBACK\"; exit 0;;\nesac\nexit 1\n").unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+    let fallback = f.dir.join("fallback");
+    let path = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )))
+    .unwrap();
+    let output = f
+        .pm()
+        .env("PATH", path)
+        .env("GITPMT_PROBE_FIFO", fifo)
+        .env("GITPMT_FALLBACK", &fallback)
+        .args(["auth", "check", "https://example.invalid/repo.git"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "probe timeout was swallowed: {stderr}"
+    );
+    assert!(stderr.contains("Error kind: git"), "{stderr}");
+    assert!(
+        stderr.contains("git config --get core.sshCommand: timed out after 10s"),
+        "{stderr}"
+    );
+    assert!(!fallback.exists(), "ls-remote ran after the failed probe");
+}
+
+#[cfg(unix)]
+#[test]
+fn custom_ssh_is_shared_by_auth_install_catalog_and_check() {
+    use std::os::unix::fs::PermissionsExt;
+    for variable in ["GIT_SSH", "GIT_SSH_COMMAND"] {
+        let f = Fixture::new();
+        let helper = f.dir.join("local-ssh");
+        let log = f.dir.join("ssh.log");
+        fs::write(&helper, "#!/bin/sh\ncase \"$1\" in -G) exit 1;; esac\nprintf '%s\\n' \"$*\" >> \"$GITPMT_SSH_LOG\"\nexec git-upload-pack \"$GITPMT_SSH_REPO\"\n").unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+        let source = "git@example.invalid:repo.git";
+        fs::write(f.dir.join("sources.txt"), format!("{source}\n")).unwrap();
+        let mut previous = 0;
+        for args in [
+            vec!["auth", "check", source],
+            vec!["install", source],
+            vec!["check"],
+            vec!["catalog", "update"],
+            vec!["catalog", "register", source, "--ref", "dan/hello@1.0.0"],
+        ] {
+            let mut command = f.pm();
+            command
+                .current_dir(&f.dir)
+                .env(variable, &helper)
+                .env("GITPMT_SSH_LOG", &log)
+                .env("GITPMT_SSH_REPO", &f.repo)
+                .args(&args);
+            if args == ["check"] {
+                // Exercise origin lookup without the fixture's not-yet-built catalog.
+                command.env_remove("GITPM_CATALOG");
+            }
+            if variable == "GIT_SSH_COMMAND" {
+                command.env("GIT_SSH", "/nonexistent-must-not-be-used");
+            }
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success(),
+                "{variable} {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let calls = fs::read_to_string(&log).unwrap().lines().count();
+            assert!(
+                calls > previous,
+                "{variable} {args:?} must use the SSH helper"
+            );
+            previous = calls;
+        }
+        assert_eq!(f.content(), "hello v1");
+    }
+}
+
+#[test]
 fn gitpm_variables_set_root_catalog_and_sources() {
     let f = Fixture::new();
     fs::write(f.dir.join("sources.txt"), "./upstream\n").unwrap();
@@ -1610,7 +1946,7 @@ fn gitpm_variables_set_root_catalog_and_sources() {
     let out = f
         .pm()
         .current_dir(&f.dir)
-        .args(["catalog-update"])
+        .args(["catalog", "update"])
         .output()
         .unwrap();
     assert!(
@@ -1648,7 +1984,7 @@ fn help_names_the_binary_and_removed_commands_are_unknown() {
     assert!(!help.contains("--publish"));
     for args in [
         &["sync"][..],
-        &["catalog-update", "--publish"][..],
+        &["catalog", "update", "--publish"][..],
         &["sync", "--dry-run"][..],
     ] {
         let out = f.pm().args(args).output().unwrap();
@@ -1662,7 +1998,13 @@ fn help_names_the_binary_and_removed_commands_are_unknown() {
             .lines()
             .any(|l| l.starts_with("  create ") || l.contains("migrate-catalog"))
     );
-    for command in ["create", "migrate-catalog"] {
+    for command in [
+        "create",
+        "migrate-catalog",
+        "info",
+        "catalog-update",
+        "register",
+    ] {
         let out = f
             .pm()
             .args([command, "dan/hello", "--into", "x"])
@@ -1857,6 +2199,25 @@ fn command_help_prints_only_that_command() {
         update.contains("update ID") && update.contains("update all"),
         "{update}"
     );
+    for flag in ["--help", "-h"] {
+        let group = f.cli(&["catalog", flag], true);
+        for subcommand in ["show", "links", "update", "register"] {
+            let single = f.cli(&["catalog", subcommand, flag], true);
+            assert!(
+                single.starts_with(&format!("  catalog {subcommand} ")),
+                "{single}"
+            );
+            assert!(group.contains(single.trim_end()));
+            assert!(full.contains(single.trim_end()));
+            assert_eq!(
+                single
+                    .lines()
+                    .filter(|l| l.starts_with("  catalog "))
+                    .count(),
+                1
+            );
+        }
+    }
     let out = f.pm().args(["nope", "--help"]).output().unwrap();
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("unknown command: nope"));
@@ -2054,6 +2415,7 @@ fn verified_catalog_protects_updates_and_detach_drops_it() {
         &[
             "--catalog",
             location,
+            "catalog",
             "register",
             repo,
             "--ref",
@@ -2081,9 +2443,9 @@ fn verified_catalog_protects_updates_and_detach_drops_it() {
     fs::write(&file, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
     fs::write(f.dir.join("sources.txt"), format!("{repo}\n")).unwrap();
     let before = fs::read(&file).unwrap();
-    f.cli(&["--catalog", location, "catalog-update"], false);
+    f.cli(&["--catalog", location, "catalog", "update"], false);
     assert_eq!(fs::read(&file).unwrap(), before);
-    let info = f.cli(&["--catalog", location, "info"], true);
+    let info = f.cli(&["--catalog", location, "catalog", "show"], true);
     assert!(info.contains("Verified: yes"), "{info}");
 
     f.cli(
@@ -2170,7 +2532,15 @@ fn update_lines_mark_major_updates() {
         "dan/hello@1.1.0-rc.2",
     ] {
         other.cli(
-            &["--catalog", location, "register", repo, "--ref", tag],
+            &[
+                "--catalog",
+                location,
+                "catalog",
+                "register",
+                repo,
+                "--ref",
+                tag,
+            ],
             true,
         );
     }
@@ -2223,6 +2593,7 @@ fn catalog_package_with_pre_releases_only() {
         &[
             "--catalog",
             location,
+            "catalog",
             "register",
             repo,
             "--ref",
@@ -2230,7 +2601,7 @@ fn catalog_package_with_pre_releases_only() {
         ],
         true,
     );
-    let info = f.cli(&["--catalog", location, "info"], true);
+    let info = f.cli(&["--catalog", location, "catalog", "show"], true);
     assert!(info.contains("latest: pre-releases only"), "{info}");
     let out = f
         .pm()
@@ -2257,4 +2628,192 @@ fn catalog_package_with_pre_releases_only() {
         out.contains("installed dan/hello@2.0.0-beta.1 from"),
         "{out}"
     );
+}
+
+#[test]
+fn update_all_local_work_prints_the_library_message_unchanged() {
+    let f = Fixture::new();
+    f.install();
+    let repo = f.root.join("packages/dan/hello");
+    let git = |args: &[&str]| f.git_in(&repo, args);
+    fs::write(repo.join("local.txt"), "local work").unwrap();
+    git(&["add", "local.txt"]);
+    git(&["commit", "-qm", "local"]);
+    git(&["tag", "local-only"]);
+    git(&["reset", "--hard", "HEAD~1"]);
+    let error = {
+        let manager = gitpm::Manager::open(&f.root).unwrap();
+        manager.update_all().unwrap_err()
+    };
+    let (ok, out, err) = f.output(&["update", "all"]);
+    assert!(!ok);
+    assert!(out.is_empty(), "{out}");
+    assert_eq!(err, format!("Error: {error}\nError kind: local_changes\n"));
+    assert!(
+        err.contains(
+            "dan/hello: unpublished local work blocks update all; unpublished tag: local-only"
+        ),
+        "{err}"
+    );
+}
+
+#[test]
+fn catalog_group_runs_every_subcommand() {
+    let f = Fixture::new();
+    f.release("1.1.0", "hello v2");
+    let sources = f.dir.join("group-sources.txt");
+    fs::write(&sources, format!("{}\n", f.repo.display())).unwrap();
+    let location = f.dir.join("group-catalog");
+    let location = location.to_str().unwrap();
+    let out = f.cli(
+        &[
+            "catalog",
+            "update",
+            "--catalog",
+            location,
+            "--sources",
+            sources.to_str().unwrap(),
+        ],
+        true,
+    );
+    assert_eq!(out, "Catalog ready: 2 release(s) checked from sources.\n");
+    f.release("1.2.0", "hello v3");
+    let out = f.cli(
+        &[
+            "--catalog",
+            location,
+            "catalog",
+            "register",
+            f.repo.to_str().unwrap(),
+            "--ref",
+            "dan/hello@1.2.0",
+            "--package",
+            "dan/hello",
+            "--build-url",
+            "https://example.invalid/build.tar.gz",
+            "--build-sha256",
+            &"a".repeat(64),
+        ],
+        true,
+    );
+    let release: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(release["manifest"]["id"], "dan/hello");
+    let show = f.cli(&["--catalog", location, "catalog", "show"], true);
+    assert!(
+        show.contains("dan/hello — latest: 1.2.0, versions: 3"),
+        "{show}"
+    );
+    let links = f.cli(&["--catalog", location, "catalog", "links"], true);
+    let links: serde_json::Value = serde_json::from_str(&links).unwrap();
+    assert_eq!(links["schema"], 1);
+    assert!(!f.root.exists());
+}
+
+#[test]
+fn catalog_group_errors_create_nothing() {
+    let f = Fixture::new();
+    let empty = f.dir.join("empty");
+    fs::create_dir(&empty).unwrap();
+    for (args, message) in [
+        (
+            vec!["catalog"],
+            "catalog needs a subcommand: show, links, update or register; use gitpm catalog --help",
+        ),
+        (
+            vec!["catalog", "publish"],
+            "unknown catalog command: publish; use gitpm catalog --help",
+        ),
+        (
+            vec!["catalog", "publish", "--help"],
+            "unknown catalog command: publish; use gitpm catalog --help",
+        ),
+    ] {
+        let out = Command::new(env!("CARGO_BIN_EXE_gitpm"))
+            .env_clear()
+            .current_dir(&empty)
+            .args(["--root", "workspace", "--catalog", "catalog-dir"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(1));
+        assert_eq!(
+            String::from_utf8_lossy(&out.stderr),
+            format!("Error: {message}\n")
+        );
+        assert!(out.stdout.is_empty());
+        assert_eq!(fs::read_dir(&empty).unwrap().count(), 0);
+    }
+}
+
+#[test]
+fn catalog_update_http_error_has_a_command_hint() {
+    let f = Fixture::new();
+    let (ok, out, err) = f.output(&[
+        "--catalog",
+        "https://example.invalid/catalog.json",
+        "catalog",
+        "update",
+    ]);
+    assert!(!ok);
+    assert!(out.is_empty());
+    assert!(
+        err.contains("writing a catalog requires a local folder; HTTP(S) catalogs are read-only"),
+        "{err}"
+    );
+    assert!(err.contains("Error kind: invalid_argument"), "{err}");
+    assert!(
+        err.contains(
+            "Hint: `gitpm catalog update` writes a local catalog folder; upload its files yourself"
+        ),
+        "{err}"
+    );
+    assert!(!f.root.exists());
+}
+
+#[test]
+fn file_formats_use_version_one_and_refuse_other_versions() {
+    let f = Fixture::new();
+    fs::write(f.dir.join("sources.txt"), f.repo.to_str().unwrap()).unwrap();
+    f.cli(&["catalog", "update"], true);
+    f.cli(&["install", f.repo.to_str().unwrap()], true);
+    for (path, field, args, kind) in [
+        (
+            f.root.join("state.json"),
+            "format",
+            vec!["list"],
+            "unsupported",
+        ),
+        (
+            f.dir.join("catalog/catalog.json"),
+            "schema",
+            vec!["catalog", "links"],
+            "catalog",
+        ),
+        (
+            f.dir.join("catalog/namespaces/dan/hello/plugin.json"),
+            "schema",
+            vec!["catalog", "show"],
+            "catalog",
+        ),
+    ] {
+        let original = fs::read(&path).unwrap();
+        let mut value: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        assert_eq!(value[field], 1, "{}", path.display());
+        f.cli(&args, true);
+        for version in [0, 2, 3, 99] {
+            value[field] = version.into();
+            let bytes = serde_json::to_vec_pretty(&value).unwrap();
+            fs::write(&path, &bytes).unwrap();
+            let out = f.pm().args(&args).output().unwrap();
+            assert!(!out.status.success(), "{args:?}: version {version}");
+            let error = String::from_utf8(out.stderr).unwrap();
+            assert!(error.contains(kind), "{error}");
+            assert_eq!(
+                fs::read(&path).unwrap(),
+                bytes,
+                "input must not be rewritten"
+            );
+        }
+        fs::write(&path, original).unwrap();
+    }
 }

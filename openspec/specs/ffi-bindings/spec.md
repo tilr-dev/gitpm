@@ -38,19 +38,32 @@ The FFI crate SHALL generate the Swift module `Gitpm` over the C module `GitpmFF
 - **THEN** `PackageManager` has `install` (optional `package`, `force`), `installFromCatalog(force)`, `download`, `downloadFromCatalog`, `update`, `updateAllPlan`, `updateAll`, `rollback`, `enable(force)`, `disable(force)`, `forget(force)` (returning `ForgetResult`), `restore`, `uninstallPlan`, `uninstall(confirmed, force)` (`confirmed` the lost-work items the user saw), `fork`, `forkAndReplace`, `forkPackages`, `forkPackagesAndReplace`, `forkReplaceResume`, `replacePlan`, `replace`, `switchBackPlan`, `switchBack(confirm, force)`, `syncDistPlan` and `syncDist`; `check` is a free function, not a method
 
 #### Scenario: Catalog generation is not exposed
-- **WHEN** a host looks for `catalog-update`, `register`, `init` or `commit` in the bindings
+- **WHEN** a host looks for `catalog update`, `catalog register`, `init` or `commit` in the bindings
 - **THEN** none exist; those stay library/CLI functions
 
 ### Requirement: Errors keep kind and message
-Library errors SHALL map to the `PmError` enum, one case per kind, each with the full `message` and the library's structured fields (`id`, `LocalChanges.items`, `HasDependents.dependents` and `lostWork`, `IncompatibleReplacement.consumers`, `NotDeployed.sync`); `Other { kind, message }` SHALL carry a kind added to the non-exhaustive library enum later. Verified by `every_library_error_maps_to_its_own_case_with_the_full_message` and `ids_and_lost_work_items_are_preserved`.
+Library errors SHALL map to the `PmError` enum, one case per kind, each with the full `message` and the library's structured fields (`id` for every error about a package, `LocalChanges.items`, `HasDependents.dependents` and `lostWork`, `IncompatibleReplacement.consumers`, `NotDeployed.sync`); `Other { kind, message }` SHALL carry a kind added to the non-exhaustive library enum later.
 
 #### Scenario: Local changes from Swift
 - **WHEN** an unconfirmed uninstall would lose work
 - **THEN** Swift receives `PmError.LocalChanges` with the message and the list of items
+- Verified by `every_library_error_maps_to_its_own_case_with_the_full_message` and `ids_and_lost_work_items_are_preserved`.
 
 #### Scenario: Undeployed packages from Swift
 - **WHEN** `syncDist` leaves an active package undeployed
 - **THEN** Swift receives `PmError.NotDeployed` with the message and the `sync` report (what was deployed and removed, and the skipped packages with their reasons), as the CLI prints it
+
+#### Scenario: Update refusal from Swift
+- **WHEN** a branch-mode `update` of `acme/greeter` is refused because the history diverged
+- **THEN** Swift receives `PmError.VersionConflict` whose `id` is `acme/greeter` and whose message names it
+
+#### Scenario: Manifest refusal from Swift
+- **WHEN** an update of `acme/greeter` finds another package ID or rollback finds a mismatched manifest
+- **THEN** Swift receives `PmError.InvalidManifest` with `id` `acme/greeter` and the complete library message
+
+#### Scenario: Unscoped validation error from Swift
+- **WHEN** manifest or version validation fails without a package operation
+- **THEN** the error keeps its original message and its optional `id` is absent
 
 ### Requirement: Records mirror library results
 FFI records SHALL convert library results field by field, dropping none: `InstalledPackage` (`active`, `clone`, `path`, metadata), `InstallResult` (`alreadyInstalled`, `available`, `skipped`, `warnings`), `RevisionChange` (`warnings`, `skipped`), every dist report, `CatalogRelease`, `PackageSummary`, `DistSync` (`SkippedDist.cloneMissing`), `UpdateAllPlan` (`unchanged`, `skipped`), `ReplacementPlan` (`installedVersion`), `ForgetResult`, `UninstallPlan` (`dependencyConflict`) and fork results.
@@ -84,7 +97,7 @@ FFI records SHALL convert library results field by field, dropping none: `Instal
 - **THEN** the script reports the skipped target and builds the rest
 
 ### Requirement: CLI and FFI parity
-Every CLI command that reads or changes a workspace, reads a catalog or checks access SHALL have an FFI equivalent that returns the data the CLI prints, so a host never re-implements CLI logic. The stated exceptions are the author commands (`init`, `commit`, `remote`) and the catalog writers (`catalog-update`, `register`), which stay library and CLI functions. Verified by `ffi_covers_every_workspace_and_catalog_read_command`.
+Every CLI command that reads or changes a workspace, reads a catalog or checks access SHALL have an FFI equivalent that returns the data the CLI prints, so a host never re-implements CLI logic. The stated exceptions are the author commands (`init`, `commit`, `remote`) and the catalog writers (`catalog update`, `catalog register`), which stay library and CLI functions. Verified by `ffi_covers_every_workspace_and_catalog_read_command`.
 
 #### Scenario: list with a filter
 - **WHEN** a host needs what `gitpm list --provides theme` prints
@@ -151,3 +164,10 @@ FFI records SHALL carry the version flags of the library results: `RevisionChang
 #### Scenario: Pre-release in a check row
 - **WHEN** 1.2.0 is installed and the catalog has 2.0.0 and 2.1.0-rc.1
 - **THEN** the host's `CheckReport` row has `major` true and `prerelease` `2.1.0-rc.1`
+
+### Requirement: SSH setting in ManagerOptions
+`ManagerOptions` SHALL carry `customSsh` (the library's `Options.custom_ssh`), used for every git command of the opened workspace, and `authCheck(source, customSsh)` and `check(root, catalog, customSsh)` SHALL take the same setting, so a host decides once whether its environment brings its own SSH command. Verified by `records_convert_field_by_field`.
+
+#### Scenario: Host with its own SSH command
+- **WHEN** a host that sets `GIT_SSH` for its process opens a `PackageManager` with `customSsh: true` and installs from an SSH URL
+- **THEN** gitpm passes no SSH command of its own and git uses `GIT_SSH`, as `authCheck` does

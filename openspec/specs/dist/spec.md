@@ -22,11 +22,11 @@ The deployed folder `dist/<namespace>/<name>/` SHALL exist exactly when the pack
 - **THEN** `dist/acme/greeter/` does not exist, `dist/me/greeter/` does, and `acme/greeter` stays `enabled: true` with `active: false` in `list`
 
 ### Requirement: Deploys copy the committed tree
-Every deploy (install, update, rollback, restore, `replace --back`, enable, reconcile) SHALL copy the package dist `<path>/dist` of the resolved commit from the clone's Git objects, never from the working tree. Nested folders and the executable bit SHALL be kept; symlinks SHALL be refused with `unsupported`, while a submodule comes out as an empty folder. Verified by `every_deploy_copies_the_committed_tree_with_nested_files_and_exec_bits`.
+Every deploy SHALL copy the resolved commit’s package folder selected by its committed manifest's `dist` (default `<path>/dist`; `"."` selects `<path>` itself) from Git objects, never the working tree, preserving nested folders and executable bits. Symlinks SHALL fail with `unsupported`. Gitlinks SHALL become empty directories without fetching submodules, with an actionable warning naming the path and advising committing built files instead.
 
 #### Scenario: Symlink inside dist
 - **WHEN** a release's package dist contains a symlink
-- **THEN** the deploy fails with `unsupported` ("symlinks and submodules are not supported: PATH"; the message also names submodules, which are not refused)
+- **THEN** the deploy fails with `unsupported` ("symlinks are not supported: PATH")
 
 #### Scenario: Uncommitted edits are not deployed
 - **WHEN** a clone has uncommitted changes in `dist/` and the package is re-deployed by `enable`
@@ -34,30 +34,44 @@ Every deploy (install, update, rollback, restore, `replace --back`, enable, reco
 
 #### Scenario: Submodule inside dist
 - **WHEN** a release's `dist/vendor` is a submodule
-- **THEN** the deploy succeeds and `dist/<id>/vendor/` is an empty folder
+- **THEN** install (and every other deploy) succeeds with an empty `dist/<id>/vendor/` folder and warns that `dist/vendor` is a Git submodule whose files will not be installed, probably a mistake; commit built files to dist instead of a submodule
 
 #### Scenario: Executable file
 - **WHEN** a release's `dist/bin/run` has the executable bit
 - **THEN** the deployed `dist/<id>/bin/run` is executable
 
+#### Scenario: export-ignore in the package repository
+- **WHEN** the release commit's `.gitattributes` marks `dist/debug.js` `export-ignore`
+- **THEN** `dist/<id>/debug.js` is deployed and `export-subst` placeholders stay as committed
+- **AND** catalog creation, `install-catalog`, protected-package update, and `verify_catalog_release` hash or verify the staged `dist/<id>` export after `export_dist` and before committing the transaction, so each hash covers the deployed bytes
+
+#### Scenario: Root or arbitrary output folder
+- **WHEN** a release declares `dist: "."` or `dist: "output/vtf"`
+- **THEN** install and subsequent deploys copy that committed folder, relative to the package root, including nested files and executable bits
+- **AND** uncommitted edits and files outside the selected folder are not deployed
+
 ### Requirement: A revision without dist is refused
-Single source for the missing package dist refusal: a revision whose package folder has no `dist/` SHALL be refused with `invalid_manifest` and SHALL NOT be deployed as an empty folder. The message names where it was detected (see the scenarios). Verified by `workspace::a_revision_without_dist_is_never_deployed_empty` and `packages::invalid_package_sets_are_refused`.
+A revision without its declared output folder (default dist/) SHALL fail with invalid_manifest, never deploying an empty folder. Messages SHALL name the missing folder and detection context as below; substitute the declared path for dist in default messages. With buildRequired, errors SHALL explain that a committed build result is required and name buildCommand when supplied. gitpm SHALL NOT run builds.
 
 #### Scenario: Deploy from Git objects
-- **WHEN** the commit being deployed has no `[PATH/]dist` tree
+- **WHEN** the commit being deployed has no declared output tree
 - **THEN** the error is "release COMMIT has no [PATH/]dist/ folder"
 
 #### Scenario: Checked-out root package
-- **WHEN** a root package's checked-out folder has no `dist/`
+- **WHEN** a root package's checked-out folder has no declared output folder (`dist/` by default)
 - **THEN** the error is "package must contain a ready dist/ directory"
 
 #### Scenario: Package folder of a multi-package repository
-- **WHEN** a folder listed by `gitpm.json` has no `dist/`
+- **WHEN** a folder listed by `gitpm.json` has no declared output folder (`dist/` by default)
 - **THEN** that package is defective with "package FOLDER must contain a ready dist/ directory" (siblings are handled as in multi-package-repos)
 
 #### Scenario: Release without dist
 - **WHEN** the latest tag points at a commit without `dist/`
 - **THEN** install fails with `invalid_manifest` and the workspace is unchanged
+
+#### Scenario: Missing required build output
+- **WHEN** a package declares `dist: "output"`, `buildRequired: true` and `buildCommand: "npm run build"` but output is absent
+- **THEN** install or fork fails with invalid_manifest naming output and npm run build, without running the command or deploying an empty package
 
 ### Requirement: Replace removes the original's dist
 `replace ORIGINAL --with FORK` SHALL remove `dist/ORIGINAL/` and SHALL NOT copy anything of FORK into it; `dist/FORK/` stays. Its preconditions (FORK installed, enabled and declaring `replaces`) are specified in fork-replacement ("Replacement is explicit and global"). Verified by `replace_removes_the_original_dist_and_back_restores_it_from_the_clone`.
@@ -118,11 +132,16 @@ Every mutating command (install, `install-catalog`, `download`, `download-catalo
 - **THEN** the disabled package's `dist/` is removed in the same transaction
 
 ### Requirement: Unknown paths are left alone
-Folders under `dist/` that belong to no known package SHALL be left untouched and reported (the CLI warns on stderr). A namespace path under `dist/` that is a symlink or a file SHALL be reported the same way (in `unmanaged`) and nothing SHALL be written below it. Verified by `a_namespace_path_that_is_not_a_folder_blocks_nothing_else`.
+Folders under `dist/` that belong to no known package SHALL be left untouched and reported (the CLI warns on stderr). A namespace path under `dist/` that is a symlink or a file SHALL be reported the same way (in `unmanaged`) and nothing SHALL be written below it; an active package below such a path SHALL be listed in `skipped` with the reason. Verified by `a_namespace_path_that_is_not_a_folder_blocks_nothing_else`.
 
 #### Scenario: Namespace path that is a file
 - **WHEN** `dist/acme` is a file and `acme/greeter` is active
 - **THEN** a command on an unrelated package succeeds and leaves `acme/greeter` undeployed, while an operation that deploys or removes `acme/greeter` fails with `workspace` (transactions-locking, "Managed paths are never followed through symlinks")
+
+#### Scenario: sync-dist with a blocked namespace
+- **WHEN** `dist/acme` is a file, `acme/greeter` is active and the user runs `sync-dist`
+- **THEN** `acme/greeter` is in `skipped` ("dist/acme is not a folder") and `sync-dist` fails with `not_deployed` instead of printing `dist/ already holds exactly the active packages.`
+- **AND** the CLI hint tells the user to remove or rename `dist/acme` and run `gitpm sync-dist` again; advice to uninstall or forget a package whose clone is gone is given only for `clone_missing`
 
 #### Scenario: Unknown folder
 - **WHEN** `dist/custom/` exists and belongs to no package
@@ -186,3 +205,18 @@ Every mutating library operation SHALL return, inside its result, the reconcilia
 #### Scenario: Skipped package in an enable result
 - **WHEN** the clone of an active package is missing and the user enables another package
 - **THEN** the enable result's dist report lists the package in `skipped` with the reason `clone missing`
+
+### Requirement: Repeating enable and disable is idempotent
+When dependency and replacement guards permit it, repeating enable or disable SHALL succeed with CLI exit 0, preserving workspace state and clone bytes. Already reconciled deployed files SHALL remain byte-identical; otherwise the operation SHALL reconcile dist as required by "Every mutating command reconciles all of dist".
+
+#### Scenario: Repeat enable
+- **WHEN** an enabled package is enabled again with no intervening workspace changes
+- **THEN** the operation succeeds and workspace state, clone contents and deployed files remain byte-identical
+
+#### Scenario: Repeat disable
+- **WHEN** a disabled package is disabled again with no intervening workspace changes
+- **THEN** the operation succeeds and workspace state, clone contents and deployed files remain byte-identical
+
+#### Scenario: Repeat enable repairs missing dist
+- **WHEN** an enabled package is enabled again while another active package has a missing deployed folder
+- **THEN** the operation reconciles dist and restores that folder, preserving workspace state and clone bytes

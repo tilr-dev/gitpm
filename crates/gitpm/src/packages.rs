@@ -5,7 +5,7 @@
 //! Everything here reads committed trees (`git ls-tree`/`git show` at a commit), never a
 //! working tree: the package set of a release is the one in its tagged commit.
 use crate::error::{Error, Result, ensure};
-use crate::{Manifest, exec::git, exec::git_raw, valid_id};
+use crate::{Manifest, transport::git, transport::git_raw, valid_id};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fs, path::Path};
 
@@ -99,10 +99,11 @@ pub(crate) fn validate_path(path: &str) -> Result<()> {
 }
 
 /// Mode and type of every entry of the commit's tree (recursive, folders included).
-fn tree(repo: &Path, commit: &str) -> Result<BTreeMap<String, (String, String)>> {
+fn tree(repo: &Path, commit: &str, custom_ssh: bool) -> Result<BTreeMap<String, (String, String)>> {
     let raw = git_raw(
         repo,
         &["ls-tree", "-r", "-t", "-z", "--full-tree", commit, "--"],
+        custom_ssh,
     )?;
     let mut entries = BTreeMap::new();
     for entry in raw.split(|b| *b == 0).filter(|e| !e.is_empty()) {
@@ -119,18 +120,49 @@ fn tree(repo: &Path, commit: &str) -> Result<BTreeMap<String, (String, String)>>
     Ok(entries)
 }
 
-fn show(repo: &Path, commit: &str, path: &str) -> Result<String> {
-    git(repo, &["show", &format!("{commit}:{path}")])
+fn show(repo: &Path, commit: &str, path: &str, custom_ssh: bool) -> Result<String> {
+    git(repo, &["show", &format!("{commit}:{path}")], custom_ssh)
+}
+
+/// Read and validate the manifest committed at a package's repository-relative path.
+pub(crate) fn manifest_at(
+    repo: &Path,
+    commit: &str,
+    package: Option<&str>,
+    custom_ssh: bool,
+) -> Result<Manifest> {
+    let path = match package.filter(|p| !p.is_empty()) {
+        Some(folder) => format!("{folder}/plugin.json"),
+        None => "plugin.json".to_owned(),
+    };
+    let manifest: Manifest = serde_json::from_str(&show(repo, commit, &path, custom_ssh)?)
+        .map_err(|e| Error::invalid_manifest(format!("invalid {path}: {e}")))?;
+    manifest
+        .validate_dist()
+        .map_err(|error| error.with_package(&manifest.id))?;
+    Ok(manifest)
 }
 
 /// `gitpm.json` at `commit`; `None` for a single-package repository.
 pub fn config_at(repo: &Path, commit: &str) -> Result<Option<Config>> {
-    let listed = git(repo, &["ls-tree", "--name-only", commit, "--", CONFIG])?;
+    config_at_with_ssh(repo, commit, false)
+}
+
+pub(crate) fn config_at_with_ssh(
+    repo: &Path,
+    commit: &str,
+    custom_ssh: bool,
+) -> Result<Option<Config>> {
+    let listed = git(
+        repo,
+        &["ls-tree", "--name-only", commit, "--", CONFIG],
+        custom_ssh,
+    )?;
     if listed.is_empty() {
         return Ok(None);
     }
-    let config: Config = serde_json::from_str(&show(repo, commit, CONFIG)?)
-        .map_err(|e| Error::InvalidManifest(format!("invalid {CONFIG}: {e}")))?;
+    let config: Config = serde_json::from_str(&show(repo, commit, CONFIG, custom_ssh)?)
+        .map_err(|e| Error::invalid_manifest(format!("invalid {CONFIG}: {e}")))?;
     for pattern in &config.packages {
         validate_pattern(pattern)?;
     }
@@ -219,6 +251,7 @@ fn read_folder(
     commit: &str,
     entries: &BTreeMap<String, (String, String)>,
     folder: &str,
+    custom_ssh: bool,
 ) -> std::result::Result<Package, (Option<String>, Error)> {
     let path = format!("{folder}/plugin.json");
     let (mode, kind) = &entries[&path];
@@ -228,27 +261,30 @@ fn read_folder(
             Error::Unsupported(format!("symlinks are not supported: {path}")),
         ));
     }
-    let manifest: Manifest = show(repo, commit, &path)
-        .and_then(|text| {
-            serde_json::from_str(&text)
-                .map_err(|e| Error::InvalidManifest(format!("invalid {path}: {e}")))
-        })
-        .map_err(|e| (None, e))?;
+    let manifest = manifest_at(repo, commit, Some(folder), custom_ssh).map_err(|error| {
+        let id = match &error {
+            Error::InvalidManifest { id, .. } => id.clone(),
+            _ => None,
+        };
+        (id, error)
+    })?;
     let id = Some(manifest.id.clone());
     valid_id(&manifest.id).map_err(|e| (id.clone(), e))?;
-    match entries.get(&format!("{folder}/dist")) {
+    let output = manifest.dist_path(Some(folder));
+    match entries.get(&output) {
         Some((_, kind)) if kind == "tree" => {}
         Some(_) => {
             return Err((
                 id,
-                Error::Unsupported(format!("symlinks are not supported: {folder}/dist")),
+                Error::Unsupported(format!("symlinks are not supported: {output}")),
             ));
         }
         None => {
             return Err((
                 id,
-                Error::InvalidManifest(format!(
-                    "package {folder} must contain a ready dist/ directory"
+                manifest.missing_dist(format!(
+                    "package {folder} must contain a ready {}/ directory",
+                    manifest.dist_folder()
                 )),
             ));
         }
@@ -264,10 +300,18 @@ fn read_folder(
 /// folder and a `namespace/name` ID that no other folder uses (in any letter case);
 /// nested folders are defective. Only an invalid `gitpm.json` itself is an error.
 pub fn layout_at(repo: &Path, commit: &str) -> Result<Option<Layout>> {
-    let Some(config) = config_at(repo, commit)? else {
+    layout_at_with_ssh(repo, commit, false)
+}
+
+pub(crate) fn layout_at_with_ssh(
+    repo: &Path,
+    commit: &str,
+    custom_ssh: bool,
+) -> Result<Option<Layout>> {
+    let Some(config) = config_at_with_ssh(repo, commit, custom_ssh)? else {
         return Ok(None);
     };
-    let entries = tree(repo, commit)?;
+    let entries = tree(repo, commit, custom_ssh)?;
     let folders: Vec<&str> = entries
         .keys()
         .filter_map(|path| path.strip_suffix("/plugin.json"))
@@ -275,7 +319,7 @@ pub fn layout_at(repo: &Path, commit: &str) -> Result<Option<Layout>> {
         .collect();
     let mut layout = Layout::default();
     for folder in &folders {
-        match read_folder(repo, commit, &entries, folder) {
+        match read_folder(repo, commit, &entries, folder, custom_ssh) {
             Ok(package) => layout.packages.push(package),
             Err((id, error)) => layout.problems.push(Problem {
                 path: (*folder).to_owned(),
@@ -294,7 +338,7 @@ pub fn layout_at(repo: &Path, commit: &str) -> Result<Option<Layout>> {
                     a.path.clone(),
                     (
                         Some(a.manifest.id.clone()),
-                        Error::InvalidManifest(format!(
+                        Error::invalid_manifest(format!(
                             "package ID {} appears in both {} and {}",
                             a.manifest.id, first.path, second.path
                         )),
@@ -314,7 +358,7 @@ pub fn layout_at(repo: &Path, commit: &str) -> Result<Option<Layout>> {
                 a.path.clone(),
                 (
                     Some(a.manifest.id.clone()),
-                    Error::InvalidManifest(format!(
+                    Error::invalid_manifest(format!(
                         "package {inner} is nested inside package {outer}"
                     )),
                 ),
@@ -339,7 +383,15 @@ pub fn layout_at(repo: &Path, commit: &str) -> Result<Option<Layout>> {
 /// Packages listed by `gitpm.json` at `commit`, sorted by folder; `None` without
 /// `gitpm.json`. Strict: any defective folder (see [`layout_at`]) is an error.
 pub fn packages_at(repo: &Path, commit: &str) -> Result<Option<Vec<Package>>> {
-    let Some(layout) = layout_at(repo, commit)? else {
+    packages_at_with_ssh(repo, commit, false)
+}
+
+pub(crate) fn packages_at_with_ssh(
+    repo: &Path,
+    commit: &str,
+    custom_ssh: bool,
+) -> Result<Option<Vec<Package>>> {
+    let Some(layout) = layout_at_with_ssh(repo, commit, custom_ssh)? else {
         return Ok(None);
     };
     if let Some(problem) = layout.problems.into_iter().next() {
@@ -364,21 +416,30 @@ fn list(packages: &[Package]) -> String {
 /// is refused with the list of its packages. Only the selected package's folder must be
 /// valid (see [`Layout::select`]).
 pub fn find_at(repo: &Path, commit: &str, id: Option<&str>) -> Result<Package> {
+    find_at_with_ssh(repo, commit, id, false)
+}
+
+pub(crate) fn find_at_with_ssh(
+    repo: &Path,
+    commit: &str,
+    id: Option<&str>,
+    custom_ssh: bool,
+) -> Result<Package> {
     if let Some(id) = id {
         valid_id(id)?;
     }
-    let Some(layout) = layout_at(repo, commit)? else {
+    let Some(layout) = layout_at_with_ssh(repo, commit, custom_ssh)? else {
         ensure!(
             !git(
                 repo,
-                &["ls-tree", "--name-only", commit, "--", "plugin.json"]
+                &["ls-tree", "--name-only", commit, "--", "plugin.json"],
+                custom_ssh
             )?
             .is_empty(),
             InvalidManifest,
             "missing plugin.json in the repository root (and no {CONFIG} listing packages)"
         );
-        let manifest: Manifest = serde_json::from_str(&show(repo, commit, "plugin.json")?)
-            .map_err(|e| Error::InvalidManifest(format!("invalid plugin.json: {e}")))?;
+        let manifest = manifest_at(repo, commit, None, custom_ssh)?;
         if let Some(id) = id {
             ensure!(
                 manifest.id == id,
@@ -422,7 +483,7 @@ pub fn read_config(repo: &Path) -> Result<Option<Config>> {
         return Ok(None);
     }
     let config: Config = serde_json::from_slice(&fs::read(&path)?)
-        .map_err(|e| Error::InvalidManifest(format!("invalid {CONFIG}: {e}")))?;
+        .map_err(|e| Error::invalid_manifest(format!("invalid {CONFIG}: {e}")))?;
     for pattern in &config.packages {
         validate_pattern(pattern)?;
     }
@@ -479,7 +540,8 @@ pub fn packages_in(repo: &Path) -> Result<Option<Vec<Package>>> {
     for path in folders {
         let manifest: Manifest =
             serde_json::from_slice(&fs::read(repo.join(&path).join("plugin.json"))?)
-                .map_err(|e| Error::InvalidManifest(format!("invalid {path}/plugin.json: {e}")))?;
+                .map_err(|e| Error::invalid_manifest(format!("invalid {path}/plugin.json: {e}")))?;
+        manifest.validate_dist()?;
         packages.push(Package { path, manifest });
     }
     Ok(Some(packages))
@@ -556,6 +618,30 @@ mod tests {
         fixture_git(repo, &["add", "--all"]);
         fixture_git(repo, &["commit", "-q", "-m", "change"]);
         fixture_git(repo, &["rev-parse", "HEAD"])
+    }
+
+    #[test]
+    fn invalid_output_path_keeps_package_identity() {
+        let dir = TempDir::new("invalid-output-path");
+        let repo = dir.join("mono");
+        fs::create_dir_all(&repo).unwrap();
+        fixture_git(&repo, &["init", "-q", "-b", "main"]);
+        fs::write(repo.join(CONFIG), r#"{"packages":["packages/*"]}"#).unwrap();
+        package(&repo, "packages/good", "tilr/good");
+        package(&repo, "packages/bad", "tilr/bad");
+        fs::write(
+            repo.join("packages/bad/plugin.json"),
+            r#"{"id":"tilr/bad","version":"1.0.0","dist":"../escape"}"#,
+        )
+        .unwrap();
+        let head = commit(&repo);
+        let layout = layout_at(&repo, &head).unwrap().unwrap();
+        assert_eq!(layout.problems.len(), 1);
+        assert_eq!(layout.problems[0].id.as_deref(), Some("tilr/bad"));
+        assert!(find_at(&repo, &head, Some("tilr/good")).is_ok());
+        let error = find_at(&repo, &head, Some("tilr/bad")).unwrap_err();
+        assert_eq!(error.kind(), "invalid_manifest");
+        assert!(error.to_string().contains("invalid manifest dist path"));
     }
 
     #[test]

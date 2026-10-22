@@ -369,6 +369,11 @@ fn a_package_of_a_shared_clone_is_deployed_from_its_own_commit() {
     ]);
     assert_eq!(f.dist("tilr/theme"), None);
     assert_eq!(f.dist("me/theme").as_deref(), Some("theme 1.0.0"));
+    assert_eq!(f.dist("tilr/store"), None);
+    assert_eq!(f.dist("me/store").as_deref(), Some("store 1.0.0"));
+    // The whole repository was forked and replaced. Keep theme's fork active but
+    // restore store's original provider to exercise independent dist revisions.
+    f.ok(&["replace", "tilr/store", "--back"]);
     assert_eq!(f.dist("tilr/store").as_deref(), Some("store 1.0.0"));
     // theme 1.1.0 is installed while replaced; then store moves the shared clone's HEAD
     // to a commit whose theme files differ from theme's installed revision.
@@ -531,11 +536,25 @@ fn a_namespace_path_that_is_not_a_folder_blocks_nothing_else() {
     fs::remove_dir_all(dist.join("vendor")).unwrap();
     let out = f.run(&["sync-dist"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success(), "{stderr}");
+    assert!(!out.status.success(), "{stderr}");
     assert!(
         stderr.contains("dist/dan belongs to no known package or is not a folder"),
         "{stderr}"
     );
+    assert!(
+        stderr.contains("Warning: dan/demo: dist not deployed (dist/dan is not a folder)"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("Error: 1 package(s) not deployed: dan/demo"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("Error kind: not_deployed"), "{stderr}");
+    assert!(
+        stderr.contains("Hint: remove or rename `dist/dan` and run `gitpm sync-dist` again"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("clone is gone"), "{stderr}");
     assert_eq!(f.dist("vendor/demo").as_deref(), Some("vendor 1"));
     // A plain file there behaves the same.
     fs::remove_file(dist.join("dan")).unwrap();
@@ -543,6 +562,32 @@ fn a_namespace_path_that_is_not_a_folder_blocks_nothing_else() {
     f.ok(&["disable", "vendor/demo"]);
     assert_eq!(f.dist("vendor/demo"), None);
     assert_eq!(fs::read_to_string(dist.join("dan")).unwrap(), "file");
+    let out = f.run(&["uninstall", "dan/demo", "--force"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(stderr.contains("Error kind: workspace"), "{stderr}");
+    assert_eq!(fs::read_to_string(dist.join("dan")).unwrap(), "file");
+    let out = f.run(&["sync-dist"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("Warning: dan/demo: dist not deployed (dist/dan is not a folder)"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("Error kind: not_deployed"), "{stderr}");
+    assert!(
+        stderr.contains("Hint: remove or rename `dist/dan` and run `gitpm sync-dist` again"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("clone is gone"), "{stderr}");
+    // Following the hint repairs deployment without dropping the package's record.
+    fs::rename(dist.join("dan"), dist.join("dan-blocked")).unwrap();
+    f.ok(&["sync-dist"]);
+    assert_eq!(f.dist("dan/demo").as_deref(), Some("fork"));
+    assert_eq!(
+        fs::read_to_string(dist.join("dan-blocked")).unwrap(),
+        "file"
+    );
 }
 
 #[test]
@@ -745,4 +790,235 @@ fn uninstall_refusal_of_a_reactivation_comes_before_the_prompt() {
     );
     assert!(!String::from_utf8_lossy(&out.stdout).contains("uninstalled"));
     assert!(f.root().join("packages/dan/demo/notes.txt").exists());
+}
+
+/// A release with a configurable output folder, either at root or inside a monorepo.
+fn output_release(f: &Fixture, folder: Option<&str>, mono: bool) -> PathBuf {
+    let repo = f.path("source");
+    let package = if mono {
+        repo.join("packages/demo")
+    } else {
+        repo.clone()
+    };
+    fs::create_dir_all(&package).unwrap();
+    let mut manifest = serde_json::json!({"id":"test/output", "version":"0.1.0",
+        "buildCommand":"touch BUILD_MUST_NOT_RUN", "buildRequired":true});
+    if let Some(folder) = folder {
+        manifest["dist"] = folder.into();
+    }
+    fs::write(package.join("plugin.json"), manifest.to_string()).unwrap();
+    let output = package.join(folder.unwrap_or("dist"));
+    fs::create_dir_all(output.join("nested")).unwrap();
+    fs::write(output.join("index.js"), "committed output").unwrap();
+    fs::write(output.join("nested/data"), "nested output").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(output.join("index.js"), fs::Permissions::from_mode(0o755)).unwrap();
+    if folder != Some(".") {
+        fs::write(package.join("outside"), "not deployed").unwrap();
+    }
+    if mono {
+        fs::write(repo.join("gitpm.json"), r#"{"packages":["packages/*"]}"#).unwrap();
+        fs::write(repo.join("sibling"), "not deployed").unwrap();
+    }
+    f.git(&repo, &["init"]);
+    f.git(&repo, &["add", "."]);
+    f.git(&repo, &["commit", "-m", "release"]);
+    f.git(&repo, &["tag", "test/output@0.1.0"]);
+    repo
+}
+
+#[test]
+fn declared_output_folders_install_redeploy_and_verify_catalog() {
+    for mono in [false, true] {
+        for folder in [None, Some("dist"), Some("."), Some("output/vtf")] {
+            let f = Fixture::new();
+            let repo = output_release(&f, folder, mono);
+            let source = repo.to_str().unwrap();
+            f.ok(&["install", source]);
+            assert_eq!(f.dist("test/output").as_deref(), Some("committed output"));
+            let deployed = f.root().join("dist/test/output");
+            assert_eq!(
+                fs::read_to_string(deployed.join("nested/data")).unwrap(),
+                "nested output"
+            );
+            use std::os::unix::fs::PermissionsExt;
+            assert_ne!(
+                fs::metadata(deployed.join("index.js"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o111,
+                0
+            );
+            assert!(!deployed.join("outside").exists());
+            assert!(!deployed.join("sibling").exists());
+            assert!(!deployed.join(".git").exists());
+            let state = f.state();
+            let clone = match state["packages"]["test/output"]["clone"].as_str() {
+                Some(key) => f.root().join("repos").join(key),
+                None => f.root().join("packages/test/output"),
+            };
+            let package = if mono {
+                clone.join("packages/demo")
+            } else {
+                clone
+            };
+            fs::write(
+                package.join(folder.unwrap_or("dist")).join("index.js"),
+                "dirty",
+            )
+            .unwrap();
+            f.ok(&["disable", "test/output"]);
+            f.ok(&["enable", "test/output"]);
+            assert_eq!(f.dist("test/output").as_deref(), Some("committed output"));
+            f.ok(&["uninstall", "test/output", "--force"]);
+            fs::write(f.path("sources.txt"), format!("{source}\n")).unwrap();
+            f.ok(&[
+                "catalog",
+                "update",
+                "--sources",
+                f.path("sources.txt").to_str().unwrap(),
+            ]);
+            let release: serde_json::Value = serde_json::from_slice(
+                &fs::read(f.path("catalog/namespaces/test/output/versions/0.1.0/release.json"))
+                    .unwrap(),
+            )
+            .unwrap();
+            assert!(release["files"].get("index.js").is_some());
+            assert!(release["files"].get("outside").is_none());
+            f.ok(&["install-catalog", "test/output"]);
+            assert_eq!(f.dist("test/output").as_deref(), Some("committed output"));
+            assert!(!repo.join("BUILD_MUST_NOT_RUN").exists());
+            assert!(!f.root().join("BUILD_MUST_NOT_RUN").exists());
+        }
+    }
+}
+
+#[test]
+fn declared_output_missing_required_build_is_actionable_and_atomic() {
+    for mono in [false, true] {
+        let f = Fixture::new();
+        let repo = output_release(&f, Some("output/vtf"), mono);
+        let package = if mono {
+            repo.join("packages/demo")
+        } else {
+            repo.clone()
+        };
+        fs::remove_dir_all(package.join("output")).unwrap();
+        f.git(&repo, &["add", "."]);
+        f.git(&repo, &["commit", "-m", "remove build output"]);
+        f.git(&repo, &["tag", "-f", "test/output@0.1.0"]);
+        let error = f.fails(&["install", repo.to_str().unwrap()]);
+        assert!(error.contains("invalid_manifest"), "{error}");
+        assert!(error.contains("output/vtf"), "{error}");
+        assert!(
+            error.contains("buildCommand: touch BUILD_MUST_NOT_RUN"),
+            "{error}"
+        );
+        assert!(!f.root().join("dist/test/output").exists());
+        assert!(!package.join("BUILD_MUST_NOT_RUN").exists());
+    }
+}
+
+#[test]
+fn declared_output_fork_preserves_build_metadata_without_running_it() {
+    let f = Fixture::new();
+    let repo = output_release(&f, Some("output/vtf"), false);
+    f.ok(&["install", repo.to_str().unwrap()]);
+    f.ok(&["fork", "test/output", "--ns", "mine", "--into", "fork"]);
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(f.path("fork/plugin.json")).unwrap()).unwrap();
+    assert_eq!(manifest["dist"], "output/vtf");
+    assert_eq!(manifest["buildRequired"], true);
+    assert_eq!(manifest["buildCommand"], "touch BUILD_MUST_NOT_RUN");
+    assert!(!f.path("fork/BUILD_MUST_NOT_RUN").exists());
+}
+
+#[test]
+fn declared_output_rejects_invalid_fields() {
+    for (key, value) in [
+        ("dist", serde_json::json!("../escape")),
+        ("dist", serde_json::json!("/absolute")),
+        ("dist", serde_json::json!("")),
+        ("dist", serde_json::json!("output\\escape")),
+        ("dist", serde_json::json!(42)),
+        ("dist", serde_json::Value::Null),
+        ("buildCommand", serde_json::Value::Null),
+        ("buildRequired", serde_json::json!("true")),
+        ("buildCommand", serde_json::json!(["build"])),
+    ] {
+        let f = Fixture::new();
+        let repo = output_release(&f, None, false);
+        let path = repo.join("plugin.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        manifest[key] = value;
+        fs::write(path, manifest.to_string()).unwrap();
+        f.git(&repo, &["add", "."]);
+        f.git(&repo, &["commit", "-m", "invalid manifest"]);
+        f.git(&repo, &["tag", "-f", "test/output@0.1.0"]);
+        let error = f.fails(&["install", repo.to_str().unwrap()]);
+        assert!(error.contains("invalid_manifest"), "{error}");
+    }
+}
+
+#[test]
+fn declared_output_update_error_names_package() {
+    for mono in [false, true] {
+        let f = Fixture::new();
+        let repo = output_release(&f, None, mono);
+        let package = if mono {
+            repo.join("packages/demo")
+        } else {
+            repo.clone()
+        };
+        f.ok(&["install", repo.to_str().unwrap()]);
+        let path = package.join("plugin.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        manifest["version"] = serde_json::json!("0.2.0");
+        manifest["dist"] = serde_json::json!("../escape");
+        fs::write(path, manifest.to_string()).unwrap();
+        f.git(&repo, &["add", "."]);
+        f.git(&repo, &["commit", "-m", "invalid output path"]);
+        f.git(&repo, &["tag", "test/output@0.2.0"]);
+        let error = f.fails(&["update", "test/output"]);
+        assert!(
+            error.contains("test/output: invalid manifest dist path"),
+            "monorepo={mono}: {error}"
+        );
+        assert_eq!(f.dist("test/output").as_deref(), Some("committed output"));
+    }
+}
+
+#[test]
+fn declared_output_update_and_rollback_use_each_commits_manifest() {
+    for mono in [false, true] {
+        let f = Fixture::new();
+        let repo = output_release(&f, Some("output/vtf"), mono);
+        let package = if mono {
+            repo.join("packages/demo")
+        } else {
+            repo.clone()
+        };
+        f.ok(&["install", repo.to_str().unwrap()]);
+        let path = package.join("plugin.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        manifest["dist"] = serde_json::json!("alternate");
+        fs::write(&path, manifest.to_string()).unwrap();
+        fs::create_dir_all(package.join("alternate")).unwrap();
+        fs::write(package.join("alternate/index.js"), "new output").unwrap();
+        f.ok(&["commit", repo.to_str().unwrap(), "0.2.0"]);
+        let rewritten: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(rewritten["dist"], "alternate");
+        assert_eq!(rewritten["buildCommand"], "touch BUILD_MUST_NOT_RUN");
+        assert_eq!(rewritten["buildRequired"], true);
+        f.ok(&["update", "test/output"]);
+        assert_eq!(f.dist("test/output").as_deref(), Some("new output"));
+        f.ok(&["rollback", "test/output"]);
+        assert_eq!(f.dist("test/output").as_deref(), Some("committed output"));
+        assert!(!package.join("BUILD_MUST_NOT_RUN").exists());
+    }
 }

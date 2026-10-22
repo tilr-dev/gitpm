@@ -27,7 +27,7 @@ mod version_tests {
     }
 }
 
-/// Text overview of a catalog, as printed by `gitpm info`.
+/// Text overview of a catalog, as printed by `gitpm catalog show`.
 pub mod catalog {
     use gitpm::catalog::{CatalogOverview, OVERVIEW_LIMIT, OverviewItem, PackageSummary, browse};
     use std::fmt::Write as _;
@@ -103,7 +103,7 @@ pub mod catalog {
         if overview.truncated {
             let _ = writeln!(
                 output,
-                "Overview limit: {OVERVIEW_LIMIT} entries. To browse one branch: gitpm --catalog <branch location> info"
+                "Overview limit: {OVERVIEW_LIMIT} entries. To browse one branch: gitpm --catalog <branch location> catalog show"
             );
         }
         output
