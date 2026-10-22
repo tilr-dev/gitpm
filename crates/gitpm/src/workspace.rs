@@ -614,7 +614,7 @@ pub(crate) fn export_folder(
     }
     Ok(())
 }
-/// Fill `target` with the package's `dist/` (package folder `package`, `None`: the
+/// Fill `target` with the package's declared output folder (package folder `package`, `None`: the
 /// root) at `commit` of `repo`, from Git objects (never the working tree). A revision
 /// without that folder is refused ([`Error::InvalidManifest`]), never deployed empty.
 /// Gitlinks become empty directories; returned warnings explain their missing contents.
@@ -625,20 +625,27 @@ pub(crate) fn export_dist(
     target: &Path,
     custom_ssh: bool,
 ) -> Result<Vec<String>> {
-    let folder = match package {
-        Some(path) => format!("{path}/dist"),
-        None => "dist".to_owned(),
+    let manifest_path = match package.filter(|p| !p.is_empty()) {
+        Some(path) => format!("{path}/plugin.json"),
+        None => "plugin.json".to_owned(),
     };
-    ensure!(
-        git(
-            repo,
-            &["cat-file", "-t", &format!("{commit}:{folder}")],
-            custom_ssh,
-        )
-        .is_ok_and(|kind| kind == "tree"),
-        InvalidManifest,
-        "release {commit} has no {folder}/ folder"
-    );
+    let manifest: Manifest = serde_json::from_str(&git(
+        repo,
+        &["show", &format!("{commit}:{manifest_path}")],
+        custom_ssh,
+    )?)
+    .map_err(|e| Error::invalid_manifest(format!("invalid {manifest_path}: {e}")))?;
+    manifest.validate_dist()?;
+    let folder = manifest.dist_path(package);
+    if !git(
+        repo,
+        &["cat-file", "-t", &format!("{commit}:{folder}")],
+        custom_ssh,
+    )
+    .is_ok_and(|kind| kind == "tree")
+    {
+        return Err(manifest.missing_dist(format!("release {commit} has no {folder}/ folder")));
+    }
     let mut warnings = Vec::new();
     let tree = format!("{commit}:{folder}");
     let entries = crate::transport::git_raw(repo, &["ls-tree", "-r", "-z", &tree], custom_ssh)?;

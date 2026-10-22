@@ -250,19 +250,22 @@ fn read_folder(
         .map_err(|e| (None, e))?;
     let id = Some(manifest.id.clone());
     valid_id(&manifest.id).map_err(|e| (id.clone(), e))?;
-    match entries.get(&format!("{folder}/dist")) {
+    manifest.validate_dist().map_err(|e| (id.clone(), e))?;
+    let output = manifest.dist_path(Some(folder));
+    match entries.get(&output) {
         Some((_, kind)) if kind == "tree" => {}
         Some(_) => {
             return Err((
                 id,
-                Error::Unsupported(format!("symlinks are not supported: {folder}/dist")),
+                Error::Unsupported(format!("symlinks are not supported: {output}")),
             ));
         }
         None => {
             return Err((
                 id,
-                Error::invalid_manifest(format!(
-                    "package {folder} must contain a ready dist/ directory"
+                manifest.missing_dist(format!(
+                    "package {folder} must contain a ready {}/ directory",
+                    manifest.dist_folder()
                 )),
             ));
         }
@@ -420,6 +423,7 @@ pub(crate) fn find_at_with_ssh(
         let manifest: Manifest =
             serde_json::from_str(&show(repo, commit, "plugin.json", custom_ssh)?)
                 .map_err(|e| Error::invalid_manifest(format!("invalid plugin.json: {e}")))?;
+        manifest.validate_dist()?;
         if let Some(id) = id {
             ensure!(
                 manifest.id == id,
@@ -521,6 +525,7 @@ pub fn packages_in(repo: &Path) -> Result<Option<Vec<Package>>> {
         let manifest: Manifest =
             serde_json::from_slice(&fs::read(repo.join(&path).join("plugin.json"))?)
                 .map_err(|e| Error::invalid_manifest(format!("invalid {path}/plugin.json: {e}")))?;
+        manifest.validate_dist()?;
         packages.push(Package { path, manifest });
     }
     Ok(Some(packages))

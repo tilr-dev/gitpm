@@ -1,0 +1,2 @@
+## Decisions
+Read the deployment folder from the manifest at the resolved commit. Resolve it relative to the package folder; accept dot for the root and reject absolute paths, parent traversal and platform-dependent separators. Keep all exports on Git objects, preserving current symlink and gitlink rules. Build commands are metadata only and are never executed. Missing output with buildRequired yields invalid_manifest with the declared buildCommand when present. Fork preserves these fields and uses the same validation.
