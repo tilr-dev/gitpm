@@ -45,8 +45,8 @@ REMOVED or RENAMED delta in that own change still requires authorization for
 existing requirements. Foreign changes require `edit` or `archive`; rewriting contents during an archive
 requires both. A rename followed by a modification in an own delta requires
 `modify` authorization for the original requirement name. Renaming a
-requirement is authorized only when its body is preserved. Removing only a
-requirement heading, so that its text falls under an existing requirement,
+requirement is authorized only when its body is preserved. Deleting or moving a
+requirement heading, so that its text falls under another existing requirement,
 requires `modify` for that requirement. An archive already in dev counts as a
 foreign change even when it carries the own change name. A new capability whose
 name equals another one after case folding and Unicode NFC normalization fails

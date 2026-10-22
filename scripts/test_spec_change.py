@@ -228,6 +228,15 @@ class AuthorizationFixtures(unittest.TestCase):
         self.assertIn('gitpm: specs/terminal — «Existing»: modify', checker.check(base, head, auth, 'gitpm'))
         self.assertEqual([], checker.check(base, head, auth + [grant('specs/terminal — «Existing»: modify')], 'gitpm'))
 
+    def test_heading_moved_below_scenario_needs_modify_for_absorbing_requirement(self):
+        moved = '\n#### Scenario: Moved behavior\n- **WHEN** called later\n- **THEN** it also works\n'
+        rest = 'The system SHALL also work.\n\n#### Scenario: Kept behavior\n- **WHEN** called last\n- **THEN** it still works\n'
+        base = {SPEC: ORIGINAL + '\n### Requirement: Moved\n' + rest.replace('work.\n', 'work.\n' + moved, 1)}
+        head = {SPEC: ORIGINAL + moved + '\n### Requirement: Moved\n' + rest}
+        auth = [ready(), grant('specs/terminal — «Moved»: modify')]
+        self.assertIn('gitpm: specs/terminal — «Existing»: modify', checker.check(base, head, auth, 'gitpm'))
+        self.assertEqual([], checker.check(base, head, auth + [grant('specs/terminal — «Existing»: modify')], 'gitpm'))
+
     def test_scope_own_change_is_parsed_only_inside_own(self):
         foreign = 'openspec/changes/by/tasks.md'
         scope = 'Ready\nSpec scope: own (ADDED; change add-spec-change-check per repo); spec-change by Dan: https://plan.example/c/1'
@@ -238,6 +247,7 @@ class AuthorizationFixtures(unittest.TestCase):
     def test_scope_with_change_outside_own_or_two_ids_fails_closed(self):
         for scope in ['own (ADDED; change add-check) and must not change foreign-change',
                       'own (change add-check, change other-check)',
+                      'own (change add-check) own (ADDED to terminal)',
                       'own (ADDED to terminal)',
                       'change add-check']:
             with self.subTest(scope=scope), self.assertRaises(checker.CheckError):

@@ -91,8 +91,8 @@ def changed_requirements(old, new):
                 if before[old_index].strip() and name in names_before and name != owner:
                     if name in names_after:
                         result.add((name, 'modify'))
-                    elif owner in names_before:
-                        # A removed heading must not hand its text to an existing requirement.
+                    if owner in names_before:
+                        # Text that moves under another existing requirement modifies that one too.
                         result.add((owner, 'modify'))
             continue
         for index in range(i, j):
