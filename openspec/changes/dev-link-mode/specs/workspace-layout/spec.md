@@ -12,11 +12,18 @@ State SHALL support explicit link records with canonical absolute package and in
 - **THEN** state keeps its last validated manifest snapshot until an explicit validated relink refreshes it
 
 ### Requirement: Link record format
-A link record SHALL hold `mode` as `{"link": {"packageRoot": PATH, "target": PATH}}`, plus `source` (when available), `enabled`, `version` (declared), `dependencies` and `metadata`. It MUST NOT hold `current`, `previous`, `clone`, `path`, `catalog`, `forkOf` or `replaces`.
+A link record SHALL hold `mode` as `{"link": {"packageRoot": PATH, "target": PATH}}`, optional validated `mode.link.discovery` provenance, plus `source` (when available), `enabled`, `version` (declared), `dependencies` and `metadata`. It MUST NOT hold `current`, `previous`, `clone`, `path`, `catalog`, `forkOf` or `replaces`.
 
 #### Scenario: Link record fields
 - **WHEN** a package is linked
 - **THEN** its record has `mode.link.packageRoot` and `mode.link.target` and no `current`, `previous` or `clone`
+
+### Requirement: Linked fork discovery preserves validated provenance
+A fork link SHALL record its validated `forkOf` snapshot as `mode.link.discovery.forkOf`, with the same field shapes and source validation as package-manifest. Check and update SHALL use this snapshot for original-upstream discovery until validated relink refreshes it, without rereading external manifest edits into state.
+
+#### Scenario: Fork manifest changed outside gitpm
+- **WHEN** the author changes or removes `forkOf` in the linked manifest after linking
+- **THEN** check still reports original-upstream availability from the recorded provenance; a validated relink may refresh it
 
 ### Requirement: Link records follow the workspace format policy
 Link record schema changes SHALL follow workspace-layout "State format versions": format 1 in place before the first public release; later bumps only under its release-milestone policy. No migration or compatibility reader SHALL be added. Foreign formats SHALL be refused with `unsupported` unchanged; README SHALL document workspace recreation.

@@ -40,7 +40,7 @@ The joint update solver SHALL keep each linked package's recorded version and de
 ## MODIFIED Requirements
 
 ### Requirement: update follows the recorded mode
-`update ID` without a target SHALL follow the package's recorded mode (links: "Linked packages report releases without automatic replacement"): release mode moves to the newest release, branch mode to the branch HEAD, and a pinned package SHALL stay unchanged with reason `pinned` (CLI: `ID pinned at V (REF)`). For managed packages, `--ref REF` and `--dev` SHALL move the package and record the new mode as at install (install-uninstall); `--release` SHALL return the managed package to release mode at the newest release.
+Managed `update ID` SHALL follow recorded mode: release moves to the newest release, branch to HEAD, pinned stays with reason `pinned` (CLI: `ID pinned at V (REF)`). For managed packages, `--ref REF` and `--dev` SHALL move and record mode as at install; `--release` SHALL return to the newest release. Links follow "Linked packages report releases without automatic replacement", including explicit targets.
 
 #### Scenario: Pinned package
 - **WHEN** `acme/greeter` was installed with `--ref acme/greeter@0.1.0`, 0.2.0 is released and the user runs `update acme/greeter`

@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Package folder contents
-A package SHALL be a folder in a Git repository (the repository root, or a folder listed by `gitpm.json`) containing its manifest `plugin.json` and a package output folder selected by `dist`; managed deployments read the committed folder and links expose the author folder (default package root). A revision without a manifest SHALL be refused with `invalid_manifest` naming the missing file. The refusal of a missing package dist and its messages are specified once, in dist ("A revision without dist is refused").
+A package SHALL be a Git repository root or a folder listed by `gitpm.json`, containing `plugin.json` and output selected by `dist` (default package root). Managed deployment reads committed output; link exposes the author folder. Missing manifests SHALL fail with `invalid_manifest` naming the file. Missing-output refusal and messages follow dist ("A revision without dist is refused").
 
 #### Scenario: Missing plugin.json
 - **WHEN** a release commit has no `plugin.json`

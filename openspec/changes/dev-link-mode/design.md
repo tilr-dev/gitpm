@@ -115,7 +115,12 @@ Link record format (decided here, as Dan delegated):
 
 The snippet is one package record, not a complete state document. Required:
 `mode.link.packageRoot`, `mode.link.target`, `enabled`, `version` (declared),
-`dependencies`, `metadata`; `source` when available. Absent: `current`,
+`dependencies`, `metadata`; `source` when available. For a fork, also record
+`mode.link.discovery.forkOf`: a validated snapshot using the existing manifest
+`forkOf` shape (`id`, `version`, `commit`, optional `source`) and validation.
+Use it for original-upstream discovery until a validated relink refreshes it;
+external manifest edits must not retarget discovery. This descriptor is provenance,
+not a managed replacement binding. Absent at the record top level: `current`,
 `previous`, `clone`, `path`, `catalog`, `forkOf`, `replaces`. The manifest identity/version/dependencies/metadata are a
 validated snapshot at link time; file content stays live. They do not silently
 change the dependency graph when the author edits the manifest. An explicit
