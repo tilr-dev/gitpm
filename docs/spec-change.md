@@ -12,8 +12,12 @@ python3 /trusted/gitpm/scripts/spec_change.py \
   --base origin/dev --head HEAD --branch task/TILR-123
 ```
 
-`--base` and `--head` identify commits. CI must use the current target dev commit
-and exact candidate SHA. Local merge automation must provide the same revisions.
+`--base` and `--head` identify commits. `--head` must be the merge result of the
+candidate into the current dev and `--base` that dev commit, not the branch tip:
+a branch that is behind dev would otherwise "remove" every requirement dev gained
+after it forked. CI uses GitHub's test merge `refs/pull/<n>/merge` (its first
+parent is dev, its second must be the exact candidate SHA). Local merge
+automation passes the dev commit and its uncommitted squash result the same way.
 Use `--comments-json /trusted/comments.json` for offline verification with an
 exported array of comment activity records. Never accept that file from a PR.
 
