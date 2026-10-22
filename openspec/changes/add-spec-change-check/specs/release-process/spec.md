@@ -99,3 +99,4 @@ Pull requests into dev SHALL pass the required spec-change check. One shared che
 #### Scenario: A new capability differs from an existing one only by letter case or Unicode form
 - **WHEN** a pull request adds a capability directory whose name equals an existing or another added capability after case folding and Unicode normalization
 - **THEN** the check fails with an error instead of treating it as a new capability
+- **AND** the same applies when a delta in the task's own change names a capability that differs from an existing one only by letter case or Unicode form

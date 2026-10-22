@@ -163,12 +163,19 @@ def delta_operations(body, existing):
         yield identities.get(name, name), operation
 
 
+def capability_key(name):
+    """Capability folders that differ only by case or Unicode form collide on checkout."""
+    return unicodedata.normalize('NFC', unicodedata.normalize('NFC', name).casefold())
+
+
+def capabilities(tree):
+    return {m[1] for path in tree if (m := re.match(r'openspec/specs/([^/]+)/', path))}
+
+
 def capability_collisions(base, head):
     """New capability folders may not differ from others only by case or Unicode form."""
-    def capabilities(tree):
-        return {m[1] for path in tree if (m := re.match(r'openspec/specs/([^/]+)/', path))}
     existing, current = capabilities(base), capabilities(head)
-    key = lambda name: unicodedata.normalize('NFC', unicodedata.normalize('NFC', name).casefold())
+    key = capability_key
     for name in sorted(current - existing):
         clash = sorted(other for other in existing | current if other != name and key(other) == key(name))
         if clash:
@@ -227,6 +234,10 @@ def check(base, head, comments, component):
         delta = re.fullmatch(r'specs/([^/]+)/spec\.md', suffix)
         if is_own and delta:
             capability = delta[1]
+            clash = sorted(other for other in capabilities(base)
+                           if other != capability and capability_key(other) == capability_key(capability))
+            if clash:
+                raise CheckError(f'Delta capability {capability} collides with {clash[0]} by case or Unicode form')
             baseline = base.get(f'openspec/specs/{capability}/spec.md', '')
             existing = {m[1] for line in baseline.splitlines() if (m := REQUIREMENT.fullmatch(line))}
             for name, operation in delta_operations(new, existing):

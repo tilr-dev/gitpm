@@ -237,6 +237,16 @@ class AuthorizationFixtures(unittest.TestCase):
         self.assertIn('gitpm: specs/terminal — «Existing»: modify', checker.check(base, head, auth, 'gitpm'))
         self.assertEqual([], checker.check(base, head, auth + [grant('specs/terminal — «Existing»: modify')], 'gitpm'))
 
+    def test_text_moved_between_surviving_requirements_needs_modify_for_both(self):
+        # Other's heading moves up, so Existing's scenario falls under Other while both survive.
+        base = {SPEC: ORIGINAL + '\n### Requirement: Other\nThe system SHALL do other work.\n'}
+        head = {SPEC: ORIGINAL.replace('#### Scenario', '### Requirement: Other\n#### Scenario')
+                + '\nThe system SHALL do other work.\n'}
+        self.assertEqual(['gitpm: specs/terminal — «Existing»: modify', 'gitpm: specs/terminal — «Other»: modify'],
+                         checker.check(base, head, [ready()], 'gitpm'))
+        self.assertEqual([], checker.check(base, head, [ready(), grant('specs/terminal — «Existing»: modify'),
+                                                        grant('specs/terminal — «Other»: modify')], 'gitpm'))
+
     def test_scope_own_change_is_parsed_only_inside_own(self):
         foreign = 'openspec/changes/by/tasks.md'
         scope = 'Ready\nSpec scope: own (ADDED; change add-spec-change-check per repo); spec-change by Dan: https://plan.example/c/1'
@@ -259,6 +269,18 @@ class AuthorizationFixtures(unittest.TestCase):
                          checker.check({path: 'old'}, {path: 'rewritten'}, [ready()], 'gitpm'))
         self.assertEqual([], checker.check({path: 'old'}, {path: 'rewritten'},
                                           [ready(), grant('changes/add-check: edit')], 'gitpm'))
+
+    def test_own_delta_capability_differing_by_case_or_unicode_form_fails_closed(self):
+        delta = '## MODIFIED Requirements\n### Requirement: Existing\nThe system SHALL change.\n'
+        cafe_nfc, cafe_nfd = 'caf\u00e9', 'cafe\u0301'
+        for existing, spelled in [('terminal', 'Terminal'), (cafe_nfc, cafe_nfd)]:
+            base = {f'openspec/specs/{existing}/spec.md': ORIGINAL}
+            head = {**base, f'openspec/changes/add-check/specs/{spelled}/spec.md': delta}
+            with self.subTest(spelled=spelled), self.assertRaises(checker.CheckError):
+                checker.check(base, head, [ready()], 'gitpm')
+        base = {SPEC: ORIGINAL}
+        self.assertEqual(['gitpm: specs/terminal — «Existing»: modify (delta add-check)'], checker.check(
+            base, {**base, 'openspec/changes/add-check/specs/terminal/spec.md': delta}, [ready()], 'gitpm'))
 
     def test_capability_colliding_by_case_or_unicode_form_fails_closed(self):
         new_spec = '## Requirements\n\n### Requirement: New\nThe system SHALL add behavior.\n'

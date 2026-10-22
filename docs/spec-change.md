@@ -50,7 +50,8 @@ requirement heading, so that its text falls under another existing requirement,
 requires `modify` for that requirement. An archive already in dev counts as a
 foreign change even when it carries the own change name. A new capability whose
 name equals another one after case folding and Unicode NFC normalization fails
-closed. Changes outside a recognized specification/change layout fail closed.
+closed, and so does an own-change delta whose capability matches an existing one
+only after that normalization. Changes outside a recognized specification/change layout fail closed.
 
 Run the deterministic fixture, real Git diff/CLI and mocked MCP contract tests:
 
