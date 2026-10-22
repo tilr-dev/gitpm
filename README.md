@@ -301,8 +301,8 @@ acme/hello updated 0.1.1 → 0.2.0 (major)
 ```
 
 `gitpm fork ID --ns NAMESPACE --into DIR` clones the recorded source of an installed
-package with Git history at its installed revision into `DIR` under the ID
-`NAMESPACE/<same name>`: only the namespace changes, so the original and the fork can be installed side by
+package with Git history at its installed revision into `DIR`. All packages in that
+repository receive IDs `NAMESPACE/<same name>`: only the namespace changes, so the original and the fork can be installed side by
 side. `DIR` must be a new folder; it is never derived from the ID. The output lists the next steps (commit and
 tag, install, replace):
 
@@ -430,8 +430,8 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   config (or provide both author and committer identity environment variables).
 - `fork` clones the recorded source at installed revisions and keeps submodule links.
   Local installation edits are excluded. An existing `--into` repository now fails
-  with `invalid_argument` (exit 1, previously success with exit 0). Fork the selected
-  packages together into a new folder instead. Fork now needs access to the recorded
+  with `invalid_argument` (exit 1, previously success with exit 0). Fork the entire
+  repository into a new folder instead. Fork now needs access to the recorded
   source. A relative or remote-helper recorded source is refused with `invalid_argument`
   (exit 1, previously success with exit 0 without `forkOf.source`).
 - `auth::check` now takes `&Options`; the separate `AuthOptions` was removed.
@@ -1033,27 +1033,28 @@ packages/theme/dist/…
   when the user has none. `gitpm commit REPO VERSION --package ID` releases one
   package: like for a root package it stages ALL changes of the repository (not only
   that folder), commits and tags `ID@VERSION`.
-- `gitpm fork ID [ID...] --ns NAMESPACE --into DIR` forks installed packages of one
-  repository into the fork repository `DIR`; each gets the ID `NAMESPACE/<same name>`.
-  One package is the one-package case of the same command. All IDs must be installed
+- `gitpm fork ID [ID...] --ns NAMESPACE --into DIR` forks the entire source
+  repository into `DIR`; every package gets the ID `NAMESPACE/<same name>`, including
+  packages that are not installed. The IDs identify the source, never a subset of
+  packages. All input IDs must be installed
   from the same repository (otherwise the error lists each ID with its source).
   - `DIR` must be a new folder outside the workspace, without `..`, and outside
     the source repository. Existing destinations are refused. A failed fork leaves no
-    folder behind, including parents it created. To include more packages, fork them
-    together into a new folder.
+    folder behind, including parents it created.
   - Git clones the source recorded in the installation metadata with its history,
     using the original source as `upstream`. The new attached `fork` branch starts at
-    the newest installed revision (the others must be its ancestors); each selected
-    package's folder comes from its installed revision. Local commits and edits of
-    the installed clone are ignored and left unchanged. Unforked sibling folders are
-    removed and `gitpm.json` lists exactly the selected folders. One commit records
+    the newest installed revision of packages from that source (the others must be
+    its ancestors); each installed package's folder comes from its recorded revision.
+    Other packages come from the starting revision. Local commits and edits of
+    the installed clone are ignored and left unchanged. All sibling packages and
+    other repository files are retained; `gitpm.json` preserves the original layout. One commit records
     the new IDs and metadata; user hooks are not run for this initial commit.
     A root package stays at the repository root.
   - Submodules remain Git links at their recorded commits with `.gitmodules`
     configuration. Run `git -C DIR submodule update --init` to populate them.
     Installation still deploys committed package `dist/`; fork does not build sources
     or enable dev mode.
-  - Dependencies on packages forked together are rewritten to their fork IDs. The
+  - Dependencies between all packages in the repository are rewritten to their fork IDs. The
     requirement is kept when satisfied by the fork's version (or `--version V`), else
     it becomes `^V`; each rewrite is printed. Dependencies on other packages keep
     their original IDs. Depending on both an original and its fork is refused.
@@ -1061,7 +1062,8 @@ packages/theme/dist/…
     `version` set in each manifest when `--version` is given) and one tag
     `NAMESPACE/NAME@VERSION` per package, then each package is installed (dependencies
     first; a dependency cycle between the forked packages is refused before anything is
-    created) and replaces its original. Release metadata is checked strictly
+    created) and replaces its original when that original is installed. Uninstalled
+    siblings are installed without creating a replacement binding. Release metadata is checked strictly
     (`invalid_manifest` for a wrong type). A failed release commit restores the
     manifests and index; release tags are created all or none. If the release fails,
     nothing is installed. A
@@ -1073,7 +1075,7 @@ packages/theme/dist/…
 $ gitpm fork tilr/theme tilr/panel --ns me --into forks/me-packages
 Fork created: /…/forks/me-packages
 Git history is cloned from the recorded source; the original repository is the upstream remote.
-Only the forked packages are left in the tree and in gitpm.json.
+All repository packages are forked; the complete tree and gitpm.json are preserved.
 me/theme forked from tilr/theme (packages/theme)
 me/panel forked from tilr/panel (packages/panel)
 Dependency: me/panel now depends on me/theme ^1.0 (was tilr/theme)
@@ -1520,7 +1522,7 @@ download(source, target, package), downloadFromCatalog,
 update(id, target: `Target`, `.recorded` follows the recorded mode), updateAllPlan,
 updateAll (`UpdateAllPlan` with `unchanged`, each with its `reason`, and `dist`), rollback, enable(force), disable(force),
 forget(force), restore, uninstallPlan, uninstall(confirmed, force), fork
-(one package; `ForkResult`), forkAndReplace(version, confirm; returns a
+(one source ID, whole repository; `ForkResult`), forkAndReplace(version, confirm; returns a
 `ForkReplacement`: a failure after the fork exists is reported in `failedStep` (the
 `ForkStep` enum: release, install, replace), `errorKind`, `errorMessage`, and a
 replacement that needs confirmation in `pending`), forkPackages

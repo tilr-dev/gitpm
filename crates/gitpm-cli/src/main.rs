@@ -541,7 +541,9 @@ fn print_package_fork(fork: &gitpm::PackageFork) {
         "Git history is cloned from the recorded source; the original repository is the upstream remote."
     );
     if !root {
-        println!("Only the forked packages are left in the tree and in gitpm.json.");
+        println!(
+            "All repository packages are forked; the complete tree and gitpm.json are preserved."
+        );
     }
     for package in &fork.packages {
         println!(

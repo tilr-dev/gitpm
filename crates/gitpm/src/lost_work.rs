@@ -425,6 +425,35 @@ pub(crate) fn refusal(id: &str, items: Vec<LostWork>) -> Error {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn changed_paths_sees_untracked_files_whatever_the_status_config_says() {
+        use crate::test_support::{TempDir, git as fixture_git};
+        let dir = TempDir::new("dirty");
+        let repo = dir.join("repo");
+        fs::create_dir_all(repo.join("packages/a")).unwrap();
+        fixture_git(&repo, &["init", "-q", "-b", "main"]);
+        fs::write(repo.join("packages/a/plugin.json"), "{}").unwrap();
+        fixture_git(&repo, &["add", "--all"]);
+        fixture_git(&repo, &["commit", "-q", "-m", "first"]);
+        // A setting of the user's that hides untracked files from a plain status.
+        fixture_git(&repo, &["config", "status.showUntrackedFiles", "no"]);
+        fs::write(repo.join("gitpm.json"), "{}").unwrap();
+        fs::write(repo.join("packages/a/new.js"), "x").unwrap();
+        fs::write(repo.join("packages/a/plugin.json"), "{ }").unwrap();
+        assert_eq!(
+            fixture_git(&repo, &["status", "--porcelain"]),
+            "M packages/a/plugin.json"
+        );
+        let paths = ["gitpm.json", "packages/a"];
+        let mut found = changed_paths(&repo, &paths, false).unwrap();
+        found.sort();
+        assert_eq!(
+            found,
+            ["gitpm.json", "packages/a/new.js", "packages/a/plugin.json"]
+        );
+        assert!(changed_paths(&repo, &["other"], false).unwrap().is_empty());
+    }
+
     use super::*;
     use crate::test_support::{Author, TempDir, git as fixture_git};
     use std::{fs, path::PathBuf};

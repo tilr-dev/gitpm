@@ -286,7 +286,13 @@ fn wrong_typed_metadata_is_ignored_when_installing_and_refused_when_authoring() 
     f.ok(&["fork", "tilr/store", "--ns", "me", "--into", "forks/store"]);
     let fork = f.dir.join("forks/store");
     assert_eq!(f.json(&fork.join("packages/store/plugin.json"))["tags"], 7);
-    let error = f.fails(&["commit", fork.to_str().unwrap(), "2.0.0"]);
+    let error = f.fails(&[
+        "commit",
+        fork.to_str().unwrap(),
+        "2.0.0",
+        "--package",
+        "me/store",
+    ]);
     assert!(
         error.contains("invalid plugin.json: tags must be an array of strings")
             && error.contains("Error kind: invalid_manifest"),

@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Fork copies an installed package
-`fork ID [ID...] --ns NAMESPACE --into DIR` SHALL Git-clone the recorded installation source with history at installed revisions, into a new repository with IDs `NAMESPACE/<same name>`. It SHALL leave the installation unchanged, set the source as `upstream`, accept only installed IDs, and exclude local installation work.
+`fork ID [ID...] --ns NAMESPACE --into DIR` SHALL Git-clone the recorded installation source with history at installed revisions, into a new repository with every package renamed to `NAMESPACE/<same name>`. It SHALL leave the installation unchanged, set the source as `upstream`, accept only installed IDs, and exclude local installation work.
 
 #### Scenario: Fork one package
 - **WHEN** the user runs `gitpm fork acme/hello --ns me --into hello-fork`
@@ -27,7 +27,7 @@
 - **THEN** the fork fails with `invalid_argument` ("fork destination must be outside the managed workspace") and nothing is created
 
 ### Requirement: Fork metadata
-The fork manifest SHALL get `forkOf` `{id, version, commit, source}` and `replaces` `{id, version}` from the installed revision of the cloned source; `source` SHALL be the recorded source. Metadata and unknown keys SHALL be kept. HEAD SHALL be attached to a new branch `fork` (`fork-2`, … when taken).
+The fork manifest SHALL get `forkOf` `{id, version, commit, source}` and `replaces` `{id, version}` from its revision of the cloned source (the installed revision for installed packages from that source, the starting revision for other packages); `source` SHALL be the recorded source. Metadata and unknown keys SHALL be kept. HEAD SHALL be attached to a new branch `fork` (`fork-2`, … when taken).
 
 #### Scenario: Fork manifest
 - **WHEN** `acme/hello` 1.0.0, installed from `https://git.example/acme/hello.git`, is forked into namespace `me`
@@ -38,18 +38,22 @@ The fork manifest SHALL get `forkOf` `{id, version, commit, source}` and `replac
 ## ADDED Requirements
 
 ### Requirement: Fork preserves source submodules
-A fork SHALL preserve submodules outside dist as Git links at their recorded commits with the corresponding `.gitmodules` configuration, including when a selected package comes from an older installed revision. The user SHALL be able to populate them with `git submodule update --init`; package files SHALL NOT be exported through archive.
+A fork SHALL preserve submodules outside dist as Git links at their recorded commits with the corresponding `.gitmodules` configuration, including when a requested package comes from an older installed revision. The user SHALL be able to populate them with `git submodule update --init`; package files SHALL NOT be exported through archive.
 
 #### Scenario: Source submodule
 - **WHEN** an installed package's recorded source has a submodule outside dist
 - **THEN** its fork retains the gitlink and configuration and initializing it checks out the recorded submodule commit
 
 ### Requirement: Fork installs committed dist
-Forking SHALL keep the existing installation model: install the fork's committed package dist without automatically building sources or enabling dev mode.
+Forking SHALL keep the existing installation model: install the fork's committed package dist without automatically building sources or enabling dev mode. With `--replace`, every forked package SHALL be released and installed; a replacement binding SHALL be created only for originals that are installed.
 
 #### Scenario: Install a fork with dist
 - **WHEN** a package has source files and committed dist and the user forks it with `--replace`
 - **THEN** the fork contains the source tree and only its committed dist is deployed under the fork ID
+
+#### Scenario: Replace a repository with an uninstalled sibling
+- **WHEN** only one original package is installed and its repository has another package, and the user forks with `--replace`
+- **THEN** both fork packages are released and installed, only the installed original gets a replacement binding, and no `not_installed` error is reported
 
 ### Requirement: Fork isolates source and destination state
 Fork SHALL exclude local installation work and use only the recorded source at installed revisions. It SHALL reject unsupported recorded sources and existing destinations without changing the installation or an existing destination.

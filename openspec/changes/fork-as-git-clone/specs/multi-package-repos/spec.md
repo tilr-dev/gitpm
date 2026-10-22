@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Forking packages of one repository
-`fork ID [ID...]` SHALL accept only packages installed from one recorded source, else `invalid_argument` listing IDs and sources. It SHALL start at their newest installed revision, restore each selected folder at its installed revision, remove unforked package folders, and list exactly selected folders in `gitpm.json`. One commit `Fork A, B as me/A, me/B` SHALL record the result without user hooks. A root package SHALL remain at the root.
+`fork ID [ID...]` SHALL accept only packages installed from one recorded source, else `invalid_argument` listing IDs and sources. It SHALL start at the newest installed revision of all packages from that source, restore every installed package folder from that source at its installed revision, include every package listed by the repository, and preserve all other repository files and the package layout. Uninstalled packages SHALL come from the newest installed revision of packages from that source. Every package SHALL receive a new namespace, `forkOf` and `replaces`, including uninstalled siblings at the starting revision; no package subset SHALL be selected. One commit `Fork A, B as me/A, me/B` SHALL record the result without user hooks. A root package SHALL remain at the root.
 
 #### Scenario: Revisions on diverged histories
 - **WHEN** the installed revisions of the forked packages are not ancestors of the newest one
@@ -12,12 +12,12 @@
 - **THEN** its folder and submodule entries come from that revision in the cloned source
 
 #### Scenario: Partial fork
-- **WHEN** the user forks `tilr/theme tilr/panel` of a three-package repository
-- **THEN** the fork contains only `packages/theme` and `packages/panel` and prints `Only the forked packages are left in the tree and in gitpm.json.`
-- **AND** this is covered by `fork_of_two_packages_keeps_exactly_those_and_rewrites_their_dependency` and `packages_forked_together_must_come_from_one_repository`
+- **WHEN** the user forks only installed `tilr/theme` of a three-package repository, where its sibling packages are not installed
+- **THEN** all three packages are retained and renamed into the new namespace, their internal dependencies are rewritten, and repository files and `gitpm.json` are preserved
+- **AND** this is covered by `fork_ids_select_the_repository_and_rewrite_all_package_dependencies` and `packages_forked_together_must_come_from_one_repository`
 
 ### Requirement: Dependencies between forks are rewritten
-Only a dependency on a package forked in the same command SHALL be rewritten to its fork; the requirement SHALL be kept when the fork's version satisfies it, else become `^V`, and each rewrite SHALL be printed. A manifest depending on both an original and its fork SHALL be refused with `invalid_manifest`.
+Every dependency between packages of the source repository SHALL be rewritten to its fork; the requirement SHALL be kept when the fork's version satisfies it, else become `^V`, and each rewrite SHALL be printed. A manifest depending on both an original and its fork SHALL be refused with `invalid_manifest`.
 
 #### Scenario: Dependency cycle between forks
 - **WHEN** packages forked together with `--replace` depend on each other in a cycle
@@ -36,4 +36,4 @@ Only a dependency on a package forked in the same command SHALL be rewritten to 
 
 ### Requirement: Adding packages to an existing fork
 **Reason**: A fork is a clone of one recorded source into a new repository; adding exported folders loses Git structure.
-**Migration**: Fork the required packages together into a new folder.
+**Migration**: Fork the entire source repository into a new folder.
