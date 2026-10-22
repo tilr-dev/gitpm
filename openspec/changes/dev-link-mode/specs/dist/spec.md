@@ -21,4 +21,3 @@ Enable, disable, replacement, forget, restore, uninstall and reconciliation SHAL
 #### Scenario: Author moves the target away
 - **WHEN** a recorded linked folder no longer exists and reconciliation runs for another package
 - **THEN** the report identifies the unavailable linked package and its link mode, and no clone or build output is created for it
-
