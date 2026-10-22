@@ -179,7 +179,8 @@ def check(base, head, comments, component):
                 source = f'openspec/changes/{change}/{suffix}'
                 targets = [p for p in head.keys() - base.keys() if re.fullmatch(
                     r'openspec/changes/archive/\d{4}-\d{2}-\d{2}-' + re.escape(change + '/' + suffix), p)]
-                if any(source not in base or head[p] != base[source] for p in targets):
+                source_edited = source in head and head[source] != base.get(source, '')
+                if source_edited or any(source not in base or head[p] != base[source] for p in targets):
                     if ('change', change, 'edit') not in allowed:
                         uncovered.add(f'{component}: changes/{change}: edit')
         delta = re.fullmatch(r'specs/([^/]+)/spec\.md', suffix)

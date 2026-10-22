@@ -59,3 +59,7 @@ Pull requests into dev SHALL pass the required spec-change check. One shared che
 - **WHEN** a pull request adds a sentence, scenario, or scenario step inside a requirement already present in dev
 - **THEN** matching modify authorization for that existing requirement is required
 - **AND** adding a separate new requirement remains allowed without authorization
+
+#### Scenario: An active foreign change is edited while copied to archive
+- **WHEN** a foreign change is copied unchanged to archive while its active source is modified
+- **THEN** both archive and edit authorization are required for that change

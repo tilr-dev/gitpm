@@ -115,6 +115,16 @@ class AuthorizationFixtures(unittest.TestCase):
         self.assertEqual([], checker.check(base, {target: 'rewritten'},
                                           auth + [grant('changes/foreign: edit')], 'gitpm'))
 
+    def test_foreign_archive_with_modified_surviving_source_needs_edit(self):
+        source = 'openspec/changes/foreign/tasks.md'
+        target = 'openspec/changes/archive/2026-10-22-foreign/tasks.md'
+        base = {source: 'original'}
+        head = {source: 'rewritten', target: 'original'}
+        auth = [ready(), grant('changes/foreign: archive')]
+        self.assertEqual(['gitpm: changes/foreign: edit'], checker.check(base, head, auth, 'gitpm'))
+        self.assertEqual([], checker.check(base, head, auth + [grant('changes/foreign: edit')], 'gitpm'))
+        self.assertEqual([], checker.check(base, {source: 'original', target: 'original'}, auth, 'gitpm'))
+
     def test_foreign_archive_new_file_requires_edit_as_well(self):
         source = 'openspec/changes/foreign/tasks.md'
         target = 'openspec/changes/archive/2026-10-22-foreign/tasks.md'
