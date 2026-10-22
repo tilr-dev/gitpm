@@ -39,7 +39,9 @@ spec-change:
 Changing an existing line requires a matching operation. Adding a requirement or
 editing the own change declared in intake scope needs no block. A MODIFIED,
 REMOVED or RENAMED delta in that own change still requires authorization for
-existing requirements. Foreign changes require `edit` or `archive`; renaming a
+existing requirements. Foreign changes require `edit` or `archive`; rewriting contents during an archive
+requires both. A rename followed by a modification in an own delta requires
+`modify` authorization for the original requirement name. Renaming a
 requirement is authorized only when its body is preserved. Changes outside a
 recognized specification/change layout fail closed.
 

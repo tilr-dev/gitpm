@@ -69,6 +69,31 @@ class AuthorizationFixtures(unittest.TestCase):
         self.assertTrue(checker.check(base, head, [ready()], 'gitpm'))
         self.assertEqual([], checker.check(base, head, [ready(), grant('specs/terminal — «Existing»: modify')], 'gitpm'))
 
+    def test_renamed_modified_delta_requires_original_requirement_modify(self):
+        path = 'openspec/changes/add-check/specs/terminal/spec.md'
+        delta = ('## RENAMED Requirements\n'
+                 '- FROM: `### Requirement: Existing`\n'
+                 '- TO: `### Requirement: Renamed`\n'
+                 '## MODIFIED Requirements\n'
+                 '### Requirement: Renamed\nThe system SHALL change.\n')
+        base = {SPEC: ORIGINAL}
+        auth = [ready(), grant('specs/terminal — «Existing»: rename')]
+        self.assertEqual(['gitpm: specs/terminal — «Existing»: modify (delta add-check)'],
+                         checker.check(base, {**base, path: delta}, auth, 'gitpm'))
+        self.assertEqual([], checker.check(base, {**base, path: delta},
+                                          auth + [grant('specs/terminal — «Existing»: modify')], 'gitpm'))
+
+    def test_foreign_archive_rewrite_requires_edit_as_well(self):
+        source = 'openspec/changes/foreign/tasks.md'
+        target = 'openspec/changes/archive/2026-10-22-foreign/tasks.md'
+        base = {source: 'original'}
+        auth = [ready(), grant('changes/foreign: archive')]
+        self.assertEqual([], checker.check(base, {target: 'original'}, auth, 'gitpm'))
+        self.assertEqual(['gitpm: changes/foreign: edit'],
+                         checker.check(base, {target: 'rewritten'}, auth, 'gitpm'))
+        self.assertEqual([], checker.check(base, {target: 'rewritten'},
+                                          auth + [grant('changes/foreign: edit')], 'gitpm'))
+
     def test_own_archive_is_allowed(self):
         source = 'openspec/changes/add-check/tasks.md'
         target = 'openspec/changes/archive/2026-10-21-add-check/tasks.md'
