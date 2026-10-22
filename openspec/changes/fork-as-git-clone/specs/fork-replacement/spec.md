@@ -73,3 +73,9 @@ Fork SHALL exclude local installation work and use only the recorded source at i
 #### Scenario: Existing destination
 - **WHEN** `--into` names an existing directory, including an existing multi-package fork
 - **THEN** the command fails with `invalid_argument` and leaves it unchanged
+
+#### Scenario: Repository starting revision
+- **WHEN** one or more IDs identify a source with packages installed at different revisions
+- **THEN** the fork starts at the newest installed revision of all packages from that source, restores every installed package folder at its recorded revision, and keeps uninstalled packages at the starting revision
+- **AND** one commit `Fork A, B as me/A, me/B` records all renamed packages without running user hooks
+

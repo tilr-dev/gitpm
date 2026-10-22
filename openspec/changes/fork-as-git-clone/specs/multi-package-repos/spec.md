@@ -3,11 +3,6 @@
 ### Requirement: Forking packages of one repository
 `fork ID [ID...]` SHALL accept only installed IDs from one recorded source, else `invalid_argument` listing IDs and sources. It SHALL clone the whole repository, retain all files and the package layout, and rename every package into the new namespace with `forkOf` and `replaces`. Dependencies between repository packages SHALL be rewritten. A root package SHALL stay at the root; no package subset SHALL be selected.
 
-#### Scenario: Repository starting revision
-- **WHEN** one or more IDs identify a source with packages installed at different revisions
-- **THEN** the fork starts at the newest installed revision of all packages from that source, restores every installed package folder at its recorded revision, and keeps uninstalled packages at the starting revision
-- **AND** one commit `Fork A, B as me/A, me/B` records all renamed packages without running user hooks
-
 #### Scenario: Revisions on diverged histories
 - **WHEN** the installed revisions of the forked packages are not ancestors of the newest one
 - **THEN** the fork fails with `invalid_argument` ("… on diverged histories …") and creates nothing
