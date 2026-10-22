@@ -55,6 +55,10 @@ Forking SHALL keep the existing installation model: install the fork's committed
 - **WHEN** only one original package is installed and its repository has another package, and the user forks with `--replace`
 - **THEN** both fork packages are released and installed, only the installed original gets a replacement binding, and no `not_installed` error is reported
 
+#### Scenario: Single-ID replacement API
+- **WHEN** a host calls `fork_replace` or FFI `forkAndReplace` with one installed ID from a multi-package repository
+- **THEN** it receives `PackageForkReplacement` with every package outcome, including sibling errors and pending confirmations
+
 ### Requirement: Fork isolates source and destination state
 Fork SHALL exclude local installation work and use only the recorded source at installed revisions. It SHALL reject unsupported recorded sources and existing destinations without changing the installation or an existing destination.
 

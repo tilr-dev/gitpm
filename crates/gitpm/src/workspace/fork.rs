@@ -225,10 +225,9 @@ impl Manager {
     ) -> Result<PathBuf> {
         Ok(self.fork_packages(&[id], destination, namespace)?.path)
     }
-    /// [`Manager::fork_packages_replace`] with one ID: fork, release the fork right away
-    /// (tag `NAMESPACE/NAME@VERSION`; `version` defaults to the forked version, local
-    /// source manifests are committed with it), install it and make it the provider
-    /// of `id` for every consumer ([`Manager::replace`] with `confirm`).
+    /// [`Manager::fork_packages_replace`] with one source ID. The entire repository
+    /// is forked, released and installed. Return every package outcome, including
+    /// sibling failures and replacement confirmations.
     pub fn fork_replace(
         &self,
         id: &str,
@@ -236,15 +235,8 @@ impl Manager {
         namespace: &str,
         version: Option<&str>,
         confirm: bool,
-    ) -> Result<ForkReplacement> {
-        let mut done =
-            self.fork_packages_replace(&[id], destination, namespace, version, confirm)?;
-        let index = done
-            .packages
-            .iter()
-            .position(|p| p.original == id)
-            .expect("the requested package is included in its repository fork");
-        Ok(done.packages.remove(index))
+    ) -> Result<PackageForkReplacement> {
+        self.fork_packages_replace(&[id], destination, namespace, version, confirm)
     }
 
     /// Fork installed packages of one repository into `namespace` (new IDs
@@ -552,10 +544,10 @@ impl Manager {
             let clone = &destination;
             let mut sources = Vec::new();
             let mut new_ids: BTreeSet<String> = BTreeSet::new();
-            for (id, p) in &installed {
+            let mut qualify = |id: &str| -> Result<String> {
                 let new_id = identity::qualified(namespace, id.rsplit('/').next().unwrap())?;
                 ensure!(
-                    new_id != *id,
+                    new_id != id,
                     InvalidArgument,
                     "fork needs a different namespace; pass another namespace"
                 );
@@ -575,6 +567,10 @@ impl Manager {
                     InvalidArgument,
                     "fork ID {new_id} differs only in letter case from an installed package"
                 );
+                Ok(new_id)
+            };
+            for (id, p) in &installed {
+                let new_id = qualify(id)?;
                 let commit = p.current.commit.clone();
                 if git(
                     clone,
@@ -608,28 +604,7 @@ impl Manager {
                 if sources.iter().any(|s| &s.original == id) {
                     continue;
                 }
-                let new_id = identity::qualified(namespace, id.rsplit('/').next().unwrap())?;
-                ensure!(
-                    new_id != *id,
-                    InvalidArgument,
-                    "fork needs a different namespace; pass another namespace"
-                );
-                ensure!(
-                    !new_ids.iter().any(|other| ids_collide(other, &new_id))
-                        && new_ids.insert(new_id.clone()),
-                    InvalidArgument,
-                    "two packages would get the same fork ID {new_id}"
-                );
-                ensure!(
-                    !ids_collide(&new_id, id)
-                        && !state
-                            .packages
-                            .keys()
-                            .chain(state.forgotten.keys())
-                            .any(|other| ids_collide(other, &new_id)),
-                    InvalidArgument,
-                    "fork ID {new_id} differs only in letter case from an installed package"
-                );
+                let new_id = qualify(id)?;
                 sources.push(Source {
                     original: id.clone(),
                     original_source: first_installed.source.clone(),

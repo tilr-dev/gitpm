@@ -1637,9 +1637,9 @@ impl PackageManager {
     ) -> Result<ReplacementPlan> {
         Ok(self.inner.switch_back(&original, confirm, force)?.into())
     }
-    /// Fork an installed package as `namespace/<same name>` into the fork repository
-    /// `destination` (outside the workspace): a new folder, or an existing repository with
-    /// `gitpm.json` to add it to. The one-package case of `forkPackages`.
+    /// Fork the entire source repository of an installed package into a new folder
+    /// `destination` outside the workspace. Every package receives a new namespace;
+    /// all repository files and the package layout are preserved.
     pub fn fork(&self, id: String, destination: String, namespace: String) -> Result<ForkResult> {
         let path =
             self.inner
@@ -1650,9 +1650,9 @@ impl PackageManager {
             path: path.to_string_lossy().into_owned(),
         })
     }
-    /// Fork, release the fork (`version` defaults to the forked one), install it and
-    /// replace `id` with it for every consumer (`confirm` as in `replace`). Errors before
-    /// the fork folder exists are thrown; later failures are reported in the result.
+    /// Fork, release and install every package of the repository; replace installed
+    /// originals (`confirm` as in `replace`). Return every package outcome, including
+    /// sibling failures and pending confirmations.
     #[uniffi::method(default(version = None, confirm = false))]
     pub fn fork_and_replace(
         &self,
@@ -1661,7 +1661,7 @@ impl PackageManager {
         namespace: String,
         version: Option<String>,
         confirm: bool,
-    ) -> Result<ForkReplacement> {
+    ) -> Result<PackageForkReplacement> {
         Ok(self
             .inner
             .fork_replace(
@@ -1673,10 +1673,9 @@ impl PackageManager {
             )?
             .into())
     }
-    /// Fork installed packages of one repository into `namespace` as the fork repository
-    /// `destination`: a new folder (a copy of the source with the unforked siblings
-    /// removed), or an existing repository with `gitpm.json` to add them to; anything
-    /// else is refused. Dependencies between the forks are rewritten.
+    /// Fork the entire repository identified by installed IDs into a new folder
+    /// `destination`. Rename all packages into `namespace`, preserve repository files
+    /// and layout, and rewrite dependencies between packages in the repository.
     pub fn fork_packages(
         &self,
         ids: Vec<String>,

@@ -811,7 +811,8 @@ Workspace (installed packages):",
                                    NS/<same name> into the fork repository DIR: a new
                                    folder clones the recorded source with Git history
                                    at installed revisions; local installation edits are
-                                   ignored and unforked sibling packages removed.
+                                   ignored. All repository packages are renamed;
+                                   all files and the package layout are retained.
                                    Existing destinations are refused. Dependencies
                                    between packages forked together are rewritten
     [--replace [--version V] [--force]]  then release each fork (tag NS/NAME@V, V defaults

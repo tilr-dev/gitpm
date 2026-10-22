@@ -14,4 +14,4 @@
 - [x] Expand fork discovery to all packages and update CLI/README.
 - [x] Cover uninstalled siblings and whole-repository dependency rewriting.
 - [x] Remove obsolete existing-fork specification clauses and test-only fork helpers.
-- [ ] Review the updated implementation and validate.
+- [x] Review the updated implementation and validate.

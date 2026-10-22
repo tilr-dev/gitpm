@@ -432,7 +432,9 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   Local installation edits are excluded. An existing `--into` repository now fails
   with `invalid_argument` (exit 1, previously success with exit 0). Fork the entire
   repository into a new folder instead. Fork now needs access to the recorded
-  source. A relative or remote-helper recorded source is refused with `invalid_argument`
+  source. `Manager::fork_replace` and FFI `forkAndReplace` now return
+  `PackageForkReplacement` (previously `ForkReplacement`) so sibling failures and
+  pending confirmations are visible. A relative or remote-helper recorded source is refused with `invalid_argument`
   (exit 1, previously success with exit 0 without `forkOf.source`).
 - `auth::check` now takes `&Options`; the separate `AuthOptions` was removed.
   `Options` now includes `custom_ssh` (UniFFI `ManagerOptions.customSsh`, default false).
@@ -1249,7 +1251,7 @@ let dist = pm.uninstall(id, &confirmed, /* force: ignore dependents */ false)?;
 // Forks: the fork repository is always explicit (new folder).
 pm.fork_in_namespace(id, Path::new("/work/demo1-fork"), "me")?;   // sets forkOf + replaces
 let done = pm.fork_replace(id, Path::new("/work/demo1-fork"), "me", None, confirm)?; // + release, install, replace
-if let Some(step) = done.failed { /* fork folder kept; done.error says why */ }
+if let Some(error) = done.error() { /* fork kept; inspect done.packages for every outcome */ }
 let repo = Path::new("/work/forks/me-packages");               // created as a new folder
 let fork = pm.fork_packages(&["tilr/theme", "tilr/panel"], repo, "me")?; // one repo, deps rewritten
 let done = pm.fork_packages_replace(&ids, repo, "me", Some("2.0.0"), confirm)?; // per-package results
@@ -1523,9 +1525,7 @@ update(id, target: `Target`, `.recorded` follows the recorded mode), updateAllPl
 updateAll (`UpdateAllPlan` with `unchanged`, each with its `reason`, and `dist`), rollback, enable(force), disable(force),
 forget(force), restore, uninstallPlan, uninstall(confirmed, force), fork
 (one source ID, whole repository; `ForkResult`), forkAndReplace(version, confirm; returns a
-`ForkReplacement`: a failure after the fork exists is reported in `failedStep` (the
-`ForkStep` enum: release, install, replace), `errorKind`, `errorMessage`, and a
-replacement that needs confirmation in `pending`), forkPackages
+`PackageForkReplacement` with every package outcome and pending confirmation), forkPackages
 (`PackageFork`), forkPackagesAndReplace (`PackageForkReplacement`: the fork plus one
 `ForkReplacement` per package and the `pending` list), forkReplaceResume(pending,
 confirm; `ForkResume`: `applied` plans and the first `failed` one), replacePlan, replace, switchBackPlan, switchBack(confirm, force) (`ReplacementPlan` with

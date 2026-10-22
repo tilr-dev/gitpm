@@ -1,7 +1,12 @@
 ## MODIFIED Requirements
 
 ### Requirement: Forking packages of one repository
-`fork ID [ID...]` SHALL accept only packages installed from one recorded source, else `invalid_argument` listing IDs and sources. It SHALL start at the newest installed revision of all packages from that source, restore every installed package folder from that source at its installed revision, include every package listed by the repository, and preserve all other repository files and the package layout. Uninstalled packages SHALL come from the newest installed revision of packages from that source. Every package SHALL receive a new namespace, `forkOf` and `replaces`, including uninstalled siblings at the starting revision; no package subset SHALL be selected. One commit `Fork A, B as me/A, me/B` SHALL record the result without user hooks. A root package SHALL remain at the root.
+`fork ID [ID...]` SHALL accept only installed IDs from one recorded source, else `invalid_argument` listing IDs and sources. It SHALL clone the whole repository, retain all files and the package layout, and rename every package into the new namespace with `forkOf` and `replaces`. Dependencies between repository packages SHALL be rewritten. A root package SHALL stay at the root; no package subset SHALL be selected.
+
+#### Scenario: Repository starting revision
+- **WHEN** one or more IDs identify a source with packages installed at different revisions
+- **THEN** the fork starts at the newest installed revision of all packages from that source, restores every installed package folder at its recorded revision, and keeps uninstalled packages at the starting revision
+- **AND** one commit `Fork A, B as me/A, me/B` records all renamed packages without running user hooks
 
 #### Scenario: Revisions on diverged histories
 - **WHEN** the installed revisions of the forked packages are not ancestors of the newest one

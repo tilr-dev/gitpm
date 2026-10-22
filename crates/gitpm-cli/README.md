@@ -55,8 +55,8 @@ single-package repository, a repository with `gitpm.json` (or without one and wi
 root package) gets the folder `PREFIX/NAME` for the first `PREFIX/*` pattern of
 `gitpm.json` (`packages/NAME` by default). `fork ID... --ns NAMESPACE --into DIR`:
 `DIR` must be new. Git clones the recorded source at installed revisions with history
-and submodule links, ignoring local installation edits and removing unforked sibling
-packages. Initialize submodules with `git -C DIR submodule update --init`;
+and submodule links, ignoring local installation edits. All packages are renamed
+into the new namespace; all repository files and the package layout are preserved. Initialize submodules with `git -C DIR submodule update --init`;
 dependencies between the forks are rewritten and `--replace` releases, installs and
 replaces each one.
 

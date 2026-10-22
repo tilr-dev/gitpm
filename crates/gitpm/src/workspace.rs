@@ -6537,7 +6537,7 @@ mod tests {
     }
 
     #[test]
-    fn a_fork_of_a_package_releases_only_that_package() {
+    fn a_fork_of_one_package_releases_every_package_in_the_repository() {
         let mono = Mono::new();
         let m = mono.open();
         m.install_package(mono.source(), Some("tilr/theme"), InstallTarget::Release)
@@ -6546,13 +6546,23 @@ mod tests {
         let result = m
             .fork_replace("tilr/theme", &destination, "me", None, false)
             .unwrap();
-        assert!(result.failed.is_none(), "{:?}", result.error);
-        assert_eq!(result.tag.as_deref(), Some("me/theme@1.0.0"));
+        assert!(result.error().is_none(), "{:?}", result.error());
+        assert_eq!(result.packages.len(), 2);
+        for package in &result.packages {
+            assert_eq!(
+                package.tag.as_deref(),
+                Some(format!("{}@1.0.0", package.id).as_str())
+            );
+            assert!(package.installed.is_some());
+        }
         let config: packages::Config =
             serde_json::from_slice(&fs::read(destination.join(packages::CONFIG)).unwrap()).unwrap();
-        assert_eq!(config.packages, ["packages/theme"]);
+        assert_eq!(config.packages, ["packages/*"]);
         let state = m.state().unwrap();
         assert_eq!(state.replacements["tilr/theme"], "me/theme");
+        assert!(state.packages.contains_key("me/store"));
+        assert!(!state.packages.contains_key("tilr/store"));
+        assert!(!state.replacements.contains_key("tilr/store"));
         let fork = &state.packages["me/theme"];
         assert_eq!(fork.path.as_deref(), Some("packages/theme"));
         assert_eq!(fork.fork_of.as_ref().unwrap().id, "tilr/theme");
@@ -6561,6 +6571,61 @@ mod tests {
             .fork_replace("tilr/theme", &destination, "me", None, false)
             .unwrap_err();
         assert_eq!(error.kind(), "invalid_argument");
+    }
+
+    #[test]
+    fn single_fork_replace_exposes_a_siblings_pending_replacement() {
+        let mono = Mono::new();
+        mono.release("store", "2.0.0");
+        let m = mono.open();
+        for id in ["tilr/store", "tilr/theme"] {
+            m.install_package(mono.source(), Some(id), InstallTarget::Release)
+                .unwrap();
+        }
+        let consumer = Author::new(mono.dir.join("consumer"), "app/consumer");
+        let mut manifest = make_manifest("app/consumer", "0.2.0");
+        manifest
+            .dependencies
+            .insert("tilr/store".into(), "^2.0".into());
+        write_manifest(&consumer.path, &manifest);
+        fixture_git(
+            &consumer.path,
+            &["commit", "-qam", "Require incompatible store"],
+        );
+        consumer.tag("0.2.0");
+        m.install(consumer.source()).unwrap();
+        m.uninstall("tilr/store", &[], true).unwrap();
+        m.install_package(
+            mono.source(),
+            Some("tilr/store"),
+            InstallTarget::Ref("tilr/store@1.0.0".into()),
+        )
+        .unwrap();
+
+        let result = m
+            .fork_replace(
+                "tilr/theme",
+                &mono.dir.join("forks/pending"),
+                "me",
+                None,
+                false,
+            )
+            .unwrap();
+        assert_eq!(result.packages.len(), 2);
+        let theme = result.packages.iter().find(|p| p.id == "me/theme").unwrap();
+        assert!(theme.failed.is_none(), "{:?}", theme.error);
+        assert!(theme.replacement.is_some());
+        let store = result.packages.iter().find(|p| p.id == "me/store").unwrap();
+        assert!(store.installed.is_some());
+        assert_eq!(store.failed, Some(ForkStep::Replace));
+        assert_eq!(result.error().unwrap().kind(), "incompatible_replacement");
+        let pending = result.pending();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].original, "tilr/store");
+        assert_eq!(pending[0].fork, "me/store");
+        let state = m.state().unwrap();
+        assert_eq!(state.replacements["tilr/theme"], "me/theme");
+        assert!(!state.replacements.contains_key("tilr/store"));
     }
 
     #[test]
@@ -6638,7 +6703,12 @@ mod tests {
             error.to_string().contains("destination already exists"),
             "{error}"
         );
-        assert!(!single.join("packages/theme").exists());
+        assert_eq!(
+            package_manifest(&single, Some("packages/theme"))
+                .unwrap()
+                .id,
+            "s/theme"
+        );
         assert_eq!(fixture_git(&single, &["rev-parse", "HEAD"]), before);
         assert_eq!(fixture_git(&destination, &["rev-parse", "HEAD"]), head);
     }
@@ -6676,8 +6746,12 @@ mod tests {
         let result = m
             .fork_packages_replace(&["tilr/theme"], &third, "ns3", None, false)
             .unwrap();
-        assert!(result.fork.packages.iter().all(|p| p.id == "ns3/theme"));
-        let theme = &result.packages[0];
+        assert_eq!(result.fork.packages.len(), 2);
+        let theme = result
+            .packages
+            .iter()
+            .find(|p| p.id == "ns3/theme")
+            .unwrap();
         assert_eq!(theme.failed, Some(ForkStep::Release));
         assert_eq!(result.error().unwrap().kind(), "version_conflict");
         assert!(third.join("packages/theme/plugin.json").is_file());
@@ -7108,12 +7182,25 @@ mod tests {
             fixture_git(&path, &["rev-parse", "refs/heads/fork"]),
             head_of(&path)
         );
-        assert_eq!(fixture_git(&path, &["rev-parse", "HEAD^"]), store_commit);
-        // Same tree semantics as several packages: the sibling is gone.
-        assert!(!path.join("packages/theme").exists());
+        assert_eq!(
+            fixture_git(&path, &["rev-parse", "HEAD^"]),
+            head_of(&mono.repo)
+        );
+        assert_eq!(
+            package_manifest(&path, Some("packages/store"))
+                .unwrap()
+                .fork_of
+                .unwrap()
+                .commit,
+            store_commit
+        );
+        assert_eq!(
+            package_manifest(&path, Some("packages/theme")).unwrap().id,
+            "me/theme"
+        );
         let config: packages::Config =
             serde_json::from_slice(&fs::read(path.join(packages::CONFIG)).unwrap()).unwrap();
-        assert_eq!(config.packages, ["packages/store"]);
+        assert_eq!(config.packages, ["packages/*"]);
         assert!(fixture_git(&path, &["status", "--porcelain"]).is_empty());
     }
 
