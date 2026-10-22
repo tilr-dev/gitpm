@@ -963,6 +963,35 @@ fn declared_output_rejects_invalid_fields() {
 }
 
 #[test]
+fn declared_output_update_error_names_package() {
+    for mono in [false, true] {
+        let f = Fixture::new();
+        let repo = output_release(&f, None, mono);
+        let package = if mono {
+            repo.join("packages/demo")
+        } else {
+            repo.clone()
+        };
+        f.ok(&["install", repo.to_str().unwrap()]);
+        let path = package.join("plugin.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        manifest["version"] = serde_json::json!("0.2.0");
+        manifest["dist"] = serde_json::json!("../escape");
+        fs::write(path, manifest.to_string()).unwrap();
+        f.git(&repo, &["add", "."]);
+        f.git(&repo, &["commit", "-m", "invalid output path"]);
+        f.git(&repo, &["tag", "test/output@0.2.0"]);
+        let error = f.fails(&["update", "test/output"]);
+        assert!(
+            error.contains("test/output: invalid manifest dist path"),
+            "monorepo={mono}: {error}"
+        );
+        assert_eq!(f.dist("test/output").as_deref(), Some("committed output"));
+    }
+}
+
+#[test]
 fn declared_output_update_and_rollback_use_each_commits_manifest() {
     for mono in [false, true] {
         let f = Fixture::new();
