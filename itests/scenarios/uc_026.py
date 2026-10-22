@@ -57,7 +57,7 @@ def unscoped_id_equal_to_an_installed_namespace(t: T):
     t.eq(sorted(t.state()["packages"]), ["author/demo"], "only author/demo")
 
 
-@case(fixture="g3_legacy", spec=["package-ids/package-id-syntax", "catalog/catalog-v2-is-a-tree-of-static-files"])
+@case(fixture="g3_legacy", spec=["package-ids/package-id-syntax", "catalog/catalog-is-a-tree-of-static-files"])
 def unscoped_id_is_never_registered(t: T):
     """register of the unscoped `demo` fails; no legacy/ folder appears in the catalog."""
     scoped = package_repo(t, t.root / "authors/author-demo", "author/demo")

@@ -38,10 +38,9 @@ gitpm --catalog ./catalog --root ./other install-catalog acme/greeter   # hashes
 
 gitpm init acme/hello --into ./hello     # new package repository ./hello, ID acme/hello
 gitpm install ./hello
-gitpm fork acme/hello --ns me --into ./me-hello   # copy installed acme/hello as me/hello
+gitpm fork acme/hello --ns me --into ./me-hello   # clone the recorded source as me/hello
 gitpm fork acme/hello --ns you --into ./you-hello --replace   # fork, release, install, replace
 gitpm fork tilr/store tilr/theme --ns me --into ./me-packages   # several packages, one repo
-gitpm fork tilr/panel --ns me --into ./me-packages   # add to that existing fork later
 
 git init -q tilr-packages
 gitpm init tilr/store --into ./tilr-packages   # multi-package repository (gitpm.json, packages/*)
@@ -55,8 +54,9 @@ from an ID and there is no default namespace. `init --into DIR`: a new `DIR` bec
 single-package repository, a repository with `gitpm.json` (or without one and without a
 root package) gets the folder `PREFIX/NAME` for the first `PREFIX/*` pattern of
 `gitpm.json` (`packages/NAME` by default). `fork ID... --ns NAMESPACE --into DIR`:
-`DIR` with `gitpm.json` gets the packages added, a new `DIR` becomes a copy of the source
-repository with the unforked sibling packages removed, anything else is refused;
+`DIR` must be new. Git clones the recorded source at installed revisions with history
+and submodule links, ignoring local installation edits. All packages are renamed
+into the new namespace; all repository files and the package layout are preserved. Initialize submodules with `git -C DIR submodule update --init`;
 dependencies between the forks are rewritten and `--replace` releases, installs and
 replaces each one.
 

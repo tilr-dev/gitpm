@@ -38,10 +38,10 @@ CASES: list["Case"] = []
 # change of this mapping only; T.gitpm rewrites the command word before running gitpm.
 # `t.run("gitpm", ...)` bypasses the mapping (for cases about the exact spelling).
 COMMANDS: dict[str, tuple[str, ...]] = {
-    "info": ("info",),
-    "catalog": ("catalog",),
-    "catalog-update": ("catalog-update",),
-    "register": ("register",),
+    "info": ("catalog", "show"),
+    "catalog": ("catalog", "links"),
+    "catalog-update": ("catalog", "update"),
+    "register": ("catalog", "register"),
 }
 # Global options taking a value (they may precede the command word).
 VALUE_OPTIONS = {"--root", "--catalog", "--sources"}
@@ -58,6 +58,10 @@ def gitpm_argv(args) -> list[str]:
         if args[i].startswith("-"):
             i += 1
             continue
+        if args[i] == "catalog" and i + 1 < len(args) and args[i + 1] in {
+            "show", "links", "update", "register", "--help", "-h"
+        }:
+            return args
         if args[i] in COMMANDS:
             return args[:i] + list(COMMANDS[args[i]]) + args[i + 1:]
         break

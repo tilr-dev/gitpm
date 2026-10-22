@@ -17,7 +17,7 @@ import signal
 import subprocess
 from pathlib import Path
 
-from gitpmtest import R, T, case
+from gitpmtest import R, T, case, gitpm_argv
 
 ID = "dan/hello"
 NOBODY = "65534"
@@ -54,7 +54,7 @@ def give_to_nobody(t: T):
 
 
 def gitpm_nobody(t: T, *args) -> R:
-    return t.run("setpriv", f"--reuid={NOBODY}", f"--regid={NOBODY}", "--clear-groups", "--", "gitpm", *args,
+    return t.run("setpriv", f"--reuid={NOBODY}", f"--regid={NOBODY}", "--clear-groups", "--", "gitpm", *gitpm_argv(args),
                  env={"HOME": "/tmp"})
 
 

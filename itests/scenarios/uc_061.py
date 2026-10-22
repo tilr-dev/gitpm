@@ -324,7 +324,7 @@ for _name, _version, _tag in [("two_parts", "1.0", "package-ids/version-format")
 
 # ---------------------------------------------------------------- 9. many versions
 
-@case(spec=["package-ids/version-format#numeric-ordering", "catalog/bounded-overview"])
+@case(spec=["package-ids/version-format#numeric-ordering", "catalog/bounded-overview", "catalog/local-release-history-remains-bounded-in-execution-time#two-hundred-local-releases"])
 def two_hundred_versions(t: T):
     """9. 200 releases (1.0.0 … 1.199.0): numeric maximum everywhere, each command under 60 s."""
     t.new_package("dan/many", "1.0.0")

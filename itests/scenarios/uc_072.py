@@ -135,19 +135,22 @@ def register_package_and_catalog_update(t: T):
     t.eq((t.package(STORE)["path"], t.package(THEME)["path"]), ("packages/store", "packages/theme"), "paths")
 
 
-@case(fixture="fork_suite_installed", spec=["multi-package-repos/forking-packages-of-one-repository#partial-fork",
+@case(fixture="fork_suite_installed", spec=["multi-package-repos/forking-packages-of-one-repository",
                                             "fork-replacement/fork-metadata#fork-manifest"])
 def fork_one_package_of_the_repository(t: T):
-    """`fork tilr/theme --ns me --into DIR`: the new fork keeps only packages/theme (tree and
-    gitpm.json), its manifest is me/theme with forkOf/replaces; originals unchanged."""
+    """`fork tilr/theme --ns me --into DIR`: the new fork keeps every package and the original layout,
+    renames installed and uninstalled siblings; originals stay unchanged."""
     before = t.snap(t.ws, git=True)
     dest = t.root / "forks/suite"
     r = t.gitpm_ok("fork", THEME, "--ns", "me", "--into", dest)
     t.has(r.out, "me/theme forked from tilr/theme (packages/theme)",
-          "Only the forked packages are left in the tree and in gitpm.json.",
           "Next steps (or all at once: add --replace):", "--package me/theme", "gitpm replace tilr/theme --with me/theme")
-    t.eq(json.loads((dest / "gitpm.json").read_text()), {"packages": ["packages/theme"]}, "fork gitpm.json")
-    t.eq(sorted(p.name for p in (dest / "packages").iterdir()), ["theme"], "only the forked folder")
+    t.eq(json.loads((dest / "gitpm.json").read_text()), {"packages": ["packages/*"]}, "fork gitpm.json")
+    t.eq(sorted(p.name for p in (dest / "packages").iterdir()), ["panel", "store", "theme"], "all package folders preserved")
+    for name in ("panel", "store", "theme"):
+        sibling = json.loads((dest / "packages" / name / "plugin.json").read_text())
+        t.eq(sibling["id"], f"me/{name}", f"{name} renamed")
+        t.eq(sibling["forkOf"]["id"], f"tilr/{name}", f"{name} provenance")
     m = json.loads((dest / "packages/theme/plugin.json").read_text())
     theme = t.package(THEME)["current"]
     t.eq((m["id"], m["forkOf"], m["replaces"]),

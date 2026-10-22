@@ -39,8 +39,10 @@ def register_into_new_catalog(t: T):
     t.eq(stored["files"], {"index.js": committed(t.repo(ID), commit, "dist/index.js")}, "file hashes")
     t.ok("build" not in stored, "no build metadata")
     index = json.loads(t.catalog_index(ID).read_text())
-    t.eq(index, {"schema": 2, "id": ID, "source": str(t.repo(ID)),
-                 "versions": {"0.1.0": "versions/0.1.0/release.json"}}, "package index")
+    t.eq(index, {"schema": 1, "id": ID, "source": str(t.repo(ID)),
+                 "versions": {"0.1.0": "versions/0.1.0/release.json"},
+                 "latest": {"version": "0.1.0", "title": None, "description": None,
+                            "provides": [], "tags": []}}, "package index")
     t.ok(not t.ws.exists(), "register installs nothing")
 
 

@@ -369,6 +369,11 @@ fn a_package_of_a_shared_clone_is_deployed_from_its_own_commit() {
     ]);
     assert_eq!(f.dist("tilr/theme"), None);
     assert_eq!(f.dist("me/theme").as_deref(), Some("theme 1.0.0"));
+    assert_eq!(f.dist("tilr/store"), None);
+    assert_eq!(f.dist("me/store").as_deref(), Some("store 1.0.0"));
+    // The whole repository was forked and replaced. Keep theme's fork active but
+    // restore store's original provider to exercise independent dist revisions.
+    f.ok(&["replace", "tilr/store", "--back"]);
     assert_eq!(f.dist("tilr/store").as_deref(), Some("store 1.0.0"));
     // theme 1.1.0 is installed while replaced; then store moves the shared clone's HEAD
     // to a commit whose theme files differ from theme's installed revision.
@@ -531,11 +536,25 @@ fn a_namespace_path_that_is_not_a_folder_blocks_nothing_else() {
     fs::remove_dir_all(dist.join("vendor")).unwrap();
     let out = f.run(&["sync-dist"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success(), "{stderr}");
+    assert!(!out.status.success(), "{stderr}");
     assert!(
         stderr.contains("dist/dan belongs to no known package or is not a folder"),
         "{stderr}"
     );
+    assert!(
+        stderr.contains("Warning: dan/demo: dist not deployed (dist/dan is not a folder)"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("Error: 1 package(s) not deployed: dan/demo"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("Error kind: not_deployed"), "{stderr}");
+    assert!(
+        stderr.contains("Hint: remove or rename `dist/dan` and run `gitpm sync-dist` again"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("clone is gone"), "{stderr}");
     assert_eq!(f.dist("vendor/demo").as_deref(), Some("vendor 1"));
     // A plain file there behaves the same.
     fs::remove_file(dist.join("dan")).unwrap();
@@ -543,6 +562,32 @@ fn a_namespace_path_that_is_not_a_folder_blocks_nothing_else() {
     f.ok(&["disable", "vendor/demo"]);
     assert_eq!(f.dist("vendor/demo"), None);
     assert_eq!(fs::read_to_string(dist.join("dan")).unwrap(), "file");
+    let out = f.run(&["uninstall", "dan/demo", "--force"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(stderr.contains("Error kind: workspace"), "{stderr}");
+    assert_eq!(fs::read_to_string(dist.join("dan")).unwrap(), "file");
+    let out = f.run(&["sync-dist"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("Warning: dan/demo: dist not deployed (dist/dan is not a folder)"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("Error kind: not_deployed"), "{stderr}");
+    assert!(
+        stderr.contains("Hint: remove or rename `dist/dan` and run `gitpm sync-dist` again"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("clone is gone"), "{stderr}");
+    // Following the hint repairs deployment without dropping the package's record.
+    fs::rename(dist.join("dan"), dist.join("dan-blocked")).unwrap();
+    f.ok(&["sync-dist"]);
+    assert_eq!(f.dist("dan/demo").as_deref(), Some("fork"));
+    assert_eq!(
+        fs::read_to_string(dist.join("dan-blocked")).unwrap(),
+        "file"
+    );
 }
 
 #[test]

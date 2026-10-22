@@ -44,7 +44,7 @@ Releases SHALL be per package with tags `ID@VERSION` (package-ids, "Release tag 
 
 #### Scenario: vVERSION tag in a multi-package repository
 - **WHEN** a multi-package repository also has the tag `v0.2.0`
-- **THEN** it is no release of any package and install, update and `catalog-update` print no warning about it
+- **THEN** it is no release of any package and install, update and `catalog update` print no warning about it
 - **AND** this is covered by `a_v_version_tag_in_a_multi_package_repository_is_ignored_without_a_warning`
 
 ### Requirement: Choosing a package at install
@@ -96,7 +96,7 @@ A root package SHALL keep its own `packages/<id>` clone when a later release mov
 - **THEN** `update` succeeds and state records `path` `packages/store`
 
 ### Requirement: Forking packages of one repository
-`fork ID [ID...]` SHALL accept only IDs installed from the same repository (else `invalid_argument` listing each ID with its source). A new fork SHALL start at the newest installed revision of the forked packages, SHALL remove the folders of unforked packages from the tree and list exactly the forked folders in `gitpm.json`, in one commit `Fork A, B as me/A, me/B` made without running hooks; local edits of the clone stay uncommitted. A root package SHALL stay the root package of its fork.
+`fork ID [ID...]` SHALL accept only installed IDs from one recorded source, else `invalid_argument` listing IDs and sources. It SHALL clone the whole repository, retain all files and the package layout, and rename every package into the new namespace with `forkOf` and `replaces`. Dependencies between repository packages SHALL be rewritten. A root package SHALL stay at the root; no package subset SHALL be selected.
 
 #### Scenario: Revisions on diverged histories
 - **WHEN** the installed revisions of the forked packages are not ancestors of the newest one
@@ -104,35 +104,15 @@ A root package SHALL keep its own `packages/<id>` clone when a later release mov
 
 #### Scenario: Package at an older revision
 - **WHEN** one forked package is installed at an older revision than the fork starts from
-- **THEN** its folder comes from that revision; local edits of that folder in the clone make the fork fail with `local_changes`
+- **THEN** its folder and submodule entries come from that revision in the cloned source
 
 #### Scenario: Partial fork
-- **WHEN** the user forks `tilr/theme tilr/panel` of a three-package repository
-- **THEN** the fork contains only `packages/theme` and `packages/panel` and prints `Only the forked packages are left in the tree and in gitpm.json.`
-- **AND** this is covered by `fork_of_two_packages_keeps_exactly_those_and_rewrites_their_dependency` and `packages_forked_together_must_come_from_one_repository`
-
-### Requirement: Adding packages to an existing fork
-`fork … --into DIR` where `DIR` has `gitpm.json` SHALL add the package folders (files of the installed revisions, plain files only) at their original folders, in one commit of only those paths; `gitpm.json` and changed manifests MUST have no uncommitted changes, a Git identity is required (authoring, "Git identity is never invented in existing repositories"), and a failed commit SHALL restore the repository. Every refusal below SHALL be `invalid_argument` and change nothing.
-
-#### Scenario: Folder or ID already there
-- **WHEN** the fork repository already has the folder, or a package whose ID differs only in letter case
-- **THEN** the add is refused
-
-#### Scenario: Nesting folders
-- **WHEN** an added folder would contain or be contained in another package folder
-- **THEN** the add is refused ("package folder … would nest with …")
-
-#### Scenario: Root package
-- **WHEN** a forked package is the root package of its repository
-- **THEN** the add is refused ("… is the root package of its repository …; fork it into a new folder")
-
-#### Scenario: Add later
-- **WHEN** the user runs `gitpm fork tilr/dock --ns me --into forks/me-packages` on an existing fork
-- **THEN** it prints `Packages added to: …` and `me/dock forked from tilr/dock (packages/dock)`
-- **AND** this is covered by `packages_are_added_to_an_existing_fork_with_dependencies_rewritten_both_ways` and `adding_to_a_fork_refuses_a_failing_commit_and_a_missing_identity_untouched`
+- **WHEN** the user forks only installed `tilr/theme` of a three-package repository, where its sibling packages are not installed
+- **THEN** all three packages are retained and renamed into the new namespace, their internal dependencies are rewritten, and repository files and `gitpm.json` are preserved
+- **AND** this is covered by `fork_ids_select_the_repository_and_rewrite_all_package_dependencies` and `packages_forked_together_must_come_from_one_repository`
 
 ### Requirement: Dependencies between forks are rewritten
-A dependency on a package forked in the same command, or on an original that a package already in the fork repository forks, SHALL be rewritten to the fork, in both directions when adding; the requirement SHALL be kept when the fork's version satisfies it, else become `^V`, and each rewrite SHALL be printed. A manifest depending on both an original and its fork SHALL be refused with `invalid_manifest`.
+Every dependency between packages of the source repository SHALL be rewritten to its fork; the requirement SHALL be kept when the fork's version satisfies it, else become `^V`, and each rewrite SHALL be printed. A manifest depending on both an original and its fork SHALL be refused with `invalid_manifest`.
 
 #### Scenario: Dependency cycle between forks
 - **WHEN** packages forked together with `--replace` depend on each other in a cycle

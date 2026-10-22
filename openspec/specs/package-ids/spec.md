@@ -41,7 +41,7 @@ The release tag of a package SHALL be `namespace/name@VERSION` with VERSION as i
 
 #### Scenario: Tag disagrees with the manifest
 - **WHEN** `acme/hello` at version 1.0.0 gets the newest tag `acme/hello@8.0.0` on a commit whose manifest still says 1.0.0
-- **THEN** the tag is skipped ("tag acme/hello@8.0.0 disagrees with manifest version 1.0.0") and, because it is the newest, `catalog-update` fails with `version_conflict` and writes nothing
+- **THEN** the tag is skipped ("tag acme/hello@8.0.0 disagrees with manifest version 1.0.0") and, because it is the newest, `catalog update` fails with `version_conflict` and writes nothing
 
 #### Scenario: Two tags for one version
 - **WHEN** `v1.0.0` and `dan/demo1@1.0.0` point to different commits
@@ -61,23 +61,23 @@ The release tag of a package SHALL be `namespace/name@VERSION` with VERSION as i
 
 #### Scenario: Pre-release tag
 - **WHEN** a repository has the tag `dan/demo1@2.0.0-beta.1` on a commit whose manifest has version `2.0.0-beta.1`
-- **THEN** it is a release tag of version `2.0.0-beta.1`; install, update and `update all` pick it only when asked for (updates, "Pre-releases are opt-in"), and `catalog-update` publishes it
+- **THEN** it is a release tag of version `2.0.0-beta.1`; install, update and `update all` pick it only when asked for (updates, "Pre-releases are opt-in"), and `catalog update` publishes it
 
 #### Scenario: Tags that are not release versions
 - **WHEN** a repository has tags `dan/demo1@2.0.0+b1` and `dan/demo1@latest` besides valid releases
-- **THEN** those tags are not releases: install, update and `catalog-update` never select them and do not warn about them
+- **THEN** those tags are not releases: install, update and `catalog update` never select them and do not warn about them
 
 ### Requirement: Broken historical tags are skipped
 Single source for broken release tags: a broken historical release tag (invalid manifest, manifest mismatch, package missing at the commit) SHALL be skipped, not fail discovery; install, `update ID` and `update all` SHALL return it (`InstallResult.skipped`, `RevisionChange.skipped`, `UpdateAllPlan.skipped`). A skipped tag newer than every valid release SHALL still fail selection ("Bad newest tag"). Verified by `releases::bad_historical_tag_does_not_hide_valid_releases`.
 
 #### Scenario: Bad newest tag
 - **WHEN** the newest tag is broken and an older one is valid
-- **THEN** install, update and `catalog-update` fail with `version_conflict` ("latest release tag is broken: …")
+- **THEN** install, update and `catalog update` fail with `version_conflict` ("latest release tag is broken: …")
 
 #### Scenario: One bad old tag
 - **WHEN** tag 0.1.0's manifest is invalid but 0.2.0 is valid
-- **THEN** `catalog-update` publishes 0.2.0 and warns about 0.1.0
-- **AND** `catalog-update` warns `Warning: SOURCE: reason`; this is covered by `catalog::update_sources_skips_and_reports_a_broken_historical_tag`
+- **THEN** `catalog update` publishes 0.2.0 and warns about 0.1.0
+- **AND** `catalog update` warns `Warning: SOURCE: reason`; this is covered by `catalog::update_sources_skips_and_reports_a_broken_historical_tag`
 
 #### Scenario: Update past a broken old tag
 - **WHEN** `acme/greeter` 0.1.0 is installed, the origin adds a tag `acme/greeter@0.1.5` whose manifest is invalid and a valid `acme/greeter@0.2.0`, and the user runs `update acme/greeter` or `update all`
@@ -106,7 +106,7 @@ Operations on an installed package SHALL match the ID exactly as recorded in `st
 - **THEN** the command fails with `repository_not_found` and `vendor/module` is untouched
 
 ### Requirement: Case-colliding IDs are refused
-Single source for IDs that differ only in letter case, refused independent of the file system's case sensitivity: installing or restoring a package whose ID differs only in case from an installed or retained package, or from an existing workspace path, SHALL fail with `workspace`; `fork`, `init` into a multi-package repository and adding packages to an existing fork SHALL fail with `invalid_argument`. Verified by `workspace::ids_differing_only_in_case_are_refused`.
+Single source for IDs that differ only in letter case, refused independent of the file system's case sensitivity: installing or restoring a package whose ID differs only in case from an installed or retained package, or from an existing workspace path, SHALL fail with `workspace`; `fork` and `init` into a multi-package repository SHALL fail with `invalid_argument`. Verified by `workspace::ids_differing_only_in_case_are_refused`.
 
 #### Scenario: Case variants inside one repository
 - **WHEN** a multi-package repository lists two packages whose IDs differ only in letter case
@@ -122,7 +122,7 @@ Single source for IDs that differ only in letter case, refused independent of th
 - **THEN** init fails with `invalid_argument` (`package a/ui already exists in this repository`) and the repository is unchanged
 
 ### Requirement: Tags are not policed; integrity via protected catalog
-Single source for moved and deleted tags: fetching into any clone (own or shared) SHALL take the origin's release tags as they are: no install, update, `update all` or `catalog-update` SHALL fail because a tag moved or was deleted. Installed revisions are kept by commit; the only tag refusal left is a broken newest tag (scenario below). Integrity of published versions is the job of a verified catalog. Verified by `workspace::moved_and_deleted_tags_are_taken_as_they_are`.
+Single source for moved and deleted tags: fetching into any clone (own or shared) SHALL take the origin's release tags as they are: no install, update, `update all` or `catalog update` SHALL fail because a tag moved or was deleted. Installed revisions are kept by commit; the only tag refusal left is a broken newest tag (scenario below). Integrity of published versions is the job of a verified catalog. Verified by `workspace::moved_and_deleted_tags_are_taken_as_they_are`.
 
 #### Scenario: Retagged release
 - **WHEN** the tag of an already seen release `acme/greeter@0.2.0` is moved to another commit on the origin
@@ -138,5 +138,5 @@ Single source for moved and deleted tags: fetching into any clone (own or shared
 - **THEN** it is a broken tag: `update all` keeps the package with the warning `release tag acme/greeter@0.2.0 now points to COMMIT (skipped: REASON); the installed commit is kept`, while `update acme/greeter` fails with `version_conflict` ("latest release tag is broken: …") because it is the newest tag
 
 #### Scenario: Moved tag on regenerate
-- **WHEN** a published tag was moved to another commit and the user runs `catalog-update`
+- **WHEN** a published tag was moved to another commit and the user runs `catalog update`
 - **THEN** the published record is kept and a warning names the moved tag (catalog, "Published versions are immutable")

@@ -33,13 +33,13 @@ pub enum PmError {
     #[error("{message}")]
     InvalidId { message: String },
     #[error("{message}")]
-    InvalidManifest { message: String },
+    InvalidManifest { id: Option<String>, message: String },
     #[error("{message}")]
     InvalidVersion { message: String },
     #[error("{message}")]
     InvalidArgument { message: String },
     #[error("{message}")]
-    VersionConflict { message: String },
+    VersionConflict { id: Option<String>, message: String },
     /// `commit`: the previous revision's commit is no longer in the clone.
     #[error("{message}")]
     NoPreviousVersion {
@@ -86,7 +86,10 @@ pub enum PmError {
     /// `syncDist` committed what it could; `sync` is its report (as `syncDist` returns
     /// it), whose `skipped` are the active packages left without their deployed folder.
     #[error("{message}")]
-    NotDeployed { message: String, sync: DistSync },
+    NotDeployed {
+        message: String,
+        sync: Box<DistSync>,
+    },
     #[error("{message}")]
     InvalidData { message: String },
     #[error("{message}")]
@@ -109,10 +112,10 @@ impl From<pm::Error> for PmError {
             },
             pm::Error::Locked(_) => PmError::Locked { message },
             pm::Error::InvalidId(_) => PmError::InvalidId { message },
-            pm::Error::InvalidManifest(_) => PmError::InvalidManifest { message },
+            pm::Error::InvalidManifest { id, .. } => PmError::InvalidManifest { id, message },
             pm::Error::InvalidVersion(_) => PmError::InvalidVersion { message },
             pm::Error::InvalidArgument(_) => PmError::InvalidArgument { message },
-            pm::Error::VersionConflict(_) => PmError::VersionConflict { message },
+            pm::Error::VersionConflict { id, .. } => PmError::VersionConflict { id, message },
             pm::Error::NoPreviousVersion { id, commit } => PmError::NoPreviousVersion {
                 id,
                 commit,
@@ -140,7 +143,7 @@ impl From<pm::Error> for PmError {
             },
             pm::Error::NotDeployed { sync, .. } => PmError::NotDeployed {
                 message,
-                sync: (*sync).into(),
+                sync: Box::new((*sync).into()),
             },
             pm::Error::IncompatibleReplacement { id, consumers, .. } => {
                 PmError::IncompatibleReplacement {
@@ -797,6 +800,8 @@ pub struct DistSync {
     pub unmanaged: Vec<String>,
     /// Active packages left without `dist/`, with the reason (clone missing, …).
     pub skipped: Vec<SkippedDist>,
+    /// Actionable warnings from committed dist exports.
+    pub warnings: Vec<String>,
 }
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct SkippedDist {
@@ -811,6 +816,7 @@ impl From<pm::DistSync> for DistSync {
             deployed: s.deployed,
             removed: s.removed,
             unmanaged: s.unmanaged,
+            warnings: s.warnings,
             skipped: s
                 .skipped
                 .into_iter()
@@ -829,6 +835,7 @@ impl From<DistSync> for pm::DistSync {
             deployed: s.deployed,
             removed: s.removed,
             unmanaged: s.unmanaged,
+            warnings: s.warnings,
             skipped: s
                 .skipped
                 .into_iter()
@@ -1429,6 +1436,18 @@ pub struct ManagerOptions {
     /// Catalog location: local folder, JSON file or HTTP(S) URL.
     #[uniffi(default = None)]
     pub catalog: Option<String>,
+    /// Preserve the host's SSH transport for all workspace Git commands.
+    #[uniffi(default = false)]
+    pub custom_ssh: bool,
+}
+
+impl From<ManagerOptions> for pm::Options {
+    fn from(options: ManagerOptions) -> Self {
+        Self {
+            catalog: options.catalog,
+            custom_ssh: options.custom_ssh,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1445,12 +1464,7 @@ impl PackageManager {
     /// Open (or create) a dedicated workspace directory and take its lock.
     #[uniffi::constructor]
     pub fn open(root: String, options: ManagerOptions) -> Result<Arc<Self>> {
-        let inner = pm::Manager::open_with(
-            root,
-            pm::Options {
-                catalog: options.catalog,
-            },
-        )?;
+        let inner = pm::Manager::open_with(root, options.into())?;
         Ok(Arc::new(Self { inner }))
     }
     pub fn root(&self) -> String {
@@ -1623,9 +1637,9 @@ impl PackageManager {
     ) -> Result<ReplacementPlan> {
         Ok(self.inner.switch_back(&original, confirm, force)?.into())
     }
-    /// Fork an installed package as `namespace/<same name>` into the fork repository
-    /// `destination` (outside the workspace): a new folder, or an existing repository with
-    /// `gitpm.json` to add it to. The one-package case of `forkPackages`.
+    /// Fork the entire source repository of an installed package into a new folder
+    /// `destination` outside the workspace. Every package receives a new namespace;
+    /// all repository files and the package layout are preserved.
     pub fn fork(&self, id: String, destination: String, namespace: String) -> Result<ForkResult> {
         let path =
             self.inner
@@ -1636,9 +1650,9 @@ impl PackageManager {
             path: path.to_string_lossy().into_owned(),
         })
     }
-    /// Fork, release the fork (`version` defaults to the forked one), install it and
-    /// replace `id` with it for every consumer (`confirm` as in `replace`). Errors before
-    /// the fork folder exists are thrown; later failures are reported in the result.
+    /// Fork, release and install every package of the repository; replace installed
+    /// originals (`confirm` as in `replace`). Return every package outcome, including
+    /// sibling failures and pending confirmations.
     #[uniffi::method(default(version = None, confirm = false))]
     pub fn fork_and_replace(
         &self,
@@ -1647,7 +1661,7 @@ impl PackageManager {
         namespace: String,
         version: Option<String>,
         confirm: bool,
-    ) -> Result<ForkReplacement> {
+    ) -> Result<PackageForkReplacement> {
         Ok(self
             .inner
             .fork_replace(
@@ -1659,10 +1673,9 @@ impl PackageManager {
             )?
             .into())
     }
-    /// Fork installed packages of one repository into `namespace` as the fork repository
-    /// `destination`: a new folder (a copy of the source with the unforked siblings
-    /// removed), or an existing repository with `gitpm.json` to add them to; anything
-    /// else is refused. Dependencies between the forks are rewritten.
+    /// Fork the entire repository identified by installed IDs into a new folder
+    /// `destination`. Rename all packages into `namespace`, preserve repository files
+    /// and layout, and rewrite dependencies between packages in the repository.
     pub fn fork_packages(
         &self,
         ids: Vec<String>,
@@ -1719,7 +1732,13 @@ impl PackageManager {
 /// `custom_ssh`: the process environment already sets GIT_SSH_COMMAND/GIT_SSH.
 #[uniffi::export]
 pub fn auth_check(source: String, custom_ssh: bool) -> Result<AuthCheck> {
-    let result = pm::auth::check(&source, &pm::auth::AuthOptions { custom_ssh })?;
+    let result = pm::auth::check(
+        &source,
+        &pm::Options {
+            custom_ssh,
+            ..Default::default()
+        },
+    )?;
     Ok(AuthCheck {
         source: result.source,
         message: result.message,
@@ -1758,10 +1777,18 @@ pub fn read_state(root: String) -> Result<ListView> {
 }
 
 /// Compare the installed versions with a catalog (what `gitpm check` prints), without
-/// opening the workspace. An empty workspace needs no catalog.
+/// opening the workspace. An empty workspace needs no catalog. `custom_ssh` is the
+/// same setting as `ManagerOptions.customSsh`.
 #[uniffi::export]
-pub fn check(root: String, catalog: Option<String>) -> Result<CheckReport> {
-    Ok(pm::check::check(std::path::Path::new(&root), catalog.as_deref())?.into())
+pub fn check(root: String, catalog: Option<String>, custom_ssh: bool) -> Result<CheckReport> {
+    let options = pm::Options {
+        custom_ssh,
+        ..Default::default()
+    };
+    Ok(
+        pm::check::check_with_options(std::path::Path::new(&root), catalog.as_deref(), &options)?
+            .into(),
+    )
 }
 
 /// The directory links at one catalog level (what `gitpm catalog` prints).
@@ -1808,7 +1835,7 @@ mod tests {
             manager.uninstall_plan("a/b".into()),
             Err(PmError::RepositoryNotFound { .. })
         ));
-        let report = check(root.to_string_lossy().into(), None).unwrap();
+        let report = check(root.to_string_lossy().into(), None, false).unwrap();
         assert!(report.rows.is_empty() && report.unsatisfied.is_empty());
         assert!(matches!(
             PackageManager::open(root.to_string_lossy().into(), ManagerOptions::default()),
@@ -1849,10 +1876,16 @@ mod tests {
             },
             pm::Error::Locked(m()),
             pm::Error::InvalidId(m()),
-            pm::Error::InvalidManifest(m()),
+            pm::Error::InvalidManifest {
+                id: None,
+                message: m(),
+            },
             pm::Error::InvalidVersion(m()),
             pm::Error::InvalidArgument(m()),
-            pm::Error::VersionConflict(m()),
+            pm::Error::VersionConflict {
+                id: None,
+                message: m(),
+            },
             pm::Error::NoPreviousVersion {
                 id: "a/b".into(),
                 commit: Some("c0ffee".into()),
@@ -1930,10 +1963,10 @@ mod tests {
             | PmError::LocalChanges { message, .. }
             | PmError::Locked { message }
             | PmError::InvalidId { message }
-            | PmError::InvalidManifest { message }
+            | PmError::InvalidManifest { message, .. }
             | PmError::InvalidVersion { message }
             | PmError::InvalidArgument { message }
-            | PmError::VersionConflict { message }
+            | PmError::VersionConflict { message, .. }
             | PmError::NoPreviousVersion { message, .. }
             | PmError::NoReleases { message }
             | PmError::RepositoryNotFound { message, .. }
@@ -1974,10 +2007,20 @@ mod tests {
             | PmError::AlreadyInstalled { id, .. }
             | PmError::LocalChanges { id, .. }
             | PmError::NoPreviousVersion { id, .. }
-            | PmError::RepositoryNotFound { id, .. } => id,
+            | PmError::RepositoryNotFound { id, .. }
+            | PmError::InvalidManifest { id: Some(id), .. }
+            | PmError::VersionConflict { id: Some(id), .. } => id,
             other => panic!("no id: {other:?}"),
         };
         for error in [
+            pm::Error::InvalidManifest {
+                id: Some("x/one".into()),
+                message: "x/one: rollback manifest mismatch".into(),
+            },
+            pm::Error::VersionConflict {
+                id: Some("x/one".into()),
+                message: "x/one: history of main diverged; automatic update refused".into(),
+            },
             pm::Error::NotInstalled { id: "x/one".into() },
             pm::Error::AlreadyInstalled {
                 id: "x/one".into(),
@@ -1989,7 +2032,29 @@ mod tests {
             },
             pm::Error::RepositoryNotFound { id: "x/one".into() },
         ] {
-            assert_eq!(id_of(error.into()), "x/one");
+            let message = error.to_string();
+            let mapped = PmError::from(error);
+            assert_eq!(mapped.to_string(), message);
+            assert_eq!(id_of(mapped), "x/one");
+        }
+        for error in [
+            pm::Error::InvalidManifest {
+                id: None,
+                message: "global manifest error".into(),
+            },
+            pm::Error::VersionConflict {
+                id: None,
+                message: "global version conflict".into(),
+            },
+        ] {
+            let message = error.to_string();
+            let mapped = PmError::from(error);
+            assert_eq!(mapped.to_string(), message);
+            assert!(matches!(
+                mapped,
+                PmError::InvalidManifest { id: None, .. }
+                    | PmError::VersionConflict { id: None, .. }
+            ));
         }
         let PmError::NoPreviousVersion { commit, .. } =
             PmError::from(pm::Error::NoPreviousVersion {
@@ -2152,6 +2217,14 @@ mod tests {
 
     #[test]
     fn records_convert_field_by_field() {
+        let options: pm::Options = ManagerOptions {
+            catalog: Some("catalog.json".into()),
+            custom_ssh: true,
+        }
+        .into();
+        assert_eq!(options.catalog.as_deref(), Some("catalog.json"));
+        assert!(options.custom_ssh);
+        assert!(!pm::Options::from(ManagerOptions::default()).custom_ssh);
         let package = InstalledPackage::from(pm::InstalledPackage {
             id: "me/x".into(),
             source: "src".into(),
@@ -2312,6 +2385,7 @@ mod tests {
             deployed: vec!["me/x".into()],
             removed: vec!["vendor/x".into()],
             unmanaged: vec!["dist/custom".into()],
+            warnings: vec!["submodule warning".into()],
             skipped: vec![pm::SkippedDist {
                 id: "me/y".into(),
                 reason: "clone missing".into(),
@@ -2327,6 +2401,7 @@ mod tests {
                 )
             );
             assert_eq!(dist.unmanaged, ["dist/custom"]);
+            assert_eq!(dist.warnings, ["submodule warning"]);
             assert_eq!(
                 (dist.skipped[0].id.as_str(), dist.skipped[0].reason.as_str()),
                 ("me/y", "clone missing")
@@ -2652,12 +2727,12 @@ mod tests {
                 let _ = auth_check;
                 vec!["authCheck"]
             }),
-            ("info", {
+            ("catalog show", {
                 let _ = browse_catalog;
                 let _ = PackageManager::browse_catalog;
                 vec!["browseCatalog"]
             }),
-            ("catalog", {
+            ("catalog links", {
                 let _ = catalog_links;
                 vec!["catalogLinks"]
             }),
@@ -2743,7 +2818,14 @@ mod tests {
                 vec!["syncDistPlan", "syncDist"]
             }),
         ];
-        let exceptions = ["init", "commit", "remote", "catalog-update", "register"];
+        let exceptions = [
+            "init",
+            "commit",
+            "remote",
+            "catalog",
+            "catalog update",
+            "catalog register",
+        ];
         let cli = include_str!("../../gitpm-cli/src/main.rs");
         let block = cli
             .split("const COMMANDS: &[&str] = &[")
@@ -2988,7 +3070,8 @@ mod tests {
                     .to_string_lossy()
                     .into(),
                 ManagerOptions {
-                    catalog: Some("/nonexistent-pm-catalog".into())
+                    catalog: Some("/nonexistent-pm-catalog".into()),
+                    custom_ssh: false,
                 }
             ),
             Err(PmError::InvalidArgument { .. })
@@ -3004,7 +3087,7 @@ mod tests {
         assert!(view.packages.is_empty() && view.resolved.is_empty());
         assert!(list(missing.to_string_lossy().into(), Some("theme".into())).is_ok());
         assert!(
-            check(missing.to_string_lossy().into(), None)
+            check(missing.to_string_lossy().into(), None, false)
                 .unwrap()
                 .rows
                 .is_empty()
@@ -3025,6 +3108,7 @@ mod tests {
             dir.join("workspace").to_string_lossy().into(),
             ManagerOptions {
                 catalog: Some(catalog),
+                custom_ssh: true,
             },
         )
         .unwrap();
@@ -3053,7 +3137,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(
             root.join("state.json"),
-            r#"{"format":3,"packages":{"acme/greeter":{"source":"s","current":{"version":"0.1.0","commit":"c"},"previous":null,"enabled":false,"mode":{"pinned":"acme/greeter@0.1.0"},"metadata":{}}}}"#,
+            r#"{"format":1,"packages":{"acme/greeter":{"source":"s","current":{"version":"0.1.0","commit":"c"},"previous":null,"enabled":false,"mode":{"pinned":"acme/greeter@0.1.0"},"metadata":{}}}}"#,
         )
         .unwrap();
         let manager =
@@ -3074,7 +3158,7 @@ mod tests {
                 reference: "acme/greeter@0.1.0".into()
             })
         );
-        let report = check(root.to_string_lossy().into(), None).unwrap();
+        let report = check(root.to_string_lossy().into(), None, false).unwrap();
         assert!(matches!(report.rows[0].status, CheckStatus::Pinned));
         drop(manager);
         let _ = std::fs::remove_dir_all(&dir);
@@ -3102,7 +3186,7 @@ mod tests {
         );
         std::fs::write(
             root.join("state.json"),
-            r#"{"format":3,"packages":{"me/x":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":false,"forkOf":{"id":"vendor/x","version":"0.9.0","commit":"f"},"metadata":{}}}}"#,
+            r#"{"format":1,"packages":{"me/x":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":false,"forkOf":{"id":"vendor/x","version":"0.9.0","commit":"f"},"metadata":{}}}}"#,
         )
         .unwrap();
         let view = read_state(root.to_string_lossy().into()).unwrap();
@@ -3110,7 +3194,7 @@ mod tests {
         assert_eq!(list.len(), 1);
         assert_eq!((list[0].id.as_str(), list[0].enabled), ("me/x", false));
         assert_eq!(list[0].fork_of.as_ref().unwrap().id, "vendor/x");
-        assert_eq!(view.format, 3);
+        assert_eq!(view.format, 1);
         assert_eq!(view.packages["me/x"].current.version, "1.0.0");
 
         let manager =
@@ -3118,7 +3202,7 @@ mod tests {
         assert_eq!(manager.root(), root.to_string_lossy());
         assert_eq!(manager.list().unwrap()[0].current.version, "1.0.0");
         // Without a catalog check asks the origin; "s" is unreachable: a row, no error.
-        let report = check(root.to_string_lossy().into(), None).unwrap();
+        let report = check(root.to_string_lossy().into(), None, true).unwrap();
         assert!(matches!(
             report.rows[0].status,
             CheckStatus::OriginUnreachable

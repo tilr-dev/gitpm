@@ -26,16 +26,16 @@ pub enum Error {
     Locked(String),
     #[error("{0}")]
     InvalidId(String),
-    #[error("{0}")]
-    InvalidManifest(String),
+    #[error("{message}")]
+    InvalidManifest { id: Option<String>, message: String },
     #[error("{0}")]
     InvalidVersion(String),
     /// Bad caller input: refs, sources, URLs, conflicting options, destinations.
     #[error("{0}")]
     InvalidArgument(String),
     /// Existing release/tag/version rules forbid the operation.
-    #[error("{0}")]
-    VersionConflict(String),
+    #[error("{message}")]
+    VersionConflict { id: Option<String>, message: String },
     /// No previous revision to roll back to, or (`commit`) the previous revision's commit
     /// is no longer in the clone (pruned after the origin deleted or moved its tag).
     #[error("{}", match commit {
@@ -100,6 +100,41 @@ pub enum Error {
 }
 
 impl Error {
+    /// A manifest error outside a known package operation.
+    pub(crate) fn invalid_manifest(message: String) -> Self {
+        Self::InvalidManifest { id: None, message }
+    }
+
+    /// A version conflict outside a known package operation.
+    pub(crate) fn version_conflict(message: String) -> Self {
+        Self::VersionConflict { id: None, message }
+    }
+
+    /// Identify the package whose update or rollback was refused.
+    pub(crate) fn with_package(mut self, package: &str) -> Self {
+        if let Self::InvalidManifest { id, message } | Self::VersionConflict { id, message } =
+            &mut self
+            && id.is_none()
+        {
+            *id = Some(package.into());
+            *message = format!("{package}: {message}");
+        }
+        self
+    }
+
+    /// Put the clone's ID and its lost-work items into a `LocalChanges` message.
+    /// Applied once, where update, update all and rollback return, so the CLI
+    /// prints the message alone.
+    pub(crate) fn listing_lost_work(mut self) -> Self {
+        if let Self::LocalChanges { id, message, items } = &mut self {
+            *message = format!("{id}: {message}");
+            for item in items {
+                message.push_str(&format!("; {}", item.describe()));
+            }
+        }
+        self
+    }
+
     /// Stable snake_case identifier; never changes for an existing variant.
     pub fn kind(&self) -> &'static str {
         match self {
@@ -108,10 +143,10 @@ impl Error {
             Error::LocalChanges { .. } => "local_changes",
             Error::Locked(_) => "locked",
             Error::InvalidId(_) => "invalid_id",
-            Error::InvalidManifest(_) => "invalid_manifest",
+            Error::InvalidManifest { .. } => "invalid_manifest",
             Error::InvalidVersion(_) => "invalid_version",
             Error::InvalidArgument(_) => "invalid_argument",
-            Error::VersionConflict(_) => "version_conflict",
+            Error::VersionConflict { .. } => "version_conflict",
             Error::NoPreviousVersion { .. } => "no_previous_version",
             Error::NoReleases(_) => "no_releases",
             Error::RepositoryNotFound { .. } => "repository_not_found",
@@ -164,6 +199,12 @@ impl From<std::time::SystemTimeError> for Error {
 
 /// `ensure!(condition, Variant, "format", args...)` returns `Error::Variant(message)`.
 macro_rules! ensure {
+    ($cond:expr, InvalidManifest, $($fmt:tt)+) => {
+        if !$cond { return Err($crate::Error::invalid_manifest(format!($($fmt)+))); }
+    };
+    ($cond:expr, VersionConflict, $($fmt:tt)+) => {
+        if !$cond { return Err($crate::Error::version_conflict(format!($($fmt)+))); }
+    };
     ($cond:expr, $variant:ident, $($fmt:tt)+) => {
         if !$cond {
             return Err($crate::Error::$variant(format!($($fmt)+)));
@@ -172,6 +213,12 @@ macro_rules! ensure {
 }
 /// `fail!(Variant, "format", args...)` returns `Error::Variant(message)` immediately.
 macro_rules! fail {
+    (InvalidManifest, $($fmt:tt)+) => {
+        return Err($crate::Error::invalid_manifest(format!($($fmt)+)))
+    };
+    (VersionConflict, $($fmt:tt)+) => {
+        return Err($crate::Error::version_conflict(format!($($fmt)+)))
+    };
     ($variant:ident, $($fmt:tt)+) => {
         return Err($crate::Error::$variant(format!($($fmt)+)))
     };
@@ -224,10 +271,10 @@ mod tests {
             ),
             (Error::Locked(s()), "locked"),
             (Error::InvalidId(s()), "invalid_id"),
-            (Error::InvalidManifest(s()), "invalid_manifest"),
+            (Error::invalid_manifest(s()), "invalid_manifest"),
             (Error::InvalidVersion(s()), "invalid_version"),
             (Error::InvalidArgument(s()), "invalid_argument"),
-            (Error::VersionConflict(s()), "version_conflict"),
+            (Error::version_conflict(s()), "version_conflict"),
             (
                 Error::NoPreviousVersion {
                     id: "a/b".into(),
@@ -283,10 +330,10 @@ mod tests {
             | Error::LocalChanges { .. }
             | Error::Locked(_)
             | Error::InvalidId(_)
-            | Error::InvalidManifest(_)
+            | Error::InvalidManifest { .. }
             | Error::InvalidVersion(_)
             | Error::InvalidArgument(_)
-            | Error::VersionConflict(_)
+            | Error::VersionConflict { .. }
             | Error::NoPreviousVersion { .. }
             | Error::NoReleases(_)
             | Error::RepositoryNotFound { .. }
@@ -303,6 +350,40 @@ mod tests {
             | Error::InvalidData(_)
             | Error::Io(_) => {}
         }
+    }
+
+    #[test]
+    fn package_errors_name_the_package() {
+        for error in [
+            Error::invalid_manifest("manifest mismatch".into()),
+            Error::version_conflict("history diverged".into()),
+        ] {
+            let kind = error.kind();
+            let message = error.to_string();
+            assert!(matches!(
+                &error,
+                Error::InvalidManifest { id: None, .. } | Error::VersionConflict { id: None, .. }
+            ));
+            let scoped = error.with_package("dan/demo");
+            assert_eq!(scoped.kind(), kind);
+            assert_eq!(scoped.to_string(), format!("dan/demo: {message}"));
+            assert!(matches!(&scoped,
+                Error::InvalidManifest { id: Some(id), .. } | Error::VersionConflict { id: Some(id), .. }
+                if id == "dan/demo"));
+        }
+        let error = Error::LocalChanges {
+            id: "dan/demo".into(),
+            message: "local work blocks update".into(),
+            items: vec![LostWork::Untracked {
+                path: "extra.js".into(),
+            }],
+        }
+        .with_package("dan/demo")
+        .listing_lost_work();
+        assert_eq!(
+            error.to_string(),
+            "dan/demo: local work blocks update; untracked: extra.js"
+        );
     }
 
     #[test]
@@ -431,7 +512,8 @@ mod tests {
             ("deps.rs", include_str!("deps.rs")),
             ("error.rs", include_str!("error.rs")),
             ("lib.rs", include_str!("lib.rs")),
-            ("exec.rs", include_str!("exec.rs")),
+            ("transport/mod.rs", include_str!("transport/mod.rs")),
+            ("transport/system.rs", include_str!("transport/system.rs")),
             ("identity.rs", include_str!("identity.rs")),
             ("list.rs", include_str!("list.rs")),
             ("lock.rs", include_str!("lock.rs")),

@@ -61,7 +61,7 @@ $ cat gitpm-workspace/dist/acme/greeter/index.js
 export const greeting = "greeter v1";
 $ gitpm list
 {
-  "format": 3,
+  "format": 1,
   "packages": {
     "acme/greeter": {
       "source": "/…/greeter",
@@ -154,7 +154,7 @@ down). A tag or commit may go back to an older version or keep the installed one
 another commit (an explicit `--ref` of a moved release tag warns `release tag ID@V now
 points to COMMIT`); a
 branch whose history no longer contains the installed commit, or that the origin no
-longer has, is refused (`version_conflict`, "history of main diverged; automatic update
+longer has, is refused (`version_conflict`, "ID: history of main diverged; automatic update
 refused"); `update ID --ref BRANCH` follows it again after a force-push. `previous`
 records the mode it had, so `rollback` restores revision and mode together. `update all`
 takes no `--ref`, `--dev` or `--release`: it follows each package's mode (pinned ones
@@ -206,10 +206,10 @@ everything and tags:
 ```console
 $ export GITPM_CATALOG=$PWD/catalog
 $ echo './greeter' > sources.txt
-$ gitpm catalog-update
+$ gitpm catalog update
 Reading releases: /…/greeter
 Catalog ready: 2 release(s) checked from sources.
-$ gitpm info
+$ gitpm catalog show
 Catalog: /…/catalog
 Type: local folder/JSON
 Verified: no (discovery only)
@@ -232,7 +232,7 @@ $ echo 'export const greeting = "hello v2";' > hello/dist/index.js
 $ gitpm commit hello 0.1.1
 acme/hello committed 0.1.1 (local commit and tag acme/hello@0.1.1)
 $ echo './hello' >> sources.txt
-$ gitpm catalog-update
+$ gitpm catalog update
 Reading releases: /…/greeter
 Reading releases: /…/hello
 Catalog ready: 4 release(s) checked from sources.
@@ -254,13 +254,13 @@ Updates: 0. Nothing was changed.
 #### Verified catalogs
 
 A catalog is a guarantor only when its owner says so: `"verified": true` in the
-top-level `catalog.json`, set by hand (no command sets it; `register` keeps it). Any other
+top-level `catalog.json`, set by hand (no command sets it; `catalog register` keeps it). Any other
 catalog serves discovery only: `install-catalog` still installs exactly the release record
 (commit, manifest and file hashes are checked), but records nothing, and the package then
 updates from its origin like a direct install.
 
-- Versions enter a verified catalog only one by one through `register` (a manual act of
-  verification); `catalog-update` into it fails with `invalid_argument` ("a verified
+- Versions enter a verified catalog only one by one through `catalog register` (a manual act of
+  verification); `catalog update` into it fails with `invalid_argument` ("a verified
   catalog takes versions only one by one through register") and changes nothing. An ID
   stays bound to the source that first registered it, which is the namespace ownership.
 - A package installed from a verified catalog (and each dependency pulled from it) is
@@ -288,7 +288,7 @@ updates from its origin like a direct install.
 - One verified catalog per workspace: installing from a second verified catalog is refused
   with `catalog` ("… mixing verified catalogs is not supported"); unverified catalogs are
   exempt. `check` prints `Catalog: LOCATION (verified)` or `(unverified: discovery only)`
-  and `info` a `Verified:` line.
+  and `catalog show` a `Verified:` line.
 
 ```console
 $ gitpm install-catalog acme/hello            # catalog.json has "verified": true
@@ -300,17 +300,16 @@ acme/hello detached from catalog /…/catalog/catalog.json; it now follows its o
 acme/hello updated 0.1.1 → 0.2.0 (major)
 ```
 
-`gitpm fork ID --ns NAMESPACE --into DIR` copies an installed package (with its Git
-history and local edits) into the fork repository `DIR` under the ID `NAMESPACE/<same
-name>`: only the namespace changes, so the original and the fork can be installed side by
-side. `DIR` is always given (a new folder; or an existing repository with `gitpm.json`,
-see below); it is never derived from the ID. The output lists the next steps (commit and
+`gitpm fork ID --ns NAMESPACE --into DIR` clones the recorded source of an installed
+package with Git history at its installed revision into `DIR`. All packages in that
+repository receive IDs `NAMESPACE/<same name>`: only the namespace changes, so the original and the fork can be installed side by
+side. `DIR` must be a new folder; it is never derived from the ID. The output lists the next steps (commit and
 tag, install, replace):
 
 ```console
 $ gitpm fork acme/hello --ns me --into hello-fork
 Fork created: /…/hello-fork
-Git history and local edits are kept; the original repository is the upstream remote.
+Git history is cloned from the recorded source; the original repository is the upstream remote.
 me/hello forked from acme/hello (repository root)
 forkOf records each origin; replaces says the fork can stand in for it (used only
 after an explicit replace). The original installations are unchanged.
@@ -328,8 +327,7 @@ acme/hello uninstalled
 ```
 
 `fork ID --ns NAMESPACE --into DIR --replace` does all of it at once: fork, release the
-fork right away (tag `NAMESPACE/NAME@VERSION`; `--version V`, default the forked version;
-local edits of the installed copy are committed with it), install it and replace `ID`
+fork right away (tag `NAMESPACE/NAME@VERSION`; `--version V`, default the forked version), install it and replace `ID`
 with it for every consumer. Incompatible consumers are handled as by `replace`: asked on a
 TTY, otherwise only with `--force`. The fork folder is never removed again: when the
 release, install or replace step fails, the command says per package what is left and how
@@ -341,11 +339,12 @@ the library returns the replacement as pending; the CLI shows its warning, asks 
 and applies it with the library's resume call.
 
 Output: stdout carries the result lines (one per affected package for workspace-mutating
-commands, JSON for `list`, `catalog` and `register`); everything else goes to stderr:
+commands, JSON for `list`, `catalog links` and `catalog register`); everything else goes to stderr:
 `Warning: …` lines taken from the result (ignored metadata keys, skipped release tags,
 the dist report), `[y/N]` prompts with what they list, and failures. A failure prints
 `Error: MESSAGE`, for a library error also `Error kind: KIND` (and one `  - item` line
-per lost item for `local_changes`, and for an uninstall's `has_dependents`) and, where a gitpm command helps, one `Hint: …` line
+per lost item for `local_changes` outside update and rollback, whose message already
+lists them, and for an uninstall's `has_dependents`) and, where a gitpm command helps, one `Hint: …` line
 naming it; the exit status is 1. The CLI checks only the command line (unknown, repeated
 or misplaced options, value sets, argument counts); domain rules and option
 combinations are the library's, which also returns everything the CLI prints, so a host
@@ -366,9 +365,9 @@ folder are gone; `init --in REPO` is now `init --into DIR`.
 Changed in 0.5:
 
 - [Plugin metadata](#package-metadata): `title`, `description`, `provides`, `tags` in
-  `plugin.json`, reported by `list` (and `list --provides SERVICE`), `info` and the FFI;
-  `init` writes a `title`. `info`/`browse` now read each listed plugin's latest
-  `release.json` (one extra HTTP request per plugin on a remote catalog, at most 40).
+  `plugin.json`, reported by `list` (and `list --provides SERVICE`), `catalog show` and the FFI;
+  `init` writes a `title`. Catalog overviews read each listed package's latest
+  `release.json`.
 - Output: every mutating command prints one line per affected package, `ID <verb> …`
   (detail lines such as `Fork created:` stay as they were); `OK:` lines are gone from
   all commands (scripts that match them must match the new lines; `Warning:` lines on
@@ -395,7 +394,7 @@ Changed in 0.5:
 - `gitpm COMMAND --help` (or `-h`) prints that command's usage; builds from a Git
   checkout that is not at a release tag report `gitpm --version` as `VERSION-dev+HASH`.
 - Metadata types: `commit` refuses a `plugin.json` whose metadata keys have the wrong
-  type (`invalid_manifest`); `install`, `update`, `rollback`, `fork`, `catalog-update`
+  type (`invalid_manifest`); `install`, `update`, `rollback`, `fork`, `catalog update`
   and `list` accept such manifests (published before 0.5) and treat those keys as
   absent, with a warning on stderr for install and update.
 - `init --multi` makes a new (or empty) folder a multi-package repository;
@@ -413,6 +412,43 @@ Changed in 0.5:
 
 Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING**):
 
+- **BREAKING:** Catalog directory files (`catalog.json`) and package indexes use
+  schema 1 (gitpm 0.5 wrote schema 2). Any other schema is refused with `catalog`.
+  Migration: regenerate the catalog with `gitpm catalog update` into an empty folder.
+- Catalog package indexes now carry a `latest` release summary without changing the
+  schema number. Regenerate catalogs with `gitpm catalog update`. Overviews read one
+  index per listed package and no `release.json`; installs still verify release records.
+
+- Catalog commands: `info` → `catalog show`, bare `catalog` → `catalog links`,
+  `catalog-update` → `catalog update`, `register` → `catalog register`. Old spellings
+  have no aliases.
+
+
+- `commit` and `init` into an existing repository now
+  refuse a missing configured Git identity with `invalid_argument` instead of using
+  a name or email derived by Git. Migration: set `user.name` and `user.email` in Git
+  config (or provide both author and committer identity environment variables).
+- `fork` clones the recorded source at installed revisions and keeps submodule links.
+  Local installation edits are excluded. An existing `--into` repository now fails
+  with `invalid_argument` (exit 1, previously success with exit 0). Fork the entire
+  repository into a new folder instead. Fork now needs access to the recorded
+  source. `Manager::fork_replace` and FFI `forkAndReplace` now return
+  `PackageForkReplacement` (previously `ForkReplacement`) so sibling failures and
+  pending confirmations are visible. A relative or remote-helper recorded source is refused with `invalid_argument`
+  (exit 1, previously success with exit 0 without `forkOf.source`).
+- `auth::check` now takes `&Options`; the separate `AuthOptions` was removed.
+  `Options` now includes `custom_ssh` (UniFFI `ManagerOptions.customSsh`, default false).
+  Set it when the host supplies `GIT_SSH` or `GIT_SSH_COMMAND`; the CLI does this for
+  every command. Auth checks and workspace Git commands share one batch SSH policy
+  with keepalives and `StrictHostKeyChecking=accept-new`. The library never reads
+  these environment variables. Standalone catalog and check operations offer
+  `*_with_options` variants; their existing entry points use default options. FFI
+  `check` takes `customSsh`.
+- Submodules (gitlinks) inside a package's `dist/` become empty directories without
+  fetching their contents. Registration, catalog update and every deploy warn that
+  their files will not be installed, probably a mistake: commit built files to
+  `dist/` instead of a submodule.
+  Migration: include the dependency's files in the committed `dist/` tree.
 - Package IDs are always `namespace/name`; an unscoped ID (`demo`) is refused with
   `invalid_id` everywhere (manifests, dependencies, state, commands). `update all` is
   always the joint upgrade, as no ID can be `all`. Migration: re-create the package
@@ -422,7 +458,7 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   single- and multi-package repositories, and are ignored without a warning (a
   repository with only `v1.0.0` fails install with `no_releases`); `init`, `commit` and
   `fork --replace` never create them. Migration: tag `ID@VERSION` on the release commits.
-- `state.json` format 3: installed packages are under `packages` (was `plugins`), own
+- `state.json` format 1: installed packages are under `packages` (was `plugins`), own
   clones in the workspace folder `packages/` (was `plugins/`). Any other format, or a
   file without `format`, is refused with `unsupported` and never rewritten; there is no
   migration. Migration: re-create the workspace (install its packages again into a new
@@ -439,7 +475,7 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   | `catalog::PluginSummary` | `catalog::PackageSummary` |
   | `catalog::Plugin`, `Catalog.plugins` (result of `selected`) | `catalog::Package`, `Catalog.packages` |
   | `catalog::OverviewItem::Plugin { depth, plugin }` | `OverviewItem::Package { depth, package }` |
-  | `catalog::CatalogFormat`, `CatalogOverview.format` | removed (only the v2 tree exists) |
+  | `catalog::CatalogFormat`, `CatalogOverview.format` | removed (only the static file tree exists) |
   | `State::installed_in(root)` (read metadata from the clone) | removed; use `State::installed()` |
   | `Installed.metadata: Option<Metadata>` | `Installed.metadata: Metadata`, required in `state.json` (`invalid_data` without it) |
   | FFI `PluginManager` | `PackageManager` |
@@ -451,11 +487,11 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
 - v1 catalogs are refused: a monolithic `catalog.json` (`{"plugins": …}`) fails every
   read and write with `catalog`; `legacy/<id>/` folders and releases without file
   hashes are gone (`catalog release of ID has no file hashes`). `migrate-catalog` and
-  `catalog::migrate` are removed; `info` no longer prints a `Format:` line. Migration:
-  regenerate the catalog with `catalog-update` into an empty folder.
+  `catalog::migrate` are removed; `catalog show` no longer prints a `Format:` line. Migration:
+  regenerate the catalog with `catalog update` into an empty folder.
 - The CLI alias `create` is removed (`init` only); `create` and `migrate-catalog` fail
   with `unknown command: X; use --help`.
-- `list` takes metadata only from the state record; `metadata` is required in every format-3 record (a record without it is `invalid_data`).
+- `list` takes metadata only from the state record; `metadata` is required in every format-1 record (a record without it is `invalid_data`).
 - A new fork no longer gets the Git config keys `pm.forkBase`/`pm.forkVersion` (nothing
   read them); `forkOf` in the manifest is the only fork provenance.
 - `gitpm-ffi` carries the library version (0.6.0 with this release) and promises no
@@ -464,17 +500,22 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   `Options.catalog`) is refused with `invalid_argument` ("catalog location PATH does not
   exist") before anything is created; it no longer counts as "no catalog" for `install`.
   `Manager::open_with` validates its Options first. The free catalog readers do the same:
-  `check`, `info`/`browse`, `catalog`, `catalog_release`/`lookup` on a missing local
+  `check`, `catalog show`/`browse`, `catalog links`, `catalog_release`/`lookup` on a missing local
   location fail with `invalid_argument` (was `catalog` "catalog not found"). Migration:
-  create the catalog folder (`catalog-update`/`register` create it) or drop the setting.
-- `gitpm catalog` prints the library's typed directory links `{"schema": 2,
+  create the catalog folder (`catalog update`/`catalog register` create it) or drop the setting.
+- `gitpm catalog links` prints the library's typed directory links `{"schema": 1,
   "directories": {…}}` (`catalog::links`, the same as FFI `catalogLinks`) instead of the
-  raw `catalog.json`; a v1 or otherwise invalid root fails with `catalog`.
+  raw `catalog.json`; a monolithic (v1) catalog or otherwise invalid root fails with `catalog`.
 - `uninstall` and `forget` of a recorded package whose clone is gone drop its record and
   `dist/` without confirmation (was `repository_not_found`; `forget` keeps no `forgotten`
   record then); the CLI warning for such a package says `uninstall or forget ID to drop
   its record` (was `run \`gitpm sync-dist\``, which could not deploy it); `restore` of a forgotten package whose shared clone is gone fails
   with `repository_not_found` (was `workspace`), like any restore without a clone.
+- Active packages below a file or symlink at `dist/<namespace>` are now reported in
+  `DistSync.skipped` with reason `dist/<namespace> is not a folder`. Mutating commands
+  warn `Warning: ID: dist not deployed (dist/<namespace> is not a folder)`;
+  `sync-dist` now exits 1 with `not_deployed` for these packages (previously 0), with a
+  hint to remove or rename the blocked path and run `gitpm sync-dist` again.
 - `sync-dist` leaving active packages undeployed is the library error `not_deployed` (new
   kind; `Manager::sync_dist` returns `Err(Error::NotDeployed { sync, .. })` after
   committing what it could) instead of `Ok` with `skipped` that the CLI turned into a
@@ -538,7 +579,8 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
 - `fork` writes `forkOf.source` (the original's recorded source) into the fork's
   `plugin.json`; `forkOf` is `{id, version, commit, source?}` (`source` optional when
   reading; `invalid_manifest` when empty, relative or a remote helper such as `ext::…`;
-  `fork` leaves it out when the original's source is not a URL or an absolute path). FFI
+  `fork` refuses an unsupported recorded source with `invalid_argument` rather than
+  omitting `forkOf.source`). FFI
   `ForkOf` gains `source`. A gitpm before this
   change refuses such a manifest or state record (unknown key in `forkOf`).
 - `--channel stable|dev` is removed, without an alias (`unknown option: --channel; use
@@ -568,7 +610,7 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   `branch_gone` in `update all`; `ID already installed (V, pinned at REF)` names the
   recorded mode, and `--ref`/`--dev` asking for another mode adds the update hint.
 - `state.json` records gain `mode` (omitted in release mode, else `{"pinned": REF}` or
-  `{"branch": NAME}`); the format stays 3 (no released gitpm wrote format 3 without it).
+  `{"branch": NAME}`); the format stays 1 (no released gitpm wrote format 1 without it).
   `forgotten` now keeps the record of every forgotten package, own clones included.
 - `restore` records the forgotten package as it was: revisions (`previous` kept),
   `catalog`, `enabled` and mode, for own and shared clones alike (an own clone used to be
@@ -688,14 +730,14 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   `invalid_data`, and the `replace --back` line always ends `; FORK stays installed and
   enabled (…)`. Migration: remove the entry from `replacements` in `state.json`.
 - No tag policing: a moved (retagged) or deleted release tag no longer fails `update`,
-  `update all`, an install or update of a sibling in a shared clone, or `catalog-update`
+  `update all`, an install or update of a sibling in a shared clone, or `catalog update`
   with `version_conflict` ("release tag … changed commit", "release commit changed for
   installed version", "latest release is older than installed version; downgrading
   requires an explicit ref", "release ID@V changed; refusing to replace published
   version" are gone). Release-mode updates compare versions only and keep the installed
   commit; a moved or retracted installed release is up to date with a warning in
   `RevisionChange.warnings` and the new `Unchanged.warnings` (FFI `Unchanged.warnings`).
-  `catalog-update` never replaces a published record: it keeps it and reports
+  `catalog update` never replaces a published record: it keeps it and reports
   `UpdateSourcesReport.warnings` (`release ID@V: tag now points to COMMIT; the published
   record is kept`, `release ID@V differs from the published record; the published record
   is kept`). `Error::NoPreviousVersion` gains `commit` (FFI `PmError.NoPreviousVersion
@@ -712,7 +754,7 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   longer records `packages.<id>.catalog` on `install-catalog` (or for pulled
   dependencies), so its packages update from their origins and the one-catalog rule
   ignores it; the refusal now says "mixing verified catalogs is not supported".
-  `catalog-update` into a verified catalog is refused with `invalid_argument`. Packages
+  `catalog update` into a verified catalog is refused with `invalid_argument`. Packages
   from a verified catalog update only to its versions, hash-checked (`catalog` on a
   mismatch); `update ID --detach` drops the protection. Library: `Manager::update_with(id,
   target, UpdateOptions { detach })`, `RevisionChange.detached`,
@@ -725,9 +767,9 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   `UnchangedReason.notInCatalog(version)`, `UnchangedReason.catalogUnavailable(reason)`,
   `CatalogOverview.verified`,
   `CheckStatus.upstreamNotInCatalog`, `CheckRow.originLatest`,
-  `CheckReport.catalogVerified`. `info` prints `Verified: yes|no …`, the `check` header
+  `CheckReport.catalogVerified`. `catalog show` prints `Verified: yes|no …`, the `check` header
   `Catalog: LOCATION (verified)` or `(unverified: discovery only)`. Migration: add
-  `"verified": true` to a catalog you vouch for and register its versions with `register`;
+  `"verified": true` to a catalog you vouch for and register its versions with `catalog register`;
   a record that names an unverified catalog (written by an earlier gitpm) is still
   protected and its updates fail with `catalog` ("… is no longer verified") until you run
   `update ID --detach` (or verify that catalog).
@@ -754,6 +796,14 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   (a newer pre-release that is not offered; the status ends with `; pre-release V`).
   FFI: `RevisionChange.major`, `CheckRow.major`, `CheckRow.prerelease`. Migration: hosts
   that parse these lines accept the ` (major)` suffix.
+- `auth check` (`auth::check`, FFI `authCheck`) is bounded: its `git ls-remote` and the
+  `core.sshCommand` lookup it makes first are each killed at 10 s and fail with `git`
+  ("git ls-remote -- SOURCE: timed out after 10s"). Before, a server that accepted the
+  connection and sent nothing failed with `auth` after Git's own 20-second low-speed
+  limit on HTTP(S), and was waited for without end on `git://` and on a stalled SSH
+  connection. It uses the same batch SSH policy as clones and fetches; the 10-second
+  kill also bounds SSH stalls. Other failures of the check are still `auth`. Migration: hosts that treat every failed check as `auth` also handle `git`
+  (the server did not answer in time).
 
 ## Working without a catalog
 
@@ -800,18 +850,26 @@ A fork records the original's source in `forkOf.source`, so `check` shows the or
 newest release without a catalog too: `me/hello: fork of acme/hello (base 1.0.0); original
 at origin: 1.1.0 — newer than the fork base` (or `original: unreachable (REASON)`).
 
-Catalog commands (`info`, `catalog`, `catalog-update`, `register`) and
+Catalog commands (`catalog show`, `catalog links`, `catalog update`, `catalog register`) and
 `install-catalog` need a catalog.
 
 ## Workspace layout and `dist/`
 
 ```text
-state.json              {"format": 3, "packages": …}: installed packages, replacements, forgotten records
+state.json              {"format": 1, "packages": …}: installed packages, replacements, forgotten records
 packages/<ns>/<name>/   own clone of a root package
 repos/<name>-<hash>/    shared clone of a multi-package source
 dist/<ns>/<name>/       deployed files of an active package
 .pm-txn/                an interrupted operation (finished or discarded on open)
 ```
+
+A new workspace root may be empty or contain only `.DS_Store`; Finder metadata is
+preserved. New workspaces publish `state.json` by writing `.state.json-<pid>-<n>.tmp`
+inside the root and renaming it into place before creating `packages/` and `dist/`,
+so the root may be a mount point of its own. An interrupted write leaves no partial
+state: when the root holds nothing but such files (and `.DS_Store`), the next open
+removes them under the workspace lock and finishes creation. Any other content
+without `state.json` is refused with `workspace`, untouched.
 
 `dist/<namespace>/<name>/` exists exactly when the package is installed, enabled and not
 replaced by another package (`State::is_active`). A host loads every package folder under
@@ -822,11 +880,17 @@ not derive it. `enabled` is not `active`: a replaced package stays `enabled: tru
 `active: false`. `list --provides SERVICE` keeps inactive packages (it is a status view).
 
 - Every deploy (install, update, rollback, restore, `replace --back`, enable, reconcile)
-  copies `<path>/dist` of the resolved commit from the clone's Git objects (one
-  `git archive`), never the working tree: uncommitted edits in a clone are not deployed,
-  nested folders and the executable bit are kept, symlinks are refused, and a revision
+  copies `<path>/dist` of the resolved commit from the clone's Git objects using
+  `git ls-tree` and `git cat-file`, never the working tree: uncommitted edits in a clone are not deployed,
+  nested folders and the executable bit are kept. Symlinks are refused with
+  `unsupported`; submodules become empty directories and produce an actionable
+  warning (also during catalog registration and update). A revision
   without that folder is refused (`invalid_manifest`, "release … has no dist/ folder")
   instead of deploying an empty folder.
+  Git attributes such as `export-ignore` and `export-subst` are not applied: all
+  committed files keep their committed bytes. Catalog hashes are calculated from
+  the staged export, covering exactly the bytes deployed; verified catalog
+  installs and protected updates check that export before committing the transaction.
 - `replace X --with Y` removes `dist/X/`; nothing of `Y` is copied there; `dist/Y/` stays.
   `X` must be installed (`not_installed`) and `Y` enabled (`invalid_argument`: "Y is
   disabled; enable it first"), so a replacement never leaves nothing loaded. `replace X --back` deploys `dist/X/` again from
@@ -857,14 +921,17 @@ transaction: it deploys the missing folders of active packages and removes those
 inactive ones (disabled, replaced, forgotten or retained clones); folders of no known
 package are left alone (the CLI warns about them on stderr), an existing folder of an
 active package is not rewritten. A namespace path under `dist/` that is a symlink or a
-file is reported the same way and nothing is written below it. An active package whose
+file is reported the same way and nothing is written below it. Active packages below
+it are skipped with `Warning: ID: dist not deployed (dist/<namespace> is not a folder)`;
+unrelated commands succeed, while an operation deploying or removing a package below
+that path fails with `workspace`. An active package whose
 clone or installed commit is gone is skipped, so it does not block an unrelated command;
 the CLI warns `Warning: ID: dist not deployed (clone missing); uninstall or forget ID to
 drop its record` (both drop a record whose clone is gone without asking; `sync-dist` never
 re-clones), decided by `SkippedDist.clone_missing`; a missing installed commit gets only
 `Warning: ID: dist not deployed (installed commit missing from its clone)`.
 Any other deploy error fails the command. Every mutating result carries this report as
-`dist` (`DistSync`: `deployed`, `removed`, `unmanaged`, `skipped`; `enable`, `disable`,
+`dist` (`DistSync`: `deployed`, `removed`, `unmanaged`, `skipped`, `warnings`; `enable`, `disable`,
 `forget` and `uninstall` return it directly); the CLI prints its warnings from there and
 an FFI host reads the same fields.
 Read-only commands, `list` and `check`, never reconcile `dist/` and open nothing: they
@@ -875,6 +942,9 @@ while another process holds the workspace.
 reconcile, as an explicit repair. It syncs and commits every package it can; when an
 active package stays undeployed it then fails with `not_deployed` ("N package(s) not
 deployed: IDS", the report in `Error::NotDeployed.sync`), exit status 1.
+This includes packages below a file or symlink at `dist/<namespace>` (previously
+`sync-dist` exited 0 for them). The CLI hint tells you to remove or rename that path
+and run `gitpm sync-dist` again; uninstall/forget advice applies only to a missing clone.
 
 ## Multi-package repositories
 
@@ -900,7 +970,7 @@ packages/theme/dist/…
   symlink); packages cannot nest. Deployed files must be plain files, as for a root
   package. Only the package being installed, updated or registered must be valid at its
   commit: a defective sibling folder (no `dist/`, bad ID, …) does not block it
-  (`catalog-update` reports it as a warning and publishes the other packages).
+  (`catalog update` reports it as a warning and publishes the other packages).
 - Releases are per package: tag `ID@VERSION` (`tilr/store@1.2.0`), so the packages of one
   repository release independently. The package set is read from `gitpm.json` at the
   tagged commit, so a package may move to another folder between releases. Other tags
@@ -938,9 +1008,9 @@ packages/theme/dist/…
   again is refused until it is restored or uninstalled (as for a forgotten root package).
   If the clone is gone, `uninstall` drops the record, and `restore` says so.
 - Catalog: a release of a package carries `"path": "packages/store"` next to `source` and
-  `commit` (absent for a root package). `catalog-update` publishes every package listed in
+  `commit` (absent for a root package). `catalog update` publishes every package listed in
   `gitpm.json` at the source's HEAD from its `ID@VERSION` tags (one source line, all
-  packages); `register SRC --ref REF --package ID` registers one (an `ID@VERSION` ref names
+  packages); `catalog register SRC --ref REF --package ID` registers one (an `ID@VERSION` ref names
   it).
 - Authoring: `gitpm init NAMESPACE/NAME --into DIR` adds a package with release 0.1.0
   to a repository with `gitpm.json`; an existing repository without `gitpm.json` gets that
@@ -955,51 +1025,50 @@ packages/theme/dist/…
   second `init` is refused naming the package that has the folder). Only `gitpm.json` and
   the new folder are committed; `gitpm.json` must have no uncommitted changes. If only the
   tag fails, the commit stays and the error names the tag to create. gitpm never writes
-  a Git identity into an existing repository (no identity: refused as by `commit`); only a
+  a Git identity into an existing repository: without configured `user.name` and
+  `user.email` (or author and committer identity environment variables), `commit`,
+  and `init` into it fail with `invalid_argument` and
+  `no Git identity configured; set user.name and user.email`. Git's inferred login
+  name and host email are not accepted. A retry that only creates a failed release
+  tag needs no identity. Only a
   repository it creates itself (a new `init` folder, a new fork) gets a local demo identity
   when the user has none. `gitpm commit REPO VERSION --package ID` releases one
   package: like for a root package it stages ALL changes of the repository (not only
   that folder), commits and tags `ID@VERSION`.
-- `gitpm fork ID [ID...] --ns NAMESPACE --into DIR` forks installed packages of one
-  repository into the fork repository `DIR`; each gets the ID `NAMESPACE/<same name>`.
-  One package is the one-package case of the same command. All IDs must be installed
+- `gitpm fork ID [ID...] --ns NAMESPACE --into DIR` forks the entire source
+  repository into `DIR`; every package gets the ID `NAMESPACE/<same name>`, including
+  packages that are not installed. The IDs identify the source, never a subset of
+  packages. All input IDs must be installed
   from the same repository (otherwise the error lists each ID with its source).
-  - `DIR`: has a `gitpm.json` → the packages are added to it; does not exist → the fork
-    is created there; anything else is refused, as are a `DIR` inside the workspace, with
-    `..`, the source repository itself or a folder inside it. A failed new fork leaves no
-    folder behind (parents it created included).
-  - New fork: a copy of the source repository with history and local edits (upstream
-    remote = the source), on a new `fork` branch (attached HEAD) starting at the newest
-    installed revision of the forked packages (the others must be its ancestors); a
-    package installed at an older revision gets its folder from that revision (refused
-    if that folder has local edits in the clone, which belong to another revision). The
-    folders of packages that are not forked are **removed** from the tree, not just
-    unlisted, and `gitpm.json` lists exactly the forked folders, so the fork cannot
-    release a sibling ID even after someone edits `gitpm.json`. One commit `Fork A, B as
-    me/A, me/B` records it (hooks are not run in this repository gitpm creates); local
-    edits stay uncommitted. A root package (no
-    `gitpm.json`) stays the root of its fork: only its `plugin.json` changes (local
-    commits on top of its installed revision are kept), and it cannot be added to a
-    multi-package repository.
-  - Adding to an existing fork: the package folders (files of the installed revisions,
-    plain files only) are added at their original folders (refused if a folder or ID is
-    already there) and to `gitpm.json` unless a pattern covers them, in one commit of only
-    those paths. `gitpm.json` and the manifests that change must have no uncommitted
-    changes. Remotes and other files are left alone; nothing temporary is written into
-    the repository, and a failed commit (a hook, say) restores it.
-  - Dependencies: a dependency on a package forked in the same command, or (when adding)
-    on an original that a package already in the repository forks (`forkOf` or
-    `replaces`), is rewritten to the fork; packages already in the repository that depend
-    on a newly forked original are rewritten too. The requirement is kept when the fork's
-    version (its manifest version, or `--version V`) satisfies it, else it becomes `^V`;
-    each rewrite is printed (`Dependency: me/panel now depends on me/theme ^1.0 (was
-    tilr/theme)`). Dependencies on packages that are not forked keep the original ID. A
-    manifest that depends on both an original and its fork is refused.
+  - `DIR` must be a new folder outside the workspace, without `..`, and outside
+    the source repository. Existing destinations are refused. A failed fork leaves no
+    folder behind, including parents it created.
+  - Git clones the source recorded in the installation metadata with its history,
+    using the original source as `upstream`. The new attached `fork` branch starts at
+    the newest installed revision of packages from that source (the others must be
+    its ancestors); each installed package's folder comes from its recorded revision.
+    Other packages come from the starting revision. Local commits and edits of
+    the installed clone are ignored and left unchanged. All sibling packages and
+    other repository files are retained; `gitpm.json` preserves the original layout. One commit records
+    the new IDs and metadata; user hooks are not run for this initial commit.
+    A root package stays at the repository root.
+  - Submodules remain Git links at their recorded commits with `.gitmodules`
+    configuration. Run `git -C DIR submodule update --init` to populate them.
+    Installation still deploys committed package `dist/`; fork does not build sources
+    or enable dev mode.
+  - Dependencies between all packages in the repository are rewritten to their fork IDs. The
+    requirement is kept when satisfied by the fork's version (or `--version V`), else
+    it becomes `^V`; each rewrite is printed. Dependencies on other packages keep
+    their original IDs. Depending on both an original and its fork is refused.
   - `--replace [--version V] [--force]`: one release commit of the forked folders (with
     `version` set in each manifest when `--version` is given) and one tag
     `NAMESPACE/NAME@VERSION` per package, then each package is installed (dependencies
     first; a dependency cycle between the forked packages is refused before anything is
-    created) and replaces its original. If the release fails, nothing is installed. A
+    created) and replaces its original when that original is installed. Uninstalled
+    siblings are installed without creating a replacement binding. Release metadata is checked strictly
+    (`invalid_manifest` for a wrong type). A failed release commit restores the
+    manifests and index; release tags are created all or none. If the release fails,
+    nothing is installed. A
     failed install or replace of one package does not stop the others; the fork is never
     removed, the command prints per package what failed and how to finish or undo, and
     exits with status 1 and the first error's kind.
@@ -1007,16 +1076,12 @@ packages/theme/dist/…
 ```console
 $ gitpm fork tilr/theme tilr/panel --ns me --into forks/me-packages
 Fork created: /…/forks/me-packages
-Git history and local edits are kept; the original repository is the upstream remote.
-Only the forked packages are left in the tree and in gitpm.json.
+Git history is cloned from the recorded source; the original repository is the upstream remote.
+All repository packages are forked; the complete tree and gitpm.json are preserved.
 me/theme forked from tilr/theme (packages/theme)
 me/panel forked from tilr/panel (packages/panel)
 Dependency: me/panel now depends on me/theme ^1.0 (was tilr/theme)
 …
-$ gitpm fork tilr/dock --ns me --into forks/me-packages   # add one more later
-Packages added to: /…/forks/me-packages
-me/dock forked from tilr/dock (packages/dock)
-Dependency: me/dock now depends on me/theme ^1.0 (was tilr/theme)
 ```
 
 ```console
@@ -1045,7 +1110,7 @@ all commands, `gitpm COMMAND --help` one). There is no config file; the old `PM_
 | `--sources FILE` | `GITPM_SOURCES` | `./sources.txt` |
 
 Publishing a catalog is up to you: it is a folder of static files, so any static host
-works (`catalog-update` and `register` write only to a local folder; HTTP(S) catalogs are
+works (`catalog update` and `catalog register` write only to a local folder; HTTP(S) catalogs are
 read-only).
 
 When you upload an updated catalog, go in an order that never shows readers a half-updated
@@ -1053,6 +1118,13 @@ tree: new `versions/<V>/release.json` files first, then each package's
 `namespaces/<ns>/<name>/plugin.json` index, then the directory files from the deepest level
 up, and the root `catalog.json` last. Never overwrite a `release.json` that is already
 published, never drop versions from an index, and do not delete objects as part of an update.
+
+Each package index has `schema: 1`, `id`, `source`, `versions` (version-to-release
+links), and `latest`: `{version, title, description, provides, tags}`. The summary
+selects the newest stable release, or the newest prerelease when no stable release
+exists. Missing strings are `null`, missing lists are `[]`. Writers publish the summary
+and version links together under the catalog lock with an atomic rename. Directory
+files remain links only.
 
 ## Package metadata
 
@@ -1068,8 +1140,9 @@ published, never drop versions from an index, and do not delete objects as part 
 gitpm only stores and reports them; it never interprets them (no exclusivity, no
 "one theme at a time": that is up to the host, which can, for example, group installed
 packages into slots by what they `provide`, without cloning or running anything).
-Authoring is strict, everything else lenient: `commit` refuses a key of another type
-(`invalid_manifest`); installing, updating, rolling back, forking, publishing to a
+Authoring is strict, everything else lenient: `commit` and the release step of
+`fork --replace` refuse a key of another type (`invalid_manifest`); installing,
+updating, rolling back, forking without releasing, publishing to a
 catalog and listing treat such a key (and `null`) as absent, so such packages keep
 working (`install`/`update` warn: `Warning: ID VERSION: plugin.json tags
 must be an array of strings; ignored`; the library reports it in
@@ -1080,7 +1153,7 @@ they were: `commit`, `fork` and `fork --replace` rewrite `version`, `id`, `forkO
 `init` writes `"title": "NAME"`.
 
 Shape rule, everywhere gitpm reports metadata (`list` `resolved[]` and
-`packages.<id>.metadata`, `info`/`browse` `PackageSummary`, `CatalogRelease`, the FFI
+`packages.<id>.metadata`, `catalog show`/`browse` `PackageSummary`, `CatalogRelease`, the FFI
 records): all four keys are always present; an absent string (`title`, `description`) is
 `null` (`Option<String>`, Swift `String?`), an absent list (`provides`, `tags`) is `[]`
 (`Vec<String>`, `[String]`).
@@ -1092,13 +1165,11 @@ records): all four keys are always present; an absent string (`title`, `descript
 - `gitpm list --provides SERVICE`: only the packages whose `provides` contains `SERVICE`.
   It filters `packages` and `resolved` only; `replacements` and `forgotten` are printed
   unfiltered (they describe the workspace, not single packages).
-- Catalog: a release (`release.json`) has the whole manifest, so `catalog-update` and
-  `register` publish the metadata with it. `info` and `browse` (`PackageSummary`) show
-  the metadata of each package's latest release; a missing or broken latest
-  `release.json` only leaves that package without metadata. The catalog package index
-  (`namespaces/<ns>/<name>/plugin.json`) carries no metadata. Cost: the overview reads
-  one `release.json` per listed package (at most 40), which on an HTTP(S) catalog is one
-  extra request each.
+- Catalog: `catalog update` and `catalog register` publish the latest release's metadata
+  in the package index. `catalog show` and `browse` (`PackageSummary`, FFI `browseCatalog`)
+  read that summary: at most one index request per listed package, no `release.json`
+  requests, and at most 40 overview entries. A missing, malformed, or mismatched summary
+  leaves only that package without metadata. Installs still verify `release.json`.
 - FFI: `InstalledPackage`, `PackageSummary` and `CatalogRelease` have `title`,
   `description` (`String?`), `provides` and `tags` (`[String]`).
 
@@ -1135,30 +1206,37 @@ $ gitpm list --provides theme | jq '.resolved[] | {id, title, description, provi
   snake_case identifier; `Display` is the complete human message.
 - Blocking API. `Manager` is `Send + Sync`; its operations are serialized internally.
   Call it off the UI thread.
+- Catalog HTTP responses are limited to 16 MiB, including streams without
+  `Content-Length`; oversized responses fail with `http`.
 - All subprocesses (system `git`, `curl`) go through one internal module (`exec`), the
   place to switch to gix/ureq later.
+- All Git operations share batch SSH with keepalives and
+  `StrictHostKeyChecking=accept-new` unless `Options.custom_ssh` is true or Git config
+  defines `core.sshCommand`. Hosts pass `custom_ssh` explicitly; Git subprocesses
+  inherit the host environment.
 - No backward compatibility before 1.0: package IDs are always `namespace/name`, release
-  tags always `ID@VERSION`, catalogs always the v2 tree; there are no aliases,
+  tags always `ID@VERSION`, catalogs always the static file tree; there are no aliases,
   migrations or compatibility readers, and the FFI promises no stability. Every breaking
   change is listed under "Changed in X.Y".
 - `state.json` carries `"format"` (`gitpm::STATE_FORMAT`). A gitpm reads and writes
   exactly its own format: any other one (or a file without `format`) is refused with
   `unsupported` and never rewritten, in either direction (no downgrade, no migration). A
   workspace of another format is re-created: install its packages again into a new
-  workspace root. The format is bumped with every change an older gitpm would misread.
+  workspace root. Before the first public release, all gitpm file formats stay at version 1
+  and evolve in place without backward compatibility or bumps. Afterward, bump a format
+  only when gitpm from the previous public release would misread the change. Bump it as
+  a separate step in the release milestone, at most once per release.
 
   | gitpm | state format |
   | --- | --- |
-  | 0.3 and earlier | none (no `format` key), packages under `plugins` |
-  | 0.4, 0.5 | 2 (`clone`/`path`, `forgotten`), packages under `plugins`, clones in `plugins/` |
-  | 0.6 | 3: packages under `packages`, own clones in `packages/` |
+  | Before the first public release | 1: packages under `packages`, own clones in `packages/` |
 
 ## API overview
 
 ```rust
 use gitpm::{Manager, Options};
 
-let pm = Manager::open_with("/path/to/workspace", Options { catalog: Some(url) })?;
+let pm = Manager::open_with("/path/to/workspace", Options { catalog: Some(url), ..Default::default() })?;
 pm.install("git@github.com:acme/demo1.git")?;          // latest release tag
 use gitpm::{InstallTarget, Target};
 pm.install_package(src, None, InstallTarget::Ref("acme/demo1@0.2.0".into()))?; // pinned
@@ -1177,11 +1255,11 @@ if let Some(refusal) = plan.refusal() { return Err(refusal) } // has_dependents 
 let confirmed = if user_said_yes { plan.lost_work.clone() } else { Vec::new() };
 let dist = pm.uninstall(id, &confirmed, /* force: ignore dependents */ false)?;
 // Every mutating result carries its dist report (`dist`, or the returned `DistSync`).
-// Forks: the fork repository is always explicit (new folder, or a repo with gitpm.json).
+// Forks: the fork repository is always explicit (new folder).
 pm.fork_in_namespace(id, Path::new("/work/demo1-fork"), "me")?;   // sets forkOf + replaces
 let done = pm.fork_replace(id, Path::new("/work/demo1-fork"), "me", None, confirm)?; // + release, install, replace
-if let Some(step) = done.failed { /* fork folder kept; done.error says why */ }
-let repo = Path::new("/work/forks/me-packages");               // created, or added to
+if let Some(error) = done.error() { /* fork kept; inspect done.packages for every outcome */ }
+let repo = Path::new("/work/forks/me-packages");               // created as a new folder
 let fork = pm.fork_packages(&["tilr/theme", "tilr/panel"], repo, "me")?; // one repo, deps rewritten
 let done = pm.fork_packages_replace(&ids, repo, "me", Some("2.0.0"), confirm)?; // per-package results
 if let Some(error) = done.error() { /* fork kept; done.packages[i].failed says where */ }
@@ -1205,7 +1283,7 @@ Modules with free functions (no workspace lock needed):
 | `list` | `list_with(root, &ListOptions)` → `ListView` (raw state + `resolved`; `provides` filter) |
 | `catalog` | `browse` (`CatalogOverview.verified`), `is_verified`, `list`, `links`, `lookup`, `selected`, `register`, `register_build`, `register_package`, `update_sources` (progress callback), `hash_files`, `version_key`, `validate_location`, `ensure_publishable` |
 | `check` | `read_state` (does not create/lock), `compare`/`compare_in` (run `git ls-remote` for packages the catalog does not list), `check(root, catalog: Option)` → `CheckReport` (`catalog_verified`); `CheckStatus::message()`, `CheckRow::message()`, `CheckSource` |
-| `auth` | `check(source, &AuthOptions)` — `git ls-remote` only; refuses credentials in the URL, stores nothing; failures are `auth` |
+| `auth` | `check(source, &Options)` — `git ls-remote` only; refuses credentials in the URL, stores nothing (SSH itself records a new host's key, `accept-new`); failures are `auth`, except `git` when the check does not finish in 10 s |
 | `scaffold` | `init(dir, namespace, name)` (the `init --into` rule; the only way to create a package besides `create_package`), `init_with` (`InitOptions { multi, release }`), `create_package` (into a multi-package repo), `commit`, `commit_package` (`Commit { package, version, tag }`), `release_current`, `set_remote`, `shell_quote` |
 | `packages` | `config_at`, `layout_at` (packages and defective folders of a commit), `packages_at` (strict), `find_at` (one package of a commit), `read_config`, `packages_in` (working tree), `matches`, `validate_pattern` |
 | `identity` | `valid_part`, `qualified`, `split` (`NAMESPACE/NAME`, else `invalid_id`), `release_tag` (no default namespace, no namespace config) |
@@ -1232,11 +1310,11 @@ case-insensitive file system `Vendor/Module` never resolves to `vendor/module`.
 A version is SemVer `MAJOR.MINOR.PATCH` with an optional pre-release `-PRE`
 (`1.3.0-beta.1`); build metadata is refused. Versions are ordered by SemVer precedence
 (`1.0.0-alpha < 1.0.0-beta < 1.0.0-beta.2 < 1.0.0`), and `ID@1.3.0-beta.1` is a release
-tag like any other (`gitpm commit REPO 1.3.0-beta.1` creates it, `catalog-update`
+tag like any other (`gitpm commit REPO 1.3.0-beta.1` creates it, `catalog update`
 publishes it). Pre-releases are opt-in, as in npm:
 
 - `install`, `install-catalog` without `--version`, `update` and `update all` never pick
-  one; `check` and `info` show it (`check`: `up to date; pre-release 1.3.0-beta.1`).
+  one; `check` and `catalog show` show it (`check`: `up to date; pre-release 1.3.0-beta.1`).
 - Install one by name: `install-catalog ID --version 1.3.0-beta.1` (release mode), or
   `install SRC --ref ID@1.3.0-beta.1` (pinned; `update ID --release` returns it to
   release mode).
@@ -1403,7 +1481,7 @@ without one, `browse_catalog`, `catalog_release` and `install_from_catalog` fail
 `invalid_argument` ("no catalog configured"); `check` then reads each package's origin. A configured local location that
 does not exist is not "no catalog": `Manager::open_with` and every catalog reader refuse
 it with `invalid_argument` ("catalog location PATH does not exist") before anything is
-created; only `catalog-update` and `register` create a missing local catalog. A workspace uses one verified catalog
+created; only `catalog update` and `catalog register` create a missing local catalog. A workspace uses one verified catalog
 ([Verified catalogs](#verified-catalogs), `catalog::is_verified`). `install_from_catalog`
 records the canonical location of a verified catalog per package (`packages.<id>.catalog`,
 the package is then protected) and refuses to install from a second verified catalog;
@@ -1453,15 +1531,13 @@ download(source, target, package), downloadFromCatalog,
 update(id, target: `Target`, `.recorded` follows the recorded mode), updateAllPlan,
 updateAll (`UpdateAllPlan` with `unchanged`, each with its `reason`, and `dist`), rollback, enable(force), disable(force),
 forget(force), restore, uninstallPlan, uninstall(confirmed, force), fork
-(one package; `ForkResult`), forkAndReplace(version, confirm; returns a
-`ForkReplacement`: a failure after the fork exists is reported in `failedStep` (the
-`ForkStep` enum: release, install, replace), `errorKind`, `errorMessage`, and a
-replacement that needs confirmation in `pending`), forkPackages
+(one source ID, whole repository; `ForkResult`), forkAndReplace(version, confirm; returns a
+`PackageForkReplacement` with every package outcome and pending confirmation), forkPackages
 (`PackageFork`), forkPackagesAndReplace (`PackageForkReplacement`: the fork plus one
 `ForkReplacement` per package and the `pending` list), forkReplaceResume(pending,
 confirm; `ForkResume`: `applied` plans and the first `failed` one), replacePlan, replace, switchBackPlan, switchBack(confirm, force) (`ReplacementPlan` with
 `installedVersion`, `dist`), syncDistPlan, syncDist (`DistSync`: deployed,
-removed, unmanaged, skipped)); every mutating call returns its `DistSync` report
+removed, unmanaged, skipped, warnings)); every mutating call returns its `DistSync` report
 (`enable`/`disable`/`uninstall` return it, `forget` returns `ForgetResult { cloneKept,
 dist }`, `InstallResult`, `RevisionChange`,
 `ReplacementPlan` and `UpdateAllPlan` carry it as `dist`); `InstallResult` and
@@ -1475,13 +1551,13 @@ records have the names of the library types `gitpm::ForkReplacement`, `PackageFo
 `PackageForkReplacement`, `PendingReplacement`, `ForkedPackage`, `DependencyRewrite`,
 `ForkStep`. Free functions, which read without opening, locking or creating the
 workspace: `list(root, provides)` and `readState(root)` (`ListView`: `format`,
-`packages`, `replacements`, `forgotten`, `resolved`), `check(root, catalog)`
+`packages`, `replacements`, `forgotten`, `resolved`), `check(root, catalog, customSsh)`
 (`CheckReport`: rows with `source` `.catalog`/`.origin` and `problem`, fork `upstream`
 with its `source`, replacements, unsatisfied dependencies; `catalog` may be `nil`), `catalogLinks(location)`,
 `authCheck(source, customSsh)`, `browseCatalog`, `catalogRelease`, `describeLostWork`,
 `uninstallRefusal(plan)`.
 Every CLI command that reads or changes a workspace, reads a catalog or checks access has
-its FFI call; `init`, `commit`, `remote`, `catalog-update` and `register` stay library and
+its FFI call; `init`, `commit`, `remote`, `catalog update` and `catalog register` stay library and
 CLI functions. Errors are the `PmError` enum (one case per kind, each with `message`;
 `id` where the library error has one, `LocalChanges.items`, `HasDependents.dependents`
 and `.lostWork`, `IncompatibleReplacement.consumers`, `NotDeployed.sync` (the dist report), and
@@ -1558,8 +1634,9 @@ DT_ENGINE=dagger ./itests/dt                  # the same on a local engine (Dock
 With the 1Password SSH agent run `env -u SSH_AUTH_SOCK ./itests/dt`. Results land in
 `itests/results/<timestamp>/` (`summary.txt`, `report.html`, logs). Every case is tagged
 with the spec requirement it verifies; `./itests/dt coverage` writes
-`openspec/coverage/coverage.md` and `coverage.json`. Details, statuses (`XFAIL` for known
-defects) and how to write cases: [itests/README.md](itests/README.md).
+`openspec/coverage/coverage.md` and `coverage.json` locally (the directory is ignored by Git;
+nothing in it is committed). Details, statuses (`XFAIL` for known defects) and how to write
+cases: [itests/README.md](itests/README.md).
 
 ## Build
 

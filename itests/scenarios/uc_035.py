@@ -35,7 +35,7 @@ def up_to_date(t: T):
     check(t, srv.url, HELLO, "up to date")
 
 
-@case(fixture="catalog", spec=["catalog/check-compares-installed-packages-with-their-catalog-or-origin", "catalog/catalog-v2-is-a-tree-of-static-files#direct-lookup"])
+@case(fixture="catalog", spec=["catalog/check-compares-installed-packages-with-their-catalog-or-origin", "catalog/catalog-is-a-tree-of-static-files#direct-lookup"])
 def update_available_reads_only_installed_plugins(t: T):
     """Two installed packages; requests go to their index and current/latest releases only, plus
     the top-level catalog.json for the verified flag (a broken one reads as unverified)."""

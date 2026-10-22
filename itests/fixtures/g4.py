@@ -45,7 +45,7 @@ def _(t: T):
     t.has(t.git("old/oldie", "show", "old/oldie@0.1.0:plugin.json"), '"id": "old/oldie"', '"version": "0.1.0"')
 
 
-# ------------------------------------------------------------------ v2 tree
+# ------------------------------------------------------------------ catalog tree
 
 
 @fixture(requires=["hello_releases", "g4_oldie"])
@@ -89,7 +89,7 @@ def g4_tree_catalog(t: T):
 @g4_tree_catalog.check
 def _(t: T):
     root = json.loads((t.catalog / "catalog.json").read_text())
-    t.eq(root, {"schema": 2, "directories": {"namespaces": "namespaces/"}}, "root catalog")
+    t.eq(root, {"schema": 1, "directories": {"namespaces": "namespaces/"}}, "root catalog")
     for id, _, versions, _ in G4_TREE_RELEASES:
         index = json.loads(t.catalog_index(id).read_text())
         t.eq(sorted(index["versions"]), sorted(versions), f"{id} versions")

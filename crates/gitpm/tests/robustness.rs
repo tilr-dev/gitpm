@@ -95,10 +95,7 @@ fn ignored_work_survives_rejected_operations_and_fork() {
     let fork = m
         .fork_in_namespace("vendor/module", &f.dir.join("fork"), "mine")
         .unwrap();
-    assert_eq!(
-        fs::read_to_string(fork.join("node_modules/private.txt")).unwrap(),
-        "irreplaceable"
-    );
+    assert!(!fork.join("node_modules/private.txt").exists());
     assert_eq!(
         fs::read_to_string(repo.join("node_modules/private.txt")).unwrap(),
         "irreplaceable"
@@ -106,12 +103,13 @@ fn ignored_work_survives_rejected_operations_and_fork() {
 }
 
 #[test]
-fn fork_records_local_head_preserves_index_and_immediate_parent() {
+fn fork_records_source_revision_and_immediate_parent() {
     let f = Fixture::new();
     let m = f.installed();
     let repo = f.root.join("packages/vendor/module");
     git(&repo, &["config", "user.name", "Test"]);
     git(&repo, &["config", "user.email", "test@example.invalid"]);
+    let installed = git(&repo, &["rev-parse", "HEAD"]);
     fs::write(repo.join("local.txt"), "local commit").unwrap();
     git(&repo, &["add", "local.txt"]);
     git(&repo, &["commit", "-m", "local"]);
@@ -124,11 +122,11 @@ fn fork_records_local_head_preserves_index_and_immediate_parent() {
         .unwrap();
     let manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(fork.join("plugin.json")).unwrap()).unwrap();
-    assert_eq!(manifest["forkOf"]["commit"], head);
-    assert_eq!(
-        git(&fork, &["diff", "--cached", "--name-only"]),
-        "staged.txt"
-    );
+    assert_eq!(manifest["forkOf"]["commit"], installed);
+    assert_eq!(git(&fork, &["rev-parse", "HEAD^"]), installed);
+    assert!(!fork.join("local.txt").exists());
+    assert!(!fork.join("staged.txt").exists());
+    assert_eq!(git(&fork, &["diff", "--cached", "--name-only"]), "");
     assert_eq!(
         git(
             &fork,
@@ -154,6 +152,74 @@ fn fork_records_local_head_preserves_index_and_immediate_parent() {
         manifest["forkOf"]["commit"],
         git(&fork, &["rev-parse", "HEAD"])
     );
+}
+
+#[test]
+fn fork_clones_source_submodules_and_installs_only_committed_dist() {
+    let f = Fixture::new();
+    let module = f.dir.join("dependency");
+    fs::create_dir_all(&module).unwrap();
+    git(&module, &["init", "-q"]);
+    git(&module, &["config", "user.name", "Test"]);
+    git(&module, &["config", "user.email", "test@example.invalid"]);
+    fs::write(module.join("library.js"), "source dependency").unwrap();
+    git(&module, &["add", "."]);
+    git(&module, &["commit", "-qm", "dependency"]);
+    let module_commit = git(&module, &["rev-parse", "HEAD"]);
+    git(
+        &f.author,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "../dependency",
+            "src/vendor",
+        ],
+    );
+    fs::write(f.author.join("src/main.js"), "source, not distribution").unwrap();
+    git(&f.author, &["add", "."]);
+    git(&f.author, &["commit", "-qm", "source and submodule"]);
+    git(&f.author, &["tag", "-f", "vendor/module@0.1.0"]);
+    let m = f.installed();
+    let original_dist = fs::read(f.root.join("dist/vendor/module/index.js")).unwrap();
+    let before = state(&m);
+    // Fork needs only recorded metadata and the source, even without an installed clone.
+    fs::remove_dir_all(f.root.join("packages/vendor/module")).unwrap();
+    let fork = m
+        .fork_in_namespace("vendor/module", &f.dir.join("fork"), "mine")
+        .unwrap();
+    assert!(fork.join("src/main.js").is_file());
+    assert!(
+        git(&fork, &["ls-tree", "HEAD", "src/vendor"])
+            .starts_with(&format!("160000 commit {module_commit}"))
+    );
+    git(
+        &fork,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "update",
+            "--init",
+        ],
+    );
+    assert_eq!(
+        fs::read_to_string(fork.join("src/vendor/library.js")).unwrap(),
+        "source dependency"
+    );
+    assert_eq!(state(&m), before);
+    m.install_package(
+        fork.to_str().unwrap(),
+        None,
+        gitpm::InstallTarget::Ref("HEAD".into()),
+    )
+    .unwrap();
+    assert_eq!(
+        fs::read(f.root.join("dist/mine/module/index.js")).unwrap(),
+        original_dist
+    );
+    assert!(!f.root.join("dist/mine/module/src").exists());
 }
 
 #[test]

@@ -11,14 +11,11 @@ use crate::{
     ForkOf, Installed, InstalledPackage, LostWork, Manifest, Mode, Replaces, Revision, State,
     catalog,
     check::{self, CheckRow},
-    deps,
-    exec::git,
-    identity,
+    deps, identity,
     lost_work::{self, clean},
-    model::{
-        manifest, manifest_json, package_manifest, resolve_ref, resolve_upstream_ref, revision,
-    },
+    model::{manifest_json, package_manifest, resolve_ref, resolve_upstream_ref, revision},
     packages, releases, scaffold,
+    transport::git,
     txn::{self, Txn},
     valid_id,
 };
@@ -62,6 +59,8 @@ enum Activation {
 pub struct Options {
     /// Catalog location (local folder, JSON file or HTTP(S) URL) for catalog-based operations.
     pub catalog: Option<String>,
+    /// Preserve the SSH transport supplied by the caller's environment.
+    pub custom_ssh: bool,
 }
 
 /// What an install installs and the mode it records (see [`Mode`]).
@@ -300,6 +299,7 @@ fn release_tag_warning(
     id: &str,
     current: &Revision,
     found: &releases::Discovery,
+    custom_ssh: bool,
 ) -> Option<String> {
     let tag = identity::release_tag(id, &current.version);
     let short = |commit: &str| commit[..commit.len().min(12)].to_owned();
@@ -317,7 +317,7 @@ fn release_tag_warning(
     }
     // The tag still exists but points at a commit it is no release of (a broken tag).
     if let Some(broken) = found.skipped.iter().find(|s| s.name == tag) {
-        let commit = resolve_ref(repo, &format!("refs/tags/{tag}")).unwrap_or_default();
+        let commit = resolve_ref(repo, &format!("refs/tags/{tag}"), custom_ssh).unwrap_or_default();
         return Some(format!(
             "release tag {tag} now points to {} (skipped: {}); the installed commit is kept",
             short(&commit),
@@ -440,9 +440,11 @@ pub struct DistSync {
     /// real folders where a namespace folder belongs; left alone.
     pub unmanaged: Vec<String>,
     /// Active packages whose missing `dist/<id>` is not deployed, with the reason (clone
-    /// or installed commit missing, or another error in `sync_dist`). Packages below a
-    /// namespace path that is not a folder are not listed: that path is in `unmanaged`.
+    /// or installed commit missing, a blocked namespace, or another error in `sync_dist`).
     pub skipped: Vec<SkippedDist>,
+    /// Actionable warnings from committed dist exports.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 /// An active package left without `dist/` (see [`DistSync::skipped`]).
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -549,60 +551,61 @@ pub(crate) fn copy_tree(from: &Path, to: &Path, symlinks: bool) -> Result<()> {
     Ok(())
 }
 /// Copy the folder `path` (`""`: the root) of `commit` from `repo` into `target`: one
-/// `git archive` of that tree (`COMMIT:PATH`, a literal path, never a pattern), unpacked
-/// in process. Plain files and folders only, the executable bit is kept; symlinks are
+/// `git ls-tree`/`cat-file` of that tree (`COMMIT:PATH`, a literal path, never a pattern).
+/// Plain files and folders only, the executable bit is kept; symlinks are
 /// refused (a submodule comes out as an empty folder). The folder must exist.
-pub(crate) fn export_folder(repo: &Path, commit: &str, path: &str, target: &Path) -> Result<()> {
+pub(crate) fn export_folder(
+    repo: &Path,
+    commit: &str,
+    path: &str,
+    target: &Path,
+    custom_ssh: bool,
+) -> Result<()> {
     if !path.is_empty() {
         packages::validate_path(path)?;
     }
     let tree = format!("{commit}:{path}");
     ensure!(
-        git(repo, &["cat-file", "-t", &tree]).is_ok_and(|kind| kind == "tree"),
+        git(repo, &["cat-file", "-t", &tree], custom_ssh).is_ok_and(|kind| kind == "tree"),
         InvalidManifest,
         "revision {commit} has no folder {}",
         if path.is_empty() { "(root)" } else { path }
     );
-    let tar = crate::exec::git_raw(repo, &["archive", "--format=tar", &tree])?;
+    let entries =
+        crate::transport::git_raw(repo, &["ls-tree", "-r", "-t", "-z", &tree], custom_ssh)?;
     fs::create_dir_all(target)?;
-    let mut archive = tar::Archive::new(&tar[..]);
-    for entry in archive.entries()? {
-        let mut entry = entry?;
-        let kind = entry.header().entry_type();
-        if matches!(
-            kind,
-            tar::EntryType::XGlobalHeader | tar::EntryType::XHeader
-        ) {
-            continue;
-        }
-        let name = entry
-            .path()?
-            .to_string_lossy()
-            .trim_end_matches('/')
-            .to_owned();
-        if name.is_empty() {
-            continue;
-        }
-        packages::validate_path(&name)?;
-        let destination = target.join(&name);
-        match kind {
-            tar::EntryType::Directory => fs::create_dir_all(&destination)?,
-            tar::EntryType::Regular => {
-                let executable = entry.header().mode()? & 0o111 != 0;
-                let mut bytes = Vec::new();
-                std::io::Read::read_to_end(&mut entry, &mut bytes)?;
+    for entry in entries
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+    {
+        let entry = std::str::from_utf8(entry)
+            .map_err(|_| Error::InvalidData("non-UTF8 build path".into()))?;
+        let (meta, name) = entry
+            .split_once('\t')
+            .ok_or_else(|| Error::InvalidData("invalid Git tree entry".into()))?;
+        let mut meta = meta.split(' ');
+        let (Some(mode), Some(kind), Some(oid)) = (meta.next(), meta.next(), meta.next()) else {
+            fail!(InvalidData, "invalid Git tree entry")
+        };
+        packages::validate_path(name)?;
+        let destination = target.join(name);
+        match (mode, kind) {
+            ("040000", "tree") | ("160000", "commit") => fs::create_dir_all(&destination)?,
+            ("100644" | "100755", "blob") => {
+                let bytes =
+                    crate::transport::git_raw(repo, &["cat-file", "blob", oid], custom_ssh)?;
                 fs::create_dir_all(destination.parent().unwrap())?;
                 fs::write(&destination, bytes)?;
-                if executable {
+                if mode == "100755" {
                     use std::os::unix::fs::PermissionsExt;
                     fs::set_permissions(&destination, fs::Permissions::from_mode(0o755))?;
                 }
             }
             _ => fail!(
                 Unsupported,
-                "symlinks and submodules are not supported: {}",
+                "symlinks are not supported: {}",
                 if path.is_empty() {
-                    name
+                    name.to_owned()
                 } else {
                     format!("{path}/{name}")
                 }
@@ -614,24 +617,63 @@ pub(crate) fn export_folder(repo: &Path, commit: &str, path: &str, target: &Path
 /// Fill `target` with the package's `dist/` (package folder `package`, `None`: the
 /// root) at `commit` of `repo`, from Git objects (never the working tree). A revision
 /// without that folder is refused ([`Error::InvalidManifest`]), never deployed empty.
+/// Gitlinks become empty directories; returned warnings explain their missing contents.
 pub(crate) fn export_dist(
     repo: &Path,
     commit: &str,
     package: Option<&str>,
     target: &Path,
-) -> Result<()> {
+    custom_ssh: bool,
+) -> Result<Vec<String>> {
     let folder = match package {
         Some(path) => format!("{path}/dist"),
         None => "dist".to_owned(),
     };
     ensure!(
-        git(repo, &["cat-file", "-t", &format!("{commit}:{folder}")])
-            .is_ok_and(|kind| kind == "tree"),
+        git(
+            repo,
+            &["cat-file", "-t", &format!("{commit}:{folder}")],
+            custom_ssh,
+        )
+        .is_ok_and(|kind| kind == "tree"),
         InvalidManifest,
         "release {commit} has no {folder}/ folder"
     );
-    export_folder(repo, commit, &folder, target)
+    let mut warnings = Vec::new();
+    let tree = format!("{commit}:{folder}");
+    let entries = crate::transport::git_raw(repo, &["ls-tree", "-r", "-z", &tree], custom_ssh)?;
+    for entry in entries.split(|byte| *byte == 0) {
+        if entry.starts_with(b"160000 ") {
+            let name =
+                String::from_utf8_lossy(entry.splitn(2, |byte| *byte == b'\t').nth(1).unwrap());
+            warnings.push(format!("{folder}/{name} is a Git submodule; its files will not be installed and the directory will be empty. This is probably a mistake: commit built files to dist instead of a submodule."));
+        }
+    }
+    export_folder(repo, commit, &folder, target, custom_ssh)?;
+    Ok(warnings)
 }
+/// Locate an updated package, retaining the requested and upstream identities.
+fn updated_package(
+    repo: &Path,
+    commit: &str,
+    id: &str,
+    custom_ssh: bool,
+) -> Result<packages::Package> {
+    packages::find_at_with_ssh(repo, commit, Some(id), custom_ssh).map_err(|error| {
+        let error = match error {
+            Error::InvalidArgument(message) => {
+                let message = match packages::find_at_with_ssh(repo, commit, None, custom_ssh) {
+                    Ok(found) => format!("package id changed upstream to {}", found.manifest.id),
+                    Err(_) => format!("package id changed upstream; {message}"),
+                };
+                Error::invalid_manifest(message)
+            }
+            other => other,
+        };
+        error.with_package(id)
+    })
+}
+
 /// Each component of `id` exists under `base` with exactly this spelling. On a
 /// case-insensitive file system `Vendor/Module` must not resolve to `vendor/module`.
 fn exact_path(base: &Path, id: &str) -> Result<bool> {
@@ -685,6 +727,29 @@ fn ids_collide(a: &str, b: &str) -> bool {
         .take_while(|(x, y)| x.eq_ignore_ascii_case(y))
         .any(|(x, y)| x != y)
 }
+
+/// `.state.json-<pid>-<counter>.tmp`, the name `write_initial_state` stages under.
+fn is_initial_state_temp(name: &std::ffi::OsStr) -> bool {
+    fn is_digits(s: &str) -> bool {
+        !s.is_empty() && s.bytes().all(|c| c.is_ascii_digit())
+    }
+    name.to_str()
+        .and_then(|name| name.strip_prefix(".state.json-"))
+        .and_then(|id| id.strip_suffix(".tmp"))
+        .and_then(|id| id.split_once('-'))
+        .is_some_and(|(pid, counter)| is_digits(pid) && is_digits(counter))
+}
+
+fn write_initial_state(root: &Path) -> Result<()> {
+    // Stage inside the root: the rename never crosses a filesystem, even when the root
+    // is a mount point.
+    crate::atomic_write::write_atomically(
+        &root.join(".state.json"),
+        &root.join("state.json"),
+        &serde_json::to_vec_pretty(&State::default())?,
+    )
+}
+
 impl Manager {
     /// A dedicated workspace only: never point this at the application's live data.
     pub fn open(root: impl AsRef<Path>) -> Result<Self> {
@@ -739,20 +804,32 @@ impl Manager {
             txn::recover(&root)?;
         }
         if root.exists() && !root.join("state.json").exists() {
-            ensure!(
-                fs::read_dir(&root)?.next().is_none(),
-                Workspace,
-                "refusing nonempty directory without state.json"
-            );
+            // Under the lock, gitpm's own staged state is an abandoned write and `.DS_Store`
+            // is Finder metadata, not content; anything else refuses the directory before
+            // one file is removed.
+            let mut abandoned = Vec::new();
+            for entry in fs::read_dir(&root)? {
+                let entry = entry?;
+                if entry.file_name() == ".DS_Store" {
+                    continue;
+                }
+                ensure!(
+                    is_initial_state_temp(&entry.file_name()) && entry.file_type()?.is_file(),
+                    Workspace,
+                    "refusing nonempty directory without state.json"
+                );
+                abandoned.push(entry.path());
+            }
+            for path in abandoned {
+                fs::remove_file(path)?;
+            }
+        }
+        if !root.join("state.json").exists() {
+            fs::create_dir_all(&root)?;
+            write_initial_state(&real)?;
         }
         fs::create_dir_all(root.join("packages"))?;
         fs::create_dir_all(root.join("dist"))?;
-        if !root.join("state.json").exists() {
-            fs::write(
-                root.join("state.json"),
-                serde_json::to_vec_pretty(&State::default())?,
-            )?;
-        }
         manager.state()?;
         Ok(manager)
     }
@@ -793,8 +870,11 @@ impl Manager {
         let mut state = self.state()?;
         let before = state.clone();
         let value = action(&mut txn, &mut state)?;
-        settle_dist(&mut txn, &before, &state)?;
-        let mut report = DistSync::default();
+        settle_dist(&mut txn, &before, &state, self.options.custom_ssh)?;
+        let mut report = DistSync {
+            warnings: txn.warnings.clone(),
+            ..Default::default()
+        };
         for id in txn.staged_dists() {
             if txn.deploys_dist(&id) {
                 report.deployed.push(id);
@@ -813,7 +893,7 @@ impl Manager {
         let mut live = Vec::new();
         for key in keys {
             match txn.staged_repo(&format!("repos/{key}")) {
-                Some(staged) => clones::sync_refs(&staged, &state, key)?,
+                Some(staged) => clones::sync_refs(&staged, &state, key, self.options.custom_ssh)?,
                 None => live.push(key),
             }
         }
@@ -822,11 +902,11 @@ impl Manager {
             let repo = self.root.join("repos").join(key);
             if repo.join(".git").is_dir() {
                 // Best effort: the change is committed; the next fetch syncs again.
-                let _ = clones::sync_refs(&repo, &state, key);
+                let _ = clones::sync_refs(&repo, &state, key, self.options.custom_ssh);
             }
         }
         // Committed: a failing read of dist/ must not turn the change into an error.
-        if let Ok(drift) = dist_drift(&self.root, &state) {
+        if let Ok(drift) = dist_drift(&self.root, &state, self.options.custom_ssh) {
             report.unmanaged = drift.unmanaged;
             report.skipped = drift.skipped;
         }
@@ -841,7 +921,11 @@ impl Manager {
         if state.packages.is_empty() {
             return Ok(Vec::new());
         }
-        check::check_state(&state, self.options.catalog.as_deref())
+        check::check_state(
+            &state,
+            self.options.catalog.as_deref(),
+            self.options.custom_ssh,
+        )
     }
     /// Bounded overview of the configured catalog.
     pub fn browse_catalog(&self) -> Result<catalog::CatalogOverview> {
@@ -1008,10 +1092,10 @@ impl Manager {
                 source: &source,
                 ..fetch
             };
-            let cloned = clone_revision(txn, &fetch, "incoming")?;
+            let cloned = clone_revision(txn, &fetch, "incoming", self.options.custom_ssh)?;
             let m = cloned.manifest.clone();
             if let Some(installed) = state.packages.get(&m.id).filter(|p| p.source == source) {
-                let resolved = revision(&cloned.repo, &m)?;
+                let resolved = revision(&cloned.repo, &m, self.options.custom_ssh)?;
                 // Only an explicit ref or the default branch asks for a mode.
                 let requested_mode = (matches!(
                     fetch.target,
@@ -1025,7 +1109,7 @@ impl Manager {
                 // release of its version; then it becomes protected.
                 let protect = match (&origin, &installed.catalog) {
                     (Some(location), None) => {
-                        verify_installed_release(&cloned.repo, &m.id, installed, location)?;
+                        verify_installed_release(txn, &cloned.repo, &m.id, installed, location, self.options.custom_ssh)?;
                         Some(location.clone())
                     }
                     _ => None,
@@ -1116,7 +1200,15 @@ impl Manager {
                 self.options.catalog.as_deref(),
             )?;
             let skipped = cloned.skipped.clone();
-            let mut result = adopt(txn, state, cloned, source.clone(), origin.clone(), enabled)?;
+            let mut result = adopt(
+                txn,
+                state,
+                cloned,
+                source.clone(),
+                origin.clone(),
+                enabled,
+                self.options.custom_ssh,
+            )?;
             if enabled && !force && state.is_active(&m.id) {
                 deps::refuse_inactive_dependencies(state, &m.id, "install", true)?;
             }
@@ -1147,21 +1239,21 @@ impl Manager {
         let origin = protecting_catalog_at(location, state)?;
         let mut installed = Vec::new();
         for (number, (id, version)) in missing.iter().enumerate() {
-            let release = catalog::lookup(location, id, Some(&version.to_string()))?;
-            catalog::validate_release(&release, id, &release.manifest.version)?;
-            let cloned = clone_revision(
-                txn,
-                &Fetch::release(&release),
-                &format!("dependency-{number}"),
-            )?;
-            check_new_id(txn.root(), state, &cloned.manifest)?;
-            let result = adopt(
+            let release = catalog::lookup(location, id, Some(&version.to_string()))
+                .and_then(|release| {
+                    catalog::validate_release(&release, id, &release.manifest.version)?;
+                    Ok(release)
+                })
+                .map_err(|error| error.with_package(id))?;
+            let result = install_pulled(
                 txn,
                 state,
-                cloned,
-                release.source.clone(),
+                id,
+                &release,
+                &format!("dependency-{number}"),
                 origin.clone(),
                 enabled,
+                self.options.custom_ssh,
             )?;
             installed.push(InstalledDependency {
                 id: result.id,
@@ -1184,12 +1276,13 @@ impl Manager {
         catalog: Option<&str>,
     ) -> Result<()> {
         for (original, fork) in &state.replacements {
-            ensure!(
-                fork != id || m.replaces.as_ref().is_some_and(|r| r.id == *original),
-                VersionConflict,
-                "{id} {} no longer declares that it replaces {original}, which it replaces now",
-                m.version
-            );
+            if fork == id && m.replaces.as_ref().is_none_or(|r| r.id != *original) {
+                return Err(Error::version_conflict(format!(
+                    "version {} no longer declares that it replaces {original}, which it replaces now",
+                    m.version
+                ))
+                .with_package(id));
+            }
         }
         let mut next = state.clone();
         let entry = next
@@ -1228,12 +1321,15 @@ impl Manager {
         let mut txn = Txn::begin(&self.root)?;
         let mut state = self.state()?;
         self.prepare_update_all(&mut txn, &mut state)
+            .map_err(Error::listing_lost_work)
     }
 
     /// Resolve and apply a joint upgrade in one recoverable transaction.
     /// Local work blocks the operation. No merge, deletion or downgrade is attempted.
     pub fn update_all(&self) -> Result<UpdateAllPlan> {
-        let (plan, dist) = self.transaction(|txn, state| self.prepare_update_all(txn, state))?;
+        let (plan, dist) = self
+            .transaction(|txn, state| self.prepare_update_all(txn, state))
+            .map_err(Error::listing_lost_work)?;
         Ok(UpdateAllPlan { dist, ..plan })
     }
 
@@ -1301,13 +1397,15 @@ impl Manager {
                 "local commits detected; update would discard them",
                 "unpublished local work blocks update all",
                 true,
-            )?;
+                self.options.custom_ssh,
+            )
+            .map_err(|error| error.with_package(first))?;
             // Scratch copies ensure even held-back repositories keep their original refs.
             let repo = txn.scratch(&format!("upgrade-{number}"));
             copy_tree(&live, &repo, true)?;
             match key {
-                Some(key) => clones::fetch_tags(&repo, state, key, true)?,
-                None => clones::fetch_origin(&repo, true)?,
+                Some(key) => clones::fetch_tags(&repo, state, key, true, self.options.custom_ssh)?,
+                None => clones::fetch_origin(&repo, true, self.options.custom_ssh)?,
             }
             for id in ids {
                 let installed = &state.packages[id];
@@ -1317,8 +1415,14 @@ impl Manager {
                 // Read at the installed commit, from the recorded package folder: a shared
                 // clone's HEAD may be another package's revision, and a root package may
                 // have moved into a package folder since.
-                let current_manifest =
-                    packages::find_at(&repo, &installed.current.commit, Some(id))?.manifest;
+                let current_manifest = packages::find_at_with_ssh(
+                    &repo,
+                    &installed.current.commit,
+                    Some(id),
+                    self.options.custom_ssh,
+                )
+                .map_err(|error| error.with_package(id))?
+                .manifest;
                 versions.insert(
                     current.clone(),
                     catalog::Release {
@@ -1355,8 +1459,11 @@ impl Manager {
                         continue;
                     }
                     Mode::Branch(branch) => {
-                        let Ok(head) = resolve_ref(&repo, &format!("refs/remotes/origin/{branch}"))
-                        else {
+                        let Ok(head) = resolve_ref(
+                            &repo,
+                            &format!("refs/remotes/origin/{branch}"),
+                            self.options.custom_ssh,
+                        ) else {
                             reasons.insert(
                                 id.clone(),
                                 UnchangedReason::BranchGone {
@@ -1376,6 +1483,7 @@ impl Manager {
                                     &installed.current.commit,
                                     &head,
                                 ],
+                                self.options.custom_ssh,
                             );
                             if ancestor.is_err() {
                                 reasons.insert(
@@ -1385,13 +1493,8 @@ impl Manager {
                                     },
                                 );
                             } else {
-                                let found = match packages::find_at(&repo, &head, Some(id)) {
-                                    Ok(found) => found,
-                                    Err(Error::InvalidArgument(_)) => {
-                                        fail!(InvalidManifest, "package id changed upstream")
-                                    }
-                                    Err(error) => return Err(error),
-                                };
+                                let found =
+                                    updated_package(&repo, &head, id, self.options.custom_ssh)?;
                                 let version = deps::version(&found.manifest.version)?;
                                 let dropped = no_longer_replaces(state, id, &found.manifest);
                                 if let Some(original) = dropped.clone()
@@ -1403,7 +1506,8 @@ impl Manager {
                                 // The branch commit is the identity: at the installed
                                 // version it takes the installed revision's place.
                                 if version >= current && dropped.is_none() {
-                                    deps::validate(&found.manifest)?;
+                                    deps::validate(&found.manifest)
+                                        .map_err(|error| error.with_package(id))?;
                                     newest = newest.max(version.clone());
                                     versions.insert(
                                         version,
@@ -1433,21 +1537,26 @@ impl Manager {
                 // A protected package: only the versions its verified catalog lists.
                 if let Some(location) = &installed.catalog {
                     // An unusable catalog keeps only this package where it is.
-                    let (releases, upstream) =
-                        match catalog_candidates(&repo, id, installed, location) {
-                            Ok(found) => found,
-                            Err(error) => {
-                                reasons.insert(
-                                    id.clone(),
-                                    UnchangedReason::CatalogUnavailable {
-                                        reason: error.to_string(),
-                                    },
-                                );
-                                latest.insert(id.clone(), newest.to_string());
-                                candidates.insert(id.clone(), versions);
-                                continue;
-                            }
-                        };
+                    let (releases, upstream) = match catalog_candidates(
+                        &repo,
+                        id,
+                        installed,
+                        location,
+                        self.options.custom_ssh,
+                    ) {
+                        Ok(found) => found,
+                        Err(error) => {
+                            reasons.insert(
+                                id.clone(),
+                                UnchangedReason::CatalogUnavailable {
+                                    reason: error.to_string(),
+                                },
+                            );
+                            latest.insert(id.clone(), newest.to_string());
+                            candidates.insert(id.clone(), versions);
+                            continue;
+                        }
+                    };
                     if releases.is_empty()
                         && let Some(version) = upstream
                     {
@@ -1462,7 +1571,8 @@ impl Manager {
                             }
                             continue;
                         }
-                        deps::validate(&release.manifest)?;
+                        deps::validate(&release.manifest)
+                            .map_err(|error| error.with_package(id))?;
                         versions.insert(version, release);
                     }
                     if let Some(reason) =
@@ -1475,11 +1585,19 @@ impl Manager {
                     continue;
                 }
                 // Every tag of the package may be gone (all retracted).
-                let found = match releases::discover_all(&repo, Some(id)) {
-                    Err(Error::NoReleases(_)) => releases::Discovery::default(),
-                    other => other?,
-                };
-                if let Some(warning) = release_tag_warning(&repo, id, &installed.current, &found) {
+                let found =
+                    match releases::discover_all_with_ssh(&repo, Some(id), self.options.custom_ssh)
+                    {
+                        Err(Error::NoReleases(_)) => releases::Discovery::default(),
+                        other => other?,
+                    };
+                if let Some(warning) = release_tag_warning(
+                    &repo,
+                    id,
+                    &installed.current,
+                    &found,
+                    self.options.custom_ssh,
+                ) {
                     tag_warnings.insert(id.clone(), warning);
                 }
                 // Pre-releases only on the installed pre-release's track.
@@ -1501,7 +1619,7 @@ impl Manager {
                         }
                         continue;
                     }
-                    deps::validate(&tag.manifest)?;
+                    deps::validate(&tag.manifest).map_err(|error| error.with_package(id))?;
                     versions.insert(
                         version,
                         catalog::Release {
@@ -1552,8 +1670,9 @@ impl Manager {
                 // A protected package's catalog release is verified before any change.
                 let protected = installed.catalog.is_some();
                 if protected {
-                    ensure_release_commit(&repo, release)?;
-                    let found = packages::find_at(&repo, &release.commit, Some(id))?;
+                    ensure_release_commit(&repo, release, self.options.custom_ssh)?;
+                    let found =
+                        updated_package(&repo, &release.commit, id, self.options.custom_ssh)?;
                     ensure!(
                         found.subdir() == release.path.as_deref(),
                         Catalog,
@@ -1563,17 +1682,22 @@ impl Manager {
                         found.subdir().unwrap_or("(root)")
                     );
                 }
-                git(&repo, &["checkout", "--detach", &release.commit])?;
-                let actual = package_manifest(&repo, release.path.as_deref())?;
+                git(
+                    &repo,
+                    &["checkout", "--detach", &release.commit],
+                    self.options.custom_ssh,
+                )?;
+                let actual = package_manifest(&repo, release.path.as_deref())
+                    .map_err(|error| error.with_package(id))?;
                 if protected {
-                    verify_catalog_release(&repo, &actual, release)?;
+                    verify_catalog_manifest(&actual, release)?;
                 }
-                ensure!(
-                    serde_json::to_value(&actual)? == serde_json::to_value(m)?,
-                    VersionConflict,
-                    "release manifest changed for {id}"
-                );
-                let next = revision(&repo, m)?;
+                if serde_json::to_value(&actual)? != serde_json::to_value(m)? {
+                    return Err(
+                        Error::version_conflict("release manifest changed".into()).with_package(id)
+                    );
+                }
+                let next = revision(&repo, m, self.options.custom_ssh)?;
                 let installed = state.packages.get_mut(id).unwrap();
                 plan.updates.push(RevisionChange {
                     id: id.clone(),
@@ -1596,26 +1720,33 @@ impl Manager {
                 if txn.staged_repo(&relative).is_none() {
                     txn.add_repo(&relative, &repo)?;
                 }
-                txn.deploy(id, &relative, path.as_deref(), &release.commit)?;
+                let staged = txn
+                    .deploy(
+                        id,
+                        &relative,
+                        path.as_deref(),
+                        &release.commit,
+                        self.options.custom_ssh,
+                    )
+                    .map_err(|error| error.with_package(id))?;
+                if protected {
+                    verify_catalog_release(&actual, release, &staged)?;
+                }
             } else {
                 let origin = protecting_catalog_at(
                     catalog.require(Error::InvalidArgument, check::NO_CATALOG)?,
                     state,
                 )?;
-                let cloned = clone_revision(
-                    txn,
-                    &Fetch::release(release),
-                    &format!("upgrade-new-{number}"),
-                )?;
-                check_new_id(txn.root(), state, &cloned.manifest)?;
-                plan.installs.push(adopt(
+                plan.installs.push(install_pulled(
                     txn,
                     state,
-                    cloned,
-                    release.source.clone(),
+                    id,
+                    release,
+                    &format!("upgrade-new-{number}"),
                     origin,
                     // Enabled only when an active package pulls it (as `update ID`).
                     active_new.contains(id),
+                    self.options.custom_ssh,
                 )?);
             }
         }
@@ -1670,6 +1801,7 @@ impl Manager {
         options: UpdateOptions,
     ) -> Result<RevisionChange> {
         valid_id(id)?;
+        let ssh = self.options.custom_ssh;
         let (change, dist) = self.transaction(|txn, state| {
             let p = state
                 .packages
@@ -1728,17 +1860,18 @@ impl Manager {
                 "local commits detected; update would discard them",
                 "local branches, tags or stash hold unpublished work; keep or remove them before updating",
                 true,
+                self.options.custom_ssh,
             )?;
             let repo = txn.repo(&relative, &live)?;
             // Mirror the origin's tags exactly: a deleted release disappears, a moved one
             // is seen at its new commit (tags are not policed; the installed revision is
             // kept by commit). Local tags holding unpublished commits were refused above.
             match p.clone.as_deref() {
-                Some(key) => clones::fetch_tags(&repo, state, key, true)?,
-                None => clones::fetch_origin(&repo, true)?,
+                Some(key) => clones::fetch_tags(&repo, state, key, true, self.options.custom_ssh)?,
+                None => clones::fetch_origin(&repo, true, self.options.custom_ssh)?,
             }
             if matches!(&target, Target::Dev) || target == Target::Ref("HEAD".into()) {
-                git(&repo, &["remote", "set-head", "origin", "--auto"])?;
+                crate::transport::set_remote_head(&repo, "origin", self.options.custom_ssh)?;
             }
             let mut skipped = Vec::new();
             // Moved or retracted installed release tag (release mode).
@@ -1748,7 +1881,7 @@ impl Manager {
             let (next_commit, mode) = match (&target, &p.mode) {
                 _ if protected.is_some() => {
                     let location = protected.as_deref().unwrap();
-                    let (releases, upstream) = catalog_candidates(&repo, id, &p, location)?;
+                    let (releases, upstream) = catalog_candidates(&repo, id, &p, location, ssh)?;
                     let Some(release) = releases.into_iter().last() else {
                         return Ok(unchanged(
                             upstream.map(|version| UnchangedReason::NotInCatalog { version }),
@@ -1756,17 +1889,17 @@ impl Manager {
                         ));
                     };
                     let commit = release.commit.clone();
-                    ensure_release_commit(&repo, &release)?;
+                    ensure_release_commit(&repo, &release, self.options.custom_ssh)?;
                     expected = Some(release);
                     (commit, Mode::Release)
                 }
-                (Target::Ref(reference), _) => resolve_upstream_ref(&repo, reference)?,
-                (Target::Dev, _) => resolve_upstream_ref(&repo, "HEAD")?,
+                (Target::Ref(reference), _) => resolve_upstream_ref(&repo, reference, ssh)?,
+                (Target::Dev, _) => resolve_upstream_ref(&repo, "HEAD", self.options.custom_ssh)?,
                 (Target::Recorded, Mode::Branch(branch)) => {
-                    let commit = resolve_ref(&repo, &format!("refs/remotes/origin/{branch}"))
+                    let commit = resolve_ref(&repo, &format!("refs/remotes/origin/{branch}"), ssh)
                         .map_err(|_| {
-                            Error::VersionConflict(format!(
-                                "the origin no longer has the branch {branch} that {id} follows; automatic update refused"
+                            Error::version_conflict(format!(
+                                "the origin no longer has the branch {branch} it follows; automatic update refused"
                             ))
                         })?;
                     (commit, p.mode.clone())
@@ -1774,7 +1907,7 @@ impl Manager {
                 _ => {
                     // Following releases (no explicit target) compares versions only.
                     let following = target == Target::Recorded;
-                    let mut found = match releases::discover_all(&repo, Some(id)) {
+                    let mut found = match releases::discover_all_with_ssh(&repo, Some(id), ssh) {
                         // Every release tag was deleted on the origin: the installed one
                         // was retracted, the package stays.
                         Err(Error::NoReleases(_)) if following => releases::Discovery::default(),
@@ -1782,7 +1915,7 @@ impl Manager {
                     };
                     let current_version = catalog::version_key(&p.current.version)?;
                     // The installed release tag is looked up among all of them.
-                    let tag_warning = release_tag_warning(&repo, id, &p.current, &found);
+                    let tag_warning = release_tag_warning(&repo, id, &p.current, &found, ssh);
                     // Pre-releases only on the installed pre-release's track.
                     found.offered(Some(&current_version));
                     if !found.tags.is_empty() {
@@ -1846,20 +1979,17 @@ impl Manager {
                 git(
                     &repo,
                     &["merge-base", "--is-ancestor", &p.current.commit, &next_commit],
+                    self.options.custom_ssh,
                 )
                 .context(
-                    Error::VersionConflict,
+                    Error::version_conflict,
                     format!("history of {branch} diverged; automatic update refused"),
                 )?;
             }
             // The package can move to another folder (or into a multi-package layout).
-            let path = match packages::find_at(&repo, &next_commit, Some(id)) {
-                Ok(found) => found.subdir().map(str::to_owned),
-                Err(Error::InvalidArgument(_)) => {
-                    fail!(InvalidManifest, "package id changed upstream")
-                }
-                Err(error) => return Err(error),
-            };
+            let path = updated_package(&repo, &next_commit, id, ssh)?
+                .subdir()
+                .map(str::to_owned);
             if let Some(release) = &expected {
                 ensure!(
                     path == release.path,
@@ -1870,11 +2000,11 @@ impl Manager {
                     path.as_deref().unwrap_or("(root)")
                 );
             }
-            git(&repo, &["checkout", "--detach", &next_commit])?;
+            git(&repo, &["checkout", "--detach", &next_commit], self.options.custom_ssh)?;
             let m = package_manifest(&repo, path.as_deref())?;
-            ensure!(m.id == id, InvalidManifest, "package id changed upstream");
+            ensure!(m.id == id, InvalidManifest, "package id changed upstream to {}", m.id);
             if let Some(release) = &expected {
-                verify_catalog_release(&repo, &m, release)?;
+                verify_catalog_manifest(&m, release)?;
             }
             // Tags are not policed: an explicit tag or commit may keep the installed version
             // at another commit; when it is the moved release tag of that version, say so.
@@ -1893,7 +2023,7 @@ impl Manager {
                 None => self.options.catalog.clone(),
             };
             self.check_change(txn, state, id, &m, dependency_catalog.as_deref())?;
-            let next = revision(&repo, &m)?;
+            let next = revision(&repo, &m, self.options.custom_ssh)?;
             let entry = state.packages.get_mut(id).unwrap();
             entry.previous = Some(p.current.with_mode(&p.mode));
             entry.current = next.clone();
@@ -1904,7 +2034,10 @@ impl Manager {
             if state.is_active(id) {
                 deps::refuse_inactive_dependencies(state, id, "update", false)?;
             }
-            txn.deploy(id, &relative, path.as_deref(), &next.commit)?;
+            let staged = txn.deploy(id, &relative, path.as_deref(), &next.commit, self.options.custom_ssh)?;
+            if let Some(release) = &expected {
+                verify_catalog_release(&m, release, &staged)?;
+            }
             Ok(RevisionChange {
                 id: id.into(),
                 major: deps::is_major_text(&p.current.version, &next.version),
@@ -1918,12 +2051,13 @@ impl Manager {
                 detached,
                 dist: DistSync::default(),
             })
-        })?;
+        }).map_err(|error| error.with_package(id).listing_lost_work())?;
         Ok(RevisionChange { dist, ..change })
     }
     /// Swap current and previous version (offline). Refused if it breaks a dependent.
     pub fn rollback(&self, id: &str) -> Result<RevisionChange> {
         valid_id(id)?;
+        let ssh = self.options.custom_ssh;
         let (change, dist) = self.transaction(|txn, state| {
             let p = state
                 .packages
@@ -1947,23 +2081,24 @@ impl Manager {
                 "local commits detected",
                 "local branches, tags or stash hold unpublished work; keep or remove them before rolling back",
                 false,
+                self.options.custom_ssh,
             )?;
             // The previous commit can be gone: pruned after the origin deleted or moved
             // the tag that held it.
-            if git(&live, &["cat-file", "-e", &format!("{}^{{commit}}", previous.commit)]).is_err()
-            {
+            let previous_commit = format!("{}^{{commit}}", previous.commit);
+            if git(&live, &["cat-file", "-e", &previous_commit], ssh).is_err() {
                 return Err(Error::NoPreviousVersion {
                     id: id.into(),
                     commit: Some(previous.commit.clone()),
                 });
             }
             let repo = txn.repo(&relative, &live)?;
-            let path = match packages::find_at(&repo, &previous.commit, Some(id)) {
+            let path = match packages::find_at_with_ssh(&repo, &previous.commit, Some(id), ssh) {
                 Ok(found) => found.subdir().map(str::to_owned),
                 Err(Error::InvalidArgument(_)) => fail!(InvalidManifest, "rollback manifest mismatch"),
                 Err(error) => return Err(error),
             };
-            git(&repo, &["checkout", "--detach", &previous.commit])?;
+            git(&repo, &["checkout", "--detach", &previous.commit], self.options.custom_ssh)?;
             let m = package_manifest(&repo, path.as_deref())?;
             ensure!(
                 m.id == id && m.version == previous.version,
@@ -1981,7 +2116,7 @@ impl Manager {
             if state.is_active(id) {
                 deps::refuse_inactive_dependencies(state, id, "roll back", false)?;
             }
-            txn.deploy(id, &relative, path.as_deref(), &previous.commit)?;
+            txn.deploy(id, &relative, path.as_deref(), &previous.commit, self.options.custom_ssh)?;
             Ok(RevisionChange {
                 id: id.into(),
                 from: p.current,
@@ -1995,7 +2130,7 @@ impl Manager {
                 detached: None,
                 dist: DistSync::default(),
             })
-        })?;
+        }).map_err(|error| error.with_package(id).listing_lost_work())?;
         Ok(RevisionChange { dist, ..change })
     }
     pub fn set_enabled(&self, id: &str, enabled: bool) -> Result<DistSync> {
@@ -2082,7 +2217,7 @@ impl Manager {
             let relative = installed.clone_folder(id);
             state.forgotten.insert(id.to_owned(), installed);
             if let Some(key) = shared {
-                settle_head(txn, state, &key, id, &relative)?;
+                settle_head(txn, state, &key, id, &relative, self.options.custom_ssh)?;
             }
             Ok(true)
         })
@@ -2124,11 +2259,11 @@ impl Manager {
         let relative = record.clone_folder(id);
         // The clone is gone: `repository_not_found`, like a restore without a record.
         let live = installed_repo(txn.root(), id, &record)?;
-        clean(&live, id)?;
+        clean(&live, id, self.options.custom_ssh)?;
         let recorded = record.current.commit.clone();
-        let head = git(&live, &["rev-parse", "HEAD"])?;
+        let head = git(&live, &["rev-parse", "HEAD"], self.options.custom_ssh)?;
         // Commits only this clone has are lost work in every mode.
-        let unpublished = lost_work::unpublished_head_commits(&live)?;
+        let unpublished = lost_work::unpublished_head_commits(&live, self.options.custom_ssh)?;
         if !unpublished.is_empty() {
             return Err(Error::LocalChanges {
                 id: id.into(),
@@ -2139,7 +2274,12 @@ impl Manager {
         // Branch mode takes HEAD as found when it moved forward on its own branch: a
         // descendant of the recorded commit that the origin's branch contains.
         let on_branch = |branch: &str| {
-            git(&live, &["merge-base", "--is-ancestor", &recorded, &head]).is_ok()
+            git(
+                &live,
+                &["merge-base", "--is-ancestor", &recorded, &head],
+                self.options.custom_ssh,
+            )
+            .is_ok()
                 && git(
                     &live,
                     &[
@@ -2148,6 +2288,7 @@ impl Manager {
                         &head,
                         &format!("refs/remotes/origin/{branch}"),
                     ],
+                    self.options.custom_ssh,
                 )
                 .is_ok()
         };
@@ -2157,7 +2298,7 @@ impl Manager {
         } else {
             // A shared clone's HEAD may be another user's revision; anything else moved.
             let moved = match record.clone.as_deref() {
-                Some(key) => shared_head_moved(&live, state, key, id)?,
+                Some(key) => shared_head_moved(&live, state, key, id, self.options.custom_ssh)?,
                 None => Some(LostWork::HeadMoved {
                     head: head.clone(),
                     recorded: recorded.clone(),
@@ -2176,14 +2317,19 @@ impl Manager {
         };
         if commit != head {
             let staged = txn.repo(&relative, &live)?;
-            git(&staged, &["checkout", "-q", "--detach", &commit])?;
+            git(
+                &staged,
+                &["checkout", "-q", "--detach", &commit],
+                self.options.custom_ssh,
+            )?;
         }
         let repo = txn.staged_repo(&relative).unwrap_or(live);
-        let path = match packages::find_at(&repo, &commit, Some(id)) {
-            Ok(found) => found.subdir().map(str::to_owned),
-            Err(Error::InvalidArgument(_)) => fail!(InvalidManifest, "package id mismatch"),
-            Err(error) => return Err(error),
-        };
+        let path =
+            match packages::find_at_with_ssh(&repo, &commit, Some(id), self.options.custom_ssh) {
+                Ok(found) => found.subdir().map(str::to_owned),
+                Err(Error::InvalidArgument(_)) => fail!(InvalidManifest, "package id mismatch"),
+                Err(error) => return Err(error),
+            };
         let m = package_manifest(&repo, path.as_deref())?;
         ensure!(
             m.id == id && (commit != recorded || m.version == record.current.version),
@@ -2196,7 +2342,7 @@ impl Manager {
         };
         if commit != recorded {
             installed.previous = Some(installed.current.with_mode(&installed.mode));
-            installed.current = revision(&repo, &m)?;
+            installed.current = revision(&repo, &m, self.options.custom_ssh)?;
         }
         let result = InstallResult {
             id: id.into(),
@@ -2223,7 +2369,13 @@ impl Manager {
         state.packages.get_mut(id).unwrap().adopt(&m);
         if state.is_active(id) {
             deps::refuse_inactive_dependencies(state, id, "restore", false)?;
-            txn.deploy(id, &relative, path.as_deref(), &commit)?;
+            txn.deploy(
+                id,
+                &relative,
+                path.as_deref(),
+                &commit,
+                self.options.custom_ssh,
+            )?;
         }
         Ok(result)
     }
@@ -2234,7 +2386,7 @@ impl Manager {
         valid_id(id)?;
         let _busy = self.busy();
         let state = self.state()?;
-        let removal = removal(&self.root, &state, id)?;
+        let removal = removal(&self.root, &state, id, self.options.custom_ssh)?;
         let mut deletes = Vec::new();
         if let Some(repo) = &removal.repo {
             deletes.push(repo.to_string_lossy().into_owned());
@@ -2270,7 +2422,7 @@ impl Manager {
     pub fn uninstall(&self, id: &str, confirmed: &[LostWork], force: bool) -> Result<DistSync> {
         valid_id(id)?;
         self.transaction(|txn, state| {
-            let removal = removal(txn.root(), state, id)?;
+            let removal = removal(txn.root(), state, id, self.options.custom_ssh)?;
             if !force {
                 let after = without_provider(state, id, true);
                 guard_removal(state, &after, id, "uninstall", &removal.lost_work)?;
@@ -2290,7 +2442,14 @@ impl Manager {
             match (&removal.repo, &removal.key) {
                 (Some(_), _) => txn.delete_repo(&removal.relative)?,
                 // Other packages keep the shared clone; its HEAD goes to one of theirs.
-                (None, Some(key)) => settle_head(txn, state, key, id, &removal.relative)?,
+                (None, Some(key)) => settle_head(
+                    txn,
+                    state,
+                    key,
+                    id,
+                    &removal.relative,
+                    self.options.custom_ssh,
+                )?,
                 (None, None) => {}
             }
             txn.delete_dist(id)?;
@@ -2381,7 +2540,7 @@ impl Manager {
     /// Read-only: what [`Manager::sync_dist`] would change.
     pub fn sync_dist_plan(&self) -> Result<DistSync> {
         let _busy = self.busy();
-        dist_drift(&self.root, &self.state()?)
+        dist_drift(&self.root, &self.state()?, self.options.custom_ssh)
     }
     /// Make `dist/` hold exactly the active packages: deploy a missing `dist/<id>` of an
     /// active package from its clone at the installed commit and remove the `dist/` of
@@ -2393,11 +2552,11 @@ impl Manager {
     /// for it) is reported in `skipped` and the others are still synced: the transaction
     /// commits, then the call fails with [`Error::NotDeployed`] carrying the report.
     pub fn sync_dist(&self) -> Result<DistSync> {
-        let (plan, _) = self.transaction(|txn, state| {
-            let mut plan = dist_drift(txn.root(), state)?;
+        let (mut plan, report) = self.transaction(|txn, state| {
+            let mut plan = dist_drift(txn.root(), state, self.options.custom_ssh)?;
             let mut deployed = Vec::new();
             for id in std::mem::take(&mut plan.deployed) {
-                match deploy_committed(txn, &id, &state.packages[&id]) {
+                match deploy_committed(txn, &id, &state.packages[&id], self.options.custom_ssh) {
                     Ok(()) => deployed.push(id),
                     Err(error) => {
                         // Settled as "nothing to deploy" (the live dist is missing).
@@ -2414,6 +2573,7 @@ impl Manager {
             plan.skipped.sort_by(|a, b| a.id.cmp(&b.id));
             Ok(plan)
         })?;
+        plan.warnings = report.warnings;
         if plan.skipped.is_empty() {
             return Ok(plan);
         }
@@ -2431,10 +2591,10 @@ impl Manager {
 /// active, gets it from its clone at the installed commit. Folders of no known package
 /// are left alone, and so is an active package that cannot be deployed because its clone
 /// or installed commit is missing or its namespace path is not a folder (callers report
-/// both with [`Manager::sync_dist_plan`]); any other failure fails the operation. Cheap:
+/// these with [`Manager::sync_dist_plan`]); any other failure fails the operation. Cheap:
 /// one listing of `dist/`, and Git reads only for the packages deployed.
-fn settle_dist(txn: &mut Txn, before: &State, after: &State) -> Result<()> {
-    let drift = dist_drift(txn.root(), after)?;
+fn settle_dist(txn: &mut Txn, before: &State, after: &State, custom_ssh: bool) -> Result<()> {
+    let drift = dist_drift(txn.root(), after, custom_ssh)?;
     for id in txn.staged_dists().into_iter().chain(drift.removed) {
         if !after.is_active(&id) {
             txn.delete_dist(&id)?;
@@ -2444,13 +2604,8 @@ fn settle_dist(txn: &mut Txn, before: &State, after: &State) -> Result<()> {
         if !after.is_active(id) || txn.has_dist(id) || drift.skipped.iter().any(|s| s.id == *id) {
             continue;
         }
-        // A package below a namespace path that is not a folder is never deployed.
-        let blocked = id
-            .split_once('/')
-            .is_some_and(|(ns, _)| drift.unmanaged.contains(&format!("dist/{ns}")))
-            && !drift.deployed.contains(id);
-        if drift.deployed.contains(id) || (!before.is_active(id) && !blocked) {
-            deploy_committed(txn, id, p)?;
+        if drift.deployed.contains(id) || !before.is_active(id) {
+            deploy_committed(txn, id, p, custom_ssh)?;
         }
     }
     Ok(())
@@ -2458,16 +2613,23 @@ fn settle_dist(txn: &mut Txn, before: &State, after: &State) -> Result<()> {
 
 /// Stage `dist/<id>` from the package's `dist/` at its installed commit (see
 /// [`Txn::deploy`]); the clone must exist.
-fn deploy_committed(txn: &mut Txn, id: &str, p: &Installed) -> Result<()> {
+fn deploy_committed(txn: &mut Txn, id: &str, p: &Installed, custom_ssh: bool) -> Result<()> {
     let relative = p.clone_folder(id);
     if txn.staged_repo(&relative).is_none() {
         installed_repo(txn.root(), id, p)?;
     }
-    txn.deploy(id, &relative, p.path.as_deref(), &p.current.commit)
+    txn.deploy(
+        id,
+        &relative,
+        p.path.as_deref(),
+        &p.current.commit,
+        custom_ssh,
+    )?;
+    Ok(())
 }
 
 /// Compare `dist/` with the active packages of `state` (read-only).
-fn dist_drift(root: &Path, state: &State) -> Result<DistSync> {
+fn dist_drift(root: &Path, state: &State, custom_ssh: bool) -> Result<DistSync> {
     let mut plan = DistSync::default();
     let dist = root.join("dist");
     // A known ID: registered, forgotten, or a retained own clone `packages/<id>`.
@@ -2529,17 +2691,23 @@ fn dist_drift(root: &Path, state: &State) -> Result<DistSync> {
         if !state.is_active(id) || present.contains(id) {
             continue;
         }
-        // Below a namespace path that is not a folder nothing is written (it is reported
-        // in `unmanaged`); deploying there would fail every operation.
+        // A blocked namespace is unmanaged, and its active packages remain undeployed.
         let namespace = id.split_once('/').map(|(ns, _)| ns);
-        if namespace.is_some_and(|ns| blocked.iter().any(|b| b == ns)) {
+        if let Some(ns) = namespace
+            && blocked.iter().any(|b| b == ns)
+        {
+            plan.skipped.push(SkippedDist {
+                id: id.clone(),
+                reason: format!("dist/{ns} is not a folder"),
+                clone_missing: false,
+            });
             continue;
         }
         let commit = format!("{}^{{commit}}", p.current.commit);
         let reason = match installed_repo(root, id, p) {
             Err(Error::RepositoryNotFound { .. }) => Some(("clone missing", true)),
             Err(error) => return Err(error),
-            Ok(repo) => git(&repo, &["cat-file", "-e", &commit])
+            Ok(repo) => git(&repo, &["cat-file", "-e", &commit], custom_ssh)
                 .is_err()
                 .then_some(("installed commit missing from its clone", false)),
         };
@@ -2599,36 +2767,35 @@ struct Cloned {
     manifest: Manifest,
     /// Package folder (`None`: the repository root).
     path: Option<String>,
+    expected_files: Option<BTreeMap<String, catalog::FileDigest>>,
     skipped: Vec<releases::SkippedTag>,
     /// The mode the install records.
     mode: Mode,
 }
 
 /// Clone into the transaction's scratch area, check out and verify the revision.
-fn clone_revision(txn: &Txn, fetch: &Fetch, name: &str) -> Result<Cloned> {
+fn clone_revision(txn: &Txn, fetch: &Fetch, name: &str, custom_ssh: bool) -> Result<Cloned> {
     let repo = txn.scratch(name);
     let parent = repo.parent().unwrap();
     fs::create_dir_all(parent)?;
-    git(
-        parent,
-        &["clone", "--no-hardlinks", "--", fetch.source, name],
-    )?;
+    crate::transport::clone_repo(parent, fetch.source, name, custom_ssh)?;
     // A fresh clone has exactly the origin's tags.
-    lost_work::record_origin_tags(&repo)?;
+    lost_work::record_origin_tags(&repo, custom_ssh)?;
     let mut skipped = Vec::new();
     let (commit, mode) = match fetch.target {
-        FetchTarget::Exact(commit) => (resolve_ref(&repo, commit)?, Mode::Release),
+        FetchTarget::Exact(commit) => (resolve_ref(&repo, commit, custom_ssh)?, Mode::Release),
         // The fresh clone has the origin's branches as `refs/remotes/origin/*` only (and
         // a local branch for the default one, which is never used).
-        FetchTarget::Ref(reference) => resolve_upstream_ref(&repo, reference)?,
-        FetchTarget::Dev => resolve_upstream_ref(&repo, "HEAD")?,
+        FetchTarget::Ref(reference) => resolve_upstream_ref(&repo, reference, custom_ssh)?,
+        FetchTarget::Dev => resolve_upstream_ref(&repo, "HEAD", custom_ssh)?,
         FetchTarget::Latest => {
-            let mut found = match releases::discover_all(&repo, fetch.package) {
+            let mut found = match releases::discover_all_with_ssh(&repo, fetch.package, custom_ssh)
+            {
                 // An ID the repository does not have: say which packages it has.
                 Err(Error::NoReleases(message)) => {
                     if let Some(id) = fetch.package {
-                        let head = git(&repo, &["rev-parse", "HEAD"])?;
-                        packages::find_at(&repo, &head, Some(id))?;
+                        let head = git(&repo, &["rev-parse", "HEAD"], custom_ssh)?;
+                        packages::find_at_with_ssh(&repo, &head, Some(id), custom_ssh)?;
                     }
                     return Err(Error::NoReleases(message));
                 }
@@ -2669,7 +2836,7 @@ fn clone_revision(txn: &Txn, fetch: &Fetch, name: &str) -> Result<Cloned> {
         FetchTarget::Ref(reference) => packages::tag_id(reference),
         _ => None,
     });
-    let found = packages::find_at(&repo, &commit, package)?;
+    let found = packages::find_at_with_ssh(&repo, &commit, package, custom_ssh)?;
     if fetch.expected.is_some() {
         ensure!(
             found.subdir() == fetch.path,
@@ -2679,7 +2846,7 @@ fn clone_revision(txn: &Txn, fetch: &Fetch, name: &str) -> Result<Cloned> {
             found.subdir().unwrap_or("(root)")
         );
     }
-    git(&repo, &["checkout", "--detach", &commit])?;
+    git(&repo, &["checkout", "--detach", &commit], custom_ssh)?;
     let path = found.subdir().map(str::to_owned);
     let m = package_manifest(&repo, path.as_deref())?;
     ensure!(
@@ -2695,12 +2862,16 @@ fn clone_revision(txn: &Txn, fetch: &Fetch, name: &str) -> Result<Cloned> {
         );
     }
     if let Some(expected_files) = fetch.files {
-        let dist = match &path {
-            Some(path) => repo.join(path).join("dist"),
-            None => repo.join("dist"),
-        };
         ensure!(
-            catalog::hash_files(&dist)? == *expected_files,
+            catalog::hash_exported_dist(
+                &repo,
+                &commit,
+                path.as_deref(),
+                &txn.scratch("verify-dist"),
+                custom_ssh,
+            )?
+            .files
+                == *expected_files,
             Catalog,
             "catalog file hashes do not match git dist"
         );
@@ -2709,6 +2880,7 @@ fn clone_revision(txn: &Txn, fetch: &Fetch, name: &str) -> Result<Cloned> {
         repo,
         manifest: m,
         path,
+        expected_files: fetch.files.cloned(),
         skipped,
         mode,
     })
@@ -2760,12 +2932,26 @@ fn adopt(
     source: String,
     catalog: Option<String>,
     enabled: bool,
+    custom_ssh: bool,
 ) -> Result<InstallResult> {
-    let (staged, relative, key) = place_clone(txn, state, &cloned, &source)?;
+    let (staged, relative, key) = place_clone(txn, state, &cloned, &source, custom_ssh)?;
     let m = &cloned.manifest;
-    let current = revision(&staged, m)?;
+    let current = revision(&staged, m, custom_ssh)?;
     if enabled {
-        txn.deploy(&m.id, &relative, cloned.path.as_deref(), &current.commit)?;
+        let staged = txn.deploy(
+            &m.id,
+            &relative,
+            cloned.path.as_deref(),
+            &current.commit,
+            custom_ssh,
+        )?;
+        if let Some(expected) = &cloned.expected_files {
+            ensure!(
+                catalog::hash_files(&staged)? == *expected,
+                Catalog,
+                "catalog file hashes do not match git dist"
+            );
+        }
     }
     let mut installed = Installed {
         source: source.clone(),
@@ -2797,6 +2983,37 @@ fn adopt(
     })
 }
 
+/// Install `release` of dependency `id` that an update pulls; its refusal names the
+/// dependency, not the package that pulled it.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "pulled dependency inputs include the caller SSH policy"
+)]
+fn install_pulled(
+    txn: &mut Txn,
+    state: &mut State,
+    id: &str,
+    release: &catalog::Release,
+    name: &str,
+    catalog: Option<String>,
+    enabled: bool,
+    custom_ssh: bool,
+) -> Result<InstallResult> {
+    (|| {
+        let cloned = clone_revision(txn, &Fetch::release(release), name, custom_ssh)?;
+        check_new_id(txn.root(), state, &cloned.manifest)?;
+        adopt(
+            txn,
+            state,
+            cloned,
+            release.source.clone(),
+            catalog,
+            enabled,
+            custom_ssh,
+        )
+    })()
+    .map_err(|error| error.with_package(id))
+}
 /// [`Manager::protecting_catalog`] for the catalog at `location`.
 fn protecting_catalog_at(location: &str, state: &State) -> Result<Option<String>> {
     if !catalog::is_verified(location)? {
@@ -2816,6 +3033,7 @@ fn catalog_candidates(
     id: &str,
     installed: &Installed,
     location: &str,
+    custom_ssh: bool,
 ) -> Result<(Vec<catalog::Release>, Option<String>)> {
     ensure!(
         catalog::is_verified(location)?,
@@ -2855,7 +3073,7 @@ fn catalog_candidates(
         releases.push(release);
     }
     // Tag names only: the origin's newer release is reported, never installed.
-    let upstream = match releases::discover_all(repo, Some(id)) {
+    let upstream = match releases::discover_all_with_ssh(repo, Some(id), custom_ssh) {
         Ok(found) => found
             .tags
             .iter()
@@ -2876,10 +3094,12 @@ fn catalog_candidates(
 /// verified catalog at `location`: the same source and commit, and (checked out in
 /// `repo`, a clone of that source) the same package folder, manifest and file hashes.
 fn verify_installed_release(
+    txn: &Txn,
     repo: &Path,
     id: &str,
     installed: &Installed,
     location: &str,
+    custom_ssh: bool,
 ) -> Result<()> {
     let version = &installed.current.version;
     let release = catalog::lookup(location, id, Some(version))?;
@@ -2890,23 +3110,35 @@ fn verify_installed_release(
         &installed.current.commit[..installed.current.commit.len().min(12)],
         &release.commit[..release.commit.len().min(12)]
     );
-    ensure_release_commit(repo, &release)?;
-    let found = packages::find_at(repo, &release.commit, Some(id))?;
+    ensure_release_commit(repo, &release, custom_ssh)?;
+    let found = packages::find_at_with_ssh(repo, &release.commit, Some(id), custom_ssh)?;
     ensure!(
         found.subdir() == release.path.as_deref(),
         Catalog,
         "catalog package folder of {id}@{version} does not match git revision"
     );
-    git(repo, &["checkout", "--detach", &release.commit])?;
+    git(repo, &["checkout", "--detach", &release.commit], custom_ssh)?;
     let actual = package_manifest(repo, release.path.as_deref())?;
-    verify_catalog_release(repo, &actual, &release)
+    let staged = txn.scratch("verify-installed-dist");
+    if staged.exists() {
+        fs::remove_dir_all(&staged)?;
+    }
+    export_dist(
+        repo,
+        &release.commit,
+        release.path.as_deref(),
+        &staged,
+        custom_ssh,
+    )?;
+    verify_catalog_release(&actual, &release, &staged)
 }
 /// The commit of a catalog release must be in `repo` (the clone after fetching its origin).
-fn ensure_release_commit(repo: &Path, release: &catalog::Release) -> Result<()> {
+fn ensure_release_commit(repo: &Path, release: &catalog::Release, custom_ssh: bool) -> Result<()> {
     ensure!(
         git(
             repo,
-            &["cat-file", "-e", &format!("{}^{{commit}}", release.commit)]
+            &["cat-file", "-e", &format!("{}^{{commit}}", release.commit)],
+            custom_ssh
         )
         .is_ok(),
         Catalog,
@@ -2917,25 +3149,27 @@ fn ensure_release_commit(repo: &Path, release: &catalog::Release) -> Result<()> 
     );
     Ok(())
 }
-/// The checked-out revision in `repo` (manifest `actual`) must be exactly the catalog
-/// release: the same manifest and dist file hashes (`catalog` otherwise).
-fn verify_catalog_release(
-    repo: &Path,
-    actual: &Manifest,
-    release: &catalog::Release,
-) -> Result<()> {
+/// The checked-out manifest must match the catalog release.
+fn verify_catalog_manifest(actual: &Manifest, release: &catalog::Release) -> Result<()> {
     let name = format!("{}@{}", release.manifest.id, release.manifest.version);
     ensure!(
         serde_json::to_value(actual)? == serde_json::to_value(&release.manifest)?,
         Catalog,
         "catalog manifest does not match git revision of {name}: the release differs from the one added to the catalog"
     );
-    let dist = match &release.path {
-        Some(path) => repo.join(path).join("dist"),
-        None => repo.join("dist"),
-    };
+    Ok(())
+}
+
+/// Verify catalog hashes against the exported tree staged for deployment.
+fn verify_catalog_release(
+    actual: &Manifest,
+    release: &catalog::Release,
+    staged: &Path,
+) -> Result<()> {
+    verify_catalog_manifest(actual, release)?;
+    let name = format!("{}@{}", release.manifest.id, release.manifest.version);
     ensure!(
-        catalog::hash_files(&dist)? == release.files,
+        catalog::hash_files(staged)? == release.files,
         Catalog,
         "catalog file hashes do not match git dist of {name}: the release differs from the one added to the catalog"
     );
@@ -3387,6 +3621,7 @@ mod tests {
         ] {
             let options = Options {
                 catalog: Some(location.into()),
+                custom_ssh: false,
             };
             let error = Manager::open_with(&root, options).err().unwrap();
             assert_eq!(error.kind(), kind, "{location}: {error}");
@@ -3396,6 +3631,7 @@ mod tests {
         // A valid remote location is not fetched when opening.
         let options = Options {
             catalog: Some("https://example.invalid/catalog".into()),
+            custom_ssh: false,
         };
         drop(Manager::open_with(&root, options).unwrap());
         assert!(root.join("state.json").exists());
@@ -3410,6 +3646,7 @@ mod tests {
             let location = missing.to_string_lossy().into_owned();
             let options = Options {
                 catalog: Some(location.clone()),
+                custom_ssh: false,
             };
             let error = Manager::open_with(&root, options).err().unwrap();
             assert_eq!(error.kind(), "invalid_argument");
@@ -3431,13 +3668,14 @@ mod tests {
         let catalog = catalog.to_string_lossy().into_owned();
         let options = Options {
             catalog: Some(catalog.clone()),
+            custom_ssh: false,
         };
         let m = Manager::open_with(&root, options).unwrap();
         assert_eq!(m.root(), root);
         assert_eq!(m.options().catalog.as_deref(), Some(catalog.as_str()));
         assert_eq!(
             read(&root.join("state.json")),
-            "{\n  \"format\": 3,\n  \"packages\": {}\n}"
+            "{\n  \"format\": 1,\n  \"packages\": {}\n}"
         );
         assert!(root.join("packages").is_dir() && root.join("dist").is_dir());
         assert!(!root.join("plugins").exists());
@@ -3454,6 +3692,128 @@ mod tests {
         drop(reopen(&root).unwrap());
         assert_eq!(tree_hash(&root), before);
         assert_eq!(Manager::open("/").err().unwrap().kind(), "workspace");
+    }
+
+    #[test]
+    fn open_ds_store_only_root() {
+        let dir = TempDir::new("workspace");
+        let root = dir.join("workspace");
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join(".DS_Store"), b"Finder metadata").unwrap();
+
+        let manager = Manager::open(&root).unwrap();
+        assert!(manager.list().unwrap().is_empty());
+        assert!(root.join("state.json").is_file());
+        assert!(root.join("packages").is_dir());
+        assert!(root.join("dist").is_dir());
+        assert_eq!(
+            fs::read(root.join(".DS_Store")).unwrap(),
+            b"Finder metadata"
+        );
+    }
+
+    #[test]
+    fn open_ds_store_with_other_content_is_refused() {
+        let dir = TempDir::new("workspace");
+        for name in ["notes.txt", ".hidden"] {
+            let root = dir.join(name);
+            fs::create_dir(&root).unwrap();
+            fs::write(root.join(".DS_Store"), b"Finder metadata").unwrap();
+            fs::write(root.join(name), b"user data").unwrap();
+            let before = tree_hash(&root);
+            let error = Manager::open(&root).err().unwrap();
+            assert_eq!(error.kind(), "workspace");
+            assert_eq!(tree_hash(&root), before);
+        }
+    }
+
+    #[test]
+    fn open_retries_after_interrupted_initial_state_write() {
+        for existing_root in [false, true] {
+            let dir = TempDir::new("workspace-initial-state-crash");
+            let root = dir.join("workspace");
+            if existing_root {
+                fs::create_dir(&root).unwrap();
+            }
+            crate::atomic_write::CRASH_WRITE.set(true);
+            let crash = std::panic::catch_unwind(|| Manager::open(&root));
+            assert!(crash.is_err(), "initial state write was not interrupted");
+            assert!(
+                !root.join("state.json").exists(),
+                "partial state was published"
+            );
+            let staged: Vec<_> = fs::read_dir(&root)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect();
+            assert!(
+                staged.len() == 1 && is_initial_state_temp(&staged[0]),
+                "the root holds only the staged state: {staged:?}"
+            );
+            // Any other entry makes it a foreign directory: refused, the staged file kept.
+            for name in ["notes.txt", ".state.json-1-x.tmp"] {
+                fs::write(root.join(name), "user data").unwrap();
+                let before = tree_hash(&root);
+                assert_eq!(reopen(&root).err().unwrap().kind(), "workspace");
+                assert_eq!(tree_hash(&root), before);
+                fs::remove_file(root.join(name)).unwrap();
+            }
+            let manager = reopen(&root).unwrap();
+            assert!(manager.list().unwrap().is_empty());
+            assert_eq!(
+                read(&root.join("state.json")),
+                "{\n  \"format\": 1,\n  \"packages\": {}\n}"
+            );
+            assert!(root.join("packages").is_dir() && root.join("dist").is_dir());
+            assert!(
+                fs::read_dir(&root)
+                    .unwrap()
+                    .all(|entry| !is_initial_state_temp(&entry.unwrap().file_name())),
+                "stale initial state temporary remains after reopen"
+            );
+        }
+    }
+
+    #[test]
+    fn open_creates_a_workspace_on_a_mount_point_root() {
+        let dir = TempDir::new("workspace-mount-point");
+        let root = dir.join("workspace");
+        fs::create_dir(&root).unwrap();
+        crate::atomic_write::MOUNT_POINT.set(Some(root.clone()));
+        let opened = Manager::open(&root);
+        crate::atomic_write::MOUNT_POINT.set(None);
+        assert!(opened.unwrap().list().unwrap().is_empty());
+        assert!(root.join("state.json").is_file());
+    }
+
+    #[test]
+    fn open_ds_store_root_with_abandoned_initial_state() {
+        let dir = TempDir::new("workspace-ds-store-crash");
+        let root = dir.join("workspace");
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join(".DS_Store"), b"Finder metadata").unwrap();
+        crate::atomic_write::CRASH_WRITE.set(true);
+        let crash = std::panic::catch_unwind(|| Manager::open(&root));
+        assert!(crash.is_err(), "initial state write was not interrupted");
+        assert!(
+            fs::read_dir(&root)
+                .unwrap()
+                .any(|entry| is_initial_state_temp(&entry.unwrap().file_name()))
+        );
+
+        let manager = reopen(&root).unwrap();
+        assert!(manager.list().unwrap().is_empty());
+        assert!(root.join("state.json").is_file());
+        assert!(
+            fs::read_dir(&root)
+                .unwrap()
+                .all(|entry| !is_initial_state_temp(&entry.unwrap().file_name())),
+            "stale initial state temporary remains after reopen"
+        );
+        assert_eq!(
+            fs::read(root.join(".DS_Store")).unwrap(),
+            b"Finder metadata"
+        );
     }
 
     #[test]
@@ -3477,15 +3837,15 @@ mod tests {
         for (text, kind) in [
             ("{truncated", "invalid_data"),
             (
-                r#"{"format":3,"packages":{"../evil":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true,"metadata":{}}}}"#,
+                r#"{"format":1,"packages":{"../evil":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true,"metadata":{}}}}"#,
                 "invalid_id",
             ),
             (
-                r#"{"format":3,"packages":{"a/b/c":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true,"metadata":{}}}}"#,
+                r#"{"format":1,"packages":{"a/b/c":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true,"metadata":{}}}}"#,
                 "invalid_id",
             ),
             (
-                r#"{"format":3,"packages":{"demo1":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true,"metadata":{}}}}"#,
+                r#"{"format":1,"packages":{"demo1":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true,"metadata":{}}}}"#,
                 "invalid_id",
             ),
         ] {
@@ -3602,7 +3962,7 @@ mod tests {
         fixture_git(&ws.author.path, &["commit", "-q", "-m", "no dist"]);
         let commit = ws.author.head();
         let target = ws.dir.join("target");
-        let error = export_dist(&ws.author.path, &commit, None, &target).unwrap_err();
+        let error = export_dist(&ws.author.path, &commit, None, &target, false).unwrap_err();
         assert_eq!(error.kind(), "invalid_manifest", "{error}");
         assert!(error.to_string().contains("has no dist/ folder"), "{error}");
         assert!(!target.exists());
@@ -4002,6 +4362,7 @@ mod tests {
             &ws.root,
             Options {
                 catalog: Some(location),
+                custom_ssh: false,
             },
         )
         .unwrap();
@@ -4295,6 +4656,74 @@ mod tests {
     }
 
     #[test]
+    fn rollback_manifest_mismatch_names_the_package() {
+        let id = "dan/demo1";
+        let (ws, m) = Ws::installed(id);
+        ws.author.release("0.2.0");
+        m.update(id).unwrap();
+        // Corrupt the recorded previous version, while its commit still exists.
+        let path = ws.root.join("state.json");
+        let mut state: serde_json::Value = serde_json::from_str(&read(&path)).unwrap();
+        state["packages"][id]["previous"]["version"] = "0.0.9".into();
+        fs::write(&path, state.to_string()).unwrap();
+        let error = ws.refuses("invalid_manifest", || m.rollback(id));
+        assert_eq!(error.to_string(), "dan/demo1: rollback manifest mismatch");
+        assert!(matches!(error, Error::InvalidManifest { id: Some(package), .. } if package == id));
+        // Point the previous revision at a valid commit declaring another package.
+        write_manifest(&ws.author.path, &make_manifest("dan/renamed", "0.3.0"));
+        fixture_git(&ws.author.path, &["commit", "-qam", "rename"]);
+        let renamed = ws.author.head();
+        fixture_git(&ws.repo(), &["fetch", ws.author.source(), &renamed]);
+        state["packages"][id]["previous"]["commit"] = renamed.into();
+        state["packages"][id]["previous"]["version"] = "0.3.0".into();
+        fs::write(&path, state.to_string()).unwrap();
+        let error = ws.refuses("invalid_manifest", || m.rollback(id));
+        assert_eq!(error.to_string(), "dan/demo1: rollback manifest mismatch");
+        assert!(matches!(error, Error::InvalidManifest { id: Some(package), .. } if package == id));
+    }
+
+    #[test]
+    fn update_all_upstream_identity_refusal_names_the_package() {
+        let id = "dan/demo1";
+        let ws = Ws::new(id);
+        let m = ws.open();
+        m.install_package(ws.author.source(), None, InstallTarget::Dev)
+            .unwrap();
+        write_manifest(&ws.author.path, &make_manifest("dan/renamed", "0.2.0"));
+        fixture_git(&ws.author.path, &["commit", "-qam", "rename"]);
+        for error in [
+            ws.refuses("invalid_manifest", || m.update_all()),
+            ws.refuses("invalid_manifest", || m.update_all_plan()),
+        ] {
+            assert_eq!(
+                error.to_string(),
+                "dan/demo1: package id changed upstream to dan/renamed"
+            );
+            assert!(
+                matches!(error, Error::InvalidManifest { id: Some(package), .. } if package == id)
+            );
+        }
+    }
+
+    #[test]
+    fn update_all_local_work_names_the_package_and_items() {
+        let (ws, m) = Ws::installed("dan/demo1");
+        let repo = ws.repo();
+        fs::write(repo.join("local.txt"), "local work").unwrap();
+        fixture_git(&repo, &["add", "local.txt"]);
+        fixture_git(&repo, &["commit", "-qm", "local"]);
+        fixture_git(&repo, &["tag", "local-only"]);
+        fixture_git(&repo, &["reset", "--hard", "HEAD~1"]);
+        let error = ws.refuses("local_changes", || m.update_all());
+        assert_eq!(
+            error.to_string(),
+            "dan/demo1: unpublished local work blocks update all; unpublished tag: local-only"
+        );
+        assert!(matches!(error, Error::LocalChanges { id, items, .. }
+            if id == "dan/demo1" && items == [LostWork::UnpublishedTag { name: "local-only".into() }]));
+    }
+
+    #[test]
     fn update_refusals_leave_the_workspace_unchanged() {
         let id = "dan/demo1";
         let (ws, m) = Ws::installed(id);
@@ -4317,7 +4746,11 @@ mod tests {
         let error = ws.refuses("invalid_manifest", || {
             m.update_to(id, Target::Ref(String::from(&renamed)))
         });
-        assert_eq!(error.to_string(), "package id changed upstream");
+        assert_eq!(
+            error.to_string(),
+            "dan/demo1: package id changed upstream to dan/renamed"
+        );
+        assert!(matches!(error, Error::InvalidManifest { id: Some(package), .. } if package == id));
     }
 
     /// New upstream commit that keeps the manifest version.
@@ -4382,7 +4815,7 @@ mod tests {
         m.update_to("dan/demo1", Target::Ref("dan/demo1@0.1.1".into()))
             .unwrap();
         assert_eq!(
-            resolve_ref(&ws.repo(), "dan/demo1@0.1.2").unwrap(),
+            resolve_ref(&ws.repo(), "dan/demo1@0.1.2", false).unwrap(),
             original
         );
         let moved = same_version_commit(&ws.author);
@@ -4392,7 +4825,10 @@ mod tests {
         for target in [Target::Release, Target::Ref("dan/demo1@0.1.2".into())] {
             let change = m.update_to("dan/demo1", target.clone()).unwrap();
             assert_eq!(change.to.commit, moved);
-            assert_eq!(resolve_ref(&ws.repo(), "dan/demo1@0.1.2").unwrap(), moved);
+            assert_eq!(
+                resolve_ref(&ws.repo(), "dan/demo1@0.1.2", false).unwrap(),
+                moved
+            );
             m.rollback("dan/demo1").unwrap();
         }
     }
@@ -4428,7 +4864,10 @@ mod tests {
                 &moved[..12]
             )]
         );
-        assert_eq!(resolve_ref(&ws.repo(), "dan/demo1@0.2.0").unwrap(), moved);
+        assert_eq!(
+            resolve_ref(&ws.repo(), "dan/demo1@0.2.0", false).unwrap(),
+            moved
+        );
         assert_eq!(read(&ws.root.join("state.json")), state);
         // Deleted release tag: the installed release was retracted, the package stays.
         fixture_git(&ws.author.path, &["tag", "-d", "dan/demo1@0.2.0"]);
@@ -4438,7 +4877,7 @@ mod tests {
             change.warnings,
             ["installed release dan/demo1@0.2.0 no longer exists on the origin"]
         );
-        assert!(resolve_ref(&ws.repo(), "refs/tags/dan/demo1@0.2.0").is_err());
+        assert!(resolve_ref(&ws.repo(), "refs/tags/dan/demo1@0.2.0", false).is_err());
         assert_eq!(read(&ws.root.join("state.json")), state);
     }
 
@@ -4467,7 +4906,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .starts_with("latest release tag is broken")
+                .starts_with("dan/demo1: latest release tag is broken")
         );
     }
 
@@ -4599,6 +5038,34 @@ mod tests {
     }
 
     #[test]
+    fn update_all_invalid_requirement_on_the_branch_names_the_package() {
+        let id = "dan/demo1";
+        let ws = Ws::new(id);
+        let m = ws.open();
+        m.install_package(ws.author.source(), None, InstallTarget::Dev)
+            .unwrap();
+        let mut next = make_manifest(id, "0.2.0");
+        next.dependencies
+            .insert("dan/lib".into(), "^1 || ^2".into());
+        write_manifest(&ws.author.path, &next);
+        fixture_git(&ws.author.path, &["commit", "-qam", "bad requirement"]);
+        for error in [
+            ws.refuses("invalid_manifest", || m.update_all()),
+            ws.refuses("invalid_manifest", || m.update_all_plan()),
+        ] {
+            assert!(
+                error
+                    .to_string()
+                    .starts_with("dan/demo1: invalid version requirement"),
+                "{error}"
+            );
+            assert!(
+                matches!(error, Error::InvalidManifest { id: Some(package), .. } if package == id)
+            );
+        }
+    }
+
+    #[test]
     fn branch_mode_follows_origin_head_and_refuses_diverged_history() {
         let id = "dan/demo1";
         let ws = Ws::new(id);
@@ -4630,8 +5097,11 @@ mod tests {
             assert!(
                 error
                     .to_string()
-                    .starts_with("history of main diverged; automatic update refused"),
+                    .starts_with("dan/demo1: history of main diverged; automatic update refused"),
                 "{error}"
+            );
+            assert!(
+                matches!(error, Error::VersionConflict { id: Some(package), .. } if package == id)
             );
         }
         // An explicit ref is the user's choice: no ancestry needed.
@@ -4744,6 +5214,7 @@ mod tests {
             &ws.root,
             Options {
                 catalog: Some(location),
+                custom_ssh: false,
             },
         )
         .unwrap();
@@ -4923,6 +5394,7 @@ mod tests {
             &ws.root,
             Options {
                 catalog: Some(location),
+                custom_ssh: false,
             },
         )
         .unwrap();
@@ -5119,6 +5591,7 @@ mod tests {
             &ws.root,
             Options {
                 catalog: Some(location.clone()),
+                custom_ssh: false,
             },
         )
         .unwrap()
@@ -5163,6 +5636,7 @@ mod tests {
             &ws.root,
             Options {
                 catalog: Some(other.to_str().unwrap().into()),
+                custom_ssh: false,
             },
         )
         .unwrap();
@@ -5182,6 +5656,7 @@ mod tests {
             &ws.root,
             Options {
                 catalog: Some(other.to_str().unwrap().into()),
+                custom_ssh: false,
             },
         )
         .unwrap();
@@ -5204,6 +5679,7 @@ mod tests {
             &ws.root,
             Options {
                 catalog: Some(location.clone()),
+                custom_ssh: false,
             },
         )
         .unwrap();
@@ -5241,6 +5717,7 @@ mod tests {
             &ws.root,
             Options {
                 catalog: Some(location.clone()),
+                custom_ssh: false,
             },
         )
         .unwrap();
@@ -5266,6 +5743,7 @@ mod tests {
             &ws.root,
             Options {
                 catalog: Some(location),
+                custom_ssh: false,
             },
         )
         .unwrap();
@@ -5352,6 +5830,7 @@ mod tests {
             &ws.root,
             Options {
                 catalog: Some(location.clone()),
+                custom_ssh: false,
             },
         )
         .unwrap();
@@ -5427,8 +5906,8 @@ mod tests {
     fn fork_creates_an_independent_author_checkout() {
         let (ws, m) = Ws::installed("vendor/demo1");
         let base = ws.author.head();
-        // A branch named `fork` already exists in the installed clone.
-        fixture_git(&ws.repo(), &["branch", "fork"]);
+        // Branch naming considers the recorded source, not local installation refs.
+        fixture_git(&ws.author.path, &["branch", "fork"]);
         let before = tree_hash(&ws.root);
         let path = m
             .fork_in_namespace("vendor/demo1", &ws.dir.join("forks/demo1"), "me")
@@ -5508,9 +5987,7 @@ mod tests {
         fs::create_dir_all(&dest).unwrap();
         let error = ws.refuses("invalid_argument", || m.fork_in_namespace(id, &dest, "me"));
         assert!(
-            error
-                .to_string()
-                .starts_with("destination already exists and is not a multi-package repository"),
+            error.to_string().starts_with("destination already exists"),
             "{error}"
         );
         fs::remove_dir(&dest).unwrap();
@@ -5581,6 +6058,53 @@ mod tests {
         fixture_git(&bad.path, &["commit", "-q", "-m", "symlink in dist"]);
         fixture_git(&bad.path, &["tag", "-f", "dan/bad@0.1.0"]);
         ws.refuses("unsupported", || m.install(bad.source()));
+    }
+
+    #[test]
+    fn a_submodule_in_dist_deploys_an_empty_folder() {
+        let (ws, m) = Ws::installed("dan/demo1");
+        let bad = ws.other_author("bad", "dan/bad");
+        let sha = git(&bad.path, &["rev-parse", "HEAD"], false).unwrap();
+        fixture_git(
+            &bad.path,
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("160000,{sha},dist/vendor"),
+            ],
+        );
+        fixture_git(&bad.path, &["commit", "-q", "-m", "submodule in dist"]);
+        fixture_git(&bad.path, &["tag", "-f", "dan/bad@0.1.0"]);
+        let result = m.install(bad.source()).unwrap();
+        let vendor = ws.root.join("dist/dan/bad/vendor");
+        assert!(vendor.is_dir());
+        assert_eq!(fs::read_dir(vendor).unwrap().count(), 0);
+        assert_eq!(result.id, "dan/bad");
+        assert!(
+            result
+                .dist
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("dist/vendor is a Git submodule"))
+        );
+        fs::remove_dir_all(ws.root.join("dist/dan/bad")).unwrap();
+        let synced = m.sync_dist().unwrap();
+        assert_eq!(synced.warnings, result.dist.warnings);
+        assert!(ws.root.join("dist/dan/bad/vendor").is_dir());
+        fs::remove_dir_all(ws.root.join("dist/dan/bad")).unwrap();
+        fs::remove_dir_all(ws.dist()).unwrap();
+        let state = m.state().unwrap();
+        fs::remove_dir_all(
+            ws.root
+                .join(state.packages["dan/demo1"].clone_folder("dan/demo1")),
+        )
+        .unwrap();
+        let Error::NotDeployed { sync, .. } = m.sync_dist().unwrap_err() else {
+            panic!("missing clone must produce a partial reconciliation report");
+        };
+        assert_eq!(sync.warnings, result.dist.warnings);
+        assert!(ws.root.join("dist/dan/bad/vendor").is_dir());
     }
 
     #[test]
@@ -6013,7 +6537,7 @@ mod tests {
     }
 
     #[test]
-    fn a_fork_of_a_package_releases_only_that_package() {
+    fn a_fork_of_one_package_releases_every_package_in_the_repository() {
         let mono = Mono::new();
         let m = mono.open();
         m.install_package(mono.source(), Some("tilr/theme"), InstallTarget::Release)
@@ -6022,13 +6546,23 @@ mod tests {
         let result = m
             .fork_replace("tilr/theme", &destination, "me", None, false)
             .unwrap();
-        assert!(result.failed.is_none(), "{:?}", result.error);
-        assert_eq!(result.tag.as_deref(), Some("me/theme@1.0.0"));
+        assert!(result.error().is_none(), "{:?}", result.error());
+        assert_eq!(result.packages.len(), 2);
+        for package in &result.packages {
+            assert_eq!(
+                package.tag.as_deref(),
+                Some(format!("{}@1.0.0", package.id).as_str())
+            );
+            assert!(package.installed.is_some());
+        }
         let config: packages::Config =
             serde_json::from_slice(&fs::read(destination.join(packages::CONFIG)).unwrap()).unwrap();
-        assert_eq!(config.packages, ["packages/theme"]);
+        assert_eq!(config.packages, ["packages/*"]);
         let state = m.state().unwrap();
         assert_eq!(state.replacements["tilr/theme"], "me/theme");
+        assert!(state.packages.contains_key("me/store"));
+        assert!(!state.packages.contains_key("tilr/store"));
+        assert!(!state.replacements.contains_key("tilr/store"));
         let fork = &state.packages["me/theme"];
         assert_eq!(fork.path.as_deref(), Some("packages/theme"));
         assert_eq!(fork.fork_of.as_ref().unwrap().id, "tilr/theme");
@@ -6037,6 +6571,61 @@ mod tests {
             .fork_replace("tilr/theme", &destination, "me", None, false)
             .unwrap_err();
         assert_eq!(error.kind(), "invalid_argument");
+    }
+
+    #[test]
+    fn single_fork_replace_exposes_a_siblings_pending_replacement() {
+        let mono = Mono::new();
+        mono.release("store", "2.0.0");
+        let m = mono.open();
+        for id in ["tilr/store", "tilr/theme"] {
+            m.install_package(mono.source(), Some(id), InstallTarget::Release)
+                .unwrap();
+        }
+        let consumer = Author::new(mono.dir.join("consumer"), "app/consumer");
+        let mut manifest = make_manifest("app/consumer", "0.2.0");
+        manifest
+            .dependencies
+            .insert("tilr/store".into(), "^2.0".into());
+        write_manifest(&consumer.path, &manifest);
+        fixture_git(
+            &consumer.path,
+            &["commit", "-qam", "Require incompatible store"],
+        );
+        consumer.tag("0.2.0");
+        m.install(consumer.source()).unwrap();
+        m.uninstall("tilr/store", &[], true).unwrap();
+        m.install_package(
+            mono.source(),
+            Some("tilr/store"),
+            InstallTarget::Ref("tilr/store@1.0.0".into()),
+        )
+        .unwrap();
+
+        let result = m
+            .fork_replace(
+                "tilr/theme",
+                &mono.dir.join("forks/pending"),
+                "me",
+                None,
+                false,
+            )
+            .unwrap();
+        assert_eq!(result.packages.len(), 2);
+        let theme = result.packages.iter().find(|p| p.id == "me/theme").unwrap();
+        assert!(theme.failed.is_none(), "{:?}", theme.error);
+        assert!(theme.replacement.is_some());
+        let store = result.packages.iter().find(|p| p.id == "me/store").unwrap();
+        assert!(store.installed.is_some());
+        assert_eq!(store.failed, Some(ForkStep::Replace));
+        assert_eq!(result.error().unwrap().kind(), "incompatible_replacement");
+        let pending = result.pending();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].original, "tilr/store");
+        assert_eq!(pending[0].fork, "me/store");
+        let state = m.state().unwrap();
+        assert_eq!(state.replacements["tilr/theme"], "me/theme");
+        assert!(!state.replacements.contains_key("tilr/store"));
     }
 
     #[test]
@@ -6100,7 +6689,7 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains("already exists"), "{error}");
         assert_eq!(error.kind(), "invalid_argument");
-        // Adding needs the touched files of the target repository clean.
+        // Dirty existing targets are also refused without touching their files.
         let single = mono.dir.join("forks/single");
         m.fork_packages(&["tilr/store"], &single, "s").unwrap();
         let before = fixture_git(&single, &["rev-parse", "HEAD"]);
@@ -6110,8 +6699,16 @@ mod tests {
         )
         .unwrap();
         let error = m.fork_packages(&["tilr/theme"], &single, "s").unwrap_err();
-        assert!(error.to_string().contains("commit or discard"), "{error}");
-        assert!(!single.join("packages/theme").exists());
+        assert!(
+            error.to_string().contains("destination already exists"),
+            "{error}"
+        );
+        assert_eq!(
+            package_manifest(&single, Some("packages/theme"))
+                .unwrap()
+                .id,
+            "s/theme"
+        );
         assert_eq!(fixture_git(&single, &["rev-parse", "HEAD"]), before);
         assert_eq!(fixture_git(&destination, &["rev-parse", "HEAD"]), head);
     }
@@ -6144,13 +6741,17 @@ mod tests {
         );
         // A release whose tag exists fails for every package; the fork stays.
         let third = mono.dir.join("forks/third");
-        let fork = m.fork_packages(&["tilr/store"], &third, "ns3").unwrap();
-        fixture_git(&fork.path, &["tag", "ns3/theme@1.0.0"]);
+        // The source already carries this name in a different namespace.
+        fixture_git(&mono.repo, &["tag", "ns3/theme@1.0.0"]);
         let result = m
             .fork_packages_replace(&["tilr/theme"], &third, "ns3", None, false)
             .unwrap();
-        assert!(result.fork.packages.iter().all(|p| p.id == "ns3/theme"));
-        let theme = &result.packages[0];
+        assert_eq!(result.fork.packages.len(), 2);
+        let theme = result
+            .packages
+            .iter()
+            .find(|p| p.id == "ns3/theme")
+            .unwrap();
         assert_eq!(theme.failed, Some(ForkStep::Release));
         assert_eq!(result.error().unwrap().kind(), "version_conflict");
         assert!(third.join("packages/theme/plugin.json").is_file());
@@ -6362,7 +6963,7 @@ mod tests {
         let error = ws.refuses("version_conflict", || m.update("dan/a"));
         assert_eq!(
             error.to_string(),
-            "the origin no longer has the branch feature that dan/a follows; automatic update refused"
+            "dan/a: the origin no longer has the branch feature it follows; automatic update refused"
         );
         let plan = m.update_all().unwrap();
         assert_eq!(plan.updates.len(), 1, "{plan:?}");
@@ -6581,12 +7182,25 @@ mod tests {
             fixture_git(&path, &["rev-parse", "refs/heads/fork"]),
             head_of(&path)
         );
-        assert_eq!(fixture_git(&path, &["rev-parse", "HEAD^"]), store_commit);
-        // Same tree semantics as several packages: the sibling is gone.
-        assert!(!path.join("packages/theme").exists());
+        assert_eq!(
+            fixture_git(&path, &["rev-parse", "HEAD^"]),
+            head_of(&mono.repo)
+        );
+        assert_eq!(
+            package_manifest(&path, Some("packages/store"))
+                .unwrap()
+                .fork_of
+                .unwrap()
+                .commit,
+            store_commit
+        );
+        assert_eq!(
+            package_manifest(&path, Some("packages/theme")).unwrap().id,
+            "me/theme"
+        );
         let config: packages::Config =
             serde_json::from_slice(&fs::read(path.join(packages::CONFIG)).unwrap()).unwrap();
-        assert_eq!(config.packages, ["packages/store"]);
+        assert_eq!(config.packages, ["packages/*"]);
         assert!(fixture_git(&path, &["status", "--porcelain"]).is_empty());
     }
 
@@ -6818,7 +7432,7 @@ mod tests {
     }
 
     #[test]
-    fn a_fork_never_drops_edits_of_a_package_installed_at_an_older_revision() {
+    fn a_fork_ignores_local_edits_and_uses_each_installed_revision() {
         // B10: store is installed at the first commit, its folder changed since.
         let mono = Mono::new();
         let m = mono.open();
@@ -6831,17 +7445,15 @@ mod tests {
         let clone = mono.clone_dir();
         fs::write(clone.join("packages/store/dist/index.js"), "store edit").unwrap();
         let destination = mono.dir.join("forks/both");
-        let error = mono.refuses("local_changes", || {
-            m.fork_packages(&["tilr/store", "tilr/theme"], &destination, "me")
-        });
-        assert!(error.to_string().contains("older revision"), "{error}");
-        assert!(!destination.exists());
-        fixture_git(&clone, &["checkout", "-q", "--", "packages/store"]);
         m.fork_packages(&["tilr/store", "tilr/theme"], &destination, "me")
             .unwrap();
         assert_eq!(
             read(&destination.join("packages/store/dist/index.js")),
             "store 1.0.0"
+        );
+        assert_eq!(
+            read(&clone.join("packages/store/dist/index.js")),
+            "store edit"
         );
         // A missing installed revision is reported as such, not as diverged history.
         let mut state: serde_json::Value =
@@ -6864,39 +7476,83 @@ mod tests {
     }
 
     #[test]
-    fn adding_to_a_fork_leaves_no_temporary_folder_in_the_repository() {
-        // B12: a symlink in theme's folder makes its export fail after the checks.
+    fn a_submodule_outside_dist_is_preserved_at_its_source_revision() {
         let mono = Mono::new();
-        mono.write("theme", "1.0.1", &[]);
-        std::os::unix::fs::symlink("plugin.json", mono.repo.join("packages/theme/link")).unwrap();
-        mono.commit("link");
-        mono.tag("theme", "1.0.1");
-        let m = mono.open();
-        for id in ["tilr/store", "tilr/theme"] {
-            m.install_package(mono.source(), Some(id), InstallTarget::Release)
-                .unwrap();
-        }
-        let destination = mono.dir.join("forks/me");
-        m.fork_packages(&["tilr/store"], &destination, "me")
-            .unwrap();
-        let head = head_of(&destination);
-        let before = tree_hash(&destination);
-        let error = m
-            .fork_packages(&["tilr/theme"], &destination, "me")
-            .unwrap_err();
-        assert_eq!(error.kind(), "unsupported", "{error}");
-        assert_eq!(head_of(&destination), head);
-        assert_eq!(
-            tree_hash(&destination),
-            before,
-            "repository changed by a failed add"
+        // Use a real repository and a relative URL, then advance it after recording
+        // the link: initialization must use the recorded commit, not its latest HEAD.
+        let module = mono.dir.join("vendor");
+        fs::create_dir_all(&module).unwrap();
+        fixture_git(&module, &["init", "-q"]);
+        fixture_git(&module, &["config", "user.name", "Test"]);
+        fixture_git(&module, &["config", "user.email", "test@example.invalid"]);
+        fs::write(module.join("source.txt"), "recorded").unwrap();
+        fixture_git(&module, &["add", "."]);
+        fixture_git(&module, &["commit", "-qm", "module"]);
+        let sha = head_of(&module);
+        fixture_git(
+            &mono.repo,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                "../vendor",
+                "packages/theme/src/vendor",
+            ],
         );
-        assert!(fs::read_dir(&destination).unwrap().all(|e| {
-            !e.unwrap()
-                .file_name()
-                .to_string_lossy()
-                .starts_with(".gitpm")
-        }),);
+        mono.commit("source submodule");
+        mono.tag("theme", "1.0.1");
+        // Use this revision as theme's installed revision.
+        let m = mono.open();
+        m.install_package(
+            mono.source(),
+            Some("tilr/theme"),
+            InstallTarget::Ref("HEAD".into()),
+        )
+        .unwrap();
+        fs::write(module.join("source.txt"), "newer").unwrap();
+        fixture_git(&module, &["commit", "-qam", "newer module"]);
+        // A newer sibling revision removes the module. Theme must restore both the
+        // gitlink and configuration from its older installed revision.
+        fixture_git(&mono.repo, &["rm", "-f", "packages/theme/src/vendor"]);
+        mono.release("store", "1.1.0");
+        m.install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
+            .unwrap();
+        let destination = mono.dir.join("forks/me");
+        m.fork_packages(&["tilr/store", "tilr/theme"], &destination, "me")
+            .unwrap();
+        let link = fixture_git(
+            &destination,
+            &["ls-tree", "HEAD", "packages/theme/src/vendor"],
+        );
+        assert!(link.starts_with(&format!("160000 commit {sha}")), "{link}");
+        fixture_git(
+            &destination,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "update",
+                "--init",
+            ],
+        );
+        assert_eq!(head_of(&destination.join("packages/theme/src/vendor")), sha);
+        assert_eq!(
+            read(&destination.join("packages/theme/src/vendor/source.txt")),
+            "recorded"
+        );
+        assert_eq!(
+            crate::model::manifest(&destination.join("packages/theme"))
+                .unwrap()
+                .id,
+            "me/theme"
+        );
+        let before = snapshot(&destination);
+        let error = m
+            .fork_packages(&["tilr/store"], &destination, "me")
+            .unwrap_err();
+        assert_eq!(error.kind(), "invalid_argument");
+        assert_eq!(snapshot(&destination), before);
     }
 
     #[test]
@@ -6956,7 +7612,7 @@ mod tests {
             let before = tree_hash(ws.dir.path());
             let error = reopen(&ws.root).err().unwrap();
             assert_eq!(error.kind(), "unsupported", "{format:?}");
-            assert!(error.to_string().contains("only format 3"), "{error}");
+            assert!(error.to_string().contains("only format 1"), "{error}");
             assert_eq!(
                 tree_hash(ws.dir.path()),
                 before,
@@ -6984,13 +7640,6 @@ mod tests {
     fn snapshot(repo: &Path) -> String {
         crate::test_support::tree_hash_except(repo, &[".git/objects"])
     }
-    fn failing_hook(repo: &Path) {
-        let hook = repo.join(".git/hooks/pre-commit");
-        fs::create_dir_all(hook.parent().unwrap()).unwrap();
-        fs::write(&hook, "#!/bin/sh\necho refused by hook >&2\nexit 1\n").unwrap();
-        fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-    }
-
     #[test]
     fn installed_revisions_of_a_shared_clone_survive_upstream_rewrites_and_gc() {
         let mono = Mono::new();
@@ -7041,8 +7690,21 @@ mod tests {
         assert_eq!(mono.dist("theme"), "theme 1.1.0");
         m.rollback("tilr/theme").unwrap();
         assert_eq!(mono.dist("theme"), "theme 1.2.0");
+        // A whole-repository fork also includes store: its rewritten history diverges
+        // from theme's recorded revision, so it cannot form one fork branch.
+        let destination = mono.dir.join("theme-fork");
+        let error = m
+            .fork_packages(&["tilr/theme"], &destination, "me")
+            .unwrap_err();
+        assert_eq!(error.kind(), "invalid_argument");
+        assert!(error.to_string().contains("on diverged histories"));
+        assert!(!destination.exists());
+        // Retaining store leaves theme as the sole installed revision to pin. The
+        // fork still includes every package from theme's source revision.
+        m.forget("tilr/store").unwrap();
+        assert!(keep_refs(&clone).contains(&"refs/gitpm/tilr/store/current".to_owned()));
         let fork = m
-            .fork_packages(&["tilr/theme"], &mono.dir.join("theme-fork"), "me")
+            .fork_packages(&["tilr/theme"], &destination, "me")
             .unwrap();
         assert_eq!(
             read(&fork.path.join("packages/theme/dist/index.js")),
@@ -7053,8 +7715,6 @@ mod tests {
             "the fork has no workspace refs"
         );
         // Records that go take their refs with them.
-        m.forget("tilr/store").unwrap();
-        assert!(keep_refs(&clone).contains(&"refs/gitpm/tilr/store/current".to_owned()));
         m.uninstall("tilr/store", &[], false).unwrap();
         assert_eq!(
             keep_refs(&clone),
@@ -7128,15 +7788,15 @@ mod tests {
         m.install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
             .unwrap();
         let clone = mono.clone_dir();
-        assert!(resolve_ref(&clone, "refs/origin-tags/extra").is_ok());
+        assert!(resolve_ref(&clone, "refs/origin-tags/extra", false).is_ok());
         // A tag made by hand on a published commit, then the origin drops the commit
         // and the tag `extra`; installing a sibling fetches without pruning tags.
         fixture_git(&clone, &["tag", "mine"]);
         fixture_git(&mono.repo, &["tag", "-d", "extra"]);
         m.install_package(mono.source(), Some("tilr/theme"), InstallTarget::Release)
             .unwrap();
-        assert!(resolve_ref(&clone, "refs/origin-tags/extra").is_err());
-        assert!(resolve_ref(&clone, "refs/origin-tags/mine").is_err());
+        assert!(resolve_ref(&clone, "refs/origin-tags/extra", false).is_err());
+        assert!(resolve_ref(&clone, "refs/origin-tags/mine", false).is_err());
         fixture_git(&mono.repo, &["switch", "-q", "--orphan", "rewritten"]);
         mono.write("store", "2.0.0", &[]);
         mono.write("theme", "2.0.0", &[]);
@@ -7193,7 +7853,7 @@ mod tests {
         assert_eq!(m.update("tilr/theme").unwrap().to.version, "1.1.0");
         // The shared clone took the moved tag; tilr/store keeps its installed commit.
         assert_eq!(
-            resolve_ref(&mono.clone_dir(), "tilr/store@1.0.0").unwrap(),
+            resolve_ref(&mono.clone_dir(), "tilr/store@1.0.0", false).unwrap(),
             moved
         );
         assert_eq!(
@@ -7236,47 +7896,6 @@ mod tests {
         let state = m.state().unwrap();
         assert!(state.forgotten.is_empty() && state.packages.is_empty());
         assert!(!mono.root.join("dist/tilr/store").exists());
-    }
-
-    #[test]
-    fn adding_to_a_fork_refuses_a_failing_commit_and_a_missing_identity_untouched() {
-        let mono = Mono::new();
-        let m = mono.open();
-        for id in ["tilr/store", "tilr/theme"] {
-            m.install_package(mono.source(), Some(id), InstallTarget::Release)
-                .unwrap();
-        }
-        let destination = mono.dir.join("forks/me");
-        // The new fork repository is gitpm's own: the user's hooks do not run there.
-        m.fork_packages(&["tilr/store"], &destination, "me")
-            .unwrap();
-        // In the author's repository a pre-commit hook that fails refuses the add.
-        failing_hook(&destination);
-        let before = snapshot(&destination);
-        let error = m
-            .fork_packages(&["tilr/theme"], &destination, "me")
-            .unwrap_err();
-        assert_eq!(error.kind(), "git", "{error}");
-        assert!(
-            error.to_string().contains("the repository was restored")
-                && error.to_string().contains("refused by hook"),
-            "{error}"
-        );
-        assert_eq!(snapshot(&destination), before, "repository changed");
-        fs::remove_file(destination.join(".git/hooks/pre-commit")).unwrap();
-        // Without a Git identity gitpm refuses instead of writing one.
-        fixture_git(&destination, &["config", "user.name", ""]);
-        let before = snapshot(&destination);
-        let error = m
-            .fork_packages(&["tilr/theme"], &destination, "me")
-            .unwrap_err();
-        assert_eq!(error.kind(), "git", "{error}");
-        assert!(error.to_string().contains("GIT_AUTHOR_IDENT"), "{error}");
-        assert_eq!(snapshot(&destination), before, "repository changed");
-        assert_eq!(
-            fixture_git(&destination, &["config", "--local", "user.name"]),
-            ""
-        );
     }
 
     /// A recorded package whose clone was deleted by hand: uninstall and forget drop the

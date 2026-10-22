@@ -13,12 +13,12 @@
 //! as [`Error`] with a stable [`Error::kind`]. All calls block; run them off the UI thread.
 //! Subprocesses (system `git`, `curl`) are confined to one internal module.
 
+mod atomic_write;
 pub mod auth;
 pub mod catalog;
 pub mod check;
 pub mod deps;
 mod error;
-mod exec;
 pub mod identity;
 pub mod list;
 mod lock;
@@ -29,6 +29,7 @@ pub mod releases;
 pub mod scaffold;
 #[cfg(test)]
 mod test_support;
+mod transport;
 mod txn;
 mod upgrade;
 mod workspace;

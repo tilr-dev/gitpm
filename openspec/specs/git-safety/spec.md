@@ -7,47 +7,63 @@ Defines how gitpm talks to system `git` and `curl` safely: one subprocess bounda
 ## Requirements
 
 ### Requirement: One subprocess boundary
-All subprocesses of the library (system `git` and `curl`) SHALL be started from one internal module, the planned switch point to embedded implementations; no other library module SHALL start processes. Single source for the library's I/O rule: the library SHALL NOT print, prompt, read stdin or read environment variables itself; a setting that depends on the environment is passed in by the caller. Verified by `no_env::garbage_pm_environment_is_ignored`.
+All subprocesses of the library (system `git` and `curl`) SHALL be started from the internal transport module, the planned switch point to embedded implementations; no other gitpm library module SHALL start processes. Single source for the library's I/O rule: the library SHALL NOT print, prompt, read stdin or read environment variables itself; a setting that depends on the environment is passed in by the caller. Verified by `no_env::garbage_pm_environment_is_ignored`.
 
 #### Scenario: SSH setting from the environment
-- **WHEN** `GIT_SSH_COMMAND` or `GIT_SSH` is set and the user runs `gitpm auth check URL`
-- **THEN** the CLI passes `custom_ssh` to the library (an FFI host passes it to `authCheck`); git subprocesses inherit the process environment, so git itself still honours such variables
+- **WHEN** `GIT_SSH_COMMAND` or `GIT_SSH` is set and the user runs any gitpm command
+- **THEN** the CLI sets `Options.custom_ssh` (an FFI host sets `ManagerOptions.customSsh` and passes it to `authCheck`), gitpm then sets no SSH command of its own, and git uses the inherited variable
 
 #### Scenario: Garbage environment
 - **WHEN** `PM_*` and `GITPM_*` variables hold garbage while the library is used
 - **THEN** results are the same as with a clean environment
 
 ### Requirement: Git never waits for input
-Every git command on a repository (`git -C REPO …`) SHALL run with closed stdin, `GIT_TERMINAL_PROMPT=0`, `http.lowSpeedLimit=1`/`http.lowSpeedTime=20`, and a batch SSH command (`BatchMode=yes`, `ConnectTimeout=10`, keepalives) passed as `core.sshCommand` unless the user's Git config defines `core.sshCommand`; one still running after 10 minutes SHALL be killed and reported as `git` ("timed out after 600s"). Verified by `exec::git_never_reads_stdin_or_prompts`.
+Repository git commands SHALL use closed stdin, `GIT_TERMINAL_PROMPT=0`, empty `GIT_ASKPASS`, `credential.interactive=never`, `http.lowSpeedLimit=1`/`http.lowSpeedTime=20`, and the "Batch SSH command" policy. The `auth check` ls-remote and `core.sshCommand` probe SHALL be killed after 10 s (`git`, "timed out after 10s"). Verified by `transport::system::tests::git_never_reads_stdin_or_prompts`.
 
 #### Scenario: Wedged git
 - **WHEN** a git subprocess hangs for 10 minutes
-- **THEN** it is killed and the operation fails with `git`
-- **AND** this is covered by `exec::wedged_subprocess_is_killed_at_the_limit`
+- **THEN** it SHALL be killed and the operation SHALL fail with `git` ("timed out after 600s")
+- **AND** this is covered by `transport::system::tests::wedged_subprocess_is_killed_at_the_limit`
 
 #### Scenario: User's GIT_SSH_COMMAND
 - **WHEN** the inherited environment has `GIT_SSH_COMMAND`
 - **THEN** git uses it over the batch `core.sshCommand`, because git gives the variable precedence; the library does not read it
 
 #### Scenario: Batch SSH command
-- **WHEN** the user's Git config has no `core.sshCommand` and the environment has no `GIT_SSH_COMMAND`
-- **THEN** git gets `ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4`
+- **WHEN** `Options.custom_ssh` is false and the user's Git config has no `core.sshCommand`
+- **THEN** clones, fetches and `auth check` alike get `ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o StrictHostKeyChecking=accept-new`
 
 #### Scenario: Access check ls-remote
 - **WHEN** `auth check` runs `git ls-remote`
-- **THEN** it has closed stdin, `GIT_TERMINAL_PROMPT=0` and the lowSpeed limits, but its own SSH command (`BatchMode=yes`, `ConnectTimeout=10`, `StrictHostKeyChecking=yes`, no keepalives; not set when the caller passes `custom_ssh` or the Git config defines `core.sshCommand`) and no wall-clock kill
+- **THEN** it has closed stdin, `GIT_TERMINAL_PROMPT=0`, empty `GIT_ASKPASS`, `credential.interactive=never`, the lowSpeed limits and the same batch SSH command as every other git command (not set when `Options.custom_ssh` is set or the Git config defines `core.sshCommand`), and is killed after 10 seconds with `git` ("timed out after 10s")
+- **AND** this is covered by `auth::access_check_is_bounded`
 
 #### Scenario: Probe of the user's SSH setting
 - **WHEN** gitpm checks whether `core.sshCommand` is configured
-- **THEN** `git config --get core.sshCommand` runs without a timeout
+- **THEN** `git -c credential.interactive=never config --get core.sshCommand` runs with empty `GIT_ASKPASS`, closed stdin, and is killed after 10 seconds (`git`, "timed out after 10s")
+- **AND** a timed-out probe stops `auth check` before `ls-remote`; it cannot be treated as a configured SSH command
+- **AND** this is covered by `auth_check_reports_config_probe_timeout_without_running_ls_remote`
 
 #### Scenario: Catalog download
 - **WHEN** a remote catalog file is fetched
 - **THEN** curl runs with `--connect-timeout 5` and `--max-time 20`
 
 #### Scenario: Credential prompt
-- **WHEN** a clone of an HTTPS URL would ask for a password
+- **WHEN** a clone of an HTTPS URL would ask for a password, also through `GIT_ASKPASS`, `SSH_ASKPASS`-style helpers or an interactive credential helper
 - **THEN** git fails fast with `git` instead of waiting, so the workspace lock is released
+
+### Requirement: Library-owned Git input
+Exception to "Git never waits for input": a Git ref transaction (`update-ref --stdin`) SHALL get only library-generated input instead of closed stdin, and the input pipe SHALL be closed after writing; user stdin SHALL NOT be inherited, and the other bounds of that requirement (no prompts, lowSpeed limits, batch SSH, 600s kill) SHALL apply unchanged.
+
+#### Scenario: Library-owned ref transaction input
+- **WHEN** release tags are created by `update-ref --stdin`
+- **THEN** only library-generated commands are supplied, followed by EOF, with the same execution timeout
+- **AND** verified by `fork_replace_release_late_tag_lock_leaves_no_tags`
+
+#### Scenario: Git exits before reading the input
+- **WHEN** the Git process closes its input before the library has written it
+- **THEN** the command fails with `git` ("cannot write git input") and no SIGPIPE reaches the host process, which may keep the default SIGPIPE action (FFI)
+- **AND** verified by `transport::system::tests::input_to_a_child_that_closed_stdin_fails_without_sigpipe`
 
 ### Requirement: No option injection
 Single source for option-like input: ID components starting with `-` SHALL be refused with `invalid_id` before any git call, and user refs starting with `-` with `invalid_argument` ("invalid git ref") before they reach git; user refs (install, update, register) SHALL be resolved with `rev-parse --verify --end-of-options`, and positional names (sources, tags, paths) SHALL be passed after `--`. Verified by `identity::valid_part_accepts_1_to_80_safe_ascii_characters`.
@@ -79,24 +95,29 @@ gitpm SHALL rely on the user's Git credentials (SSH keys, agents, credential hel
 - **THEN** it fails with `invalid_argument` like "Token in URL", git is not started and the value is not printed
 
 ### Requirement: Read-only repository access check
-`auth check SOURCE` (`auth::check`, FFI `authCheck`) SHALL verify read access with `git ls-remote` only, without cloning or opening a workspace; an empty repository SHALL count as accessible; a failing check SHALL fail with `auth`, its message the diagnosis of one category (host key, SSH denied, DNS, unreachable, TLS, not found, authentication) without echoing raw git output, and host key verification SHALL never be disabled.
+`auth check SOURCE` (`auth::check`, FFI `authCheck`) SHALL verify read access with `git ls-remote` only, without cloning or opening a workspace; an empty repository SHALL count as accessible; a failing check SHALL fail with `auth` (except at the time limit, see "Silent server"), its message the diagnosis of one category (host key, SSH denied, DNS, unreachable, TLS, not found, authentication) without raw git output; host key verification SHALL never be disabled.
 
 #### Scenario: Invalid input
 - **WHEN** the source is empty, option-like, has an unsupported scheme or carries credentials
 - **THEN** the check fails with `invalid_argument` before git starts; a git that cannot be started fails with `auth`
 
 #### Scenario: Unknown host key
-- **WHEN** SSH reports `Host key verification failed`
+- **WHEN** SSH reports `Host key verification failed` (a changed key; a new host's key is accepted and recorded in `known_hosts` by `StrictHostKeyChecking=accept-new`)
 - **THEN** the check fails with `auth`, the message says to set up known_hosts with plain SSH and does not include git's stderr
 - **AND** this is covered by `auth::diagnoses_failures_without_echoing_secrets`, `auth::failure_maps_every_category_and_hides_stderr`, `auth_check_is_read_only_and_accepts_empty_repositories`
 
+#### Scenario: Silent server
+- **WHEN** the server accepts the connection and sends nothing for 10 seconds
+- **THEN** the check fails with `git` ("timed out after 10s"), not `auth`
+- **AND** this is covered by `auth::access_check_is_bounded`
+
 ### Requirement: Untracked files are detected regardless of git config
-Local-work detection SHALL see untracked and ignored files whatever the repository's `status.showUntrackedFiles` setting (every status listing passes `--untracked-files=all`), and SHALL bound the listing of unpublished commits. Verified by `fork::dirty_sees_untracked_files_whatever_the_status_config_says` (the check before adding packages to an existing fork) and `lost_work::unpublished_commit_listing_is_bounded`.
+Local-work detection SHALL see untracked and ignored files whatever the repository's `status.showUntrackedFiles` setting (every status listing passes `--untracked-files=all`), and SHALL bound the listing of unpublished commits. Verified by `lost_work::changed_paths_sees_untracked_files_whatever_the_status_config_says` and `lost_work::unpublished_commit_listing_is_bounded`.
 
 #### Scenario: Hidden untracked file
 - **WHEN** the clone sets `status.showUntrackedFiles=no` and has an untracked file
-- **THEN** the check before adding packages to an existing fork still reports it as an uncommitted change
-- **AND** uninstall planning uses the same status listing but has no test with that setting
+- **THEN** local-work detection still reports it as an uncommitted change
+- **AND** uninstall planning uses the same status listing
 
 ### Requirement: URL rewrites do not hide clones
 Origin checks of shared clones SHALL compare sources so that a `url.*.insteadOf` rewrite in the user's Git config does not hide an existing clone. Verified by `a_url_rewrite_in_the_git_config_does_not_hide_the_shared_clone`.
@@ -121,11 +142,11 @@ The Rust tests run by `cargo test` SHALL NOT inherit the developer's `GITPM_*`/`
 - **THEN** `cargo test` in this repository is unaffected
 
 ### Requirement: Origin tag lookup is bounded and restricted
-The repository-less `git ls-remote --tags --heads -- SOURCE` of `check` SHALL run in `exec.rs` with the bounds of every repository command plus `LC_ALL=C`, the OS temp dir as working directory and a transport allowlist (file, git, http, https, ssh), and only on a source that passes `auth::validate_recorded`; nothing is fetched or written. Verified by `exec::ls_remote_refs_lists_tags_with_peeled_commits_and_branches_and_fails_as_git`.
+The repository-less `git ls-remote --tags --heads -- SOURCE` of `check` SHALL run in the internal transport module with the bounds of every repository command plus `LC_ALL=C`, the OS temp dir as working directory and a transport allowlist (file, git, http, https, ssh), and only on a source that passes `auth::validate_recorded`; nothing is fetched or written. Verified by `transport::system::tests::ls_remote_refs_lists_tags_with_peeled_commits_and_branches_and_fails_as_git`.
 
 #### Scenario: Bounds
 - **WHEN** `check` reads an origin's tags and branches
-- **THEN** git runs with closed stdin, `GIT_TERMINAL_PROMPT=0`, `http.lowSpeedLimit=1`/`http.lowSpeedTime=20`, the batch `core.sshCommand` unless the user configured one, the 10-minute kill, `--` before the source, `LC_ALL=C`, the temp dir as cwd (a bare word is never a remote of the caller's repository) and `protocol.allow=never` with `protocol.{file,git,http,https,ssh}.allow=always`
+- **THEN** git runs with closed stdin, `GIT_TERMINAL_PROMPT=0`, `http.lowSpeedLimit=1`/`http.lowSpeedTime=20`, the batch `core.sshCommand` unless `Options.custom_ssh` is set or the user configured one, the 10-minute kill, `--` before the source, `LC_ALL=C`, the temp dir as cwd (a bare word is never a remote of the caller's repository) and `protocol.allow=never` with `protocol.{file,git,http,https,ssh}.allow=always`
 
 #### Scenario: Source rule
 - **WHEN** the source is not a Git URL (`https`, `http`, `ssh`, `git`, `file`, `host:path`, no credentials) or an absolute path, or contains `::`
@@ -139,3 +160,35 @@ The repository-less `git ls-remote --tags --heads -- SOURCE` of `check` SHALL ru
 #### Scenario: Local paths stay allowed
 - **WHEN** the recorded source is an absolute local path (Git 2.38.1 and later default `protocol.file.allow` to `user`)
 - **THEN** the lookup still reads its tags and branches, because the allowlist sets `protocol.file.allow=always` instead of `GIT_PROTOCOL_FROM_USER=0`
+
+### Requirement: Local source clones use Git transport
+Registration, catalog source discovery and package installation SHALL clone local sources through Git transport rather than copying their object directories. Transient server-info files disappearing while the source is read SHALL NOT prevent reading committed releases. Clones SHALL have their own objects and retain the original source as origin.
+
+#### Scenario: Transient server-info file disappears
+- **GIVEN** a local source with a committed tagged release and a transient `objects/info/packs_*` file removed when a filesystem copier opens it
+- **WHEN** the source is registered, discovered by catalog update, or installed
+- **THEN** the operation succeeds with the committed release and does not copy the transient file
+- **AND** installation records the dependency edges as usual
+
+### Requirement: SSH settings for standalone operations
+Standalone catalog and check operations, which reach remotes, SHALL offer `*_with_options` entry points accepting `&Options` and use the caller's SSH policy for every Git command. Local-only operations (authoring, package and release discovery) SHALL NOT offer `*_with_options` entry points. Existing entry points SHALL use default options. Verified by `custom_ssh_is_shared_by_auth_install_catalog_and_check`.
+
+#### Scenario: Explicit options for standalone operations
+- **WHEN** a caller invokes a standalone catalog or check `*_with_options` operation with `custom_ssh: true`
+- **THEN** every Git command uses the same SSH override policy as a Manager opened with those options, without reading environment variables
+
+#### Scenario: Default standalone options
+- **WHEN** an existing standalone entry point is used
+- **THEN** its SSH behavior is equivalent to its `*_with_options` variant with `Options::default()`
+
+### Requirement: Typed network transport
+The transport module SHALL expose a Transport trait with typed methods for clone, fetch, remote HEAD refresh, remote ref lookup, read-only access probes and HTTP GET. Network call sites in gitpm SHALL use these methods rather than assemble raw network Git commands. Raw local Git commands SHALL remain available through the same boundary for subsequent migration tasks. Transport failures SHALL retain the existing gitpm error kinds and messages.
+
+#### Scenario: Clone and fetch through the interface
+- **WHEN** gitpm clones a repository or fetches tags, records origin tags or refreshes a remote HEAD
+- **THEN** it invokes the typed transport operation with the same options, refspecs and SSH setting as before, with subprocess creation confined to the transport module
+
+#### Scenario: Streamed catalog size bound
+- **WHEN** a catalog response has no declared size
+- **THEN** the transport reads at most 16 MiB plus the four-byte status trailer plus one overflow byte, kills curl on overflow, and retains the existing 200/404/error semantics
+- **AND** both loopback streamed-response tests run inside the transport module

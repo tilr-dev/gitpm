@@ -38,6 +38,7 @@ fn garbage_pm_environment_is_ignored() {
         &root,
         Options {
             catalog: Some(catalog.clone()),
+            custom_ssh: false,
         },
     )
     .unwrap();

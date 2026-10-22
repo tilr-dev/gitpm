@@ -13,7 +13,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from gitpmtest import R, T, case
+from gitpmtest import R, T, case, gitpm_argv
 
 ID = "dan/hello"
 _gates = iter(range(10_000))
@@ -22,7 +22,7 @@ _gates = iter(range(10_000))
 def race(t: T, jobs: list[list]) -> list[R]:
     gate = t.root / f".gate-{next(_gates)}"
     os.mkfifo(gate)
-    procs = [subprocess.Popen(["sh", "-c", 'read _ < "$0"; exec gitpm "$@"', str(gate), *map(str, args)],
+    procs = [subprocess.Popen(["sh", "-c", 'read _ < "$0"; exec gitpm "$@"', str(gate), *gitpm_argv(args)],
                               cwd=t.root, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                               stdin=subprocess.DEVNULL) for args in jobs]
     time.sleep(0.5)
@@ -31,7 +31,7 @@ def race(t: T, jobs: list[list]) -> list[R]:
     results = []
     for args, p in zip(jobs, procs):
         out, err = p.communicate(timeout=120)
-        r = R(["gitpm", *map(str, args)], p.returncode, out, err)
+        r = R(["gitpm", *gitpm_argv(args)], p.returncode, out, err)
         print(f"$ {' '.join(r.argv)}  (concurrent)\n" + "".join(f"    {l}\n" for l in (out + err).strip().splitlines())
               + f"  -> exit {r.code}")
         results.append(r)

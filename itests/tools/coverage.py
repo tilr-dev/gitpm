@@ -1,6 +1,7 @@
 """Write openspec/coverage/coverage.md and coverage.json: spec requirements and scenarios
 mapped to the Dagger cases tagged for them, the cargo tests the spec text names, and the
 status of each case in the last run (itests/results/latest/report.json, when present).
+The report is local: openspec/coverage/ is ignored by Git and never committed.
 
 Runs on the host without Dagger (stdlib only):
 

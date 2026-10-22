@@ -17,17 +17,17 @@ OPT = "cli/option-validation"
 # Every command of `gitpm --help` (main.rs COMMANDS).
 COMMANDS = ["install", "install-catalog", "list", "check", "update", "rollback", "enable", "disable", "forget",
             "restore", "uninstall", "fork", "replace", "sync-dist", "init", "commit", "remote", "auth",
-            "info", "catalog", "catalog-update", "register"]
+            "catalog show", "catalog links", "catalog update", "catalog register"]
 # Positional arguments each command takes (main.rs `expected` - 1). install takes SOURCE [ID]
 # (the message still says 1); fork takes ID [ID...] (no upper bound).
-ARITY = {"list": 0, "check": 0, "sync-dist": 0, "info": 0, "catalog": 0, "catalog-update": 0,
+ARITY = {"list": 0, "check": 0, "sync-dist": 0, "catalog show": 0, "catalog links": 0, "catalog update": 0,
          "commit": 2, "remote": 2, "auth": 2}
 ESC = "\x1b["
 
 
 def listed(command: str, text: str) -> bool:
     """A usage line starts with COMMAND, or names it after `|` (`enable ID | disable ID`)."""
-    return any(line.split()[:1] == [command] or f"| {command} " in line for line in text.splitlines())
+    return any(line.split()[:len(command.split())] == command.split() or f"| {command} " in line for line in text.splitlines())
 
 
 def usage_case(name: str, doc: str, argv, needle: str, spec: str):
@@ -49,7 +49,7 @@ for _name, _doc, _argv, _needle, _spec in [
     ("version_with_install", "1. --version with install", ["install", REPO, "--version", "0.1.0"],
      "--version is not valid for install", f"{OPT}#misplaced-flag"),
     ("sources_with_check", "1. --sources with check", ["check", "--sources", "/fx/sources.txt"],
-     "--sources requires catalog-update", f"{OPT}#misplaced-flag"),
+     "--sources requires catalog update", f"{OPT}#misplaced-flag"),
     ("dry_run_with_catalog_update", "1. --dry-run with catalog-update", ["catalog-update", "--dry-run"],
      "--dry-run requires update all or sync-dist", f"{OPT}#misplaced-flag"),
     ("force_with_update", "1. --force with update", ["update", ID, "--force"],
@@ -61,7 +61,7 @@ for _name, _doc, _argv, _needle, _spec in [
     ("multi_with_install", "1. --multi outside init", ["install", REPO, "--multi"],
      "--multi/--no-release require init", f"{OPT}#misplaced-flag"),
     ("package_with_init", "1. --package with init", ["init", "dan/x", "--into", "/fx/x", "--package", "dan/x"],
-     "--package requires install/download/commit/register", f"{OPT}#misplaced-flag"),
+     "--package requires install/download/commit/catalog register", f"{OPT}#misplaced-flag"),
     # 2. repeated / missing / unknown
     ("repeated_ref", "2. --ref a --ref b", ["update", ID, "--ref", "a", "--ref", "b"], "--ref given more than once", OPT),
     ("repeated_force", "2. --force twice", ["uninstall", ID, "--force", "--force"], "--force given more than once", OPT),
@@ -101,7 +101,7 @@ def wrong_argument_count(t: T):
             args = [f"arg{i}" for i in range(n)]
             if command == "auth" and args:
                 args[0] = "check"
-            r = t.gitpm(command, *args, *mode)
+            r = t.gitpm(*command.split(), *args, *mode)
             problems = []
             if r.code == 0:
                 problems.append("exit 0")
@@ -130,20 +130,20 @@ def uninstall_flag_order_is_irrelevant(t: T):
 
 
 def v2_catalog(t: T, name: str, n: int):
-    """A v2 tree namespaces/dan/pNN with n package folders: n + 2 overview entries."""
+    """A catalog tree namespaces/dan/pNN with n package folders: n + 2 overview entries."""
     root = t.root / name
     ns = root / "namespaces/dan"
     ns.mkdir(parents=True)
-    (root / "catalog.json").write_text(json.dumps({"schema": 2, "directories": {"namespaces": "namespaces/"}}))
-    (root / "namespaces/catalog.json").write_text(json.dumps({"schema": 2, "directories": {"dan": "dan/"}}))
+    (root / "catalog.json").write_text(json.dumps({"schema": 1, "directories": {"namespaces": "namespaces/"}}))
+    (root / "namespaces/catalog.json").write_text(json.dumps({"schema": 1, "directories": {"dan": "dan/"}}))
     dirs = {}
     for i in range(n):
         name = f"p{i:02}"
         dirs[name] = f"{name}/"
         (ns / name).mkdir()
         (ns / name / "plugin.json").write_text(json.dumps(
-            {"schema": 2, "id": f"dan/{name}", "source": f"https://example.invalid/{name}.git", "versions": {}}))
-    (ns / "catalog.json").write_text(json.dumps({"schema": 2, "directories": dirs}))
+            {"schema": 1, "id": f"dan/{name}", "source": f"https://example.invalid/{name}.git", "versions": {}}))
+    (ns / "catalog.json").write_text(json.dumps({"schema": 1, "directories": dirs}))
     return root
 
 
@@ -159,12 +159,12 @@ def info_below_the_limit_has_no_hint(t: T):
 def info_at_the_limit_shows_hint(t: T):
     """6. 40 entries (38 packages) reach the limit: all 40 shown plus the truncation hint."""
     out = t.gitpm_ok("--catalog", v2_catalog(t, "v2-40", 38), "info").out
-    t.has(out, "dan/p00", "dan/p37", "Overview limit: 40 entries")
+    t.has(out, "dan/p00", "dan/p37", "Overview limit: 40 entries", "gitpm --catalog <branch location> catalog show")
 
 
 @case(spec=["catalog/bounded-overview"])
 def info_v2_more_than_40_entries(t: T):
-    """6. A v2 tree with 45 package folders is truncated with the hint."""
+    """6. A catalog tree with 45 package folders is truncated with the hint."""
     out = t.gitpm_ok("--catalog", v2_catalog(t, "v2", 45), "info").out
     t.has(out, "dan/p00", "Overview limit: 40 entries")
     t.lacks(out, "dan/p44")
@@ -236,7 +236,7 @@ def command_help_prints_only_that_command(t: T):
     """8. COMMAND --help and -h print only that command's usage block, exit 0."""
     full = t.gitpm_ok("--help").out
     for command in COMMANDS:
-        texts = [t.gitpm_ok(command, flag).out for flag in ("--help", "-h")]
+        texts = [t.gitpm_ok(*command.split(), flag).out for flag in ("--help", "-h")]
         t.eq(texts[0], texts[1], f"{command} --help == -h")
         t.ok(texts[0].strip() and len(texts[0]) < len(full), f"{command} help is a part of the full help")
         t.ok(listed(command, texts[0]), f"{command} help names {command}")

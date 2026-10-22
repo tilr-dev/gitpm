@@ -16,7 +16,7 @@ def v1(t: T):
     return t.root / "v1"
 
 
-@case(fixture="g4_v1", spec=["catalog/catalog-v2-is-a-tree-of-static-files", "errors/stable-error-kinds"])
+@case(fixture="g4_v1", spec=["catalog/catalog-is-a-tree-of-static-files", "errors/stable-error-kinds"])
 def every_read_is_refused(t: T):
     """info, install-catalog, check and update fail with `catalog`; the v1 file and the
     workspace keep their bytes."""
@@ -29,10 +29,10 @@ def every_read_is_refused(t: T):
     t.same(before, "v1 catalog")
 
 
-@case(fixture="g4_v1", spec=["catalog/catalog-v2-is-a-tree-of-static-files", "catalog/register-one-version"])
+@case(fixture="g4_v1", spec=["catalog/catalog-is-a-tree-of-static-files", "catalog/register-one-version"])
 def writes_into_a_v1_catalog_are_refused(t: T):
     """register and catalog-update into the v1 folder fail with `catalog` and write nothing
-    (no backup, no v2 tree)."""
+    (no backup, no catalog tree)."""
     before = t.snap(v1(t))
     t.gitpm_err("--catalog", v1(t), "register", t.repo(HELLO), "--ref", f"{HELLO}@0.2.0",
                 kind="catalog", contains="v1 catalogs")

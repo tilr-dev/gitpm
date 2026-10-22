@@ -233,7 +233,7 @@ fn list_reports_metadata_present_or_absent_and_filters_by_provides() {
         "metadata follows the installed revision"
     );
 
-    // metadata is required in a format-3 record: a record without it is invalid data,
+    // metadata is required in a format-1 record: a record without it is invalid data,
     // and state.json is not rewritten.
     let path = f.dir.join("workspace/state.json");
     let mut state = f.json(&path);
@@ -286,7 +286,13 @@ fn wrong_typed_metadata_is_ignored_when_installing_and_refused_when_authoring() 
     f.ok(&["fork", "tilr/store", "--ns", "me", "--into", "forks/store"]);
     let fork = f.dir.join("forks/store");
     assert_eq!(f.json(&fork.join("packages/store/plugin.json"))["tags"], 7);
-    let error = f.fails(&["commit", fork.to_str().unwrap(), "2.0.0"]);
+    let error = f.fails(&[
+        "commit",
+        fork.to_str().unwrap(),
+        "2.0.0",
+        "--package",
+        "me/store",
+    ]);
     assert!(
         error.contains("invalid plugin.json: tags must be an array of strings")
             && error.contains("Error kind: invalid_manifest"),
@@ -346,14 +352,14 @@ fn fork_and_commit_carry_the_metadata_unchanged() {
 fn catalog_releases_carry_and_show_the_metadata() {
     let f = Fixture::new();
     fs::write(f.dir.join("sources.txt"), format!("{}\n", f.source())).unwrap();
-    f.ok(&["catalog-update"]);
+    f.ok(&["catalog", "update"]);
     let release = f.json(
         &f.dir
             .join("catalog/namespaces/tilr/theme/versions/1.0.0/release.json"),
     );
     assert_eq!(release["manifest"]["title"], "Theme");
     assert_eq!(release["manifest"]["provides"], "theme");
-    let info = f.ok(&["info"]);
+    let info = f.ok(&["catalog", "show"]);
     assert!(
         info.contains("Title: Theme")
             && info.contains("Description: Dark and light")
@@ -373,14 +379,23 @@ fn catalog_releases_carry_and_show_the_metadata() {
         serde_json::json!(["theme"])
     );
 
-    // A broken latest release.json costs only the metadata in the overview.
+    // Display metadata comes from the index even if the release record is broken.
     fs::write(
         f.dir
             .join("catalog/namespaces/tilr/theme/versions/1.0.0/release.json"),
         "{",
     )
     .unwrap();
-    let info = f.ok(&["info"]);
+    let info = f.ok(&["catalog", "show"]);
+    assert!(
+        info.contains("tilr/theme — latest: 1.0.0") && info.contains("Title: Theme"),
+        "{info}"
+    );
+    let index_path = f.dir.join("catalog/namespaces/tilr/theme/plugin.json");
+    let mut index = f.json(&index_path);
+    index["latest"]["provides"] = serde_json::json!(false);
+    fs::write(&index_path, serde_json::to_vec(&index).unwrap()).unwrap();
+    let info = f.ok(&["catalog", "show"]);
     assert!(
         info.contains("tilr/theme — latest: 1.0.0") && !info.contains("Title:"),
         "{info}"
@@ -393,7 +408,7 @@ fn catalog_update_publishes_historical_releases_with_wrong_typed_metadata() {
     f.release("store", "1.1.0", r#","title":"Old","tags":"ui""#);
     f.release("store", "1.2.0", r#","title":"New""#);
     fs::write(f.dir.join("sources.txt"), format!("{}\n", f.source())).unwrap();
-    let out = f.ok(&["catalog-update"]);
+    let out = f.ok(&["catalog", "update"]);
     assert!(out.contains("Catalog ready: 4 release(s)"), "{out}");
     let old = f.json(
         &f.dir
@@ -408,7 +423,7 @@ fn catalog_update_publishes_historical_releases_with_wrong_typed_metadata() {
         (&store["title"], &store["tags"]),
         (&"Old".into(), &serde_json::json!([]))
     );
-    assert!(f.ok(&["info"]).contains("Title: New"));
+    assert!(f.ok(&["catalog", "show"]).contains("Title: New"));
 }
 
 #[test]

@@ -2,7 +2,10 @@
 //! Never pushes and never touches a workspace.
 use crate::catalog::version_key;
 use crate::error::{Context, Error, Result, ensure, fail};
-use crate::{Manifest, exec::git, identity, model, packages};
+use crate::{
+    Manifest, identity, model, packages,
+    transport::{git, git_with_input},
+};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -27,7 +30,7 @@ fn new_manifest(id: &str, name: &str) -> Manifest {
 
 /// New single-package repository (the root is the package `id`) with version 0.1.0 at
 /// `directory`, which must not exist yet; `release`: also tag it.
-fn create_repo(directory: &Path, id: &str, release: bool) -> Result<PathBuf> {
+fn create_repo(directory: &Path, id: &str, release: bool, custom_ssh: bool) -> Result<PathBuf> {
     crate::valid_id(id)?;
     let name = id.rsplit('/').next().unwrap_or(id);
     if let Some(parent) = directory.parent().filter(|p| !p.as_os_str().is_empty()) {
@@ -68,15 +71,16 @@ fn create_repo(directory: &Path, id: &str, release: bool) -> Result<PathBuf> {
                 "# {name}\n\nLocal gitpm demo package, version 0.1.0.\n\nEdit `dist/index.js` directly; there is no build step. `plugin.json` holds the\npackage ID and version. This is a demo package fixture.\n\nWith the `gitpm` CLI (the workspace is `--root DIR`, `GITPM_ROOT` or `./gitpm-workspace`):\n\n```sh\n{install}\n# After editing this repository:\ngitpm commit {source} 0.1.1\ngitpm update {id} --ref {next_tag}\ngitpm rollback {id}\n```\n\nTo generate a static catalog: add the repository URL/path to sources.txt, then run\n(`GITPM_CATALOG` can replace `--catalog`):\n\n```sh\ngitpm --catalog ./catalog catalog-update\n```\n\nNo remote is configured. If Git identity was missing, the scaffold configured\nPackage Demo <demo@example.invalid> locally in this repository only.\n"
             ),
         )?;
-        git(&directory, &["init", "-b", "main"])?;
-        ensure_identity(&directory)?;
-        git(&directory, &["add", "--all", "--", "."])?;
+        git(&directory, &["init", "-b", "main"], custom_ssh)?;
+        require_identity(&directory, true, custom_ssh)?;
+        git(&directory, &["add", "--all", "--", "."], custom_ssh)?;
         git(
             &directory,
             &["commit", "-m", &format!("Create {name} 0.1.0")],
+            custom_ssh,
         )?;
         if release {
-            git(&directory, &["tag", "--", &tag])?;
+            git(&directory, &["tag", "--", &tag], custom_ssh)?;
         }
         Ok(fs::canonicalize(&directory)?)
     })();
@@ -91,38 +95,64 @@ pub fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
-/// Give a repository that gitpm has just created (never a user's existing one) a local
-/// demo identity when the user has none, so authoring works on a fresh machine without
-/// changing global Git settings. An identity the user has is never overridden.
-pub(crate) fn ensure_identity(directory: &Path) -> Result<()> {
-    if git(directory, &["config", "user.name"]).is_err() {
+/// Check both identities without Git's login/host fallback. Only repositories newly
+/// created by gitpm may receive a local demo identity, and configured values stay intact.
+pub(crate) fn require_identity(repo: &Path, created: bool, custom_ssh: bool) -> Result<()> {
+    let configured = || {
         git(
-            directory,
-            &["config", "--local", "user.name", "Package Demo"],
-        )?;
+            repo,
+            &["-c", "user.useConfigOnly=true", "var", "GIT_AUTHOR_IDENT"],
+            custom_ssh,
+        )
+        .and_then(|_| {
+            git(
+                repo,
+                &[
+                    "-c",
+                    "user.useConfigOnly=true",
+                    "var",
+                    "GIT_COMMITTER_IDENT",
+                ],
+                custom_ssh,
+            )
+        })
+        .is_ok()
+    };
+    if !configured() {
+        if created {
+            if git(repo, &["config", "user.name"], custom_ssh).is_err() {
+                git(
+                    repo,
+                    &["config", "--local", "user.name", "Package Demo"],
+                    custom_ssh,
+                )?;
+            }
+            if git(repo, &["config", "user.email"], custom_ssh).is_err() {
+                git(
+                    repo,
+                    &["config", "--local", "user.email", "demo@example.invalid"],
+                    custom_ssh,
+                )?;
+            }
+        }
+        ensure!(
+            configured(),
+            InvalidArgument,
+            "no Git identity configured; set user.name and user.email"
+        );
     }
-    if git(directory, &["config", "user.email"]).is_err() {
-        git(
-            directory,
-            &["config", "--local", "user.email", "demo@example.invalid"],
-        )?;
-    }
-    Ok(())
-}
-
-/// Refuse to commit in a user's repository without a Git identity (gitpm never writes
-/// one there): the error of `git var GIT_AUTHOR_IDENT`/`GIT_COMMITTER_IDENT`.
-pub(crate) fn require_identity(repo: &Path) -> Result<()> {
-    git(repo, &["var", "GIT_AUTHOR_IDENT"])?;
-    git(repo, &["var", "GIT_COMMITTER_IDENT"])?;
     Ok(())
 }
 
 /// Repository root, manifest path and manifest of the package to release.
-fn locate(repo: &Path, package: Option<&str>) -> Result<(PathBuf, String, Manifest)> {
+fn locate(
+    repo: &Path,
+    package: Option<&str>,
+    custom_ssh: bool,
+) -> Result<(PathBuf, String, Manifest)> {
     let repo = fs::canonicalize(repo)?;
     ensure!(
-        Path::new(&git(&repo, &["rev-parse", "--show-toplevel"])?) == repo,
+        Path::new(&git(&repo, &["rev-parse", "--show-toplevel"], custom_ssh)?) == repo,
         InvalidArgument,
         "pass the repository root"
     );
@@ -153,21 +183,30 @@ fn locate(repo: &Path, package: Option<&str>) -> Result<(PathBuf, String, Manife
 /// there are any) as `Release ID VERSION` and tag it. For a fresh fork, which keeps
 /// the version it started from. Never pushes.
 pub fn release_current(repo: &Path, package: Option<&str>) -> Result<String> {
-    let (repo, _, m) = locate(repo, package)?;
+    release_current_with_ssh(repo, package, false)
+}
+
+pub(crate) fn release_current_with_ssh(
+    repo: &Path,
+    package: Option<&str>,
+    custom_ssh: bool,
+) -> Result<String> {
+    let (repo, _, m) = locate(repo, package, custom_ssh)?;
     let tag = identity::release_tag(&m.id, &m.version);
     ensure!(
-        git(&repo, &["tag", "--list", "--", &tag])?.is_empty(),
+        git(&repo, &["tag", "--list", "--", &tag], custom_ssh)?.is_empty(),
         VersionConflict,
         "tag already exists: {tag}"
     );
-    if !git(&repo, &["status", "--porcelain"])?.is_empty() {
-        git(&repo, &["add", "--all", "--", "."])?;
+    if !git(&repo, &["status", "--porcelain"], custom_ssh)?.is_empty() {
+        git(&repo, &["add", "--all", "--", "."], custom_ssh)?;
         git(
             &repo,
             &["commit", "-m", &format!("Release {} {}", m.id, m.version)],
+            custom_ssh,
         )?;
     }
-    git(&repo, &["tag", "--", &tag])?;
+    git(&repo, &["tag", "--", &tag], custom_ssh)?;
     Ok(tag)
 }
 
@@ -182,7 +221,11 @@ pub struct Commit {
 
 /// Commit package changes locally and create an immutable version tag. Never pushes.
 pub fn commit(repo: &Path, version: &str) -> Result<Commit> {
-    commit_package(repo, version, None)
+    commit_with_ssh(repo, version, false)
+}
+
+pub(crate) fn commit_with_ssh(repo: &Path, version: &str, custom_ssh: bool) -> Result<Commit> {
+    commit_package_with_ssh(repo, version, None, custom_ssh)
 }
 
 /// [`commit`] for one package: in a repository with `gitpm.json`, `package` picks the
@@ -190,69 +233,49 @@ pub fn commit(repo: &Path, version: &str) -> Result<Commit> {
 /// [`commit`] it stages ALL changes of the repository, not only the package folder.
 /// For a single-package repository a given `package` must match the root manifest.
 pub fn commit_package(repo: &Path, version: &str, package: Option<&str>) -> Result<Commit> {
+    commit_package_with_ssh(repo, version, package, false)
+}
+
+pub(crate) fn commit_package_with_ssh(
+    repo: &Path,
+    version: &str,
+    package: Option<&str>,
+    custom_ssh: bool,
+) -> Result<Commit> {
     version_key(version)?;
-    let (repo, manifest_path, mut m) = locate(repo, package)?;
+    let (repo, manifest_path, m) = locate(repo, package, custom_ssh)?;
     // Authoring is strict about metadata types; installing is lenient.
     m.metadata_strict()?;
     let tag = identity::release_tag(&m.id, version);
     ensure!(
-        git(&repo, &["tag", "--list", "--", &tag])?.is_empty(),
+        git(&repo, &["tag", "--list", "--", &tag], custom_ssh)?.is_empty(),
         VersionConflict,
         "tag already exists: {tag}"
     );
     if m.version == version {
         // Retry after a failed tag: the release commit exists, only the tag is missing.
-        let head: Manifest =
-            serde_json::from_str(&git(&repo, &["show", &format!("HEAD:{manifest_path}")])?)
-                .map_err(|e| {
-                    Error::InvalidManifest(format!("invalid {manifest_path} at HEAD: {e}"))
-                })?;
+        let head: Manifest = serde_json::from_str(&git(
+            &repo,
+            &["show", &format!("HEAD:{manifest_path}")],
+            custom_ssh,
+        )?)
+        .map_err(|e| Error::invalid_manifest(format!("invalid {manifest_path} at HEAD: {e}")))?;
         ensure!(
             head.version == version
-                && git(&repo, &["status", "--porcelain"])?.is_empty()
-                && released_by_head(&repo, &m.id, version)?,
+                && git(&repo, &["status", "--porcelain"], custom_ssh)?.is_empty()
+                && released_by_head(&repo, &m.id, version, custom_ssh)?,
             VersionConflict,
             "choose a new version"
         );
-        git(&repo, &["tag", "--", &tag])?;
+        git(&repo, &["tag", "--", &tag], custom_ssh)?;
         return Ok(Commit {
             package: m.id,
             version: version.to_owned(),
             tag,
         });
     }
-    require_identity(&repo)?;
-    // A failed commit (hook, signing) must leave the manifest and the index as they were.
-    let original = fs::read(repo.join(&manifest_path))?;
-    let index = PathBuf::from(git(
-        &repo,
-        &["rev-parse", "--path-format=absolute", "--git-path", "index"],
-    )?);
-    let saved_index = fs::read(&index).ok();
-    m.version = version.to_owned();
-    fs::write(repo.join(&manifest_path), model::manifest_json(&m)?)?;
-    let committed = git(&repo, &["add", "--all", "--", "."]).and_then(|_| {
-        git(
-            &repo,
-            &["commit", "-m", &format!("Release {} {version}", m.id)],
-        )
-    });
-    if let Err(error) = committed {
-        fs::write(repo.join(&manifest_path), original)?;
-        match saved_index {
-            Some(bytes) => fs::write(&index, bytes)?,
-            None => {
-                let _ = fs::remove_file(&index);
-            }
-        }
-        return Err(Error::Git(format!(
-            "commit failed; plugin.json and the index were restored, your edits remain: {error}"
-        )));
-    }
-    git(&repo, &["tag", "--", &tag]).context(
-        Error::Git,
-        "commit succeeded but tag creation failed; releasing the same version again creates the tag",
-    )?;
+    let folder = manifest_path.strip_suffix("/plugin.json");
+    release_packages(&repo, &[(folder, version)], &["."], false, custom_ssh)?;
     Ok(Commit {
         package: m.id,
         version: version.to_owned(),
@@ -260,11 +283,127 @@ pub fn commit_package(repo: &Path, version: &str, package: Option<&str>) -> Resu
     })
 }
 
+/// Shared authoring transaction for a single commit or a multi-package fork release.
+/// `releases` are (package folder, `None` for the root package; version) pairs.
+/// `only` limits fork commits to package folders and allows an unchanged initial commit.
+pub(crate) fn release_packages(
+    repo: &Path,
+    releases: &[(Option<&str>, &str)],
+    folders: &[&str],
+    only: bool,
+    custom_ssh: bool,
+) -> Result<()> {
+    require_identity(repo, false, custom_ssh)?;
+    let mut manifests = Vec::new();
+    let mut tags = Vec::new();
+    let mut names = Vec::new();
+    // Validate and snapshot every manifest before changing any of them.
+    for &(folder, version) in releases {
+        version_key(version)?;
+        // The loader validates the IDs and the package path before any git call.
+        let mut manifest = model::package_manifest(repo, folder)?;
+        manifest.metadata_strict()?;
+        let path = repo.join(folder.unwrap_or("")).join("plugin.json");
+        let original = fs::read(&path)?;
+        let tag = identity::release_tag(&manifest.id, version);
+        ensure!(
+            git(repo, &["tag", "--list", "--", &tag], custom_ssh)?.is_empty(),
+            VersionConflict,
+            "tag already exists: {tag}"
+        );
+        names.push(format!("{} {version}", manifest.id));
+        tags.push(tag);
+        let updated = if manifest.version == version {
+            original.clone()
+        } else {
+            manifest.version = version.to_owned();
+            model::manifest_json(&manifest)?.into_bytes()
+        };
+        manifests.push((path, original, updated));
+    }
+    let index = PathBuf::from(git(
+        repo,
+        &["rev-parse", "--path-format=absolute", "--git-path", "index"],
+        custom_ssh,
+    )?);
+    let saved_index = match fs::read(&index) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+    let committed = (|| {
+        for (path, original, updated) in &manifests {
+            if original != updated {
+                fs::write(path, updated)?;
+            }
+        }
+        let mut args = vec!["add", "--all", "--"];
+        args.extend_from_slice(folders);
+        git(repo, &args, custom_ssh)?;
+        if only {
+            let mut args = vec!["status", "--porcelain", "--"];
+            args.extend_from_slice(folders);
+            if git(repo, &args, custom_ssh)?.is_empty() {
+                return Ok(());
+            }
+        }
+        let message = format!("Release {}", names.join(", "));
+        let mut args = vec!["commit", "-m", &message];
+        if only {
+            args.extend(["-q", "--only", "--"]);
+            args.extend_from_slice(folders);
+        }
+        git(repo, &args, custom_ssh).map(drop)
+    })();
+    if let Err(error) = committed {
+        for (path, original, _) in manifests {
+            fs::write(path, original)?;
+        }
+        match saved_index {
+            Some(bytes) => fs::write(index, bytes)?,
+            None => match fs::remove_file(index) {
+                Ok(()) => (),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                Err(error) => return Err(error.into()),
+            },
+        }
+        return Err(Error::Git(format!(
+            "commit failed; plugin.json and the index were restored, your edits remain: {error}"
+        )));
+    }
+    // A fork release may skip its commit (nothing changed after the fork commit), and
+    // `commit` cannot retry the tag on a commit it did not make: no retry advice there.
+    let tag_failure = if only {
+        "tag creation failed; no release tags were created"
+    } else {
+        "commit succeeded but tag creation failed; releasing the same version again creates the tag"
+    };
+    let tagged = if tags.len() == 1 {
+        // Keep the existing single-package tag behavior, including Git config.
+        git(repo, &["tag", "--", &tags[0]], custom_ssh).map(drop)
+    } else {
+        let head = git(repo, &["rev-parse", "HEAD"], custom_ssh)?;
+        // update-ref applies the whole batch as one transaction. `create` refuses
+        // a tag that appeared after validation rather than overwriting it.
+        let input: String = tags
+            .iter()
+            .map(|tag| format!("create refs/tags/{tag} {head}\n"))
+            .collect();
+        git_with_input(
+            repo,
+            &["update-ref", "--stdin"],
+            input.into_bytes(),
+            custom_ssh,
+        )
+    };
+    tagged.context(Error::Git, tag_failure)
+}
+
 /// HEAD is the commit that set `version` of package `id` and only lacks its tag: a
 /// `Release ID VERSION` commit whose tag failed, or the initial commit of `init
 /// --no-release` (`Create NAME 0.1.0` / `Create ID 0.1.0`).
-fn released_by_head(repo: &Path, id: &str, version: &str) -> Result<bool> {
-    let subject = git(repo, &["log", "-1", "--format=%s"])?;
+fn released_by_head(repo: &Path, id: &str, version: &str, custom_ssh: bool) -> Result<bool> {
+    let subject = git(repo, &["log", "-1", "--format=%s"], custom_ssh)?;
     let name = id.rsplit('/').next().unwrap_or(id);
     Ok(subject == format!("Release {id} {version}")
         || (version == "0.1.0"
@@ -327,18 +466,37 @@ impl Default for InitOptions {
 /// - `dir` is a single-package repository (root `plugin.json`): refused, as is a folder
 ///   that is not a Git repository.
 pub fn init(dir: &Path, namespace: &str, name: &str) -> Result<Init> {
-    init_with(dir, namespace, name, InitOptions::default())
+    init_with_ssh(dir, namespace, name, false)
+}
+
+pub(crate) fn init_with_ssh(
+    dir: &Path,
+    namespace: &str,
+    name: &str,
+    custom_ssh: bool,
+) -> Result<Init> {
+    init_with_with_ssh(dir, namespace, name, InitOptions::default(), custom_ssh)
 }
 
 /// [`init`] with options: `multi` makes a new (or empty, not yet a repository) `dir` a
 /// multi-package repository; `release: false` skips the tag.
 pub fn init_with(dir: &Path, namespace: &str, name: &str, options: InitOptions) -> Result<Init> {
+    init_with_with_ssh(dir, namespace, name, options, false)
+}
+
+pub(crate) fn init_with_with_ssh(
+    dir: &Path,
+    namespace: &str,
+    name: &str,
+    options: InitOptions,
+    custom_ssh: bool,
+) -> Result<Init> {
     let id = identity::qualified(namespace, name)?;
     let tag = options.release.then(|| identity::release_tag(&id, "0.1.0"));
     let missing = fs::symlink_metadata(dir).is_err();
     if missing && !options.multi {
         return Ok(Init {
-            repo: create_repo(dir, &id, options.release)?,
+            repo: create_repo(dir, &id, options.release, custom_ssh)?,
             folder: None,
             tag,
         });
@@ -360,7 +518,7 @@ pub fn init_with(dir: &Path, namespace: &str, name: &str, options: InitOptions) 
             }
         );
     }
-    let folder = add_package(dir, namespace, name, options.release, empty)?;
+    let folder = add_package(dir, namespace, name, options.release, empty, custom_ssh)?;
     let repo = fs::canonicalize(dir)?;
     let relative = folder
         .strip_prefix(&repo)
@@ -398,7 +556,16 @@ pub fn suggests_multi(dir: &Path) -> bool {
 /// repository; a failed tag keeps the commit and the error names the tag to create.
 /// Returns the package folder.
 pub fn create_package(repo: &Path, namespace: &str, name: &str) -> Result<PathBuf> {
-    add_package(repo, namespace, name, true, false)
+    create_package_with_ssh(repo, namespace, name, false)
+}
+
+pub(crate) fn create_package_with_ssh(
+    repo: &Path,
+    namespace: &str,
+    name: &str,
+    custom_ssh: bool,
+) -> Result<PathBuf> {
+    add_package(repo, namespace, name, true, false, custom_ssh)
 }
 
 /// [`create_package`]; `release: false` skips the tag; `adopt_empty`: `repo` is an
@@ -409,23 +576,24 @@ fn add_package(
     name: &str,
     release: bool,
     adopt_empty: bool,
+    custom_ssh: bool,
 ) -> Result<PathBuf> {
     let id = identity::qualified(namespace, name)?;
     let created = adopt_empty || !repo.exists();
     if created {
         fs::create_dir_all(repo)?;
-        git(repo, &["init", "-b", "main"])?;
+        git(repo, &["init", "-b", "main"], custom_ssh)?;
     }
     let repo = fs::canonicalize(repo)?;
     let result = (|| {
         ensure!(
-            Path::new(&git(&repo, &["rev-parse", "--show-toplevel"])?) == repo,
+            Path::new(&git(&repo, &["rev-parse", "--show-toplevel"], custom_ssh)?) == repo,
             InvalidArgument,
             "pass the repository root"
         );
         if !created {
             // The commit takes gitpm.json as it is on disk: it must be the committed one.
-            let unclean = crate::lost_work::changed_paths(&repo, &[packages::CONFIG])?;
+            let unclean = crate::lost_work::changed_paths(&repo, &[packages::CONFIG], custom_ssh)?;
             ensure!(
                 unclean.is_empty(),
                 InvalidArgument,
@@ -465,7 +633,7 @@ fn add_package(
         }
         let tag = identity::release_tag(&id, "0.1.0");
         ensure!(
-            git(&repo, &["tag", "--list", "--", &tag])?.is_empty(),
+            git(&repo, &["tag", "--list", "--", &tag], custom_ssh)?.is_empty(),
             VersionConflict,
             "tag already exists: {tag}"
         );
@@ -495,15 +663,12 @@ fn add_package(
             }
         }
         // gitpm never writes an identity into a user's repository; a new one is its own.
-        if created {
-            ensure_identity(&repo)?;
-        } else {
-            require_identity(&repo)?;
-        }
+        require_identity(&repo, created, custom_ssh)?;
         // A failed commit (hook, signing) must leave the index as it was, too.
         let index = PathBuf::from(git(
             &repo,
             &["rev-parse", "--path-format=absolute", "--git-path", "index"],
+            custom_ssh,
         )?);
         let saved_index = fs::read(&index).ok();
         // The outermost folder this creates (`packages/` too when it is new).
@@ -527,9 +692,13 @@ fn add_package(
                 &config_path,
                 format!("{}\n", serde_json::to_string_pretty(&config)?),
             )?;
-            git(&repo, &["add", "--", packages::CONFIG, &folder])?;
+            git(&repo, &["add", "--", packages::CONFIG, &folder], custom_ssh)?;
             if created {
-                git(&repo, &["commit", "-m", &format!("Create {id} 0.1.0")])?;
+                git(
+                    &repo,
+                    &["commit", "-m", &format!("Create {id} 0.1.0")],
+                    custom_ssh,
+                )?;
             } else {
                 git(
                     &repo,
@@ -541,6 +710,7 @@ fn add_package(
                         packages::CONFIG,
                         &folder,
                     ],
+                    custom_ssh,
                 )?;
             }
             Ok(())
@@ -552,7 +722,11 @@ fn add_package(
                         let _ = fs::write(&index, bytes);
                     }
                     None => {
-                        let _ = git(&repo, &["reset", "-q", "--", packages::CONFIG, &folder]);
+                        let _ = git(
+                            &repo,
+                            &["reset", "-q", "--", packages::CONFIG, &folder],
+                            custom_ssh,
+                        );
                     }
                 }
                 let _ = fs::remove_dir_all(&new_folder);
@@ -571,7 +745,7 @@ fn add_package(
         if !release {
             return Ok(directory);
         }
-        if let Err(error) = git(&repo, &["tag", "--", &tag]) {
+        if let Err(error) = git(&repo, &["tag", "--", &tag], custom_ssh) {
             if created {
                 return Err(error);
             }
@@ -595,13 +769,17 @@ fn add_package(
 
 /// Set the author's origin for fetch and push; no network operations.
 pub fn set_remote(repo: &Path, url: &str) -> Result<()> {
+    set_remote_with_ssh(repo, url, false)
+}
+
+pub(crate) fn set_remote_with_ssh(repo: &Path, url: &str, custom_ssh: bool) -> Result<()> {
     ensure!(
         !url.trim().is_empty() && !url.starts_with('-') && !url.chars().any(char::is_control),
         InvalidArgument,
         "invalid git remote URL"
     );
     let repo = fs::canonicalize(repo)?;
-    let top = fs::canonicalize(git(&repo, &["rev-parse", "--show-toplevel"])?)?;
+    let top = fs::canonicalize(git(&repo, &["rev-parse", "--show-toplevel"], custom_ssh)?)?;
     ensure!(
         top == repo,
         InvalidArgument,
@@ -612,7 +790,7 @@ pub fn set_remote(repo: &Path, url: &str) -> Result<()> {
         InvalidManifest,
         "plugin.json not found in repository root"
     );
-    let remotes = git(&repo, &["remote"])?;
+    let remotes = git(&repo, &["remote"], custom_ssh)?;
     if remotes.lines().any(|name| name == "origin") {
         // Replace all configured URLs so an old secondary destination cannot remain.
         git(
@@ -624,8 +802,15 @@ pub fn set_remote(repo: &Path, url: &str) -> Result<()> {
                 "remote.origin.url",
                 url,
             ],
+            custom_ssh,
         )?;
-        if git(&repo, &["config", "--get-all", "remote.origin.pushurl"]).is_ok() {
+        if git(
+            &repo,
+            &["config", "--get-all", "remote.origin.pushurl"],
+            custom_ssh,
+        )
+        .is_ok()
+        {
             git(
                 &repo,
                 &[
@@ -635,10 +820,11 @@ pub fn set_remote(repo: &Path, url: &str) -> Result<()> {
                     "remote.origin.pushurl",
                     url,
                 ],
+                custom_ssh,
             )?;
         }
     } else {
-        git(&repo, &["remote", "add", "--", "origin", url])?;
+        git(&repo, &["remote", "add", "--", "origin", url], custom_ssh)?;
     }
     Ok(())
 }
@@ -647,6 +833,38 @@ pub fn set_remote(repo: &Path, url: &str) -> Result<()> {
 mod tests {
     use super::*;
     use crate::test_support::{TempDir, git as fixture_git, tree_hash};
+
+    // Cargo supplies a global test identity. Run the missing-identity case in a
+    // single isolated test process so other parallel unit tests keep their config.
+    fn isolated_identity_test(name: &str) -> bool {
+        if std::env::var_os("GITPM_IDENTITY_TEST_CHILD").is_some() {
+            return false;
+        }
+        let dir = TempDir::new("identity-test-config");
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name])
+            .env("GITPM_IDENTITY_TEST_CHILD", "1")
+            .env("GIT_CONFIG_GLOBAL", dir.join("missing-config"))
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env_remove("GIT_AUTHOR_NAME")
+            .env_remove("GIT_AUTHOR_EMAIL")
+            .env_remove("GIT_COMMITTER_NAME")
+            .env_remove("GIT_COMMITTER_EMAIL")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "expected one child test to pass: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        true
+    }
 
     #[test]
     fn shell_quote_survives_single_quotes() {
@@ -878,6 +1096,24 @@ mod tests {
     }
 
     #[test]
+    fn release_refuses_an_invalid_manifest_id_before_any_change() {
+        let dir = TempDir::new("scaffold");
+        let repo = new_repo(&dir, "demo1");
+        // A manifest edited by hand after the fork wrote it.
+        let path = repo.join("plugin.json");
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        json["id"] = "-x/demo1".into();
+        fs::write(&path, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+        fixture_git(&repo, &["commit", "-qam", "hand edit"]);
+        let before = tree_hash(&repo);
+        let error = release_packages(&repo, &[(None, "0.2.0")], &["."], true, false).unwrap_err();
+        assert_eq!(error.kind(), "invalid_id", "{error}");
+        assert_eq!(tree_hash(&repo), before);
+        assert_eq!(fixture_git(&repo, &["tag", "--list"]), "dan/demo1@0.1.0");
+    }
+
+    #[test]
     fn commit_can_be_retried_after_a_failed_tag() {
         let dir = TempDir::new("scaffold");
         let repo = new_repo(&dir, "demo1");
@@ -1041,6 +1277,11 @@ mod tests {
 
     #[test]
     fn create_package_refuses_uncommitted_config_and_a_missing_identity() {
+        if isolated_identity_test(
+            "scaffold::tests::create_package_refuses_uncommitted_config_and_a_missing_identity",
+        ) {
+            return;
+        }
         let dir = TempDir::new("scaffold");
         let repo = dir.join("mono");
         create_package(&repo, "tilr", "store").unwrap();
@@ -1061,15 +1302,22 @@ mod tests {
         assert_eq!(snapshot(&repo), before);
         fixture_git(&repo, &["checkout", "-q", "--", packages::CONFIG]);
         // gitpm never writes an identity into an existing repository.
-        fixture_git(&repo, &["config", "user.name", ""]);
+        fixture_git(&repo, &["config", "--unset", "user.name"]);
+        fixture_git(&repo, &["config", "--unset", "user.email"]);
         let before = snapshot(&repo);
         let error = create_package(&repo, "tilr", "theme").unwrap_err();
-        assert_eq!(error.kind(), "git");
-        assert!(error.to_string().contains("GIT_AUTHOR_IDENT"), "{error}");
+        assert_eq!(error.kind(), "invalid_argument");
+        assert_eq!(
+            error.to_string(),
+            "no Git identity configured; set user.name and user.email"
+        );
         assert_eq!(snapshot(&repo), before);
-        assert_eq!(fixture_git(&repo, &["config", "--local", "user.name"]), "");
+        assert!(
+            !fs::read_to_string(repo.join(".git/config"))
+                .unwrap()
+                .contains("name =")
+        );
         // An existing folder is refused like in a fork that adds packages.
-        fixture_git(&repo, &["config", "--unset", "user.name"]);
         fs::create_dir_all(repo.join("packages/theme")).unwrap();
         fs::write(repo.join("packages/theme/notes.txt"), "mine").unwrap();
         let error = create_package(&repo, "tilr", "theme").unwrap_err();

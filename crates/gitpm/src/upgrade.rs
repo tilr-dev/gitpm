@@ -61,7 +61,9 @@ impl Provider<'_> {
             if ignored.is_some_and(|ignored| ignored.contains(id)) {
                 continue;
             }
-            let requirement = deps::requirement(text)?;
+            // A refusal from the consumer's own manifest names the consumer.
+            let requirement =
+                deps::requirement(text).map_err(|error| error.with_package(consumer))?;
             let provider = self.state.replacements.get(id).unwrap_or(id);
             let mut allowed = if provider != id {
                 let mut allowed = Range::empty();
