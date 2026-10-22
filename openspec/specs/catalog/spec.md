@@ -7,7 +7,7 @@ Defines the static JSON catalog: its single format, a tree of static files, rele
 ## Requirements
 
 ### Requirement: Catalog is a tree of static files
-A catalog SHALL be a tree of JSON files holding only links: `catalog.json` and directory files `{"schema": 1, "directories": {…}}`, a catalog package index `namespaces/<ns>/<name>/plugin.json` `{"schema": 1, "id", "source", "versions"}` per package, and one `versions/<V>/release.json` per version. Lookup by ID SHALL NOT walk the tree. Any other schema value, a v1 monolithic `catalog.json` included, SHALL be refused with `catalog`.
+A catalog SHALL be a tree of JSON files: schema-1 directory links, a schema-1 package index `namespaces/<ns>/<name>/plugin.json` with `id`, `source`, `versions` and `latest`, and one `versions/<V>/release.json` per version. `latest` SHALL summarize the selected release's version and metadata. Lookup by ID SHALL NOT walk the tree. Any other schema value, a v1 monolithic `catalog.json` included, SHALL be refused with `catalog`.
 
 #### Scenario: Unknown schema
 - **WHEN** a directory file or catalog package index has `"schema": 2`
@@ -25,6 +25,15 @@ A catalog SHALL be a tree of JSON files holding only links: `catalog.json` and d
 - **WHEN** the directory indexes are damaged but `namespaces/dan/demo1/` is intact
 - **THEN** `install-catalog dan/demo1` still finds the release
 - **AND** this is covered by `catalog::v2_layout_links_directories_bottom_up` and `split_catalog_hashes_and_direct_lookup_are_independent_of_directory_indexes`
+
+#### Scenario: Release summary in the index
+- **WHEN** a catalog is generated and the latest release of `tilr/theme` has a title and provides
+- **THEN** `namespaces/tilr/theme/plugin.json` holds `latest {version, title, description, provides, tags}`, equal to the normalized manifest metadata in its `release.json`; directory files `{"schema": 1, "directories": {…}}` carry only links
+
+#### Scenario: Summary selection and regeneration
+- **WHEN** a catalog is generated or a release is registered, including an older version or an already published version
+- **THEN** the index summary matches the newest stable release, or the newest prerelease if no stable release exists, and its schema number remains unchanged
+- **AND** a failed generation leaves the existing index unchanged
 
 ### Requirement: Release record
 Single source for the release record: a release SHALL record the whole `manifest`, `source`, `commit`, `reference`, `files` (SHA-256 and size of every file of the package dist), optional `build` `{url, sha256}` (format only; installs come from Git) and, for a package of a multi-package repository, `path`. Every release MUST have file hashes. Verified by `catalog::validate_release_checks_identity_commit_paths_and_build` and `workspace::release_with_empty_files_is_still_verified`.

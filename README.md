@@ -368,8 +368,8 @@ Changed in 0.5:
 
 - [Plugin metadata](#package-metadata): `title`, `description`, `provides`, `tags` in
   `plugin.json`, reported by `list` (and `list --provides SERVICE`), `catalog show` and the FFI;
-  `init` writes a `title`. `catalog show`/`browse` now read each listed plugin's latest
-  `release.json` (one extra HTTP request per plugin on a remote catalog, at most 40).
+  `init` writes a `title`. Catalog overviews read each listed package's latest
+  `release.json`.
 - Output: every mutating command prints one line per affected package, `ID <verb> …`
   (detail lines such as `Fork created:` stay as they were); `OK:` lines are gone from
   all commands (scripts that match them must match the new lines; `Warning:` lines on
@@ -417,6 +417,10 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
 - **BREAKING:** Catalog directory files (`catalog.json`) and package indexes use
   schema 1 (gitpm 0.5 wrote schema 2). Any other schema is refused with `catalog`.
   Migration: regenerate the catalog with `gitpm catalog update` into an empty folder.
+- Catalog package indexes now carry a `latest` release summary without changing the
+  schema number. Regenerate catalogs with `gitpm catalog update`. Overviews read one
+  index per listed package and no `release.json`; installs still verify release records.
+
 - Catalog commands: `info` → `catalog show`, bare `catalog` → `catalog links`,
   `catalog-update` → `catalog update`, `register` → `catalog register`. Old spellings
   have no aliases.
@@ -1121,6 +1125,13 @@ tree: new `versions/<V>/release.json` files first, then each package's
 up, and the root `catalog.json` last. Never overwrite a `release.json` that is already
 published, never drop versions from an index, and do not delete objects as part of an update.
 
+Each package index has `schema: 1`, `id`, `source`, `versions` (version-to-release
+links), and `latest`: `{version, title, description, provides, tags}`. The summary
+selects the newest stable release, or the newest prerelease when no stable release
+exists. Missing strings are `null`, missing lists are `[]`. Writers publish the summary
+and version links together under the catalog lock with an atomic rename. Directory
+files remain links only.
+
 ## Package metadata
 
 `plugin.json` may describe the package with four optional keys:
@@ -1160,13 +1171,11 @@ records): all four keys are always present; an absent string (`title`, `descript
 - `gitpm list --provides SERVICE`: only the packages whose `provides` contains `SERVICE`.
   It filters `packages` and `resolved` only; `replacements` and `forgotten` are printed
   unfiltered (they describe the workspace, not single packages).
-- Catalog: a release (`release.json`) has the whole manifest, so `catalog update` and
-  `catalog register` publish the metadata with it. `catalog show` and `browse` (`PackageSummary`) show
-  the metadata of each package's latest release; a missing or broken latest
-  `release.json` only leaves that package without metadata. The catalog package index
-  (`namespaces/<ns>/<name>/plugin.json`) carries no metadata. Cost: the overview reads
-  one `release.json` per listed package (at most 40), which on an HTTP(S) catalog is one
-  extra request each.
+- Catalog: `catalog update` and `catalog register` publish the latest release's metadata
+  in the package index. `catalog show` and `browse` (`PackageSummary`, FFI `browseCatalog`)
+  read that summary: at most one index request per listed package, no `release.json`
+  requests, and at most 40 overview entries. A missing, malformed, or mismatched summary
+  leaves only that package without metadata. Installs still verify `release.json`.
 - FFI: `InstalledPackage`, `PackageSummary` and `CatalogRelease` have `title`,
   `description` (`String?`), `provides` and `tags` (`[String]`).
 

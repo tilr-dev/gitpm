@@ -373,13 +373,22 @@ fn catalog_releases_carry_and_show_the_metadata() {
         serde_json::json!(["theme"])
     );
 
-    // A broken latest release.json costs only the metadata in the overview.
+    // Display metadata comes from the index even if the release record is broken.
     fs::write(
         f.dir
             .join("catalog/namespaces/tilr/theme/versions/1.0.0/release.json"),
         "{",
     )
     .unwrap();
+    let info = f.ok(&["catalog", "show"]);
+    assert!(
+        info.contains("tilr/theme — latest: 1.0.0") && info.contains("Title: Theme"),
+        "{info}"
+    );
+    let index_path = f.dir.join("catalog/namespaces/tilr/theme/plugin.json");
+    let mut index = f.json(&index_path);
+    index["latest"]["provides"] = serde_json::json!(false);
+    fs::write(&index_path, serde_json::to_vec(&index).unwrap()).unwrap();
     let info = f.ok(&["catalog", "show"]);
     assert!(
         info.contains("tilr/theme — latest: 1.0.0") && !info.contains("Title:"),

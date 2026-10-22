@@ -77,7 +77,9 @@ def schema1_directories_and_links_resolve(t: T):
     for id, (versions, _) in PACKAGES.items():
         index = load(folder(t, id) / "plugin.json")
         t.eq(index, {"schema": 1, "id": id, "source": str(t.repo(id)),
-                     "versions": {v: f"versions/{v}/release.json" for v in versions}}, f"{id} index")
+                     "versions": {v: f"versions/{v}/release.json" for v in versions},
+                     "latest": {"version": versions[-1], "title": None, "description": None,
+                                "provides": [], "tags": []}}, f"{id} index")
 
 
 @case(fixture="g4_tree_catalog", spec=["catalog/release-record"])

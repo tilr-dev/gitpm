@@ -65,6 +65,30 @@ struct PackageIndex {
     id: String,
     source: String,
     versions: BTreeMap<String, String>,
+    // Display-only data stays untyped here so a malformed summary never prevents
+    // installs or hides other packages in an overview.
+    #[serde(default)]
+    latest: serde_json::Value,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct IndexSummary {
+    version: String,
+    title: Option<String>,
+    description: Option<String>,
+    provides: Vec<String>,
+    tags: Vec<String>,
+}
+impl IndexSummary {
+    fn from_release(release: &Release) -> Self {
+        let metadata = release.metadata();
+        Self {
+            version: release.manifest.version.clone(),
+            title: metadata.title,
+            description: metadata.description,
+            provides: metadata.provides,
+            tags: metadata.tags,
+        }
+    }
 }
 fn folder(id: &str) -> Result<String> {
     valid_id(id)?;
@@ -649,6 +673,7 @@ fn write_release(root: &Path, release: &Release) -> Result<()> {
             id: id.clone(),
             source: release.source.clone(),
             versions: BTreeMap::new(),
+            latest: serde_json::Value::Null,
         }
     };
     ensure!(
@@ -673,8 +698,14 @@ fn write_release(root: &Path, release: &Release) -> Result<()> {
     }
     if !index.versions.contains_key(version) {
         index.versions.insert(version.clone(), link);
-        atomic_json(&path, &index)?;
     }
+    let newest = summary_version(index.versions.keys().map(String::as_str))
+        .require(Error::Catalog, "package has no versions")?;
+    let newest_release: Release =
+        serde_json::from_slice(&fs::read(root.join(&folder).join(&index.versions[newest]))?)?;
+    validate_release(&newest_release, id, newest)?;
+    index.latest = serde_json::to_value(IndexSummary::from_release(&newest_release))?;
+    atomic_json(&path, &index)?;
     // Publish directory links bottom-up, only when a child first appears.
     let parts: Vec<_> = folder.split('/').collect();
     for depth in (1..parts.len()).rev() {
@@ -1167,7 +1198,6 @@ pub(crate) fn update_sources_with_ssh(
     let _lock = lock(&path)?;
     refuse_verified(location)?;
     // Check every source and immutable version before writing any release.
-    let mut kept = Vec::new();
     for ((id, version), release) in &mut pending {
         if let Some(index) = package_index(location, id)? {
             ensure!(
@@ -1177,6 +1207,11 @@ pub(crate) fn update_sources_with_ssh(
             );
             if index.versions.contains_key(version) {
                 read_release(location, id, version, &index)?;
+            }
+            // Summary regeneration can also read a published version whose tag
+            // disappeared upstream. Validate it before publishing any package.
+            if let Some(latest) = summary_version(index.versions.keys().map(String::as_str)) {
+                read_release(location, id, latest, &index)?;
             }
         }
         let old = read_json(
@@ -1202,14 +1237,13 @@ pub(crate) fn update_sources_with_ssh(
                         "release {id}@{version} differs from the published record; the published record is kept"
                     )
                 });
-                kept.push((id.clone(), version.clone()));
+                // Re-publish the index from the immutable record as well: an old
+                // catalog may still need its display summary regenerated.
+                *release = old;
             }
         }
     }
     let releases = pending.len();
-    for key in &kept {
-        pending.remove(key);
-    }
     prepare_root(&path)?;
     for release in pending.values() {
         write_release(path.parent().unwrap(), release)?;
@@ -1271,11 +1305,22 @@ pub struct CatalogOverview {
 }
 pub const OVERVIEW_LIMIT: usize = 40;
 
+// Metadata follows the newest stable version, falling back to the newest
+// prerelease only for a package with no stable versions.
+fn summary_version<'a>(versions: impl Iterator<Item = &'a str> + Clone) -> Option<&'a str> {
+    newest_eligible(versions.clone(), None).or_else(|| {
+        versions
+            .filter_map(|v| version_key(v).ok().map(|key| (key, v)))
+            .max()
+            .map(|(_, v)| v)
+    })
+}
+
 fn summary(
     id: &str,
     source: &str,
     versions: impl Iterator<Item = String>,
-    latest: impl FnOnce(&str) -> Result<Release>,
+    latest: serde_json::Value,
 ) -> Result<PackageSummary> {
     valid_id(id)?;
     let mut versions = versions
@@ -1284,14 +1329,20 @@ fn summary(
     versions.sort();
     let versions: Vec<String> = versions.into_iter().map(|(_, v)| v).collect();
     let newest = newest_eligible(versions.iter().map(String::as_str), None).map(str::to_owned);
-    // Display only: a missing or broken latest release gives no metadata (install
-    // verifies releases); the overview never fails because of it. A package with
-    // pre-releases only shows the newest one's metadata.
-    let metadata = newest
-        .as_ref()
-        .or(versions.last())
-        .and_then(|version| latest(version).ok())
-        .map(|release| release.metadata())
+    // A summary must describe the selected version; invalid display data only
+    // removes this package's metadata and never triggers a release request.
+    let metadata = serde_json::from_value::<IndexSummary>(latest)
+        .ok()
+        .filter(|latest| {
+            Some(latest.version.as_str()) == summary_version(versions.iter().map(String::as_str))
+        });
+    let metadata = metadata
+        .map(|latest| crate::Metadata {
+            title: latest.title,
+            description: latest.description,
+            provides: latest.provides,
+            tags: latest.tags,
+        })
         .unwrap_or_default();
     Ok(PackageSummary {
         id: id.into(),
@@ -1352,13 +1403,7 @@ pub fn browse(location: &str) -> Result<CatalogOverview> {
                     &plugin.id,
                     &plugin.source,
                     plugin.versions.keys().cloned(),
-                    |version| {
-                        let link = &plugin.versions[version];
-                        let value = read_json(location, &format!("{child}{link}"))?
-                            .require(Error::Catalog, "release not found")?;
-                        serde_json::from_value(value)
-                            .context(Error::Catalog, "invalid catalog release")
-                    },
+                    plugin.latest,
                 )?;
                 items.push(OverviewItem::Package {
                     depth,
@@ -1783,7 +1828,9 @@ pub(crate) mod tests {
         assert_eq!(
             dirs("namespaces/dan/demo1/plugin.json"),
             json!({"schema": 1, "id": "dan/demo1", "source": SOURCE,
-                   "versions": {"0.1.0": "versions/0.1.0/release.json"}})
+                   "versions": {"0.1.0": "versions/0.1.0/release.json"},
+                   "latest": {"version": "0.1.0", "title": null, "description": null,
+                              "provides": [], "tags": []}})
         );
         assert_eq!(
             dirs("namespaces/dan/demo1/versions/0.1.0/release.json"),
@@ -2273,6 +2320,103 @@ pub(crate) mod tests {
         );
     }
 
+    #[test]
+    fn index_summary_matches_the_latest_release() {
+        let dir = TempDir::new("catalog-summary");
+        let cat = dir.join("catalog");
+        let index_path = cat.join("namespaces/dan/demo1/plugin.json");
+        let check = |version: &str| {
+            let index = read(&index_path);
+            assert_eq!(index["schema"], 1);
+            let stored = lookup(loc(&cat), "dan/demo1", Some(version)).unwrap();
+            let metadata = stored.metadata();
+            assert_eq!(
+                index["latest"],
+                json!({
+                    "version": version, "title": metadata.title,
+                    "description": metadata.description, "provides": metadata.provides,
+                    "tags": metadata.tags,
+                })
+            );
+        };
+        for version in [
+            "3.0.0-beta.2",
+            "3.0.0-beta.10",
+            "1.10.0",
+            "1.9.0",
+            "4.0.0-alpha",
+        ] {
+            let mut record = release("dan/demo1", version, SOURCE, 'a');
+            record.manifest.extra = serde_json::from_value(json!({
+                "title": version, "description": "Details", "provides": "theme",
+                "tags": ["ui", "colors"],
+            }))
+            .unwrap();
+            save(&cat, &record);
+            check(if version.starts_with("3.") {
+                version
+            } else {
+                "1.10.0"
+            });
+        }
+        // Re-registering repairs a missing summary without changing version links.
+        let mut index = read(&index_path);
+        index.as_object_mut().unwrap().remove("latest");
+        write_json(&index_path, &index);
+        let old = lookup(loc(&cat), "dan/demo1", Some("1.9.0")).unwrap();
+        save(&cat, &old);
+        check("1.10.0");
+    }
+
+    #[test]
+    fn browse_reads_only_indexes() {
+        let dir = TempDir::new("catalog-summary");
+        let cat = dir.join("catalog");
+        for name in ["a", "b"] {
+            let mut record = release(&format!("dan/{name}"), "1.0.0", SOURCE, 'a');
+            record.manifest.extra.insert("title".into(), json!(name));
+            save(&cat, &record);
+            fs::remove_file(cat.join(format!("namespaces/dan/{name}/versions/1.0.0/release.json")))
+                .unwrap();
+        }
+        let rows = || {
+            browse(loc(&cat))
+                .unwrap()
+                .items
+                .into_iter()
+                .filter_map(|item| {
+                    if let OverviewItem::Package { package, .. } = item {
+                        Some(package)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            rows()
+                .iter()
+                .map(|p| p.title.as_deref())
+                .collect::<Vec<_>>(),
+            [Some("a"), Some("b")]
+        );
+        let path = cat.join("namespaces/dan/a/plugin.json");
+        let original = read(&path);
+        for bad in [
+            serde_json::Value::Null,
+            json!({"version": "1.0.0", "provides": false}),
+            json!({"version": "9.0.0", "title": "Wrong", "description": null, "provides": [], "tags": []}),
+        ] {
+            let mut index = original.clone();
+            index["latest"] = bad;
+            write_json(&path, &index);
+            let rows = rows();
+            assert_eq!(rows[0].title, None);
+            assert_eq!(rows[0].latest.as_deref(), Some("1.0.0"));
+            assert_eq!(rows[1].title.as_deref(), Some("b"));
+        }
+    }
+
     // ---- browse ---------------------------------------------------------------------
 
     #[test]
@@ -2644,6 +2788,54 @@ pub(crate) mod tests {
         let before = tree_hash(&cat);
         update_sources(loc(&cat), &list, &mut |_| {}).unwrap();
         assert_eq!(tree_hash(&cat), before);
+    }
+
+    #[test]
+    fn summary_generation_preserves_export_warnings() {
+        let dir = TempDir::new("catalog-summary");
+        let author = Author::new(dir.join("author"), "dan/demo1");
+        let entry = format!("160000,{},dist/vendor", author.head());
+        fixture_git(
+            &author.path,
+            &["update-index", "--add", "--cacheinfo", &entry],
+        );
+        fixture_git(&author.path, &["commit", "-q", "-m", "add gitlink"]);
+        fixture_git(&author.path, &["tag", "-f", "dan/demo1@0.1.0"]);
+        let cat = dir.join("catalog");
+        let list = sources(dir.path(), "author\n");
+        let report = update_sources(loc(&cat), &list, &mut |_| {}).unwrap();
+        assert_eq!(report.warnings.len(), 1);
+        assert!(report.warnings[0].contains("dist/vendor is a Git submodule"));
+        assert_eq!(
+            read(&cat.join("namespaces/dan/demo1/plugin.json"))["latest"]["version"],
+            "0.1.0"
+        );
+    }
+
+    #[test]
+    fn failed_summary_regeneration_leaves_catalog_unchanged() {
+        let dir = TempDir::new("catalog-summary");
+        let first = Author::new(dir.join("first"), "dan/a");
+        let second = Author::new(dir.join("second"), "dan/b");
+        second.release("0.2.0");
+        let cat = dir.join("catalog");
+        let list = sources(dir.path(), "first\nsecond\n");
+        update_sources(loc(&cat), &list, &mut |_| {}).unwrap();
+        first.release("0.2.0");
+        fixture_git(&second.path, &["tag", "-d", "dan/b@0.2.0"]);
+        // The published newest release is no longer part of source discovery.
+        fs::write(
+            cat.join("namespaces/dan/b/versions/0.2.0/release.json"),
+            "{broken",
+        )
+        .unwrap();
+        let before = tree_hash(&cat);
+        assert!(update_sources(loc(&cat), &list, &mut |_| {}).is_err());
+        assert_eq!(
+            tree_hash(&cat),
+            before,
+            "preflight must finish before any publication"
+        );
     }
 
     #[test]

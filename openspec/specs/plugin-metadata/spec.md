@@ -58,9 +58,17 @@ Install and update SHALL store the installed revision's metadata in `packages.<i
 - **THEN** `list --provides theme` lists both, with `active` false for `tilr/theme`
 
 ### Requirement: Metadata in the catalog
-Because a catalog release carries the whole manifest (catalog, "Release record"), `catalog update` and `catalog register` SHALL publish the metadata; `catalog show` and `browse` SHALL show the metadata of each package's latest release by reading its `release.json` (bounded as in catalog, "Bounded overview"), and a missing or broken latest `release.json` SHALL only leave that package without metadata. The catalog package index format SHALL stay unchanged.
+`catalog update` and `catalog register` SHALL publish the latest release's metadata in the package index, under the catalog lock in the same atomic write. `catalog show` and `browse` SHALL read that summary without reading `release.json`, with at most one index request per listed package and the existing bounded overview. A missing or broken summary SHALL only leave its package without metadata. Installs SHALL keep verifying against `release.json`.
 
 #### Scenario: info shows metadata
 - **WHEN** the latest release of `tilr/theme` has a title and provides
 - **THEN** `gitpm catalog show` prints `Title: Theme` and `Provides: theme` under the package
 - **AND** this is covered by `catalog_releases_carry_and_show_the_metadata`
+
+#### Scenario: Overview without per-package release reads
+- **WHEN** an HTTPS catalog lists 40 packages
+- **THEN** `browse` shows their metadata with at most 40 index requests and without requesting any `release.json`
+
+#### Scenario: One broken summary
+- **WHEN** the index summary of one listed package is missing or invalid
+- **THEN** the overview shows that package without metadata and the others normally
