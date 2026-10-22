@@ -38,4 +38,3 @@ The manifest SHALL require id and version and MAY carry dist, buildCommand, buil
 #### Scenario: Unsafe deployment path
 - **WHEN** dist is empty, absolute, contains a parent component or a backslash
 - **THEN** the manifest is refused with invalid_manifest
-

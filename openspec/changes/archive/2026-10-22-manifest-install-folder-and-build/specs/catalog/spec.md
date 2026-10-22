@@ -14,4 +14,3 @@ Single source for the release record: a release SHALL record the whole `manifest
 #### Scenario: Declared folder hashes
 - **WHEN** a package selects its root or a custom output folder
 - **THEN** catalog generation and verification hash exactly the same committed files as deployment
-
