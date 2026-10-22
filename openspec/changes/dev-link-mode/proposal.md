@@ -43,6 +43,6 @@ its tests land; do not archive it into `openspec/specs/` as research completion.
 ## Impact
 
 Future changes touch workspace-layout, dist, install-uninstall, updates,
-transactions-locking, ffi-bindings and CLI. Existing committed deployment and
+transactions-locking, ffi-bindings, package-manifest and CLI. Existing committed deployment and
 lost-work rules remain in force for managed clones. See design for the precise
 exceptions and the implementation/test plan.

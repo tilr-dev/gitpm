@@ -69,9 +69,8 @@ for the root and validates package-relative paths; reuse that schema and its
 The inspected baseline defaults `dist` to `"dist"`, including the requirements
 "Package folder contents" and "Known manifest keys" in package-manifest.
 The selected root default is a future behavior change for both managed install
-and link, not a description of current behavior. Its implementation must align
-those requirements and the missing-output refusal with the dist deployment
-contract. Existing packages needing `dist/` must declare `dist: "dist"` explicitly.
+and link, not a description of current behavior. The package-manifest and dist deltas align
+those requirements and the missing-output refusal for future implementation. Existing packages needing `dist/` must declare `dist: "dist"` explicitly.
 
 Resolve an existing directory to a canonical absolute target; reject paths that
 would create a workspace/self-reference cycle. Validate identity and manifest (`invalid_manifest`)
