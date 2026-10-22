@@ -7690,8 +7690,21 @@ mod tests {
         assert_eq!(mono.dist("theme"), "theme 1.1.0");
         m.rollback("tilr/theme").unwrap();
         assert_eq!(mono.dist("theme"), "theme 1.2.0");
+        // A whole-repository fork also includes store: its rewritten history diverges
+        // from theme's recorded revision, so it cannot form one fork branch.
+        let destination = mono.dir.join("theme-fork");
+        let error = m
+            .fork_packages(&["tilr/theme"], &destination, "me")
+            .unwrap_err();
+        assert_eq!(error.kind(), "invalid_argument");
+        assert!(error.to_string().contains("on diverged histories"));
+        assert!(!destination.exists());
+        // Retaining store leaves theme as the sole installed revision to pin. The
+        // fork still includes every package from theme's source revision.
+        m.forget("tilr/store").unwrap();
+        assert!(keep_refs(&clone).contains(&"refs/gitpm/tilr/store/current".to_owned()));
         let fork = m
-            .fork_packages(&["tilr/theme"], &mono.dir.join("theme-fork"), "me")
+            .fork_packages(&["tilr/theme"], &destination, "me")
             .unwrap();
         assert_eq!(
             read(&fork.path.join("packages/theme/dist/index.js")),
@@ -7702,8 +7715,6 @@ mod tests {
             "the fork has no workspace refs"
         );
         // Records that go take their refs with them.
-        m.forget("tilr/store").unwrap();
-        assert!(keep_refs(&clone).contains(&"refs/gitpm/tilr/store/current".to_owned()));
         m.uninstall("tilr/store", &[], false).unwrap();
         assert_eq!(
             keep_refs(&clone),
