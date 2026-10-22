@@ -220,6 +220,47 @@ class AuthorizationFixtures(unittest.TestCase):
                     checker.check({SPEC: ORIGINAL}, {SPEC: ORIGINAL.replace('it works', 'it fails')},
                                   earlier + [comment(checker.INTAKE, 'Ready\nSpec scope:' + scope)], 'gitpm')
 
+    def test_heading_only_removal_needs_modify_for_absorbing_requirement(self):
+        removed = '\n### Requirement: Removed\nThe system SHALL also work.\n\n#### Scenario: Removed behavior\n- **WHEN** called later\n- **THEN** it also works\n'
+        base = {SPEC: ORIGINAL + removed}
+        head = {SPEC: ORIGINAL + removed.replace('### Requirement: Removed\n', '')}
+        auth = [ready(), grant('specs/terminal — «Removed»: remove')]
+        self.assertIn('gitpm: specs/terminal — «Existing»: modify', checker.check(base, head, auth, 'gitpm'))
+        self.assertEqual([], checker.check(base, head, auth + [grant('specs/terminal — «Existing»: modify')], 'gitpm'))
+
+    def test_scope_own_change_is_parsed_only_inside_own(self):
+        foreign = 'openspec/changes/by/tasks.md'
+        scope = 'Ready\nSpec scope: own (ADDED; change add-spec-change-check per repo); spec-change by Dan: https://plan.example/c/1'
+        comments = [comment(checker.INTAKE, scope)]
+        self.assertEqual({'add-spec-change-check'}, checker.trusted_scope(comments))
+        self.assertEqual(['gitpm: changes/by: edit'], checker.check({}, {foreign: 'edited'}, comments, 'gitpm'))
+
+    def test_scope_with_change_outside_own_or_two_ids_fails_closed(self):
+        for scope in ['own (ADDED; change add-check) and must not change foreign-change',
+                      'own (change add-check, change other-check)',
+                      'own (ADDED to terminal)',
+                      'change add-check']:
+            with self.subTest(scope=scope), self.assertRaises(checker.CheckError):
+                checker.trusted_scope([comment(checker.INTAKE, 'Ready\nSpec scope: ' + scope)])
+
+    def test_existing_archive_with_own_name_needs_edit(self):
+        path = 'openspec/changes/archive/2026-01-01-add-check/tasks.md'
+        self.assertEqual(['gitpm: changes/add-check: edit'],
+                         checker.check({path: 'old'}, {path: 'rewritten'}, [ready()], 'gitpm'))
+        self.assertEqual([], checker.check({path: 'old'}, {path: 'rewritten'},
+                                          [ready(), grant('changes/add-check: edit')], 'gitpm'))
+
+    def test_capability_colliding_by_case_or_unicode_form_fails_closed(self):
+        new_spec = '## Requirements\n\n### Requirement: New\nThe system SHALL add behavior.\n'
+        cafe_nfc, cafe_nfd = 'openspec/specs/café/spec.md', 'openspec/specs/café/spec.md'
+        for base, added in [({SPEC: ORIGINAL}, {'openspec/specs/Terminal/spec.md': new_spec}),
+                            ({cafe_nfc: ORIGINAL}, {cafe_nfd: new_spec}),
+                            ({}, {'openspec/specs/new/spec.md': new_spec, 'openspec/specs/NEW/spec.md': new_spec})]:
+            with self.subTest(added=sorted(added)), self.assertRaises(checker.CheckError):
+                checker.check(base, {**base, **added}, [ready()], 'gitpm')
+        base = {SPEC: ORIGINAL}
+        self.assertEqual([], checker.check(base, {**base, 'openspec/specs/terminal-2/spec.md': new_spec}, [ready()], 'gitpm'))
+
 
 class GitCLIIntegration(unittest.TestCase):
     def test_real_diff_exit_status_and_uncovered_requirement(self):
