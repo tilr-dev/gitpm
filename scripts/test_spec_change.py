@@ -104,6 +104,35 @@ class AuthorizationFixtures(unittest.TestCase):
         self.assertEqual([], checker.check(base, {**base, path: delta},
                                           auth + [grant('specs/terminal — «Existing»: modify')], 'gitpm'))
 
+    def test_chained_renames_require_original_authorization(self):
+        path = 'openspec/changes/add-check/specs/terminal/spec.md'
+        renames = ('## RENAMED Requirements\n'
+                   '- FROM: `### Requirement: Existing`\n'
+                   '- TO: `### Requirement: Intermediate`\n'
+                   '- FROM: `### Requirement: Intermediate`\n'
+                   '- TO: `### Requirement: Final`\n')
+        base = {SPEC: ORIGINAL}
+        auth = [ready(), grant('specs/terminal — «Existing»: rename')]
+        self.assertEqual([], checker.check(base, {**base, path: renames}, auth, 'gitpm'))
+        for section, operation in [('MODIFIED', 'modify'), ('REMOVED', 'remove')]:
+            delta = renames + f'## {section} Requirements\n### Requirement: Final\nThe system SHALL change.\n'
+            with self.subTest(operation=operation):
+                self.assertEqual([f'gitpm: specs/terminal — «Existing»: {operation} (delta add-check)'],
+                                 checker.check(base, {**base, path: delta}, auth, 'gitpm'))
+                self.assertEqual([], checker.check(base, {**base, path: delta},
+                                 auth + [grant(f'specs/terminal — «Existing»: {operation}')], 'gitpm'))
+
+    def test_invalid_rename_graph_fails_closed(self):
+        for pairs in [[('Existing', 'Next'), ('Next', 'Existing')],
+                      [('Existing', 'Final'), ('Other', 'Final')]]:
+            delta = '## RENAMED Requirements\n' + ''.join(
+                f'- FROM: `### Requirement: {old}`\n- TO: `### Requirement: {new}`\n'
+                for old, new in pairs)
+            with self.subTest(pairs=pairs), self.assertRaises(checker.CheckError):
+                checker.check({SPEC: ORIGINAL},
+                              {SPEC: ORIGINAL, 'openspec/changes/add-check/specs/terminal/spec.md': delta},
+                              [ready(), grant('specs/terminal — «Existing»: rename')], 'gitpm')
+
     def test_foreign_archive_rewrite_requires_edit_as_well(self):
         source = 'openspec/changes/foreign/tasks.md'
         target = 'openspec/changes/archive/2026-10-22-foreign/tasks.md'

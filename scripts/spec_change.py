@@ -133,10 +133,23 @@ def delta_operations(body):
                 operations.append((renamed_from, 'rename'))
             match = re.fullmatch(r'- TO: `### Requirement: (.+)`\s*', line)
             if match and renamed_from:
-                originals[match[1]] = renamed_from
+                target = match[1]
+                if target in originals and originals[target] != renamed_from:
+                    raise CheckError('Ambiguous requirement rename: ' + target)
+                originals[target] = renamed_from
                 renamed_from = None
+    resolved = {}
+    for target in originals:
+        name = target
+        seen = set()
+        while name in originals:
+            if name in seen:
+                raise CheckError('Cyclic requirement rename: ' + name)
+            seen.add(name)
+            name = originals[name]
+        resolved[target] = name
     for name, operation in operations:
-        yield originals.get(name, name) if operation != 'rename' else name, operation
+        yield resolved.get(name, name), operation
 
 
 def check(base, head, comments, component):
