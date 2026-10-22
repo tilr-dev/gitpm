@@ -11,12 +11,17 @@ pub struct Manifest {
     pub id: String,
     pub version: String,
     /// Package-relative committed output folder; absent means `dist`, `.` means root.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "optional_string",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub dist: Option<String>,
     /// Describes how to build the package. gitpm never executes this command.
     #[serde(
         default,
         rename = "buildCommand",
+        deserialize_with = "optional_string",
         skip_serializing_if = "Option::is_none"
     )]
     pub build_command: Option<String>,
@@ -41,6 +46,13 @@ pub struct Manifest {
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
+// Serde defaults handle absent fields; a present value must be a string, never null.
+fn optional_string<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<String>, D::Error> {
+    String::deserialize(deserializer).map(Some)
+}
+
 impl Manifest {
     /// The selected output folder, relative to the package root.
     pub fn dist_folder(&self) -> &str {

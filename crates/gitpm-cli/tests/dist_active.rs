@@ -942,6 +942,8 @@ fn declared_output_rejects_invalid_fields() {
         ("dist", serde_json::json!("")),
         ("dist", serde_json::json!("output\\escape")),
         ("dist", serde_json::json!(42)),
+        ("dist", serde_json::Value::Null),
+        ("buildCommand", serde_json::Value::Null),
         ("buildRequired", serde_json::json!("true")),
         ("buildCommand", serde_json::json!(["build"])),
     ] {
