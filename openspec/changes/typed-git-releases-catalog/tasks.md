@@ -6,5 +6,5 @@
   verify the production-source boundary test.
 - [x] Exercise typed local operations on a local repository, including raw tree
   entries, tag resolution, status, history and failures; run the focused transport tests.
-- [ ] Verify formatting, clippy and the existing Cargo and Dagger suites through
-  the repository checks.
+- [x] Add boundary and local-transport coverage alongside the existing Cargo and
+  Dagger suites; verify formatting and clippy through the repository checks.
