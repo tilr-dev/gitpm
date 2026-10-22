@@ -1,2 +1,6 @@
 /target
 /openspec/coverage/
+
+# Python bytecode from running the scripts/ checks (scripts/test_spec_change.py)
+__pycache__/
+*.py[cod]
