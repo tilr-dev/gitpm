@@ -431,7 +431,9 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
 - `fork` clones the recorded source at installed revisions and keeps submodule links.
   Local installation edits are excluded. An existing `--into` repository now fails
   with `invalid_argument` (exit 1, previously success with exit 0). Fork the selected
-  packages together into a new folder instead.
+  packages together into a new folder instead. Fork now needs access to the recorded
+  source. A relative or remote-helper recorded source is refused with `invalid_argument`
+  (exit 1, previously success with exit 0 without `forkOf.source`).
 - `auth::check` now takes `&Options`; the separate `AuthOptions` was removed.
   `Options` now includes `custom_ssh` (UniFFI `ManagerOptions.customSsh`, default false).
   Set it when the host supplies `GIT_SSH` or `GIT_SSH_COMMAND`; the CLI does this for
@@ -575,7 +577,8 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
 - `fork` writes `forkOf.source` (the original's recorded source) into the fork's
   `plugin.json`; `forkOf` is `{id, version, commit, source?}` (`source` optional when
   reading; `invalid_manifest` when empty, relative or a remote helper such as `ext::…`;
-  `fork` leaves it out when the original's source is not a URL or an absolute path). FFI
+  `fork` refuses an unsupported recorded source with `invalid_argument` rather than
+  omitting `forkOf.source`). FFI
   `ForkOf` gains `source`. A gitpm before this
   change refuses such a manifest or state record (unknown key in `forkOf`).
 - `--channel stable|dev` is removed, without an alias (`unknown option: --channel; use

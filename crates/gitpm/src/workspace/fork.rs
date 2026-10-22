@@ -157,6 +157,7 @@ fn dirty(repo: &Path, paths: &[String], custom_ssh: bool) -> Result<Vec<String>>
     lost_work::changed_paths(repo, &specs, custom_ssh)
 }
 
+/// A package folder as a pathspec; the root package selects the whole repository.
 fn pathspec(folder: &str) -> &str {
     if folder.is_empty() { "." } else { folder }
 }
@@ -950,6 +951,7 @@ fn forked(sources: &[Source], manifests: &[Manifest]) -> Vec<ForkedPackage> {
         .collect()
 }
 
+/// Install order of packages given as (ID, dependency IDs), with dependencies first.
 fn install_order(packages: &[(&str, BTreeSet<String>)]) -> Result<Vec<usize>> {
     fn visit(
         index: usize,

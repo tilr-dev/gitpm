@@ -273,6 +273,7 @@ fn fork_replace_release_without_file_transport() {
     f.ok(&["install", f.source(), "tilr/store"]);
     f.ok(&["install", f.source(), "tilr/theme"]);
     use std::os::unix::fs::PermissionsExt;
+    // Cloning the recorded local-path source needs file transport; disable it after checkout.
     let hooks = f.dir.join("transport-hooks");
     fs::create_dir_all(&hooks).unwrap();
     let hook = hooks.join("post-checkout");
