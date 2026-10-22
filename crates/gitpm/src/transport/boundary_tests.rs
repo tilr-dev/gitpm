@@ -96,6 +96,34 @@ fn boundary_detects_imports_aliases_and_qualified_calls() {
 /// also catches imports renamed locally and inherited calls through `super::*`.
 #[derive(Default)]
 struct WorkspaceBoundary(Vec<String>);
+
+/// Macro bodies are arbitrary token trees, not Rust expressions. Visit their
+/// identifiers recursively without interpreting string literals as source code.
+struct MacroIdentifiers(Vec<syn::Ident>);
+impl syn::parse::Parse for MacroIdentifiers {
+    fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
+        use syn::ext::IdentExt;
+        let mut identifiers = Vec::new();
+        while !input.is_empty() {
+            let content;
+            if input.peek(syn::Ident::peek_any) {
+                identifiers.push(input.call(syn::Ident::parse_any)?);
+                continue;
+            } else if input.peek(syn::token::Paren) {
+                syn::parenthesized!(content in input);
+            } else if input.peek(syn::token::Brace) {
+                syn::braced!(content in input);
+            } else if input.peek(syn::token::Bracket) {
+                syn::bracketed!(content in input);
+            } else {
+                input.step(|cursor| Ok(((), cursor.token_tree().unwrap().1)))?;
+                continue;
+            }
+            identifiers.extend(content.parse::<Self>()?.0);
+        }
+        Ok(Self(identifiers))
+    }
+}
 impl<'ast> Visit<'ast> for WorkspaceBoundary {
     fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
         if !test_only(&item.attrs) {
@@ -105,6 +133,15 @@ impl<'ast> Visit<'ast> for WorkspaceBoundary {
     fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
         if !test_only(&item.attrs) {
             visit::visit_item_fn(self, item);
+        }
+    }
+    fn visit_macro(&mut self, item: &'ast syn::Macro) {
+        self.visit_path(&item.path);
+        for ident in syn::parse2::<MacroIdentifiers>(item.tokens.clone())
+            .unwrap()
+            .0
+        {
+            self.visit_ident(&ident);
         }
     }
     fn visit_ident(&mut self, ident: &'ast syn::Ident) {
@@ -139,6 +176,8 @@ fn workspace_boundary_detects_raw_calls_and_imports() {
         "use super::*; fn run() { git(); }",
         "fn run() { backend.git(); }",
         "fn run() { crate::transport::http_get(); }",
+        "fn run() { ensure!(crate::transport::git(repo, &[\"cat-file\", \"-t\", &tree], ssh).is_ok()); }",
+        "fn run() { outer!({ inner!([git_raw()]); }); }",
     ] {
         assert!(!workspace_violations(source).is_empty(), "{source}");
     }
@@ -149,4 +188,5 @@ fn workspace_boundary_detects_raw_calls_and_imports() {
         .is_empty()
     );
     assert!(workspace_violations("fn run() { SystemTransport.head_commit(); }").is_empty());
+    assert!(workspace_violations("fn run() { ensure!(ok, \"git\"); }").is_empty());
 }
