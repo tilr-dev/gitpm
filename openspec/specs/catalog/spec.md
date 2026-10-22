@@ -36,7 +36,7 @@ A catalog SHALL be a tree of JSON files: schema-1 directory links, a schema-1 pa
 - **AND** a failed generation leaves the existing index unchanged
 
 ### Requirement: Release record
-Single source for the release record: a release SHALL record the whole `manifest`, `source`, `commit`, `reference`, `files` (SHA-256 and size of every file of the package dist), optional `build` `{url, sha256}` (format only; installs come from Git) and, for a package of a multi-package repository, `path`. Every release MUST have file hashes. Verified by `catalog::validate_release_checks_identity_commit_paths_and_build` and `workspace::release_with_empty_files_is_still_verified`.
+Single source for the release record: a release SHALL record the whole `manifest`, `source`, `commit`, `reference`, `files` (SHA-256 and size of every file of the committed output folder selected by manifest dist, default dist/), optional `build` `{url, sha256}` (format only; installs come from Git) and, for a package of a multi-package repository, `path`. Every release MUST have file hashes.
 
 #### Scenario: Legacy release without hashes
 - **WHEN** a catalog holds an unscoped release of the v1 era without `files`
@@ -45,6 +45,10 @@ Single source for the release record: a release SHALL record the whole `manifest
 #### Scenario: Namespaced release without hashes
 - **WHEN** a namespaced release record has an empty `files` while its commit has `dist/index.js`
 - **THEN** the release is refused with `catalog` instead of skipping verification
+
+#### Scenario: Declared folder hashes
+- **WHEN** a package selects its root or a custom output folder
+- **THEN** catalog generation and verification hash exactly the same committed files as deployment
 
 ### Requirement: Catalog generated from Git release tags
 `catalog update [--sources FILE]` SHALL read the repositories listed in the sources file (one per line, relative to the file; blank and `#` lines skipped), discover every release tag, pin each tag's commit, hash its package dist and write the tree. For a multi-package repository it SHALL publish only the packages listed in `gitpm.json` at HEAD. Broken historical tags are skipped as in package-ids. It SHALL validate every source before writing anything and retain releases of removed sources.
