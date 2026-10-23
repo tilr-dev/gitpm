@@ -82,7 +82,7 @@ Installing an ID that is installed from a different source (including a `file://
 - **AND** the message names no command; the CLI adds a `Hint:` line naming `gitpm restore ID` and `gitpm uninstall ID` (the same holds for a forgotten package of a shared clone)
 
 ### Requirement: Install from the catalog
-`install-catalog ID [--version V]` (`Manager::install_from_catalog`) SHALL install the exact catalog release (latest if omitted): check out the recorded commit of its source and verify manifest and package dist file hashes against it before any change. A mismatch SHALL fail with `catalog`. Only a verified catalog makes it protected (catalog). Verified by `catalog_manifest_is_verified_before_install`, `workspace::install_from_catalog_verifies_and_check_compares`.
+install-catalog SHALL install the exact requested release, latest if omitted. With build it SHALL verify archive SHA-256 and release file hashes and deploy without cloning; otherwise it SHALL verify the recorded Git commit, manifest and output hashes. Mismatches SHALL fail with catalog and unavailable artifacts with http, preserving the workspace. Only verified catalogs protect; build installs additionally retain catalog provenance.
 
 #### Scenario: Tampered dist
 - **WHEN** the catalog's file hashes do not match the release commit's `dist/`
@@ -96,7 +96,11 @@ Installing an ID that is installed from a different source (including a `file://
 
 #### Scenario: Install from an unverified catalog
 - **WHEN** the catalog has no `"verified": true` and the user runs `install-catalog acme/greeter`
-- **THEN** the release is verified as above, the record has no `catalog`, and `update acme/greeter` later reads the origin
+- **THEN** the release is verified as above, the record has no `catalog`, and a Git installation later updates from the origin; a build installation follows its separately recorded catalog location
+
+#### Scenario: Install a build with unavailable source
+- **WHEN** a catalog release has a valid build and its source repository is unavailable
+- **THEN** install-catalog deploys the verified archive output without a clone
 
 ### Requirement: Refused input creates nothing
 Input SHALL be validated before anything is created: the CLI checks argv syntax and parses IDs and versions with the library's parsers before opening, and `open_with` validates Options first (workspace-layout). A refused install SHALL leave no clone, no `dist/<id>`, no state entry and no `.pm-txn` (errors). Verified by `usage_errors_name_the_problem_and_create_nothing` and `workspace::install_refusals_leave_the_workspace_unchanged`.
@@ -199,7 +203,7 @@ Uninstall SHALL delete only what the workspace owns (the clone inside the worksp
 - **THEN** it fails with `dependency_conflict` naming `lib` as disabled (dependencies, "enable needs active dependencies"), while `enable lib` followed by `enable app` succeeds
 
 ### Requirement: Removing a package whose clone is gone
-`uninstall ID` and `forget ID` of a package recorded in state whose clone (own or shared) no longer exists SHALL succeed without confirmation (there is no lost work): they drop the record and its deployed folder, keep no `forgotten` record, and are still guarded by dependents (dependencies, "Dependents guard removal"). Verified by `workspace::uninstall_and_forget_of_a_package_without_clone_drop_the_record`.
+Uninstall and forget SHALL drop a Git record whose clone is gone, plus its deployed output, without confirmation or a forgotten record, subject to dependent guards. A build intentionally has no clone: forget SHALL retain its record and cached output for restore; uninstall SHALL remove the cache. Managed build output SHALL NOT count as lost Git work.
 
 #### Scenario: Clone deleted by hand
 - **WHEN** `packages/acme/greeter` was deleted by hand while `acme/greeter` is recorded and active, and the user runs `uninstall acme/greeter`
@@ -208,3 +212,7 @@ Uninstall SHALL delete only what the workspace owns (the clone inside the worksp
 #### Scenario: Forget without a clone
 - **WHEN** the same package is forgotten instead
 - **THEN** it prints `acme/greeter forgotten (no clone; record and dist removed)` (`clone_kept` false), the record is dropped and no `forgotten` record is kept, because there is nothing to restore; a later `restore acme/greeter` fails with `repository_not_found`
+
+#### Scenario: Forget and restore a build
+- **WHEN** a build package is forgotten and restored
+- **THEN** its cached output and record survive forget and restore redeploys them without Git

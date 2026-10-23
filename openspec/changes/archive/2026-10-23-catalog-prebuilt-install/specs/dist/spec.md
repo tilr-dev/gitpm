@@ -60,4 +60,3 @@ A Git revision missing its manifest-selected output SHALL fail with invalid_mani
 #### Scenario: Prebuilt release needs no committed output
 - **WHEN** a build release manifest selects an output folder absent from its Git commit
 - **THEN** installation deploys the verified build without accessing that commit
-
