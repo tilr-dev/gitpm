@@ -1,0 +1,14 @@
+{
+  "base": {},
+  "head": {
+    "openspec/changes/add-check/tasks.md": "own"
+  },
+  "comments": [
+    {
+      "actorUserId": "de530293-4ccc-44bc-8d3d-d24a781a8351",
+      "kind": "comment",
+      "body": "Ready to work.\nSpec scope: own (change add-check per repo)"
+    }
+  ],
+  "uncovered": []
+}

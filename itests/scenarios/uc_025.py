@@ -1,7 +1,7 @@
 """UC-025: Fork invalid destinations (P0).
 
 vendor/demo 0.1.0 installed (g3_vendor_installed). `fork ID --ns NS --into DIR` accepts only a new
-folder or a repository with gitpm.json; every refusal is checked for: non-zero exit, Error
+folder; every refusal is checked for: non-zero exit, Error
 kind, no destination created, and byte-identical workspace + author repositories.
 """
 
@@ -60,7 +60,7 @@ def existing_destination_with_sentinel(t: T):
     dest = t.root / "authors/existing"
     t.write(dest, {"sentinel.txt": "keep me\n"})
     sentinel = t.snap(dest)
-    refused(t, [ID, "--ns", "author", "--into", dest], "invalid_argument", "destination already exists and is not a multi-package repository (gitpm.json)")
+    refused(t, [ID, "--ns", "author", "--into", dest], "invalid_argument", "destination already exists; pass a new folder")
     t.same(sentinel, "destination with sentinel")
 
 
@@ -68,7 +68,7 @@ def existing_destination_with_sentinel(t: T):
 def empty_existing_destination(t: T):
     dest = t.root / "authors/empty"
     dest.mkdir(parents=True)
-    refused(t, [ID, "--ns", "author", "--into", dest], "invalid_argument", "destination already exists and is not a multi-package repository (gitpm.json)")
+    refused(t, [ID, "--ns", "author", "--into", dest], "invalid_argument", "destination already exists; pass a new folder")
     t.eq(list(dest.iterdir()), [], "still empty")
 
 
@@ -77,7 +77,9 @@ def dangling_symlink_destination(t: T):
     dest = t.root / "authors/link"
     dest.parent.mkdir(parents=True)
     dest.symlink_to(t.root / "nowhere")
-    refused(t, [ID, "--ns", "author", "--into", dest], "invalid_argument", "destination already exists and is not a multi-package repository (gitpm.json)")
+    refused(t, [ID, "--ns", "author", "--into", dest], "invalid_argument", "destination already exists; pass a new folder")
+    t.ok(dest.is_symlink(), "destination symlink preserved")
+    t.eq(os.readlink(dest), str(t.root / "nowhere"), "symlink target unchanged")
     t.ok(not (t.root / "nowhere").exists(), "symlink target not created")
 
 
