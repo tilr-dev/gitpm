@@ -52,10 +52,6 @@ Repository git commands SHALL use closed stdin, `GIT_TERMINAL_PROMPT=0`, empty `
 - **WHEN** a clone of an HTTPS URL would ask for a password, also through `GIT_ASKPASS`, `SSH_ASKPASS`-style helpers or an interactive credential helper
 - **THEN** git fails fast with `git` instead of waiting, so the workspace lock is released
 
-#### Scenario: Bounded build request
-- **WHEN** a build request stalls or streams an oversized body
-- **THEN** the five-second connect timeout, twenty-second total timeout and 16 MiB streaming bound terminate it with `http`; builds alone follow at most five HTTPS-only redirects
-
 ### Requirement: Library-owned Git input
 Exception to "Git never waits for input": a Git ref transaction (`update-ref --stdin`) SHALL get only library-generated input instead of closed stdin, and the input pipe SHALL be closed after writing; user stdin SHALL NOT be inherited, and the other bounds of that requirement (no prompts, lowSpeed limits, batch SSH, 600s kill) SHALL apply unchanged.
 
@@ -186,7 +182,7 @@ Standalone catalog and check operations, which reach remotes, SHALL offer `*_wit
 - **THEN** its SSH behavior is equivalent to its `*_with_options` variant with `Options::default()`
 
 ### Requirement: Typed network transport
-The transport module SHALL expose a Transport trait with typed methods for clone, fetch, remote HEAD refresh, remote ref lookup, read-only access probes, catalog HTTP GET and artifact GET. Network call sites in gitpm SHALL use these methods rather than assemble raw network Git commands. The transport API visible to production callers SHALL contain only typed operations; raw Git helpers SHALL remain internal to the transport module. Transport failures SHALL retain the existing gitpm error kinds and messages.
+The transport module SHALL expose a Transport trait with typed methods for clone, fetch, remote HEAD refresh, remote ref lookup, read-only access probes and HTTP GET. Network call sites in gitpm SHALL use these methods rather than assemble raw network Git commands. The transport API visible to production callers SHALL contain only typed operations; raw Git helpers SHALL remain internal to the transport module. Transport failures SHALL retain the existing gitpm error kinds and messages.
 
 #### Scenario: Clone and fetch through the interface
 - **WHEN** gitpm clones a repository or fetches tags, records origin tags or refreshes a remote HEAD
@@ -196,14 +192,6 @@ The transport module SHALL expose a Transport trait with typed methods for clone
 - **WHEN** a catalog response has no declared size
 - **THEN** the transport reads at most 16 MiB plus the four-byte status trailer plus one overflow byte, kills curl on overflow, and retains the existing 200/404/error semantics
 - **AND** both loopback streamed-response tests run inside the transport module
-
-#### Scenario: Build download through the interface
-- **WHEN** a package needs a build archive
-- **THEN** the library invokes the typed artifact operation and subprocesses remain confined to transport
-
-#### Scenario: Shared bounded HTTP handling
-- **WHEN** catalog or build bytes are downloaded
-- **THEN** artifact GET shares the bounded catalog HTTP handling while applying its build-specific HTTPS-only redirect policy
 
 ### Requirement: Typed release and catalog repository operations
 Release discovery, lost-work inspection, catalog generation, checks,
