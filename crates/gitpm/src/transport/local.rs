@@ -83,7 +83,9 @@ fn typed_local_operations_preserve_revisions_trees_and_errors() {
     );
     fs::write(root.join("package/data"), "second").unwrap();
     git(repo, &["commit", "-qam", "second"]);
-    transport.checkout_detached(repo, &first, false).unwrap();
+    transport
+        .checkout_detached(repo, &first, false, false)
+        .unwrap();
     assert_eq!(
         fs::read_to_string(root.join("package/data")).unwrap(),
         "first\n"
@@ -173,7 +175,9 @@ fn typed_refs_and_history_preserve_reachability() {
         "package"
     );
     assert!(transport.stashes(repo, false).unwrap().is_empty());
-    transport.checkout_detached(repo, &second, false).unwrap();
+    transport
+        .checkout_detached(repo, &second, false, false)
+        .unwrap();
     fs::write(root.join("package/data"), "third").unwrap();
     git(repo, &["commit", "-qam", "third"]);
     let third = fixture(repo, &["rev-parse", "HEAD"]);
