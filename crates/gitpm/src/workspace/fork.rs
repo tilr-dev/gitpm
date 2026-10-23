@@ -572,16 +572,19 @@ impl Manager {
             for (id, p) in &installed {
                 let new_id = qualify(id)?;
                 let commit = p.current.commit.clone();
-                if git(
+                if transport::require_object(
                     clone,
-                    &["cat-file", "-e", &format!("{commit}^{{commit}}")],
+                    &format!("{commit}^{{commit}}"),
                     self.options.custom_ssh,
                 )
                 .is_err()
                 {
-                    git(
+                    transport::fetch(
                         clone,
-                        &["fetch", "origin", &commit],
+                        transport::Fetch::Revision {
+                            remote: "origin",
+                            revision: &commit,
+                        },
                         self.options.custom_ssh,
                     )?;
                 }
@@ -678,12 +681,7 @@ fn identify(m: &mut Manifest, source: &Source) {
 /// Whether `path` has the same tree at both commits (`false` if it is missing in one).
 fn same_folder(repo: &Path, a: &str, b: &str, path: &str, custom_ssh: bool) -> bool {
     let tree = |commit: &str| {
-        git(
-            repo,
-            &["rev-parse", "--verify", "-q", &format!("{commit}:{path}")],
-            custom_ssh,
-        )
-        .ok()
+        transport::verify_revision(repo, &format!("{commit}:{path}"), true, custom_ssh).ok()
     };
     matches!((tree(a), tree(b)), (Some(x), Some(y)) if x == y)
 }
@@ -702,14 +700,10 @@ fn select_submodules(repo: &Path, base: &str, sources: &[Source], custom_ssh: bo
             .map(|s| (s.commit.as_str(), Some(s.path.as_str()))),
     ) {
         let blob = format!("{commit}:.gitmodules");
-        if git(repo, &["cat-file", "-e", &blob], custom_ssh).is_err() {
+        if transport::require_object(repo, &blob, custom_ssh).is_err() {
             continue;
         }
-        let config = git(
-            repo,
-            &["config", "--blob", &blob, "--null", "--list"],
-            custom_ssh,
-        )?;
+        let config = transport::config_blob(repo, &blob, custom_ssh)?;
         let mut modules: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
         for entry in config.split('\0').filter(|e| !e.is_empty()) {
             let Some((key, value)) = entry.split_once('\n') else {
@@ -753,11 +747,7 @@ fn select_submodules(repo: &Path, base: &str, sources: &[Source], custom_ssh: bo
     }
     for values in selected.values() {
         for (key, value) in values {
-            git(
-                repo,
-                &["config", "--file", ".gitmodules", "--add", key, value],
-                custom_ssh,
-            )?;
+            transport::config_file_add(repo, ".gitmodules", key, value, custom_ssh)?;
         }
     }
     Ok(())
@@ -771,12 +761,8 @@ fn fork_base(repo: &Path, sources: &[Source], custom_ssh: bool) -> Result<String
         .find(|candidate| {
             sources.iter().all(|s| {
                 s.commit == *candidate
-                    || git(
-                        repo,
-                        &["merge-base", "--is-ancestor", &s.commit, candidate],
-                        custom_ssh,
-                    )
-                    .is_ok()
+                    || transport::require_ancestor(repo, &s.commit, candidate, custom_ssh)
+                        .is_ok()
             })
         })
         .require(
@@ -794,9 +780,9 @@ fn new_fork(
 ) -> Result<PackageFork> {
     let root = sources.iter().any(|s| s.path.is_empty());
     for source in sources {
-        git(
+        transport::require_object(
             destination,
-            &["cat-file", "-e", &format!("{}^{{commit}}", source.commit)],
+            &format!("{}^{{commit}}", source.commit),
             custom_ssh,
         )
         .map_err(|_| {
@@ -809,21 +795,14 @@ fn new_fork(
     }
     let base = fork_base(destination, sources, custom_ssh)?;
     // Renaming preserves remote branches and the URL used by relative submodules.
-    git(
-        destination,
-        &["remote", "rename", "origin", "upstream"],
-        custom_ssh,
-    )?;
+    transport::rename_remote(destination, "origin", "upstream", custom_ssh)?;
     let mut branch = "fork".to_owned();
     let mut number = 2;
-    while !git(destination, &["branch", "--list", &branch], custom_ssh)?.is_empty()
-        || git(
+    while !transport::branches_matching(destination, &branch, custom_ssh)?.is_empty()
+        || transport::verify_revision(
             destination,
-            &[
-                "rev-parse",
-                "--verify",
-                &format!("refs/remotes/upstream/{branch}"),
-            ],
+            &format!("refs/remotes/upstream/{branch}"),
+            false,
             custom_ssh,
         )
         .is_ok()
@@ -832,11 +811,7 @@ fn new_fork(
         number += 1;
     }
     // Attached to the new branch, so the fork commit is on it (whatever HEAD was).
-    git(
-        destination,
-        &["checkout", "-q", "-b", &branch, &base],
-        custom_ssh,
-    )?;
+    transport::create_branch(destination, &branch, &base, custom_ssh)?;
 
     if !root {
         // A package installed at an older revision starts from that revision's files.
@@ -844,34 +819,19 @@ fn new_fork(
             if same_folder(destination, &base, &source.commit, &source.path, custom_ssh) {
                 continue;
             }
-            git(
-                destination,
-                &[
-                    "rm",
-                    "-r",
-                    "-q",
-                    "--cached",
-                    "--ignore-unmatch",
-                    "--",
-                    &source.path,
-                ],
-                custom_ssh,
-            )?;
+            transport::remove_cached_path(destination, &source.path, custom_ssh)?;
             match fs::remove_dir_all(destination.join(&source.path)) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
                 _ => {}
             }
-            git(
-                destination,
-                &["checkout", &source.commit, "--", &source.path],
-                custom_ssh,
-            )?;
+            transport::checkout_path(destination, &source.commit, &source.path, custom_ssh)?;
         }
     }
     select_submodules(destination, &base, sources, custom_ssh)?;
-    git(
+    transport::config_set(
         destination,
-        &["config", &format!("branch.{branch}.remote"), "upstream"],
+        &format!("branch.{branch}.remote"),
+        "upstream",
         custom_ssh,
     )?;
     let mut manifests = Vec::new();
@@ -893,20 +853,9 @@ fn new_fork(
     // Commit all fork identities and the source trees.
     let message = fork_message(sources);
     // A new repository of gitpm's: user hooks are not run.
-    git(destination, &["add", "-A"], custom_ssh)?;
-    git(
-        destination,
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "-q",
-            "-m",
-            &message,
-        ],
-        custom_ssh,
-    )?;
-    let commit = git(destination, &["rev-parse", "HEAD"], custom_ssh)?;
+    transport::stage_all(destination, custom_ssh)?;
+    transport::commit_without_hooks(destination, &message, custom_ssh)?;
+    let commit = transport::object_id(destination, "HEAD", custom_ssh)?;
     if root {
         packages::find_at_with_ssh(destination, &commit, Some(&sources[0].id), custom_ssh)?;
     } else {

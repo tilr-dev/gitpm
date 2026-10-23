@@ -1,8 +1,7 @@
 //! Catalog client and author operations. The catalog stores metadata, never code.
 use crate::error::{Context, Error, Require, Result, ensure, fail};
 use crate::{
-    Manifest, identity, model::package_manifest, model::resolve_ref, packages, transport,
-    transport::git, valid_id,
+    Manifest, identity, model::package_manifest, model::resolve_ref, packages, transport, valid_id,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -964,7 +963,7 @@ pub fn register_package_report_with_options(
         custom_ssh,
     )?;
     let path = found.subdir().map(str::to_owned);
-    git(&repo, &["checkout", "--detach", &commit], custom_ssh)?;
+    transport::checkout_detached(&repo, &commit, false, custom_ssh)?;
     let manifest = package_manifest(&repo, path.as_deref())?;
     version_key(&manifest.version)?;
     let exported = hash_exported_dist(
@@ -1001,7 +1000,7 @@ fn source_packages(
     if packages::config_at_with_ssh(repo, "HEAD", custom_ssh)?.is_none() {
         return Ok((vec![None], Vec::new()));
     }
-    let head = git(repo, &["rev-parse", "HEAD"], custom_ssh)?;
+    let head = transport::object_id(repo, "HEAD", custom_ssh)?;
     let layout = packages::layout_at_with_ssh(repo, &head, custom_ssh)?.unwrap_or_default();
     let warnings = layout
         .problems
@@ -1172,7 +1171,7 @@ pub(crate) fn update_sources_with_ssh(
                     "multiple sources claim package {id}"
                 );
             }
-            git(&repo, &["checkout", "--detach", &tag.commit], custom_ssh)?;
+            transport::checkout_detached(&repo, &tag.commit, false, custom_ssh)?;
             let path = (!tag.path.is_empty()).then_some(tag.path);
             let exported = hash_exported_dist(
                 &repo,

@@ -503,7 +503,7 @@ mod tests {
     fn messages_name_no_cli_command() {
         let scaffold = include_str!("scaffold.rs");
         let readme_start = scaffold.find("let install = if release").unwrap();
-        let readme_end = scaffold.find("git(&directory, &[\"init\"").unwrap();
+        let readme_end = scaffold.find("transport::init_repo(&directory,").unwrap();
         let scaffold = format!("{}{}", &scaffold[..readme_start], &scaffold[readme_end..]);
         let sources = [
             ("auth.rs", include_str!("auth.rs")),
