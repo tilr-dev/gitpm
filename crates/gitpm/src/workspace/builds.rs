@@ -242,7 +242,7 @@ impl Manager {
                     ssh,
                 )?;
                 verify_catalog_release(&found.manifest, release, &output)?;
-                git(&repo, &["checkout", "--detach", &release.commit], ssh)?;
+                SystemTransport.checkout_detached(&repo, &release.commit, false, ssh)?;
             } else {
                 let cloned = clone_revision(txn, &Fetch::release(release), "build-to-git", ssh)?;
                 let (_, _, key) = place_clone(txn, state, &cloned, &release.source, ssh)?;
