@@ -121,7 +121,6 @@ pub(crate) trait Transport {
         custom_ssh: bool,
     ) -> Result<String>;
     fn git(&self, repo: &Path, args: &[&str], custom_ssh: bool) -> Result<String>;
-    fn git_raw(&self, repo: &Path, args: &[&str], custom_ssh: bool) -> Result<Vec<u8>>;
     fn git_with_input(
         &self,
         repo: &Path,
@@ -440,9 +439,6 @@ impl Transport for SystemTransport {
     fn git(&self, repo: &Path, args: &[&str], custom_ssh: bool) -> Result<String> {
         system::git(repo, args, custom_ssh)
     }
-    fn git_raw(&self, repo: &Path, args: &[&str], custom_ssh: bool) -> Result<Vec<u8>> {
-        system::git_raw(repo, args, custom_ssh)
-    }
     fn git_with_input(
         &self,
         repo: &Path,
@@ -523,9 +519,6 @@ mod network;
 
 pub(crate) fn git(repo: &Path, args: &[&str], custom_ssh: bool) -> Result<String> {
     SystemTransport.git(repo, args, custom_ssh)
-}
-pub(crate) fn git_raw(repo: &Path, args: &[&str], custom_ssh: bool) -> Result<Vec<u8>> {
-    SystemTransport.git_raw(repo, args, custom_ssh)
 }
 pub(crate) fn git_with_input(
     repo: &Path,
