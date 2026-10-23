@@ -191,13 +191,13 @@ fn output_with_input_within(
 }
 
 /// `git -C repo ARGS`, noninteractive. Returns trimmed stdout.
-pub fn git(repo: &Path, args: &[&str], custom_ssh: bool) -> Result<String> {
+pub(super) fn git(repo: &Path, args: &[&str], custom_ssh: bool) -> Result<String> {
     let output = git_raw(repo, args, custom_ssh)?;
     Ok(String::from_utf8(output)?.trim().to_owned())
 }
 
 /// Raw stdout (untrimmed) for NUL-separated output such as `status -z`.
-pub fn git_raw(repo: &Path, args: &[&str], custom_ssh: bool) -> Result<Vec<u8>> {
+pub(super) fn git_raw(repo: &Path, args: &[&str], custom_ssh: bool) -> Result<Vec<u8>> {
     let what = format!("git {}", args.join(" "));
     let output = output_within(
         git_command(repo, args, custom_ssh)?,
@@ -216,7 +216,12 @@ pub fn git_raw(repo: &Path, args: &[&str], custom_ssh: bool) -> Result<Vec<u8>> 
 }
 
 /// Run Git with library-owned input, never inherited user stdin. Input closes at EOF.
-pub fn git_with_input(repo: &Path, args: &[&str], input: Vec<u8>, custom_ssh: bool) -> Result<()> {
+pub(super) fn git_with_input(
+    repo: &Path,
+    args: &[&str],
+    input: Vec<u8>,
+    custom_ssh: bool,
+) -> Result<()> {
     let what = format!("git {}", args.join(" "));
     let output = output_with_input_within(
         git_command(repo, args, custom_ssh)?,

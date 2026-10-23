@@ -963,7 +963,7 @@ pub fn register_package_report_with_options(
         custom_ssh,
     )?;
     let path = found.subdir().map(str::to_owned);
-    transport::checkout_detached(&repo, &commit, custom_ssh)?;
+    transport::checkout_detached(&repo, &commit, false, custom_ssh)?;
     let manifest = package_manifest(&repo, path.as_deref())?;
     version_key(&manifest.version)?;
     let exported = hash_exported_dist(
@@ -1171,7 +1171,7 @@ pub(crate) fn update_sources_with_ssh(
                     "multiple sources claim package {id}"
                 );
             }
-            transport::checkout_detached(&repo, &tag.commit, custom_ssh)?;
+            transport::checkout_detached(&repo, &tag.commit, false, custom_ssh)?;
             let path = (!tag.path.is_empty()).then_some(tag.path);
             let exported = hash_exported_dist(
                 &repo,
