@@ -36,7 +36,7 @@ A catalog SHALL be a tree of JSON files: schema-1 directory links, a schema-1 pa
 - **AND** a failed generation leaves the existing index unchanged
 
 ### Requirement: Release record
-A release SHALL record manifest, source, commit, reference, files (every output file's SHA-256 and size), optional build {url, sha256}, and path for a package folder. Build is the preferred install source. Every release MUST have file hashes; Git output is selected by manifest dist, while build output is the archive root.
+Single source for the release record: a release SHALL record the whole `manifest`, `source`, `commit`, `reference`, `files` (SHA-256 and size of every file of the committed output folder selected by manifest dist, default dist/), optional `build` `{url, sha256}` (format only; installs come from Git) and, for a package of a multi-package repository, `path`. Every release MUST have file hashes.
 
 #### Scenario: Legacy release without hashes
 - **WHEN** a catalog holds an unscoped release of the v1 era without `files`
@@ -47,7 +47,7 @@ A release SHALL record manifest, source, commit, reference, files (every output 
 - **THEN** the release is refused with `catalog` instead of skipping verification
 
 #### Scenario: Declared folder hashes
-- **WHEN** a Git release selects its root or a custom output folder
+- **WHEN** a package selects its root or a custom output folder
 - **THEN** catalog generation and verification hash exactly the same committed files as deployment
 
 ### Requirement: Catalog generated from Git release tags
@@ -110,7 +110,7 @@ A published version SHALL NOT change; a rejected `catalog register` or `catalog 
 - **AND** the author is warned that `dist/vendor` is a Git submodule whose files will not be installed, probably a mistake; commit built files to dist instead of a submodule
 
 ### Requirement: Catalog locations and transport
-Catalogs SHALL be local folders, JSON paths or HTTPS URLs; plain HTTP is allowed only on loopback. Catalog requests SHALL follow no redirects. Build downloads SHALL use the same timeouts and 16 MiB streaming bound, with at most five HTTPS-only redirects. HTTP catalogs SHALL be read-only. The build read allowance for loopback HTTP SHALL NOT relax catalog register's HTTPS-only input.
+A catalog location SHALL be a local folder, a path to a `*.json` file (normally `catalog.json`), or an HTTP(S) URL. Remote catalogs MUST use HTTPS; `http://` SHALL be accepted only for loopback hosts (`localhost`, loopback IPs, not `localhost.evil.example` or `user@host`), else `invalid_argument`. Requests SHALL not follow redirects and SHALL refuse a body over 16 MiB, announced or not. HTTP catalogs SHALL be read-only. Verified by `catalog::locations_are_local_paths_or_http_urls`.
 
 #### Scenario: Failed request
 - **WHEN** a catalog request fails (connection, timeout, a status other than 200 or 404, a body over 16 MiB)
@@ -123,10 +123,6 @@ Catalogs SHALL be local folders, JSON paths or HTTPS URLs; plain HTTP is allowed
 #### Scenario: Plain HTTP to a remote host
 - **WHEN** the catalog is `http://pkg.example/catalog.json`
 - **THEN** every catalog command fails with `invalid_argument` ("catalog URL must use HTTPS (http:// only for localhost)")
-
-#### Scenario: Build redirect to plain HTTP
-- **WHEN** a build response redirects to a plain HTTP destination
-- **THEN** the request fails with http, even for loopback; catalog redirects remain refused
 
 ### Requirement: Writers are serialized and crash-safe
 Catalog writes SHALL hold an exclusive lock on `.<catalog name>.catalog.lock` beside the catalog, use unique temporary files, and clean up leftovers of dead writers; a lock or temp file left by a killed writer MUST NOT block later writers. Verified by `catalog_lock_blocks_writers_and_is_released_after_success` and `stale_catalog_lock_from_a_dead_writer_does_not_block`.
@@ -171,7 +167,7 @@ Single source for working without a catalog: a direct install SHALL record its s
 - **AND** `browse_catalog`, `catalog_release` and `install_from_catalog` fail with `invalid_argument` ("no catalog configured")
 
 ### Requirement: check compares installed packages with their catalog or origin
-check SHALL be read-only and report each installed package with status, message, source and problem, plus replacements and unsatisfied dependencies. Git installs compare by mode, verified protection, selected catalog, then origin. Build installs SHALL use the recorded catalog, including unverified catalogs, without a clone or origin query. Protection under a different selected catalog SHALL report other_catalog.
+`check(root, catalog)` (CLI, FFI) SHALL be read-only (no open, lock or creation) and report one row per installed package: by mode, else from its verified catalog for a protected package (`other_catalog` under another one), else from the catalog listing it, else its origin. Each row SHALL carry a status, message, `source` and `problem` (scenarios). The report SHALL list replacements and unsatisfied dependencies. Verified by `check::check_without_catalog_reads_each_origin`.
 
 #### Scenario: Statuses
 - **WHEN** `check` reports a package
@@ -206,7 +202,7 @@ check SHALL be read-only and report each installed package with status, message,
 - **THEN** the pinned row is `pinned` with its ref and needs no origin query, and the branch row compares the installed commit with the HEAD of `main` on the origin (`up_to_date`, or `update_available` when it moved); release-mode packages are compared by release as above
 
 #### Scenario: Protected package with a newer upstream
-- **WHEN** Git-installed `acme/greeter` 0.2.0 is protected by a verified catalog whose latest is 0.2.0 and its origin has the tag `acme/greeter@0.3.0`
+- **WHEN** `acme/greeter` 0.2.0 is protected by a verified catalog whose latest is 0.2.0 and its origin has the tag `acme/greeter@0.3.0`
 - **THEN** its row is `upstream_not_in_catalog` ("upstream 0.3.0 not in catalog", the origin's version in `origin_latest`), `latest` is the catalog's 0.2.0 and no update is offered, with or without the catalog given
 - **AND** this is covered by `workspace::check_compares_protected_packages_with_their_catalog`
 
@@ -228,12 +224,8 @@ check SHALL be read-only and report each installed package with status, message,
 - **WHEN** `gitpm check` finds an update available, or finds none
 - **THEN** the exit status is 0 in both cases; only a failed `check` exits 1
 
-#### Scenario: Check a build without a selected catalog
-- **WHEN** a build package is installed and check runs without a catalog option
-- **THEN** it compares the recorded catalog and never probes the unavailable Git source
-
 ### Requirement: Nothing is built, executed or uploaded
-gitpm SHALL only clone Git repositories, copy package output, download and verify builds, write local catalogs, and perform local author operations (repositories, commits, tags and remote settings). It SHALL never build, execute package code, push or upload. HTTP(S) catalog writes SHALL fail with invalid_argument and a command-neutral message.
+gitpm SHALL only clone Git repositories, copy their package dist folders, write local catalogs and, for the author operations (`init`, `commit`, `remote`, `fork`), create local repositories, commits, tags and remote settings; it SHALL never build, execute package code, push or upload. Writing a catalog to an HTTP(S) location SHALL fail with `invalid_argument` and a message that names no command.
 
 #### Scenario: Catalog publishing
 - **WHEN** the user runs `catalog update` against an HTTPS catalog location
@@ -294,18 +286,3 @@ For the local integration fixture containing one package with 200 committed rele
 #### Scenario: Two hundred local releases
 - **WHEN** the local fixture creates the 200 releases and runs `catalog update`, `catalog show`, `install-catalog` and direct `install` separately
 - **THEN** each command completes in less than 60 seconds, the generated catalog contains 200 versions, the overview reports `1.199.0` as latest and 200 versions, and both installation forms select `1.199.0`
-
-### Requirement: Safe prebuilt archive installation
-Builds SHALL be tar.gz with output at the root, verified against archive SHA-256 and the exact release file paths, sizes and hashes before commit. Extraction SHALL preserve executable bits, accept only regular files and directories, reject traversal, absolute/duplicate paths, links and special entries, and bound file data by declared sizes and structural data by the response limit. Package code SHALL never run.
-
-#### Scenario: Source unavailable
-- **WHEN** a release has a valid build but its source repository is unavailable
-- **THEN** install-catalog succeeds from the archive without a clone
-
-#### Scenario: Invalid archive or file hashes
-- **WHEN** archive bytes or extracted files do not match the release record
-- **THEN** installation fails with catalog and the workspace is unchanged
-
-#### Scenario: Unsafe archive entry
-- **WHEN** an archive contains a link, special file or unsafe path
-- **THEN** it is refused before commit and cannot write outside staging
