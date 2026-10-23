@@ -15,7 +15,7 @@ The transport module SHALL expose a Transport trait with typed methods for clone
 ## ADDED Requirements
 
 ### Requirement: Typed scaffold repository operations
-Scaffold authoring SHALL use typed transport operations without assembling Git command arguments in production callers. Repository initialization, configured identity checks, staging, commits, tags, index location, history and remote configuration SHALL preserve existing results, errors, SSH settings, execution bounds, hooks and signing behavior. All production library callers SHALL use transport facades that select the sole system implementation in one place. Test fixtures, unit and integration tests, and build scripts are outside this production-only boundary.
+Scaffold authoring SHALL use typed transport operations without assembling Git arguments. Operations SHALL preserve results, errors, SSH settings, execution bounds, identity, hooks, signing and rollback behavior. All production library callers SHALL use transport facades selecting the sole system implementation in one place. Test fixtures, unit and integration tests, and build scripts are outside this production-only boundary.
 
 #### Scenario: Initialize and release a package
 - **WHEN** an author initializes a repository or commits and tags a package version
