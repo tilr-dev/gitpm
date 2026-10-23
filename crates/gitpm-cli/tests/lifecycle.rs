@@ -960,6 +960,11 @@ fn split_catalog_hashes_and_direct_lookup_are_independent_of_directory_indexes()
     fs::remove_file(dir.join("namespaces/dan/catalog.json")).unwrap();
     let found = catalog::lookup(location, "dan/hello", None).unwrap();
     assert_eq!(found.build.as_ref().unwrap().sha256, "a".repeat(64));
+    // Exercise Git hash verification separately from the placeholder build metadata.
+    let found = catalog::Release {
+        build: None,
+        ..found
+    };
     let manager = Manager::open(&f.root).unwrap();
     let mut tampered = found.clone();
     tampered.files.get_mut("index.js").unwrap().sha256 = "0".repeat(64);
