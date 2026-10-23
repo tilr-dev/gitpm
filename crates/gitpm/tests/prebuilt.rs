@@ -447,21 +447,42 @@ fn links_special_entries_and_traversal_cannot_escape_staging() {
     let mut release = f.publish("1.0.0", b"one");
     let m = f.manager();
     let before = f.snapshot();
-    for (path, kind) in [
-        ("../escape", tar::EntryType::Regular),
-        ("/escape", tar::EntryType::Regular),
-        ("link", tar::EntryType::Symlink),
-        ("hardlink", tar::EntryType::Link),
-        ("device", tar::EntryType::Char),
-    ] {
+    let absolute = f.dir.join("escape-absolute").to_str().unwrap().to_owned();
+    let mut cases = vec![
+        ("link".to_owned(), tar::EntryType::Symlink),
+        ("hardlink".to_owned(), tar::EntryType::Link),
+        ("device".to_owned(), tar::EntryType::Char),
+    ];
+    // Scratch output is three levels below the workspace. Include paths reaching
+    // each ancestor through the fixture root, without escaping the fixture itself.
+    for path in [3, 4, 1, 2]
+        .into_iter()
+        .map(|depth| format!("{}escape", "../".repeat(depth)))
+        .chain([absolute])
+    {
+        cases.push((format!("{path}/"), tar::EntryType::Directory));
+        cases.push((path, tar::EntryType::Regular));
+    }
+    for (path, kind) in cases {
         let mut header = tar::Header::new_gnu();
-        header.as_mut_bytes()[..path.len()].copy_from_slice(path.as_bytes());
         header.set_size(0);
         header.set_mode(0o644);
         header.set_entry_type(kind);
-        header.set_cksum();
         let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         let mut tar = tar::Builder::new(encoder);
+        // Write raw names: append_data intentionally refuses unsafe paths.
+        // GNU long names keep absolute paths valid even with long temp prefixes.
+        if path.len() >= 100 {
+            let mut long_name = tar::Header::new_gnu();
+            let bytes = format!("{path}\0");
+            long_name.set_entry_type(tar::EntryType::GNULongName);
+            long_name.set_size(bytes.len() as u64);
+            long_name.set_cksum();
+            tar.append(&long_name, bytes.as_bytes()).unwrap();
+        } else {
+            header.as_mut_bytes()[..path.len()].copy_from_slice(path.as_bytes());
+        }
+        header.set_cksum();
         tar.append(&header, &[][..]).unwrap();
         let bytes = tar.into_inner().unwrap().finish().unwrap();
         release.build.as_mut().unwrap().sha256 = sha(&bytes);
@@ -471,10 +492,22 @@ fn links_special_entries_and_traversal_cannot_escape_staging() {
             .lock()
             .unwrap()
             .insert("/1.0.0.tar.gz".into(), bytes);
-        let error = m.install_from_catalog(ID, None).unwrap_err();
-        assert!(matches!(error.kind(), "catalog" | "unsupported"), "{error}");
-        assert_eq!(f.snapshot(), before);
-        assert!(!f.root.join("escape").exists());
+        let result = m.install_from_catalog(ID, None);
+        for base in [&f.root, &f.dir] {
+            for name in ["escape", "escape-absolute"] {
+                assert!(!base.join(name).exists(), "{path}: wrote outside staging");
+            }
+        }
+        let error = result.unwrap_err();
+        if kind.is_file() || kind.is_dir() {
+            assert!(
+                error.to_string().contains("unsafe build archive path"),
+                "{path}: {error}"
+            );
+        } else {
+            assert_eq!(error.kind(), "unsupported", "{path}: {error}");
+        }
+        assert_eq!(f.snapshot(), before, "{path}");
     }
 }
 

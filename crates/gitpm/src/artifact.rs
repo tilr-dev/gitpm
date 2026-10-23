@@ -151,3 +151,71 @@ pub(crate) fn download(release: &catalog::Release, destination: &Path) -> Result
     );
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Manifest, catalog::FileDigest, test_support::TempDir};
+    use std::{collections::BTreeMap, net::TcpListener, thread};
+
+    #[test]
+    fn traversal_is_refused_even_when_listed_in_release_files() {
+        let temp = TempDir::new("artifact-traversal");
+        let destination = temp.join("staging");
+        let name = "../escape";
+        let contents = b"escaped";
+        let mut header = tar::Header::new_gnu();
+        header.as_mut_bytes()[..name.len()].copy_from_slice(name.as_bytes());
+        header.set_size(contents.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        archive.append(&header, contents.as_slice()).unwrap();
+        let bytes = archive.into_inner().unwrap().finish().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/build.tar.gz", listener.local_addr().unwrap());
+        let hash = catalog::hex(&Sha256::digest(&bytes));
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0];
+            while !request.ends_with(b"\r\n\r\n") {
+                assert_eq!(stream.read(&mut byte).unwrap(), 1);
+                request.push(byte[0]);
+            }
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                bytes.len()
+            )
+            .unwrap();
+            stream.write_all(&bytes).unwrap();
+        });
+        // Catalog validation normally refuses unsafe files keys first. Call the
+        // extractor directly to prove its guard works independently of that layer.
+        let release = catalog::Release {
+            manifest: Manifest::default(),
+            source: String::new(),
+            commit: String::new(),
+            reference: String::new(),
+            files: BTreeMap::from([(
+                name.to_owned(),
+                FileDigest {
+                    sha256: catalog::hex(&Sha256::digest(contents)),
+                    size: contents.len() as u64,
+                },
+            )]),
+            build: Some(catalog::Build { url, sha256: hash }),
+            path: None,
+        };
+        let result = download(&release, &destination);
+        server.join().unwrap();
+        assert!(!temp.join("escape").exists(), "wrote outside staging");
+        let error = result.unwrap_err();
+        assert!(
+            error.to_string().contains("unsafe build archive path"),
+            "{error}"
+        );
+    }
+}
