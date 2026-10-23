@@ -70,6 +70,7 @@ A release SHALL record manifest, source, commit, reference, files (every output 
 - **WHEN** the sources file lists the same repository twice, also in another spelling of its path
 - **THEN** `catalog update` reads it once and indexes each release once
 
+
 #### Scenario: Submodule inside dist
 - **WHEN** the release contains a Git submodule at `dist/vendor`
 - **THEN** publication succeeds, hashing the staged export with an empty `vendor/` directory
@@ -101,6 +102,7 @@ A published version SHALL NOT change; a rejected `catalog register` or `catalog 
 #### Scenario: Invalid build metadata
 - **WHEN** `--build-url` is `http://…` or the SHA-256 is malformed
 - **THEN** catalog register fails with `catalog` ("build URL must use HTTPS" / "invalid build SHA-256") and no release is published (an empty top-level `catalog.json` may already have been created)
+
 
 #### Scenario: Submodule inside dist
 - **WHEN** the release contains a Git submodule at `dist/vendor`
