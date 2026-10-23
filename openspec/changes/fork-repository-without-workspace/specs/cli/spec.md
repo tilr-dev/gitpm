@@ -19,3 +19,7 @@ Before calling the library the CLI SHALL refuse only syntax: unknown or repeated
 #### Scenario: Flag position
 - **WHEN** the user runs `gitpm uninstall ID --force` or `gitpm uninstall --force ID`
 - **THEN** both behave the same: options may come before or after the positional arguments
+
+#### Scenario: Removed fork options have no side effects
+- **WHEN** `fork` receives `--replace`, `--version V` or `--force`
+- **THEN** it fails as a usage error before opening the workspace or creating the destination
