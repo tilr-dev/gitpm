@@ -58,7 +58,7 @@ def lifecycle_matches_library_contract(t: T):
     t.has((t.dist(HELLO) / "index.js").read_text(), "dan/hello 0.1.0")
     fork = t.root / "forks/hello"
     r = t.gitpm_ok("fork", HELLO, "--ns", "mine", "--into", fork)
-    t.has(r.out, "mine/hello forked from dan/hello (repository root)", "Next steps (or all at once: add --replace):")
+    t.has(r.out, "mine/hello forked from dan/hello (repository root)", "Next steps:")
     m = json.loads((fork / "plugin.json").read_text())
     t.eq((m["id"], m["forkOf"]["id"], m["forkOf"]["commit"], m["replaces"]),
          ("mine/hello", HELLO, rev(t, "0.1.0")["commit"], {"id": HELLO, "version": "0.1.0"}), "fork manifest")

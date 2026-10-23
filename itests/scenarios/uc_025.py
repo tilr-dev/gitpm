@@ -37,15 +37,20 @@ def missing_namespace(t: T):
     t.ok(not os.path.lexists(dest), f"{dest} not created")
 
 
-@case(fixture="g3_vendor_installed", spec=["fork-replacement/fork-requires-explicit-namespace-and-destination#version-without-replace"])
-def version_without_replace(t: T):
-    """--version is only valid with --replace."""
+@case(fixture="g3_vendor_installed", spec=["cli/option-validation#removed-fork-options-have-no-side-effects"])
+def removed_fork_options(t: T):
+    """Removed compound-operation flags fail before any files are created."""
     dest = t.root / "authors/none"
     before = t.snap(t.ws, t.root / "repos", git=True)
-    t.gitpm_err("fork", ID, "--ns", "author", "--into", dest, "--version", "2.0.0",
-                contains="--version is not valid for fork")
-    t.same(before, "workspace and author repositories")
-    t.ok(not os.path.lexists(dest), f"{dest} not created")
+    for options, message in [
+        (["--replace"], "unknown option: --replace"),
+        (["--version", "2.0.0"], "--version is not valid for fork"),
+        (["--force"], "--force is only valid with"),
+    ]:
+        t.gitpm_err("fork", ID, "--ns", "author", "--into", dest, *options,
+                     contains=message)
+        t.same(before, "workspace and author repositories")
+        t.ok(not os.path.lexists(dest), f"{dest} not created")
 
 
 @case(fixture="g3_vendor_installed", spec=["fork-replacement/fork-copies-an-installed-package"])

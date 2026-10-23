@@ -264,9 +264,9 @@ pub(crate) fn commit_package_with_ssh(
     })
 }
 
-/// Shared authoring transaction for a single commit or a multi-package fork release.
+/// Authoring transaction for package releases.
 /// `releases` are (package folder, `None` for the root package; version) pairs.
-/// `only` limits fork commits to package folders and allows an unchanged initial commit.
+/// `only` limits commits to package folders and allows an unchanged initial commit.
 pub(crate) fn release_packages(
     repo: &Path,
     releases: &[(Option<&str>, &str)],
