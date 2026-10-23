@@ -1994,7 +1994,7 @@ impl Manager {
                         matches!(target, Target::Recorded | Target::Release),
                         InvalidArgument,
                         "{id} is protected by catalog {location} and moves only to the versions \
-                     it lists; detach it to follow a ref or branch of its origin"
+                         it lists; detach it to follow a ref or branch of its origin"
                     );
                 }
                 if let (Target::Recorded, Mode::Pinned(reference), None) =
@@ -2024,7 +2024,7 @@ impl Manager {
                     p.clone.as_deref(),
                     "local commits detected; update would discard them",
                     "local branches, tags or stash hold unpublished work; \
-                 keep or remove them before updating",
+                     keep or remove them before updating",
                     true,
                     self.options.custom_ssh,
                 )?;
@@ -2072,7 +2072,7 @@ impl Manager {
                                 .map_err(|_| {
                                     Error::version_conflict(format!(
                                         "the origin no longer has the branch {branch} it follows; \
-                                 automatic update refused"
+                                         automatic update refused"
                                     ))
                                 })?;
                         (commit, p.mode.clone())
