@@ -155,7 +155,7 @@ pub(super) fn shared_head_moved(
     id: &str,
     custom_ssh: bool,
 ) -> Result<Option<LostWork>> {
-    let head = SystemTransport.head_commit(repo, custom_ssh)?;
+    let head = SystemTransport.object_id(repo, "HEAD", custom_ssh)?;
     if clone_users(state, key, "")
         .iter()
         .any(|(_, p)| p.current.commit == head)
@@ -244,7 +244,7 @@ pub(super) fn place_clone(
     }
     let key = repo_key(source);
     let relative = format!("repos/{key}");
-    let commit = SystemTransport.head_commit(&cloned.repo, custom_ssh)?;
+    let commit = SystemTransport.object_id(&cloned.repo, "HEAD", custom_ssh)?;
     let live = txn.root().join(&relative);
     let staged = if let Some(staged) = txn.staged_repo(&relative) {
         staged
@@ -316,7 +316,7 @@ pub(super) fn settle_head(
         return Ok(());
     }
     let repo = txn.staged_repo(relative).unwrap_or_else(|| live.clone());
-    let head = SystemTransport.head_commit(&repo, custom_ssh)?;
+    let head = SystemTransport.object_id(&repo, "HEAD", custom_ssh)?;
     if candidates.iter().any(|(_, p)| p.current.commit == head) {
         return Ok(());
     }
@@ -392,7 +392,7 @@ pub(super) fn removal(root: &Path, state: &State, id: &str, custom_ssh: bool) ->
     let others = clone_users(state, &key, id);
     if !others.is_empty() {
         // HEAD moves to another user's revision: commits only HEAD holds would be lost.
-        let head = SystemTransport.head_commit(&live, custom_ssh)?;
+        let head = SystemTransport.object_id(&live, "HEAD", custom_ssh)?;
         let keep: Vec<&str> = others
             .iter()
             .map(|(_, p)| p.current.commit.as_str())

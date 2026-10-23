@@ -95,7 +95,10 @@ fn boundary_detects_imports_aliases_and_qualified_calls() {
 /// must express operations through the typed transport API. Checking identifiers
 /// also catches imports renamed locally and inherited calls through `super::*`.
 #[derive(Default)]
-struct WorkspaceBoundary(Vec<String>);
+struct RawGitBoundary {
+    found: Vec<String>,
+    forbid_http: bool,
+}
 
 /// Macro bodies are arbitrary token trees, not Rust expressions. Visit their
 /// identifiers recursively without interpreting string literals as source code.
@@ -124,7 +127,7 @@ impl syn::parse::Parse for MacroIdentifiers {
         Ok(Self(identifiers))
     }
 }
-impl<'ast> Visit<'ast> for WorkspaceBoundary {
+impl<'ast> Visit<'ast> for RawGitBoundary {
     fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
         if !test_only(&item.attrs) {
             visit::visit_item_mod(self, item);
@@ -146,24 +149,26 @@ impl<'ast> Visit<'ast> for WorkspaceBoundary {
     }
     fn visit_ident(&mut self, ident: &'ast syn::Ident) {
         let name = ident.to_string();
-        if matches!(
-            name.as_str(),
-            "git" | "git_raw" | "git_with_input" | "http_get"
-        ) {
-            self.0.push(name);
+        if matches!(name.as_str(), "git" | "git_raw" | "git_with_input")
+            || (self.forbid_http && name == "http_get")
+        {
+            self.found.push(name);
         }
     }
 }
-fn workspace_violations(source: &str) -> Vec<String> {
-    let mut boundary = WorkspaceBoundary::default();
+fn raw_git_violations(source: &str, forbid_http: bool) -> Vec<String> {
+    let mut boundary = RawGitBoundary {
+        forbid_http,
+        ..Default::default()
+    };
     boundary.visit_file(&syn::parse_file(source).unwrap());
-    boundary.0
+    boundary.found
 }
 #[test]
 fn workspace_uses_typed_transport() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     for file in ["workspace.rs", "workspace/clones.rs", "workspace/fork.rs"] {
-        let found = workspace_violations(&fs::read_to_string(root.join(file)).unwrap());
+        let found = raw_git_violations(&fs::read_to_string(root.join(file)).unwrap(), true);
         assert!(found.is_empty(), "{file} uses raw transport: {found:?}");
     }
 }
@@ -179,14 +184,74 @@ fn workspace_boundary_detects_raw_calls_and_imports() {
         "fn run() { ensure!(crate::transport::git(repo, &[\"cat-file\", \"-t\", &tree], ssh).is_ok()); }",
         "fn run() { outer!({ inner!([git_raw()]); }); }",
     ] {
-        assert!(!workspace_violations(source).is_empty(), "{source}");
+        assert!(!raw_git_violations(source, true).is_empty(), "{source}");
     }
     assert!(
-        workspace_violations(
-            "#[cfg(test)] mod tests { use crate::test_support::git; fn setup() { git(); } }"
+        raw_git_violations(
+            "#[cfg(test)] mod tests { use crate::test_support::git; fn setup() { git(); } }",
+            true
         )
         .is_empty()
     );
-    assert!(workspace_violations("fn run() { SystemTransport.head_commit(); }").is_empty());
-    assert!(workspace_violations("fn run() { ensure!(ok, \"git\"); }").is_empty());
+    assert!(raw_git_violations("fn run() { SystemTransport.object_id(); }", true).is_empty());
+    assert!(raw_git_violations("fn run() { ensure!(ok, \"git\"); }", true).is_empty());
+}
+fn check_typed_tree(path: &Path) {
+    if path.is_dir() {
+        for entry in fs::read_dir(path).unwrap() {
+            check_typed_tree(&entry.unwrap().path());
+        }
+    } else if path.extension().is_some_and(|e| e == "rs") {
+        let found = raw_git_violations(&fs::read_to_string(path).unwrap(), false);
+        assert!(
+            found.is_empty(),
+            "{} uses raw Git outside transport: {found:?}",
+            path.display()
+        );
+    }
+}
+#[test]
+fn releases_and_catalog_use_typed_transport() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    for module in [
+        "releases",
+        "lost_work",
+        "catalog",
+        "check",
+        "model",
+        "packages",
+        "auth",
+    ] {
+        let file = src.join(format!("{module}.rs"));
+        let directory = src.join(module);
+        assert!(
+            file.exists() || directory.exists(),
+            "missing module {module}"
+        );
+        if file.exists() {
+            check_typed_tree(&file);
+        }
+        if directory.exists() {
+            check_typed_tree(&directory);
+        }
+    }
+}
+#[test]
+fn typed_boundary_detects_raw_calls_and_import_aliases() {
+    assert!(raw_git_violations("fn run() { backend.http_get(); }", false).is_empty());
+    for source in [
+        "use crate::transport::git as run;",
+        "use crate::transport::{git_raw as read};",
+        "fn run() { crate::transport::git_with_input(); }",
+        "fn run(t: impl Transport) { t.git(); }",
+    ] {
+        assert!(!raw_git_violations(source, false).is_empty(), "{source}");
+    }
+    assert!(
+        raw_git_violations(
+            "#[cfg(test)] mod tests { use crate::test_support::git; fn fixture() { git(); } }",
+            false
+        )
+        .is_empty()
+    );
 }

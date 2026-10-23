@@ -1,11 +1,8 @@
 //! Detection of local work that deleting or replacing a package clone would lose.
 use crate::error::{Error, Result};
-use crate::transport::{git, git_raw};
+use crate::transport;
 use serde::Serialize;
 use std::path::Path;
-
-/// Upper bound of listed unpublished commits per plan (the check itself is exact).
-const MAX_COMMITS: &str = "--max-count=50";
 
 /// One item of local work in a package clone.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -100,21 +97,7 @@ fn status_of(
     paths: &[&str],
     custom_ssh: bool,
 ) -> Result<Vec<LostWork>> {
-    let mut args = vec![
-        "--no-optional-locks",
-        "status",
-        "--porcelain=v1",
-        "-z",
-        "--untracked-files=all",
-    ];
-    if ignored {
-        args.push("--ignored");
-    }
-    if !paths.is_empty() {
-        args.push("--");
-        args.extend(paths);
-    }
-    let raw = git_raw(repo, &args, custom_ssh)?;
+    let raw = transport::status(repo, ignored, paths, custom_ssh)?;
     let mut items = Vec::new();
     let mut entries = raw.split(|b| *b == 0).filter(|e| !e.is_empty());
     while let Some(entry) = entries.next() {
@@ -159,7 +142,7 @@ pub(crate) fn require_head(
     message: &str,
     custom_ssh: bool,
 ) -> Result<()> {
-    let head = git(repo, &["rev-parse", "HEAD"], custom_ssh)?;
+    let head = transport::object_id(repo, "HEAD", custom_ssh)?;
     if head == recorded {
         return Ok(());
     }
@@ -194,20 +177,10 @@ pub(crate) fn record_origin_tags(repo: &Path, custom_ssh: bool) -> Result<()> {
 
 fn unpublished_refs(repo: &Path, prefix: &str, custom_ssh: bool) -> Result<Vec<(String, u64)>> {
     let mut result = Vec::new();
-    for name in git(
-        repo,
-        &["for-each-ref", "--format=%(refname)", prefix],
-        custom_ssh,
-    )?
-    .lines()
-    {
-        let count: u64 = git(
-            repo,
-            &["rev-list", "--count", name, "--not", "--remotes"],
-            custom_ssh,
-        )?
-        .parse()
-        .map_err(|e| Error::Git(format!("git rev-list --count: {e}")))?;
+    for name in transport::refs(repo, prefix, custom_ssh)?.lines() {
+        let count: u64 = transport::unpublished_count(repo, name, custom_ssh)?
+            .parse()
+            .map_err(|e| Error::Git(format!("git rev-list --count: {e}")))?;
         if count > 0 {
             let short = name.strip_prefix(prefix).unwrap_or(name).to_owned();
             result.push((short, count));
@@ -234,18 +207,10 @@ fn hidden(repo: &Path, check_remote: bool, custom_ssh: bool) -> Result<Vec<LostW
     };
     for (name, _) in tags {
         let reference = format!("refs/tags/{name}");
-        let object = git(repo, &["rev-parse", &reference], custom_ssh)?;
-        let fetched = git(
-            repo,
-            &[
-                "rev-parse",
-                "--verify",
-                "-q",
-                &format!("{ORIGIN_TAGS}{name}"),
-            ],
-            custom_ssh,
-        )
-        .is_ok_and(|seen| seen == object);
+        let object = transport::object_id(repo, &reference, custom_ssh)?;
+        let fetched =
+            transport::verified_object_id(repo, &format!("{ORIGIN_TAGS}{name}"), custom_ssh)
+                .is_ok_and(|seen| seen == object);
         if !fetched
             && !published
                 .lines()
@@ -254,7 +219,7 @@ fn hidden(repo: &Path, check_remote: bool, custom_ssh: bool) -> Result<Vec<LostW
             items.push(LostWork::UnpublishedTag { name });
         }
     }
-    for entry in git(repo, &["stash", "list"], custom_ssh)?.lines() {
+    for entry in transport::stashes(repo, custom_ssh)?.lines() {
         items.push(LostWork::Stash {
             entry: entry.into(),
         });
@@ -306,7 +271,7 @@ pub(crate) fn detect(
     custom_ssh: bool,
 ) -> Result<Vec<LostWork>> {
     let mut items = status(repo, custom_ssh)?;
-    let head = git(repo, &["rev-parse", "HEAD"], custom_ssh)?;
+    let head = transport::object_id(repo, "HEAD", custom_ssh)?;
     if let Some(recorded) = recorded
         && head != recorded
     {
@@ -315,16 +280,11 @@ pub(crate) fn detect(
             recorded: recorded.into(),
         });
     }
-    let log = git(
+    let log = transport::head_history(
         repo,
-        &[
-            "log",
-            MAX_COMMITS,
-            "--format=%H%x09%s",
-            "HEAD",
-            "--not",
-            "--remotes",
-        ],
+        transport::HeadHistory::Unpublished {
+            exclude_tags: false,
+        },
         custom_ssh,
     )?;
     for line in log.lines() {
@@ -341,17 +301,9 @@ pub(crate) fn detect(
 /// Commits reachable from HEAD that no remote-tracking branch and no tag contains:
 /// work only this clone has (a restore would record it as if it were published).
 pub(crate) fn unpublished_head_commits(repo: &Path, custom_ssh: bool) -> Result<Vec<LostWork>> {
-    Ok(git(
+    Ok(transport::head_history(
         repo,
-        &[
-            "log",
-            MAX_COMMITS,
-            "--format=%H%x09%s",
-            "HEAD",
-            "--not",
-            "--remotes",
-            "--tags",
-        ],
+        transport::HeadHistory::Unpublished { exclude_tags: true },
         custom_ssh,
     )?
     .lines()
@@ -372,27 +324,20 @@ pub(crate) fn unreferenced_head_commits(
     keep: &[&str],
     custom_ssh: bool,
 ) -> Result<Vec<LostWork>> {
-    let mut args = vec![
-        "log",
-        MAX_COMMITS,
-        "--format=%H%x09%s",
-        "HEAD",
-        "--not",
-        "--branches",
-        "--tags",
-        "--remotes",
-    ];
-    args.extend(keep.iter().copied());
-    Ok(git(repo, &args, custom_ssh)?
-        .lines()
-        .map(|line| {
-            let (commit, summary) = line.split_once('\t').unwrap_or((line, ""));
-            LostWork::UnpublishedCommit {
-                commit: commit.into(),
-                summary: summary.into(),
-            }
-        })
-        .collect())
+    Ok(transport::head_history(
+        repo,
+        transport::HeadHistory::Unreferenced { keep },
+        custom_ssh,
+    )?
+    .lines()
+    .map(|line| {
+        let (commit, summary) = line.split_once('\t').unwrap_or((line, ""));
+        LostWork::UnpublishedCommit {
+            commit: commit.into(),
+            summary: summary.into(),
+        }
+    })
+    .collect())
 }
 
 /// `LocalChanges` with the message of the most important category (as before the split).

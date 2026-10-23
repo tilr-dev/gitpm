@@ -767,8 +767,9 @@ fn fork_base(repo: &Path, sources: &[Source], custom_ssh: bool) -> Result<String
         .find(|candidate| {
             sources.iter().all(|s| {
                 s.commit == *candidate
-                    || SystemTransport.require_ancestor(repo, &s.commit, candidate, custom_ssh)
-                    .is_ok()
+                    || SystemTransport
+                        .require_ancestor(repo, &s.commit, candidate, custom_ssh)
+                        .is_ok()
             })
         })
         .require(
@@ -865,7 +866,7 @@ fn new_fork(
     // A new repository of gitpm's: user hooks are not run.
     SystemTransport.stage_all(destination, custom_ssh)?;
     SystemTransport.commit_without_hooks(destination, &message, custom_ssh)?;
-    let commit = SystemTransport.head_commit(destination, custom_ssh)?;
+    let commit = SystemTransport.object_id(destination, "HEAD", custom_ssh)?;
     if root {
         packages::find_at_with_ssh(destination, &commit, Some(&sources[0].id), custom_ssh)?;
     } else {

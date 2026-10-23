@@ -1967,11 +1967,17 @@ impl Manager {
                 let Mode::Branch(branch) = &mode else {
                     unreachable!()
                 };
-                SystemTransport.require_ancestor(&repo, &p.current.commit, &next_commit, self.options.custom_ssh)
-                .context(
-                    Error::version_conflict,
-                    format!("history of {branch} diverged; automatic update refused"),
-                )?;
+                SystemTransport
+                    .require_ancestor(
+                        &repo,
+                        &p.current.commit,
+                        &next_commit,
+                        self.options.custom_ssh,
+                    )
+                    .context(
+                        Error::version_conflict,
+                        format!("history of {branch} diverged; automatic update refused"),
+                    )?;
             }
             // The package can move to another folder (or into a multi-package layout).
             let path = updated_package(&repo, &next_commit, id, ssh)?
@@ -2248,7 +2254,7 @@ impl Manager {
         let live = installed_repo(txn.root(), id, &record)?;
         clean(&live, id, self.options.custom_ssh)?;
         let recorded = record.current.commit.clone();
-        let head = SystemTransport.head_commit(&live, self.options.custom_ssh)?;
+        let head = SystemTransport.object_id(&live, "HEAD", self.options.custom_ssh)?;
         // Commits only this clone has are lost work in every mode.
         let unpublished = lost_work::unpublished_head_commits(&live, self.options.custom_ssh)?;
         if !unpublished.is_empty() {
@@ -2772,7 +2778,7 @@ fn clone_revision(txn: &Txn, fetch: &Fetch, name: &str, custom_ssh: bool) -> Res
                 // An ID the repository does not have: say which packages it has.
                 Err(Error::NoReleases(message)) => {
                     if let Some(id) = fetch.package {
-                        let head = SystemTransport.head_commit(&repo, custom_ssh)?;
+                        let head = SystemTransport.object_id(&repo, "HEAD", custom_ssh)?;
                         packages::find_at_with_ssh(&repo, &head, Some(id), custom_ssh)?;
                     }
                     return Err(Error::NoReleases(message));
@@ -6039,7 +6045,7 @@ mod tests {
     fn a_submodule_in_dist_deploys_an_empty_folder() {
         let (ws, m) = Ws::installed("dan/demo1");
         let bad = ws.other_author("bad", "dan/bad");
-        let sha = SystemTransport.head_commit(&bad.path, false).unwrap();
+        let sha = SystemTransport.object_id(&bad.path, "HEAD", false).unwrap();
         fixture_git(
             &bad.path,
             &[
