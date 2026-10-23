@@ -1,5 +1,5 @@
 //! Exercise the typed local interface against real, isolated repositories.
-use super::{HeadHistory, SystemTransport, Transport};
+use super::{CommitScope, HeadHistory, SystemTransport, Transport};
 use crate::test_support::{TempDir, git};
 use std::{fs, path::Path};
 
@@ -196,6 +196,63 @@ fn typed_refs_and_history_preserve_reachability() {
     fs::write(root.join("package/data"), "stashed").unwrap();
     git(repo, &["stash", "push", "-qm", "saved"]);
     assert!(!transport.stashes(repo, false).unwrap().is_empty());
+}
+
+#[test]
+fn typed_commit_paths_preserves_unrelated_changes() {
+    assert_selected_commit_preserves_unrelated_changes(CommitScope::Paths(&["package/data"]));
+}
+
+#[test]
+fn typed_commit_only_preserves_unrelated_changes() {
+    assert_selected_commit_preserves_unrelated_changes(CommitScope::Only(&["package/data"]));
+}
+
+fn assert_selected_commit_preserves_unrelated_changes(scope: CommitScope<'_>) {
+    let root = repository();
+    let repo = root.path();
+    fs::write(root.join("unrelated"), "original\n").unwrap();
+    git(repo, &["add", "unrelated"]);
+    git(repo, &["commit", "-qm", "unrelated baseline"]);
+    fs::write(root.join("unrelated"), "staged\n").unwrap();
+    git(repo, &["add", "unrelated"]);
+    fs::write(root.join("unrelated"), "unstaged\n").unwrap();
+    fs::write(root.join("package/data"), "selected staged\n").unwrap();
+    git(repo, &["add", "package/data"]);
+    // Both path scopes commit the selected working tree, even if its index differs.
+    fs::write(root.join("package/data"), "selected working tree\n").unwrap();
+
+    let transport: &dyn Transport = &SystemTransport;
+    transport
+        .commit(repo, "selected change", scope, false)
+        .unwrap();
+
+    assert_eq!(fixture(repo, &["show", "HEAD:unrelated"]), "original");
+    assert_eq!(fixture(repo, &["show", ":unrelated"]), "staged");
+    assert_eq!(
+        fs::read_to_string(root.join("unrelated")).unwrap(),
+        "unstaged\n"
+    );
+    assert_eq!(
+        fixture(repo, &["diff", "--cached", "--name-only"]),
+        "unrelated"
+    );
+    assert_eq!(fixture(repo, &["diff", "--name-only"]), "unrelated");
+    assert_eq!(
+        fixture(repo, &["show", "HEAD:package/data"]),
+        "selected working tree"
+    );
+    assert_eq!(
+        fixture(repo, &["show", ":package/data"]),
+        "selected working tree"
+    );
+    assert_eq!(
+        fixture(
+            repo,
+            &["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"]
+        ),
+        "package/data"
+    );
 }
 
 #[test]

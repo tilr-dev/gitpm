@@ -92,8 +92,8 @@ fn boundary_detects_imports_aliases_and_qualified_calls() {
 }
 
 /// Production callers must express operations through the typed transport API.
-/// Checking identifiers
-/// also catches imports renamed locally and inherited calls through `super::*`.
+/// Checking identifiers also catches imports renamed locally and inherited calls
+/// through `super::*`.
 #[derive(Default)]
 struct RawGitBoundary {
     found: Vec<String>,
