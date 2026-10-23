@@ -27,6 +27,7 @@ use std::{
     sync::{Mutex, MutexGuard},
 };
 
+mod builds;
 mod clones;
 mod fork;
 use clones::{
@@ -1017,6 +1018,9 @@ impl Manager {
         activation: Activation,
     ) -> Result<InstallResult> {
         catalog::validate_release(release, &release.manifest.id, &release.manifest.version)?;
+        if release.build.is_some() {
+            return self.install_build_release(release, origin, activation);
+        }
         self.install_checked(Fetch::release(release), origin, activation)
     }
     /// Look up `id` (latest if `version` is `None`) in the configured catalog and install
@@ -1242,16 +1246,27 @@ impl Manager {
                     Ok(release)
                 })
                 .map_err(|error| error.with_package(id))?;
-            let result = install_pulled(
-                txn,
-                state,
-                id,
-                &release,
-                &format!("dependency-{number}"),
-                origin.clone(),
-                enabled,
-                self.options.custom_ssh,
-            )?;
+            let result = if release.build.is_some() {
+                builds::adopt_build(
+                    txn,
+                    state,
+                    &release,
+                    Some(catalog::canonical_location(location)?),
+                    origin.clone(),
+                    enabled,
+                )?
+            } else {
+                install_pulled(
+                    txn,
+                    state,
+                    id,
+                    &release,
+                    &format!("dependency-{number}"),
+                    origin.clone(),
+                    enabled,
+                    self.options.custom_ssh,
+                )?
+            };
             installed.push(InstalledDependency {
                 id: result.id,
                 source: result.source,
@@ -1336,6 +1351,9 @@ impl Manager {
         // One scratch copy per clone: the packages of a multi-package source share it.
         let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for (id, installed) in &state.packages {
+            if installed.build.is_some() {
+                continue;
+            }
             groups
                 .entry(installed.clone_folder(id))
                 .or_default()
@@ -1373,6 +1391,12 @@ impl Manager {
             .values()
             .find_map(|p| p.catalog.clone())
             .filter(|location| catalog::is_verified(location).unwrap_or(false))
+            .or_else(|| {
+                state
+                    .packages
+                    .values()
+                    .find_map(|p| p.build.as_ref().and_then(|b| b.location.clone()))
+            })
             .or_else(|| self.options.catalog.clone());
         let catalog = dependency_catalog.as_deref();
         // Broken release tags passed over, for every installed package.
@@ -1382,6 +1406,39 @@ impl Manager {
             .iter()
             .map(|(id, p)| (id.clone(), p.current.version.clone()))
             .collect();
+        for (id, p) in &state.packages {
+            let Some(build) = &p.build else {
+                continue;
+            };
+            let current = deps::version(&p.current.version)?;
+            let mut versions = BTreeMap::from([(current.clone(), build.release.clone())]);
+            let mut newest = current;
+            if !broken.contains_key(id) {
+                let location = build
+                    .location
+                    .as_deref()
+                    .require(Error::InvalidArgument, check::NO_CATALOG)?;
+                match builds::candidates(p, id, location) {
+                    Ok(found) => {
+                        for release in found {
+                            let key = deps::version(&release.manifest.version)?;
+                            newest = newest.max(key.clone());
+                            versions.insert(key, release);
+                        }
+                    }
+                    Err(error) => {
+                        reasons.insert(
+                            id.clone(),
+                            UnchangedReason::CatalogUnavailable {
+                                reason: error.to_string(),
+                            },
+                        );
+                    }
+                }
+            }
+            latest.insert(id.clone(), newest.to_string());
+            candidates.insert(id.clone(), versions);
+        }
         for (number, (relative, ids)) in groups.iter().enumerate() {
             let first = &ids[0];
             let key = state.packages[first].clone.as_deref();
@@ -1659,6 +1716,16 @@ impl Manager {
                 if release.commit == installed.current.commit {
                     continue;
                 }
+                if installed.build.is_some() || release.build.is_some() {
+                    let location = installed
+                        .catalog
+                        .clone()
+                        .or_else(|| installed.build.as_ref().and_then(|b| b.location.clone()))
+                        .or_else(|| dependency_catalog.clone());
+                    plan.updates
+                        .push(self.apply_catalog_revision(txn, state, id, release, location)?);
+                    continue;
+                }
                 let relative = installed.clone_folder(id);
                 let repo = match txn.staged_repo(&relative) {
                     Some(staged) => staged,
@@ -1734,6 +1801,17 @@ impl Manager {
                     catalog.require(Error::InvalidArgument, check::NO_CATALOG)?,
                     state,
                 )?;
+                if release.build.is_some() {
+                    plan.installs.push(builds::adopt_build(
+                        txn,
+                        state,
+                        release,
+                        dependency_catalog.clone(),
+                        origin,
+                        active_new.contains(id),
+                    )?);
+                    continue;
+                }
                 plan.installs.push(install_pulled(
                     txn,
                     state,
@@ -1805,8 +1883,42 @@ impl Manager {
                 .get(id)
                 .cloned()
                 .ok_or_else(|| Error::NotInstalled { id: id.into() })?;
+            if !options.detach && matches!(target, Target::Recorded | Target::Release) {
+                let location = p.catalog.clone().or_else(|| p.build.as_ref().and_then(|b| b.location.clone()));
+                if let Some(location) = location {
+                    let listed = builds::candidates(&p, id, &location)?;
+                    if let Some(release) = listed.last().filter(|r| r.build.is_some() || p.build.is_some()) {
+                        if p.build.is_none() {
+                            let live = installed_repo(txn.root(), id, &p)?;
+                            guard_clone(&live, state, id, p.clone.as_deref(), "local commits detected", "unpublished work blocks update", true, ssh)?;
+                        }
+                        self.check_change(txn, state, id, &release.manifest, Some(&location))?;
+                        let result = self.apply_catalog_revision(txn, state, id, release, Some(location))?;
+                        if state.is_active(id) { deps::refuse_inactive_dependencies(state, id, "update", false)?; }
+                        return Ok(result);
+                    }
+                    if p.build.is_some() {
+                        return Ok(RevisionChange { id: id.into(), from: p.current.clone(), to: p.current.clone(), changed: false, major: false, warnings: Vec::new(), skipped: Vec::new(), unchanged_reason: None, mode: p.mode.clone(), detached: None, dist: DistSync::default() });
+                    }
+                }
+            }
+            let transitioning_build = p.build.is_some();
+            if transitioning_build {
+                let relative = p.clone_folder(id);
+                if let Ok(live) = installed_repo(txn.root(), id, &p) {
+                    builds::guard_retained(&live, id, ssh)?;
+                    txn.repo(&relative, &live)?;
+                } else {
+                    let repo = txn.scratch("build-transition");
+                    fs::create_dir_all(repo.parent().unwrap())?;
+                    crate::transport::clone_repo(repo.parent().unwrap(), &p.source, "build-transition", ssh)?;
+                    lost_work::record_origin_tags(&repo, ssh)?;
+                    git(&repo, &["checkout", "--detach", &p.current.commit], ssh)?;
+                    txn.add_repo(&relative, &repo)?;
+                }
+            }
             let detached = if options.detach {
-                let location = p.catalog.clone().ok_or_else(|| {
+                let location = p.catalog.clone().or_else(|| p.build.as_ref().and_then(|b| b.location.clone())).ok_or_else(|| {
                     Error::InvalidArgument(format!(
                         "{id} is not protected by a catalog; there is nothing to detach"
                     ))
@@ -1816,7 +1928,7 @@ impl Manager {
             } else {
                 None
             };
-            let protected = p.catalog.clone().filter(|_| detached.is_none());
+            let protected = p.catalog.clone().filter(|_| detached.is_none() && !transitioning_build);
             if let Some(location) = &protected {
                 ensure!(
                     matches!(target, Target::Recorded | Target::Release),
@@ -1848,10 +1960,12 @@ impl Manager {
                 ));
             }
             let relative = p.clone_folder(id);
-            let live = installed_repo(txn.root(), id, &p)?;
+            let live = txn.staged_repo(&relative).unwrap_or(installed_repo(txn.root(), id, &p).or_else(|e| if transitioning_build { Ok(txn.root().join(&relative)) } else { Err(e) })?);
+            let mut guard_state = state.clone();
+            if transitioning_build { guard_state.packages.get_mut(id).unwrap().current.commit = git(&live, &["rev-parse", "HEAD"], ssh)?; }
             guard_clone(
                 &live,
-                state,
+                &guard_state,
                 id,
                 p.clone.as_deref(),
                 "local commits detected; update would discard them",
@@ -1951,10 +2065,10 @@ impl Manager {
             let following = matches!(&mode, Mode::Branch(_))
                 && mode == p.mode
                 && !matches!(target, Target::Ref(_));
-            if next_commit == p.current.commit {
+            if next_commit == p.current.commit && !transitioning_build {
                 // A new mode (or a detach) is recorded even when the revision stays: that
                 // is a change.
-                if mode == p.mode && detached.is_none() {
+                if mode == p.mode && detached.is_none() && !transitioning_build {
                     return Ok(RevisionChange {
                         warnings,
                         ..unchanged(None, skipped)
@@ -2023,6 +2137,9 @@ impl Manager {
             let next = revision(&repo, &m, self.options.custom_ssh)?;
             let entry = state.packages.get_mut(id).unwrap();
             entry.previous = Some(p.current.with_mode(&p.mode));
+            entry.previous_build = p.build.clone();
+            entry.build = None;
+            if transitioning_build { entry.catalog = None; }
             entry.current = next.clone();
             entry.path = path.clone();
             entry.mode = mode.clone();
@@ -2068,11 +2185,32 @@ impl Manager {
                     id: id.into(),
                     commit: None,
                 })?;
+            if let Some(build) = &p.previous_build {
+                let cached = txn.root().join(crate::artifact::relative(id, build));
+                if !cached.is_dir() { return Err(Error::NoPreviousVersion { id: id.into(), commit: Some(previous.commit.clone()) }); }
+                if p.build.is_none() {
+                    let live = installed_repo(txn.root(), id, &p)?;
+                    guard_clone(&live, state, id, p.clone.as_deref(), "local commits detected", "unpublished work blocks rollback", false, ssh)?;
+                }
+                self.check_change(txn, state, id, &build.release.manifest, None)?;
+                let entry = state.packages.get_mut(id).unwrap();
+                entry.previous = Some(p.current.with_mode(&p.mode));
+                entry.previous_build = p.build.clone();
+                entry.current = previous.without_mode();
+                entry.mode = previous.mode.clone();
+                entry.path = build.release.path.clone();
+                entry.build = Some(build.clone());
+                entry.adopt(&build.release.manifest);
+                if state.is_active(id) { builds::deploy_build(txn, id, build)?; }
+                return Ok(RevisionChange { id: id.into(), from: p.current, to: previous.without_mode(), changed: true, major: false, warnings: Vec::new(), skipped: Vec::new(), unchanged_reason: None, mode: previous.mode.clone(), detached: None, dist: DistSync::default() });
+            }
             let relative = p.clone_folder(id);
             let live = installed_repo(txn.root(), id, &p)?;
+            let mut guard_state = state.clone();
+            if p.build.is_some() { guard_state.packages.get_mut(id).unwrap().current = previous.without_mode(); }
             guard_clone(
                 &live,
-                state,
+                &guard_state,
                 id,
                 p.clone.as_deref(),
                 "local commits detected",
@@ -2106,6 +2244,8 @@ impl Manager {
             // Revision and mode swap together.
             let entry = state.packages.get_mut(id).unwrap();
             entry.previous = Some(p.current.with_mode(&p.mode));
+            entry.previous_build = p.build.clone();
+            entry.build = None;
             entry.current = previous.without_mode();
             entry.mode = previous.mode.clone();
             entry.path = path.clone();
@@ -2201,6 +2341,10 @@ impl Manager {
             }
             let installed = state.packages.remove(id).unwrap();
             state.replacements.retain(|_, fork| fork != id);
+            if installed.build.is_some() {
+                state.forgotten.insert(id.to_owned(), installed);
+                return Ok(true);
+            }
             match installed_repo(txn.root(), id, &installed) {
                 // Nothing to restore: only the record (and dist) are dropped.
                 Err(Error::RepositoryNotFound { .. }) => {
@@ -2253,6 +2397,13 @@ impl Manager {
         id: &str,
         record: Installed,
     ) -> Result<InstallResult> {
+        if record.build.is_some() {
+            deploy_committed(txn, id, &record, self.options.custom_ssh)?;
+            let result = builds::build_result(id, &record, false);
+            state.forgotten.remove(id);
+            state.packages.insert(id.into(), record);
+            return Ok(result);
+        }
         let relative = record.clone_folder(id);
         // The clone is gone: `repository_not_found`, like a restore without a record.
         let live = installed_repo(txn.root(), id, &record)?;
@@ -2387,6 +2538,10 @@ impl Manager {
         let mut deletes = Vec::new();
         if let Some(repo) = &removal.repo {
             deletes.push(repo.to_string_lossy().into_owned());
+        }
+        let cache = self.root.join("builds").join(id);
+        if cache.is_dir() {
+            deletes.push(cache.to_string_lossy().into_owned());
         }
         let dist = self.root.join("dist").join(id);
         if dist.exists() {
@@ -2591,6 +2746,21 @@ impl Manager {
 /// these with [`Manager::sync_dist_plan`]); any other failure fails the operation. Cheap:
 /// one listing of `dist/`, and Git reads only for the packages deployed.
 fn settle_dist(txn: &mut Txn, before: &State, after: &State, custom_ssh: bool) -> Result<()> {
+    for (id, old) in before.packages.iter().chain(&before.forgotten) {
+        let next = after.packages.get(id).or_else(|| after.forgotten.get(id));
+        for build in old.build.iter().chain(&old.previous_build) {
+            let relative = crate::artifact::relative(id, build);
+            let keep = next.is_some_and(|p| {
+                p.build
+                    .iter()
+                    .chain(&p.previous_build)
+                    .any(|b| crate::artifact::relative(id, b) == relative)
+            });
+            if !keep {
+                txn.delete_repo(&relative)?;
+            }
+        }
+    }
     let drift = dist_drift(txn.root(), after, custom_ssh)?;
     for id in txn.staged_dists().into_iter().chain(drift.removed) {
         if !after.is_active(&id) {
@@ -2611,6 +2781,9 @@ fn settle_dist(txn: &mut Txn, before: &State, after: &State, custom_ssh: bool) -
 /// Stage `dist/<id>` from the package's `dist/` at its installed commit (see
 /// [`Txn::deploy`]); the clone must exist.
 fn deploy_committed(txn: &mut Txn, id: &str, p: &Installed, custom_ssh: bool) -> Result<()> {
+    if let Some(build) = &p.build {
+        return builds::deploy_build(txn, id, build);
+    }
     let relative = p.clone_folder(id);
     if txn.staged_repo(&relative).is_none() {
         installed_repo(txn.root(), id, p)?;
@@ -2698,6 +2871,18 @@ fn dist_drift(root: &Path, state: &State, custom_ssh: bool) -> Result<DistSync> 
                 reason: format!("dist/{ns} is not a folder"),
                 clone_missing: false,
             });
+            continue;
+        }
+        if let Some(build) = &p.build {
+            if root.join(crate::artifact::relative(id, build)).is_dir() {
+                plan.deployed.push(id.clone());
+            } else {
+                plan.skipped.push(SkippedDist {
+                    id: id.clone(),
+                    reason: "cached build missing".into(),
+                    clone_missing: false,
+                });
+            }
             continue;
         }
         let commit = format!("{}^{{commit}}", p.current.commit);

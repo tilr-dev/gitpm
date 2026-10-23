@@ -26,6 +26,7 @@ pub(crate) trait Transport {
     fn ls_remote(&self, source: &str, custom_ssh: bool, start_error: &str) -> Result<LsRemote>;
     fn ls_remote_refs(&self, source: &str, custom_ssh: bool) -> Result<RemoteRefs>;
     fn http_get(&self, url: &str) -> Result<Option<Vec<u8>>>;
+    fn artifact_get(&self, url: &str) -> Result<Option<Vec<u8>>>;
     fn clone_repo(
         &self,
         parent: &Path,
@@ -64,6 +65,9 @@ impl Transport for SystemTransport {
     }
     fn http_get(&self, url: &str) -> Result<Option<Vec<u8>>> {
         system::http_get(url)
+    }
+    fn artifact_get(&self, url: &str) -> Result<Option<Vec<u8>>> {
+        system::artifact_get(url)
     }
     fn clone_repo(
         &self,
@@ -160,4 +164,8 @@ pub(crate) fn remote_tags(repo: &Path, remote: &str, custom_ssh: bool) -> Result
 
 pub(crate) fn set_remote_head(repo: &Path, remote: &str, custom_ssh: bool) -> Result<()> {
     SystemTransport.set_remote_head(repo, remote, custom_ssh)
+}
+
+pub(crate) fn artifact_get(url: &str) -> Result<Option<Vec<u8>>> {
+    SystemTransport.artifact_get(url)
 }

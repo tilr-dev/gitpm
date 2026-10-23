@@ -48,3 +48,5 @@ pub use workspace::{
     ReplacementPlan, ResumeFailure, RevisionChange, SkippedDist, Target, Unchanged,
     UnchangedReason, UninstallPlan, UpdateAllPlan, UpdateOptions,
 };
+
+mod artifact;

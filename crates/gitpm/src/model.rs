@@ -238,8 +238,20 @@ impl Mode {
     }
 }
 
+/// Catalog build metadata needed for deployment, updates and offline rollback.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct BuildInstall {
+    pub location: Option<String>,
+    pub release: crate::catalog::Release,
+}
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Installed {
+    /// Verified build provenance; distinct from catalog protection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<BuildInstall>,
+    /// Provenance of the previous revision, retained for offline rollback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_build: Option<BuildInstall>,
     pub source: String,
     pub current: Revision,
     pub previous: Option<Revision>,
@@ -358,6 +370,23 @@ impl State {
             .map_err(|e| Error::InvalidData(format!("invalid workspace state.json: {e}")))?;
         for (id, p) in state.packages.iter().chain(&state.forgotten) {
             valid_id(id)?;
+            for (build, revision) in p
+                .build
+                .iter()
+                .map(|b| (b, Some(&p.current)))
+                .chain(p.previous_build.iter().map(|b| (b, p.previous.as_ref())))
+            {
+                let release = &build.release;
+                ensure!(
+                    release.build.is_some()
+                        && revision
+                            .is_some_and(|r| r.version == release.manifest.version
+                                && r.commit == release.commit),
+                    InvalidData,
+                    "invalid build revision of {id}"
+                );
+                crate::catalog::validate_release(release, id, &release.manifest.version)?;
+            }
             if let Some(key) = &p.clone {
                 valid_clone_key(key)?;
             }
