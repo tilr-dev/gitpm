@@ -45,3 +45,4 @@ Installed records SHALL hold source, current/previous revisions, enabled, mode, 
 #### Scenario: Previous build provenance
 - **WHEN** a build revision is updated to a Git revision
 - **THEN** previous_build retains the release metadata and catalog location for offline rollback
+

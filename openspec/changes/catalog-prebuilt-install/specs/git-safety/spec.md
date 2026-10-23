@@ -60,3 +60,4 @@ Transport SHALL expose typed clone, fetch, remote HEAD, remote refs, read-only p
 #### Scenario: Build download through the interface
 - **WHEN** a package needs a build archive
 - **THEN** the library invokes the typed artifact operation and subprocesses remain confined to transport
+

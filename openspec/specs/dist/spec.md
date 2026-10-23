@@ -22,7 +22,7 @@ The deployed folder `dist/<namespace>/<name>/` SHALL exist exactly when the pack
 - **THEN** `dist/acme/greeter/` does not exist, `dist/me/greeter/` does, and `acme/greeter` stays `enabled: true` with `active: false` in `list`
 
 ### Requirement: Deploys copy the committed tree
-Git deploys SHALL copy the manifest-selected committed output (default dist, dot selects the package root) from Git objects, never the working tree. Build deploys SHALL copy locally cached verified output without Git or network. Both SHALL preserve nested folders and executable bits and refuse symlinks with unsupported. Gitlinks SHALL become empty directories with an actionable warning, without fetching submodules.
+Every deploy SHALL copy the resolved commit’s package folder selected by its committed manifest's `dist` (default `<path>/dist`; `"."` selects `<path>` itself) from Git objects, never the working tree, preserving nested folders and executable bits. Symlinks SHALL fail with `unsupported`. Gitlinks SHALL become empty directories without fetching submodules, with an actionable warning naming the path and advising committing built files instead.
 
 #### Scenario: Symlink inside dist
 - **WHEN** a release's package dist contains a symlink
@@ -50,12 +50,8 @@ Git deploys SHALL copy the manifest-selected committed output (default dist, dot
 - **THEN** install and subsequent deploys copy that committed folder, relative to the package root, including nested files and executable bits
 - **AND** uncommitted edits and files outside the selected folder are not deployed
 
-#### Scenario: Repair missing deployed build output
-- **WHEN** an active build package has no deployed folder and sync-dist runs
-- **THEN** its verified local output is deployed without Git or network access
-
 ### Requirement: A revision without dist is refused
-A Git revision missing its manifest-selected output SHALL fail with invalid_manifest, naming the folder and detection context. With buildRequired, the error SHALL explain the required committed build and name buildCommand if supplied. A catalog build SHALL use its archive output without requiring that folder in Git. gitpm SHALL never run builds.
+A revision without its declared output folder (default dist/) SHALL fail with invalid_manifest, never deploying an empty folder. Messages SHALL name the missing folder and detection context as below; substitute the declared path for dist in default messages. With buildRequired, errors SHALL explain that a committed build result is required and name buildCommand when supplied. gitpm SHALL NOT run builds.
 
 #### Scenario: Deploy from Git objects
 - **WHEN** the commit being deployed has no declared output tree
@@ -76,10 +72,6 @@ A Git revision missing its manifest-selected output SHALL fail with invalid_mani
 #### Scenario: Missing required build output
 - **WHEN** a package declares `dist: "output"`, `buildRequired: true` and `buildCommand: "npm run build"` but output is absent
 - **THEN** install or fork fails with invalid_manifest naming output and npm run build, without running the command or deploying an empty package
-
-#### Scenario: Prebuilt release needs no committed output
-- **WHEN** a build release manifest selects an output folder absent from its Git commit
-- **THEN** installation deploys the verified build without accessing that commit
 
 ### Requirement: Replace removes the original's dist
 `replace ORIGINAL --with FORK` SHALL remove `dist/ORIGINAL/` and SHALL NOT copy anything of FORK into it; `dist/FORK/` stays. Its preconditions (FORK installed, enabled and declaring `replaces`) are specified in fork-replacement ("Replacement is explicit and global"). Verified by `replace_removes_the_original_dist_and_back_restores_it_from_the_clone`.

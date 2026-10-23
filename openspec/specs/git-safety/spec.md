@@ -18,12 +18,7 @@ All subprocesses of the library (system `git` and `curl`) SHALL be started from 
 - **THEN** results are the same as with a clean environment
 
 ### Requirement: Git never waits for input
-Git and HTTP operations SHALL be bounded and noninteractive through the transport module. Git SHALL preserve its existing SSH policy, prompts suppression, input validation, keepalives and wall-clock limits. Catalog and build downloads SHALL use a five-second connect timeout, twenty-second total timeout and 16 MiB streaming bound; only builds follow up to five HTTPS-only redirects.
-
-#### Scenario: Noninteractive transport policy
-- **WHEN** transport starts a Git or HTTP operation
-- **THEN** Repository git commands SHALL use closed stdin, `GIT_TERMINAL_PROMPT=0`, empty `GIT_ASKPASS`, `credential.interactive=never`, `http.lowSpeedLimit=1`/`http.lowSpeedTime=20`, and the "Batch SSH command" policy. The `auth check` ls-remote and `core.sshCommand` probe SHALL be killed after 10 s (`git`, "timed out after 10s"). Verified by `transport::system::tests::git_never_reads_stdin_or_prompts`.
-Build downloads SHALL use the same bounded noninteractive transport policy as catalogs, with the build-specific HTTPS redirect policy.
+Repository git commands SHALL use closed stdin, `GIT_TERMINAL_PROMPT=0`, empty `GIT_ASKPASS`, `credential.interactive=never`, `http.lowSpeedLimit=1`/`http.lowSpeedTime=20`, and the "Batch SSH command" policy. The `auth check` ls-remote and `core.sshCommand` probe SHALL be killed after 10 s (`git`, "timed out after 10s"). Verified by `transport::system::tests::git_never_reads_stdin_or_prompts`.
 
 #### Scenario: Wedged git
 - **WHEN** a git subprocess hangs for 10 minutes
@@ -56,10 +51,6 @@ Build downloads SHALL use the same bounded noninteractive transport policy as ca
 #### Scenario: Credential prompt
 - **WHEN** a clone of an HTTPS URL would ask for a password, also through `GIT_ASKPASS`, `SSH_ASKPASS`-style helpers or an interactive credential helper
 - **THEN** git fails fast with `git` instead of waiting, so the workspace lock is released
-
-#### Scenario: Bounded build request
-- **WHEN** a build request stalls or streams an oversized body
-- **THEN** the catalog timeout and 16 MiB streaming bound terminate it with http
 
 ### Requirement: Library-owned Git input
 Exception to "Git never waits for input": a Git ref transaction (`update-ref --stdin`) SHALL get only library-generated input instead of closed stdin, and the input pipe SHALL be closed after writing; user stdin SHALL NOT be inherited, and the other bounds of that requirement (no prompts, lowSpeed limits, batch SSH, 600s kill) SHALL apply unchanged.
@@ -191,7 +182,7 @@ Standalone catalog and check operations, which reach remotes, SHALL offer `*_wit
 - **THEN** its SSH behavior is equivalent to its `*_with_options` variant with `Options::default()`
 
 ### Requirement: Typed network transport
-Transport SHALL expose typed clone, fetch, remote HEAD, remote refs, read-only probe, catalog HTTP GET and artifact GET methods. Network callers SHALL use this boundary rather than construct network commands. Raw local Git SHALL remain available there. Build downloads SHALL share bounded HTTP handling with catalog reads but use their HTTPS-only redirect policy. Existing transport error kinds and messages SHALL remain stable.
+The transport module SHALL expose a Transport trait with typed methods for clone, fetch, remote HEAD refresh, remote ref lookup, read-only access probes and HTTP GET. Network call sites in gitpm SHALL use these methods rather than assemble raw network Git commands. Raw local Git commands SHALL remain available through the same boundary for subsequent migration tasks. Transport failures SHALL retain the existing gitpm error kinds and messages.
 
 #### Scenario: Clone and fetch through the interface
 - **WHEN** gitpm clones a repository or fetches tags, records origin tags or refreshes a remote HEAD
@@ -201,10 +192,6 @@ Transport SHALL expose typed clone, fetch, remote HEAD, remote refs, read-only p
 - **WHEN** a catalog response has no declared size
 - **THEN** the transport reads at most 16 MiB plus the four-byte status trailer plus one overflow byte, kills curl on overflow, and retains the existing 200/404/error semantics
 - **AND** both loopback streamed-response tests run inside the transport module
-
-#### Scenario: Build download through the interface
-- **WHEN** a package needs a build archive
-- **THEN** the library invokes the typed artifact operation and subprocesses remain confined to transport
 
 ### Requirement: Typed release and catalog repository operations
 Release discovery, lost-work inspection, catalog generation, checks,
