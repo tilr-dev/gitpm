@@ -1,0 +1,10 @@
+{
+  "base": {
+    "openspec/specs/terminal/spec.md": "## Requirements\n\n### Requirement: Existing\nThe system SHALL work.\n\n#### Scenario: Use\n- **WHEN** called\n- **THEN** it works\n"
+  },
+  "head": {
+    "openspec/specs/terminal/spec.md": "## Requirements\n\n### Requirement: Existing\nThe system SHALL work.\n\n#### Scenario: Use\n- **WHEN** called\n- **THEN** it changes\n"
+  },
+  "comments": [],
+  "uncovered": []
+}

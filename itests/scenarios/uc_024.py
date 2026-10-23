@@ -27,21 +27,32 @@ def fork_release(t: T, dest, version: str) -> str:
 
 @case(fixture="g3_vendor_installed", spec=["fork-replacement/fork-metadata"])
 def branch_name_is_unique(t: T):
-    """Existing fork and fork-2 branches in the installed clone: the new branch is fork-3,
+    """Existing fork and fork-2 branches in the recorded source: the new branch is fork-3,
     the existing ones are kept untouched."""
-    clone = t.clone(ID)
-    head = t.rev(clone)
-    t.git(clone, "branch", "fork")
-    t.git(clone, "branch", "fork-2")
+    source = t.repo(ID)
+    head = t.rev(source)
+    t.git(source, "branch", "fork")
+    t.git(source, "branch", "fork-2")
+    before = t.snap(t.ws, source, git=True)
     dest = fork(t)
     t.eq(t.git(dest, "branch", "--show-current"), "fork-3", "new branch")
-    t.eq((t.rev(dest, "fork"), t.rev(dest, "fork-2")), (head, head), "existing branches")
+    t.eq((t.rev(dest, "upstream/fork"), t.rev(dest, "upstream/fork-2")), (head, head), "source branches")
+    t.same(before, "installation and source branches")
 
 
 @case(fixture="g3_vendor_installed", spec=["fork-replacement/fork-metadata"])
 def single_existing_fork_branch(t: T):
-    t.git(t.clone(ID), "branch", "fork")
+    t.git(t.repo(ID), "branch", "fork")
     t.eq(t.git(fork(t), "branch", "--show-current"), "fork-2", "new branch")
+
+
+@case(fixture="g3_vendor_installed", spec=["fork-replacement/fork-isolates-source-and-destination-state"])
+def installation_only_branch_is_ignored(t: T):
+    """A branch absent from the recorded source cannot reserve the fork's branch name."""
+    t.git(t.clone(ID), "branch", "fork")
+    before = t.snap(t.ws, t.repo(ID), git=True)
+    t.eq(t.git(fork(t), "branch", "--show-current"), "fork", "new branch")
+    t.same(before, "installation-only branch")
 
 
 @case(fixture="g3_vendor_installed", spec=["install-uninstall/install-the-latest-release-of-a-git-source#repository-without-releases", "package-ids/release-tag-names"])
