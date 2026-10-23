@@ -1413,6 +1413,7 @@ impl Manager {
             let current = deps::version(&p.current.version)?;
             let mut versions = BTreeMap::from([(current.clone(), build.release.clone())]);
             let mut newest = current;
+            let mut no_longer = None;
             if !broken.contains_key(id) {
                 let location = build
                     .location
@@ -1423,6 +1424,13 @@ impl Manager {
                         for release in found {
                             let key = deps::version(&release.manifest.version)?;
                             newest = newest.max(key.clone());
+                            if let Some(original) = no_longer_replaces(state, id, &release.manifest)
+                            {
+                                if no_longer.as_ref().is_none_or(|(v, _)| *v < key) {
+                                    no_longer = Some((key, original));
+                                }
+                                continue;
+                            }
                             versions.insert(key, release);
                         }
                     }
@@ -1435,6 +1443,9 @@ impl Manager {
                         );
                     }
                 }
+            }
+            if let Some(reason) = held_back_reason(state, catalog, &newest, &versions, no_longer) {
+                held.insert(id.clone(), reason);
             }
             latest.insert(id.clone(), newest.to_string());
             candidates.insert(id.clone(), versions);

@@ -630,3 +630,44 @@ fn joint_build_upgrade_uses_the_joint_dependency_solution() {
     }
     f.no_clone();
 }
+
+#[test]
+fn build_update_all_keeps_an_active_replacement_declaration() {
+    let f = Fixture::new(false);
+    let original = gitpm::scaffold::init(&f.dir.join("original"), "vendor", "base")
+        .unwrap()
+        .repo;
+    let fork = gitpm::scaffold::init(&f.dir.join("fork"), "mine", "base")
+        .unwrap()
+        .repo;
+    publish_repo(&f, &original, "vendor/base", "1.0.0");
+    let path = fork.join("plugin.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    manifest["replaces"] = json!({"id":"vendor/base", "version":"1.0.0"});
+    fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    publish_repo(&f, &fork, "mine/base", "1.0.0");
+    let m = f.manager();
+    m.install_from_catalog("vendor/base", None).unwrap();
+    m.install_from_catalog("mine/base", None).unwrap();
+    m.replace("vendor/base", "mine/base", false).unwrap();
+    manifest.as_object_mut().unwrap().remove("replaces");
+    fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    publish_repo(&f, &fork, "mine/base", "2.0.0");
+    fs::remove_dir_all(&fork).unwrap();
+    fs::remove_dir_all(&original).unwrap();
+    let plan = m.update_all().unwrap();
+    assert!(plan.updates.is_empty());
+    let held = plan.kept_back.iter().find(|h| h.id == "mine/base").unwrap();
+    assert_eq!(held.selected, "1.0.0");
+    assert_eq!(held.latest, "2.0.0");
+    assert_eq!(
+        held.reason,
+        gitpm::HeldBackReason::NoLongerReplaces {
+            original: "vendor/base".into()
+        }
+    );
+    let state = m.state().unwrap();
+    assert!(state.packages["mine/base"].replaces.is_some());
+    assert_eq!(state.replacements["vendor/base"], "mine/base");
+}
