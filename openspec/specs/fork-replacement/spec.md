@@ -198,8 +198,9 @@ Forking SHALL keep the existing installation model: install the fork's committed
 - **AND** the existing dist and workspace layout rules for explicit install and replace apply
 
 #### Scenario: Single-ID replacement API
-- **WHEN** a host calls the ordinary library fork API or FFI `fork` with one installed ID from a multi-package repository
-- **THEN** it receives only the editable repository's fork data, including its sibling packages, without releasing, installing or replacing any package
+- **WHEN** a host calls library `fork_in_namespace` or FFI `fork` with one installed ID from a multi-package repository
+- **THEN** it receives the path to the editable repository containing all sibling packages, without releasing, installing or replacing any package
+- **AND** library `fork_packages` and FFI `forkPackages` return the package list and dependency rewrites as well as the repository path
 - **AND** the host releases the repository and calls install and replace separately for the desired package
 
 #### Scenario: Installed sibling remains unchanged
