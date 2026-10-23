@@ -186,7 +186,7 @@ Standalone catalog and check operations, which reach remotes, SHALL offer `*_wit
 - **THEN** its SSH behavior is equivalent to its `*_with_options` variant with `Options::default()`
 
 ### Requirement: Typed network transport
-The transport module SHALL expose a Transport trait with typed methods for clone, fetch, remote HEAD refresh, remote ref lookup, read-only access probes, catalog HTTP GET and artifact GET. Network callers SHALL use these methods rather than assemble raw network Git commands. Raw local Git SHALL remain available through the same boundary. Transport failures SHALL retain existing gitpm error kinds and messages.
+The transport module SHALL expose a Transport trait with typed methods for clone, fetch, remote HEAD refresh, remote ref lookup, read-only access probes, catalog HTTP GET and artifact GET. Network call sites in gitpm SHALL use these methods rather than assemble raw network Git commands. The transport API visible to production callers SHALL contain only typed operations; raw Git helpers SHALL remain internal to the transport module. Transport failures SHALL retain the existing gitpm error kinds and messages.
 
 #### Scenario: Clone and fetch through the interface
 - **WHEN** gitpm clones a repository or fetches tags, records origin tags or refreshes a remote HEAD
@@ -244,3 +244,24 @@ Production workspace management, including shared clones and forks, SHALL perfor
 - **WHEN** workspace management exports a package folder or its distribution tree
 - **THEN** typed transport operations read object types, tree entries and blob bytes
 - **AND** byte contents, executable permissions and existing symlink and submodule handling are preserved
+
+### Requirement: Typed scaffold repository operations
+Scaffold authoring SHALL use typed transport operations without assembling Git arguments. Operations SHALL preserve results, errors, SSH settings, execution bounds, identity, hooks, signing and rollback behavior. All production library callers SHALL use transport facades selecting the sole system implementation in one place. Test fixtures, unit and integration tests, and build scripts are outside this production-only boundary.
+
+#### Scenario: Initialize and release a package
+- **WHEN** an author initializes a repository or commits and tags a package version
+- **THEN** typed operations preserve the initial branch, local demo identity fallback, staged paths, commit messages and tag behavior
+- **AND** failed commits restore manifests and the index as before
+
+#### Scenario: Release selected packages
+- **WHEN** an author releases only selected package folders or releases multiple packages together
+- **THEN** the selected-path commit behavior is preserved and multiple tags are created atomically without overwriting existing tags
+
+#### Scenario: Configure origin without network access
+- **WHEN** an author sets a repository's origin
+- **THEN** typed operations preserve replacement of all fetch URLs and any configured push URLs without contacting the remote
+
+#### Scenario: Replace the transport implementation
+- **WHEN** the transport backend is replaced
+- **THEN** one selection point inside the transport module controls all production callers
+- **AND** the production boundary test rejects raw Git helpers and direct system backend access outside the transport
