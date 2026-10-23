@@ -340,7 +340,7 @@ Release the fork with `commit`, install the desired package explicitly, then cal
 
 ```sh
 gitpm --root ./workspace fork demo/a --ns my --into ./my-fork
-gitpm commit ./my-fork 0.3.0
+gitpm commit ./my-fork 0.3.0 --package my/a
 gitpm --root ./workspace install ./my-fork my/a
 gitpm --root ./workspace replace demo/a --with my/a
 ```
@@ -1546,8 +1546,9 @@ them; `RevisionChange.unchangedReason` says why an update left a package (`pinne
 `Mode`; `force` defaults to false; `InstalledPackage.path` and `CatalogRelease.path` name
 the package folder; `InstalledPackage.clone` names the shared clone; `InstalledPackage`,
 `PackageSummary` and `CatalogRelease` carry the [metadata](#package-metadata); the fork
-records have the names of the library types `gitpm::ForkResult`, `PackageFork`,
-`ForkedPackage` and `DependencyRewrite`. Free functions, which read without opening, locking or creating the
+records `PackageFork`, `ForkedPackage` and `DependencyRewrite` mirror the library
+types of the same names. The FFI-only `ForkResult` wraps the repository path returned
+by library `fork_in_namespace`. Free functions, which read without opening, locking or creating the
 workspace: `list(root, provides)` and `readState(root)` (`ListView`: `format`,
 `packages`, `replacements`, `forgotten`, `resolved`), `check(root, catalog, customSsh)`
 (`CheckReport`: rows with `source` `.catalog`/`.origin` and `problem`, fork `upstream`
