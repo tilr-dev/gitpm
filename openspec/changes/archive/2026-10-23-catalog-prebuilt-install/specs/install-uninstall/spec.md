@@ -36,4 +36,3 @@ Uninstall and forget SHALL drop a Git record whose clone is gone, plus its deplo
 #### Scenario: Forget and restore a build
 - **WHEN** a build package is forgotten and restored
 - **THEN** its cached output and record survive forget and restore redeploys them without Git
-

@@ -7,7 +7,7 @@ Defines the on-disk workspace a `Manager` owns: its folders, `state.json` and it
 ## Requirements
 
 ### Requirement: Workspace folders
-A workspace root SHALL contain `state.json` (installed packages, replacement bindings, forgotten records), `packages/<ns>/<name>/` (own clone of a package from a single-package repository), `dist/<ns>/<name>/` (deployed folder of an active package), `repos/<name>-<hash>/` (shared clone of a multi-package repository; `repos/` only while one exists) and `.pm-txn/` only while a transaction runs or after one was interrupted. Verified by `workspace::open_creates_the_workspace_layout_and_lock`.
+A workspace SHALL contain state.json, packages/<id> for own Git clones, repos/<key> while shared clones exist, and dist/<id> exactly for active output. Build installs SHALL retain current/previous verified output under builds/<id> and need no clone. Cache changes SHALL use workspace transactions. .pm-txn SHALL exist only during a transaction or after interruption.
 
 #### Scenario: A command on a missing workspace root
 - **WHEN** a command that opens a workspace (transactions-locking, "Workspace lock") names a workspace root that does not exist
@@ -23,6 +23,10 @@ A workspace root SHALL contain `state.json` (installed packages, replacement bin
 - **AND** incomplete state is staged inside the root as `.state.json-<pid>-<counter>.tmp`, so the rename stays on one filesystem even when the root is a mount point
 - **AND** a root that holds only such files (and possibly `.DS_Store`) is not a foreign directory: the next open removes them while holding the workspace lock and creates `state.json`; any other entry refuses the directory as "Foreign directories are refused" says, and nothing inside it is removed
 - **AND** `.DS_Store` beside them keeps its bytes
+
+#### Scenario: Clone-free build storage
+- **WHEN** a catalog build is installed for the first time
+- **THEN** verified output is retained under builds/ID and there is no package clone
 
 ### Requirement: Foreign directories are refused
 Opening a non-empty directory (one holding anything but `.DS_Store` and gitpm's own staged state `.state.json-<pid>-<counter>.tmp`, see "Workspace folders") that has no `state.json` SHALL fail with `workspace` ("refusing nonempty directory without state.json") and change nothing inside that directory (its parent folder and the workspace lock file beside it may already exist). Single source for a corrupt `state.json`: it SHALL block every operation with `invalid_data` and MUST NOT be overwritten.
@@ -69,7 +73,7 @@ Verified by `workspace::open_ds_store_with_other_content_is_refused`.
 - **THEN** opening the state fails with `unsupported`
 
 ### Requirement: Installed package record
-Each `state.json` `packages.<id>` record (single source for its format) SHALL hold `source`, `current` and `previous` revisions (`version`, `commit`; `previous` also `mode`), `enabled`, `mode` (`{"pinned": REF}`, `{"branch": NAME}`, omitted for releases), and when present `forkOf`, `dependencies`, `replaces`, `catalog` (protecting verified catalog), `clone` (shared-clone key), `path` and `metadata`. At most one `previous` SHALL be kept. Verified by `model::state_round_trips_byte_for_byte`.
+Installed records SHALL hold source, current/previous revisions, enabled, mode, metadata and optional forkOf, dependencies, replaces, catalog protection, clone and path. Build and previous_build SHALL retain the full release record and catalog location separately from protection. Previous SHALL retain its mode and source kind for offline rollback. At most one previous and only current/previous build output SHALL be retained.
 
 #### Scenario: Fresh install has no previous revision
 - **WHEN** a package was just installed
@@ -86,6 +90,10 @@ Each `state.json` `packages.<id>` record (single source for its format) SHALL ho
 #### Scenario: Previous revision keeps its mode
 - **WHEN** a package in branch mode `main` is updated with `--release`
 - **THEN** `previous` is `{"version": …, "commit": …, "mode": {"branch": "main"}}` (a `previous` in release mode has no `mode`), so `rollback` restores both
+
+#### Scenario: Previous build provenance
+- **WHEN** a build revision is updated to a Git revision
+- **THEN** previous_build retains the release metadata and catalog location for offline rollback
 
 ### Requirement: Replacements and forgotten records
 `state.json` SHALL keep `replacements` (the replacement bindings ORIGINAL → FORK, global for the workspace; rules in fork-replacement) and `forgotten` (records of every forgotten package, same format as `packages.<id>`, own clone or shared clone alike; lifecycle in install-uninstall and multi-package-repos).

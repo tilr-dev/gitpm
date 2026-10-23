@@ -75,4 +75,3 @@ Rollback SHALL swap current and previous revisions and modes offline and redeplo
 #### Scenario: Offline build rollback
 - **WHEN** a build was updated and its catalog and artifact server are unavailable
 - **THEN** rollback restores the retained previous output and metadata and swaps the two revisions
-
