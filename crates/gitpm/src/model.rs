@@ -1,6 +1,6 @@
 //! Persistent formats: package manifest and workspace state. Byte-compatible with the stand.
 use crate::error::{Error, Result, ensure};
-use crate::{identity, transport::git};
+use crate::{identity, transport};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fs, path::Path};
 
@@ -640,7 +640,7 @@ pub(crate) fn package_manifest(repo: &Path, path: Option<&str>) -> Result<Manife
 pub(crate) fn revision(repo: &Path, m: &Manifest, custom_ssh: bool) -> Result<Revision> {
     Ok(Revision {
         version: m.version.clone(),
-        commit: git(repo, &["rev-parse", "HEAD"], custom_ssh)?,
+        commit: transport::object_id(repo, "HEAD", custom_ssh)?,
         mode: Mode::Release,
     })
 }
@@ -651,27 +651,14 @@ pub(crate) fn resolve_ref(repo: &Path, reference: &str, custom_ssh: bool) -> Res
         InvalidArgument,
         "invalid git ref"
     );
-    git(
-        repo,
-        &[
-            "rev-parse",
-            "--verify",
-            "--end-of-options",
-            &format!("{reference}^{{commit}}"),
-        ],
-        custom_ssh,
-    )
+    transport::resolve_commit(repo, reference, custom_ssh)
 }
 
 /// The name of the origin's default branch (`refs/remotes/origin/HEAD`, set by a clone
 /// or by `git remote set-head origin --auto`).
 pub(crate) fn default_branch(repo: &Path, custom_ssh: bool) -> Result<String> {
-    let name = git(
-        repo,
-        &["symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD"],
-        custom_ssh,
-    )
-    .map_err(|_| Error::Git("the origin has no default branch (HEAD)".into()))?;
+    let name = transport::origin_default_branch(repo, custom_ssh)
+        .map_err(|_| Error::Git("the origin has no default branch (HEAD)".into()))?;
     let branch = name.strip_prefix("origin/").unwrap_or(&name).to_owned();
     ensure!(
         !branch.is_empty() && !branch.starts_with('-'),
@@ -698,8 +685,7 @@ pub(crate) fn resolve_upstream_ref(
         InvalidArgument,
         "invalid git ref"
     );
-    let exists =
-        |full: &str| git(repo, &["show-ref", "--verify", "--quiet", full], custom_ssh).is_ok();
+    let exists = |full: &str| transport::verify_ref(repo, full, custom_ssh).is_ok();
     let branch = |name: &str| -> Result<(String, Mode)> {
         let commit = resolve_ref(repo, &format!("refs/remotes/origin/{name}"), custom_ssh)?;
         Ok((commit, Mode::Branch(name.to_owned())))
