@@ -58,7 +58,6 @@ Exception to "Git never waits for input": a Git ref transaction (`update-ref --s
 #### Scenario: Library-owned ref transaction input
 - **WHEN** release tags are created by `update-ref --stdin`
 - **THEN** only library-generated commands are supplied, followed by EOF, with the same execution timeout
-- **AND** verified by `fork_replace_release_late_tag_lock_leaves_no_tags`
 
 #### Scenario: Git exits before reading the input
 - **WHEN** the Git process closes its input before the library has written it

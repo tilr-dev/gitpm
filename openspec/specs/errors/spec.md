@@ -90,10 +90,6 @@ Every failing `Manager` operation, update and rollback included, SHALL leave the
 - **WHEN** an operation fails on a workspace root that did not exist
 - **THEN** a refusal of the Options creates nothing (workspace-layout, "Options are validated before anything is created"), while a failure after opening leaves the empty workspace that opening created
 
-#### Scenario: Partial fork --replace
-- **WHEN** a step of `fork --replace` fails
-- **THEN** the steps that succeeded stay (fork-replacement, "Fork folder is never removed after a partial failure"); likewise `sync-dist` keeps what it synced when it fails with `not_deployed` (dist)
-
 #### Scenario: Invalid ID everywhere
 - **WHEN** each operation is called with `../x`
 - **THEN** each fails with `invalid_id` and the workspace tree hash is unchanged
@@ -102,3 +98,11 @@ Every failing `Manager` operation, update and rollback included, SHALL leave the
 - **WHEN** the fetch of an update fails
 - **THEN** the command fails with `git` and the workspace tree hash is unchanged
 - **AND** this is covered by `failed_update_keeps_files_and_state` and `workspace::update_refusals_leave_the_workspace_unchanged`
+
+#### Scenario: Partial dist sync
+- **WHEN** `sync-dist` fails with `not_deployed`
+- **THEN** it keeps what it synced as specified in dist
+
+#### Scenario: Partial fork --replace
+- **WHEN** a caller attempts the removed composed fork operation through the CLI
+- **THEN** the CLI rejects the removed option before creating the destination or changing the workspace; no partial release, installation or replacement occurs
