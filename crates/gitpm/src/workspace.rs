@@ -15,7 +15,7 @@ use crate::{
     lost_work::{self, clean},
     model::{manifest_json, package_manifest, resolve_ref, resolve_upstream_ref, revision},
     packages, releases, scaffold,
-    transport::git,
+    transport::{self, SystemTransport, Transport},
     txn::{self, Txn},
     valid_id,
 };
@@ -567,13 +567,14 @@ pub(crate) fn export_folder(
     }
     let tree = format!("{commit}:{path}");
     ensure!(
-        git(repo, &["cat-file", "-t", &tree], custom_ssh).is_ok_and(|kind| kind == "tree"),
+        SystemTransport
+            .object_type(repo, &tree, custom_ssh)
+            .is_ok_and(|kind| kind == "tree"),
         InvalidManifest,
         "revision {commit} has no folder {}",
         if path.is_empty() { "(root)" } else { path }
     );
-    let entries =
-        crate::transport::git_raw(repo, &["ls-tree", "-r", "-t", "-z", &tree], custom_ssh)?;
+    let entries = SystemTransport.list_tree(repo, &tree, true, custom_ssh)?;
     fs::create_dir_all(target)?;
     for entry in entries
         .split(|byte| *byte == 0)
@@ -593,8 +594,7 @@ pub(crate) fn export_folder(
         match (mode, kind) {
             ("040000", "tree") | ("160000", "commit") => fs::create_dir_all(&destination)?,
             ("100644" | "100755", "blob") => {
-                let bytes =
-                    crate::transport::git_raw(repo, &["cat-file", "blob", oid], custom_ssh)?;
+                let bytes = SystemTransport.read_blob(repo, oid, custom_ssh)?;
                 fs::create_dir_all(destination.parent().unwrap())?;
                 fs::write(&destination, bytes)?;
                 if mode == "100755" {
@@ -628,18 +628,15 @@ pub(crate) fn export_dist(
 ) -> Result<Vec<String>> {
     let manifest = crate::packages::manifest_at(repo, commit, package, custom_ssh)?;
     let folder = manifest.dist_path(package);
-    if !git(
-        repo,
-        &["cat-file", "-t", &format!("{commit}:{folder}")],
-        custom_ssh,
-    )
-    .is_ok_and(|kind| kind == "tree")
+    if !SystemTransport
+        .object_type(repo, &format!("{commit}:{folder}"), custom_ssh)
+        .is_ok_and(|kind| kind == "tree")
     {
         return Err(manifest.missing_dist(format!("release {commit} has no {folder}/ folder")));
     }
     let mut warnings = Vec::new();
     let tree = format!("{commit}:{folder}");
-    let entries = crate::transport::git_raw(repo, &["ls-tree", "-r", "-z", &tree], custom_ssh)?;
+    let entries = SystemTransport.list_tree(repo, &tree, false, custom_ssh)?;
     for entry in entries.split(|byte| *byte == 0) {
         if entry.starts_with(b"160000 ") {
             let name =
@@ -1540,14 +1537,10 @@ impl Manager {
                             continue;
                         };
                         if head != installed.current.commit {
-                            let ancestor = git(
+                            let ancestor = SystemTransport.require_ancestor(
                                 &repo,
-                                &[
-                                    "merge-base",
-                                    "--is-ancestor",
-                                    &installed.current.commit,
-                                    &head,
-                                ],
+                                &installed.current.commit,
+                                &head,
                                 self.options.custom_ssh,
                             );
                             if ancestor.is_err() {
@@ -1757,9 +1750,10 @@ impl Manager {
                         found.subdir().unwrap_or("(root)")
                     );
                 }
-                git(
+                SystemTransport.checkout_detached(
                     &repo,
-                    &["checkout", "--detach", &release.commit],
+                    &release.commit,
+                    false,
                     self.options.custom_ssh,
                 )?;
                 let actual = package_manifest(&repo, release.path.as_deref())
@@ -1966,7 +1960,7 @@ impl Manager {
                             ssh,
                         )?;
                         lost_work::record_origin_tags(&repo, ssh)?;
-                        git(&repo, &["checkout", "--detach", &p.current.commit], ssh)?;
+                        SystemTransport.checkout_detached(&repo, &p.current.commit, false, ssh)?;
                         txn.add_repo(&relative, &repo)?;
                     }
                 }
@@ -2015,7 +2009,7 @@ impl Manager {
                 let mut guard_state = state.clone();
                 if transitioning_build {
                     guard_state.packages.get_mut(id).unwrap().current.commit =
-                        git(&live, &["rev-parse", "HEAD"], ssh)?;
+                        SystemTransport.object_id(&live, "HEAD", ssh)?;
                 }
                 guard_clone(
                     &live,
@@ -2152,20 +2146,17 @@ impl Manager {
                     let Mode::Branch(branch) = &mode else {
                         unreachable!()
                     };
-                    git(
-                        &repo,
-                        &[
-                            "merge-base",
-                            "--is-ancestor",
+                    SystemTransport
+                        .require_ancestor(
+                            &repo,
                             &p.current.commit,
                             &next_commit,
-                        ],
-                        self.options.custom_ssh,
-                    )
-                    .context(
-                        Error::version_conflict,
-                        format!("history of {branch} diverged; automatic update refused"),
-                    )?;
+                            self.options.custom_ssh,
+                        )
+                        .context(
+                            Error::version_conflict,
+                            format!("history of {branch} diverged; automatic update refused"),
+                        )?;
                 }
                 // The package can move to another folder (or into a multi-package layout).
                 let path = updated_package(&repo, &next_commit, id, ssh)?
@@ -2181,9 +2172,10 @@ impl Manager {
                         path.as_deref().unwrap_or("(root)")
                     );
                 }
-                git(
+                SystemTransport.checkout_detached(
                     &repo,
-                    &["checkout", "--detach", &next_commit],
+                    &next_commit,
+                    false,
                     self.options.custom_ssh,
                 )?;
                 let m = package_manifest(&repo, path.as_deref())?;
@@ -2339,7 +2331,10 @@ impl Manager {
                 // The previous commit can be gone: pruned after the origin deleted or moved
                 // the tag that held it.
                 let previous_commit = format!("{}^{{commit}}", previous.commit);
-                if git(&live, &["cat-file", "-e", &previous_commit], ssh).is_err() {
+                if SystemTransport
+                    .require_object(&live, &previous_commit, ssh)
+                    .is_err()
+                {
                     return Err(Error::NoPreviousVersion {
                         id: id.into(),
                         commit: Some(previous.commit.clone()),
@@ -2354,9 +2349,10 @@ impl Manager {
                     }
                     Err(error) => return Err(error),
                 };
-                git(
+                SystemTransport.checkout_detached(
                     &repo,
-                    &["checkout", "--detach", &previous.commit],
+                    &previous.commit,
+                    false,
                     self.options.custom_ssh,
                 )?;
                 let m = package_manifest(&repo, path.as_deref())?;
@@ -2544,7 +2540,7 @@ impl Manager {
         let live = installed_repo(txn.root(), id, &record)?;
         clean(&live, id, self.options.custom_ssh)?;
         let recorded = record.current.commit.clone();
-        let head = git(&live, &["rev-parse", "HEAD"], self.options.custom_ssh)?;
+        let head = SystemTransport.object_id(&live, "HEAD", self.options.custom_ssh)?;
         // Commits only this clone has are lost work in every mode.
         let unpublished = lost_work::unpublished_head_commits(&live, self.options.custom_ssh)?;
         if !unpublished.is_empty() {
@@ -2557,23 +2553,17 @@ impl Manager {
         // Branch mode takes HEAD as found when it moved forward on its own branch: a
         // descendant of the recorded commit that the origin's branch contains.
         let on_branch = |branch: &str| {
-            git(
-                &live,
-                &["merge-base", "--is-ancestor", &recorded, &head],
-                self.options.custom_ssh,
-            )
-            .is_ok()
-                && git(
-                    &live,
-                    &[
-                        "merge-base",
-                        "--is-ancestor",
+            SystemTransport
+                .require_ancestor(&live, &recorded, &head, self.options.custom_ssh)
+                .is_ok()
+                && SystemTransport
+                    .require_ancestor(
+                        &live,
                         &head,
                         &format!("refs/remotes/origin/{branch}"),
-                    ],
-                    self.options.custom_ssh,
-                )
-                .is_ok()
+                        self.options.custom_ssh,
+                    )
+                    .is_ok()
         };
         let follows = matches!(&record.mode, Mode::Branch(branch) if on_branch(branch));
         let commit = if head == recorded || follows {
@@ -2600,11 +2590,7 @@ impl Manager {
         };
         if commit != head {
             let staged = txn.repo(&relative, &live)?;
-            git(
-                &staged,
-                &["checkout", "-q", "--detach", &commit],
-                self.options.custom_ssh,
-            )?;
+            SystemTransport.checkout_detached(&staged, &commit, true, self.options.custom_ssh)?;
         }
         let repo = txn.staged_repo(&relative).unwrap_or(live);
         let path =
@@ -3024,7 +3010,8 @@ fn dist_drift(root: &Path, state: &State, custom_ssh: bool) -> Result<DistSync> 
         let reason = match installed_repo(root, id, p) {
             Err(Error::RepositoryNotFound { .. }) => Some(("clone missing", true)),
             Err(error) => return Err(error),
-            Ok(repo) => git(&repo, &["cat-file", "-e", &commit], custom_ssh)
+            Ok(repo) => SystemTransport
+                .require_object(&repo, &commit, custom_ssh)
                 .is_err()
                 .then_some(("installed commit missing from its clone", false)),
         };
@@ -3111,7 +3098,7 @@ fn clone_revision(txn: &Txn, fetch: &Fetch, name: &str, custom_ssh: bool) -> Res
                 // An ID the repository does not have: say which packages it has.
                 Err(Error::NoReleases(message)) => {
                     if let Some(id) = fetch.package {
-                        let head = git(&repo, &["rev-parse", "HEAD"], custom_ssh)?;
+                        let head = SystemTransport.object_id(&repo, "HEAD", custom_ssh)?;
                         packages::find_at_with_ssh(&repo, &head, Some(id), custom_ssh)?;
                     }
                     return Err(Error::NoReleases(message));
@@ -3163,7 +3150,7 @@ fn clone_revision(txn: &Txn, fetch: &Fetch, name: &str, custom_ssh: bool) -> Res
             found.subdir().unwrap_or("(root)")
         );
     }
-    git(&repo, &["checkout", "--detach", &commit], custom_ssh)?;
+    SystemTransport.checkout_detached(&repo, &commit, false, custom_ssh)?;
     let path = found.subdir().map(str::to_owned);
     let m = package_manifest(&repo, path.as_deref())?;
     ensure!(
@@ -3434,7 +3421,7 @@ fn verify_installed_release(
         Catalog,
         "catalog package folder of {id}@{version} does not match git revision"
     );
-    git(repo, &["checkout", "--detach", &release.commit], custom_ssh)?;
+    SystemTransport.checkout_detached(repo, &release.commit, false, custom_ssh)?;
     let actual = package_manifest(repo, release.path.as_deref())?;
     let staged = txn.scratch("verify-installed-dist");
     if staged.exists() {
@@ -3452,12 +3439,9 @@ fn verify_installed_release(
 /// The commit of a catalog release must be in `repo` (the clone after fetching its origin).
 fn ensure_release_commit(repo: &Path, release: &catalog::Release, custom_ssh: bool) -> Result<()> {
     ensure!(
-        git(
-            repo,
-            &["cat-file", "-e", &format!("{}^{{commit}}", release.commit)],
-            custom_ssh
-        )
-        .is_ok(),
+        SystemTransport
+            .require_object(repo, &format!("{}^{{commit}}", release.commit), custom_ssh)
+            .is_ok(),
         Catalog,
         "commit {} of catalog release {}@{} is not in the package's clone after fetching its origin",
         release.commit,
@@ -6381,7 +6365,7 @@ mod tests {
     fn a_submodule_in_dist_deploys_an_empty_folder() {
         let (ws, m) = Ws::installed("dan/demo1");
         let bad = ws.other_author("bad", "dan/bad");
-        let sha = git(&bad.path, &["rev-parse", "HEAD"], false).unwrap();
+        let sha = SystemTransport.object_id(&bad.path, "HEAD", false).unwrap();
         fixture_git(
             &bad.path,
             &[
