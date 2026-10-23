@@ -671,3 +671,70 @@ fn build_update_all_keeps_an_active_replacement_declaration() {
     assert!(state.packages["mine/base"].replaces.is_some());
     assert_eq!(state.replacements["vendor/base"], "mine/base");
 }
+
+fn inactive_build_dependency(operation: &str) {
+    let f = Fixture::new(false);
+    let app = gitpm::scaffold::init(&f.dir.join("source"), "acme", "widget")
+        .unwrap()
+        .repo;
+    let lib = gitpm::scaffold::init(&f.dir.join("lib"), "acme", "lib")
+        .unwrap()
+        .repo;
+    let path = app.join("plugin.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    manifest["dependencies"] = json!({"acme/lib":"^1"});
+    fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    publish_repo(&f, &lib, "acme/lib", "1.0.0");
+    publish_repo(&f, &app, ID, "1.0.0");
+    let m = f.manager();
+    m.install_from_catalog(ID, None).unwrap();
+    if operation == "rollback" {
+        manifest.as_object_mut().unwrap().remove("dependencies");
+        fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        publish_repo(&f, &app, ID, "2.0.0");
+        m.update(ID).unwrap();
+    } else {
+        m.forget(ID).unwrap();
+    }
+    if operation == "restore-missing" {
+        m.uninstall("acme/lib", &[], false).unwrap();
+    } else {
+        m.disable("acme/lib").unwrap();
+    }
+    let before = fs::read(f.root.join("state.json")).unwrap();
+    let deployed = fs::read(f.root.join("dist/acme/widget/index.js")).ok();
+    let error = if operation == "rollback" {
+        m.rollback(ID).unwrap_err()
+    } else {
+        m.restore(ID).unwrap_err()
+    };
+    assert_eq!(error.kind(), "dependency_conflict", "{operation}");
+    assert_eq!(fs::read(f.root.join("state.json")).unwrap(), before);
+    assert_eq!(
+        fs::read(f.root.join("dist/acme/widget/index.js")).ok(),
+        deployed
+    );
+    if operation == "restore-missing" {
+        m.install_from_catalog("acme/lib", None).unwrap();
+    } else {
+        m.enable("acme/lib").unwrap();
+    }
+    if operation == "rollback" {
+        m.rollback(ID).unwrap();
+    } else {
+        m.restore(ID).unwrap();
+    }
+    assert_eq!(m.state().unwrap().packages[ID].current.version, "1.0.0");
+    assert!(f.root.join("dist/acme/widget/index.js").is_file());
+}
+
+#[test]
+fn build_restore_requires_active_dependencies() {
+    inactive_build_dependency("restore");
+    inactive_build_dependency("restore-missing");
+}
+#[test]
+fn build_rollback_requires_active_dependencies() {
+    inactive_build_dependency("rollback");
+}

@@ -2212,7 +2212,10 @@ impl Manager {
                 entry.path = build.release.path.clone();
                 entry.build = Some(build.clone());
                 entry.adopt(&build.release.manifest);
-                if state.is_active(id) { builds::deploy_build(txn, id, build)?; }
+                if state.is_active(id) {
+                    deps::refuse_inactive_dependencies(state, id, "roll back", false)?;
+                    builds::deploy_build(txn, id, build)?;
+                }
                 return Ok(RevisionChange { id: id.into(), from: p.current, to: previous.without_mode(), changed: true, major: false, warnings: Vec::new(), skipped: Vec::new(), unchanged_reason: None, mode: previous.mode.clone(), detached: None, dist: DistSync::default() });
             }
             let relative = p.clone_folder(id);
@@ -2409,10 +2412,13 @@ impl Manager {
         record: Installed,
     ) -> Result<InstallResult> {
         if record.build.is_some() {
-            deploy_committed(txn, id, &record, self.options.custom_ssh)?;
             let result = builds::build_result(id, &record, false);
             state.forgotten.remove(id);
-            state.packages.insert(id.into(), record);
+            state.packages.insert(id.into(), record.clone());
+            if state.is_active(id) {
+                deps::refuse_inactive_dependencies(state, id, "restore", false)?;
+                deploy_committed(txn, id, &record, self.options.custom_ssh)?;
+            }
             return Ok(result);
         }
         let relative = record.clone_folder(id);
