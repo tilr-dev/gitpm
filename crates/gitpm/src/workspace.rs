@@ -1888,400 +1888,518 @@ impl Manager {
     ) -> Result<RevisionChange> {
         valid_id(id)?;
         let ssh = self.options.custom_ssh;
-        let (change, dist) = self.transaction(|txn, state| {
-            let p = state
-                .packages
-                .get(id)
-                .cloned()
-                .ok_or_else(|| Error::NotInstalled { id: id.into() })?;
-            if !options.detach && matches!(target, Target::Recorded | Target::Release) {
-                let location = p.catalog.clone().or_else(|| p.build.as_ref().and_then(|b| b.location.clone()));
-                if let Some(location) = location {
-                    let listed = builds::candidates(&p, id, &location)?;
-                    if let Some(release) = listed.last().filter(|r| r.build.is_some() || p.build.is_some()) {
-                        if p.build.is_none() {
-                            let live = installed_repo(txn.root(), id, &p)?;
-                            guard_clone(&live, state, id, p.clone.as_deref(), "local commits detected", "unpublished work blocks update", true, ssh)?;
+        let (change, dist) = self
+            .transaction(|txn, state| {
+                let p = state
+                    .packages
+                    .get(id)
+                    .cloned()
+                    .ok_or_else(|| Error::NotInstalled { id: id.into() })?;
+                let unchanged = |reason: Option<UnchangedReason>, skipped| RevisionChange {
+                    id: id.into(),
+                    from: p.current.clone(),
+                    to: p.current.clone(),
+                    changed: false,
+                    major: false,
+                    warnings: Vec::new(),
+                    skipped,
+                    unchanged_reason: reason,
+                    mode: p.mode.clone(),
+                    detached: None,
+                    dist: DistSync::default(),
+                };
+                if !options.detach && matches!(target, Target::Recorded | Target::Release) {
+                    let location = p
+                        .catalog
+                        .clone()
+                        .or_else(|| p.build.as_ref().and_then(|b| b.location.clone()));
+                    if let Some(location) = location {
+                        let listed = builds::candidates(&p, id, &location)?;
+                        let release = listed
+                            .last()
+                            .filter(|r| r.build.is_some() || p.build.is_some());
+                        if let Some(release) = release {
+                            if p.build.is_none() {
+                                let live = installed_repo(txn.root(), id, &p)?;
+                                guard_clone(
+                                    &live,
+                                    state,
+                                    id,
+                                    p.clone.as_deref(),
+                                    "local commits detected",
+                                    "unpublished work blocks update",
+                                    true,
+                                    ssh,
+                                )?;
+                            }
+                            self.check_change(txn, state, id, &release.manifest, Some(&location))?;
+                            let result = self.apply_catalog_revision(
+                                txn,
+                                state,
+                                id,
+                                release,
+                                Some(location),
+                            )?;
+                            if state.is_active(id) {
+                                deps::refuse_inactive_dependencies(state, id, "update", false)?;
+                            }
+                            return Ok(result);
                         }
-                        self.check_change(txn, state, id, &release.manifest, Some(&location))?;
-                        let result = self.apply_catalog_revision(txn, state, id, release, Some(location))?;
-                        if state.is_active(id) { deps::refuse_inactive_dependencies(state, id, "update", false)?; }
-                        return Ok(result);
-                    }
-                    if p.build.is_some() {
-                        return Ok(RevisionChange { id: id.into(), from: p.current.clone(), to: p.current.clone(), changed: false, major: false, warnings: Vec::new(), skipped: Vec::new(), unchanged_reason: None, mode: p.mode.clone(), detached: None, dist: DistSync::default() });
+                        if p.build.is_some() {
+                            return Ok(unchanged(None, Vec::new()));
+                        }
                     }
                 }
-            }
-            let transitioning_build = p.build.is_some();
-            if transitioning_build {
-                let relative = p.clone_folder(id);
-                if let Ok(live) = installed_repo(txn.root(), id, &p) {
-                    builds::guard_retained(&live, id, ssh)?;
-                    txn.repo(&relative, &live)?;
-                } else {
-                    let repo = txn.scratch("build-transition");
-                    fs::create_dir_all(repo.parent().unwrap())?;
-                    crate::transport::clone_repo(repo.parent().unwrap(), &p.source, "build-transition", ssh)?;
-                    lost_work::record_origin_tags(&repo, ssh)?;
-                    git(&repo, &["checkout", "--detach", &p.current.commit], ssh)?;
-                    txn.add_repo(&relative, &repo)?;
+                let transitioning_build = p.build.is_some();
+                if transitioning_build {
+                    let relative = p.clone_folder(id);
+                    if let Ok(live) = installed_repo(txn.root(), id, &p) {
+                        builds::guard_retained(&live, id, ssh)?;
+                        txn.repo(&relative, &live)?;
+                    } else {
+                        let repo = txn.scratch("build-transition");
+                        fs::create_dir_all(repo.parent().unwrap())?;
+                        crate::transport::clone_repo(
+                            repo.parent().unwrap(),
+                            &p.source,
+                            "build-transition",
+                            ssh,
+                        )?;
+                        lost_work::record_origin_tags(&repo, ssh)?;
+                        git(&repo, &["checkout", "--detach", &p.current.commit], ssh)?;
+                        txn.add_repo(&relative, &repo)?;
+                    }
                 }
-            }
-            let detached = if options.detach {
-                let location = p.catalog.clone().or_else(|| p.build.as_ref().and_then(|b| b.location.clone())).ok_or_else(|| {
-                    Error::InvalidArgument(format!(
-                        "{id} is not protected by a catalog; there is nothing to detach"
-                    ))
-                })?;
-                state.packages.get_mut(id).unwrap().catalog = None;
-                Some(location)
-            } else {
-                None
-            };
-            let protected = p.catalog.clone().filter(|_| detached.is_none() && !transitioning_build);
-            if let Some(location) = &protected {
-                ensure!(
-                    matches!(target, Target::Recorded | Target::Release),
-                    InvalidArgument,
-                    "{id} is protected by catalog {location} and moves only to the versions it lists; detach it to follow a ref or branch of its origin"
-                );
-            }
-            let unchanged = |reason: Option<UnchangedReason>, skipped| RevisionChange {
-                id: id.into(),
-                from: p.current.clone(),
-                to: p.current.clone(),
-                changed: false,
-                major: false,
-                warnings: Vec::new(),
-                skipped,
-                unchanged_reason: reason,
-                mode: p.mode.clone(),
-                detached: None,
-                dist: DistSync::default(),
-            };
-            if let (Target::Recorded, Mode::Pinned(reference), None) =
-                (&target, &p.mode, &detached)
-            {
-                return Ok(unchanged(
-                    Some(UnchangedReason::Pinned {
-                        reference: reference.clone(),
-                    }),
-                    Vec::new(),
-                ));
-            }
-            let relative = p.clone_folder(id);
-            let live = txn.staged_repo(&relative).unwrap_or(installed_repo(txn.root(), id, &p).or_else(|e| if transitioning_build { Ok(txn.root().join(&relative)) } else { Err(e) })?);
-            let mut guard_state = state.clone();
-            if transitioning_build { guard_state.packages.get_mut(id).unwrap().current.commit = git(&live, &["rev-parse", "HEAD"], ssh)?; }
-            guard_clone(
-                &live,
-                &guard_state,
-                id,
-                p.clone.as_deref(),
-                "local commits detected; update would discard them",
-                "local branches, tags or stash hold unpublished work; keep or remove them before updating",
-                true,
-                self.options.custom_ssh,
-            )?;
-            let repo = txn.repo(&relative, &live)?;
-            // Mirror the origin's tags exactly: a deleted release disappears, a moved one
-            // is seen at its new commit (tags are not policed; the installed revision is
-            // kept by commit). Local tags holding unpublished commits were refused above.
-            match p.clone.as_deref() {
-                Some(key) => clones::fetch_tags(&repo, state, key, true, self.options.custom_ssh)?,
-                None => clones::fetch_origin(&repo, true, self.options.custom_ssh)?,
-            }
-            if matches!(&target, Target::Dev) || target == Target::Ref("HEAD".into()) {
-                crate::transport::set_remote_head(&repo, "origin", self.options.custom_ssh)?;
-            }
-            let mut skipped = Vec::new();
-            // Moved or retracted installed release tag (release mode).
-            let mut warnings: Vec<String> = Vec::new();
-            // The catalog release a protected package moves to.
-            let mut expected: Option<catalog::Release> = None;
-            let (next_commit, mode) = match (&target, &p.mode) {
-                _ if protected.is_some() => {
-                    let location = protected.as_deref().unwrap();
-                    let (releases, upstream) = catalog_candidates(&repo, id, &p, location, ssh)?;
-                    let Some(release) = releases.into_iter().last() else {
-                        return Ok(unchanged(
-                            upstream.map(|version| UnchangedReason::NotInCatalog { version }),
-                            Vec::new(),
-                        ));
-                    };
-                    let commit = release.commit.clone();
-                    ensure_release_commit(&repo, &release, self.options.custom_ssh)?;
-                    expected = Some(release);
-                    (commit, Mode::Release)
-                }
-                (Target::Ref(reference), _) => resolve_upstream_ref(&repo, reference, ssh)?,
-                (Target::Dev, _) => resolve_upstream_ref(&repo, "HEAD", self.options.custom_ssh)?,
-                (Target::Recorded, Mode::Branch(branch)) => {
-                    let commit = resolve_ref(&repo, &format!("refs/remotes/origin/{branch}"), ssh)
-                        .map_err(|_| {
-                            Error::version_conflict(format!(
-                                "the origin no longer has the branch {branch} it follows; automatic update refused"
+                let detached = if options.detach {
+                    let location = p
+                        .catalog
+                        .clone()
+                        .or_else(|| p.build.as_ref().and_then(|b| b.location.clone()))
+                        .ok_or_else(|| {
+                            Error::InvalidArgument(format!(
+                                "{id} is not protected by a catalog; there is nothing to detach"
                             ))
                         })?;
-                    (commit, p.mode.clone())
+                    state.packages.get_mut(id).unwrap().catalog = None;
+                    Some(location)
+                } else {
+                    None
+                };
+                let protected = p
+                    .catalog
+                    .clone()
+                    .filter(|_| detached.is_none() && !transitioning_build);
+                if let Some(location) = &protected {
+                    ensure!(
+                        matches!(target, Target::Recorded | Target::Release),
+                        InvalidArgument,
+                        "{id} is protected by catalog {location} and moves only to the versions \
+                     it lists; detach it to follow a ref or branch of its origin"
+                    );
                 }
-                _ => {
-                    // Following releases (no explicit target) compares versions only.
-                    let following = target == Target::Recorded;
-                    let mut found = match releases::discover_all_with_ssh(&repo, Some(id), ssh) {
-                        // Every release tag was deleted on the origin: the installed one
-                        // was retracted, the package stays.
-                        Err(Error::NoReleases(_)) if following => releases::Discovery::default(),
-                        other => other?,
-                    };
-                    let current_version = catalog::version_key(&p.current.version)?;
-                    // The installed release tag is looked up among all of them.
-                    let tag_warning = release_tag_warning(&repo, id, &p.current, &found, ssh);
-                    // Pre-releases only on the installed pre-release's track.
-                    found.offered(Some(&current_version));
-                    if !found.tags.is_empty() {
-                        found.ensure_latest_is_valid()?;
+                if let (Target::Recorded, Mode::Pinned(reference), None) =
+                    (&target, &p.mode, &detached)
+                {
+                    return Ok(unchanged(
+                        Some(UnchangedReason::Pinned {
+                            reference: reference.clone(),
+                        }),
+                        Vec::new(),
+                    ));
+                }
+                let relative = p.clone_folder(id);
+                let live = match txn.staged_repo(&relative) {
+                    Some(staged) => staged,
+                    None => installed_repo(txn.root(), id, &p)?,
+                };
+                let mut guard_state = state.clone();
+                if transitioning_build {
+                    guard_state.packages.get_mut(id).unwrap().current.commit =
+                        git(&live, &["rev-parse", "HEAD"], ssh)?;
+                }
+                guard_clone(
+                    &live,
+                    &guard_state,
+                    id,
+                    p.clone.as_deref(),
+                    "local commits detected; update would discard them",
+                    "local branches, tags or stash hold unpublished work; \
+                 keep or remove them before updating",
+                    true,
+                    self.options.custom_ssh,
+                )?;
+                let repo = txn.repo(&relative, &live)?;
+                // Mirror the origin's tags exactly: a deleted release disappears, a moved one
+                // is seen at its new commit (tags are not policed; the installed revision is
+                // kept by commit). Local tags holding unpublished commits were refused above.
+                match p.clone.as_deref() {
+                    Some(key) => {
+                        clones::fetch_tags(&repo, state, key, true, self.options.custom_ssh)?
                     }
-                    skipped = std::mem::take(&mut found.skipped);
-                    let latest = found.tags.pop();
-                    let latest_version = latest
-                        .as_ref()
-                        .map(|tag| catalog::version_key(&tag.manifest.version))
-                        .transpose()?;
-                    match latest {
-                        // Following releases never downgrades: a retracted installed
-                        // release stays (an explicit return to releases may go down).
-                        _ if following && latest_version.as_ref() < Some(&current_version) => {
-                            warnings.extend(tag_warning);
-                            (p.current.commit.clone(), Mode::Release)
-                        }
-                        // The tag of the installed version moved: the installed commit
-                        // is kept (a branch commit may carry the version of the release
-                        // before it, and then moves to the release).
-                        Some(_)
-                            if !matches!(p.mode, Mode::Branch(_))
-                                && latest_version.as_ref() == Some(&current_version) =>
+                    None => clones::fetch_origin(&repo, true, self.options.custom_ssh)?,
+                }
+                if matches!(&target, Target::Dev) || target == Target::Ref("HEAD".into()) {
+                    crate::transport::set_remote_head(&repo, "origin", self.options.custom_ssh)?;
+                }
+                let mut skipped = Vec::new();
+                // Moved or retracted installed release tag (release mode).
+                let mut warnings: Vec<String> = Vec::new();
+                // The catalog release a protected package moves to.
+                let mut expected: Option<catalog::Release> = None;
+                let (next_commit, mode) = match (&target, &p.mode) {
+                    _ if protected.is_some() => {
+                        let location = protected.as_deref().unwrap();
+                        let (releases, upstream) =
+                            catalog_candidates(&repo, id, &p, location, ssh)?;
+                        let Some(release) = releases.into_iter().last() else {
+                            return Ok(unchanged(
+                                upstream.map(|version| UnchangedReason::NotInCatalog { version }),
+                                Vec::new(),
+                            ));
+                        };
+                        let commit = release.commit.clone();
+                        ensure_release_commit(&repo, &release, self.options.custom_ssh)?;
+                        expected = Some(release);
+                        (commit, Mode::Release)
+                    }
+                    (Target::Ref(reference), _) => resolve_upstream_ref(&repo, reference, ssh)?,
+                    (Target::Dev, _) => {
+                        resolve_upstream_ref(&repo, "HEAD", self.options.custom_ssh)?
+                    }
+                    (Target::Recorded, Mode::Branch(branch)) => {
+                        let commit =
+                            resolve_ref(&repo, &format!("refs/remotes/origin/{branch}"), ssh)
+                                .map_err(|_| {
+                                    Error::version_conflict(format!(
+                                        "the origin no longer has the branch {branch} it follows; \
+                                 automatic update refused"
+                                    ))
+                                })?;
+                        (commit, p.mode.clone())
+                    }
+                    _ => {
+                        // Following releases (no explicit target) compares versions only.
+                        let following = target == Target::Recorded;
+                        let mut found = match releases::discover_all_with_ssh(&repo, Some(id), ssh)
                         {
-                            warnings.extend(tag_warning);
-                            (p.current.commit.clone(), Mode::Release)
+                            // Every release tag was deleted on the origin: the installed one
+                            // was retracted, the package stays.
+                            Err(Error::NoReleases(_)) if following => {
+                                releases::Discovery::default()
+                            }
+                            other => other?,
+                        };
+                        let current_version = catalog::version_key(&p.current.version)?;
+                        // The installed release tag is looked up among all of them.
+                        let tag_warning = release_tag_warning(&repo, id, &p.current, &found, ssh);
+                        // Pre-releases only on the installed pre-release's track.
+                        found.offered(Some(&current_version));
+                        if !found.tags.is_empty() {
+                            found.ensure_latest_is_valid()?;
                         }
-                        Some(latest) => (latest.commit, Mode::Release),
-                        None => fail!(NoReleases, "no releases"),
+                        skipped = std::mem::take(&mut found.skipped);
+                        let latest = found.tags.pop();
+                        let latest_version = latest
+                            .as_ref()
+                            .map(|tag| catalog::version_key(&tag.manifest.version))
+                            .transpose()?;
+                        match latest {
+                            // Following releases never downgrades: a retracted installed
+                            // release stays (an explicit return to releases may go down).
+                            _ if following && latest_version.as_ref() < Some(&current_version) => {
+                                warnings.extend(tag_warning);
+                                (p.current.commit.clone(), Mode::Release)
+                            }
+                            // The tag of the installed version moved: the installed commit
+                            // is kept (a branch commit may carry the version of the release
+                            // before it, and then moves to the release).
+                            Some(_)
+                                if !matches!(p.mode, Mode::Branch(_))
+                                    && latest_version.as_ref() == Some(&current_version) =>
+                            {
+                                warnings.extend(tag_warning);
+                                (p.current.commit.clone(), Mode::Release)
+                            }
+                            Some(latest) => (latest.commit, Mode::Release),
+                            None => fail!(NoReleases, "no releases"),
+                        }
                     }
-                }
-            };
-            // Following the recorded branch (no explicit ref): its history must contain
-            // the installed commit.
-            let following = matches!(&mode, Mode::Branch(_))
-                && mode == p.mode
-                && !matches!(target, Target::Ref(_));
-            if next_commit == p.current.commit && !transitioning_build {
-                // A new mode (or a detach) is recorded even when the revision stays: that
-                // is a change.
-                if mode == p.mode && detached.is_none() && !transitioning_build {
+                };
+                // Following the recorded branch (no explicit ref): its history must contain
+                // the installed commit.
+                let following = matches!(&mode, Mode::Branch(_))
+                    && mode == p.mode
+                    && !matches!(target, Target::Ref(_));
+                if next_commit == p.current.commit && !transitioning_build {
+                    // A new mode (or a detach) is recorded even when the revision stays: that
+                    // is a change.
+                    if mode == p.mode && detached.is_none() && !transitioning_build {
+                        return Ok(RevisionChange {
+                            warnings,
+                            ..unchanged(None, skipped)
+                        });
+                    }
+                    state.packages.get_mut(id).unwrap().mode = mode.clone();
                     return Ok(RevisionChange {
+                        changed: true,
+                        mode,
                         warnings,
+                        detached,
                         ..unchanged(None, skipped)
                     });
                 }
-                state.packages.get_mut(id).unwrap().mode = mode.clone();
-                return Ok(RevisionChange {
-                    changed: true,
-                    mode,
-                    warnings,
-                    detached,
-                    ..unchanged(None, skipped)
-                });
-            }
-            if following {
-                let Mode::Branch(branch) = &mode else {
-                    unreachable!()
-                };
+                if following {
+                    let Mode::Branch(branch) = &mode else {
+                        unreachable!()
+                    };
+                    git(
+                        &repo,
+                        &[
+                            "merge-base",
+                            "--is-ancestor",
+                            &p.current.commit,
+                            &next_commit,
+                        ],
+                        self.options.custom_ssh,
+                    )
+                    .context(
+                        Error::version_conflict,
+                        format!("history of {branch} diverged; automatic update refused"),
+                    )?;
+                }
+                // The package can move to another folder (or into a multi-package layout).
+                let path = updated_package(&repo, &next_commit, id, ssh)?
+                    .subdir()
+                    .map(str::to_owned);
+                if let Some(release) = &expected {
+                    ensure!(
+                        path == release.path,
+                        Catalog,
+                        "catalog package folder {} of {id}@{} does not match git revision ({})",
+                        release.path.as_deref().unwrap_or("(root)"),
+                        release.manifest.version,
+                        path.as_deref().unwrap_or("(root)")
+                    );
+                }
                 git(
                     &repo,
-                    &["merge-base", "--is-ancestor", &p.current.commit, &next_commit],
+                    &["checkout", "--detach", &next_commit],
                     self.options.custom_ssh,
-                )
-                .context(
-                    Error::version_conflict,
-                    format!("history of {branch} diverged; automatic update refused"),
                 )?;
-            }
-            // The package can move to another folder (or into a multi-package layout).
-            let path = updated_package(&repo, &next_commit, id, ssh)?
-                .subdir()
-                .map(str::to_owned);
-            if let Some(release) = &expected {
+                let m = package_manifest(&repo, path.as_deref())?;
                 ensure!(
-                    path == release.path,
-                    Catalog,
-                    "catalog package folder {} of {id}@{} does not match git revision ({})",
-                    release.path.as_deref().unwrap_or("(root)"),
-                    release.manifest.version,
-                    path.as_deref().unwrap_or("(root)")
+                    m.id == id,
+                    InvalidManifest,
+                    "package id changed upstream to {}",
+                    m.id
                 );
-            }
-            git(&repo, &["checkout", "--detach", &next_commit], self.options.custom_ssh)?;
-            let m = package_manifest(&repo, path.as_deref())?;
-            ensure!(m.id == id, InvalidManifest, "package id changed upstream to {}", m.id);
-            if let Some(release) = &expected {
-                verify_catalog_manifest(&m, release)?;
-            }
-            // Tags are not policed: an explicit tag or commit may keep the installed version
-            // at another commit; when it is the moved release tag of that version, say so.
-            if let Target::Ref(reference) = &target
-                && m.version == p.current.version
-                && *reference == identity::release_tag(id, &m.version)
-            {
-                warnings.push(format!(
-                    "release tag {reference} now points to {}",
-                    &next_commit[..next_commit.len().min(12)]
-                ));
-            }
-            // A protected package takes new dependencies from its own catalog.
-            let dependency_catalog = match &protected {
-                Some(location) => Some(location.clone()),
-                None => self.options.catalog.clone(),
-            };
-            self.check_change(txn, state, id, &m, dependency_catalog.as_deref())?;
-            let next = revision(&repo, &m, self.options.custom_ssh)?;
-            let entry = state.packages.get_mut(id).unwrap();
-            entry.previous = Some(p.current.with_mode(&p.mode));
-            entry.previous_build = p.build.clone();
-            entry.build = None;
-            if transitioning_build { entry.catalog = None; }
-            entry.current = next.clone();
-            entry.path = path.clone();
-            entry.mode = mode.clone();
-            entry.adopt(&m);
-            // Only active packages satisfy the dependencies of an active package.
-            if state.is_active(id) {
-                deps::refuse_inactive_dependencies(state, id, "update", false)?;
-            }
-            let staged = txn.deploy(id, &relative, path.as_deref(), &next.commit, self.options.custom_ssh)?;
-            if let Some(release) = &expected {
-                verify_catalog_release(&m, release, &staged)?;
-            }
-            Ok(RevisionChange {
-                id: id.into(),
-                major: deps::is_major_text(&p.current.version, &next.version),
-                from: p.current.clone(),
-                to: next,
-                changed: true,
-                warnings: warnings.into_iter().chain(metadata_warnings(&m)).collect(),
-                skipped,
-                unchanged_reason: None,
-                mode,
-                detached,
-                dist: DistSync::default(),
+                if let Some(release) = &expected {
+                    verify_catalog_manifest(&m, release)?;
+                }
+                // Tags are not policed: an explicit tag or commit may keep the installed version
+                // at another commit; when it is the moved release tag of that version, say so.
+                if let Target::Ref(reference) = &target
+                    && m.version == p.current.version
+                    && *reference == identity::release_tag(id, &m.version)
+                {
+                    warnings.push(format!(
+                        "release tag {reference} now points to {}",
+                        &next_commit[..next_commit.len().min(12)]
+                    ));
+                }
+                // A protected package takes new dependencies from its own catalog.
+                let dependency_catalog = match &protected {
+                    Some(location) => Some(location.clone()),
+                    None => self.options.catalog.clone(),
+                };
+                self.check_change(txn, state, id, &m, dependency_catalog.as_deref())?;
+                let next = revision(&repo, &m, self.options.custom_ssh)?;
+                let entry = state.packages.get_mut(id).unwrap();
+                entry.previous = Some(p.current.with_mode(&p.mode));
+                entry.previous_build = p.build.clone();
+                entry.build = None;
+                if transitioning_build {
+                    entry.catalog = None;
+                }
+                entry.current = next.clone();
+                entry.path = path.clone();
+                entry.mode = mode.clone();
+                entry.adopt(&m);
+                // Only active packages satisfy the dependencies of an active package.
+                if state.is_active(id) {
+                    deps::refuse_inactive_dependencies(state, id, "update", false)?;
+                }
+                let staged = txn.deploy(
+                    id,
+                    &relative,
+                    path.as_deref(),
+                    &next.commit,
+                    self.options.custom_ssh,
+                )?;
+                if let Some(release) = &expected {
+                    verify_catalog_release(&m, release, &staged)?;
+                }
+                Ok(RevisionChange {
+                    id: id.into(),
+                    major: deps::is_major_text(&p.current.version, &next.version),
+                    from: p.current.clone(),
+                    to: next,
+                    changed: true,
+                    warnings: warnings.into_iter().chain(metadata_warnings(&m)).collect(),
+                    skipped,
+                    unchanged_reason: None,
+                    mode,
+                    detached,
+                    dist: DistSync::default(),
+                })
             })
-        }).map_err(|error| error.with_package(id).listing_lost_work())?;
+            .map_err(|error| error.with_package(id).listing_lost_work())?;
         Ok(RevisionChange { dist, ..change })
     }
     /// Swap current and previous version (offline). Refused if it breaks a dependent.
     pub fn rollback(&self, id: &str) -> Result<RevisionChange> {
         valid_id(id)?;
         let ssh = self.options.custom_ssh;
-        let (change, dist) = self.transaction(|txn, state| {
-            let p = state
-                .packages
-                .get(id)
-                .cloned()
-                .ok_or_else(|| Error::NotInstalled { id: id.into() })?;
-            let previous = p
-                .previous
-                .clone()
-                .ok_or_else(|| Error::NoPreviousVersion {
+        let (change, dist) = self
+            .transaction(|txn, state| {
+                let p = state
+                    .packages
+                    .get(id)
+                    .cloned()
+                    .ok_or_else(|| Error::NotInstalled { id: id.into() })?;
+                let previous = p.previous.clone().ok_or_else(|| Error::NoPreviousVersion {
                     id: id.into(),
                     commit: None,
                 })?;
-            if let Some(build) = &p.previous_build {
-                let cached = txn.root().join(crate::artifact::relative(id, build));
-                if !cached.is_dir() { return Err(Error::NoPreviousVersion { id: id.into(), commit: Some(previous.commit.clone()) }); }
-                if p.build.is_none() {
-                    let live = installed_repo(txn.root(), id, &p)?;
-                    guard_clone(&live, state, id, p.clone.as_deref(), "local commits detected", "unpublished work blocks rollback", false, ssh)?;
+                if let Some(build) = &p.previous_build {
+                    let cached = txn.root().join(crate::artifact::relative(id, build));
+                    if !cached.is_dir() {
+                        return Err(Error::NoPreviousVersion {
+                            id: id.into(),
+                            commit: Some(previous.commit.clone()),
+                        });
+                    }
+                    if p.build.is_none() {
+                        let live = installed_repo(txn.root(), id, &p)?;
+                        guard_clone(
+                            &live,
+                            state,
+                            id,
+                            p.clone.as_deref(),
+                            "local commits detected",
+                            "unpublished work blocks rollback",
+                            false,
+                            ssh,
+                        )?;
+                    }
+                    self.check_change(txn, state, id, &build.release.manifest, None)?;
+                    let entry = state.packages.get_mut(id).unwrap();
+                    entry.previous = Some(p.current.with_mode(&p.mode));
+                    entry.previous_build = p.build.clone();
+                    entry.current = previous.without_mode();
+                    entry.mode = previous.mode.clone();
+                    entry.path = build.release.path.clone();
+                    entry.build = Some(build.clone());
+                    entry.adopt(&build.release.manifest);
+                    if state.is_active(id) {
+                        deps::refuse_inactive_dependencies(state, id, "roll back", false)?;
+                        builds::deploy_build(txn, id, build)?;
+                    }
+                    return Ok(RevisionChange {
+                        id: id.into(),
+                        from: p.current,
+                        to: previous.without_mode(),
+                        changed: true,
+                        major: false,
+                        warnings: Vec::new(),
+                        skipped: Vec::new(),
+                        unchanged_reason: None,
+                        mode: previous.mode.clone(),
+                        detached: None,
+                        dist: DistSync::default(),
+                    });
                 }
-                self.check_change(txn, state, id, &build.release.manifest, None)?;
+                let relative = p.clone_folder(id);
+                let live = installed_repo(txn.root(), id, &p)?;
+                let mut guard_state = state.clone();
+                if p.build.is_some() {
+                    guard_state.packages.get_mut(id).unwrap().current = previous.without_mode();
+                }
+                guard_clone(
+                    &live,
+                    &guard_state,
+                    id,
+                    p.clone.as_deref(),
+                    "local commits detected",
+                    "local branches, tags or stash hold unpublished work; \
+                     keep or remove them before rolling back",
+                    false,
+                    self.options.custom_ssh,
+                )?;
+                // The previous commit can be gone: pruned after the origin deleted or moved
+                // the tag that held it.
+                let previous_commit = format!("{}^{{commit}}", previous.commit);
+                if git(&live, &["cat-file", "-e", &previous_commit], ssh).is_err() {
+                    return Err(Error::NoPreviousVersion {
+                        id: id.into(),
+                        commit: Some(previous.commit.clone()),
+                    });
+                }
+                let repo = txn.repo(&relative, &live)?;
+                let path = match packages::find_at_with_ssh(&repo, &previous.commit, Some(id), ssh)
+                {
+                    Ok(found) => found.subdir().map(str::to_owned),
+                    Err(Error::InvalidArgument(_)) => {
+                        fail!(InvalidManifest, "rollback manifest mismatch")
+                    }
+                    Err(error) => return Err(error),
+                };
+                git(
+                    &repo,
+                    &["checkout", "--detach", &previous.commit],
+                    self.options.custom_ssh,
+                )?;
+                let m = package_manifest(&repo, path.as_deref())?;
+                ensure!(
+                    m.id == id && m.version == previous.version,
+                    InvalidManifest,
+                    "rollback manifest mismatch"
+                );
+                self.check_change(txn, state, id, &m, None)?;
+                // Revision and mode swap together.
                 let entry = state.packages.get_mut(id).unwrap();
                 entry.previous = Some(p.current.with_mode(&p.mode));
                 entry.previous_build = p.build.clone();
+                entry.build = None;
                 entry.current = previous.without_mode();
                 entry.mode = previous.mode.clone();
-                entry.path = build.release.path.clone();
-                entry.build = Some(build.clone());
-                entry.adopt(&build.release.manifest);
+                entry.path = path.clone();
+                entry.adopt(&m);
                 if state.is_active(id) {
                     deps::refuse_inactive_dependencies(state, id, "roll back", false)?;
-                    builds::deploy_build(txn, id, build)?;
                 }
-                return Ok(RevisionChange { id: id.into(), from: p.current, to: previous.without_mode(), changed: true, major: false, warnings: Vec::new(), skipped: Vec::new(), unchanged_reason: None, mode: previous.mode.clone(), detached: None, dist: DistSync::default() });
-            }
-            let relative = p.clone_folder(id);
-            let live = installed_repo(txn.root(), id, &p)?;
-            let mut guard_state = state.clone();
-            if p.build.is_some() { guard_state.packages.get_mut(id).unwrap().current = previous.without_mode(); }
-            guard_clone(
-                &live,
-                &guard_state,
-                id,
-                p.clone.as_deref(),
-                "local commits detected",
-                "local branches, tags or stash hold unpublished work; keep or remove them before rolling back",
-                false,
-                self.options.custom_ssh,
-            )?;
-            // The previous commit can be gone: pruned after the origin deleted or moved
-            // the tag that held it.
-            let previous_commit = format!("{}^{{commit}}", previous.commit);
-            if git(&live, &["cat-file", "-e", &previous_commit], ssh).is_err() {
-                return Err(Error::NoPreviousVersion {
+                txn.deploy(
+                    id,
+                    &relative,
+                    path.as_deref(),
+                    &previous.commit,
+                    self.options.custom_ssh,
+                )?;
+                Ok(RevisionChange {
                     id: id.into(),
-                    commit: Some(previous.commit.clone()),
-                });
-            }
-            let repo = txn.repo(&relative, &live)?;
-            let path = match packages::find_at_with_ssh(&repo, &previous.commit, Some(id), ssh) {
-                Ok(found) => found.subdir().map(str::to_owned),
-                Err(Error::InvalidArgument(_)) => fail!(InvalidManifest, "rollback manifest mismatch"),
-                Err(error) => return Err(error),
-            };
-            git(&repo, &["checkout", "--detach", &previous.commit], self.options.custom_ssh)?;
-            let m = package_manifest(&repo, path.as_deref())?;
-            ensure!(
-                m.id == id && m.version == previous.version,
-                InvalidManifest,
-                "rollback manifest mismatch"
-            );
-            self.check_change(txn, state, id, &m, None)?;
-            // Revision and mode swap together.
-            let entry = state.packages.get_mut(id).unwrap();
-            entry.previous = Some(p.current.with_mode(&p.mode));
-            entry.previous_build = p.build.clone();
-            entry.build = None;
-            entry.current = previous.without_mode();
-            entry.mode = previous.mode.clone();
-            entry.path = path.clone();
-            entry.adopt(&m);
-            if state.is_active(id) {
-                deps::refuse_inactive_dependencies(state, id, "roll back", false)?;
-            }
-            txn.deploy(id, &relative, path.as_deref(), &previous.commit, self.options.custom_ssh)?;
-            Ok(RevisionChange {
-                id: id.into(),
-                from: p.current,
-                to: previous.without_mode(),
-                changed: true,
-                major: false,
-                warnings: Vec::new(),
-                skipped: Vec::new(),
-                unchanged_reason: None,
-                mode: previous.mode.clone(),
-                detached: None,
-                dist: DistSync::default(),
+                    from: p.current,
+                    to: previous.without_mode(),
+                    changed: true,
+                    major: false,
+                    warnings: Vec::new(),
+                    skipped: Vec::new(),
+                    unchanged_reason: None,
+                    mode: previous.mode.clone(),
+                    detached: None,
+                    dist: DistSync::default(),
+                })
             })
-        }).map_err(|error| error.with_package(id).listing_lost_work())?;
+            .map_err(|error| error.with_package(id).listing_lost_work())?;
         Ok(RevisionChange { dist, ..change })
     }
     pub fn set_enabled(&self, id: &str, enabled: bool) -> Result<DistSync> {

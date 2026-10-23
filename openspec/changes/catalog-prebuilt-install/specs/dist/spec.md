@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Deploys copy the committed tree
-Git deploys SHALL copy the manifest-selected committed output (default dist, dot selects the package root) from Git objects, never the working tree. Build deploys SHALL copy locally cached verified output without Git or network. Both SHALL preserve nested folders and executable bits and refuse symlinks with unsupported. Gitlinks SHALL become empty directories with an actionable warning, without fetching submodules.
+Git deploys SHALL copy the resolved commit’s manifest-selected package output (default `<path>/dist`; `"."` selects `<path>`) from Git objects, never the working tree. Builds SHALL deploy cached verified output without Git or network. Both SHALL preserve nested folders and executable bits. Symlinks SHALL fail with `unsupported`. Gitlinks SHALL become empty directories without fetching submodules, with an actionable warning naming the path and advising committing built files instead.
 
 #### Scenario: Symlink inside dist
 - **WHEN** a release's package dist contains a symlink
@@ -33,9 +33,8 @@ Git deploys SHALL copy the manifest-selected committed output (default dist, dot
 - **WHEN** an active build package has no deployed folder and sync-dist runs
 - **THEN** its verified local output is deployed without Git or network access
 
-
 ### Requirement: A revision without dist is refused
-A Git revision missing its manifest-selected output SHALL fail with invalid_manifest, naming the folder and detection context. With buildRequired, the error SHALL explain the required committed build and name buildCommand if supplied. A catalog build SHALL use its archive output without requiring that folder in Git. gitpm SHALL never run builds.
+A Git revision without its declared output folder (default dist/) SHALL fail with invalid_manifest, never deploying an empty folder. Messages SHALL name the missing folder and detection context below; substitute the declared path for dist in default messages. With buildRequired, errors SHALL explain that a committed build result is required and name buildCommand when supplied. Catalog builds SHALL use archive output without requiring that folder in Git. gitpm SHALL NOT run builds.
 
 #### Scenario: Deploy from Git objects
 - **WHEN** the commit being deployed has no declared output tree
@@ -60,4 +59,3 @@ A Git revision missing its manifest-selected output SHALL fail with invalid_mani
 #### Scenario: Prebuilt release needs no committed output
 - **WHEN** a build release manifest selects an output folder absent from its Git commit
 - **THEN** installation deploys the verified build without accessing that commit
-

@@ -1,12 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Git never waits for input
-Git and HTTP operations SHALL be bounded and noninteractive through the transport module. Git SHALL preserve its existing SSH policy, prompts suppression, input validation, keepalives and wall-clock limits. Catalog and build downloads SHALL use a five-second connect timeout, twenty-second total timeout and 16 MiB streaming bound; only builds follow up to five HTTPS-only redirects.
-
-#### Scenario: Noninteractive transport policy
-- **WHEN** transport starts a Git or HTTP operation
-- **THEN** Repository git commands SHALL use closed stdin, `GIT_TERMINAL_PROMPT=0`, empty `GIT_ASKPASS`, `credential.interactive=never`, `http.lowSpeedLimit=1`/`http.lowSpeedTime=20`, and the "Batch SSH command" policy. The `auth check` ls-remote and `core.sshCommand` probe SHALL be killed after 10 s (`git`, "timed out after 10s"). Verified by `transport::system::tests::git_never_reads_stdin_or_prompts`.
-Build downloads SHALL use the same bounded noninteractive transport policy as catalogs, with the build-specific HTTPS redirect policy.
+Repository git commands SHALL use closed stdin, `GIT_TERMINAL_PROMPT=0`, empty `GIT_ASKPASS`, `credential.interactive=never`, `http.lowSpeedLimit=1`/`http.lowSpeedTime=20`, and the "Batch SSH command" policy. The `auth check` ls-remote and `core.sshCommand` probe SHALL be killed after 10 s (`git`, "timed out after 10s"). Verified by `transport::system::tests::git_never_reads_stdin_or_prompts`.
 
 #### Scenario: Wedged git
 - **WHEN** a git subprocess hangs for 10 minutes
@@ -42,11 +37,10 @@ Build downloads SHALL use the same bounded noninteractive transport policy as ca
 
 #### Scenario: Bounded build request
 - **WHEN** a build request stalls or streams an oversized body
-- **THEN** the catalog timeout and 16 MiB streaming bound terminate it with http
-
+- **THEN** the five-second connect timeout, twenty-second total timeout and 16 MiB streaming bound terminate it with `http`; builds alone follow at most five HTTPS-only redirects
 
 ### Requirement: Typed network transport
-Transport SHALL expose typed clone, fetch, remote HEAD, remote refs, read-only probe, catalog HTTP GET and artifact GET methods. Network callers SHALL use this boundary rather than construct network commands. Raw local Git SHALL remain available there. Build downloads SHALL share bounded HTTP handling with catalog reads but use their HTTPS-only redirect policy. Existing transport error kinds and messages SHALL remain stable.
+The transport module SHALL expose a Transport trait with typed methods for clone, fetch, remote HEAD refresh, remote ref lookup, read-only access probes, catalog HTTP GET and artifact GET. Network callers SHALL use these methods rather than assemble raw network Git commands. Raw local Git SHALL remain available through the same boundary. Transport failures SHALL retain existing gitpm error kinds and messages.
 
 #### Scenario: Clone and fetch through the interface
 - **WHEN** gitpm clones a repository or fetches tags, records origin tags or refreshes a remote HEAD
@@ -61,3 +55,6 @@ Transport SHALL expose typed clone, fetch, remote HEAD, remote refs, read-only p
 - **WHEN** a package needs a build archive
 - **THEN** the library invokes the typed artifact operation and subprocesses remain confined to transport
 
+#### Scenario: Shared bounded HTTP handling
+- **WHEN** catalog or build bytes are downloaded
+- **THEN** artifact GET shares the bounded catalog HTTP handling while applying its build-specific HTTPS-only redirect policy

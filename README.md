@@ -432,7 +432,6 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   Git. Fork continues cloning the recorded source repository. Existing library and FFI
   install/update/rollback entrypoints support both sources; the CLI only presents results.
 
-
 - **BREAKING:** Manifests accept `dist` (a package-relative folder, default `"dist"`; `"."` selects
   the package root), `buildCommand` (a descriptive string) and `buildRequired`
   (boolean, default false). Deploys and catalog hashes use the committed selected

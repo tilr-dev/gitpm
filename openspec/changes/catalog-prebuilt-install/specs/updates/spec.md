@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Updates need no catalog
-Unprotected Git installs SHALL update from their clone origin without a catalog. Build installs SHALL update from their recorded catalog, including unverified catalogs and without a catalog option. Targets with build SHALL install without Git; targets without build SHALL use Git. Explicit ref, branch, dev or detach SHALL transition a build to Git. New dependencies follow the dependency-resolution rules.
+`update ID` (any mode) and `update all` SHALL read releases and branches from the clone origin (set from `packages.<id>.source`) without catalog reads for unprotected Git packages. `check` SHALL use that origin when the catalog does not list them. Builds SHALL instead follow their recorded catalog, including unverified catalogs, without a catalog option. Verified by `workspace::update_and_rollback_swap_revisions_and_redeploy` (no catalog configured).
 
 #### Scenario: New dependency without a catalog
 - **WHEN** no catalog is configured and the newest release of a package adds a dependency that is not installed
@@ -23,9 +23,12 @@ Unprotected Git installs SHALL update from their clone origin without a catalog.
 - **WHEN** a build from an unverified catalog is updated without a catalog option
 - **THEN** it reads its recorded catalog and installs the newer archive without cloning
 
+#### Scenario: Select the target source kind
+- **WHEN** update selects a release with a build, or without one
+- **THEN** it installs the former without Git and the latter through Git; explicit ref, branch, dev or detach transitions a build to Git, and new dependencies follow the dependency-resolution rules
 
 ### Requirement: Protected packages update through their catalog
-Protected packages SHALL update from their recorded verified catalog, regardless of the configured catalog. Git targets SHALL match source commit, path, manifest and hashes; build targets SHALL verify archive and files without Git. Unverified build provenance SHALL NOT imply protection. Detach SHALL transition to unprotected Git atomically; ref/branch/dev of a build SHALL also transition to Git. Git protection otherwise requires detach for refs.
+Protected packages SHALL update only to versions in their recorded verified catalog, whatever `Options.catalog` is. Git targets SHALL match recorded source, commit, path, manifest and hashes before any change (`catalog` otherwise); builds SHALL verify archive and files without Git. `update ID --detach` (`Manager::update_with`) SHALL drop protection and update from origin in one transaction. Verified by `workspace::protected_packages_update_only_to_catalog_versions`.
 
 #### Scenario: Newer tag not in the catalog
 - **WHEN** protected `acme/greeter` 0.2.0 has the tag `acme/greeter@0.3.0` on its origin but the verified catalog lists only 0.1.0 and 0.2.0
@@ -56,9 +59,12 @@ Protected packages SHALL update from their recorded verified catalog, regardless
 - **WHEN** a protected build is updated with detach or an explicit Git ref or dev target
 - **THEN** the transition stages a Git clone, drops protection and deploys Git output atomically
 
+#### Scenario: Build provenance and protection
+- **WHEN** an unverified catalog supplies a build
+- **THEN** recorded build provenance does not imply protection; an explicit ref, branch or dev target transitions a build to Git atomically, while protected Git packages require detach for refs
 
 ### Requirement: Rollback swaps current and previous
-Rollback SHALL swap current and previous revisions and modes offline and redeploy, refusing broken dependents. Build revisions SHALL restore locally retained output, metadata and provenance; Git revisions SHALL use their retained clone. Missing previous revisions, Git commits or cached builds SHALL fail with no_previous_version. Rollback SHALL print ID rolled back A → B.
+`rollback ID` SHALL swap `current` and `previous` revisions and modes offline (no fetch) and redeploy retained Git or build output. Missing previous revisions, Git commits or cached builds SHALL fail with `no_previous_version`. It SHALL print `ID rolled back A → B` and refuse a target that breaks an installed dependent with `dependency_conflict` (dependencies, "Updates keep dependents working"). Verified by `rollback_to_a_pruned_commit_names_it`.
 
 #### Scenario: Previous revision needs a missing dependency
 - **WHEN** the previous revision depends on a package that is not installed
@@ -76,3 +82,6 @@ Rollback SHALL swap current and previous revisions and modes offline and redeplo
 - **WHEN** a build was updated and its catalog and artifact server are unavailable
 - **THEN** rollback restores the retained previous output and metadata and swaps the two revisions
 
+#### Scenario: Restore retained build state
+- **WHEN** rollback selects a retained build revision
+- **THEN** its output, release metadata and catalog provenance are restored locally, and current and previous modes and source kinds are swapped

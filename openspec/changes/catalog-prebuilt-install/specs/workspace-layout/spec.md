@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Workspace folders
-A workspace SHALL contain state.json, packages/<id> for own Git clones, repos/<key> while shared clones exist, and dist/<id> exactly for active output. Build installs SHALL retain current/previous verified output under builds/<id> and need no clone. Cache changes SHALL use workspace transactions. .pm-txn SHALL exist only during a transaction or after interruption.
+A workspace root SHALL contain `state.json` (installed packages, replacement bindings, forgotten records), `packages/<ns>/<name>/` (own clone of a package from a single-package repository), `dist/<ns>/<name>/` (deployed folder of an active package), `repos/<name>-<hash>/` (shared clone of a multi-package repository; `repos/` only while one exists) and `.pm-txn/` only while a transaction runs or after one was interrupted. Verified by `workspace::open_creates_the_workspace_layout_and_lock`.
 
 #### Scenario: A command on a missing workspace root
 - **WHEN** a command that opens a workspace (transactions-locking, "Workspace lock") names a workspace root that does not exist
@@ -22,9 +22,12 @@ A workspace SHALL contain state.json, packages/<id> for own Git clones, repos/<k
 - **WHEN** a catalog build is installed for the first time
 - **THEN** verified output is retained under builds/ID and there is no package clone
 
+#### Scenario: Build cache transactions
+- **WHEN** a build install or update changes its retained output
+- **THEN** `builds/<id>` keeps the verified current and previous output without a clone, and cache changes use workspace transactions
 
 ### Requirement: Installed package record
-Installed records SHALL hold source, current/previous revisions, enabled, mode, metadata and optional forkOf, dependencies, replaces, catalog protection, clone and path. Build and previous_build SHALL retain the full release record and catalog location separately from protection. Previous SHALL retain its mode and source kind for offline rollback. At most one previous and only current/previous build output SHALL be retained.
+Each `state.json` `packages.<id>` record is the single source for its format and SHALL hold `source`, `current` and `previous` revisions (`version`, `commit`; `previous` also `mode`), `enabled`, `mode` (`{"pinned": REF}`, `{"branch": NAME}`, omitted for releases), and optional `forkOf`, `dependencies`, `replaces`, protecting `catalog`, shared `clone`, `path` and `metadata`. At most one previous SHALL be kept. Verified by `model::state_round_trips_byte_for_byte`.
 
 #### Scenario: Fresh install has no previous revision
 - **WHEN** a package was just installed
@@ -46,3 +49,6 @@ Installed records SHALL hold source, current/previous revisions, enabled, mode, 
 - **WHEN** a build revision is updated to a Git revision
 - **THEN** previous_build retains the release metadata and catalog location for offline rollback
 
+#### Scenario: Build record format
+- **WHEN** a current or previous revision is a build
+- **THEN** `build` or `previous_build` retains its full release record and catalog location separately from catalog protection; previous retains its mode and source kind for offline rollback, and only current/previous build output is retained

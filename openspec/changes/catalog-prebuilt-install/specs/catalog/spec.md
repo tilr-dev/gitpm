@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Release record
-A release SHALL record manifest, source, commit, reference, files (every output file's SHA-256 and size), optional build {url, sha256}, and path for a package folder. Build is the preferred install source. Every release MUST have file hashes; Git output is selected by manifest dist, while build output is the archive root.
+Single source for the release record: a release SHALL record the whole `manifest`, `source`, `commit`, `reference`, `files` (every output file’s SHA-256 and size), optional `build` `{url, sha256}` and, for a multi-package repository’s package, `path`. Every release MUST have file hashes. Build SHALL be preferred over Git; its output is the archive root, while Git output is the committed manifest-selected folder (default dist/).
 
 #### Scenario: Legacy release without hashes
 - **WHEN** a catalog holds an unscoped release of the v1 era without `files`
@@ -16,14 +16,14 @@ A release SHALL record manifest, source, commit, reference, files (every output 
 - **THEN** catalog generation and verification hash exactly the same committed files as deployment
 
 ### Requirement: Nothing is built, executed or uploaded
-gitpm SHALL only clone Git repositories, copy package output, download and verify builds, write local catalogs, and perform local author operations (repositories, commits, tags and remote settings). It SHALL never build, execute package code, push or upload. HTTP(S) catalog writes SHALL fail with invalid_argument and a command-neutral message.
+gitpm SHALL only clone Git repositories, copy their package dist folders, download and verify builds, write local catalogs and, for the author operations (`init`, `commit`, `remote`, `fork`), create local repositories, commits, tags and remote settings; it SHALL never build, execute package code, push or upload. Writing a catalog to an HTTP(S) location SHALL fail with `invalid_argument` and a message that names no command.
 
 #### Scenario: Catalog publishing
 - **WHEN** the user runs `catalog update` against an HTTPS catalog location
 - **THEN** the library fails with `invalid_argument` ("writing a catalog requires a local folder; HTTP(S) catalogs are read-only") and nothing is uploaded; the CLI may add a hint naming the command
 
 ### Requirement: Catalog locations and transport
-Catalogs SHALL be local folders, JSON paths or HTTPS URLs; plain HTTP is allowed only on loopback. Catalog requests SHALL follow no redirects. Build downloads SHALL use the same timeouts and 16 MiB streaming bound, with at most five HTTPS-only redirects. HTTP catalogs SHALL be read-only. The build read allowance for loopback HTTP SHALL NOT relax catalog register's HTTPS-only input.
+A catalog location SHALL be a local folder, a path to a `*.json` file (normally `catalog.json`), or an HTTP(S) URL. Remote catalogs MUST use HTTPS; `http://` SHALL be accepted only for loopback hosts (`localhost`, loopback IPs, not `localhost.evil.example` or `user@host`), else `invalid_argument`. Requests SHALL not follow redirects and SHALL refuse a body over 16 MiB, announced or not. HTTP catalogs SHALL be read-only. Verified by `catalog::locations_are_local_paths_or_http_urls`.
 
 #### Scenario: Failed request
 - **WHEN** a catalog request fails (connection, timeout, a status other than 200 or 404, a body over 16 MiB)
@@ -41,9 +41,12 @@ Catalogs SHALL be local folders, JSON paths or HTTPS URLs; plain HTTP is allowed
 - **WHEN** a build response redirects to a plain HTTP destination
 - **THEN** the request fails with http, even for loopback; catalog redirects remain refused
 
+#### Scenario: Build transport policy
+- **WHEN** a build URL is downloaded
+- **THEN** the catalog timeouts and 16 MiB streaming bound apply, with at most five HTTPS-only redirects; reading a loopback HTTP build does not relax catalog register's HTTPS-only input
 
 ### Requirement: check compares installed packages with their catalog or origin
-check SHALL be read-only and report each installed package with status, message, source and problem, plus replacements and unsatisfied dependencies. Git installs compare by mode, verified protection, selected catalog, then origin. Build installs SHALL use the recorded catalog, including unverified catalogs, without a clone or origin query. Protection under a different selected catalog SHALL report other_catalog.
+`check(root, catalog)` (CLI, FFI) SHALL be read-only (no open, lock or creation), reporting one row per package with status, message, `source` and `problem`, plus replacements and unsatisfied dependencies. Git selection SHALL be by mode, verified protection (`other_catalog` under another catalog), selected catalog listing it, then origin. Builds SHALL read recorded catalogs without Git. Verified by `check::check_without_catalog_reads_each_origin`.
 
 #### Scenario: Statuses
 - **WHEN** `check` reports a package
@@ -102,8 +105,7 @@ check SHALL be read-only and report each installed package with status, message,
 
 #### Scenario: Check a build without a selected catalog
 - **WHEN** a build package is installed and check runs without a catalog option
-- **THEN** it compares the recorded catalog and never probes the unavailable Git source
-
+- **THEN** it compares the recorded catalog, including an unverified one, without a clone or origin query, and never probes the unavailable Git source
 
 ## ADDED Requirements
 

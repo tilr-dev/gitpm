@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Install from the catalog
-install-catalog SHALL install the exact requested release, latest if omitted. With build it SHALL verify archive SHA-256 and release file hashes and deploy without cloning; otherwise it SHALL verify the recorded Git commit, manifest and output hashes. Mismatches SHALL fail with catalog and unavailable artifacts with http, preserving the workspace. Only verified catalogs protect; build installs additionally retain catalog provenance.
+`install-catalog ID [--version V]` (`Manager::install_from_catalog`) SHALL install the exact release (latest if omitted), verifying the manifest and file hashes before any change. Git installs SHALL check out the recorded source commit; builds SHALL verify archive SHA-256 and deploy without cloning. Mismatches SHALL fail with `catalog`, unavailable artifacts with `http`. Only verified catalogs protect. Verified by `catalog_manifest_is_verified_before_install`.
 
 #### Scenario: Tampered dist
 - **WHEN** the catalog's file hashes do not match the release commit's `dist/`
@@ -21,9 +21,13 @@ install-catalog SHALL install the exact requested release, latest if omitted. Wi
 - **WHEN** a catalog release has a valid build and its source repository is unavailable
 - **THEN** install-catalog deploys the verified archive output without a clone
 
+#### Scenario: Catalog verification before mutation
+- **WHEN** `Manager::install_from_catalog` selects a Git release
+- **THEN** the committed package folder, whole manifest and output file hashes are verified against the catalog before any workspace change
+- **AND** verification is covered by `workspace::install_from_catalog_verifies_and_check_compares`
 
 ### Requirement: Removing a package whose clone is gone
-Uninstall and forget SHALL drop a Git record whose clone is gone, plus its deployed output, without confirmation or a forgotten record, subject to dependent guards. A build intentionally has no clone: forget SHALL retain its record and cached output for restore; uninstall SHALL remove the cache. Managed build output SHALL NOT count as lost Git work.
+`uninstall ID` and `forget ID` of a recorded Git package whose own or shared clone is gone SHALL succeed without confirmation, drop the record and deployed folder, keep no forgotten record, and retain dependent guards (dependencies, "Dependents guard removal"). Builds intentionally have no clone and SHALL follow the cache lifecycle below. Verified by `workspace::uninstall_and_forget_of_a_package_without_clone_drop_the_record`.
 
 #### Scenario: Clone deleted by hand
 - **WHEN** `packages/acme/greeter` was deleted by hand while `acme/greeter` is recorded and active, and the user runs `uninstall acme/greeter`
@@ -37,3 +41,6 @@ Uninstall and forget SHALL drop a Git record whose clone is gone, plus its deplo
 - **WHEN** a build package is forgotten and restored
 - **THEN** its cached output and record survive forget and restore redeploys them without Git
 
+#### Scenario: Managed build output is not lost Git work
+- **WHEN** a build is forgotten or uninstalled
+- **THEN** managed cached output needs no lost-work confirmation; forget retains its record and cached output for restore, while uninstall removes the cache, subject to dependent guards
