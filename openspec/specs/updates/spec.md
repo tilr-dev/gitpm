@@ -14,7 +14,7 @@ Defines how installed packages move between revisions: single-package `update` (
 - **THEN** the first prints `acme/greeter updated 0.1.0 → 0.2.0 (major)`, the second `acme/greeter up to date (0.2.0)`
 
 ### Requirement: Updates need no catalog
-`update ID` (any mode) and `update all` SHALL read releases and branches from the clone origin (set from `packages.<id>.source`) without catalog reads for unprotected Git packages. `check` SHALL use that origin when the catalog does not list them. Builds SHALL instead follow their recorded catalog, including unverified catalogs, without a catalog option. Verified by `workspace::update_and_rollback_swap_revisions_and_redeploy` (no catalog configured).
+`update ID` (in any mode) and `update all` SHALL read releases and branches from the origin of the package's clone (set from `packages.<id>.source`) and SHALL NOT read a catalog for unprotected packages, so they work without one (protected packages: "Protected packages update through their catalog"); `check` reads the same origin for packages the catalog does not list (catalog). Verified by `workspace::update_and_rollback_swap_revisions_and_redeploy` (no catalog configured).
 
 #### Scenario: New dependency without a catalog
 - **WHEN** no catalog is configured and the newest release of a package adds a dependency that is not installed
@@ -31,14 +31,6 @@ Defines how installed packages move between revisions: single-package `update` (
 #### Scenario: Catalog-less check
 - **WHEN** the same workspace has no catalog and the user runs `gitpm check`
 - **THEN** the row of `acme/greeter` says `update available` with `0.2.0 (major)` from the origin, and nothing in the workspace changes
-
-#### Scenario: Unverified build follows its recorded catalog
-- **WHEN** a build from an unverified catalog is updated without a catalog option
-- **THEN** it reads its recorded catalog and installs the newer archive without cloning
-
-#### Scenario: Select the target source kind
-- **WHEN** update selects a release with a build, or without one
-- **THEN** it installs the former without Git and the latter through Git; explicit ref, branch, dev or detach transitions a build to Git, and new dependencies follow the dependency-resolution rules
 
 ### Requirement: Stable update never downgrades
 An update that follows releases SHALL compare versions only and SHALL never downgrade; installed revisions are kept by commit (package-ids). A retracted, moved or broken installed release tag SHALL leave the package up to date with a warning, in `update ID` and `update all` alike. Verified by `stable_update_never_downgrades`, `update_all_does_not_downgrade_and_warns_about_moved_and_retracted_releases` and the tests the scenarios name.
@@ -114,7 +106,7 @@ Update and rollback SHALL refuse with `local_changes` when the clone has any los
 - **THEN** update fails with `local_changes` and nothing changes
 
 ### Requirement: Rollback swaps current and previous
-`rollback ID` SHALL swap `current` and `previous` revisions and modes offline (no fetch) and redeploy retained Git or build output. Missing previous revisions, Git commits or cached builds SHALL fail with `no_previous_version`. It SHALL print `ID rolled back A → B` and refuse a target that breaks an installed dependent with `dependency_conflict` (dependencies, "Updates keep dependents working"). Verified by `rollback_to_a_pruned_commit_names_it`.
+`rollback ID` SHALL swap `current` and `previous` offline (no fetch) and redeploy; without a previous revision, or when its commit is no longer in the clone, it SHALL fail with `no_previous_version`. It SHALL print `ID rolled back A → B`. Like update, it is refused with `dependency_conflict` when the target version breaks an installed dependent (see dependencies, "Updates keep dependents working"). Verified by `rollback_to_a_pruned_commit_names_it`.
 
 #### Scenario: Previous revision needs a missing dependency
 - **WHEN** the previous revision depends on a package that is not installed
@@ -127,14 +119,6 @@ Update and rollback SHALL refuse with `local_changes` when the clone has any los
 #### Scenario: Previous commit gone
 - **WHEN** the previous revision's commit is no longer in the clone (pruned after the origin deleted its tag)
 - **THEN** rollback fails with `no_previous_version` ("previous revision COMMIT of ID is no longer available") and the workspace is unchanged
-
-#### Scenario: Offline build rollback
-- **WHEN** a build was updated and its catalog and artifact server are unavailable
-- **THEN** rollback restores the retained previous output and metadata and swaps the two revisions
-
-#### Scenario: Restore retained build state
-- **WHEN** rollback selects a retained build revision
-- **THEN** its output, release metadata and catalog provenance are restored locally, and current and previous modes and source kinds are swapped
 
 ### Requirement: Joint upgrade of all packages
 `update all` (`Manager::update_all`) SHALL resolve all installed packages together with PubGrub over the candidates of each package's mode ("Pre-releases are opt-in"), the installed revision as fallback and missing dependencies from the configured catalog; preferring newer versions, installed packages first in ID order, applied as one recoverable transaction. Each entry carries `major`. Verified by `update_all_coordinates_versions_and_adds_dependencies_atomically`.
@@ -239,7 +223,7 @@ An update whose target resolves to the installed commit but records another mode
 - **THEN** it is back at the branch commit in branch mode `main`, and `previous` is the release with no `mode`
 
 ### Requirement: Protected packages update through their catalog
-Protected packages SHALL update only to versions in their recorded verified catalog, whatever `Options.catalog` is. Git targets SHALL match recorded source, commit, path, manifest and hashes before any change (`catalog` otherwise); builds SHALL verify archive and files without Git. `update ID --detach` (`Manager::update_with`) SHALL drop protection and update from origin in one transaction. Verified by `workspace::protected_packages_update_only_to_catalog_versions`.
+A protected package (recorded `catalog`) SHALL update only to versions its verified catalog lists, read from the recorded location whatever `Options.catalog` is; the release commit, package folder, manifest and file hashes SHALL match the record before any change (`catalog` otherwise). `update ID --detach` (`Manager::update_with`) SHALL drop the protection and update from the origin in one transaction. Verified by `workspace::protected_packages_update_only_to_catalog_versions`.
 
 #### Scenario: Newer tag not in the catalog
 - **WHEN** protected `acme/greeter` 0.2.0 has the tag `acme/greeter@0.3.0` on its origin but the verified catalog lists only 0.1.0 and 0.2.0
@@ -265,14 +249,6 @@ Protected packages SHALL update only to versions in their recorded verified cata
 - **WHEN** the user runs `update acme/greeter --detach`
 - **THEN** it prints `acme/greeter detached from catalog LOCATION; it now follows its origin` and `acme/greeter updated 0.2.0 → 0.3.0 (major)`, the record loses `catalog` and later updates follow the origin
 - **AND** a detach with no newer release is still a change (`workspace::detach_without_a_new_release_is_a_change`); detaching an unprotected package fails with `invalid_argument`; `update all --detach` is a usage error (exit status 1)
-
-#### Scenario: Detach a protected build
-- **WHEN** a protected build is updated with detach or an explicit Git ref or dev target
-- **THEN** the transition stages a Git clone, drops protection and deploys Git output atomically
-
-#### Scenario: Build provenance and protection
-- **WHEN** an unverified catalog supplies a build
-- **THEN** recorded build provenance does not imply protection; an explicit ref, branch or dev target transitions a build to Git atomically, while protected Git packages require detach for refs
 
 ### Requirement: Major updates are marked
 An update to a newer version outside the caret range of the installed one (a new MAJOR; for 0.x a new MINOR; for 0.0.x any newer version) SHALL be marked `major` in its `RevisionChange` and in each `update all` entry, and the CLI SHALL append ` (major)` to its line. Authors mark a breaking release only by its version number. A major update is not held back by itself; dependents stay protected by their own requirements. Verified by `workspace::major_updates_are_marked`.
