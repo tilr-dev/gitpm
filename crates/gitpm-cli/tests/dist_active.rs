@@ -174,7 +174,7 @@ fn replace_removes_the_original_dist_and_back_restores_it_from_the_clone() {
     };
     assert_eq!(resolved(&state, "vendor/demo"), (true.into(), false.into()));
     assert_eq!(resolved(&state, "dan/demo"), (true.into(), true.into()));
-    let out = f.ok(&["replace", "vendor/demo", "--back"]);
+    let out = f.ok(&["replace", "vendor/demo", "--with", "vendor/demo"]);
     assert!(
         out.contains(
             "; dan/demo stays installed and enabled (disable or uninstall it if not wanted)"
@@ -197,12 +197,17 @@ fn disable_removes_and_enable_restores_also_around_a_replacement() {
     assert_eq!(f.dist("vendor/demo"), None);
     f.ok(&["enable", "vendor/demo"]);
     assert_eq!(f.dist("vendor/demo").as_deref(), Some("vendor 1"));
-    // Disabled and replaced: switching back keeps it out until it is enabled.
+    // Returning to a disabled original is refused until it is explicitly enabled.
     f.ok(&["replace", "vendor/demo", "--with", "dan/demo"]);
     f.ok(&["disable", "vendor/demo"]);
-    f.ok(&["replace", "vendor/demo", "--back"]);
+    assert!(
+        f.fails(&["replace", "vendor/demo", "--with", "vendor/demo"])
+            .contains("enable it first")
+    );
     assert_eq!(f.dist("vendor/demo"), None);
     f.ok(&["enable", "vendor/demo"]);
+    assert_eq!(f.dist("vendor/demo"), None);
+    f.ok(&["replace", "vendor/demo", "--with", "vendor/demo"]);
     assert_eq!(f.dist("vendor/demo").as_deref(), Some("vendor 1"));
     // Disabling the replacement drops it: the installed original takes over and is
     // deployed again; a later enable does not bring the binding back.
@@ -254,7 +259,7 @@ fn update_and_rollback_of_a_replaced_package_leave_dist_alone_until_back() {
         "0.3.0"
     );
     assert_eq!(f.dist("vendor/demo"), None);
-    f.ok(&["replace", "vendor/demo", "--back"]);
+    f.ok(&["replace", "vendor/demo", "--with", "vendor/demo"]);
     assert_eq!(f.dist("vendor/demo").as_deref(), Some("vendor 2"));
     // Active again: rollback deploys as usual.
     f.ok(&["rollback", "vendor/demo"]);
@@ -263,7 +268,7 @@ fn update_and_rollback_of_a_replaced_package_leave_dist_alone_until_back() {
     f.ok(&["replace", "vendor/demo", "--with", "dan/demo"]);
     f.ok(&["rollback", "vendor/demo"]);
     assert_eq!(f.dist("vendor/demo"), None);
-    f.ok(&["replace", "vendor/demo", "--back"]);
+    f.ok(&["replace", "vendor/demo", "--with", "vendor/demo"]);
     assert_eq!(f.dist("vendor/demo").as_deref(), Some("vendor 2"));
 }
 
@@ -277,7 +282,7 @@ fn installing_a_package_that_is_replaced_deploys_nothing() {
     assert_eq!(f.state()["replacements"]["vendor/demo"], "dan/demo");
     f.ok(&["install", f.path("vendor/demo").to_str().unwrap()]);
     assert_eq!(f.dist("vendor/demo"), None);
-    f.ok(&["replace", "vendor/demo", "--back"]);
+    f.ok(&["replace", "vendor/demo", "--with", "vendor/demo"]);
     assert_eq!(f.dist("vendor/demo").as_deref(), Some("vendor 1"));
 }
 
@@ -386,7 +391,7 @@ fn a_package_of_a_shared_clone_is_deployed_from_its_own_commit() {
     release_package(&f, &mono, "store", "1.1.0");
     f.ok(&["update", "tilr/store"]);
     assert_eq!(f.dist("tilr/store").as_deref(), Some("store 1.1.0"));
-    f.ok(&["replace", "tilr/theme", "--back"]);
+    f.ok(&["replace", "tilr/theme", "--with", "tilr/theme"]);
     assert_eq!(f.dist("tilr/theme").as_deref(), Some("theme 1.1.0"));
     assert_eq!(f.dist("me/theme").as_deref(), Some("theme 1.0.0"));
     f.ok(&["disable", "tilr/theme"]);
@@ -448,7 +453,7 @@ fn sync_dist_repairs_a_tree_written_by_an_older_gitpm() {
         "{out}"
     );
     // A disabled package's leftover dist is removed as well.
-    f.ok(&["replace", "vendor/demo", "--back"]);
+    f.ok(&["replace", "vendor/demo", "--with", "vendor/demo"]);
     f.ok(&["disable", "vendor/demo"]);
     fs::create_dir_all(dist.join("vendor/demo")).unwrap();
     let out = f.ok(&["sync-dist"]);
@@ -674,7 +679,7 @@ fn every_deploy_copies_the_committed_tree_with_nested_files_and_exec_bits() {
     let clone = clone_path(&f.root(), &f.path("vendor/demo"));
     fs::write(clone.join("dist/index.js"), "edited").unwrap();
     f.ok(&["replace", "vendor/demo", "--with", "dan/demo"]);
-    f.ok(&["replace", "vendor/demo", "--back"]);
+    f.ok(&["replace", "vendor/demo", "--with", "vendor/demo"]);
     check("--back");
     assert_eq!(f.dist("vendor/demo").as_deref(), Some("vendor 2"));
     f.ok(&["disable", "vendor/demo"]);
@@ -687,7 +692,7 @@ fn every_deploy_copies_the_committed_tree_with_nested_files_and_exec_bits() {
 }
 
 #[test]
-fn replace_back_with_the_original_absent_drops_only_the_binding() {
+fn replace_with_absent_original_is_refused() {
     let f = Fixture::new();
     f.original_and_fork();
     f.consumer();
@@ -700,21 +705,13 @@ fn replace_back_with_the_original_absent_drops_only_the_binding() {
             && error.contains("Error kind: not_installed"),
         "{error}"
     );
-    // --back would leave app/a without vendor/demo: refused unless forced.
-    let error = f.fails(&["replace", "vendor/demo", "--back"]);
-    assert!(
-        error.contains("app/a")
-            && error.contains("Error kind: has_dependents")
-            && error.contains("Hint: `gitpm replace vendor/demo --back --force` does it anyway"),
-        "{error}"
-    );
+    // Returning requires an installed original, with no force bypass.
+    let error = f.fails(&["replace", "vendor/demo", "--with", "vendor/demo"]);
+    assert!(error.contains("Error kind: not_installed"), "{error}");
     assert_eq!(f.state()["replacements"]["vendor/demo"], "dan/demo");
-    let out = f.ok(&["replace", "vendor/demo", "--back", "--force"]);
-    assert_eq!(
-        out,
-        "vendor/demo switched back from dan/demo (vendor/demo is not installed; broken: app/a); dan/demo stays installed and enabled (disable or uninstall it if not wanted)\n"
-    );
-    assert!(f.state().get("replacements").is_none());
+    let error = f.fails(&["replace", "vendor/demo", "--with", "vendor/demo", "--force"]);
+    assert!(error.contains("--force is only valid"), "{error}");
+    assert_eq!(f.state()["replacements"]["vendor/demo"], "dan/demo");
     assert_eq!(f.dist("dan/demo").as_deref(), Some("fork"));
     assert_eq!(f.dist("vendor/demo"), None);
 }
@@ -1025,4 +1022,43 @@ fn declared_output_update_and_rollback_use_each_commits_manifest() {
         assert_eq!(f.dist("test/output").as_deref(), Some("committed output"));
         assert!(!package.join("BUILD_MUST_NOT_RUN").exists());
     }
+}
+
+#[test]
+fn replacement_check_resolve_cli_and_removed_options() {
+    let f = Fixture::new();
+    f.original_and_fork();
+    f.consumer();
+    let before = f.state();
+    let out = f.ok(&["replace-check", "vendor/demo", "--with", "dan/demo"]);
+    let check: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(check["plan"]["provider"], "dan/demo");
+    assert_eq!(check["issues"], serde_json::json!([]));
+    assert_eq!(check["missing"], serde_json::json!({}));
+    assert_eq!(before, f.state());
+    assert!(
+        f.ok(&["replace-resolve", "vendor/demo", "--with", "dan/demo"])
+            .is_empty()
+    );
+    assert_eq!(before, f.state());
+    assert!(
+        f.fails(&["replace", "vendor/demo", "--back"])
+            .contains("unknown option: --back")
+    );
+    assert!(
+        f.fails(&["replace", "vendor/demo", "--with", "dan/demo", "--force"])
+            .contains("--force is only valid")
+    );
+    assert_eq!(before, f.state());
+}
+
+#[test]
+fn replacing_original_with_itself_without_binding_reports_no_change() {
+    let f = Fixture::new();
+    f.original_and_fork();
+    let before = f.state();
+    let out = f.ok(&["replace", "vendor/demo", "--with", "vendor/demo"]);
+    assert_eq!(out.trim(), "vendor/demo already uses original 0.1.1");
+    assert_eq!(before, f.state());
+    assert_eq!(f.dist("vendor/demo").as_deref(), Some("vendor 1"));
 }

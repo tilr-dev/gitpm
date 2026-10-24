@@ -54,71 +54,84 @@ The CLI SHALL print the fork lines and the next steps per package (the strings b
 - **THEN** the output contains `Next steps (choose the packages to install and replace):` followed by the commit, install and replace commands
 
 ### Requirement: Replacement is explicit and global
-`replace ORIGINAL --with FORK` (`Manager::replace`) SHALL set the single binding `state.replacements[ORIGINAL] = FORK`, after which every consumer of ORIGINAL, existing and future, resolves to FORK (the solver sees ORIGINAL at `replaces.version`). Preconditions (single source): FORK MUST be installed, enabled and declare `replaces.id` equal to ORIGINAL; ORIGINAL MUST be installed. Verified by `fork_replacement_main_scenario` and `replace_requires_the_original_and_back_drops_an_absent_one`.
-
-#### Scenario: Effect on dist
-- **WHEN** the replace succeeds
-- **THEN** `dist/` changes as specified in dist ("Replace removes the original's dist")
-- **AND** this is covered by `required_global_fork_replacement_through_the_cli`
-
-#### Scenario: Fork not usable as the replacing package
-- **WHEN** FORK is not installed, is disabled, or does not declare `replaces.id` equal to ORIGINAL
-- **THEN** the replace fails with `not_installed`, or `invalid_argument` ("FORK is disabled; enable it first" / "FORK does not declare that it replaces ORIGINAL …")
-
-#### Scenario: Original not installed
-- **WHEN** `vendor/base` is not installed and the user runs `replace vendor/base --with mine/base`
-- **THEN** the replace fails with `not_installed` naming `vendor/base` and nothing changes
+`replace ORIGINAL --with FORK` (`Manager::replace`) SHALL set `state.replacements[ORIGINAL] = FORK`, so consumers resolve ORIGINAL at FORK's `replaces.version`. Before mutation it SHALL check the resulting active workspace. Only the provider's transitive dependencies and active consumers' requirements on ORIGINAL SHALL block it. Failure SHALL leave state, clones and dist unchanged. Replace SHALL NOT install or enable dependencies or have a confirmation or force bypass.
 
 #### Scenario: Fork with unsatisfiable dependencies
-- **WHEN** FORK's own dependencies would not be satisfied in the resulting workspace
-- **THEN** the replace fails with `dependency_conflict` ("FORK has unsatisfied dependencies: …")
+- **WHEN** a fork needs an absent plugin
+- **THEN** replace fails with `dependency_conflict` naming the consumer and dependency, and the workspace remains unchanged
+
+#### Scenario: Compatible fork
+- **WHEN** the proposed provider has satisfied dependencies transitively and active consumers accept its offered version
+- **THEN** replace applies the binding and dist changes in one transaction
+
+#### Scenario: Fork not usable as the replacing package
+- **WHEN** a forward replacement is requested
+- **THEN** both packages MUST be installed; FORK MUST be enabled and declare replaces.id equal to ORIGINAL
+
+#### Scenario: Original not installed
+- **WHEN** ORIGINAL is not installed
+- **THEN** replace refuses with `not_installed` and changes nothing
+
+#### Scenario: Effect on dist
+- **WHEN** replace succeeds
+- **THEN** dist changes as specified by "Replace removes the original's dist" in the same transaction
 
 #### Scenario: Output variants
-- **WHEN** the declared `replaces.version` differs from the installed version, or nothing depends on ORIGINAL
-- **THEN** the line is `ORIGINAL replaced by FORK V (as ORIGINAL V') for: …`, or ends `for: no consumers yet`
+- **WHEN** the provider's installed version differs from its declared replaces.version or there are no consumers
+- **THEN** output uses `ORIGINAL replaced by FORK V (as ORIGINAL V') for: …` or ends `for: no consumers yet`
 
 #### Scenario: Replace for all consumers
-- **WHEN** `app1` and `app2` depend on `vendor/base` and the user replaces it with `mine/base`
-- **THEN** both resolve to `mine/base` and the CLI prints `vendor/base replaced by mine/base V for: app1, app2`
+- **WHEN** app1 and app2 depend on ORIGINAL and replace with FORK succeeds
+- **THEN** both resolve to FORK and output names both consumers
 
 ### Requirement: Compatibility is checked by versions only
-Consumers whose requirement the fork's declared version does not satisfy SHALL be listed in `ReplacementPlan.incompatible`, and the replace SHALL fail with `incompatible_replacement` unless confirmed. The CLI SHALL ask `Replace anyway? [y/N]` on a TTY and otherwise require `--force` (the warning is still printed). Code SHALL never be run to check compatibility. Verified by `replacement_compatibility_needs_confirmation`.
+Consumers whose requirement the provider's declared version does not satisfy SHALL be listed in `ReplacementPlan.incompatible`, and replace SHALL fail with `incompatible_replacement`. Compatibility SHALL be checked from metadata, without running package code. There SHALL be no confirm parameter, TTY prompt or `--force` for replace.
 
 #### Scenario: Incompatible consumer without a TTY
-- **WHEN** `app` needs `vendor/base ^2` and `mine/base` declares `replaces.version` `1.4.0`, and stdin is not a terminal
-- **THEN** the CLI warns `app needs vendor/base ^2`, prints `No terminal to confirm; use --force to replace anyway.` and fails with `incompatible_replacement`
+- **WHEN** app needs ORIGINAL ^2 and FORK declares replaces.version 1.4.0
+- **THEN** check reports app and its requirement, replace fails with `incompatible_replacement`, and the workspace is unchanged
+
+#### Scenario: Force refused
+- **WHEN** a caller passes `--force` to replace
+- **THEN** the CLI rejects the option without changing the workspace
 
 ### Requirement: Self-replacement and cycles are refused
-Replacing a package with itself, or creating a replacement cycle, SHALL always be refused with `invalid_argument`, even when confirmed or forced: "cannot replace ORIGINAL by itself", and "cyclic replacement: …" when FORK is itself replaced, when ORIGINAL already replaces another package, or when FORK depends on ORIGINAL.
+`replace ORIGINAL --with ORIGINAL` SHALL remove the replacement binding, rather than create a self-binding. Replacement cycles SHALL be refused with `invalid_argument`: when FORK is itself replaced, ORIGINAL already replaces another package, or FORK depends on ORIGINAL.
 
 #### Scenario: Cycle
-- **WHEN** `a` is replaced by `b` and the user tries to replace `b` with `a`
-- **THEN** the replace fails with `invalid_argument` ("cyclic replacement: …")
+- **WHEN** a is replaced by b and the caller tries to replace b with a
+- **THEN** replace fails with `invalid_argument` and changes nothing
 
 ### Requirement: Switching back
-`replace ORIGINAL --back` (`Manager::switch_back(original, confirm, force)`) SHALL return all consumers to the installed original (same confirmation rule) and print `ORIGINAL switched back from FORK (ORIGINAL V for: consumers); FORK stays installed and enabled (disable or uninstall it if not wanted)`. Replacing again SHALL switch the binding. Verified by `replace_requires_the_original_and_back_drops_an_absent_one`.
+Returning to the original SHALL be ordinary `replace ORIGINAL --with ORIGINAL`, removing its binding with the same workspace consistency check and atomicity as forward replacement. ORIGINAL MUST be installed and enabled. The old fork SHALL stay installed and enabled. There SHALL be no separate `--back`, `switch_back` or `switch_back_plan`, no confirmation and no force bypass.
 
-#### Scenario: Output variants
-- **WHEN** no package depends on ORIGINAL
-- **THEN** the line says `no installed consumers`
+#### Scenario: Return to original
+- **WHEN** FORK replaces the installed enabled ORIGINAL and the resulting workspace is consistent
+- **THEN** replace with ORIGINAL removes the binding, redeploys ORIGINAL and reports the former provider
 
 #### Scenario: Back with the original absent
-- **WHEN** `vendor/base` was uninstalled while replaced by `mine/base`, `app` depends on `vendor/base`, and the user runs `replace vendor/base --back`
-- **THEN** it fails with `has_dependents` naming `app`; with `--force` the binding is dropped and `app` is reported broken
+- **WHEN** ORIGINAL is absent or disabled
+- **THEN** returning refuses without changing the binding or dist; the caller must first install or enable ORIGINAL
 
-#### Scenario: Back to a disabled original
-- **WHEN** `mine/base` replaces the installed but disabled `vendor/base`, `app` depends on `vendor/base`, and the user runs `replace vendor/base --back`
-- **THEN** it fails with `has_dependents` naming `app` (also when incompatible consumers were confirmed); with `--force` the binding is dropped and `app` is reported broken
-- **AND** this is covered by `switch_back_to_a_disabled_original_is_guarded`
+#### Scenario: Return breaks versions or dependencies
+- **WHEN** returning makes a consumer version incompatible or exposes an unsatisfied dependency of ORIGINAL
+- **THEN** replace refuses and the workspace remains unchanged
 
 #### Scenario: Back without a replacement
-- **WHEN** nothing replaces `vendor/base` and the user runs `replace vendor/base --back`
-- **THEN** the command fails with `invalid_argument` ("vendor/base is not replaced")
+- **WHEN** ORIGINAL is installed and enabled but has no binding
+- **THEN** replace with ORIGINAL still checks consistency and succeeds without creating a self-binding; the CLI reports `ORIGINAL already uses original VERSION`
+
+#### Scenario: Output variants
+- **WHEN** replace ORIGINAL --with ORIGINAL removes a binding
+- **THEN** output is `ORIGINAL switched back from FORK (ORIGINAL V for: consumers); FORK stays installed and enabled (disable or uninstall it if not wanted)`; without consumers it says `no installed consumers`
+
+#### Scenario: Back to a disabled original
+- **WHEN** replace ORIGINAL --with ORIGINAL is requested while ORIGINAL is disabled
+- **THEN** it refuses with invalid_argument telling the caller to enable ORIGINAL, without changing the binding or dist
 
 #### Scenario: Consumers the original does not serve
-- **WHEN** ORIGINAL is not installed or disabled once the binding is dropped (a version mismatch is the confirmation rule instead)
-- **THEN** the consumers it leaves broken refuse with `has_dependents` naming them unless forced (`--force`), the one rule of dependencies ("Dependents guard removal")
-- **AND** for an ORIGINAL that is not installed only the binding is dropped and the line is `ORIGINAL switched back from FORK (ORIGINAL is not installed; broken: consumers)` or `(ORIGINAL is not installed; no installed consumers)`
+- **WHEN** returning would leave consumers without an installed, enabled, compatible original
+- **THEN** it refuses without changes or a force bypass; absent originals use not_installed and version-incompatible consumers use incompatible_replacement
 
 ### Requirement: Active fork rules
 Single source for bindings when a package leaves or changes. Disabling, forgetting or uninstalling an active fork SHALL drop its binding and deploy ORIGINAL's `dist/` in the same transaction when ORIGINAL is active then (guards: dependencies). A fork update SHALL keep declaring `replaces`. Uninstalling or forgetting the original SHALL keep the binding. A replacing package is always enabled ("Binding to a disabled package"). Verified by `a_binding_to_a_disabled_fork_is_invalid_state`.
@@ -142,7 +155,7 @@ Single source for bindings when a package leaves or changes. Disabling, forgetti
 
 #### Scenario: Reinstalled original stays replaced
 - **WHEN** the original `vendor/base` is uninstalled while replaced and later installed again
-- **THEN** it is still replaced by the fork until `replace vendor/base --back`
+- **THEN** it is still replaced by the fork until `replace vendor/base --with vendor/base`
 
 ### Requirement: check shows fork upstream
 For a fork, `check` SHALL add `upstream {id, base, latest, newer, source, problem}`: the original's latest release against the version the fork started from, taken from the catalog when it lists the original, otherwise from the release tags of `forkOf.source` (`source` `catalog` or `origin`); without either, `latest` is unknown. Verified by `check_shows_fork_upstream_and_other_catalogs` and `check::fork_upstream_from_fork_of_source`.
@@ -160,23 +173,23 @@ For a fork, `check` SHALL add `upstream {id, base, latest, newer, source, proble
 - **THEN** `upstream.problem` says why and `check` prints `me/hello: fork of acme/hello (base 1.0.0); original: unreachable (PROBLEM)`
 
 ### Requirement: Replacement plans carry what the output needs
-`ReplacementPlan` (of `replace_plan`, `switch_back_plan`, `replace`, `switch_back`) SHALL carry `original`, `provider`, `version`, `current`, `consumers`, `incompatible` and `installed_version` (the installed version of `provider`), so the replace and switch-back lines are built from the plan without reading state. Verified by `replacement_plan_carries_installed_version`.
+`ReplacementPlan` returned by `replace_plan` and `replace` SHALL carry `original`, `provider`, `version`, `current`, `consumers`, `incompatible` and `installed_version`, allowing output without another state read. `replace_check` SHALL additionally report workspace dependency issues and missing dependency installation candidates in its consistency report.
 
 #### Scenario: Switch back
-- **WHEN** `me/greeter` replaces the installed `acme/greeter` 1.4.0 and the user runs `replace acme/greeter --back`
-- **THEN** the plan has `current` `me/greeter` and `installed_version` `1.4.0`, and the line ends `; me/greeter stays installed and enabled (disable or uninstall it if not wanted)`
-
-#### Scenario: Switch back to a disabled fork
-- **WHEN** a host reads `switch_back_plan` to build the switch-back line
-- **THEN** the plan carries no fork state: the fork named in `current` is always enabled (disabling it drops the binding, "Active fork rules"), so the line always ends `; FORK stays installed and enabled (disable or uninstall it if not wanted)`
-
-#### Scenario: Plan for a missing original
-- **WHEN** `vendor/base` was uninstalled while replaced by `mine/base` and a host calls `switch_back_plan("vendor/base")`
-- **THEN** the plan has `provider` `vendor/base`, an empty `version`, no `installed_version`, `current` `mine/base`, every consumer of `vendor/base` in `consumers` and none in `incompatible`
+- **WHEN** FORK replaces ORIGINAL 1.4.0 and a caller plans replacement with ORIGINAL
+- **THEN** provider is ORIGINAL, current is FORK and installed_version is 1.4.0
 
 #### Scenario: Fork version differs from the declared one
-- **WHEN** `me/greeter` 0.3.0 declares `replaces: acme/greeter 1.4.0` and the user replaces `acme/greeter` with it
-- **THEN** the plan has `version` `1.4.0` and `installed_version` `0.3.0`, and the line is `acme/greeter replaced by me/greeter 0.3.0 (as acme/greeter 1.4.0) for: …`
+- **WHEN** FORK 0.3.0 declares replaces.version 1.4.0
+- **THEN** the plan carries installed_version 0.3.0 and version 1.4.0
+
+#### Scenario: Switch back to a disabled fork
+- **WHEN** a host reads replace_plan(ORIGINAL, ORIGINAL) for returning from an active fork
+- **THEN** current names the enabled fork; no fork state needs reading because disabling it would have dropped the binding
+
+#### Scenario: Plan for a missing original
+- **WHEN** ORIGINAL was uninstalled while replaced and a host calls replace_plan(ORIGINAL, ORIGINAL)
+- **THEN** planning refuses with not_installed rather than returning a plan to drop the binding
 
 ### Requirement: Fork preserves source submodules
 A fork SHALL preserve submodules outside dist as Git links at their recorded commits with the corresponding `.gitmodules` configuration, including when a requested package comes from an older installed revision. The user SHALL be able to populate them with `git submodule update --init`; package files SHALL NOT be exported through archive.
@@ -226,3 +239,41 @@ Fork SHALL exclude local installation work and use only the recorded source at i
 - **WHEN** one or more IDs identify a source with packages installed at different revisions
 - **THEN** the fork starts at the newest installed revision of all packages from that source, restores every installed package folder at its recorded revision, and keeps uninstalled packages at the starting revision
 - **AND** one commit `Fork A, B as me/A, me/B` records all renamed packages without running user hooks
+
+### Requirement: Explicit workspace replacement check
+`Manager::replace_check(original, replacement)` SHALL check the proposed active workspace without mutations. It SHALL return the replacement plan, all unsatisfied dependencies with consumer and requirement, and missing dependencies for the proposed provider's closure. Catalog candidates MAY supply missing dependencies, including transitives; installed versions SHALL remain fixed. Unrelated existing breakage SHALL be diagnostic only. Existing update `check` is unchanged.
+
+#### Scenario: Missing plugin
+- **WHEN** a fork requires a plugin absent from the workspace
+- **THEN** the check reports the missing dependency and what must be installed, without installing it
+
+#### Scenario: Whole workspace
+- **WHEN** another active package has an unsatisfied dependency unrelated to the new mapping
+- **THEN** check reports it too, but compatible replace succeeds and resolve does not reinstall the unrelated missing dependency, even if that broken package also consumes ORIGINAL
+
+#### Scenario: Disabled or incompatible installed provider
+- **WHEN** a provider is installed but disabled or has an incompatible version
+- **THEN** check reports it as a problem requiring explicit user action
+
+#### Scenario: Changed requirement
+- **WHEN** the fork requires a version incompatible with an installed provider
+- **THEN** check reports the mismatch without changing installed versions
+
+### Requirement: Explicit missing dependency resolution
+`Manager::replace_resolve(original, replacement)` SHALL recompute the check under lock and transactionally install missing dependencies only for the proposed provider and its transitive dependencies. It SHALL NOT update or enable installed packages or apply the binding. Unsatisfiable replacement constraints SHALL refuse without changes. Replace SHALL recheck current state.
+
+#### Scenario: Check resolve replace
+- **WHEN** check finds installable missing dependencies, the caller invokes resolve, then replace
+- **THEN** resolve installs the missing dependencies including transitives without applying the mapping, and replace subsequently succeeds
+
+#### Scenario: Stale check
+- **WHEN** workspace metadata changes after a successful check
+- **THEN** resolve and replace use current state and refuse if the replacement dependencies or consumers of ORIGINAL are incompatible
+
+#### Scenario: Unsatisfiable missing dependencies
+- **WHEN** the catalog cannot provide compatible releases
+- **THEN** resolve refuses without partial installs or binding changes
+
+#### Scenario: Disabled transitive provider
+- **WHEN** the proposed provider depends on an installed package whose dependency is disabled
+- **THEN** resolve and replace refuse without changing files, installing dependencies or enabling packages

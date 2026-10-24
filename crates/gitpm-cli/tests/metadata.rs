@@ -575,7 +575,7 @@ fn removal_leaves_no_empty_namespace_or_clone_folders() {
 }
 
 #[test]
-fn update_all_reports_kept_back_packages_and_replace_back_without_a_replacement() {
+fn update_all_reports_kept_back_packages_and_replace_with_original_without_a_replacement() {
     let f = Fixture::new();
     f.release("store", "1.0.1", r#","dependencies":{"tilr/theme":"~1.0"}"#);
     f.ok(&["install", f.source(), "tilr/theme"]);
@@ -588,13 +588,9 @@ fn update_all_reports_kept_back_packages_and_replace_back_without_a_replacement(
             && out.contains("0 updates, 0 installs, 1 kept back."),
         "{out}"
     );
-    // Nothing to switch back from: a clear refusal, nothing changes.
-    let error = f.fails(&["replace", "tilr/theme", "--back"]);
-    assert!(
-        error.contains("tilr/theme is not replaced")
-            && error.contains("Error kind: invalid_argument"),
-        "{error}"
-    );
+    // Returning without a binding is idempotent and creates no self-binding.
+    f.ok(&["replace", "tilr/theme", "--with", "tilr/theme"]);
+    assert!(f.list(&[]).get("replacements").is_none());
     // A consumer whose dependency was removed with force is skipped with the reason from
     // the plan, not a failure, and the dependency is not installed again.
     f.ok(&["uninstall", "tilr/theme", "--force"]);
