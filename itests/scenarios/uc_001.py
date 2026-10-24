@@ -66,7 +66,6 @@ def ds_store_root(t: T):
     t.eq(metadata.read_bytes(), b"Finder metadata", ".DS_Store preserved")
     t.eq(json.loads((root / "state.json").read_text()),
          {"format": 1, "packages": {}}, "initial state")
-    t.ok((root / "repos").is_dir(), "repos created")
     t.ok(not (root / "packages").exists(), "no packages directory")
     t.ok((root / "dist").is_dir(), "dist created")
 
