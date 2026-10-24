@@ -1,6 +1,8 @@
 //! End-to-end tests of multi-package repositories (`gitpm.json`) and explicit fork workflows.
 //! Hermetic: the CLI and Git run with a cleared environment, a fixture HOME/TMPDIR and
 //! Git config; every path is inside a per-test temp directory removed on drop.
+mod common;
+use common::clone_path;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -229,7 +231,7 @@ fn uninstalling_one_package_keeps_the_other_working() {
     f.ok(&["update", "tilr/theme"]);
     assert_eq!(f.dist("tilr/theme"), "theme 1.1.0");
     f.ok(&["uninstall", "tilr/theme"]);
-    assert_eq!(f.clones(), 0);
+    assert_eq!(f.clones(), 1);
     assert!(
         f.state()["packages"].as_object().unwrap().is_empty(),
         "nothing left"
@@ -272,8 +274,12 @@ fn legacy_root_repository_installs_and_updates_as_before() {
     };
     release("1.0.0");
     f.ok(&["install", legacy.to_str().unwrap()]);
-    assert!(f.dir.join("workspace/packages/acme/hello/.git").is_dir());
-    assert_eq!(f.clones(), 0);
+    assert!(
+        clone_path(&f.dir.join("workspace"), &legacy)
+            .join(".git")
+            .is_dir()
+    );
+    assert_eq!(f.clones(), 1);
     let entry = &f.state()["packages"]["acme/hello"];
     assert!(
         entry.get("path").is_none() && entry.get("repo").is_none(),

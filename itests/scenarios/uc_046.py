@@ -114,7 +114,7 @@ def activation_failure(t: T, readonly: str):
     r = gitpm_nobody(t, "update", ID)
     t.ok(r.code == 1, "update failed")
     t.has(r.err, "Permission denied", "Error kind: io")
-    t.eq(journal(t), {"paths": {f"dist/{ID}": "replace", f"packages/{ID}": "replace"}}, "committed journal kept")
+    t.eq(journal(t), {"paths": {f"dist/{ID}": "replace", str(t.clone(ID).relative_to(t.ws)): "replace"}}, "committed journal kept")
     t.eq(json.loads((t.ws / "state.json").read_text()), json.loads(before["state"]), "state.json still the previous one")
     t.ok((t.ws / "state.json").read_bytes() == before["state"], "state.json complete and unchanged")
     (t.ws / readonly).chmod(0o755)
@@ -135,9 +135,9 @@ def activation_failure_at_first_move_rolls_forward(t: T):
 
 @case(fixture="hello_installed", spec=["transactions-locking/crash-recovery#crash-during-commit"])
 def activation_failure_midway_rolls_forward(t: T):
-    """packages/dan is read-only: dist moved, the clone did not. The next open rolls the
+    """repos is read-only: dist moved, the clone did not. The next open rolls the
     commit forward instead of leaving a mixed installation."""
-    before = activation_failure(t, "packages/dan")
+    before = activation_failure(t, "repos")
     t.has((t.dist(ID) / "index.js").read_text(), "0.1.1")
     t.eq(t.rev(t.clone(ID)), before["head"], "clone not moved yet")
     r = gitpm_nobody(t, "disable", ID)

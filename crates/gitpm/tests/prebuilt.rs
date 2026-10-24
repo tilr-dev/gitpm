@@ -1,4 +1,6 @@
 //! Real loopback downloads through the public library API without a source repository.
+mod common;
+use common::clone_path;
 use gitpm::{
     Manager, Manifest, Options,
     catalog::{self, Build, FileDigest, Release},
@@ -195,7 +197,7 @@ impl Fixture {
         catalog::hash_files(&self.root).unwrap()
     }
     fn no_clone(&self) {
-        assert!(!self.root.join("packages/acme/widget").exists());
+        assert!(!self.root.join("packages").exists());
         assert!(!self.root.join("repos").exists());
     }
 }
@@ -411,7 +413,14 @@ fn build_can_switch_to_git_and_rollback_in_both_directions() {
         m.update_with(ID, target, gitpm::UpdateOptions { detach: detached })
             .unwrap();
         assert!(m.state().unwrap().packages[ID].build.is_none());
-        assert!(f.root.join("packages/acme/widget/.git").exists());
+        assert!(
+            clone_path(
+                &f.root,
+                std::path::Path::new(&m.state().unwrap().packages[ID].source)
+            )
+            .join(".git")
+            .exists()
+        );
         let git_bytes = fs::read(f.dist()).unwrap();
         assert_ne!(git_bytes, b"built");
         m.rollback(ID).unwrap();
@@ -438,7 +447,14 @@ fn git_release_without_build_remains_a_git_install() {
     let m = f.manager();
     m.install_from_catalog(ID, None).unwrap();
     assert!(m.state().unwrap().packages[ID].build.is_none());
-    assert!(f.root.join("packages/acme/widget/.git").exists());
+    assert!(
+        clone_path(
+            &f.root,
+            std::path::Path::new(&m.state().unwrap().packages[ID].source)
+        )
+        .join(".git")
+        .exists()
+    );
 }
 
 #[test]
@@ -572,7 +588,7 @@ fn build_dependencies_install_and_update_together_without_clones() {
         assert_eq!(state.packages[ID].current.version, "1.1.0");
         assert!(state.packages["acme/lib"].build.is_some());
         assert!(state.packages["acme/lib"].enabled);
-        assert!(!f.root.join("packages/acme/lib").exists());
+        assert!(!f.root.join("packages").exists());
         f.no_clone();
     }
 }
@@ -614,7 +630,10 @@ fn catalog_updates_can_alternate_git_and_build_revisions() {
     m.rollback(ID).unwrap();
     assert_eq!(m.state().unwrap().packages[ID].current.version, "1.2.0");
     // Existing local Git work must survive an explicit transition request.
-    let clone = f.root.join("packages/acme/widget");
+    let clone = clone_path(
+        &f.root,
+        std::path::Path::new(&m.state().unwrap().packages[ID].source),
+    );
     fs::write(clone.join("work.txt"), "keep").unwrap();
     let before = fs::read(f.root.join("state.json")).unwrap();
     assert_eq!(

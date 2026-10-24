@@ -38,7 +38,7 @@ def uninstall_clean_removes_only_selected(t: T):
     del state["packages"][B]
     t.eq(after, state, "state minus dan/b")
     t.same(keep, "siblings and author repositories")
-    t.ok((t.ws / "packages/dan").is_dir(), "namespace directory of the sibling kept")
+    t.ok((t.ws / "repos").is_dir(), "clone directory of the sibling kept")
 
 
 @case(fixture="g3_trio_installed", spec=["package-ids/package-id-syntax", "errors/failing-operations-leave-the-workspace-unchanged"])
@@ -92,7 +92,7 @@ def case_variant_on_case_insensitive_fs(t: T):
 
 @case(fixture="g3_trio_installed", spec=["install-uninstall/only-manager-owned-files-are-deleted#uninstalling-a-fork"])
 def fork_author_repo_outside_workspace_survives(t: T):
-    """5. uninstall touches only packages/<id> and dist/<id>: the fork author repository
+    """5. uninstall touches only the source-keyed clone and dist/<id>: the fork author repository
     (outside the workspace) survives uninstall of the fork and of its original."""
     fork = t.root / "authors/my-a"
     t.gitpm_ok("fork", A, "--ns", "mine", "--into", fork)
@@ -101,8 +101,8 @@ def fork_author_repo_outside_workspace_survives(t: T):
     keep = t.snap(fork, t.root / "repos", t.clone(B), t.dist(B), t.clone(C), t.dist(C), git=True)
     t.gitpm_ok("uninstall", "mine/a")
     t.not_installed("mine/a")
-    t.ok(not (t.ws / "packages/mine").exists() or not any((t.ws / "packages/mine").iterdir()),
-         "nothing left of mine/a in packages/")
+    t.ok(not (t.clone("mine/a")).exists() or not any((t.clone("mine/a")).iterdir()),
+         "nothing left of mine/a in repos/")
     t.gitpm_ok("uninstall", A)
     t.not_installed(A)
     t.same(keep, "fork author repo, author repos and unrelated packages")

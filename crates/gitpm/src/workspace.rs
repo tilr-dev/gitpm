@@ -27,11 +27,9 @@ use std::{
 };
 
 mod builds;
-mod clones;
+pub(crate) mod clones;
 mod fork;
-use clones::{
-    guard_clone, installed_repo, package_repo, place_clone, removal, settle_head, shared_head_moved,
-};
+use clones::{guard_clone, installed_repo, place_clone, removal, settle_head, shared_head_moved};
 pub use fork::{DependencyRewrite, ForkedPackage, PackageFork};
 
 /// A mode in messages: `release`, `pinned at REF`, `branch NAME`.
@@ -816,7 +814,6 @@ impl Manager {
             txn::create_workspace_dirs(&root)?;
             write_initial_state(&real)?;
         }
-        fs::create_dir_all(root.join("packages"))?;
         fs::create_dir_all(root.join("dist"))?;
         manager.state()?;
         Ok(manager)
@@ -1939,6 +1936,9 @@ impl Manager {
                 }
                 let transitioning_build = p.build.is_some();
                 if transitioning_build {
+                    state.packages.get_mut(id).unwrap().clone = Some(clones::repo_key(&p.source));
+                }
+                if transitioning_build {
                     let relative = p.clone_folder(id);
                     if let Ok(live) = installed_repo(txn.root(), id, &p) {
                         builds::guard_retained(&live, id, ssh)?;
@@ -2437,7 +2437,7 @@ impl Manager {
     /// Like [`Manager::forget`]; consumers that would break refuse unless `force` (the
     /// guard of [`Manager::set_enabled_with`]). Replacements this package provides are
     /// dropped (their consumers go back to the original, whose `dist/` is deployed
-    /// again). The whole record is kept in `State::forgotten` (own or shared clone), so
+    /// again). The whole record is kept in `State::forgotten` (source-keyed clone), so
     /// `restore` records it again as it was and `uninstall` finds it; a shared clone's
     /// HEAD moves to a registered package's revision if it was this package's. A package
     /// whose clone is gone keeps no `forgotten` record: there is nothing to restore.
@@ -2904,12 +2904,10 @@ fn deploy_committed(txn: &mut Txn, id: &str, p: &Installed, custom_ssh: bool) ->
 fn dist_drift(root: &Path, state: &State, custom_ssh: bool) -> Result<DistSync> {
     let mut plan = DistSync::default();
     let dist = root.join("dist");
-    // A known ID: registered, forgotten, or a retained own clone `packages/<id>`.
+    // Known IDs come from installed and forgotten records.
     let known = |id: &str| {
         valid_id(id).is_ok()
-            && (state.packages.contains_key(id)
-                || state.forgotten.contains_key(id)
-                || package_repo(root, id).is_ok())
+            && (state.packages.contains_key(id) || state.forgotten.contains_key(id))
     };
     let is_namespace = |name: &str| {
         state
@@ -2917,7 +2915,6 @@ fn dist_drift(root: &Path, state: &State, custom_ssh: bool) -> Result<DistSync> 
             .keys()
             .chain(state.forgotten.keys())
             .any(|id| id.split_once('/').is_some_and(|(ns, _)| ns == name))
-            || (identity::valid_part(name).is_ok() && root.join("packages").join(name).is_dir())
     };
     // (name, real directory: not a symlink, not a file)
     let names = |folder: &Path| -> Result<Vec<(String, bool)>> {
@@ -3191,19 +3188,7 @@ fn check_new_id(root: &Path, state: &State, m: &Manifest) -> Result<()> {
             m.id
         )));
     }
-    ensure_no_case_collision(&root.join("packages"), &m.id)?;
-    let dest = root.join("packages").join(&m.id);
-    ensure!(
-        !dest.parent().unwrap().join(".git").exists(),
-        Workspace,
-        "namespace path is an existing package repository"
-    );
-    if dest.exists() {
-        return Err(Error::AlreadyInstalled {
-            message: format!("{} was forgotten and its clone is kept", m.id),
-            id: m.id.clone(),
-        });
-    }
+    ensure_no_case_collision(&root.join("dist"), &m.id)?;
     Ok(())
 }
 
@@ -3782,7 +3767,9 @@ mod tests {
             (ws, m)
         }
         fn repo(&self) -> PathBuf {
-            self.root.join("packages").join(&self.author.id)
+            self.root
+                .join("repos")
+                .join(clones::repo_key(self.author.source()))
         }
         fn dist(&self) -> PathBuf {
             self.root.join("dist").join(&self.author.id)
@@ -3870,22 +3857,14 @@ mod tests {
     #[test]
     fn exact_path_matches_spelling_component_by_component() {
         let dir = TempDir::new("workspace");
-        fs::create_dir_all(dir.join("packages/vendor/module/.git")).unwrap();
-        let plugins = dir.join("packages");
+        fs::create_dir_all(dir.join("dist/vendor/module/.git")).unwrap();
+        let plugins = dir.join("dist");
         assert!(exact_path(&plugins, "vendor/module").unwrap());
         assert!(exact_path(&plugins, "vendor").unwrap());
         for other in ["Vendor/module", "vendor/Module", "vendor/mod", "x"] {
             assert!(!exact_path(&plugins, other).unwrap(), "{other}");
         }
         assert!(!exact_path(&dir.join("missing"), "vendor").unwrap());
-        assert!(package_repo(dir.path(), "vendor/module").is_ok());
-        for other in ["vendor", "Vendor/module", "vendor/other"] {
-            let error = package_repo(dir.path(), other).unwrap_err();
-            assert!(
-                matches!(&error, Error::RepositoryNotFound { id } if id == other),
-                "{error:?}"
-            );
-        }
     }
 
     // ---- open -----------------------------------------------------------------------
@@ -3957,7 +3936,7 @@ mod tests {
             read(&root.join("state.json")),
             "{\n  \"format\": 1,\n  \"packages\": {}\n}"
         );
-        assert!(root.join("packages").is_dir() && root.join("dist").is_dir());
+        assert!(!root.join("packages").exists() && root.join("dist").is_dir());
         assert!(!root.join("plugins").exists());
         assert!(dir.join("nested/.workspace.lock").exists());
         assert!(m.list().unwrap().is_empty());
@@ -3984,7 +3963,7 @@ mod tests {
         let manager = Manager::open(&root).unwrap();
         assert!(manager.list().unwrap().is_empty());
         assert!(root.join("state.json").is_file());
-        assert!(root.join("packages").is_dir());
+        assert!(!root.join("packages").exists());
         assert!(root.join("dist").is_dir());
         assert_eq!(
             fs::read(root.join(".DS_Store")).unwrap(),
@@ -4044,7 +4023,7 @@ mod tests {
                 read(&root.join("state.json")),
                 "{\n  \"format\": 1,\n  \"packages\": {}\n}"
             );
-            assert!(root.join("packages").is_dir() && root.join("dist").is_dir());
+            assert!(!root.join("packages").exists() && root.join("dist").is_dir());
             assert!(
                 fs::read_dir(&root)
                     .unwrap()
@@ -4281,7 +4260,12 @@ mod tests {
         drop(m);
         let before = tree_hash(&ws.root);
         // Crash while staging: no journal yet.
-        fs::create_dir_all(ws.root.join(txn::DIR).join("new/packages/dan/half")).unwrap();
+        fs::create_dir_all(
+            ws.root
+                .join(txn::DIR)
+                .join("new/repos/half-0123456789abcdef"),
+        )
+        .unwrap();
         let m = ws.open();
         assert_eq!(tree_hash(&ws.root), before);
         ws.no_leftovers();
@@ -4464,7 +4448,7 @@ mod tests {
             (r.id.as_str(), r.current.commit.as_str()),
             ("dan/demo1", first.as_str())
         );
-        assert!(ws.root.join("packages/dan/demo1/.git").is_dir());
+        assert!(ws.repo().join(".git").is_dir());
         assert!(ws.root.join("dist/dan/demo1/index.js").is_file());
         m.uninstall("dan/demo1", &[], false).unwrap();
         let r = m
@@ -4618,9 +4602,14 @@ mod tests {
         assert!(matches!(error, Error::LocalChanges { items, .. } if items.len() == 1));
         fixture_git(&ws.repo(), &["checkout", "-q", "--", "dist/index.js"]);
         // A clone without a forgotten record is not restorable.
-        copy_tree(&ws.repo(), &ws.root.join("packages/dan/alias2"), true).unwrap();
+        copy_tree(
+            &ws.repo(),
+            &ws.root.join("repos/unrecorded-0123456789abcdef"),
+            true,
+        )
+        .unwrap();
         ws.refuses("repository_not_found", || m.restore("dan/alias2"));
-        // A forgotten own clone that is gone: the record is all that is left.
+        // A forgotten clone that is gone: the record is all that is left.
         fs::remove_dir_all(ws.repo()).unwrap();
         ws.refuses("repository_not_found", || m.restore("dan/demo1"));
         m.uninstall("dan/demo1", &[], false).unwrap();
@@ -4664,7 +4653,7 @@ mod tests {
         // Disabled: nothing is deployed.
         assert!(restored.dist.deployed.is_empty() && !ws.dist().exists());
 
-        // Pinned mode is kept too; a HEAD moved to another (published) commit is local work.
+        // Pinned mode is kept; another published revision may be the shared HEAD.
         m.enable(id).unwrap();
         // A protected package follows a ref only once detached.
         m.update_with(
@@ -4677,16 +4666,6 @@ mod tests {
         fixture_git(
             &ws.repo(),
             &["checkout", "-q", "--detach", "dan/demo1@0.2.0"],
-        );
-        let error = ws.refuses("local_changes", || m.restore(id));
-        assert!(
-            matches!(&error, Error::LocalChanges { items, .. }
-                if matches!(items.as_slice(), [LostWork::HeadMoved { .. }])),
-            "{error:?}"
-        );
-        fixture_git(
-            &ws.repo(),
-            &["checkout", "-q", "--detach", "dan/demo1@0.1.0"],
         );
         let restored = m.restore(id).unwrap();
         assert_eq!(restored.dist.deployed, [id]);
@@ -5421,7 +5400,7 @@ mod tests {
     fn enable_and_disable_change_only_the_flag() {
         let (ws, m) = Ws::installed("dan/demo1");
         let before = serde_json::to_value(&m.state().unwrap().packages["dan/demo1"]).unwrap();
-        let payload = tree_hash(&ws.root.join("packages"));
+        let payload = tree_hash(&ws.root.join("repos"));
         m.disable("dan/demo1").unwrap();
         m.disable("dan/demo1").unwrap();
         let mut after = serde_json::to_value(&m.state().unwrap().packages["dan/demo1"]).unwrap();
@@ -5430,7 +5409,7 @@ mod tests {
         assert_eq!(after, before);
         m.set_enabled("dan/demo1", true).unwrap();
         assert!(m.list().unwrap()[0].enabled);
-        assert_eq!(tree_hash(&ws.root.join("packages")), payload);
+        assert_eq!(tree_hash(&ws.root.join("repos")), payload);
         ws.no_leftovers();
     }
 
@@ -5461,7 +5440,7 @@ mod tests {
         assert_eq!(m.restore(id).unwrap().dist.deployed, [id]);
         // An active package whose clone and deployed folder are gone is skipped, and every
         // other mutating result says so.
-        fs::remove_dir_all(ws.root.join("packages/dan/other")).unwrap();
+        fs::remove_dir_all(ws.root.join("repos").join(clones::repo_key(other.source()))).unwrap();
         fs::remove_dir_all(ws.root.join("dist/dan/other")).unwrap();
         let report = m.disable(id).unwrap();
         assert_eq!(
@@ -5518,7 +5497,10 @@ mod tests {
             assert!(!state.packages[id].enabled, "{id}");
             assert!(state.packages[id].mode.is_release(), "{id}");
             assert!(
-                ws.root.join("packages").join(id).join(".git").is_dir(),
+                ws.root
+                    .join(state.packages[id].clone_folder(id))
+                    .join(".git")
+                    .is_dir(),
                 "{id}"
             );
             assert!(!ws.root.join("dist").join(id).exists(), "{id}");
@@ -5596,7 +5578,7 @@ mod tests {
         m.install(other.source()).unwrap();
         // dan/demo1 lost its deployed folder (repairable), dan/other its clone (not).
         fs::remove_dir_all(ws.dist()).unwrap();
-        fs::remove_dir_all(ws.root.join("packages/dan/other")).unwrap();
+        fs::remove_dir_all(ws.root.join("repos").join(clones::repo_key(other.source()))).unwrap();
         fs::remove_dir_all(ws.root.join("dist/dan/other")).unwrap();
         let plan = m.sync_dist_plan().unwrap();
         assert_eq!(plan.deployed, ["dan/demo1"]);
@@ -5652,9 +5634,12 @@ mod tests {
         let (ws, m) = Ws::installed("dan/demo1");
         let other = ws.other_author("other", "dan/other");
         m.install(other.source()).unwrap();
-        let other_repo = tree_hash(&ws.root.join("packages/dan/other"));
+        let other_repo = tree_hash(&ws.root.join("repos").join(clones::repo_key(other.source())));
         m.uninstall("dan/demo1", &[], false).unwrap();
-        assert_eq!(tree_hash(&ws.root.join("packages/dan/other")), other_repo);
+        assert_eq!(
+            tree_hash(&ws.root.join("repos").join(clones::repo_key(other.source()))),
+            other_repo
+        );
         assert!(ws.root.join("dist/dan/other/index.js").is_file());
         assert_eq!(m.list().unwrap().len(), 1);
     }
@@ -6262,7 +6247,7 @@ mod tests {
             m.fork_in_namespace(id, &ws.root.join("inside"), "me")
         });
         ws.refuses("invalid_argument", || {
-            m.fork_in_namespace(id, &ws.root.join("packages/new/deeper"), "me")
+            m.fork_in_namespace(id, &ws.repo().join("new/deeper"), "me")
         });
         fs::create_dir_all(&dest).unwrap();
         let error = ws.refuses("invalid_argument", || m.fork_in_namespace(id, &dest, "me"));
@@ -6326,10 +6311,15 @@ mod tests {
         linked.release("0.2.0");
         m.update("dan/linked").unwrap();
         assert!(
-            fs::symlink_metadata(ws.root.join("packages/dan/linked/manifest-link"))
-                .unwrap()
-                .file_type()
-                .is_symlink()
+            fs::symlink_metadata(
+                ws.root
+                    .join("repos")
+                    .join(clones::repo_key(linked.source()))
+                    .join("manifest-link")
+            )
+            .unwrap()
+            .file_type()
+            .is_symlink()
         );
         // A symlink inside dist/ is refused before anything is committed.
         let bad = ws.other_author("bad", "dan/bad");
@@ -6389,12 +6379,12 @@ mod tests {
 
     #[test]
     fn symlinked_namespace_directory_is_never_followed() {
-        // Install: `packages/vendor` points outside; nothing may be written there.
+        // Install: `repos` points outside; nothing may be written there.
         let ws = Ws::new("vendor/demo1");
         let m = ws.open();
         let outside = ws.dir.join("outside");
         fs::create_dir_all(&outside).unwrap();
-        std::os::unix::fs::symlink(&outside, ws.root.join("packages/vendor")).unwrap();
+        std::os::unix::fs::symlink(&outside, ws.root.join("repos")).unwrap();
         ws.refuses("workspace", || m.install(ws.author.source()));
         assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
 
@@ -6403,10 +6393,16 @@ mod tests {
         let (ws, m) = Ws::installed("dan/demo1");
         let outside = ws.dir.join("outside");
         fs::create_dir_all(&outside).unwrap();
-        fs::rename(ws.root.join("packages/dan"), outside.join("dan")).unwrap();
-        std::os::unix::fs::symlink(outside.join("dan"), ws.root.join("packages/dan")).unwrap();
+        fs::rename(ws.root.join("repos"), outside.join("dan")).unwrap();
+        std::os::unix::fs::symlink(outside.join("dan"), ws.root.join("repos")).unwrap();
         ws.refuses("workspace", || m.uninstall("dan/demo1", &[], true));
-        assert!(outside.join("dan/demo1/.git").is_dir());
+        assert!(
+            outside
+                .join("dan")
+                .join(clones::repo_key(ws.author.source()))
+                .join(".git")
+                .is_dir()
+        );
         ws.author.release("0.2.0");
         ws.refuses("workspace", || m.update("dan/demo1"));
 
@@ -6521,6 +6517,10 @@ mod tests {
         {
             fixture_git(&repo, &["update-ref", "-d", branch]);
         }
+        fixture_git(
+            &repo,
+            &["update-ref", "-d", "refs/gitpm/dan/demo1/previous"],
+        );
         fixture_git(&repo, &["reflog", "expire", "--expire=now", "--all"]);
         fixture_git(&repo, &["gc", "-q", "--prune=now"]);
         let error = ws.refuses("no_previous_version", || m.rollback("dan/demo1"));
@@ -7431,7 +7431,7 @@ mod tests {
 
     #[test]
     fn a_root_package_moved_into_a_folder_keeps_updating_and_forks() {
-        // B2/B8: own clone (`packages/<id>`) with a package folder.
+        // Root and nested releases keep the same source-keyed clone.
         let dir = TempDir::new("moved");
         let repo = scaffold::init(&dir.join("x"), "acme", "x").unwrap().repo;
         let m = reopen(&dir.join("workspace")).unwrap();
@@ -7453,7 +7453,11 @@ mod tests {
         let state = m.state().unwrap();
         let p = &state.packages["acme/x"];
         assert_eq!(p.path.as_deref(), Some("packages/x"));
-        assert!(p.clone.is_none() && !p.is_root_package());
+        assert_eq!(
+            p.clone.as_deref(),
+            Some(clones::repo_key(repo.to_str().unwrap()).as_str())
+        );
+        assert!(!p.is_root_package());
         fs::write(repo.join("packages/x/dist/index.js"), "x 0.3.0").unwrap();
         scaffold::commit_package(&repo, "0.3.0", Some("acme/x")).unwrap();
         let plan = m.update_all().unwrap();
@@ -7467,7 +7471,7 @@ mod tests {
             .unwrap();
         assert_eq!(fork.packages[0].path, "packages/x");
         assert!(fork.path.join(packages::CONFIG).is_file());
-        // forget/restore of the own clone finds the folder too.
+        // forget/restore of the keyed clone finds the folder too.
         m.forget("acme/x").unwrap();
         let restored = m.restore("acme/x").unwrap();
         assert_eq!(restored.current.version, "0.3.0");

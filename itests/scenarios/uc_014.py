@@ -73,12 +73,12 @@ def unknown_manifest_fields_and_missing_version(t: T):
 
 @case(fixture="hello_installed", spec=["package-ids/package-id-syntax#unsafe-components-are-refused", "package-ids/package-id-syntax#empty-namespace"])
 def invalid_id(t: T):
-    """Traversal, three components and empty IDs: invalid_id; nothing created outside packages/."""
+    """Traversal, three components and empty IDs: invalid_id; nothing created for invalid IDs."""
     for name, id in [("dotdot", "../evil"), ("deep", "a/b/c"), ("empty", ""), ("space", "bad/demo 1"),
                      ("abs", "/etc")]:
         repo, sha = bad_repo(t, name, {"plugin.json": manifest(id=id, version="0.1.0"), **DIST})
         refused(t, repo, "--ref", sha, kind="invalid_id")
-    for escaped in [t.ws / "evil", t.root / "evil", t.ws / "packages/a", t.ws / "dist/a"]:
+    for escaped in [t.ws / "evil", t.root / "evil", t.ws / "repos/a", t.ws / "dist/a"]:
         t.ok(not escaped.exists(), f"{escaped} not created")
 
 

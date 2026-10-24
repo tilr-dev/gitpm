@@ -17,7 +17,7 @@ def entry(t: T, root, id: str):
 
 def files_of(t: T, root, id: str):
     """Clone (with full .git) and dist of one installation."""
-    return t.snap(root / "packages" / id, root / "dist" / id, git=True)
+    return t.snap(t.clone(id, root), root / "dist" / id, git=True)
 
 
 def authors(t: T):
@@ -35,7 +35,7 @@ def same_basename_coexists(t: T):
         t.eq(t.rev(t.clone(id)), t.rev(id), f"{id} clone HEAD")
         t.eq((t.dist(id) / "index.js").read_text(), f'export const greeting = "{id} 0.1.0";\n', f"{id} dist")
     t.ok(t.rev(t.clone(V)) != t.rev(t.clone(A)), "distinct clones")
-    t.ok(not (t.ws / "packages/demo").exists() and not (t.ws / "dist/demo").exists(), "no basename-only paths")
+    t.ok(not (t.ws / "repos/demo").exists() and not (t.ws / "dist/demo").exists(), "no basename-only paths")
 
 
 @case(fixture="g2_demos_installed", spec=["transactions-locking/neighbouring-folders-are-never-touched"])
@@ -49,7 +49,7 @@ def second_workspace_is_independent(t: T):
     t.same(first, "first workspace")
     t.gitpm_ok("--root", other, "uninstall", V)
     t.eq(json.loads((other / "state.json").read_text())["packages"], {}, "other root empty again")
-    t.ok(not (other / "packages" / V).exists() and not (other / "dist" / V).exists(), "other root files removed")
+    t.ok(not (t.clone(V, other)).exists() and not (other / "dist" / V).exists(), "other root files removed")
     t.same(first, "first workspace")
     t.same(sources, "author repositories")
 

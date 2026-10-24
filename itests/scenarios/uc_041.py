@@ -104,7 +104,7 @@ def fifo_in_clone_is_refused_without_hanging(t: T):
     t.gitpm_ok("fork", ID, "--ns", "mine", "--into", fork)
     t.ok(not (fork / "pipe").exists(), "local FIFO excluded from fork")
     t.release(ID, "0.1.1")
-    t.gitpm_err("update", ID, kind="unsupported", contains="unsupported file: /fx/ws/packages/dan/hello/pipe", timeout=30)
+    t.gitpm_err("update", ID, kind="unsupported", contains=f"unsupported file: {t.clone(ID)}/pipe", timeout=30)
     t.same(before, "workspace")
     t.gitpm_ok("uninstall", ID, "--force", timeout=30)
     t.not_installed(ID)
@@ -166,13 +166,14 @@ def namespace_folder_cannot_be_removed(t: T):
 
 @case(fixture="hello_installed", spec=["transactions-locking/managed-paths-are-never-followed-through-symlinks"])
 def symlinked_namespace_folder_is_never_followed(t: T):
-    """packages/evil is a symlink to /fx/outside: uninstall/forget of evil/x and an
+    """repos is a symlink to /fx/outside: uninstall/forget of evil/x and an
     install into the evil namespace are refused; the outside repository survives."""
     outside = sentinels(t)
-    os.symlink(OUTSIDE, t.ws / "packages/evil")
+    (t.ws / "repos").rename(t.ws / "saved-repos")
+    os.symlink(OUTSIDE, t.ws / "repos")
     os.symlink(OUTSIDE, t.ws / "dist/evil")
     before = t.snap(t.ws)
-    r = t.gitpm("uninstall", "evil/x", "--force")
+    r = t.gitpm("uninstall", "dan/hello", "--force")
     t.ok(r.code != 0, "uninstall through a symlinked namespace refused")
     t.has(r.err, "managed path is a symlink")
     t.new_package("evil/y", "0.1.0")
