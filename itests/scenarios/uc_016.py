@@ -83,12 +83,15 @@ def id_change_by_ref_is_rejected(t: T):
     at(t, "0.1.0", t.rev(ID, f"v0.1.0"), None)
 
 
-@case(fixture="hello_installed", spec=["updates/stable-update-never-downgrades", "package-ids/broken-historical-tags-are-skipped#bad-newest-tag"])
-def id_change_in_release_tag_is_rejected(t: T):
-    """Release tag v0.1.1 on a commit whose manifest says dan/renamed: stable update rejects."""
+@case(fixture="hello_installed", spec=["updates/stable-update-never-downgrades", "package-ids/release-tag-names#repository-tag-does-not-contain-this-package"])
+def repository_tag_with_another_id_is_ignored(t: T):
+    """Release tag v0.1.1 with another manifest ID is ignored silently by stable update."""
     t.release(ID, "0.1.1", extra={"id": "dan/renamed"})
     t.eq(t.git(ID, "tag", "--points-at", "HEAD"), f"v0.1.1", "tag on the renamed commit")
-    refused(t, "update", ID, kind=None)
+    before = t.package(ID)["current"]
+    result = t.gitpm_ok("update", ID)
+    t.eq(t.package(ID)["current"], before, "foreign tag keeps installed release")
+    t.ok("Warning" not in result.err, "foreign tag is ignored silently")
     at(t, "0.1.0", t.rev(ID, f"v0.1.0"), None)
 
 
