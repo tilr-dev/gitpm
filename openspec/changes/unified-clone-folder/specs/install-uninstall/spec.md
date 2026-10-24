@@ -13,7 +13,7 @@ Installing an ID that is installed from a different source (including a `file://
 - **AND** the message names no command; the CLI adds a `Hint:` line naming `gitpm restore ID` and `gitpm uninstall ID` (the same holds for a forgotten package of a shared clone)
 
 ### Requirement: Restore preconditions
-`restore ID` SHALL record the package again from its `forgotten` record (source-keyed Git clone or retained build output) as it was; branch mode takes HEAD when it moved on along the origin's branch (dependencies checked). It SHALL refuse with `local_changes` on lost work and with `already_installed` when the ID is recorded, and print `ID restored V`. Verified by `workspace::restore_keeps_the_forgotten_record`, `restore_in_a_shared_clone_ignores_another_branch_s_revision` and `branch_mode_restore_checks_dependencies`.
+`restore ID` SHALL record the package again from its `forgotten` record (Git or build) as it was; branch mode takes HEAD when it moved on along the origin's branch (dependencies checked). It SHALL refuse with `local_changes` on lost work and with `already_installed` when the ID is recorded, and print `ID restored V`. Verified by `workspace::restore_keeps_the_forgotten_record`, `restore_in_a_shared_clone_ignores_another_branch_s_revision` and `branch_mode_restore_checks_dependencies`.
 
 #### Scenario: Restored record
 - **WHEN** a clean retained clone of `acme/greeter`, forgotten while disabled and bound to a catalog, is restored

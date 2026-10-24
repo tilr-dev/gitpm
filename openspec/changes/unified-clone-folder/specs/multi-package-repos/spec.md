@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: One shared clone per source
-Root and nested Git packages of one source SHALL share one clone `repos/<name>-<hash of the source>`; state SHALL record a source-derived `clone` key for every Git package and `path` for a nested package (absent for a root package) and only the committed manifest dist folder relative to `<path>` (default `<path>/dist`) SHALL be deployed. Single source for removing a shared clone: it SHALL be removed with the last package (recorded or forgotten) that uses it, with its lost work guarded then. Fetching into it takes the origin's tags as they are (package-ids).
+Root and nested Git packages of one source SHALL share `repos/<name>-<hash of the source>`. State SHALL record `clone` and, for nested packages, `path`; only the committed manifest output relative to that path SHALL be deployed. The clone SHALL be removed only with its last installed or forgotten user, guarding lost work then. Fetching mirrors origin tags (package-ids).
 
 #### Scenario: Uninstall one of two
 - **WHEN** `tilr/store` and `tilr/theme` share a clone and `tilr/store` is uninstalled
