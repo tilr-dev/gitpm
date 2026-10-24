@@ -130,9 +130,9 @@ pub(super) fn clone_users<'a>(
         .collect()
 }
 
-/// A shared clone has one HEAD for several packages, so HEAD must be the installed
-/// commit of one of its users (forgotten ones included) or a tagged commit; anything
-/// else is local work.
+/// A sole user's clone must stay at its recorded Git revision, including a build's
+/// retained previous Git revision. With several users (forgotten ones included),
+/// HEAD may instead be any user's installed revision or a tagged commit.
 pub(super) fn shared_head_moved(
     repo: &Path,
     state: &State,
@@ -141,9 +141,24 @@ pub(super) fn shared_head_moved(
     custom_ssh: bool,
 ) -> Result<Option<LostWork>> {
     let head = transport::object_id(repo, "HEAD", custom_ssh)?;
-    if clone_users(state, key, "")
-        .iter()
-        .any(|(_, p)| p.current.commit == head)
+    let users = clone_users(state, key, "");
+    if let [(_, package)] = users.as_slice() {
+        let recorded = if package.build.is_some() {
+            package
+                .previous
+                .as_ref()
+                .filter(|_| package.previous_build.is_none())
+        } else {
+            Some(&package.current)
+        };
+        return Ok(recorded
+            .filter(|revision| revision.commit != head)
+            .map(|revision| LostWork::HeadMoved {
+                head,
+                recorded: revision.commit.clone(),
+            }));
+    }
+    if users.iter().any(|(_, p)| p.current.commit == head)
         || !transport::tags_at(repo, "HEAD", custom_ssh)?.is_empty()
     {
         return Ok(None);

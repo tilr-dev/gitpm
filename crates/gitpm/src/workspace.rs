@@ -4655,7 +4655,7 @@ mod tests {
             },
         )
         .unwrap();
-        // Own clone from a catalog, with a previous revision, disabled, then forgotten.
+        // Source-keyed clone from a catalog, with a previous revision, disabled, then forgotten.
         m.install_from_catalog(id, Some("0.1.0")).unwrap();
         m.update(id).unwrap();
         m.disable(id).unwrap();
@@ -4673,7 +4673,7 @@ mod tests {
         // Disabled: nothing is deployed.
         assert!(restored.dist.deployed.is_empty() && !ws.dist().exists());
 
-        // Pinned mode is kept; another published revision may be the shared HEAD.
+        // A HEAD moved to another published commit is local work for a sole user.
         m.enable(id).unwrap();
         // A protected package follows a ref only once detached.
         m.update_with(
@@ -4686,6 +4686,16 @@ mod tests {
         fixture_git(
             &ws.repo(),
             &["checkout", "-q", "--detach", "dan/demo1@0.2.0"],
+        );
+        let error = ws.refuses("local_changes", || m.restore(id));
+        assert!(
+            matches!(&error, Error::LocalChanges { items, .. }
+                if matches!(items.as_slice(), [LostWork::HeadMoved { .. }])),
+            "{error:?}"
+        );
+        fixture_git(
+            &ws.repo(),
+            &["checkout", "-q", "--detach", "dan/demo1@0.1.0"],
         );
         let restored = m.restore(id).unwrap();
         assert_eq!(restored.dist.deployed, [id]);
@@ -5191,7 +5201,7 @@ mod tests {
 
     #[test]
     fn moved_and_deleted_tags_are_taken_as_they_are() {
-        // Own clone: update all reports what update ID reports, and never fails.
+        // Source-keyed clone: update all reports what update ID reports, and never fails.
         let (ws, m) = Ws::installed("dan/demo1");
         let installed = ws.author.release("0.2.0");
         m.update("dan/demo1").unwrap();
@@ -8131,7 +8141,7 @@ mod tests {
 
     /// A recorded package whose clone was deleted by hand: uninstall and forget drop the
     /// record and dist without confirmation, and forget keeps no `forgotten` record
-    /// (own clone and shared clone alike).
+    /// (clones with one or several package users alike).
     #[test]
     fn uninstall_and_forget_of_a_package_without_clone_drop_the_record() {
         let id = "dan/demo1";

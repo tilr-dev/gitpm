@@ -57,7 +57,7 @@ def install_without_package_id_lists_packages(t: T):
                                   "multi-package-repos/choosing-a-package-at-install"])
 def two_packages_share_one_clone(t: T):
     """`install SRC ID` twice: one clone repos/suite-<hash>, state records clone and path, only
-    <path>/dist is deployed for each, no packages/<id> clone."""
+    <path>/dist is deployed for each, and packages/ is absent."""
     for id in (STORE, THEME):
         r = t.gitpm_ok("install", suite(t), id)
         t.has(r.out, f"installed {id}@0.1.0 from {suite(t)}")
@@ -67,9 +67,11 @@ def two_packages_share_one_clone(t: T):
     for id, folder in ((STORE, "packages/store"), (THEME, "packages/theme")):
         p = t.package(id)
         t.eq((p["clone"], p["path"]), (clones[0], folder), f"{id} clone and path")
-        t.ok(not t.clone(id).exists(), f"no packages/{id} clone")
+        t.eq(t.clone(id), t.ws / "repos" / clones[0], f"{id} resolves to the shared clone")
+        t.ok((t.clone(id) / ".git").is_dir(), f"{id} clone exists")
         t.eq(sorted(f.name for f in t.dist(id).iterdir()), ["index.js"], f"{id}: only its dist/ deployed")
         t.has((t.dist(id) / "index.js").read_text(), f"{id.split('/')[1]} 0.1.0")
+    t.ok(not (t.ws / "packages").exists(), "no packages directory")
     t.ok(not t.dist(PANEL).exists(), "panel not installed")
 
 

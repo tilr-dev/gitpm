@@ -39,7 +39,7 @@ def only_one_previous_version_is_kept(t: T):
     at(t, "0.1.2", "0.1.1")
     text = (t.ws / "state.json").read_text()
     t.lacks(text, "0.1.0", tagged(t, "0.1.0"))
-    t.eq(sorted(t.package(ID)), sorted(["source", "current", "previous", "enabled", "metadata"]),
+    t.eq(sorted(t.package(ID)), sorted(["source", "clone", "current", "previous", "enabled", "metadata"]),
          "entry fields (no history list)")
 
 

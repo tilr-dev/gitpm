@@ -193,7 +193,7 @@ $ gitpm update acme/greeter --release
 acme/greeter updated 0.1.0 → 0.2.0 (major)
 ```
 
-`forget ID` keeps the whole record in `state.json` under `forgotten` (own clone or shared
+`forget ID` keeps the whole record in `state.json` under `forgotten` (with its source-keyed
 clone) and `restore ID` records it again as it was: revisions, `catalog`, the `enabled`
 flag and the mode. A release-mode or pinned package comes back at its recorded commit; a
 branch-mode package takes the clone's HEAD as found when it is the recorded commit or a

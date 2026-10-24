@@ -26,7 +26,7 @@ def authors(t: T):
 
 @case(fixture="g2_demos_installed", spec=["package-ids/ids-are-matched-exactly", "workspace-layout/workspace-folders"])
 def same_basename_coexists(t: T):
-    """Both IDs are installed side by side with their own clone, dist and state entry."""
+    """Both IDs coexist with source-keyed clones, separate dist and state entries."""
     state = t.gitpm_ok("list").json()
     t.eq(sorted(state["packages"]), [A, V], "state keys are full IDs")
     t.eq(sorted(p["id"] for p in state["resolved"]), [A, V], "resolved list")

@@ -175,7 +175,7 @@ def update_killed_after_staging_is_discarded(t: T):
     before = t.snap(t.ws)
     r = t.gitpm("update", ID, env=killer(t))
     t.eq(r.code, -9, "gitpm was killed")
-    staged = t.ws / ".pm-txn/new/packages" / ID
+    staged = t.ws / ".pm-txn/new" / t.clone(ID).relative_to(t.ws)
     t.ok(staged.is_dir(), "the staged copy was left by the killed process")
     t.eq(journal(t), None, "no journal: the commit was never decided")
     t.eq(t.package(ID)["current"]["version"], "0.1.0", "previous version still installed")

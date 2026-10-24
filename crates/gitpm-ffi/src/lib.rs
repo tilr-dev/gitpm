@@ -261,7 +261,7 @@ pub struct InstalledPackage {
     pub catalog: Option<String>,
     /// Package folder in a multi-package repository; `None` for the repository root.
     pub path: Option<String>,
-    /// Shared clone `repos/<clone>` of a multi-package repository; `None`: own clone.
+    /// Source-keyed clone `repos/<clone>` for Git installs; `None` for clone-free prebuilt installs.
     pub clone: Option<String>,
     /// Descriptive metadata from the installed `plugin.json` (stored, not interpreted).
     pub title: Option<String>,

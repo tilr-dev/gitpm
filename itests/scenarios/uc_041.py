@@ -165,19 +165,19 @@ def namespace_folder_cannot_be_removed(t: T):
 
 
 @case(fixture="hello_installed", spec=["transactions-locking/managed-paths-are-never-followed-through-symlinks"])
-def symlinked_namespace_folder_is_never_followed(t: T):
-    """repos is a symlink to /fx/outside: uninstall/forget of evil/x and an
-    install into the evil namespace are refused; the outside repository survives."""
-    outside = sentinels(t)
-    (t.ws / "repos").rename(t.ws / "saved-repos")
-    os.symlink(OUTSIDE, t.ws / "repos")
-    os.symlink(OUTSIDE, t.ws / "dist/evil")
+def symlinked_repos_folder_is_never_followed(t: T):
+    """repos points to an outside directory containing the recorded source-keyed clone:
+    uninstall, forget and install refuse to follow it; the outside tree is unchanged."""
+    sentinels(t)
+    (t.ws / "repos").rename(OUTSIDE / "repos")
+    os.symlink(OUTSIDE / "repos", t.ws / "repos")
+    outside = t.snap(OUTSIDE, git=True)
     before = t.snap(t.ws)
-    r = t.gitpm("uninstall", "dan/hello", "--force")
-    t.ok(r.code != 0, "uninstall through a symlinked namespace refused")
-    t.has(r.err, "managed path is a symlink")
+    for command in ("uninstall", "forget"):
+        t.gitpm_err(command, ID, "--force", kind="workspace", contains="managed path is a symlink")
+        t.same(before, f"workspace after refused {command}")
+        t.same(outside, f"outside tree after refused {command}")
     t.new_package("evil/y", "0.1.0")
     t.gitpm_err("install", t.repo("evil/y"), kind="workspace", contains="managed path is a symlink")
     t.same(before, "workspace")
-    t.same(outside, "outside sentinels")
-    t.ok(not (OUTSIDE / "y").exists(), "nothing written through the symlink")
+    t.same(outside, "outside tree")
