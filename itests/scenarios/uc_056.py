@@ -179,7 +179,7 @@ def switch_back_incompatible_answer_yes(t: T):
     t.same(before, "workspace")
     on_fork(t)
 
-@case(fixture="g6_replaced", spec=["fork-replacement/switching-back#original-unavailable", "fork-replacement/active-fork-rules#reinstalled-original-stays-replaced"])
+@case(fixture="g6_replaced", spec=["fork-replacement/switching-back#back-with-the-original-absent", "fork-replacement/active-fork-rules#reinstalled-original-stays-replaced"])
 def switch_back_to_unavailable_original(t: T):
     """An absent original must be installed before returning, without force."""
     t.gitpm_ok("uninstall", ORIGINAL)

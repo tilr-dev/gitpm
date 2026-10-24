@@ -61,6 +61,6 @@ The CLI SHALL prompt (`[y/N]`, on stderr) only when stdin is a terminal for unin
 - **WHEN** uninstall asks `Delete anyway? [y/N]`
 - **THEN** the question is written to stderr
 
-#### Scenario: Replacement refusal
-- **WHEN** a replacement is inconsistent
-- **THEN** the CLI returns the library error without asking for confirmation
+#### Scenario: Replacement prompt declined
+- **WHEN** a replacement is inconsistent and terminal input contains n
+- **THEN** the CLI returns the library error without asking for or reading confirmation

@@ -70,7 +70,7 @@ def warned(t: T, r: R):
     t.lacks(r.err, "app/a needs", "lib/mid needs", "Replace anyway?", "[y/N]")
 
 
-@case(fixture="g6_compat_installed", spec=["fork-replacement/compatibility-is-checked-by-versions-only", "cli/prompts-only-on-a-tty#replacement-refusal"])
+@case(fixture="g6_compat_installed", spec=["fork-replacement/compatibility-is-checked-by-versions-only", "cli/prompts-only-on-a-tty#replacement-prompt-declined"])
 def incompatible_fork_answer_no(t: T):
     """old/base on a TTY: strict refusal names app/b only and changes nothing."""
     before = unchanged(t)
@@ -81,7 +81,7 @@ def incompatible_fork_answer_no(t: T):
     t.same(before, "workspace")
 
 
-@case(fixture="g6_compat_installed", spec=["fork-replacement/compatibility-is-checked-by-versions-only", "cli/prompts-only-on-a-tty#replacement-refusal"])
+@case(fixture="g6_compat_installed", spec=["fork-replacement/compatibility-is-checked-by-versions-only", "cli/prompts-only-on-a-tty#replacement-prompt-declined"])
 def incompatible_fork_empty_answer(t: T):
     """An empty terminal input cannot override the strict refusal."""
     before = unchanged(t)

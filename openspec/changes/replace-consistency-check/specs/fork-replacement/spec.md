@@ -3,7 +3,7 @@
 ### Requirement: Replacement is explicit and global
 `replace ORIGINAL --with FORK` (`Manager::replace`) SHALL set the single binding `state.replacements[ORIGINAL] = FORK`, so all consumers resolve ORIGINAL through FORK at its `replaces.version`. Before any mutation, replace SHALL check the entire resulting active workspace. Any missing, disabled or version-incompatible dependency SHALL refuse the operation without changing state, clones or dist. Replace SHALL NOT install or enable dependencies and SHALL have no confirmation or force bypass.
 
-#### Scenario: Missing dependency
+#### Scenario: Fork with unsatisfiable dependencies
 - **WHEN** a fork needs an absent plugin
 - **THEN** replace fails with `dependency_conflict` naming the consumer and dependency, and the workspace remains unchanged
 
@@ -11,18 +11,30 @@
 - **WHEN** the proposed binding leaves every active dependency satisfied
 - **THEN** replace applies the binding and dist changes in one transaction
 
-#### Scenario: Provider preconditions
+#### Scenario: Fork not usable as the replacing package
 - **WHEN** a forward replacement is requested
 - **THEN** both packages MUST be installed; FORK MUST be enabled and declare replaces.id equal to ORIGINAL
 
-#### Scenario: Missing original
+#### Scenario: Original not installed
 - **WHEN** ORIGINAL is not installed
 - **THEN** replace refuses with `not_installed` and changes nothing
+
+#### Scenario: Effect on dist
+- **WHEN** replace succeeds
+- **THEN** dist changes as specified by "Replace removes the original's dist" in the same transaction
+
+#### Scenario: Output variants
+- **WHEN** the provider's installed version differs from its declared replaces.version or there are no consumers
+- **THEN** output uses `ORIGINAL replaced by FORK V (as ORIGINAL V') for: …` or ends `for: no consumers yet`
+
+#### Scenario: Replace for all consumers
+- **WHEN** app1 and app2 depend on ORIGINAL and replace with FORK succeeds
+- **THEN** both resolve to FORK and output names both consumers
 
 ### Requirement: Compatibility is checked by versions only
 Consumers whose requirement the provider's declared version does not satisfy SHALL be listed in `ReplacementPlan.incompatible`, and replace SHALL fail with `incompatible_replacement`. Compatibility SHALL be checked from metadata, without running package code. There SHALL be no confirm parameter, TTY prompt or `--force` for replace.
 
-#### Scenario: Incompatible consumer
+#### Scenario: Incompatible consumer without a TTY
 - **WHEN** app needs ORIGINAL ^2 and FORK declares replaces.version 1.4.0
 - **THEN** check reports app and its requirement, replace fails with `incompatible_replacement`, and the workspace is unchanged
 
@@ -44,7 +56,7 @@ Returning to the original SHALL be ordinary `replace ORIGINAL --with ORIGINAL`, 
 - **WHEN** FORK replaces the installed enabled ORIGINAL and the resulting workspace is consistent
 - **THEN** replace with ORIGINAL removes the binding, redeploys ORIGINAL and reports the former provider
 
-#### Scenario: Original unavailable
+#### Scenario: Back with the original absent
 - **WHEN** ORIGINAL is absent or disabled
 - **THEN** returning refuses without changing the binding or dist; the caller must first install or enable ORIGINAL
 
@@ -52,9 +64,21 @@ Returning to the original SHALL be ordinary `replace ORIGINAL --with ORIGINAL`, 
 - **WHEN** returning makes a consumer version incompatible or exposes an unsatisfied dependency of ORIGINAL
 - **THEN** replace refuses and the workspace remains unchanged
 
-#### Scenario: No binding
+#### Scenario: Back without a replacement
 - **WHEN** ORIGINAL is installed and enabled but has no binding
 - **THEN** replace with ORIGINAL still checks consistency and succeeds without creating a self-binding
+
+#### Scenario: Output variants
+- **WHEN** replace ORIGINAL --with ORIGINAL removes a binding
+- **THEN** output is `ORIGINAL switched back from FORK (ORIGINAL V for: consumers); FORK stays installed and enabled (disable or uninstall it if not wanted)`; without consumers it says `no installed consumers`
+
+#### Scenario: Back to a disabled original
+- **WHEN** replace ORIGINAL --with ORIGINAL is requested while ORIGINAL is disabled
+- **THEN** it refuses with invalid_argument telling the caller to enable ORIGINAL, without changing the binding or dist
+
+#### Scenario: Consumers the original does not serve
+- **WHEN** returning would leave consumers without an installed, enabled, compatible original
+- **THEN** it refuses without changes or a force bypass; absent originals use not_installed and version-incompatible consumers use incompatible_replacement
 
 ### Requirement: Active fork rules
 Single source for bindings when a package leaves or changes. Disabling, forgetting or uninstalling an active fork SHALL drop its binding and deploy ORIGINAL's `dist/` in the same transaction when ORIGINAL is active then (guards: dependencies). A fork update SHALL keep declaring `replaces`. Uninstalling or forgetting the original SHALL keep the binding. A replacing package is always enabled ("Binding to a disabled package"). Verified by `a_binding_to_a_disabled_fork_is_invalid_state`.
@@ -83,13 +107,21 @@ Single source for bindings when a package leaves or changes. Disabling, forgetti
 ### Requirement: Replacement plans carry what the output needs
 `ReplacementPlan` returned by `replace_plan` and `replace` SHALL carry `original`, `provider`, `version`, `current`, `consumers`, `incompatible` and `installed_version`, allowing output without another state read. `replace_check` SHALL additionally report workspace dependency issues and missing dependency installation candidates in its consistency report.
 
-#### Scenario: Original return plan
+#### Scenario: Switch back
 - **WHEN** FORK replaces ORIGINAL 1.4.0 and a caller plans replacement with ORIGINAL
 - **THEN** provider is ORIGINAL, current is FORK and installed_version is 1.4.0
 
-#### Scenario: Distinct provider and declared versions
+#### Scenario: Fork version differs from the declared one
 - **WHEN** FORK 0.3.0 declares replaces.version 1.4.0
 - **THEN** the plan carries installed_version 0.3.0 and version 1.4.0
+
+#### Scenario: Switch back to a disabled fork
+- **WHEN** a host reads replace_plan(ORIGINAL, ORIGINAL) for returning from an active fork
+- **THEN** current names the enabled fork; no fork state needs reading because disabling it would have dropped the binding
+
+#### Scenario: Plan for a missing original
+- **WHEN** ORIGINAL was uninstalled while replaced and a host calls replace_plan(ORIGINAL, ORIGINAL)
+- **THEN** planning refuses with not_installed rather than returning a plan to drop the binding
 
 ## ADDED Requirements
 

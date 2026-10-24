@@ -24,7 +24,7 @@ Single source for `has_dependents`: `disable`, `forget` and `uninstall` SHALL re
 - **WHEN** `app` depends on `lib` and the user runs `gitpm uninstall lib`
 - **THEN** it fails with `has_dependents` naming `app`; with `--force` lib is removed
 
-#### Scenario: Forced removal
+#### Scenario: Forced removal and switching back
 - **WHEN** the user passes --force to disable, forget or uninstall
 - **THEN** removal is allowed and broken consumers are reported; returning through replace ORIGINAL --with ORIGINAL has no force bypass
 
