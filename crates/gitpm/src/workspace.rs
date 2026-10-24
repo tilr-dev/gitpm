@@ -2007,14 +2007,6 @@ impl Manager {
                          it lists; detach it to follow a ref or branch of its origin"
                     );
                 }
-                let relative = p.clone_folder(id);
-                if !transitioning_build {
-                    let live = installed_repo(txn.root(), id, &p)?;
-                    guard_clone(&live, state, id,
-                        "local commits detected; update would discard them",
-                        "local branches, tags or stash hold unpublished work; keep or remove them before updating",
-                        true, ssh)?;
-                }
                 if let (Target::Recorded, Mode::Pinned(reference), None) =
                     (&target, &p.mode, &detached)
                 {
@@ -2024,6 +2016,14 @@ impl Manager {
                         }),
                         Vec::new(),
                     ));
+                }
+                let relative = p.clone_folder(id);
+                if !transitioning_build {
+                    let live = installed_repo(txn.root(), id, &p)?;
+                    guard_clone(&live, state, id,
+                        "local commits detected; update would discard them",
+                        "local branches, tags or stash hold unpublished work; keep or remove them before updating",
+                        true, ssh)?;
                 }
                 let repo = match txn.staged_repo(&relative) {
                     Some(staged) => staged,
