@@ -270,7 +270,7 @@ def update_of_replaced_package_deploys_nothing_until_back(t: T):
     t.eq(t.package(ORIGINAL)["current"], {"version": "1.1.0", "commit": commit}, "state")
     t.eq(t.rev(t.clone(ORIGINAL)), commit, "clone HEAD")
     t.ok(not t.dist(ORIGINAL).exists(), "no dist/vendor/base while replaced")
-    t.gitpm_ok("replace", ORIGINAL, "--with", ORIGINAL, "--force")
+    t.gitpm_ok("replace", ORIGINAL, "--with", ORIGINAL)
     t.has((t.dist(ORIGINAL) / "index.js").read_text(), f"{ORIGINAL} 1.1.0")
 
 
