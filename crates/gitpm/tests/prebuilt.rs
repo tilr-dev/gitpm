@@ -604,6 +604,10 @@ fn catalog_updates_can_alternate_git_and_build_revisions() {
     publish_repo(&f, &app, ID, "1.2.0");
     m.update(ID).unwrap();
     assert!(m.state().unwrap().packages[ID].build.is_some());
+    assert!(m.uninstall_plan(ID).unwrap().lost_work.is_empty());
+    m.uninstall(ID, &[], false).unwrap();
+    m.install_from_catalog(ID, Some("1.1.0")).unwrap();
+    m.update(ID).unwrap();
     m.rollback(ID).unwrap();
     assert_eq!(m.state().unwrap().packages[ID].current.version, "1.1.0");
     assert!(m.state().unwrap().packages[ID].build.is_none());
@@ -627,6 +631,12 @@ fn catalog_updates_can_alternate_git_and_build_revisions() {
     )
     .unwrap();
     assert_eq!(m.update(ID).unwrap_err().kind(), "local_changes");
+    assert_eq!(fs::read(clone.join("work.txt")).unwrap(), b"keep");
+    assert!(!m.uninstall_plan(ID).unwrap().lost_work.is_empty());
+    assert_eq!(
+        m.uninstall(ID, &[], false).unwrap_err().kind(),
+        "local_changes"
+    );
     assert_eq!(fs::read(clone.join("work.txt")).unwrap(), b"keep");
 }
 
