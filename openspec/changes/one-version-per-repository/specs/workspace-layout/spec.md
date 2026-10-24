@@ -26,4 +26,3 @@ Each `state.json` `packages.<id>` record is the single source for its format and
 #### Scenario: Build record format
 - **WHEN** a current or previous revision is a build
 - **THEN** `build` or `previous_build` retains its full release record and catalog location separately from catalog protection; previous retains its mode and source kind for offline rollback, and only current/previous build output is retained
-

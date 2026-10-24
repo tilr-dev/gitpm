@@ -31,4 +31,3 @@ A fork SHALL retain inherited upstream tags. Releasing the fork with `commit DIR
 - **WHEN** a fork retains upstream `v1.0.0` and the user runs `gitpm commit FORK 1.0.0`
 - **THEN** the command fails with `version_conflict` naming `v1.0.0`, and that upstream tag remains unchanged
 - **AND** `gitpm commit FORK 1.1.0` can release every fork package at 1.1.0 when `v1.1.0` does not already exist
-
