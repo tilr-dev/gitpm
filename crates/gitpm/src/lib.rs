@@ -47,3 +47,5 @@ pub use workspace::{
     PackageFork, ReplacementPlan, RevisionChange, SkippedDist, Target, Unchanged, UnchangedReason,
     UninstallPlan, UpdateAllPlan, UpdateOptions,
 };
+
+mod artifact;
