@@ -349,8 +349,10 @@ gitpm --root ./workspace replace demo/a --with my/a
 An explicit `commit` still refuses an existing release tag. Fork does not delete
 inherited tags or choose a new version automatically. Installing `my/a` does not
 automatically install a sibling `my/b` unless dependency resolution requires it.
-`replace` handles incompatible consumers with its usual TTY confirmation or
-explicit `--force` and prints the provider's installed and declared versions.
+`replace` refuses incompatible consumers without changing the workspace. Use
+`replace-check` for diagnostics and `replace-resolve` to explicitly install missing
+dependencies; replace has no TTY confirmation or `--force` bypass. Successful output
+prints the provider's installed and declared versions.
 
 Output: stdout carries the result lines (one per affected package for workspace-mutating
 commands, JSON for `list`, `catalog links` and `catalog register`); everything else goes to stderr:

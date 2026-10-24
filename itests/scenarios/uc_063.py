@@ -16,7 +16,7 @@ REPO = "/fx/repos/dan/hello"
 OPT = "cli/option-validation"
 # Every command of `gitpm --help` (main.rs COMMANDS).
 COMMANDS = ["install", "install-catalog", "list", "check", "update", "rollback", "enable", "disable", "forget",
-            "restore", "uninstall", "fork", "replace", "sync-dist", "init", "commit", "remote", "auth",
+            "restore", "uninstall", "fork", "replace", "replace-check", "replace-resolve", "sync-dist", "init", "commit", "remote", "auth",
             "catalog show", "catalog links", "catalog update", "catalog register"]
 # Positional arguments each command takes (main.rs `expected` - 1). install takes SOURCE [ID]
 # (the message still says 1); fork takes ID [ID...] (no upper bound).
@@ -57,7 +57,7 @@ for _name, _doc, _argv, _needle, _spec in [
     ("force_with_list", "1. --force with list", ["list", "--force"],
      "--force is only valid with uninstall/disable/enable/install/install-catalog/forget", f"{OPT}#misplaced-flag"),
     ("with_without_replace", "1. --with outside replace", ["update", ID, "--with", "dan/other"],
-     "--with/--back require replace", f"{OPT}#misplaced-flag"),
+     "--with requires replace/replace-check/replace-resolve", f"{OPT}#misplaced-flag"),
     ("multi_with_install", "1. --multi outside init", ["install", REPO, "--multi"],
      "--multi/--no-release require init", f"{OPT}#misplaced-flag"),
     ("package_with_init", "1. --package with init", ["init", "dan/x", "--into", "/fx/x", "--package", "dan/x"],
@@ -78,7 +78,7 @@ for _name, _doc, _argv, _needle, _spec in [
     ("unknown_auth_subcommand", "2. an unknown auth subcommand", ["auth", "login", REPO],
      "use: gitpm auth check GIT_URL", "cli/command-set"),
     # 5. --ref, --dev and --release exclude each other as usage errors; --channel is gone (uc_012).
-    ("replace_needs_one_mode", "3. replace without --with/--back", ["replace", ID], "replace needs exactly one of", OPT),
+    ("replace_needs_one_mode", "3. replace without --with", ["replace", ID], "replace needs --with PROVIDER", OPT),
     ("fork_needs_ns", "3. fork without --ns", ["fork", ID, "/fx/forked"], "fork needs --ns NAMESPACE", OPT),
 ]:
     usage_case(_name, _doc, _argv, _needle, _spec)
@@ -91,7 +91,7 @@ def wrong_argument_count(t: T):
     failures = []
     for command in COMMANDS:
         arity = ARITY.get(command, 1)
-        mode = ["--back"] if command == "replace" else []
+        mode = ["--with", "dan/provider"] if command in ("replace", "replace-check", "replace-resolve") else []
         attempts = [] if command == "fork" else [3 if command == "install" else arity + 1]
         if arity > 0:
             attempts.append(0)
