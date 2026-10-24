@@ -3656,7 +3656,7 @@ impl ReplacementCheck {
             .collect::<Vec<_>>()
             .join("; ");
         Error::DependencyConflict(format!(
-            "replacement leaves an inconsistent workspace: {issues}{}; use replace_check and explicitly resolve missing dependencies",
+            "replacement leaves an inconsistent workspace: {issues}{}",
             self.resolution_error
                 .as_ref()
                 .map(|e| format!("; {e}"))
