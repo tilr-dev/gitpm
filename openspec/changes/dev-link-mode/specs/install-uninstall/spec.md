@@ -16,6 +16,11 @@ gitpm SHALL provide a library link operation and equivalent FFI and CLI entry po
 - **THEN** only that selected package is installed in link mode, without requiring a new release or changing the original's installation or replacement bindings
 - **AND** fork preparation alone neither installs the fork nor publishes a linked deployment; sibling packages remain uninstalled
 
+#### Scenario: Explicitly replace with a linked fork
+- **WHEN** an installed, enabled linked fork declares a validated `replaces.id` matching the original and the user runs `replace ORIGINAL --with FORK`
+- **THEN** the existing explicit replacement operation reads the link record's top-level `replaces` offer and applies the existing replacement and dependency rules
+- **AND** consumers of the original use the linked fork's live deployment; linking alone never creates that binding
+
 ### Requirement: Invalid link targets leave no changes
 Linking SHALL refuse invalid manifests with `invalid_manifest` (unparsable JSON with `invalid_data`) and missing installation folders, workspace cycles or targets in workspace managed storage with `workspace`, without changing state or the author folder.
 

@@ -12,11 +12,15 @@ State SHALL support explicit link records with canonical absolute package and in
 - **THEN** state keeps its last validated manifest snapshot until an explicit validated relink refreshes it
 
 ### Requirement: Link record format
-A link record SHALL hold `mode` as `{"link": {"packageRoot": PATH, "target": PATH}}`, optional validated `mode.link.discovery` provenance, plus `source` (when available), `enabled`, `version` (declared), `dependencies` and `metadata`. It MUST NOT hold `current`, `previous`, `clone`, `path`, `catalog`, `forkOf` or `replaces`.
+A link record SHALL hold `mode` as `{"link": {"packageRoot": PATH, "target": PATH}}`, optional validated `mode.link.discovery` provenance, plus `source` (when available), `enabled`, `version` (declared), `dependencies`, `metadata` and optional validated top-level `replaces` in the managed-record format. It MUST NOT hold `current`, `previous`, `clone`, `path`, `catalog` or `forkOf`.
 
 #### Scenario: Link record fields
 - **WHEN** a package is linked
 - **THEN** its record has `mode.link.packageRoot` and `mode.link.target` and no `current`, `previous` or `clone`
+
+#### Scenario: Replacement offer is a validated snapshot
+- **WHEN** the author edits the linked manifest's `replaces` after linking
+- **THEN** state retains the validated top-level offer until an explicit validated relink refreshes the manifest snapshot under existing dependency and replacement checks
 
 ### Requirement: Linked fork discovery preserves validated provenance
 A fork link SHALL record its validated `forkOf` snapshot as `mode.link.discovery.forkOf`, with the same field shapes and source validation as package-manifest. Check and update SHALL use this snapshot for original-upstream discovery until validated relink refreshes it, without rereading external manifest edits into state.
@@ -27,7 +31,7 @@ A fork link SHALL record its validated `forkOf` snapshot as `mode.link.discovery
 
 #### Scenario: Link a newly prepared fork
 - **WHEN** a repository prepared by fork is explicitly installed in link mode
-- **THEN** the selected package's validated manifest `forkOf` is recorded in `mode.link.discovery.forkOf`, without a top-level `forkOf` or `replaces` and without creating a replacement binding
+- **THEN** the selected package's validated manifest `forkOf` is recorded in `mode.link.discovery.forkOf`, without a top-level `forkOf`; its validated manifest `replaces` offer is stored at the record top level in the managed-record format, without creating a replacement binding
 
 #### Scenario: Refresh fork provenance explicitly
 - **WHEN** the author explicitly relinks a package after changing its manifest `forkOf` to another valid provenance descriptor

@@ -108,8 +108,13 @@ installed and its replacement binding is unchanged.
 
 Manifest `forkOf` supplies validated discovery provenance, stored as described
 below. Manifest `replaces` remains an offer and must not create a replacement
-binding during link. This research does not add a linked-fork replacement API;
-managed installation and explicit replacement retain their existing contracts.
+binding during link. Store the validated offer as top-level `replaces` in the
+link record, using the same format as managed records. The existing explicit
+`replace ORIGINAL --with FORK` reads it without a new API, subject to the
+existing enabled-fork, compatibility and dependency rules. For example, after
+the link above, `gitpm replace acme/hello --with me/hello` makes consumers of
+`acme/hello` use the live fork deployment. The binding is created only by that
+explicit step.
 
 ## State and revisions (original question 3)
 
@@ -146,7 +151,10 @@ The snippet is one package record, not a complete state document. Required:
 Use it for original-upstream discovery until a validated relink refreshes it;
 external manifest edits must not retarget discovery. This descriptor is provenance,
 not a managed replacement binding. Absent at the record top level: `current`,
-`previous`, `clone`, `path`, `catalog`, `forkOf`, `replaces`. The manifest identity/version/dependencies/metadata are a
+`previous`, `clone`, `path`, `catalog`, `forkOf`. Optional top-level `replaces`
+is the validated manifest offer, in the existing managed-record shape
+(`id`, `version`); it is not a replacement binding. The manifest identity,
+version, dependencies, metadata and replacement offer are a
 validated snapshot at link time; file content stays live. They do not silently
 change the dependency graph when the author edits the manifest. An explicit
 relink refreshes that snapshot after validation and dependency checks. A displayed
@@ -250,7 +258,12 @@ hermetic local repositories and fixture directories, not public services.
 - Prepare a fork from a hermetic local installed source; assert that fork alone
   preserves workspace state, dist and release tags. Explicitly link one selected
   fork package without a new release; assert live deployment, no sibling installs
-  and no replacement binding. Verify `mode.link.discovery.forkOf` in state/FFI,
+  and no replacement binding. Verify the validated top-level `replaces` offer
+  in state/FFI, then explicitly replace the original with the enabled linked fork
+  using the existing API; assert consumers use the live fork and existing
+  replacement/dependency checks apply. Verify that external manifest edits do
+  not change the recorded offer until validated relink. Verify
+  `mode.link.discovery.forkOf` in state/FFI,
   own-origin versus original-upstream availability, unchanged discovery after
   external manifest edits, and snapshot refresh only after validated relink.
 - Keep managed install/update/deploy/lost-work regression coverage; document the
