@@ -42,11 +42,10 @@ pub use model::{
     STATE_FORMAT, State, valid_id,
 };
 pub use workspace::{
-    DependencyRewrite, DistSync, ForgetResult, ForkReplacement, ForkResume, ForkStep,
-    ForkedPackage, HeldBack, HeldBackReason, IncompatibleConsumer, InstallResult, InstallTarget,
-    InstalledDependency, Manager, Options, PackageFork, PackageForkReplacement, PendingReplacement,
-    ReplacementPlan, ResumeFailure, RevisionChange, SkippedDist, Target, Unchanged,
-    UnchangedReason, UninstallPlan, UpdateAllPlan, UpdateOptions,
+    DependencyRewrite, DistSync, ForgetResult, ForkedPackage, HeldBack, HeldBackReason,
+    IncompatibleConsumer, InstallResult, InstallTarget, InstalledDependency, Manager, Options,
+    PackageFork, ReplacementPlan, RevisionChange, SkippedDist, Target, Unchanged, UnchangedReason,
+    UninstallPlan, UpdateAllPlan, UpdateOptions,
 };
 
 mod artifact;

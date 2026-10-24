@@ -1633,7 +1633,7 @@ fn usage_errors_name_the_problem_and_create_nothing() {
         (&["download-catalog", "Bad"][..], "invalid"),
         (
             &["list", "--force"][..],
-            "--force is only valid with uninstall/disable/enable/install/install-catalog/forget/replace/fork --replace",
+            "--force is only valid with uninstall/disable/enable/install/install-catalog/forget/replace",
         ),
     ] {
         let out = f
