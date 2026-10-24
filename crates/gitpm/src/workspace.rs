@@ -1936,24 +1936,46 @@ impl Manager {
                 }
                 let transitioning_build = p.build.is_some();
                 if transitioning_build {
-                    let cloned = clone_revision(
-                        txn,
-                        &Fetch {
-                            source: &p.source,
-                            target: FetchTarget::Exact(&p.current.commit),
-                            expected: None,
-                            files: None,
-                            package: Some(id),
-                            path: None,
-                        },
-                        "build-transition",
-                        ssh,
-                    )?;
-                    // A clone-free build may share its source with a Git package.
-                    // Reuse its clone through the same ownership and local-work
-                    // guards as an install instead of replacing it with a fresh clone.
-                    let (_, _, key) = place_clone(txn, state, &cloned, &p.source, ssh)?;
-                    state.packages.get_mut(id).unwrap().clone = key;
+                    let mut retained = p.clone();
+                    retained
+                        .clone
+                        .get_or_insert_with(|| clones::repo_key(&p.source));
+                    if let Ok(live) = installed_repo(txn.root(), id, &retained) {
+                        if p.clone.is_some() {
+                            builds::guard_retained(&live, id, ssh)?;
+                        } else {
+                            // A clone-free build can join an installed or forgotten
+                            // sibling's clone, with all of its local-work guards.
+                            guard_clone(
+                                &live,
+                                state,
+                                id,
+                                retained.clone.as_deref(),
+                                "local commits block transition to Git",
+                                "unpublished work blocks transition to Git",
+                                true,
+                                ssh,
+                            )?;
+                        }
+                        txn.repo(&p.clone_folder(id), &live)?;
+                        state.packages.get_mut(id).unwrap().clone = retained.clone;
+                    } else {
+                        let cloned = clone_revision(
+                            txn,
+                            &Fetch {
+                                source: &p.source,
+                                target: FetchTarget::Exact(&p.current.commit),
+                                expected: None,
+                                files: None,
+                                package: Some(id),
+                                path: None,
+                            },
+                            "build-transition",
+                            ssh,
+                        )?;
+                        let (_, _, key) = place_clone(txn, state, &cloned, &p.source, ssh)?;
+                        state.packages.get_mut(id).unwrap().clone = key;
+                    }
                 }
                 let detached = if options.detach {
                     let location = p

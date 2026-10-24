@@ -53,6 +53,11 @@ Each `state.json` `packages.<id>` record is the single source for its format and
 - **WHEN** a build revision is updated to a Git revision
 - **THEN** previous_build retains the release metadata and catalog location for offline rollback
 
+#### Scenario: Retained clone after a build commit is removed upstream
+- **WHEN** a Git install switches to a build, retains its clone, and the build commit is later removed from the origin
+- **THEN** an explicit update to an available Git ref reuses the retained clone and succeeds without resolving the removed build commit first
+- **AND** build provenance is retained for offline rollback
+
 #### Scenario: Build record format
 - **WHEN** a current or previous revision is a build
 - **THEN** `build` or `previous_build` retains its full release record and catalog location separately from catalog protection; previous retains its mode and source kind for offline rollback, and only current/previous build output is retained

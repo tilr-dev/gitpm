@@ -870,3 +870,59 @@ fn clone_free_build_transition_preserves_a_siblings_local_work() {
         assert_eq!(fs::read_dir(f.root.join("repos")).unwrap().count(), 1);
     }
 }
+
+#[test]
+fn retained_clone_can_leave_a_build_whose_commit_is_gone_upstream() {
+    let f = Fixture::new(true);
+    let repo = gitpm::scaffold::init(&f.dir.join("source"), "acme", "widget")
+        .unwrap()
+        .repo;
+    gitpm::scaffold::commit(&repo, "1.0.0").unwrap();
+    let first = git(&repo, &["rev-parse", "HEAD"]);
+    catalog::register(
+        f.catalog.to_str().unwrap(),
+        repo.to_str().unwrap(),
+        &format!("{ID}@1.0.0"),
+    )
+    .unwrap();
+    let root_file = f.catalog.join("catalog.json");
+    let mut catalog_root: serde_json::Value =
+        serde_json::from_slice(&fs::read(&root_file).unwrap()).unwrap();
+    catalog_root["verified"] = json!(true);
+    fs::write(root_file, catalog_root.to_string()).unwrap();
+    let m = f.manager();
+    m.install_from_catalog(ID, None).unwrap();
+    publish_repo(&f, &repo, ID, "2.0.0");
+    m.update(ID).unwrap();
+    assert!(m.state().unwrap().packages[ID].build.is_some());
+    let clone = clone_path(&f.root, &repo);
+    assert_eq!(git(&clone, &["rev-parse", "HEAD"]), first);
+    // Replace the origin history after A with C, removing build commit B entirely.
+    git(&repo, &["reset", "--hard", &first]);
+    gitpm::scaffold::commit(&repo, "3.0.0").unwrap();
+    git(&repo, &["tag", "-d", "acme/widget@2.0.0"]);
+    git(&repo, &["reflog", "expire", "--expire=now", "--all"]);
+    git(&repo, &["gc", "--prune=now"]);
+    m.update_with(
+        ID,
+        gitpm::Target::Ref("acme/widget@3.0.0".into()),
+        gitpm::UpdateOptions::default(),
+    )
+    .unwrap();
+    let state = m.state().unwrap();
+    assert_eq!(state.packages[ID].current.version, "3.0.0");
+    assert!(state.packages[ID].build.is_none());
+    assert_eq!(
+        state.packages[ID]
+            .previous_build
+            .as_ref()
+            .unwrap()
+            .release
+            .manifest
+            .version,
+        "2.0.0"
+    );
+    assert!(clone.join(".git").is_dir());
+    m.rollback(ID).unwrap();
+    assert!(m.state().unwrap().packages[ID].build.is_some());
+}
