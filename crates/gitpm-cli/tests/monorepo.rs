@@ -1,4 +1,4 @@
-//! End-to-end tests of multi-package repositories (`gitpm.json`) and `fork --replace`.
+//! End-to-end tests of multi-package repositories (`gitpm.json`) and explicit fork workflows.
 //! Hermetic: the CLI and Git run with a cleared environment, a fixture HOME/TMPDIR and
 //! Git config; every path is inside a per-test temp directory removed on drop.
 use std::{
@@ -141,271 +141,6 @@ impl Drop for Fixture {
             let _ = fs::remove_dir_all(&self.dir);
         }
     }
-}
-
-/// Hooks live outside the copied repository and apply to its initial and release commits.
-#[cfg(unix)]
-fn release_hooks(f: &Fixture, post_commit: &str, pre_commit: &str) {
-    use std::os::unix::fs::PermissionsExt;
-    let hooks = f.dir.join("hooks");
-    fs::create_dir_all(&hooks).unwrap();
-    for (name, script) in [
-        ("prepare-commit-msg", post_commit),
-        ("pre-commit", pre_commit),
-    ] {
-        let path = hooks.join(name);
-        fs::write(&path, format!("#!/bin/sh\nset -eu\n{script}\n")).unwrap();
-        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    f.git(
-        &f.mono,
-        &[
-            "config",
-            "--global",
-            "core.hooksPath",
-            hooks.to_str().unwrap(),
-        ],
-    );
-}
-
-fn release_failure(f: &Fixture) -> (PathBuf, String) {
-    let out = f.run(&[
-        "fork",
-        "tilr/store",
-        "tilr/theme",
-        "--ns",
-        "me",
-        "--into",
-        "forks/me/mono",
-        "--replace",
-        "--version",
-        "2.0.0",
-    ]);
-    assert!(!out.status.success(), "release must fail");
-    let stderr = String::from_utf8(out.stderr).unwrap();
-    for id in ["me/store", "me/theme"] {
-        assert!(
-            stderr.contains(&format!("{id}: the release step failed")),
-            "{stderr}"
-        );
-        assert!(f.state()["packages"].get(id).is_none());
-    }
-    assert!(f.state().get("replacements").is_none());
-    assert_eq!(f.dist("tilr/store"), "store 1.0.0");
-    assert_eq!(f.dist("tilr/theme"), "theme 1.0.0");
-    let fork = f.dir.join("forks/me/mono");
-    let tags = f
-        .command("git")
-        .arg("-C")
-        .arg(&fork)
-        .arg("tag")
-        .arg("--list")
-        .arg("me/*")
-        .output()
-        .unwrap();
-    assert!(tags.status.success());
-    assert!(
-        tags.stdout.is_empty(),
-        "partial tags: {}",
-        String::from_utf8_lossy(&tags.stdout)
-    );
-    (fork, stderr)
-}
-
-#[test]
-#[cfg(unix)]
-fn fork_replace_release_rejecting_hook_restores_manifests_and_index() {
-    let f = Fixture::new();
-    f.ok(&["install", f.source(), "tilr/store"]);
-    f.ok(&["install", f.source(), "tilr/theme"]);
-    release_hooks(&f, ":", "exit 1");
-    let (fork, stderr) = release_failure(&f);
-    assert!(stderr.contains("kind: git"), "{stderr}");
-    for name in ["store", "theme"] {
-        let path = format!("packages/{name}/plugin.json");
-        let expected = f
-            .command("git")
-            .arg("-C")
-            .arg(&fork)
-            .args(["show", &format!("HEAD:{path}")])
-            .output()
-            .unwrap();
-        assert!(expected.status.success());
-        assert_eq!(fs::read(fork.join(&path)).unwrap(), expected.stdout);
-    }
-    f.git(&fork, &["diff", "--cached", "--exit-code"]);
-    let log = f
-        .command("git")
-        .arg("-C")
-        .arg(&fork)
-        .args(["log", "-1", "--format=%s"])
-        .output()
-        .unwrap();
-    assert!(String::from_utf8_lossy(&log.stdout).starts_with("Fork"));
-}
-
-#[test]
-fn fork_replace_release_rejects_wrong_metadata_type() {
-    let f = Fixture::new();
-    // Lenient install accepts this metadata; strict release must reject it even
-    // when it belongs to the last package in the batch.
-    f.write("theme", "1.0.0", r#", "tags": 42"#);
-    f.git(&f.mono, &["add", "--all"]);
-    f.git(&f.mono, &["commit", "-q", "-m", "bad metadata"]);
-    f.git(&f.mono, &["tag", "-f", "tilr/theme@1.0.0"]);
-    f.ok(&["install", f.source(), "tilr/store"]);
-    f.ok(&["install", f.source(), "tilr/theme"]);
-    let (fork, stderr) = release_failure(&f);
-    assert!(stderr.contains("kind: invalid_manifest"), "{stderr}");
-    for name in ["store", "theme"] {
-        let manifest: serde_json::Value = serde_json::from_slice(
-            &fs::read(fork.join(format!("packages/{name}/plugin.json"))).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(manifest["version"], "1.0.0");
-    }
-}
-
-#[test]
-#[cfg(unix)]
-fn fork_replace_release_without_file_transport() {
-    let f = Fixture::new();
-    f.ok(&["install", f.source(), "tilr/store"]);
-    f.ok(&["install", f.source(), "tilr/theme"]);
-    use std::os::unix::fs::PermissionsExt;
-    // Cloning the recorded local-path source needs file transport; disable it after checkout.
-    let hooks = f.dir.join("transport-hooks");
-    fs::create_dir_all(&hooks).unwrap();
-    let hook = hooks.join("post-checkout");
-    fs::write(
-        &hook,
-        "#!/bin/sh\ngit config --global protocol.file.allow never\n",
-    )
-    .unwrap();
-    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
-    f.git(
-        &f.mono,
-        &["config", "--global", "protocol.file.allow", "always"],
-    );
-    f.git(
-        &f.mono,
-        &[
-            "config",
-            "--global",
-            "core.hooksPath",
-            hooks.to_str().unwrap(),
-        ],
-    );
-    let output = f
-        .command(env!("CARGO_BIN_EXE_gitpm"))
-        .current_dir(&f.dir)
-        .arg("--root")
-        .arg(f.dir.join("workspace"))
-        .arg("--catalog")
-        .arg(f.dir.join("catalog"))
-        .env("GITPM_SOURCES", f.dir.join("sources.txt"))
-        .env("GIT_PROTOCOL_FROM_USER", "0")
-        .args([
-            "fork",
-            "tilr/store",
-            "tilr/theme",
-            "--ns",
-            "me",
-            "--into",
-            "forks/me/mono",
-            "--replace",
-            "--version",
-            "2.0.0",
-        ])
-        .stdin(std::process::Stdio::null())
-        .output()
-        .unwrap();
-    // The following install needs file transport; release itself must complete.
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.contains("the install step failed"), "{stderr}");
-    assert!(!stderr.contains("the release step failed"), "{stderr}");
-    let fork = f.dir.join("forks/me/mono");
-    for name in ["store", "theme"] {
-        f.git(
-            &fork,
-            &["diff", "--exit-code", "HEAD", &format!("me/{name}@2.0.0")],
-        );
-    }
-}
-
-#[test]
-#[cfg(unix)]
-fn fork_replace_release_late_tag_lock_leaves_no_tags() {
-    let f = Fixture::new();
-    f.ok(&["install", f.source(), "tilr/store"]);
-    f.ok(&["install", f.source(), "tilr/theme"]);
-    release_hooks(
-        &f,
-        ":",
-        r#"
-mkdir -p .git/refs/tags/me
-: > .git/refs/tags/me/theme@2.0.0.lock
-"#,
-    );
-    let (fork, stderr) = release_failure(&f);
-    assert!(stderr.contains("kind: git"), "{stderr}");
-    assert!(stderr.contains("theme@2.0.0.lock"), "{stderr}");
-    let log = f
-        .command("git")
-        .arg("-C")
-        .arg(&fork)
-        .args(["log", "-1", "--format=%s"])
-        .output()
-        .unwrap();
-    assert!(String::from_utf8_lossy(&log.stdout).starts_with("Release"));
-}
-
-#[test]
-#[cfg(unix)]
-fn fork_replace_single_package_tag_failure_gives_no_commit_retry_hint() {
-    let f = Fixture::new();
-    f.ok(&["install", f.source(), "tilr/store"]);
-    // A checkout hook places a tag lock after the clone has been created.
-    // It runs on checkout of the fork branch, before the initial commit.
-    use std::os::unix::fs::PermissionsExt;
-    release_hooks(&f, ":", ":");
-    let hook = f.dir.join("hooks/post-checkout");
-    fs::write(
-        &hook,
-        r#"#!/bin/sh
-set -eu
-case "$PWD" in
-*/forks/me/mono)
-    mkdir -p .git/refs/tags/me
-    : > .git/refs/tags/me/store@1.0.0.lock
-    ;;
-esac
-"#,
-    )
-    .unwrap();
-    fs::set_permissions(hook, fs::Permissions::from_mode(0o755)).unwrap();
-    let out = f.run(&[
-        "fork",
-        "tilr/store",
-        "--ns",
-        "me",
-        "--into",
-        "forks/me/mono",
-        "--replace",
-    ]);
-    assert!(!out.status.success(), "release must fail");
-    let stderr = String::from_utf8(out.stderr).unwrap();
-    assert!(
-        stderr.contains("me/store: the release step failed"),
-        "{stderr}"
-    );
-    assert!(stderr.contains("no release tags were created"), "{stderr}");
-    assert!(!stderr.contains("commit succeeded"), "{stderr}");
-    assert!(
-        !stderr.contains("releasing the same version again"),
-        "{stderr}"
-    );
-    assert!(f.state()["packages"].get("me/store").is_none());
 }
 
 #[test]
@@ -660,246 +395,6 @@ fn init_into_and_commit_with_a_package() {
     assert!(!root.join("gitpm.json").exists());
     let error = f.fails(&["init", "acme/four", "--in", root.to_str().unwrap()]);
     assert!(error.contains("unknown option: --in"), "{error}");
-}
-
-/// A consumer repository that depends on `tilr/theme`.
-fn consumer(f: &Fixture) -> PathBuf {
-    let repo = f.dir.join("consumer");
-    fs::create_dir_all(repo.join("dist")).unwrap();
-    f.git(&repo, &["init", "-q", "-b", "main"]);
-    fs::write(
-        repo.join("plugin.json"),
-        r#"{"id":"app/consumer","version":"1.0.0","dependencies":{"tilr/theme":"^1.0"}}"#,
-    )
-    .unwrap();
-    fs::write(repo.join("dist/index.js"), "consumer").unwrap();
-    f.git(&repo, &["add", "--all"]);
-    f.git(&repo, &["commit", "-q", "-m", "consumer"]);
-    f.git(&repo, &["tag", "app/consumer@1.0.0"]);
-    repo
-}
-fn provider(state: &serde_json::Value) -> String {
-    let consumer = state["resolved"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|p| p["id"] == "app/consumer")
-        .unwrap();
-    consumer["dependencies"][0]["provider"]
-        .as_str()
-        .unwrap()
-        .to_owned()
-}
-
-#[test]
-fn fork_replace_releases_installs_and_replaces_in_one_step() {
-    let f = Fixture::new();
-    f.ok(&["install", f.source(), "tilr/theme"]);
-    let consumer = consumer(&f);
-    f.ok(&["install", consumer.to_str().unwrap()]);
-    assert_eq!(provider(&f.state()), "tilr/theme");
-    // Local installation edits stay local; the fork releases the recorded source.
-    let clone = fs::read_dir(f.dir.join("workspace/repos"))
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
-    fs::write(clone.join("packages/theme/dist/index.js"), "my theme").unwrap();
-    let out = f.ok(&[
-        "fork",
-        "tilr/theme",
-        "--ns",
-        "me",
-        "--into",
-        "forks/me/theme",
-        "--replace",
-    ]);
-    assert!(out.contains("Released: me/theme@1.0.0"), "{out}");
-    assert!(out.contains("Installed: me/theme 1.0.0"), "{out}");
-    assert!(
-        out.contains("tilr/theme replaced by me/theme 1.0.0 for: app/consumer"),
-        "{out}"
-    );
-    let fork = f.dir.join("forks/me/theme");
-    assert!(fork.join("packages/theme/plugin.json").is_file());
-    assert_eq!(f.dist("me/theme"), "theme 1.0.0");
-    assert_eq!(
-        fs::read_to_string(clone.join("packages/theme/dist/index.js")).unwrap(),
-        "my theme"
-    );
-    // dist/ holds only active packages: the replaced original is not deployed.
-    assert!(!f.dir.join("workspace/dist/tilr/theme").exists());
-    let state = f.state();
-    assert_eq!(state["replacements"]["tilr/theme"], "me/theme");
-    assert_eq!(provider(&state), "me/theme");
-    assert_eq!(state["packages"]["me/store"]["current"]["version"], "1.0.0");
-    assert_eq!(f.dist("me/store"), "store 1.0.0");
-    assert!(state["packages"].get("tilr/store").is_none());
-    assert!(state["replacements"].get("tilr/store").is_none());
-    // A later fork release with another version shows the installed version.
-    fs::write(fork.join("packages/theme/dist/index.js"), "my theme 2").unwrap();
-    f.ok(&[
-        "commit",
-        fork.to_str().unwrap(),
-        "1.5.0",
-        "--package",
-        "me/theme",
-    ]);
-    f.ok(&["update", "me/theme"]);
-    let out = f.ok(&["replace", "tilr/theme", "--with", "me/theme"]);
-    assert!(
-        out.contains(
-            "tilr/theme replaced by me/theme 1.5.0 (as tilr/theme 1.0.0) for: app/consumer"
-        ),
-        "{out}"
-    );
-    // Switching back restores the original for the consumer.
-    let out = f.ok(&["replace", "tilr/theme", "--back"]);
-    assert!(
-        out.contains(
-            "tilr/theme switched back from me/theme (tilr/theme 1.0.0 for: app/consumer); me/theme stays installed and enabled (disable or uninstall it if not wanted)"
-        ),
-        "{out}"
-    );
-    let state = f.state();
-    assert!(state.get("replacements").is_none(), "{state:#}");
-    assert_eq!(provider(&state), "tilr/theme");
-    // Deployed again from the installed commit (the clone's local edit is not released).
-    assert_eq!(f.dist("tilr/theme"), "theme 1.0.0");
-    assert_eq!(f.dist("me/theme"), "my theme 2");
-}
-
-#[test]
-fn fork_replace_keeps_the_fork_and_says_how_to_finish_when_a_step_fails() {
-    let f = Fixture::new();
-    let legacy = f.dir.join("hello");
-    fs::create_dir_all(legacy.join("dist")).unwrap();
-    f.git(&legacy, &["init", "-q", "-b", "main"]);
-    fs::write(
-        legacy.join("plugin.json"),
-        r#"{"id":"acme/hello","version":"1.0.0"}"#,
-    )
-    .unwrap();
-    fs::write(legacy.join("dist/index.js"), "hello").unwrap();
-    f.git(&legacy, &["add", "--all"]);
-    f.git(&legacy, &["commit", "-q", "-m", "hello"]);
-    f.git(&legacy, &["tag", "acme/hello@1.0.0"]);
-    f.ok(&["install", legacy.to_str().unwrap()]);
-    // A release hook introduces an uninstallable dist after the source clone.
-    release_hooks(&f, ":", "ln -s index.js dist/link.js\ngit add dist/link.js");
-    let error = f.fails(&[
-        "fork",
-        "acme/hello",
-        "--ns",
-        "me",
-        "--into",
-        "me/hello",
-        "--replace",
-        "--version",
-        "1.0.1",
-    ]);
-    assert!(
-        error.contains("me/hello: the install step failed"),
-        "{error}"
-    );
-    assert!(error.contains("gitpm install"), "{error}");
-    assert!(
-        error.contains("To undo everything: uninstall the installed forks, then delete"),
-        "{error}"
-    );
-    assert!(error.contains("Error kind: unsupported"), "{error}");
-    let fork = f.dir.join("me/hello");
-    assert!(fork.join("plugin.json").is_file(), "fork folder is kept");
-    let state = f.state();
-    assert!(state["packages"].get("me/hello").is_none());
-    assert!(state.get("replacements").is_none());
-    release_hooks(&f, ":", ":");
-    // Without --replace the output names the next steps.
-    let out = f.ok(&["fork", "acme/hello", "--ns", "me", "--into", "other"]);
-    assert!(
-        out.contains("Next steps") && out.contains("gitpm replace acme/hello --with me/hello"),
-        "{out}"
-    );
-    assert!(f.dir.join("other/plugin.json").is_file());
-    // Invalid input is refused before any folder is created.
-    f.fails(&[
-        "fork",
-        "acme/hello",
-        "--ns",
-        "you",
-        "--into",
-        "you",
-        "--replace",
-        "--version",
-        "1.0",
-    ]);
-    assert!(!f.dir.join("you").exists());
-    f.fails(&[
-        "fork",
-        "acme/hello",
-        "--ns",
-        "you",
-        "--into",
-        "you",
-        "--version",
-        "2.0.0",
-    ]);
-    assert!(!f.dir.join("you").exists());
-
-    // An incompatible replacement needs confirmation: without a terminal the library
-    // leaves it pending, so the fork stays released and installed and the original is
-    // not replaced. acme/app needs acme/hello ^2, which a fork of 1.0.0 does not give.
-    fs::write(
-        legacy.join("plugin.json"),
-        r#"{"id":"acme/hello","version":"2.0.0"}"#,
-    )
-    .unwrap();
-    f.git(&legacy, &["commit", "-q", "-am", "2.0.0"]);
-    f.git(&legacy, &["tag", "acme/hello@2.0.0"]);
-    let app = f.dir.join("app");
-    fs::create_dir_all(app.join("dist")).unwrap();
-    f.git(&app, &["init", "-q", "-b", "main"]);
-    fs::write(
-        app.join("plugin.json"),
-        r#"{"id":"acme/app","version":"1.0.0","dependencies":{"acme/hello":"^2"}}"#,
-    )
-    .unwrap();
-    fs::write(app.join("dist/index.js"), "app").unwrap();
-    f.git(&app, &["add", "--all"]);
-    f.git(&app, &["commit", "-q", "-m", "app"]);
-    f.git(&app, &["tag", "acme/app@1.0.0"]);
-    f.ok(&["update", "acme/hello"]);
-    f.ok(&["install", app.to_str().unwrap()]);
-    f.ok(&["uninstall", "acme/hello", "--force"]);
-    f.ok(&[
-        "install",
-        legacy.to_str().unwrap(),
-        "--ref",
-        "acme/hello@1.0.0",
-    ]);
-    let error = f.fails(&[
-        "fork",
-        "acme/hello",
-        "--ns",
-        "pending",
-        "--into",
-        "pending/hello",
-        "--replace",
-    ]);
-    for needle in [
-        "Warning: pending/hello provides acme/hello 1.0.0, which these consumers do not accept:",
-        "  - acme/app needs acme/hello ^2",
-        "No terminal to confirm; use --force to replace anyway.",
-        "pending/hello: the replace step failed",
-        "gitpm replace acme/hello --with pending/hello [--force]",
-        "Error kind: incompatible_replacement",
-    ] {
-        assert!(error.contains(needle), "missing {needle:?}: {error}");
-    }
-    let state = f.state();
-    assert!(state["packages"].get("pending/hello").is_some());
-    assert!(state.get("replacements").is_none());
 }
 
 // ---- forks of several packages ------------------------------------------------------
@@ -1159,12 +654,12 @@ fn packages_forked_together_must_come_from_one_repository() {
 }
 
 #[test]
-fn fork_replace_of_two_packages_replaces_both_and_switches_back() {
+fn explicit_forks_replace_two_packages_and_switch_back() {
     let f = Fixture::new();
     three_installed(&f);
     install_consumer(&f, "uses-theme", "tilr/theme");
     install_consumer(&f, "uses-panel", "tilr/panel");
-    let out = f.ok(&[
+    f.ok(&[
         "fork",
         "tilr/panel",
         "tilr/theme",
@@ -1172,36 +667,20 @@ fn fork_replace_of_two_packages_replaces_both_and_switches_back() {
         "me",
         "--into",
         "forks/me/mono",
-        "--replace",
-        "--version",
-        "2.0.0",
     ]);
-    // me/panel needs me/theme; ^1.0 does not accept the released 2.0.0.
-    assert!(
-        out.contains("Dependency: me/panel now depends on me/theme ^2.0.0 (was tilr/theme ^1.0"),
-        "{out}"
-    );
-    assert!(
-        out.contains("Released: me/theme@2.0.0") && out.contains("Released: me/panel@2.0.0"),
-        "{out}"
-    );
-    // Dependencies are installed first.
-    assert!(
-        out.find("Installed: me/theme").unwrap() < out.find("Installed: me/panel").unwrap(),
-        "{out}"
-    );
-    assert!(
-        out.contains(
-            "tilr/theme replaced by me/theme 2.0.0 (as tilr/theme 1.0.0) for: app/uses-theme"
-        ),
-        "{out}"
-    );
+    let fork = f.dir.join("forks/me/mono");
+    for name in ["store", "theme", "panel"] {
+        let id = format!("me/{name}");
+        f.ok(&["commit", fork.to_str().unwrap(), "1.0.1", "--package", &id]);
+        f.ok(&["install", fork.to_str().unwrap(), &id]);
+        f.ok(&["replace", &format!("tilr/{name}"), "--with", &id]);
+    }
     let state = f.state();
     assert_eq!(provider_of(&state, "app/uses-theme"), "me/theme");
     assert_eq!(provider_of(&state, "app/uses-panel"), "me/panel");
     assert_eq!(state["replacements"]["tilr/panel"], "me/panel");
     let fork = f.dir.join("forks/me/mono");
-    assert_eq!(manifest(&fork.join("packages/theme"))["version"], "2.0.0");
+    assert_eq!(manifest(&fork.join("packages/theme"))["version"], "1.0.1");
     f.ok(&["replace", "tilr/theme", "--back"]);
     f.ok(&["replace", "tilr/panel", "--back"]);
     f.ok(&["replace", "tilr/store", "--back"]);
@@ -1245,62 +724,6 @@ fn an_existing_fork_is_refused_without_rewriting_dependencies() {
         manifest(&fork.join("packages/panel"))["dependencies"],
         serde_json::json!({"me/theme": "^1.0"})
     );
-}
-
-#[test]
-fn fork_replace_of_several_packages_reports_each_failure_and_keeps_the_fork() {
-    let f = Fixture::new();
-    three_installed(&f);
-    // Introduce an uninstallable dist only during the release, after source cloning.
-    release_hooks(
-        &f,
-        ":",
-        "ln -s index.js packages/panel/dist/link.js\ngit add packages/panel/dist/link.js",
-    );
-    let out = f.run(&[
-        "fork",
-        "tilr/theme",
-        "tilr/panel",
-        "--ns",
-        "me",
-        "--into",
-        "me/mono",
-        "--replace",
-        "--version",
-        "1.0.1",
-    ]);
-    assert!(!out.status.success());
-    let (stdout, stderr) = (
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr),
-    );
-    assert!(stdout.contains("Released: me/theme@1.0.1"), "{stdout}");
-    assert!(stdout.contains("Released: me/panel@1.0.1"), "{stdout}");
-    assert!(
-        stdout.contains("tilr/theme replaced by me/theme 1.0.1"),
-        "{stdout}"
-    );
-    assert!(
-        stderr.contains("me/panel: the install step failed")
-            && stderr.contains("kind: unsupported"),
-        "{stderr}"
-    );
-    assert!(stderr.contains("gitpm install"), "{stderr}");
-    assert!(
-        stderr.contains("gitpm replace tilr/panel --with me/panel"),
-        "{stderr}"
-    );
-    assert!(stderr.contains("is kept"), "{stderr}");
-    assert!(stderr.contains("Error kind: unsupported"), "{stderr}");
-    let fork = f.dir.join("me/mono");
-    assert!(
-        fork.join("packages/panel/plugin.json").is_file(),
-        "fork kept"
-    );
-    let state = f.state();
-    assert_eq!(state["replacements"]["tilr/theme"], "me/theme");
-    assert!(state["packages"].get("me/panel").is_none());
-    assert!(state["replacements"].get("tilr/panel").is_none());
 }
 
 #[test]
@@ -1366,111 +789,158 @@ fn a_v_version_tag_in_a_multi_package_repository_is_ignored_without_a_warning() 
     );
 }
 
-/// `acme/hello` installed at 1.0.0 while `acme/app` needs `acme/hello ^2`: a fork of it is
-/// an incompatible replacement.
-fn incompatible_consumer(f: &Fixture) -> std::path::PathBuf {
-    let hello = f.dir.join("hello");
-    fs::create_dir_all(hello.join("dist")).unwrap();
-    f.git(&hello, &["init", "-q", "-b", "main"]);
-    for version in ["1.0.0", "2.0.0"] {
+/// A repository-wide fork remains separate from releasing or activating one package.
+#[test]
+fn plain_fork_preserves_workspace_until_explicit_install_and_replace() {
+    let f = Fixture::new();
+    for (name, id) in [("store", "demo/a"), ("theme", "demo/b")] {
+        let path = f.mono.join(format!("packages/{name}/plugin.json"));
         fs::write(
-            hello.join("plugin.json"),
-            format!(r#"{{"id":"acme/hello","version":"{version}"}}"#),
+            path,
+            serde_json::json!({"id": id, "version": "0.2.0"}).to_string(),
         )
         .unwrap();
-        fs::write(hello.join("dist/index.js"), version).unwrap();
-        f.git(&hello, &["add", "--all"]);
-        f.git(&hello, &["commit", "-q", "-m", version]);
-        f.git(&hello, &["tag", &format!("acme/hello@{version}")]);
     }
-    let app = f.dir.join("app");
-    fs::create_dir_all(app.join("dist")).unwrap();
-    f.git(&app, &["init", "-q", "-b", "main"]);
-    fs::write(
-        app.join("plugin.json"),
-        r#"{"id":"acme/app","version":"1.0.0","dependencies":{"acme/hello":"^2"}}"#,
-    )
-    .unwrap();
-    fs::write(app.join("dist/index.js"), "app").unwrap();
-    f.git(&app, &["add", "--all"]);
-    f.git(&app, &["commit", "-q", "-m", "app"]);
-    f.git(&app, &["tag", "acme/app@1.0.0"]);
-    f.ok(&["install", hello.to_str().unwrap()]);
-    f.ok(&["install", app.to_str().unwrap()]);
-    f.ok(&["uninstall", "acme/hello", "--force"]);
-    f.ok(&[
-        "install",
-        hello.to_str().unwrap(),
-        "--ref",
-        "acme/hello@1.0.0",
-    ]);
-    hello
-}
-
-/// On a TTY a declined pending replacement does not cancel `fork --replace`: the fork
-/// stays released and installed, the original is not replaced, and the command says
-/// how to finish; a confirmed one is applied.
-#[test]
-fn fork_replace_on_a_tty_keeps_a_declined_replacement_pending() {
-    if !Path::new("/usr/bin/script").exists() {
-        return;
+    f.git(&f.mono, &["add", "--all"]);
+    f.git(&f.mono, &["commit", "-qm", "Independent A and B"]);
+    for tag in ["demo/a@0.2.0", "demo/b@0.2.0", "v0.2.0"] {
+        f.git(&f.mono, &["tag", tag]);
     }
-    let f = Fixture::new();
-    incompatible_consumer(&f);
-    let util_linux = Command::new("script")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o| o.status.success());
-    let stderr_file = f.dir.join("fork.stderr");
-    let run = |ns: &str, answer: &str| {
-        let gitpm = format!(
-            "'{}' --root '{}' --catalog '{}' fork acme/hello --ns {ns} --into {ns}/hello --replace 2>'{}'",
-            env!("CARGO_BIN_EXE_gitpm"),
-            f.dir.join("workspace").display(),
-            f.dir.join("catalog").display(),
-            stderr_file.display()
-        );
-        let script = if util_linux {
-            format!("script -qec \"{gitpm}\" /dev/null")
-        } else {
-            format!("script -q /dev/null sh -c \"exec {gitpm}\"")
-        };
-        let out = f
-            .command("sh")
-            .current_dir(&f.dir)
-            .arg("-c")
-            .arg(format!(
-                "(sleep 2; printf '{answer}\\n'; sleep 1) | {script}"
-            ))
+    for id in ["demo/a", "demo/b"] {
+        f.ok(&["install", f.source(), id]);
+    }
+    let state_path = f.dir.join("workspace/state.json");
+    let state_before = fs::read(&state_path).unwrap();
+    let before = f.state();
+    let a_dist = f.dist("demo/a");
+    let b_dist = f.dist("demo/b");
+    let tags = |repo: &Path| {
+        let output = f
+            .command("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["show-ref", "--tags"])
             .output()
             .unwrap();
-        (
-            String::from_utf8_lossy(&out.stdout).into_owned(),
-            fs::read_to_string(&stderr_file).unwrap_or_default(),
-        )
+        assert!(output.status.success());
+        output.stdout
     };
-    let (stdout, stderr) = run("me", "n");
-    for needle in [
-        "  - acme/app needs acme/hello ^2",
-        "Replace anyway? [y/N]",
-        "acme/hello is not replaced.",
-        "me/hello: the replace step failed",
-        "To finish:\n    gitpm replace acme/hello --with me/hello [--force]",
-        "The fork ",
-        "Error kind: incompatible_replacement",
-    ] {
-        assert!(stderr.contains(needle), "missing {needle:?}: {stderr}");
-    }
-    assert!(!stderr.contains("nothing was changed"), "{stderr}");
-    assert!(stdout.contains("Released: me/hello@1.0.0"), "{stdout}");
-    assert!(stdout.contains("Installed: me/hello 1.0.0"), "{stdout}");
-    let state = f.state();
-    assert!(state["packages"].get("me/hello").is_some());
-    assert!(state.get("replacements").is_none());
-    let (stdout, stderr) = run("you", "y");
+    let source_tags = tags(&f.mono);
+    let out = f.ok(&["fork", "demo/a", "--ns", "my", "--into", "my-fork"]);
     assert!(
-        stdout.contains("acme/hello replaced by you/hello 1.0.0 for: acme/app"),
-        "{stdout}\n{stderr}"
+        out.contains("Next steps (choose the packages to install and replace):"),
+        "{out}"
     );
-    assert_eq!(f.state()["replacements"]["acme/hello"], "you/hello");
+    assert!(
+        out.contains("gitpm commit")
+            && out.contains("gitpm install")
+            && out.contains("gitpm replace demo/a --with my/a"),
+        "{out}"
+    );
+    let fork = f.dir.join("my-fork");
+    assert_eq!(tags(&fork), source_tags);
+    assert_eq!(fs::read(&state_path).unwrap(), state_before);
+    assert_eq!(f.state(), before);
+    assert_eq!(f.dist("demo/a"), a_dist);
+    assert_eq!(f.dist("demo/b"), b_dist);
+    assert!(!f.dir.join("workspace/dist/my").exists());
+    for (name, id, original) in [("store", "my/a", "demo/a"), ("theme", "my/b", "demo/b")] {
+        let manifest = manifest(&fork.join(format!("packages/{name}")));
+        assert_eq!(manifest["id"], id);
+        assert_eq!(manifest["forkOf"]["id"], original);
+        assert_eq!(manifest["replaces"]["id"], original);
+    }
+    f.ok(&[
+        "commit",
+        fork.to_str().unwrap(),
+        "0.3.0",
+        "--package",
+        "my/a",
+    ]);
+    let release_head = f
+        .command("git")
+        .arg("-C")
+        .arg(&fork)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap()
+        .stdout;
+    let error = f.fails(&[
+        "commit",
+        fork.to_str().unwrap(),
+        "0.3.0",
+        "--package",
+        "my/a",
+    ]);
+    assert!(error.contains("tag already exists"), "{error}");
+    assert_eq!(
+        f.command("git")
+            .arg("-C")
+            .arg(&fork)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+        release_head
+    );
+    assert_eq!(fs::read(&state_path).unwrap(), state_before);
+    f.ok(&["install", fork.to_str().unwrap(), "my/a"]);
+    assert!(f.state().get("replacements").is_none());
+    f.ok(&["replace", "demo/a", "--with", "my/a"]);
+    let after = f.state();
+    assert_eq!(after["packages"]["demo/b"], before["packages"]["demo/b"]);
+    assert_eq!(after["replacements"], serde_json::json!({"demo/a": "my/a"}));
+    assert!(after["packages"].get("my/b").is_none());
+    assert_eq!(f.dist("demo/b"), b_dist);
+    assert_eq!(f.dist("my/a"), a_dist);
+    assert!(!f.dir.join("workspace/dist/demo/a").exists());
+    assert!(!f.dir.join("workspace/dist/my/b").exists());
+}
+
+#[test]
+fn removed_fork_options_have_no_side_effects() {
+    let f = Fixture::new();
+    f.ok(&["install", f.source(), "tilr/theme"]);
+    let state = fs::read(f.dir.join("workspace/state.json")).unwrap();
+    let dist = f.dist("tilr/theme");
+    let clones = f.clones();
+    for options in [
+        vec!["--replace"],
+        vec!["--version", "0.3.0"],
+        vec!["--force"],
+    ] {
+        let mut args = vec![
+            "fork",
+            "tilr/theme",
+            "--ns",
+            "my",
+            "--into",
+            "rejected/fork",
+        ];
+        args.extend(options);
+        f.fails(&args);
+        assert!(!f.dir.join("rejected").exists());
+        assert_eq!(fs::read(f.dir.join("workspace/state.json")).unwrap(), state);
+        assert_eq!(f.dist("tilr/theme"), dist);
+        assert_eq!(f.clones(), clones);
+    }
+    // Validation also happens before creating an otherwise absent workspace.
+    let fresh = Fixture::new();
+    for option in ["--replace", "--version", "--force"] {
+        let mut args = vec![
+            "fork",
+            "demo/a",
+            "--ns",
+            "my",
+            "--into",
+            "rejected/fork",
+            option,
+        ];
+        if option == "--version" {
+            args.push("0.3.0");
+        }
+        fresh.fails(&args);
+        assert!(!fresh.dir.join("workspace").exists());
+        assert!(!fresh.dir.join("rejected").exists());
+    }
 }

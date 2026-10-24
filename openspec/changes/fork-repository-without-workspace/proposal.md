@@ -10,20 +10,18 @@
 - Same destination, sibling-removal, dependency-rewrite and `forkOf`/`replaces` rules as forking installed packages; `forkOf.commit` is the resolved commit; no workspace is opened, created or locked.
 - Library: a free function (no `Manager`, no workspace lock), e.g. `fork::fork_source(source, ids, reference, namespace, destination)`, sharing the tree-copy, sibling-removal, `gitpm.json` and dependency-rewrite code with `Manager::fork_packages`.
 - FFI: the same free function (`forkSource`), for CLI/FFI parity.
-- `--replace` is refused with `--from` (it needs a workspace; install and replace afterwards).
 
 ## Capabilities
 
 ### Modified Capabilities
 - `fork-replacement`: "Fork copies an installed package" (installed IDs, or IDs of `--from SOURCE`).
 - `multi-package-repos`: "Forking packages of one repository" (the same repository: the installed source or `--from`).
-- `cli`: "Option validation" (`--from` and `--ref` are valid for `fork`; `--ref` without `--from` and `--replace` with `--from` are refused).
+- `cli`: "Option validation" (`--from` and `--ref` are valid for `fork`; `--ref` without `--from` is refused).
 
 The existing contracts this change widens are modified, not left contradicting it: fork-replacement "Only installed IDs are accepted" (now: without `--from`), multi-package-repos "accept only IDs installed from the same repository" (now: or all of the `--from` repository), cli "Option validation" (today `--ref` is a misplaced option for `fork`; now it is valid only with `--from`).
 
 ## Out of scope
 
-- `--replace` together with `--from`.
 - Forking local, uncommitted edits (there is no installed clone).
 - Adding `--from` packages to an existing fork repository beyond what the installed-package form already allows (same rules apply).
 

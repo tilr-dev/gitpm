@@ -121,7 +121,7 @@ A revision without its declared output folder (default dist/) SHALL fail with in
 - **THEN** `dist/acme/greeter/` is removed by the first and deployed again by the second
 
 ### Requirement: Every mutating command reconciles all of dist
-Every mutating command (install, `install-catalog`, `download`, `download-catalog`, update, `update all`, rollback, replace, `replace --back`, enable, disable, forget, restore, uninstall, `fork --replace`, `sync-dist`) SHALL, inside its transaction, deploy the missing deployed folders of active packages and remove those of inactive known packages. An existing deployed folder of an active package MUST NOT be rewritten. Verified by `any_mutating_command_reconciles_the_whole_dist`.
+Every mutating command (install, `install-catalog`, `download`, `download-catalog`, update, `update all`, rollback, replace, `replace --back`, enable, disable, forget, restore, uninstall, `sync-dist`) SHALL, inside its transaction, deploy the missing deployed folders of active packages and remove those of inactive known packages. An existing deployed folder of an active package MUST NOT be rewritten. Verified by `any_mutating_command_reconciles_the_whole_dist`.
 
 #### Scenario: Repeated install
 - **WHEN** `install` finds the package already installed and enabled from the same source

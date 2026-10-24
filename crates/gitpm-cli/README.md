@@ -39,7 +39,9 @@ gitpm --catalog ./catalog --root ./other install-catalog acme/greeter   # hashes
 gitpm init acme/hello --into ./hello     # new package repository ./hello, ID acme/hello
 gitpm install ./hello
 gitpm fork acme/hello --ns me --into ./me-hello   # clone the recorded source as me/hello
-gitpm fork acme/hello --ns you --into ./you-hello --replace   # fork, release, install, replace
+gitpm commit ./me-hello 0.2.0            # explicitly release a new version
+gitpm install ./me-hello me/hello        # explicitly install the desired fork
+gitpm replace acme/hello --with me/hello # explicitly replace its original
 gitpm fork tilr/store tilr/theme --ns me --into ./me-packages   # several packages, one repo
 
 git init -q tilr-packages
@@ -57,8 +59,11 @@ root package) gets the folder `PREFIX/NAME` for the first `PREFIX/*` pattern of
 `DIR` must be new. Git clones the recorded source at installed revisions with history
 and submodule links, ignoring local installation edits. All packages are renamed
 into the new namespace; all repository files and the package layout are preserved. Initialize submodules with `git -C DIR submodule update --init`;
-dependencies between the forks are rewritten and `--replace` releases, installs and
-replaces each one.
+dependencies between the forks are rewritten. Fork preserves inherited tags, creates
+no release tag and leaves workspace state, installed packages, replacement bindings
+and dist unchanged. Use `commit`, `install` and `replace` explicitly; an existing
+release tag still conflicts with `commit`. The removed fork options `--replace`,
+`--version` and `--force` are refused before any changes.
 
 Everything works on local folders; nothing is built, executed, pushed or uploaded.
 Settings come from flags (`--root`, `--catalog`, `--sources`), then `GITPM_ROOT`,

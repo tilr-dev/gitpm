@@ -21,8 +21,8 @@ Defines forking an installed package into an author repository under a new names
 - **THEN** it fails with `invalid_argument` ("fork needs a different namespace")
 
 #### Scenario: --version without --replace
-- **WHEN** the user runs `gitpm fork acme/hello --ns me --into x --version 2.0.0`
-- **THEN** it fails with `--version is not valid for fork` and creates nothing
+- **WHEN** the user runs `gitpm fork acme/hello --ns me --into x` with `--replace`, `--version 2.0.0` or `--force`
+- **THEN** the CLI refuses the option before creating the fork or changing the workspace
 
 #### Scenario: Missing --ns
 - **WHEN** the user runs `gitpm fork acme/hello --into x`
@@ -31,6 +31,12 @@ Defines forking an installed package into an author repository under a new names
 #### Scenario: Destination inside the workspace
 - **WHEN** `--into` points inside the workspace root
 - **THEN** the fork fails with `invalid_argument` ("fork destination must be outside the managed workspace") and nothing is created
+
+#### Scenario: Fork preserves inherited tags and workspace state
+- **WHEN** an installed source repository contains packages A and B and the inherited tag `v0.2.0`, and a caller forks A through the CLI or library
+- **THEN** the fork contains both renamed packages, source history and inherited tags, with `forkOf` and `replaces` metadata
+- **AND** fork creates no release tag and does not install packages, change replacement bindings, update workspace state or reconcile dist
+- **AND** a later explicit `commit` with an existing release tag still fails with a tag conflict
 
 ### Requirement: Fork metadata
 The fork manifest SHALL get `forkOf` `{id, version, commit, source}` and `replaces` `{id, version}` from its revision of the cloned source (the installed revision for installed packages from that source, the starting revision for other packages); `source` SHALL be the recorded source. Metadata and unknown keys SHALL be kept. HEAD SHALL be attached to a new branch `fork` (`fork-2`, … when taken).
@@ -41,40 +47,11 @@ The fork manifest SHALL get `forkOf` `{id, version, commit, source}` and `replac
 - **AND** metadata keys are carried unchanged; this is covered by `metadata::fork_and_commit_carry_the_metadata_unchanged`
 
 ### Requirement: Fork output names the next steps
-Without `--replace`, the CLI SHALL print the fork lines and the next steps per package (the strings below are the common forms): `gitpm commit DIR NEW_VERSION --package ID` (commit local edits, tag), `gitpm install DIR ID`, `gitpm replace ORIGINAL --with ID`, and for a new fork `gitpm remote DIR GIT_URL`.
+The CLI SHALL print the fork lines and the next steps per package (the strings below are the common forms): `gitpm commit DIR NEW_VERSION --package ID` (commit local edits, tag), `gitpm install DIR ID`, `gitpm replace ORIGINAL --with ID`, and for a new fork `gitpm remote DIR GIT_URL`.
 
 #### Scenario: Next steps after fork
-- **WHEN** a fork is created without `--replace`
-- **THEN** the output contains `Next steps (or all at once: add --replace):` followed by the commit, install and replace commands
-
-### Requirement: Fork and replace in one step
-`fork … --replace [--version V] [--force]` SHALL release the forked folders under the rules of `commit` (authoring): one commit (`version` set by `--version`) and one tag per package (`NAMESPACE/NAME@VERSION`, package-ids), then install each fork (dependencies first) and replace its original. If the release fails nothing SHALL be installed; a failed install or replace of one package SHALL NOT stop the others. Verified by `fork_replace_releases_installs_and_replaces_in_one_step`.
-
-#### Scenario: Release without file transport
-- **WHEN** a multi-package fork is released while Git's file transport is disabled
-- **THEN** all release tags are created at the release commit without using a transport
-- **AND** verified by `fork_replace_release_without_file_transport`
-
-#### Scenario: One-step fork
-- **WHEN** the user runs `gitpm fork acme/hello --ns me --into f --replace`
-- **THEN** `me/hello@<forked version>` is tagged, installed and replaces `acme/hello`, so only `dist/me/hello/` is deployed
-
-#### Scenario: Failed release commit
-- **WHEN** a pre-commit hook rejects the release commit of `fork … --replace`
-- **THEN** the forked manifests and the index are as before the release, no tag exists (tags are created all or none), nothing is installed, and the result reports the failed `release` step
-- **AND** a wrong-typed metadata key fails the release step with `invalid_manifest` (plugin-metadata)
-- **AND** verified by `fork_replace_release_rejecting_hook_restores_manifests_and_index` and `fork_replace_release_rejects_wrong_metadata_type`
-
-### Requirement: Fork folder is never removed after a partial failure
-When a step of `fork --replace` fails, the fork folder SHALL be kept and the steps that succeeded SHALL stay: the library reports the failed step in its result instead of failing, an exception to errors ("Failing operations leave the workspace unchanged"). The CLI SHALL print per package which step failed and how to finish or undo, and SHALL fail with exit status 1 and the first failing step's `Error kind`. Verified by `fork_replace_keeps_the_fork_and_says_how_to_finish_when_a_step_fails`.
-
-#### Scenario: Failed step in the library result
-- **WHEN** the install step of `Manager::fork_replace` (or `fork_packages_replace`) fails
-- **THEN** the call returns a result whose `failed` step and error describe it (FFI `forkAndReplace`/`forkPackagesAndReplace`: `failedStep`, `errorKind`, `errorMessage`), and the release commit and tag stay
-
-#### Scenario: Install step fails
-- **WHEN** the release succeeds but installing the fork fails
-- **THEN** stderr says `ID is released but not installed. To finish:` with the install and replace commands, and the fork folder exists
+- **WHEN** a fork is created
+- **THEN** the output contains `Next steps (choose the packages to install and replace):` followed by the commit, install and replace commands
 
 ### Requirement: Replacement is explicit and global
 `replace ORIGINAL --with FORK` (`Manager::replace`) SHALL set the single binding `state.replacements[ORIGINAL] = FORK`, after which every consumer of ORIGINAL, existing and future, resolves to FORK (the solver sees ORIGINAL at `replaces.version`). Preconditions (single source): FORK MUST be installed, enabled and declare `replaces.id` equal to ORIGINAL; ORIGINAL MUST be installed. Verified by `fork_replacement_main_scenario` and `replace_requires_the_original_and_back_drops_an_absent_one`.
@@ -119,7 +96,7 @@ Replacing a package with itself, or creating a replacement cycle, SHALL always b
 - **THEN** the replace fails with `invalid_argument` ("cyclic replacement: …")
 
 ### Requirement: Switching back
-`replace ORIGINAL --back` (`Manager::switch_back(original, confirm, force)`) SHALL return all consumers to the installed original (same confirmation rule) and print `ORIGINAL switched back from FORK (ORIGINAL V for: consumers); FORK stays installed and enabled (disable or uninstall it if not wanted)`. Replacing again SHALL switch the binding. Verified by `fork_replace_of_two_packages_replaces_both_and_switches_back` and `replace_requires_the_original_and_back_drops_an_absent_one`.
+`replace ORIGINAL --back` (`Manager::switch_back(original, confirm, force)`) SHALL return all consumers to the installed original (same confirmation rule) and print `ORIGINAL switched back from FORK (ORIGINAL V for: consumers); FORK stays installed and enabled (disable or uninstall it if not wanted)`. Replacing again SHALL switch the binding. Verified by `replace_requires_the_original_and_back_drops_an_absent_one`.
 
 #### Scenario: Output variants
 - **WHEN** no package depends on ORIGINAL
@@ -182,19 +159,8 @@ For a fork, `check` SHALL add `upstream {id, base, latest, newer, source, proble
 - **WHEN** no catalog lists the original and `forkOf.source` cannot be read
 - **THEN** `upstream.problem` says why and `check` prints `me/hello: fork of acme/hello (base 1.0.0); original: unreachable (PROBLEM)`
 
-### Requirement: A pending replacement of fork --replace is confirmed and resumed
-When the replace step of `fork --replace` needs confirmation (incompatible consumers, not forced), the library SHALL stop that package after its install and return its `ReplacementPlan` as pending; `Manager::fork_replace_resume` (FFI `forkReplaceResume`) SHALL apply the pending replacements once confirmed, re-planning under the lock (`incompatible_replacement` when the consumers changed). Verified by `fork_replace_pending_replacement_is_resumed_after_confirmation`.
-
-#### Scenario: Confirmed on a TTY
-- **WHEN** `gitpm fork acme/hello --ns me --into f --replace` finds `app` needing `acme/hello ^2` and the user answers `y`
-- **THEN** the CLI prints the warning from the pending plan, asks on stderr and calls the resume API, and `acme/hello` is replaced by `me/hello`
-
-#### Scenario: No terminal
-- **WHEN** the same command runs without a TTY and without `--force`
-- **THEN** `me/hello` stays released and installed, `acme/hello` is not replaced, and the command fails with `incompatible_replacement`
-
 ### Requirement: Replacement plans carry what the output needs
-`ReplacementPlan` (of `replace_plan`, `switch_back_plan`, `replace`, `switch_back` and pending fork replacements) SHALL carry `original`, `provider`, `version`, `current`, `consumers`, `incompatible` and `installed_version` (the installed version of `provider`), so the replace and switch-back lines are built from the plan without reading state. Verified by `replacement_plan_carries_installed_version`.
+`ReplacementPlan` (of `replace_plan`, `switch_back_plan`, `replace`, `switch_back`) SHALL carry `original`, `provider`, `version`, `current`, `consumers`, `incompatible` and `installed_version` (the installed version of `provider`), so the replace and switch-back lines are built from the plan without reading state. Verified by `replacement_plan_carries_installed_version`.
 
 #### Scenario: Switch back
 - **WHEN** `me/greeter` replaces the installed `acme/greeter` 1.4.0 and the user runs `replace acme/greeter --back`
@@ -220,19 +186,26 @@ A fork SHALL preserve submodules outside dist as Git links at their recorded com
 - **THEN** its fork retains the gitlink and configuration and initializing it checks out the recorded submodule commit
 
 ### Requirement: Fork installs committed dist
-Forking SHALL keep the existing installation model: install the fork's committed package dist without automatically building sources or enabling dev mode. With `--replace`, every forked package SHALL be released and installed; a replacement binding SHALL be created only for originals that are installed.
+Forking SHALL keep the existing installation model: install the fork's committed package dist without automatically building sources or enabling dev mode. Installation SHALL be a separate explicit `install` operation after the author explicitly releases the fork with `commit`; `fork` itself SHALL only prepare the editable repository. Replacement SHALL be a separate explicit `replace` operation.
 
 #### Scenario: Install a fork with dist
-- **WHEN** a package has source files and committed dist and the user forks it with `--replace`
-- **THEN** the fork contains the source tree and only its committed dist is deployed under the fork ID
+- **WHEN** a package has source files and committed dist, and the user forks it, commits a new version and explicitly installs the fork
+- **THEN** the fork contains the source tree and only its committed dist is deployed under the fork ID, without building sources or enabling dev mode
 
 #### Scenario: Replace a repository with an uninstalled sibling
-- **WHEN** only one original package is installed and its repository has another package, and the user forks with `--replace`
-- **THEN** both fork packages are released and installed, only the installed original gets a replacement binding, and no `not_installed` error is reported
+- **WHEN** only `demo/a` is installed from a repository that also contains `demo/b`, and the caller forks the repository into namespace `my`, commits a new version, explicitly installs only `my/a` and replaces `demo/a` with `my/a`, through either the CLI or library
+- **THEN** `my/b` is not automatically installed and no binding is created for the uninstalled `demo/b`
+- **AND** the existing dist and workspace layout rules for explicit install and replace apply
 
 #### Scenario: Single-ID replacement API
-- **WHEN** a host calls `fork_replace` or FFI `forkAndReplace` with one installed ID from a multi-package repository
-- **THEN** it receives `PackageForkReplacement` with every package outcome, including sibling errors and pending confirmations
+- **WHEN** a host calls library `fork_in_namespace` or FFI `fork` with one installed ID from a multi-package repository
+- **THEN** it receives the path to the editable repository containing all sibling packages, without releasing, installing or replacing any package
+- **AND** library `fork_packages` and FFI `forkPackages` return the package list and dependency rewrites as well as the repository path
+- **AND** the host releases the repository and calls install and replace separately for the desired package
+
+#### Scenario: Installed sibling remains unchanged
+- **WHEN** `demo/a` and `demo/b` are installed and the caller explicitly releases, installs and replaces only `my/a` after forking the repository, through either the CLI or library
+- **THEN** `demo/b` remains unchanged and `my/b` is not automatically installed
 
 ### Requirement: Fork isolates source and destination state
 Fork SHALL exclude local installation work and use only the recorded source at installed revisions. It SHALL reject unsupported recorded sources and existing destinations without changing the installation or an existing destination.

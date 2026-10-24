@@ -35,11 +35,16 @@ The FFI crate SHALL generate the Swift module `Gitpm` over the C module `GitpmFF
 
 #### Scenario: Method names
 - **WHEN** Swift bindings are generated
-- **THEN** `PackageManager` has `install` (optional `package`, `force`), `installFromCatalog(force)`, `download`, `downloadFromCatalog`, `update`, `updateAllPlan`, `updateAll`, `rollback`, `enable(force)`, `disable(force)`, `forget(force)` (returning `ForgetResult`), `restore`, `uninstallPlan`, `uninstall(confirmed, force)` (`confirmed` the lost-work items the user saw), `fork`, `forkAndReplace`, `forkPackages`, `forkPackagesAndReplace`, `forkReplaceResume`, `replacePlan`, `replace`, `switchBackPlan`, `switchBack(confirm, force)`, `syncDistPlan` and `syncDist`; `check` is a free function, not a method
+- **THEN** `PackageManager` has `install` (optional `package`, `force`), `installFromCatalog(force)`, `download`, `downloadFromCatalog`, `update`, `updateAllPlan`, `updateAll`, `rollback`, `enable(force)`, `disable(force)`, `forget(force)` (returning `ForgetResult`), `restore`, `uninstallPlan`, `uninstall(confirmed, force)` (`confirmed` the lost-work items the user saw), `fork`, `forkPackages`, `replacePlan`, `replace`, `switchBackPlan`, `switchBack(confirm, force)`, `syncDistPlan` and `syncDist`; `check` is a free function, not a method
 
 #### Scenario: Catalog generation is not exposed
 - **WHEN** a host looks for `catalog update`, `catalog register`, `init` or `commit` in the bindings
 - **THEN** none exist; those stay library/CLI functions
+
+#### Scenario: Fork is a separate operation
+- **WHEN** a host uses the fork API
+- **THEN** `fork` and `forkPackages` prepare the editable repository without releasing, installing or replacing packages
+- **AND** composed fork/release/install/replace and fork resume methods are not exported
 
 ### Requirement: Errors keep kind and message
 Library errors SHALL map to the `PmError` enum, one case per kind, each with the full `message` and the library's structured fields (`id` for every error about a package, `LocalChanges.items`, `HasDependents.dependents` and `lostWork`, `IncompatibleReplacement.consumers`, `NotDeployed.sync`); `Other { kind, message }` SHALL carry a kind added to the non-exhaustive library enum later.
@@ -68,18 +73,18 @@ Library errors SHALL map to the `PmError` enum, one case per kind, each with the
 ### Requirement: Records mirror library results
 FFI records SHALL convert library results field by field, dropping none: `InstalledPackage` (`active`, `clone`, `path`, metadata), `InstallResult` (`alreadyInstalled`, `available`, `skipped`, `warnings`), `RevisionChange` (`warnings`, `skipped`), every dist report, `CatalogRelease`, `PackageSummary`, `DistSync` (`SkippedDist.cloneMissing`), `UpdateAllPlan` (`unchanged`, `skipped`), `ReplacementPlan` (`installedVersion`), `ForgetResult`, `UninstallPlan` (`dependencyConflict`) and fork results.
 
-#### Scenario: Fork results
-- **WHEN** a host reads the result of `forkAndReplace`, `forkPackagesAndReplace` or `forkReplaceResume`
-- **THEN** it gets `ForkStep`, `errorKind`, `errorMessage` and the pending plan per package, and `ForkResume` with `applied` and `failed`
-
-#### Scenario: Partial fork failure
-- **WHEN** `forkAndReplace` fails at the install step
-- **THEN** the result has `failedStep` `install` with the error kind and message, not a thrown error
-- **AND** this is covered by `records_convert_field_by_field` and `fork_replace_result_reports_the_failed_step_with_kind_and_message`
-
 #### Scenario: Warnings reach the host
 - **WHEN** an install skips a broken historical tag and ignores a wrong-typed metadata key
 - **THEN** the FFI `InstallResult` carries both in `skipped` and `warnings`, as the CLI prints them; an update past such a tag carries it in `RevisionChange.skipped`, `update all` in `UpdateAllPlan.skipped`
+
+#### Scenario: Fork results
+- **WHEN** a host reads `fork` or `forkPackages` results
+- **THEN** the records mirror the library fork repository and package data without release/install/replace outcomes, failed steps or pending resume plans
+
+#### Scenario: Partial fork failure
+- **WHEN** an ordinary fork operation fails before its editable repository is complete
+- **THEN** the host receives the library error with its kind and message rather than a release/install/replace step outcome
+- **AND** no install step or pending resume plan is produced
 
 ### Requirement: FFI is not published
 `gitpm-ffi` SHALL stay `publish = false`, carry the library's version (release-process, "Lockstep crates") and SHALL NOT be checked on the MSRV gate; before 1.0 its bindings SHALL promise no stability. Apple artifacts SHALL be built by `scripts/build-apple.sh` (macOS staticlib, `Gitpm.swift`, headers, `GitpmFFI.xcframework` only when `xcodebuild` exists), which skips and reports missing rustup targets, never installs toolchains and fails when no Apple target is installed.
