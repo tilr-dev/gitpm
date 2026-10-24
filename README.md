@@ -725,7 +725,7 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   forceable for the removals, not for `replace ORIGINAL --with ORIGINAL`). Migration: `disable --force` of
   a fork is no longer needed when the original serves its consumers.
 - `replace ORIGINAL --with FORK` requires ORIGINAL to be installed (`not_installed`);
-  Returning now uses `replace ORIGINAL --with ORIGINAL` with the same full-workspace
+  Returning now uses `replace ORIGINAL --with ORIGINAL` with the same replacement dependency
   check: an absent or disabled original refuses without a force bypass. The former
   `switch_back` API and replacement confirmation have been removed.
 - Uninstall is bound to its plan: `Manager::uninstall(id, confirmed: &[LostWork], force)`
@@ -1468,7 +1468,9 @@ installed, enabled and declare that it replaces the original. Cycles are refused
 `replace_check(original, provider)` is a dry run over the entire resulting active
 workspace. It returns `ReplacementCheck { plan, issues, missing, resolution_error }`:
 issues name each consumer and its unsatisfied dependency; missing maps absent package
-IDs to selected catalog versions, including transitives. When no complete catalog
+IDs to selected catalog versions for the proposed provider, including transitives. Unrelated
+existing broken consumers remain in issues but do not block replace or resolve; their
+missing dependencies are not reinstalled. When no catalog
 solution exists, missing is empty and resolution_error explains the failure.
 Installed versions stay fixed. Disabled or incompatible installed providers require
 explicit user action. This is separate from the existing update `check`.
@@ -1477,10 +1479,13 @@ explicit user action. This is separate from the existing update `check`.
 missing dependencies from the configured catalog in one transaction. Its result contains
 `installed`, the updated `check`, and `dist`. It does not enable or update installed
 packages or apply the binding. If no consistent solution exists it changes nothing.
-A subsequent `replace` checks current state again, installs nothing, and refuses any
-inconsistency without changing workspace state, clones or dist. Consumer version
+A subsequent `replace` checks current state again, installs nothing, and refuses incompatibility in the provider dependency closure or requirements of
+active consumers on the original without changing workspace state, clones or dist. Consumer version
 mismatches use `incompatible_replacement`; other dependency problems use
 `dependency_conflict`. There is no confirmation or force bypass.
+
+Passing the original as provider without an existing binding succeeds after the same
+checks and prints `ORIGINAL already uses original VERSION`.
 
 The CLI equivalents are:
 

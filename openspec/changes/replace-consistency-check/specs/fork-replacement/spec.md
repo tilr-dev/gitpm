@@ -1,14 +1,14 @@
 ## MODIFIED Requirements
 
 ### Requirement: Replacement is explicit and global
-`replace ORIGINAL --with FORK` (`Manager::replace`) SHALL set the single binding `state.replacements[ORIGINAL] = FORK`, so all consumers resolve ORIGINAL through FORK at its `replaces.version`. Before any mutation, replace SHALL check the entire resulting active workspace. Any missing, disabled or version-incompatible dependency SHALL refuse the operation without changing state, clones or dist. Replace SHALL NOT install or enable dependencies and SHALL have no confirmation or force bypass.
+`replace ORIGINAL --with FORK` (`Manager::replace`) SHALL set `state.replacements[ORIGINAL] = FORK`, so consumers resolve ORIGINAL at FORK's `replaces.version`. Before mutation it SHALL check the resulting active workspace. Only the provider's transitive dependencies and active consumers' requirements on ORIGINAL SHALL block it. Failure SHALL leave state, clones and dist unchanged. Replace SHALL NOT install or enable dependencies or have a confirmation or force bypass.
 
 #### Scenario: Fork with unsatisfiable dependencies
 - **WHEN** a fork needs an absent plugin
 - **THEN** replace fails with `dependency_conflict` naming the consumer and dependency, and the workspace remains unchanged
 
 #### Scenario: Compatible fork
-- **WHEN** the proposed binding leaves every active dependency satisfied
+- **WHEN** the proposed provider has satisfied dependencies transitively and active consumers accept its offered version
 - **THEN** replace applies the binding and dist changes in one transaction
 
 #### Scenario: Fork not usable as the replacing package
@@ -66,7 +66,7 @@ Returning to the original SHALL be ordinary `replace ORIGINAL --with ORIGINAL`, 
 
 #### Scenario: Back without a replacement
 - **WHEN** ORIGINAL is installed and enabled but has no binding
-- **THEN** replace with ORIGINAL still checks consistency and succeeds without creating a self-binding
+- **THEN** replace with ORIGINAL still checks consistency and succeeds without creating a self-binding; the CLI reports `ORIGINAL already uses original VERSION`
 
 #### Scenario: Output variants
 - **WHEN** replace ORIGINAL --with ORIGINAL removes a binding
@@ -126,7 +126,7 @@ Single source for bindings when a package leaves or changes. Disabling, forgetti
 ## ADDED Requirements
 
 ### Requirement: Explicit workspace replacement check
-`Manager::replace_check(original, replacement)` SHALL resolve the entire proposed active workspace from metadata without changing state, clones or dist. It SHALL return the replacement plan, every unsatisfied dependency with consumer, dependency and version requirement, and the missing dependencies to install. Catalog candidates MAY be used for missing dependencies, including transitives; installed versions SHALL remain fixed. Existing update `check` is unchanged.
+`Manager::replace_check(original, replacement)` SHALL check the proposed active workspace without mutations. It SHALL return the replacement plan, all unsatisfied dependencies with consumer and requirement, and missing dependencies for the proposed provider's closure. Catalog candidates MAY supply missing dependencies, including transitives; installed versions SHALL remain fixed. Unrelated existing breakage SHALL be diagnostic only. Existing update `check` is unchanged.
 
 #### Scenario: Missing plugin
 - **WHEN** a fork requires a plugin absent from the workspace
@@ -134,7 +134,7 @@ Single source for bindings when a package leaves or changes. Disabling, forgetti
 
 #### Scenario: Whole workspace
 - **WHEN** another active package has an unsatisfied dependency unrelated to the new mapping
-- **THEN** check reports it too and replace refuses
+- **THEN** check reports it too, but compatible replace succeeds and resolve does not reinstall the unrelated missing dependency, even if that broken package also consumes ORIGINAL
 
 #### Scenario: Disabled or incompatible installed provider
 - **WHEN** a provider is installed but disabled or has an incompatible version
@@ -145,7 +145,7 @@ Single source for bindings when a package leaves or changes. Disabling, forgetti
 - **THEN** check reports the mismatch without changing installed versions
 
 ### Requirement: Explicit missing dependency resolution
-`Manager::replace_resolve(original, replacement)` SHALL recompute the proposed check against current locked state and explicitly install missing dependencies from the configured catalog in a transaction. It SHALL NOT update or enable installed packages or apply the replacement binding. If no consistent solution exists, it SHALL refuse without changes. Replace SHALL recheck rather than trust an earlier report.
+`Manager::replace_resolve(original, replacement)` SHALL recompute the check under lock and transactionally install missing dependencies only for the proposed provider and its transitive dependencies. It SHALL NOT update or enable installed packages or apply the binding. Unsatisfiable replacement constraints SHALL refuse without changes. Replace SHALL recheck current state.
 
 #### Scenario: Check resolve replace
 - **WHEN** check finds installable missing dependencies, the caller invokes resolve, then replace
@@ -153,8 +153,12 @@ Single source for bindings when a package leaves or changes. Disabling, forgetti
 
 #### Scenario: Stale check
 - **WHEN** workspace metadata changes after a successful check
-- **THEN** resolve and replace use current state and refuse if it is inconsistent
+- **THEN** resolve and replace use current state and refuse if the replacement dependencies or consumers of ORIGINAL are incompatible
 
 #### Scenario: Unsatisfiable missing dependencies
 - **WHEN** the catalog cannot provide compatible releases
 - **THEN** resolve refuses without partial installs or binding changes
+
+#### Scenario: Disabled transitive provider
+- **WHEN** the proposed provider depends on an installed package whose dependency is disabled
+- **THEN** resolve and replace refuse without changing files, installing dependencies or enabling packages

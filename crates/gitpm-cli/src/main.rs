@@ -162,8 +162,7 @@ fn confirm_lost_work(plan: &gitpm::UninstallPlan) -> Result<bool> {
     }
     ask("Delete anyway?")
 }
-/// `ORIGINAL replaced by PROVIDER INSTALLED_VERSION for: consumers`; the version
-/// consumers see (a fork's declared `replaces.version`) is added when it differs.
+/// Report the former provider after removing a replacement binding.
 fn print_return_to_original(plan: &ReplacementPlan) {
     let fork = plan.current.as_deref().unwrap_or_default();
     let consumers = if plan.consumers.is_empty() {
@@ -176,6 +175,8 @@ fn print_return_to_original(plan: &ReplacementPlan) {
         plan.original, plan.original, plan.version
     );
 }
+/// `ORIGINAL replaced by PROVIDER INSTALLED_VERSION for: consumers`; the version
+/// consumers see (a fork's declared `replaces.version`) is added when it differs.
 fn print_replacement(plan: &ReplacementPlan) {
     let installed = plan.installed_version.as_deref().unwrap_or(&plan.version);
     println!(
@@ -1295,8 +1296,12 @@ fn run(invocation: &mut Invocation) -> Result<()> {
         }
         "replace" => {
             let done = manager.replace(id, with.as_deref().unwrap())?;
-            if done.provider == done.original && done.current.is_some() {
-                print_return_to_original(&done);
+            if done.provider == done.original {
+                if done.current.is_some() {
+                    print_return_to_original(&done);
+                } else {
+                    println!("{} already uses original {}", done.original, done.version);
+                }
             } else {
                 print_replacement(&done);
             }

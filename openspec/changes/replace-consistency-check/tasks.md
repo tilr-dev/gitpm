@@ -5,3 +5,6 @@
 - [x] Update CLI and FFI, remove confirmation and separate switch-back APIs.
 - [x] Update documentation and integration tests for missing dependencies, version conflicts, resolution, compatible replacement and original return.
 - [x] Run focused checks and independent self-review; hand off final validation to the finish workflow.
+
+- [x] Limit blocking checks and explicit installs to the replacement dependency closure while reporting unrelated existing breakage.
+- [x] Specify and report self-replacement without an existing binding.

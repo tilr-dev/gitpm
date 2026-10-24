@@ -3579,8 +3579,10 @@ pub struct ReplacementIssue {
     pub dependency: deps::DependencyStatus,
 }
 
-/// A read-only consistency report. `missing` contains a complete catalog solution
+/// A read-only workspace report. `issues` includes unrelated existing breakage.
+/// `missing` contains a catalog solution for the proposed provider dependency closure
 /// (including transitives), or is empty when `resolution_error` explains why none exists.
+/// Only replacement constraints, including consumer requirements on the original, block apply.
 #[derive(Clone, Debug, Serialize)]
 pub struct ReplacementCheck {
     pub plan: ReplacementPlan,
@@ -3600,16 +3602,14 @@ pub struct ReplacementResolution {
 impl ReplacementCheck {
     fn refuse_unresolvable(&self) -> Result<()> {
         self.refuse_incompatible()?;
-        if self.resolution_error.is_some()
-            || self.issues.iter().any(|i| i.dependency.provider.is_some())
-        {
+        if self.resolution_error.is_some() {
             return Err(self.conflict());
         }
         Ok(())
     }
     fn refuse(&self) -> Result<()> {
         self.refuse_incompatible()?;
-        if !self.issues.is_empty() || !self.missing.is_empty() || self.resolution_error.is_some() {
+        if !self.missing.is_empty() || self.resolution_error.is_some() {
             return Err(self.conflict());
         }
         Ok(())
@@ -3641,27 +3641,12 @@ impl ReplacementCheck {
         })
     }
     fn conflict(&self) -> Error {
-        let issues = self
-            .issues
-            .iter()
-            .map(|i| {
-                format!(
-                    "{} needs {} {} ({})",
-                    i.consumer,
-                    i.dependency.id,
-                    i.dependency.requirement,
-                    i.dependency.problem.as_deref().unwrap_or("unsatisfied")
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("; ");
-        Error::DependencyConflict(format!(
-            "replacement leaves an inconsistent workspace: {issues}{}",
-            self.resolution_error
-                .as_ref()
-                .map(|e| format!("; {e}"))
-                .unwrap_or_default()
-        ))
+        Error::DependencyConflict(self.resolution_error.clone().unwrap_or_else(|| {
+            format!(
+                "replacement requires missing dependencies: {:?}",
+                self.missing
+            )
+        }))
     }
 }
 
@@ -3699,12 +3684,27 @@ fn replacement_check(
         })
         .collect();
     let fixed = deps::fixed_from_state(&next)?;
-    let roots = next
-        .packages
-        .keys()
-        .filter(|id| next.is_active(id))
-        .map(|id| (id.clone(), fixed[id].version.clone()))
-        .collect();
+    // Only the proposed provider's closure is solved. Consumers of ORIGINAL
+    // contribute version constraints through plan.incompatible, not unrelated deps.
+    let roots = BTreeMap::from([(plan.provider.clone(), fixed[&plan.provider].version.clone())]);
+    // The solver pins versions but does not model enabled state. Check installed
+    // providers in the same closure explicitly, following replacement bindings.
+    let mut pending = vec![plan.provider.clone()];
+    let mut visited = BTreeSet::new();
+    let mut inactive = Vec::new();
+    while let Some(id) = pending.pop() {
+        if !visited.insert(id.clone()) {
+            continue;
+        }
+        for dependency in deps::status(&next, &next.packages[&id]) {
+            if let Some(provider) = dependency.provider {
+                if !next.packages[&provider].enabled {
+                    inactive.push(format!("{id}: {}", dependency.problem.unwrap()));
+                }
+                pending.push(provider);
+            }
+        }
+    }
     let (missing, resolution_error) = match deps::solve(&fixed, &roots, catalog) {
         Ok(missing) => (
             missing
@@ -3714,6 +3714,11 @@ fn replacement_check(
             None,
         ),
         Err(error) => (BTreeMap::new(), Some(error.to_string())),
+    };
+    let (missing, resolution_error) = if inactive.is_empty() {
+        (missing, resolution_error)
+    } else {
+        (BTreeMap::new(), Some(inactive.join("; ")))
     };
     Ok(ReplacementCheck {
         plan,

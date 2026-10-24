@@ -2065,7 +2065,7 @@ fn replacement_check_reports_version_conflicts_and_whole_workspace() {
     f.refuses("incompatible_replacement", || {
         m.replace_resolve("vendor/base", "vendor/base")
     });
-    // An unrelated broken active consumer also prevents an otherwise compatible replace.
+    // Unrelated forced breakage remains diagnostic and must not block replacement.
     m.uninstall("app/b", &[], false).unwrap();
     let lib = f.author("lib/x");
     f.release(&lib, "lib/x", "1.0.0", &[]);
@@ -2081,9 +2081,23 @@ fn replacement_check_reports_version_conflicts_and_whole_workspace() {
             .iter()
             .any(|i| i.consumer == "other/app" && i.dependency.id == "lib/x")
     );
-    f.refuses("dependency_conflict", || {
-        m.replace("vendor/base", "vendor/base")
-    });
+    assert!(check.missing.is_empty());
+    assert!(check.resolution_error.is_none());
+    let resolved = m.replace_resolve("vendor/base", "vendor/base").unwrap();
+    assert!(resolved.installed.is_empty());
+    assert!(
+        resolved
+            .check
+            .issues
+            .iter()
+            .any(|i| i.consumer == "other/app")
+    );
+    m.replace("vendor/base", "vendor/base").unwrap();
+    assert!(!m.state().unwrap().packages.contains_key("lib/x"));
+    // Reapplying a compatible fork also leaves the unrelated consumer broken.
+    m.replace_resolve("vendor/base", "mine/base").unwrap();
+    m.replace("vendor/base", "mine/base").unwrap();
+    assert!(!m.state().unwrap().packages.contains_key("lib/x"));
 }
 
 #[test]
@@ -2147,4 +2161,67 @@ fn replacement_resolve_refuses_disabled_transitive_dependencies_without_partial_
     assert!(!m.state().unwrap().packages.contains_key("lib/new"));
     assert!(!m.state().unwrap().packages["lib/leaf"].enabled);
     assert!(m.state().unwrap().replacements.is_empty());
+}
+
+#[test]
+fn replacement_scope_keeps_unrelated_forced_breakage_and_checks_transitives() {
+    let f = Fixture::new();
+    let cat = f.catalog("catalog");
+    f.publish(&cat, "vendor/base", "1.0.0", &[]);
+    f.publish(&cat, "lib/leaf", "1.0.0", &[]);
+    f.publish(&cat, "lib/mid", "1.0.0", &[("lib/leaf", "^1")]);
+    f.publish(&cat, "lib/unrelated", "1.0.0", &[]);
+    f.publish(
+        &cat,
+        "app/a",
+        "1.0.0",
+        &[("vendor/base", "^1"), ("lib/unrelated", "^1")],
+    );
+    let m = f.open(&cat);
+    m.install_from_catalog("app/a", None).unwrap();
+    let fork = f.author("mine/base");
+    f.release_manifest(
+        &fork,
+        json!({"id":"mine/base", "version":"1.0.0",
+        "replaces":{"id":"vendor/base","version":"1.0.0"},
+        "dependencies":{"lib/mid":"^1"}}),
+    );
+    m.install(fork.to_str().unwrap()).unwrap();
+    m.uninstall("lib/unrelated", &[], true).unwrap();
+    m.uninstall("lib/leaf", &[], true).unwrap();
+    let check = m.replace_check("vendor/base", "mine/base").unwrap();
+    assert!(
+        check
+            .issues
+            .iter()
+            .any(|i| i.consumer == "app/a" && i.dependency.id == "lib/unrelated")
+    );
+    assert_eq!(
+        check.missing,
+        BTreeMap::from([("lib/leaf".into(), "1.0.0".into())])
+    );
+    f.refuses("dependency_conflict", || {
+        m.replace("vendor/base", "mine/base")
+    });
+    let resolved = m.replace_resolve("vendor/base", "mine/base").unwrap();
+    assert_eq!(resolved.installed.len(), 1);
+    assert!(!m.state().unwrap().packages.contains_key("lib/unrelated"));
+    m.replace("vendor/base", "mine/base").unwrap();
+    m.replace("vendor/base", "vendor/base").unwrap();
+    m.set_enabled_with("lib/leaf", false, true).unwrap();
+    let check = m.replace_check("vendor/base", "mine/base").unwrap();
+    assert!(
+        check
+            .resolution_error
+            .as_deref()
+            .unwrap()
+            .contains("lib/leaf is disabled")
+    );
+    assert!(check.missing.is_empty());
+    f.refuses("dependency_conflict", || {
+        m.replace_resolve("vendor/base", "mine/base")
+    });
+    f.refuses("dependency_conflict", || {
+        m.replace("vendor/base", "mine/base")
+    });
 }

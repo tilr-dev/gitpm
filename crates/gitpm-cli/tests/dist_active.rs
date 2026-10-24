@@ -1051,3 +1051,14 @@ fn replacement_check_resolve_cli_and_removed_options() {
     );
     assert_eq!(before, f.state());
 }
+
+#[test]
+fn replacing_original_with_itself_without_binding_reports_no_change() {
+    let f = Fixture::new();
+    f.original_and_fork();
+    let before = f.state();
+    let out = f.ok(&["replace", "vendor/demo", "--with", "vendor/demo"]);
+    assert_eq!(out.trim(), "vendor/demo already uses original 0.1.1");
+    assert_eq!(before, f.state());
+    assert_eq!(f.dist("vendor/demo").as_deref(), Some("vendor 1"));
+}
