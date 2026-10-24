@@ -104,7 +104,7 @@ def fifo_in_clone_is_refused_without_hanging(t: T):
     t.gitpm_ok("fork", ID, "--ns", "mine", "--into", fork)
     t.ok(not (fork / "pipe").exists(), "local FIFO excluded from fork")
     t.release(ID, "0.1.1")
-    t.gitpm_err("update", ID, kind="unsupported", contains="unsupported file: /fx/ws/packages/dan/hello/pipe", timeout=30)
+    t.gitpm_err("update", ID, kind="unsupported", contains=f"unsupported file: {t.clone(ID)}/pipe", timeout=30)
     t.same(before, "workspace")
     t.gitpm_ok("uninstall", ID, "--force", timeout=30)
     t.not_installed(ID)
@@ -165,18 +165,18 @@ def namespace_folder_cannot_be_removed(t: T):
 
 
 @case(fixture="hello_installed", spec=["transactions-locking/managed-paths-are-never-followed-through-symlinks"])
-def symlinked_namespace_folder_is_never_followed(t: T):
-    """packages/evil is a symlink to /fx/outside: uninstall/forget of evil/x and an
-    install into the evil namespace are refused; the outside repository survives."""
-    outside = sentinels(t)
-    os.symlink(OUTSIDE, t.ws / "packages/evil")
-    os.symlink(OUTSIDE, t.ws / "dist/evil")
+def symlinked_repos_folder_is_never_followed(t: T):
+    """repos points to an outside directory containing the recorded source-keyed clone:
+    uninstall and install refuse to follow it; the outside tree is unchanged."""
+    sentinels(t)
+    (t.ws / "repos").rename(OUTSIDE / "repos")
+    os.symlink(OUTSIDE / "repos", t.ws / "repos")
+    outside = t.snap(OUTSIDE, git=True)
     before = t.snap(t.ws)
-    r = t.gitpm("uninstall", "evil/x", "--force")
-    t.ok(r.code != 0, "uninstall through a symlinked namespace refused")
-    t.has(r.err, "managed path is a symlink")
+    t.gitpm_err("uninstall", ID, "--force", kind="workspace", contains="managed path is a symlink")
+    t.same(before, "workspace after refused uninstall")
+    t.same(outside, "outside tree after refused uninstall")
     t.new_package("evil/y", "0.1.0")
     t.gitpm_err("install", t.repo("evil/y"), kind="workspace", contains="managed path is a symlink")
     t.same(before, "workspace")
-    t.same(outside, "outside sentinels")
-    t.ok(not (OUTSIDE / "y").exists(), "nothing written through the symlink")
+    t.same(outside, "outside tree")
