@@ -1502,7 +1502,9 @@ impl PackageManager {
     pub fn replace_plan(&self, original: String, replacement: String) -> Result<ReplacementPlan> {
         Ok(self.inner.replace_plan(&original, &replacement)?.into())
     }
-    /// Refuse any inconsistent workspace; no confirmation or automatic installs.
+    /// Refuse incompatible provider dependencies (transitively) or active consumers'
+    /// requirements on the original; unrelated breakage is diagnostic only.
+    /// No confirmation or automatic installs.
     pub fn replace(&self, original: String, replacement: String) -> Result<ReplacementPlan> {
         Ok(self.inner.replace(&original, &replacement)?.into())
     }
