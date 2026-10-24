@@ -7,7 +7,9 @@ context: |
   as are library messages and CLI output. Discussions with the owner may be in Russian.
 
   Product boundary: gitpm is a host-agnostic package manager where a package is a folder in
-  a Git repository (plugin.json + committed output folder selected by dist, default dist/). The library (crates/gitpm) knows nothing
+  a Git repository (plugin.json + committed output folder selected by dist, default dist/),
+  or a catalog release with a prebuilt archive {url, sha256} that gitpm downloads, verifies
+  and deploys. The library (crates/gitpm) knows nothing
   about Tilr or any other host: no host names, no slot/theme/exclusivity semantics, no build
   step (buildCommand describes a build only), nothing is executed. Host concerns (which provider of a service is active, load
   order, plugins.json generation, UI) stay in the host. Tilr is only the first consumer.
@@ -34,7 +36,9 @@ context: |
   before they reach git, and positional names go after `--`.
 
   Catalog transport: remote catalogs are HTTPS only; plain http:// is accepted only for
-  loopback hosts (tests). curl is limited to http(s), no redirects, 16 MiB max-filesize.
+  loopback hosts (tests). curl is limited to http(s), 16 MiB max-filesize and bounded
+  streaming responses. Catalogs follow no redirects; build archives follow at most five
+  redirects to HTTPS only, using the same timeouts and size bound.
   Catalogs are written only to local folders; publishing/hosting is the user's job.
 
   Compatibility: no backward compatibility before 1.0 (owner decision 2026-10-18, TILR-38):
@@ -71,14 +75,14 @@ context: |
   suite in itests/ (`./itests/dt`) is an additional, slower suite, not a CI gate.
 
   Glossary (canonical terms for every spec, proposal and design):
-  - package: the unit gitpm manages (a folder with a manifest and a committed dist/). Prose
+  - package: the unit gitpm manages (a folder with a manifest and committed output, or its catalog prebuilt archive). Prose
     and literal names say "package": the state key `packages`, the workspace folder
     `packages/`, the API names `PackageManager`, `InstalledPackage`, `PackageSummary`, and
     messages. "plugin" remains only in the file name `plugin.json`.
   - manifest: a package's `plugin.json`. catalog package index: the per-package file
     `namespaces/<ns>/<name>/plugin.json` of the catalog. Never call either one "plugin.json"
     without saying which.
-  - package dist: the committed `dist/` folder inside a package. deployed folder: the
+  - package dist: the manifest-selected output folder inside a package or the verified archive root. deployed folder: the
     workspace folder `dist/<id>` gitpm copies it to.
   - enabled: the `enabled` flag in state. active: installed, enabled and not replaced.
     deployed: its deployed folder exists (exactly the active packages when dist/ is in sync).

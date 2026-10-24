@@ -5,7 +5,7 @@
 //! Everything here reads committed trees (`git ls-tree`/`git show` at a commit), never a
 //! working tree: the package set of a release is the one in its tagged commit.
 use crate::error::{Error, Result, ensure};
-use crate::{Manifest, transport::git, transport::git_raw, valid_id};
+use crate::{Manifest, transport, valid_id};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fs, path::Path};
 
@@ -100,11 +100,7 @@ pub(crate) fn validate_path(path: &str) -> Result<()> {
 
 /// Mode and type of every entry of the commit's tree (recursive, folders included).
 fn tree(repo: &Path, commit: &str, custom_ssh: bool) -> Result<BTreeMap<String, (String, String)>> {
-    let raw = git_raw(
-        repo,
-        &["ls-tree", "-r", "-t", "-z", "--full-tree", commit, "--"],
-        custom_ssh,
-    )?;
+    let raw = transport::tree_entries(repo, commit, custom_ssh)?;
     let mut entries = BTreeMap::new();
     for entry in raw.split(|b| *b == 0).filter(|e| !e.is_empty()) {
         let entry = String::from_utf8_lossy(entry);
@@ -121,7 +117,7 @@ fn tree(repo: &Path, commit: &str, custom_ssh: bool) -> Result<BTreeMap<String, 
 }
 
 fn show(repo: &Path, commit: &str, path: &str, custom_ssh: bool) -> Result<String> {
-    git(repo, &["show", &format!("{commit}:{path}")], custom_ssh)
+    transport::show_file(repo, commit, path, custom_ssh)
 }
 
 /// Read and validate the manifest committed at a package's repository-relative path.
@@ -153,11 +149,7 @@ pub(crate) fn config_at_with_ssh(
     commit: &str,
     custom_ssh: bool,
 ) -> Result<Option<Config>> {
-    let listed = git(
-        repo,
-        &["ls-tree", "--name-only", commit, "--", CONFIG],
-        custom_ssh,
-    )?;
+    let listed = transport::tree_paths(repo, commit, CONFIG, custom_ssh)?;
     if listed.is_empty() {
         return Ok(None);
     }
@@ -430,12 +422,7 @@ pub(crate) fn find_at_with_ssh(
     }
     let Some(layout) = layout_at_with_ssh(repo, commit, custom_ssh)? else {
         ensure!(
-            !git(
-                repo,
-                &["ls-tree", "--name-only", commit, "--", "plugin.json"],
-                custom_ssh
-            )?
-            .is_empty(),
+            !transport::tree_paths(repo, commit, "plugin.json", custom_ssh)?.is_empty(),
             InvalidManifest,
             "missing plugin.json in the repository root (and no {CONFIG} listing packages)"
         );

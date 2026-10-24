@@ -2,7 +2,10 @@
 //! Never pushes and never touches a workspace.
 use crate::catalog::version_key;
 use crate::error::{Context, Error, Result, ensure, fail};
-use crate::{Manifest, identity, model, packages, transport::git};
+use crate::{
+    Manifest, identity, model, packages,
+    transport::{self, CommitScope},
+};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -68,20 +71,17 @@ fn create_repo(directory: &Path, id: &str, release: bool, custom_ssh: bool) -> R
                 "# {name}\n\nLocal gitpm demo package, version 0.1.0.\n\nEdit `dist/index.js` directly; there is no build step. `plugin.json` holds the\npackage ID and version. This is a demo package fixture.\n\nWith the `gitpm` CLI (the workspace is `--root DIR`, `GITPM_ROOT` or `./gitpm-workspace`):\n\n```sh\n{install}\n# After editing this repository:\ngitpm commit {source} 0.1.1\ngitpm update {id} --ref {next_tag}\ngitpm rollback {id}\n```\n\nTo generate a static catalog: add the repository URL/path to sources.txt, then run\n(`GITPM_CATALOG` can replace `--catalog`):\n\n```sh\ngitpm --catalog ./catalog catalog-update\n```\n\nNo remote is configured. If Git identity was missing, the scaffold configured\nPackage Demo <demo@example.invalid> locally in this repository only.\n"
             ),
         )?;
-        git(&directory, &["init", "-b", "main"], custom_ssh)?;
+        transport::init_repo(&directory, custom_ssh)?;
         require_identity(&directory, true, custom_ssh)?;
-        git(&directory, &["add", "--all", "--", "."], custom_ssh)?;
-        git(
+        transport::stage_paths(&directory, &["."], true, custom_ssh)?;
+        transport::commit(
             &directory,
-            &["commit", "-m", &format!("Create {name} 0.1.0")],
+            &format!("Create {name} 0.1.0"),
+            CommitScope::Index,
             custom_ssh,
         )?;
         if release {
-            git(
-                &directory,
-                &["tag", "-m", &format!("Release {tag}"), "--", &tag],
-                custom_ssh,
-            )?;
+            transport::create_tag(&directory, &tag, custom_ssh)?;
         }
         Ok(fs::canonicalize(&directory)?)
     })();
@@ -99,39 +99,17 @@ pub fn shell_quote(value: &str) -> String {
 /// Check both identities without Git's login/host fallback. Only repositories newly
 /// created by gitpm may receive a local demo identity, and configured values stay intact.
 pub(crate) fn require_identity(repo: &Path, created: bool, custom_ssh: bool) -> Result<()> {
-    let configured = || {
-        git(
-            repo,
-            &["-c", "user.useConfigOnly=true", "var", "GIT_AUTHOR_IDENT"],
-            custom_ssh,
-        )
-        .and_then(|_| {
-            git(
-                repo,
-                &[
-                    "-c",
-                    "user.useConfigOnly=true",
-                    "var",
-                    "GIT_COMMITTER_IDENT",
-                ],
-                custom_ssh,
-            )
-        })
-        .is_ok()
-    };
+    let configured = || transport::require_configured_identity(repo, custom_ssh).is_ok();
     if !configured() {
         if created {
-            if git(repo, &["config", "user.name"], custom_ssh).is_err() {
-                git(
-                    repo,
-                    &["config", "--local", "user.name", "Package Demo"],
-                    custom_ssh,
-                )?;
+            if transport::config_get(repo, "user.name", custom_ssh).is_err() {
+                transport::config_set_local(repo, "user.name", "Package Demo", custom_ssh)?;
             }
-            if git(repo, &["config", "user.email"], custom_ssh).is_err() {
-                git(
+            if transport::config_get(repo, "user.email", custom_ssh).is_err() {
+                transport::config_set_local(
                     repo,
-                    &["config", "--local", "user.email", "demo@example.invalid"],
+                    "user.email",
+                    "demo@example.invalid",
                     custom_ssh,
                 )?;
             }
@@ -153,7 +131,7 @@ fn locate(
 ) -> Result<(PathBuf, String, Manifest)> {
     let repo = fs::canonicalize(repo)?;
     ensure!(
-        Path::new(&git(&repo, &["rev-parse", "--show-toplevel"], custom_ssh)?) == repo,
+        Path::new(&transport::repository_root(&repo, custom_ssh)?) == repo,
         InvalidArgument,
         "pass the repository root"
     );
@@ -258,31 +236,28 @@ pub(crate) fn commit_package_with_ssh(
     m.metadata_strict()?;
     let tag = identity::release_tag(version);
     ensure!(
-        git(&repo, &["tag", "--list", "--", &tag], custom_ssh)?.is_empty(),
+        transport::matching_tags(&repo, &tag, custom_ssh)?.is_empty(),
         VersionConflict,
         "tag already exists: {tag}"
     );
     if m.version == version {
         // Retry after a failed tag: the release commit exists, only the tag is missing.
-        let head: Manifest = serde_json::from_str(&git(
+        let head: Manifest = serde_json::from_str(&transport::show_file(
             &repo,
-            &["show", &format!("HEAD:{manifest_path}")],
+            "HEAD",
+            &manifest_path,
             custom_ssh,
         )?)
         .map_err(|e| Error::invalid_manifest(format!("invalid {manifest_path} at HEAD: {e}")))?;
         ensure!(
             head.version == version
                 && repository_version_is(&repo, version, custom_ssh)?
-                && git(&repo, &["status", "--porcelain"], custom_ssh)?.is_empty()
+                && transport::working_status(&repo, &[], custom_ssh)?.is_empty()
                 && released_by_head(&repo, &m.id, version, custom_ssh)?,
             VersionConflict,
             "choose a new version"
         );
-        git(
-            &repo,
-            &["tag", "-m", &format!("Release {tag}"), "--", &tag],
-            custom_ssh,
-        )?;
+        transport::create_tag(&repo, &tag, custom_ssh)?;
         return Ok(Commit {
             package: m.id,
             version: version.to_owned(),
@@ -305,9 +280,9 @@ pub(crate) fn commit_package_with_ssh(
     })
 }
 
-/// Shared authoring transaction for a single commit or a multi-package fork release.
+/// Authoring transaction for package releases.
 /// `releases` are (package folder, `None` for the root package; version) pairs.
-/// `only` limits fork commits to package folders and allows an unchanged initial commit.
+/// `only` limits commits to package folders and allows an unchanged initial commit.
 pub(crate) fn release_packages(
     repo: &Path,
     releases: &[(Option<&str>, &str)],
@@ -327,7 +302,7 @@ pub(crate) fn release_packages(
     );
     let tag = identity::release_tag(version);
     ensure!(
-        git(repo, &["tag", "--list", "--", &tag], custom_ssh)?.is_empty(),
+        transport::matching_tags(repo, &tag, custom_ssh)?.is_empty(),
         VersionConflict,
         "tag already exists: {tag}"
     );
@@ -348,11 +323,7 @@ pub(crate) fn release_packages(
         };
         manifests.push((path, original, updated));
     }
-    let index = PathBuf::from(git(
-        repo,
-        &["rev-parse", "--path-format=absolute", "--git-path", "index"],
-        custom_ssh,
-    )?);
+    let index = PathBuf::from(transport::index_path(repo, custom_ssh)?);
     let saved_index = match fs::read(&index) {
         Ok(bytes) => Some(bytes),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
@@ -364,23 +335,13 @@ pub(crate) fn release_packages(
                 fs::write(path, updated)?;
             }
         }
-        let mut args = vec!["add", "--all", "--"];
-        args.extend_from_slice(folders);
-        git(repo, &args, custom_ssh)?;
-        if only {
-            let mut args = vec!["status", "--porcelain", "--"];
-            args.extend_from_slice(folders);
-            if git(repo, &args, custom_ssh)?.is_empty() {
-                return Ok(());
-            }
+        transport::stage_paths(repo, folders, true, custom_ssh)?;
+        if only && transport::working_status(repo, folders, custom_ssh)?.is_empty() {
+            return Ok(());
         }
         let message = format!("Release {version}");
-        let mut args = vec!["commit", "-m", &message];
-        if only {
-            args.extend(["-q", "--only", "--"]);
-            args.extend_from_slice(folders);
-        }
-        git(repo, &args, custom_ssh).map(drop)
+        let scope = if only { CommitScope::Only(folders) } else { CommitScope::Index };
+        transport::commit(repo, &message, scope, custom_ssh)
     })();
     if let Err(error) = committed {
         for (path, original, _) in manifests {
@@ -405,12 +366,7 @@ pub(crate) fn release_packages(
     } else {
         "commit succeeded but tag creation failed; releasing the same version again creates the tag"
     };
-    let tagged = git(
-        repo,
-        &["tag", "-m", &format!("Release {version}"), "--", &tag],
-        custom_ssh,
-    )
-    .map(drop);
+    let tagged = transport::create_tag(repo, &tag, custom_ssh);
     tagged.context(Error::Git, tag_failure)
 }
 
@@ -418,11 +374,11 @@ pub(crate) fn release_packages(
 /// `Release VERSION` commit whose tag failed, or the initial commit of `init
 /// --no-release` (`Create NAME 0.1.0` / `Create ID 0.1.0`).
 fn released_by_head(repo: &Path, id: &str, version: &str, custom_ssh: bool) -> Result<bool> {
-    let subject = git(repo, &["log", "-1", "--format=%s"], custom_ssh)?;
+    let subject = transport::head_subject(repo, custom_ssh)?;
     let name = id.rsplit('/').next().unwrap_or(id);
     Ok(subject == format!("Release {version}")
         || (version == "0.1.0"
-            && git(repo, &["rev-list", "--count", "HEAD"], custom_ssh)? == "1"
+            && transport::commit_count(repo, "HEAD", custom_ssh)? == "1"
             && (subject == format!("Create {name} 0.1.0")
                 || subject == format!("Create {id} {version}"))))
 }
@@ -441,7 +397,7 @@ fn repository_version_is(repo: &Path, version: &str, custom_ssh: bool) -> Result
             .map_err(|e| Error::invalid_manifest(e.to_string()))?;
         current.metadata_strict()?;
         let head: Manifest =
-            serde_json::from_str(&git(repo, &["show", &format!("HEAD:{path}")], custom_ssh)?)
+            serde_json::from_str(&transport::show_file(repo, "HEAD", &path, custom_ssh)?)
                 .map_err(|e| Error::invalid_manifest(e.to_string()))?;
         if current.version != version || head.version != version {
             return Ok(false);
@@ -630,12 +586,12 @@ fn add_package(
     let created = adopt_empty || !repo.exists();
     if created {
         fs::create_dir_all(repo)?;
-        git(repo, &["init", "-b", "main"], custom_ssh)?;
+        transport::init_repo(repo, custom_ssh)?;
     }
     let repo = fs::canonicalize(repo)?;
     let result = (|| {
         ensure!(
-            Path::new(&git(&repo, &["rev-parse", "--show-toplevel"], custom_ssh)?) == repo,
+            Path::new(&transport::repository_root(&repo, custom_ssh)?) == repo,
             InvalidArgument,
             "pass the repository root"
         );
@@ -718,11 +674,7 @@ fn add_package(
         // gitpm never writes an identity into a user's repository; a new one is its own.
         require_identity(&repo, created, custom_ssh)?;
         // A failed commit (hook, signing) must leave the index as it was, too.
-        let index = PathBuf::from(git(
-            &repo,
-            &["rev-parse", "--path-format=absolute", "--git-path", "index"],
-            custom_ssh,
-        )?);
+        let index = PathBuf::from(transport::index_path(&repo, custom_ssh)?);
         let saved_index = fs::read(&index).ok();
         // The outermost folder this creates (`packages/` too when it is new).
         let new_folder = directory
@@ -746,24 +698,19 @@ fn add_package(
                 &config_path,
                 format!("{}\n", serde_json::to_string_pretty(&config)?),
             )?;
-            git(&repo, &["add", "--", packages::CONFIG, &folder], custom_ssh)?;
+            transport::stage_paths(&repo, &[packages::CONFIG, &folder], false, custom_ssh)?;
             if created {
-                git(
+                transport::commit(
                     &repo,
-                    &["commit", "-m", &format!("Create {id} {version}")],
+                    &format!("Create {id} {version}"),
+                    CommitScope::Index,
                     custom_ssh,
                 )?;
             } else {
-                git(
+                transport::commit(
                     &repo,
-                    &[
-                        "commit",
-                        "-m",
-                        &format!("Create {id} {version}"),
-                        "--",
-                        packages::CONFIG,
-                        &folder,
-                    ],
+                    &format!("Create {id} {version}"),
+                    CommitScope::Paths(&[packages::CONFIG, &folder]),
                     custom_ssh,
                 )?;
             }
@@ -776,11 +723,8 @@ fn add_package(
                         let _ = fs::write(&index, bytes);
                     }
                     None => {
-                        let _ = git(
-                            &repo,
-                            &["reset", "-q", "--", packages::CONFIG, &folder],
-                            custom_ssh,
-                        );
+                        let _ =
+                            transport::reset_paths(&repo, &[packages::CONFIG, &folder], custom_ssh);
                     }
                 }
                 let _ = fs::remove_dir_all(&new_folder);
@@ -799,11 +743,7 @@ fn add_package(
         if !release || !created {
             return Ok(directory);
         }
-        git(
-            &repo,
-            &["tag", "-m", &format!("Release {tag}"), "--", &tag],
-            custom_ssh,
-        )?;
+        transport::create_tag(&repo, &tag, custom_ssh)?;
         Ok(directory)
     })();
     if result.is_err() && created {
@@ -828,7 +768,7 @@ pub(crate) fn set_remote_with_ssh(repo: &Path, url: &str, custom_ssh: bool) -> R
         "invalid git remote URL"
     );
     let repo = fs::canonicalize(repo)?;
-    let top = fs::canonicalize(git(&repo, &["rev-parse", "--show-toplevel"], custom_ssh)?)?;
+    let top = fs::canonicalize(transport::repository_root(&repo, custom_ssh)?)?;
     ensure!(
         top == repo,
         InvalidArgument,
@@ -839,41 +779,15 @@ pub(crate) fn set_remote_with_ssh(repo: &Path, url: &str, custom_ssh: bool) -> R
         InvalidManifest,
         "plugin.json not found in repository root"
     );
-    let remotes = git(&repo, &["remote"], custom_ssh)?;
+    let remotes = transport::remotes(&repo, custom_ssh)?;
     if remotes.lines().any(|name| name == "origin") {
         // Replace all configured URLs so an old secondary destination cannot remain.
-        git(
-            &repo,
-            &[
-                "config",
-                "--local",
-                "--replace-all",
-                "remote.origin.url",
-                url,
-            ],
-            custom_ssh,
-        )?;
-        if git(
-            &repo,
-            &["config", "--get-all", "remote.origin.pushurl"],
-            custom_ssh,
-        )
-        .is_ok()
-        {
-            git(
-                &repo,
-                &[
-                    "config",
-                    "--local",
-                    "--replace-all",
-                    "remote.origin.pushurl",
-                    url,
-                ],
-                custom_ssh,
-            )?;
+        transport::config_replace_all_local(&repo, "remote.origin.url", url, custom_ssh)?;
+        if transport::config_get_all(&repo, "remote.origin.pushurl", custom_ssh).is_ok() {
+            transport::config_replace_all_local(&repo, "remote.origin.pushurl", url, custom_ssh)?;
         }
     } else {
-        git(&repo, &["remote", "add", "--", "origin", url], custom_ssh)?;
+        transport::add_remote(&repo, "origin", url, custom_ssh)?;
     }
     Ok(())
 }

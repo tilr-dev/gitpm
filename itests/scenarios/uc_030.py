@@ -1,8 +1,7 @@
 """UC-030: Build metadata validation (P1).
 
-Archive transport is NOT implemented: build metadata is only stored; install-catalog
-keeps using Git. The no-download check puts a logging `curl` first on PATH (gitpm reads
-HTTP catalogs through curl), so any archive request would be recorded.
+Build metadata is immutable. Installations prefer the verified archive and refuse
+unavailable or corrupt artifacts without changing the workspace.
 """
 
 import json
@@ -110,21 +109,72 @@ def adding_build_to_existing_release_is_rejected(t: T):
 
 
 @case(fixture="catalog", spec=["catalog/nothing-is-built-executed-or-uploaded", "install-uninstall/install-from-the-catalog"])
-def install_ignores_unreachable_build(t: T):
-    """A release whose build URL is unreachable and whose archive hash is arbitrary installs
-    from Git; no HTTP request is made and archive bytes are never checked."""
-    commit = new_release(t)
-    t.gitpm_ok(*register(t, "--build-url", "https://127.0.0.1:9/never/hello.tar.zst", "--build-sha256", "0" * 64))
+def install_refuses_unreachable_build(t: T):
+    """A build URL is authoritative; a failed request cannot fall back to Git."""
+    new_release(t)
+    t.gitpm_ok(*register(t, "--build-url", "https://127.0.0.1:9/never/hello.tar.gz", "--build-sha256", "0" * 64))
     log = t.root / "curl.log"
     stub = t.root / "stub-bin/curl"
     stub.parent.mkdir()
-    stub.write_text(f"#!/bin/sh\necho \"$@\" >> {log}\nexit 7\n")
+    stub.write_text(f'#!/bin/sh\necho "$@" >> {log}\nexit 7\n')
     stub.chmod(0o755)
     path = f"{stub.parent}:{os.environ['PATH']}"
-    t.gitpm_ok("install-catalog", ID, "--version", "0.3.0", env={"PATH": path})
-    p = t.package(ID)
-    t.eq(p["current"], {"version": "0.3.0", "commit": commit}, "installed from Git at the catalog commit")
-    t.eq(t.rev(t.clone(ID)), commit, "clone HEAD")
-    t.eq((t.dist(ID) / "index.js").read_text(), t.git(ID, "show", f"v0.3.0:dist/index.js") + "\n", "dist bytes")
-    t.ok(not log.exists(), "no HTTP request (curl never called)")
-    t.eq(sorted(p.name for p in t.dist(ID).iterdir()), ["index.js"], "no archive in dist")
+    before = t.snap(t.ws) if t.ws.exists() else None
+    t.gitpm_err("install-catalog", ID, "--version", "0.3.0", env={"PATH": path}, kind="http")
+    t.ok(log.exists(), "artifact request made")
+    t.ok(not t.clone(ID).exists(), "no clone created")
+    t.ok(not t.dist(ID).exists(), "nothing deployed")
+    if before is not None:
+        t.same(before, "workspace")
+
+
+@case(fixture="catalog", spec=["install-uninstall/install-from-the-catalog", "updates/rollback-swaps-current-and-previous"])
+def builds_install_update_and_rollback_without_clones(t: T):
+    """Real loopback artifacts; unavailable Git source, ordinary and verified catalogs."""
+    import hashlib
+    import http.server
+    import io
+    import tarfile
+    import threading
+
+    served = t.root / "artifacts"
+    served.mkdir()
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0),
+        lambda *a, **kw: http.server.SimpleHTTPRequestHandler(*a, directory=str(served), **kw))
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        for version in ["0.3.0", "0.4.0"]:
+            t.release(ID, version)
+            contents = (t.git(ID, "show", f"{ID}@{version}:dist/index.js") + "\n").encode()
+            artifact = served / f"{version}.tar.gz"
+            with tarfile.open(artifact, "w:gz") as archive:
+                entry = tarfile.TarInfo("index.js")
+                entry.size = len(contents)
+                entry.mode = 0o755
+                archive.addfile(entry, io.BytesIO(contents))
+            t.gitpm_ok(*register(t, "--build-url", f"{url.replace('http://', 'https://')}/{artifact.name}",
+                "--build-sha256", hashlib.sha256(artifact.read_bytes()).hexdigest(), ref=f"{ID}@{version}"))
+            record = stored(t, version)
+            record["build"]["url"] = f"{url}/{artifact.name}"
+            t.catalog_release(ID, version).write_text(json.dumps(record))
+        t.repo(ID).rename(t.root / "source-unavailable")
+        t.gitpm_ok("install-catalog", ID, "--version", "0.3.0")
+        t.ok(not t.clone(ID).exists(), "no Git clone")
+        t.eq(t.package(ID)["current"]["version"], "0.3.0", "explicit build version")
+        t.gitpm_ok("update", ID)
+        t.eq(t.package(ID)["current"]["version"], "0.4.0", "updated from build")
+        t.ok(not t.clone(ID).exists(), "update creates no clone")
+        for artifact in served.iterdir():
+            artifact.unlink()
+        t.gitpm_ok("rollback", ID)
+        t.eq(t.package(ID)["current"]["version"], "0.3.0", "rollback needs no artifact request")
+        t.gitpm_ok("disable", ID)
+        t.gitpm_ok("enable", ID)
+        t.ok(t.dist(ID).is_dir(), "cached build redeployed")
+        t.ok(not t.clone(ID).exists(), "lifecycle creates no clone")
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join()

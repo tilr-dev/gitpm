@@ -28,32 +28,21 @@ pub(super) fn sync_refs(repo: &Path, state: &State, key: &str, custom_ssh: bool)
         }
     }
     let mut have = BTreeMap::new();
-    for line in git(
-        repo,
-        &["for-each-ref", "--format=%(refname) %(objectname)", KEEP],
-        custom_ssh,
-    )?
-    .lines()
-    {
+    for line in transport::refs_with_objects(repo, KEEP, custom_ssh)?.lines() {
         if let Some((name, object)) = line.split_once(' ') {
             have.insert(name.to_owned(), object.to_owned());
         }
     }
     for name in have.keys().filter(|name| !wanted.contains_key(*name)) {
-        git(repo, &["update-ref", "-d", name], custom_ssh)?;
+        transport::delete_ref(repo, name, custom_ssh)?;
     }
     for (name, commit) in &wanted {
         if have.get(name) == Some(commit)
-            || git(
-                repo,
-                &["cat-file", "-e", &format!("{commit}^{{commit}}")],
-                custom_ssh,
-            )
-            .is_err()
+            || transport::require_object(repo, &format!("{commit}^{{commit}}"), custom_ssh).is_err()
         {
             continue;
         }
-        git(repo, &["update-ref", name, commit], custom_ssh)?;
+        transport::update_ref(repo, name, commit, custom_ssh)?;
     }
     Ok(())
 }
@@ -161,11 +150,11 @@ pub(super) fn shared_head_moved(
     id: &str,
     custom_ssh: bool,
 ) -> Result<Option<LostWork>> {
-    let head = git(repo, &["rev-parse", "HEAD"], custom_ssh)?;
+    let head = transport::object_id(repo, "HEAD", custom_ssh)?;
     if clone_users(state, key, "")
         .iter()
         .any(|(_, p)| p.current.commit == head)
-        || !git(repo, &["tag", "--points-at", "HEAD"], custom_ssh)?.is_empty()
+        || !transport::tags_at(repo, "HEAD", custom_ssh)?.is_empty()
     {
         return Ok(None);
     }
@@ -223,7 +212,7 @@ pub(super) fn guard_clone(
 /// The URL `origin` is configured with, as written (`git remote get-url` would apply
 /// `url.<base>.insteadOf` rewrites and no longer match the recorded source).
 pub(super) fn configured_origin(repo: &Path, custom_ssh: bool) -> Option<String> {
-    git(repo, &["config", "--get", "remote.origin.url"], custom_ssh).ok()
+    transport::config_get(repo, "remote.origin.url", custom_ssh).ok()
 }
 
 /// Stage the verified clone where the package lives: its own `packages/<id>`, or for a
@@ -246,7 +235,7 @@ pub(super) fn place_clone(
     }
     let key = repo_key(source);
     let relative = format!("repos/{key}");
-    let commit = git(&cloned.repo, &["rev-parse", "HEAD"], custom_ssh)?;
+    let commit = transport::object_id(&cloned.repo, "HEAD", custom_ssh)?;
     let live = txn.root().join(&relative);
     let staged = if let Some(staged) = txn.staged_repo(&relative) {
         staged
@@ -277,7 +266,7 @@ pub(super) fn place_clone(
         return Ok((staged, relative, Some(key)));
     };
     fetch_tags(&staged, state, &key, false, custom_ssh)?;
-    git(&staged, &["checkout", "--detach", &commit], custom_ssh)?;
+    transport::checkout_detached(&staged, &commit, false, custom_ssh)?;
     let m = package_manifest(&staged, cloned.path.as_deref())?;
     ensure!(
         serde_json::to_value(&m)? == serde_json::to_value(&cloned.manifest)?,
@@ -318,16 +307,14 @@ pub(super) fn settle_head(
         return Ok(());
     }
     let repo = txn.staged_repo(relative).unwrap_or_else(|| live.clone());
-    let head = git(&repo, &["rev-parse", "HEAD"], custom_ssh)?;
+    let head = transport::object_id(&repo, "HEAD", custom_ssh)?;
     if candidates.iter().any(|(_, p)| p.current.commit == head) {
         return Ok(());
     }
     let staged = txn.repo(relative, &live)?;
-    if let Err(error) = git(
-        &staged,
-        &["checkout", "-q", "--detach", &target.current.commit],
-        custom_ssh,
-    ) {
+    if let Err(error) =
+        transport::checkout_detached(&staged, &target.current.commit, true, custom_ssh)
+    {
         let items = match clean(&staged, target_id, custom_ssh) {
             Err(Error::LocalChanges { items, .. }) => items,
             _ => Vec::new(),
@@ -370,7 +357,19 @@ pub(super) fn removal(root: &Path, state: &State, id: &str, custom_ssh: bool) ->
             }
             Err(error) => return Err(error),
         };
-        let recorded = state.packages.get(id).map(|p| p.current.commit.as_str());
+        let recorded = state.packages.get(id).and_then(|p| {
+            if p.build.is_some() {
+                // Installing a build leaves the retained clone at its Git revision.
+                // After successive builds the previous record is also a build, so
+                // only the repository's work/status checks apply.
+                p.previous
+                    .as_ref()
+                    .filter(|_| p.previous_build.is_none())
+                    .map(|previous| previous.commit.as_str())
+            } else {
+                Some(p.current.commit.as_str())
+            }
+        });
         return Ok(Removal {
             relative: format!("packages/{id}"),
             lost_work: lost_work::detect(&repo, recorded, custom_ssh)?,
@@ -396,7 +395,7 @@ pub(super) fn removal(root: &Path, state: &State, id: &str, custom_ssh: bool) ->
     let others = clone_users(state, &key, id);
     if !others.is_empty() {
         // HEAD moves to another user's revision: commits only HEAD holds would be lost.
-        let head = git(&live, &["rev-parse", "HEAD"], custom_ssh)?;
+        let head = transport::object_id(&live, "HEAD", custom_ssh)?;
         let keep: Vec<&str> = others
             .iter()
             .map(|(_, p)| p.current.commit.as_str())

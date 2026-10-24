@@ -278,22 +278,15 @@ fn installing_a_package_that_is_replaced_deploys_nothing() {
 }
 
 #[test]
-fn fork_replace_ends_with_only_the_fork_deployed() {
+fn explicit_fork_install_and_replace_deploys_only_the_fork() {
     let f = Fixture::new();
     f.ok(&["init", "vendor/demo", "--into", "vendor/demo"]);
     f.ok(&["install", f.path("vendor/demo").to_str().unwrap()]);
     let original = f.dist("vendor/demo").unwrap();
-    f.ok(&[
-        "fork",
-        "vendor/demo",
-        "--ns",
-        "dan",
-        "--into",
-        "dan/demo",
-        "--replace",
-        "--version",
-        "1.0.1",
-    ]);
+    f.ok(&["fork", "vendor/demo", "--ns", "dan", "--into", "dan/demo"]);
+    f.ok(&["commit", f.path("dan/demo").to_str().unwrap(), "0.2.0"]);
+    f.ok(&["install", f.path("dan/demo").to_str().unwrap()]);
+    f.ok(&["replace", "vendor/demo", "--with", "dan/demo"]);
     assert_eq!(f.dist("vendor/demo"), None);
     assert_eq!(f.dist("dan/demo").as_deref(), Some(original.as_str()));
     assert_eq!(f.state()["replacements"]["vendor/demo"], "dan/demo");
@@ -366,24 +359,21 @@ fn a_package_of_a_shared_clone_is_deployed_from_its_own_commit() {
     let source = mono.to_str().unwrap();
     f.ok(&["install", source, "tilr/store"]);
     f.ok(&["install", source, "tilr/theme"]);
+    f.ok(&["fork", "tilr/theme", "--ns", "me", "--into", "forks/me"]);
+    let fork = f.path("forks/me");
     f.ok(&[
-        "fork",
-        "tilr/theme",
-        "--ns",
-        "me",
-        "--into",
-        "forks/me",
-        "--replace",
-        "--version",
+        "commit",
+        fork.to_str().unwrap(),
         "1.0.1",
+        "--package",
+        "me/theme",
     ]);
+    f.ok(&["install", fork.to_str().unwrap(), "me/theme"]);
+    f.ok(&["replace", "tilr/theme", "--with", "me/theme"]);
     assert_eq!(f.dist("tilr/theme"), None);
     assert_eq!(f.dist("me/theme").as_deref(), Some("theme 1.0.0"));
-    assert_eq!(f.dist("tilr/store"), None);
-    assert_eq!(f.dist("me/store").as_deref(), Some("store 1.0.0"));
-    // The whole repository was forked and replaced. Keep theme's fork active but
-    // restore store's original provider to exercise independent dist revisions.
-    f.ok(&["replace", "tilr/store", "--back"]);
+    // Only theme was explicitly installed and replaced; store keeps its original provider.
+    assert_eq!(f.dist("me/store"), None);
     assert_eq!(f.dist("tilr/store").as_deref(), Some("store 1.0.0"));
     // theme 1.1.0 is installed while replaced; then store moves the shared clone's HEAD
     // to a commit whose theme files differ from theme's installed revision.

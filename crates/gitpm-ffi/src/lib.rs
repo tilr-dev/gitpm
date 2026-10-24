@@ -438,84 +438,6 @@ impl From<pm::ReplacementPlan> for ReplacementPlan {
         }
     }
 }
-impl From<ReplacementPlan> for pm::ReplacementPlan {
-    fn from(p: ReplacementPlan) -> Self {
-        Self {
-            original: p.original,
-            provider: p.provider,
-            version: p.version,
-            current: p.current,
-            consumers: p.consumers,
-            incompatible: p
-                .incompatible
-                .into_iter()
-                .map(|c| pm::IncompatibleConsumer {
-                    id: c.id,
-                    requirement: c.requirement,
-                })
-                .collect(),
-            installed_version: p.installed_version,
-            dist: p.dist.into(),
-        }
-    }
-}
-/// A replacement of `forkPackagesAndReplace` waiting for confirmation; pass it to
-/// `PackageManager.forkReplaceResume` once the user confirmed.
-#[derive(Debug, Clone, uniffi::Record)]
-pub struct PendingReplacement {
-    pub original: String,
-    pub fork: String,
-    /// The plan to show (its `incompatible` consumers).
-    pub plan: ReplacementPlan,
-}
-impl From<pm::PendingReplacement> for PendingReplacement {
-    fn from(p: pm::PendingReplacement) -> Self {
-        Self {
-            original: p.original,
-            fork: p.fork,
-            plan: p.plan.into(),
-        }
-    }
-}
-impl From<PendingReplacement> for pm::PendingReplacement {
-    fn from(p: PendingReplacement) -> Self {
-        Self {
-            original: p.original,
-            fork: p.fork,
-            plan: p.plan.into(),
-        }
-    }
-}
-
-/// Result of `forkReplaceResume`: the replacements applied (each with its dist report)
-/// and the first one that failed; the ones after it stay pending.
-#[derive(Debug, Clone, uniffi::Record)]
-pub struct ForkResume {
-    pub applied: Vec<ReplacementPlan>,
-    pub failed: Option<ResumeFailure>,
-}
-#[derive(Debug, Clone, uniffi::Record)]
-pub struct ResumeFailure {
-    pub original: String,
-    pub fork: String,
-    /// Stable kind of the failure (as `PmError` kinds), with its message.
-    pub error_kind: String,
-    pub error_message: String,
-}
-impl From<pm::ForkResume> for ForkResume {
-    fn from(r: pm::ForkResume) -> Self {
-        Self {
-            applied: r.applied.into_iter().map(Into::into).collect(),
-            failed: r.failed.map(|f| ResumeFailure {
-                error_kind: f.error.kind().to_owned(),
-                error_message: f.error.to_string(),
-                original: f.original,
-                fork: f.fork,
-            }),
-        }
-    }
-}
-
 /// A release-looking tag that was passed over (broken manifest, mismatch, …).
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct SkippedTag {
@@ -1257,46 +1179,6 @@ pub struct ForkResult {
     pub path: String,
 }
 
-/// Step of a fork with replace that failed after the fork repository exists
-/// (`gitpm::ForkStep`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
-pub enum ForkStep {
-    /// Committing/tagging the fork's first release.
-    Release,
-    /// Installing the released fork.
-    Install,
-    /// Making the installed fork the provider of the original.
-    Replace,
-}
-impl From<pm::ForkStep> for ForkStep {
-    fn from(step: pm::ForkStep) -> Self {
-        match step {
-            pm::ForkStep::Release => Self::Release,
-            pm::ForkStep::Install => Self::Install,
-            pm::ForkStep::Replace => Self::Replace,
-        }
-    }
-}
-/// What `forkAndReplace`/`forkPackagesAndReplace` did for one package
-/// (`gitpm::ForkReplacement`). The fork repository is kept; a failure after it exists is
-/// reported here (`failedStep`, `errorKind`, `errorMessage`) with what was done so far,
-/// instead of as an error.
-#[derive(Debug, Clone, uniffi::Record)]
-pub struct ForkReplacement {
-    pub original: String,
-    pub id: String,
-    pub path: String,
-    pub tag: Option<String>,
-    pub installed: Option<InstallResult>,
-    pub replacement: Option<ReplacementPlan>,
-    pub failed_step: Option<ForkStep>,
-    /// Stable kind of the failure (as `PmError` kinds), with its message.
-    pub error_kind: Option<String>,
-    pub error_message: Option<String>,
-    /// The replace step needs confirmation (`failedStep` replace): the plan to show;
-    /// `forkReplaceResume` applies it.
-    pub pending: Option<ReplacementPlan>,
-}
 /// A dependency rewritten by a multi-package fork (`from` became `to`); `newRequirement`
 /// is set when the old requirement does not accept the fork's version.
 #[derive(Debug, Clone, uniffi::Record)]
@@ -1356,42 +1238,6 @@ impl From<pm::PackageFork> for PackageFork {
         }
     }
 }
-/// Result of `PackageManager.forkPackagesAndReplace` (`gitpm::PackageForkReplacement`):
-/// one entry per package (install order), each with its own
-/// `failedStep`/`errorKind`/`errorMessage`.
-#[derive(Debug, Clone, uniffi::Record)]
-pub struct PackageForkReplacement {
-    pub fork: PackageFork,
-    pub packages: Vec<ForkReplacement>,
-    /// The replacements waiting for confirmation (for `forkReplaceResume`).
-    pub pending: Vec<PendingReplacement>,
-}
-impl From<pm::PackageForkReplacement> for PackageForkReplacement {
-    fn from(r: pm::PackageForkReplacement) -> Self {
-        Self {
-            pending: r.pending().into_iter().map(Into::into).collect(),
-            fork: r.fork.into(),
-            packages: r.packages.into_iter().map(Into::into).collect(),
-        }
-    }
-}
-impl From<pm::ForkReplacement> for ForkReplacement {
-    fn from(r: pm::ForkReplacement) -> Self {
-        Self {
-            original: r.original,
-            id: r.id,
-            path: r.path.to_string_lossy().into_owned(),
-            tag: r.tag,
-            installed: r.installed.map(Into::into),
-            replacement: r.replacement.map(Into::into),
-            failed_step: r.failed.map(Into::into),
-            error_kind: r.error.as_ref().map(|e| e.kind().to_owned()),
-            error_message: r.error.as_ref().map(ToString::to_string),
-            pending: r.pending.map(Into::into),
-        }
-    }
-}
-
 /// What `update` moves a package to.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
 pub enum Target {
@@ -1650,29 +1496,6 @@ impl PackageManager {
             path: path.to_string_lossy().into_owned(),
         })
     }
-    /// Fork, release and install every package of the repository; replace installed
-    /// originals (`confirm` as in `replace`). Return every package outcome, including
-    /// sibling failures and pending confirmations.
-    #[uniffi::method(default(version = None, confirm = false))]
-    pub fn fork_and_replace(
-        &self,
-        id: String,
-        destination: String,
-        namespace: String,
-        version: Option<String>,
-        confirm: bool,
-    ) -> Result<PackageForkReplacement> {
-        Ok(self
-            .inner
-            .fork_replace(
-                &id,
-                std::path::Path::new(&destination),
-                &namespace,
-                version.as_deref(),
-                confirm,
-            )?
-            .into())
-    }
     /// Fork the entire repository identified by installed IDs into a new folder
     /// `destination`. Rename all packages into `namespace`, preserve repository files
     /// and layout, and rewrite dependencies between packages in the repository.
@@ -1687,41 +1510,6 @@ impl PackageManager {
             .inner
             .fork_packages(&ids, std::path::Path::new(&destination), &namespace)?
             .into())
-    }
-    /// `forkPackages`, then release, install and replace every package. Errors before the
-    /// fork exists are thrown; later failures are reported per package.
-    #[uniffi::method(default(version = None, confirm = false))]
-    pub fn fork_packages_and_replace(
-        &self,
-        ids: Vec<String>,
-        destination: String,
-        namespace: String,
-        version: Option<String>,
-        confirm: bool,
-    ) -> Result<PackageForkReplacement> {
-        let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
-        Ok(self
-            .inner
-            .fork_packages_replace(
-                &ids,
-                std::path::Path::new(&destination),
-                &namespace,
-                version.as_deref(),
-                confirm,
-            )?
-            .into())
-    }
-    /// Apply the pending replacements of `forkPackagesAndReplace` (or `forkAndReplace`)
-    /// after the user confirmed them (`confirm`), in order. Each is planned again; when its
-    /// incompatible consumers changed it is refused (`incompatible_replacement`). The
-    /// first failure stops the run and is reported with what was applied before it.
-    pub fn fork_replace_resume(
-        &self,
-        pending: Vec<PendingReplacement>,
-        confirm: bool,
-    ) -> ForkResume {
-        let pending: Vec<pm::PendingReplacement> = pending.into_iter().map(Into::into).collect();
-        self.inner.fork_replace_resume(&pending, confirm).into()
     }
 }
 
@@ -2191,31 +1979,6 @@ mod tests {
     }
 
     #[test]
-    fn fork_replace_result_reports_the_failed_step_with_kind_and_message() {
-        let result = ForkReplacement::from(pm::ForkReplacement {
-            original: "vendor/x".into(),
-            id: "me/x".into(),
-            path: "/forks/me/x".into(),
-            tag: Some("v1.0.0".into()),
-            installed: None,
-            replacement: None,
-            failed: Some(pm::ForkStep::Install),
-            error: Some(pm::Error::Unsupported("symlinks are not supported".into())),
-            pending: None,
-        });
-        assert_eq!(result.failed_step, Some(ForkStep::Install));
-        assert_eq!(result.error_kind.as_deref(), Some("unsupported"));
-        assert_eq!(
-            result.error_message.as_deref(),
-            Some("symlinks are not supported")
-        );
-        assert_eq!(
-            (result.path.as_str(), result.tag.as_deref()),
-            ("/forks/me/x", Some("v1.0.0"))
-        );
-    }
-
-    #[test]
     fn records_convert_field_by_field() {
         let options: pm::Options = ManagerOptions {
             catalog: Some("catalog.json".into()),
@@ -2635,31 +2398,6 @@ mod tests {
         assert_eq!(ffi.installed_version.as_deref(), Some("0.3.0"));
         assert_eq!(ffi.incompatible[0].requirement, "^2");
         check_report(&ffi.dist);
-        // Back to the library for forkReplaceResume: nothing is lost.
-        let back = pm::ReplacementPlan::from(ffi.clone());
-        assert_eq!(format!("{back:?}"), format!("{replacement:?}"));
-        let pending = PendingReplacement::from(pm::PendingReplacement {
-            original: "vendor/x".into(),
-            fork: "me/x".into(),
-            plan: replacement.clone(),
-        });
-        assert_eq!(
-            (pending.original.as_str(), pending.fork.as_str()),
-            ("vendor/x", "me/x")
-        );
-        let fork = ForkReplacement::from(pm::ForkReplacement {
-            original: "vendor/x".into(),
-            id: "me/x".into(),
-            path: "/forks/me/x".into(),
-            tag: Some("v0.3.0".into()),
-            installed: None,
-            replacement: None,
-            failed: Some(pm::ForkStep::Replace),
-            error: None,
-            pending: Some(replacement),
-        });
-        assert_eq!(fork.pending.unwrap().provider, "me/x");
-
         let error = PmError::from(pm::Error::NotDeployed {
             message: "1 package(s) not deployed: me/y".into(),
             sync: Box::new(report()),
@@ -2669,32 +2407,6 @@ mod tests {
         };
         assert_eq!(message, "1 package(s) not deployed: me/y");
         check_report(&sync);
-        let resume = ForkResume::from(pm::ForkResume {
-            applied: vec![pm::ReplacementPlan {
-                dist: report(),
-                ..back.clone()
-            }],
-            failed: Some(pm::ResumeFailure {
-                original: "vendor/y".into(),
-                fork: "me/y".into(),
-                error: pm::Error::IncompatibleReplacement {
-                    id: "vendor/y".into(),
-                    message: "changed".into(),
-                    consumers: vec!["app/a".into()],
-                },
-            }),
-        });
-        check_report(&resume.applied[0].dist);
-        let failed = resume.failed.unwrap();
-        assert_eq!(
-            (failed.original.as_str(), failed.fork.as_str()),
-            ("vendor/y", "me/y")
-        );
-        assert_eq!(
-            (failed.error_kind.as_str(), failed.error_message.as_str()),
-            ("incompatible_replacement", "changed")
-        );
-
         let plan = UninstallPlan::from(pm::UninstallPlan {
             id: "me/x".into(),
             registered: false,
@@ -2797,13 +2509,7 @@ mod tests {
             }),
             ("fork", {
                 let _ = PackageManager::fork_packages;
-                let _ = PackageManager::fork_packages_and_replace;
-                let _ = PackageManager::fork_replace_resume;
-                vec![
-                    "forkPackages",
-                    "forkPackagesAndReplace",
-                    "forkReplaceResume",
-                ]
+                vec!["forkPackages"]
             }),
             ("replace", {
                 let _ = PackageManager::replace_plan;

@@ -8,7 +8,7 @@ Packages in a repository are released together. Package-specific tags make relea
 - Read only repository release tags; ignore legacy `ID@VERSION` tags without compatibility handling.
 - Create the single tag through `git tag -m MESSAGE`, honoring `tag.gpgSign` without an editor.
 - Add packages at the current repository version without tagging; release them only through an explicit commit with a new version.
-- Align authoring, fork replacement, discovery, catalog, pinned refs and documentation with the shared release model.
+- Align authoring, explicit fork releases, discovery, catalog, pinned refs and documentation with the shared release model.
 - Remove the multi-tag ref transaction and its library-owned input requirement. Preserve immutable existing tags and safe handling of retained upstream tags in fork clones.
 
 ## Impact

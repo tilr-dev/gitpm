@@ -22,7 +22,7 @@ The deployed folder `dist/<namespace>/<name>/` SHALL exist exactly when the pack
 - **THEN** `dist/acme/greeter/` does not exist, `dist/me/greeter/` does, and `acme/greeter` stays `enabled: true` with `active: false` in `list`
 
 ### Requirement: Deploys copy the committed tree
-Every deploy SHALL copy the resolved commit’s package folder selected by its committed manifest's `dist` (default `<path>/dist`; `"."` selects `<path>` itself) from Git objects, never the working tree, preserving nested folders and executable bits. Symlinks SHALL fail with `unsupported`. Gitlinks SHALL become empty directories without fetching submodules, with an actionable warning naming the path and advising committing built files instead.
+Git deploys SHALL copy the resolved commit’s manifest-selected package output (default `<path>/dist`; `"."` selects `<path>`) from Git objects, never the working tree. Builds SHALL deploy cached verified output without Git or network. Both SHALL preserve nested folders and executable bits. Symlinks SHALL fail with `unsupported`. Gitlinks SHALL become empty directories without fetching submodules, with an actionable warning naming the path and advising committing built files instead.
 
 #### Scenario: Symlink inside dist
 - **WHEN** a release's package dist contains a symlink
@@ -50,8 +50,12 @@ Every deploy SHALL copy the resolved commit’s package folder selected by its c
 - **THEN** install and subsequent deploys copy that committed folder, relative to the package root, including nested files and executable bits
 - **AND** uncommitted edits and files outside the selected folder are not deployed
 
+#### Scenario: Repair missing deployed build output
+- **WHEN** an active build package has no deployed folder and sync-dist runs
+- **THEN** its verified local output is deployed without Git or network access
+
 ### Requirement: A revision without dist is refused
-A revision without its declared output folder (default dist/) SHALL fail with invalid_manifest, never deploying an empty folder. Messages SHALL name the missing folder and detection context as below; substitute the declared path for dist in default messages. With buildRequired, errors SHALL explain that a committed build result is required and name buildCommand when supplied. gitpm SHALL NOT run builds.
+A Git revision without its declared output folder (default dist/) SHALL fail with invalid_manifest, never deploying an empty folder. Messages SHALL name the missing folder and detection context below; substitute the declared path for dist in default messages. With buildRequired, errors SHALL explain that a committed build result is required and name buildCommand when supplied. Catalog builds SHALL use archive output without requiring that folder in Git. gitpm SHALL NOT run builds.
 
 #### Scenario: Deploy from Git objects
 - **WHEN** the commit being deployed has no declared output tree
@@ -72,6 +76,10 @@ A revision without its declared output folder (default dist/) SHALL fail with in
 #### Scenario: Missing required build output
 - **WHEN** a package declares `dist: "output"`, `buildRequired: true` and `buildCommand: "npm run build"` but output is absent
 - **THEN** install or fork fails with invalid_manifest naming output and npm run build, without running the command or deploying an empty package
+
+#### Scenario: Prebuilt release needs no committed output
+- **WHEN** a build release manifest selects an output folder absent from its Git commit
+- **THEN** installation deploys the verified build without accessing that commit
 
 ### Requirement: Replace removes the original's dist
 `replace ORIGINAL --with FORK` SHALL remove `dist/ORIGINAL/` and SHALL NOT copy anything of FORK into it; `dist/FORK/` stays. Its preconditions (FORK installed, enabled and declaring `replaces`) are specified in fork-replacement ("Replacement is explicit and global"). Verified by `replace_removes_the_original_dist_and_back_restores_it_from_the_clone`.
@@ -121,7 +129,7 @@ A revision without its declared output folder (default dist/) SHALL fail with in
 - **THEN** `dist/acme/greeter/` is removed by the first and deployed again by the second
 
 ### Requirement: Every mutating command reconciles all of dist
-Every mutating command (install, `install-catalog`, `download`, `download-catalog`, update, `update all`, rollback, replace, `replace --back`, enable, disable, forget, restore, uninstall, `fork --replace`, `sync-dist`) SHALL, inside its transaction, deploy the missing deployed folders of active packages and remove those of inactive known packages. An existing deployed folder of an active package MUST NOT be rewritten. Verified by `any_mutating_command_reconciles_the_whole_dist`.
+Every mutating command (install, `install-catalog`, `download`, `download-catalog`, update, `update all`, rollback, replace, `replace --back`, enable, disable, forget, restore, uninstall, `sync-dist`) SHALL, inside its transaction, deploy the missing deployed folders of active packages and remove those of inactive known packages. An existing deployed folder of an active package MUST NOT be rewritten. Verified by `any_mutating_command_reconciles_the_whole_dist`.
 
 #### Scenario: Repeated install
 - **WHEN** `install` finds the package already installed and enabled from the same source

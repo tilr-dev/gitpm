@@ -1,7 +1,7 @@
 """UC-025: Fork invalid destinations (P0).
 
 vendor/demo 0.1.0 installed (g3_vendor_installed). `fork ID --ns NS --into DIR` accepts only a new
-folder or a repository with gitpm.json; every refusal is checked for: non-zero exit, Error
+folder; every refusal is checked for: non-zero exit, Error
 kind, no destination created, and byte-identical workspace + author repositories.
 """
 
@@ -37,15 +37,20 @@ def missing_namespace(t: T):
     t.ok(not os.path.lexists(dest), f"{dest} not created")
 
 
-@case(fixture="g3_vendor_installed", spec=["fork-replacement/fork-requires-explicit-namespace-and-destination#version-without-replace"])
-def version_without_replace(t: T):
-    """--version is only valid with --replace."""
+@case(fixture="g3_vendor_installed", spec=["cli/option-validation#removed-fork-options-have-no-side-effects"])
+def removed_fork_options(t: T):
+    """Removed compound-operation flags fail before any files are created."""
     dest = t.root / "authors/none"
     before = t.snap(t.ws, t.root / "repos", git=True)
-    t.gitpm_err("fork", ID, "--ns", "author", "--into", dest, "--version", "2.0.0",
-                contains="--version is not valid for fork")
-    t.same(before, "workspace and author repositories")
-    t.ok(not os.path.lexists(dest), f"{dest} not created")
+    for options, message in [
+        (["--replace"], "unknown option: --replace"),
+        (["--version", "2.0.0"], "--version is not valid for fork"),
+        (["--force"], "--force is only valid with"),
+    ]:
+        t.gitpm_err("fork", ID, "--ns", "author", "--into", dest, *options,
+                     contains=message)
+        t.same(before, "workspace and author repositories")
+        t.ok(not os.path.lexists(dest), f"{dest} not created")
 
 
 @case(fixture="g3_vendor_installed", spec=["fork-replacement/fork-copies-an-installed-package"])
@@ -60,7 +65,7 @@ def existing_destination_with_sentinel(t: T):
     dest = t.root / "authors/existing"
     t.write(dest, {"sentinel.txt": "keep me\n"})
     sentinel = t.snap(dest)
-    refused(t, [ID, "--ns", "author", "--into", dest], "invalid_argument", "destination already exists and is not a multi-package repository (gitpm.json)")
+    refused(t, [ID, "--ns", "author", "--into", dest], "invalid_argument", "destination already exists; pass a new folder")
     t.same(sentinel, "destination with sentinel")
 
 
@@ -68,7 +73,7 @@ def existing_destination_with_sentinel(t: T):
 def empty_existing_destination(t: T):
     dest = t.root / "authors/empty"
     dest.mkdir(parents=True)
-    refused(t, [ID, "--ns", "author", "--into", dest], "invalid_argument", "destination already exists and is not a multi-package repository (gitpm.json)")
+    refused(t, [ID, "--ns", "author", "--into", dest], "invalid_argument", "destination already exists; pass a new folder")
     t.eq(list(dest.iterdir()), [], "still empty")
 
 
@@ -77,7 +82,9 @@ def dangling_symlink_destination(t: T):
     dest = t.root / "authors/link"
     dest.parent.mkdir(parents=True)
     dest.symlink_to(t.root / "nowhere")
-    refused(t, [ID, "--ns", "author", "--into", dest], "invalid_argument", "destination already exists and is not a multi-package repository (gitpm.json)")
+    refused(t, [ID, "--ns", "author", "--into", dest], "invalid_argument", "destination already exists; pass a new folder")
+    t.ok(dest.is_symlink(), "destination symlink preserved")
+    t.eq(os.readlink(dest), str(t.root / "nowhere"), "symlink target unchanged")
     t.ok(not (t.root / "nowhere").exists(), "symlink target not created")
 
 

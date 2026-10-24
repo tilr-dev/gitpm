@@ -132,21 +132,24 @@ def register_package_and_catalog_update(t: T):
 
 
 @case(fixture="fork_suite_installed", spec=["multi-package-repos/forking-packages-of-one-repository",
-                                            "fork-replacement/fork-metadata#fork-manifest"])
+                                            "fork-replacement/fork-metadata#fork-manifest",
+                                            "fork-replacement/fork-isolates-source-and-destination-state#repository-starting-revision"])
 def fork_one_package_of_the_repository(t: T):
-    """`fork tilr/theme --ns me --into DIR`: the new fork keeps every package and the original layout,
-    renames installed and uninstalled siblings; originals stay unchanged."""
-    before = t.snap(t.ws, git=True)
+    """Fork uses the newest installed revision, excluding packages introduced later."""
+    before = t.snap(t.ws, suite(t), git=True)
     dest = t.root / "forks/suite"
     r = t.gitpm_ok("fork", THEME, "--ns", "me", "--into", dest)
     t.has(r.out, "me/theme forked from tilr/theme (packages/theme)",
-          "Next steps (or all at once: add --replace --version NEW_VERSION):", "gitpm replace tilr/theme --with me/theme")
+          "Next steps (choose the packages to install and replace):", "--package me/theme", "gitpm replace tilr/theme --with me/theme")
     t.eq(json.loads((dest / "gitpm.json").read_text()), {"packages": ["packages/*"]}, "fork gitpm.json")
-    t.eq(sorted(p.name for p in (dest / "packages").iterdir()), ["panel", "store", "theme"], "all package folders preserved")
-    for name in ("panel", "store", "theme"):
+    t.eq(sorted(p.name for p in (dest / "packages").iterdir()), ["store", "theme"], "package folders at newest installed revision")
+    t.eq(t.rev(dest, "HEAD~1"), t.package(THEME)["current"]["commit"], "newest installed revision")
+    for name in ("store", "theme"):
         sibling = json.loads((dest / "packages" / name / "plugin.json").read_text())
         t.eq(sibling["id"], f"me/{name}", f"{name} renamed")
-        t.eq(sibling["forkOf"]["id"], f"tilr/{name}", f"{name} provenance")
+        current = t.package(f"tilr/{name}")["current"]
+        t.eq(sibling["forkOf"], {"id": f"tilr/{name}", **current,
+                               "source": t.package(f"tilr/{name}")["source"]}, f"{name} provenance")
     m = json.loads((dest / "packages/theme/plugin.json").read_text())
     theme = t.package(THEME)["current"]
     t.eq((m["id"], m["forkOf"], m["replaces"]),
@@ -158,3 +161,51 @@ def fork_one_package_of_the_repository(t: T):
     t.gitpm_ok("install", dest, "me/theme")
     t.eq(t.package("me/theme")["forkOf"]["id"], THEME, "installed fork provenance")
     t.has((t.dist("me/theme") / "index.js").read_text(), "theme")
+
+
+@case(fixture="fork_suite_installed", spec=["fork-replacement/fork-isolates-source-and-destination-state#repository-starting-revision",
+                                            "fork-replacement/fork-metadata"])
+def fork_uses_all_installed_revisions_and_starting_revision_siblings(t: T):
+    """An unrequested installed sibling selects the base; older installed folders are restored."""
+    source = suite(t)
+    store = t.package(STORE)["current"]
+    store_dist = t.git(source, "show", f"{store['commit']}:packages/store/dist/index.js")
+    theme_manifest = json.loads((source / "packages/theme/plugin.json").read_text())
+    theme_manifest["version"] = "0.1.1"
+    base = t.commit(source, "Release theme with an uninstalled sibling", {
+        "packages/theme/plugin.json": json.dumps(theme_manifest) + "\n",
+        "packages/store/dist/index.js": "newer store work\n",
+        "packages/panel/dist/index.js": "panel at installed base\n",
+        "base-marker.txt": "installed base\n",
+    })
+    t.tag(source, "v0.1.1")
+    t.gitpm_ok("update", THEME)
+    t.eq(t.package(THEME)["current"]["commit"], base, "newest installed sibling")
+    t.commit(source, "Later source-only work", {
+        "packages/panel/dist/index.js": "later panel work\n",
+        "base-marker.txt": "later source head\n",
+    })
+    before = t.snap(t.ws, source, git=True)
+    dest = t.root / "forks/revision-suite"
+    t.gitpm_ok("fork", STORE, "--ns", "me", "--into", dest)
+    t.eq(t.rev(dest, "HEAD~1"), base, "base includes unrequested installed theme")
+    t.eq((dest / "base-marker.txt").read_text(), "installed base\n", "root at starting revision")
+    t.eq((dest / "packages/store/dist/index.js").read_text().strip(), store_dist, "older installed store restored")
+    t.eq((dest / "packages/panel/dist/index.js").read_text(), "panel at installed base\n", "uninstalled panel at starting revision")
+    for name, version, commit in (("store", "0.1.0", store["commit"]),
+                                  ("theme", "0.1.1", base), ("panel", "0.1.0", base)):
+        manifest = json.loads((dest / "packages" / name / "plugin.json").read_text())
+        t.eq(manifest["id"], f"me/{name}", f"{name} renamed")
+        t.eq(manifest["forkOf"], {"id": f"tilr/{name}", "version": version,
+                                  "commit": commit, "source": str(source)}, f"{name} provenance")
+    t.same(before, "installation and source")
+
+
+@case(fixture="fork_suite_installed", spec=["fork-replacement/fork-isolates-source-and-destination-state#existing-destination"])
+def existing_multi_package_fork_is_refused_unchanged(t: T):
+    dest = t.root / "forks/existing-suite"
+    t.gitpm_ok("fork", THEME, "--ns", "me", "--into", dest)
+    before = t.snap(t.ws, suite(t), dest, git=True)
+    t.gitpm_err("fork", STORE, "--ns", "other", "--into", dest,
+                kind="invalid_argument", contains="destination already exists; pass a new folder")
+    t.same(before, "existing multi-package fork, installation and source")

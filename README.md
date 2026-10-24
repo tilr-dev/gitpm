@@ -23,8 +23,9 @@ ready output folder (`dist/` by default): the repository root, or one of several
 lists ([multi-package repositories](#multi-package-repositories)). `dist` selects the output
 folder (default `"dist"`, `"."` means the package root); `buildCommand` is descriptive only;
 with `buildRequired` (default false), a missing folder is refused with `invalid_manifest`
-naming the build command when supplied. Installing clones the
-repository into a workspace and copies the package's declared output folder; nothing is built or executed.
+naming the build command when supplied. Git installs clone the
+repository and copy the package's declared output folder. A catalog release with
+`build: {url, sha256}` installs its ready `.tar.gz` output without cloning; nothing is built or executed.
 All packages in one Git repository share one version and one annotated release tag `vVERSION`. Git honors `tag.gpgSign` when creating it.
 The catalog is a tree of static JSON files (local folder or HTTP) with exact commits and
 file hashes. It is optional: without one, packages are installed and updated straight
@@ -320,7 +321,7 @@ me/hello forked from acme/hello (repository root)
 forkOf records each origin; replaces says the fork can stand in for it (used only
 after an explicit replace). The original installations are unchanged.
 
-Next steps (or all at once: add --replace --version NEW_VERSION):
+Next steps (choose the packages to install and replace):
   gitpm commit '/…/hello-fork' NEW_VERSION --package me/hello   commit local edits, tag vNEW_VERSION
   gitpm install '/…/hello-fork' me/hello
   gitpm replace acme/hello --with me/hello
@@ -332,17 +333,24 @@ $ gitpm uninstall acme/hello
 acme/hello uninstalled
 ```
 
-`fork ID --ns NAMESPACE --into DIR --replace` does all of it at once: fork, release the
-fork right away (tag `vVERSION`; `--version V`, default the shared forked version when not already tagged), install it and replace `ID`
-with it for every consumer. Incompatible consumers are handled as by `replace`: asked on a
-TTY, otherwise only with `--force`. The fork folder is never removed again: when the
-release, install or replace step fails, the command says per package what is left and how
-to finish or undo (for example `gitpm install … me/hello` then `gitpm replace …`, or
-`gitpm uninstall me/hello` and delete the folder). `replace` prints the installed version
-of the provider and, when it differs, the version it stands in as (`acme/hello replaced by
-me/hello 1.5.0 (as acme/hello 1.0.0) for: …`). When the replace step needs confirmation,
-the library returns the replacement as pending; the CLI shows its warning, asks on a TTY
-and applies it with the library's resume call.
+`fork ID --ns NAMESPACE --into DIR` only prepares an editable Git repository.
+It preserves inherited tags and origin metadata, creates no release tag, installs
+nothing and leaves workspace state, replacement bindings and dist unchanged.
+Release the fork with `commit`, install the desired package explicitly, then call
+`replace` for each original you want to replace. For example:
+
+```sh
+gitpm --root ./workspace fork demo/a --ns my --into ./my-fork
+gitpm commit ./my-fork 0.3.0 --package my/a
+gitpm --root ./workspace install ./my-fork my/a
+gitpm --root ./workspace replace demo/a --with my/a
+```
+
+An explicit `commit` still refuses an existing release tag. Fork does not delete
+inherited tags or choose a new version automatically. Installing `my/a` does not
+automatically install a sibling `my/b` unless dependency resolution requires it.
+`replace` handles incompatible consumers with its usual TTY confirmation or
+explicit `--force` and prints the provider's installed and declared versions.
 
 Output: stdout carries the result lines (one per affected package for workspace-mutating
 commands, JSON for `list`, `catalog links` and `catalog register`); everything else goes to stderr:
@@ -418,6 +426,19 @@ Changed in 0.5:
 
 Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING**):
 
+- **BREAKING:** Catalog releases with `build {url, sha256}` now install from that archive,
+  rather than ignoring it. Artifacts are `.tar.gz`, with output files at the archive root;
+  only regular files and directories are accepted. Both archive SHA-256 and the exact
+  release `files` hashes and sizes are verified before workspace changes. Build requests
+  have the catalog's 16 MiB download limit and timeout, with at most five HTTPS-only
+  redirects (initial loopback HTTP is accepted for local testing).
+  Build revisions retain their catalog location and release metadata in state, separately
+  from verified-catalog protection, and store current/previous verified output under
+  `builds/<id>/<archive-sha256>/`. Updates use the recorded catalog; rollback, enable and
+  `sync-dist` use local output without network access. Ref/dev/detach updates switch to
+  Git. Fork continues cloning the recorded source repository. Existing library and FFI
+  install/update/rollback entrypoints support both sources; the CLI only presents results.
+
 - **BREAKING:** Manifests accept `dist` (a package-relative folder, default `"dist"`; `"."` selects
   the package root), `buildCommand` (a descriptive string) and `buildRequired`
   (boolean, default false). Deploys and catalog hashes use the committed selected
@@ -444,9 +465,7 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   Local installation edits are excluded. An existing `--into` repository now fails
   with `invalid_argument` (exit 1, previously success with exit 0). Fork the entire
   repository into a new folder instead. Fork now needs access to the recorded
-  source. `Manager::fork_replace` and FFI `forkAndReplace` now return
-  `PackageForkReplacement` (previously `ForkReplacement`) so sibling failures and
-  pending confirmations are visible. A relative or remote-helper recorded source is refused with `invalid_argument`
+  source. A relative or remote-helper recorded source is refused with `invalid_argument`
   (exit 1, previously success with exit 0 without `forkOf.source`).
 - `auth::check` now takes `&Options`; the separate `AuthOptions` was removed.
   `Options` now includes `custom_ssh` (UniFFI `ManagerOptions.customSsh`, default false).
@@ -545,19 +564,14 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
 - `update ID` returns the broken release tags it passed over in `RevisionChange.skipped`,
   `update all` in `UpdateAllPlan.skipped` (for every installed package, updated or not),
   and the CLI warns `Warning: skipped release tag NAME: reason` as install does.
-- A refused confirmation of a `fork --replace` replacement (`n` on the TTY) no longer
-  ends the command with "replacement cancelled; nothing was changed": the fork stays
-  released and installed, the replacement pending, and the CLI says how to finish.
+- Fork is preparation only. The composed fork release/install/replace operations,
+  resume methods and outcome records have been removed; use explicit operations.
 - Library API: `Manager::set_enabled`/`set_enabled_with`/`enable`/`disable`/`forget`/
   `forget_with`/`uninstall` return the `DistSync` report (were `()`);
   `InstallResult`, `RevisionChange`, `ReplacementPlan` and `UpdateAllPlan` gain `dist`;
   `RevisionChange` gains `skipped`; `UpdateAllPlan` gains `unchanged` (`{id, version}`:
   every installed package is in `updates`, `kept_back` or `unchanged`);
   `ReplacementPlan` gains `installed_version` (the provider's installed version);
-  `ForkReplacement` gains `pending` (a replacement that needs
-  confirmation; apply it with `Manager::fork_replace_resume`, see
-  `PackageForkReplacement::pending`, which returns `ForkResume { applied, failed }`:
-  the plans applied, each with its dist report, and the first failure);
   `UpdateAllPlan` gains `skipped`;
   `scaffold::commit`/`commit_package` return `Commit { package, version, tag }` (were the
   tag); `check::check(root, catalog: Option<&str>)` returns `CheckReport { rows,
@@ -570,10 +584,7 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   `PackageManager.check` are removed; `enable`/`disable`/`forget`/`uninstall` return
   `DistSync`; `InstallResult` gains `skipped`, `warnings`, `dist`; `RevisionChange` gains
   `warnings`, `skipped`, `dist`; `UpdateAllPlan` gains `unchanged`, `dist`;
-  `ReplacementPlan` gains `installedVersion`, `dist`; `ForkReplacement`
-  gains `pending` and `PackageForkReplacement` gains `pending` (`PendingReplacement`
-  list for the new `PackageManager.forkReplaceResume(pending, confirm)`, which returns
-  `ForkResume { applied, failed }`); `UpdateAllPlan` also gains `skipped`;
+  `ReplacementPlan` gains `installedVersion`, `dist`; `UpdateAllPlan` also gains `skipped`;
   `PmError.NotDeployed { message, sync }` (the whole `DistSync` report) is new.
   Migration: call the free functions, read the new fields.
 - `check` works without a catalog: a package the catalog does not list, or every package
@@ -687,7 +698,7 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   disabled dependency (dependencies are pulled as usual); `install` over a package
   downloaded (disabled) from the same source enables it and prints `installed …`
   (`already installed` only for an enabled package). The `--force` usage error is now
-  `--force is only valid with uninstall/disable/enable/install/install-catalog/forget/replace/fork --replace`.
+  `--force is only valid with uninstall/disable/enable/install/install-catalog/forget/replace`.
 - New `download SOURCE [ID] [--package ID] [--ref REF | --dev]` and `download-catalog
   ID [--version V]`: clone, verify and record like `install`/`install-catalog`, but
   disabled and without deploying; missing dependencies are downloaded disabled. Output
@@ -921,8 +932,8 @@ not derive it. `enabled` is not `active`: a replaced package stays `enabled: tru
   (`dependency_conflict`, `dist/X/` not created) while a dependency of X is not
   satisfied by an active package, unless `--force`.
 - `download`, and `install`, `update` and `rollback` of a replaced or disabled package,
-  change state and clone only; its `dist/` appears on `replace --back` / `enable`. `fork … --replace` ends
-  with the fork deployed and the original's `dist/` removed.
+  change state and clone only; its `dist/` appears on `replace --back` / `enable`.
+  An explicit `replace` deploys the fork and removes the original's `dist/`.
 - `forget X` removes `dist/X/` (the clone stays); `restore X` deploys it when it is
   active (a package forgotten while disabled stays disabled). Disabling, forgetting or
   uninstalling a replacement drops its bindings, so each active original it replaced is
@@ -932,7 +943,7 @@ not derive it. `enabled` is not `active`: a replaced package stays `enabled: tru
   and `dist/` consistent; empty `dist/<namespace>` folders are removed.
 
 Every mutating command (install, update, rollback, replace, enable, disable, forget,
-restore, uninstall, fork `--replace`) reconciles all of `dist/` with the state in its
+restore, uninstall) reconciles all of `dist/` with the state in its
 transaction: it deploys the missing folders of active packages and removes those of
 inactive ones (disabled, replaced, forgotten or retained clones); folders of no known
 package are left alone (the CLI warns about them on stderr), an existing folder of an
@@ -1071,21 +1082,13 @@ packages/theme/dist/…
     Installation deploys the committed package output selected by `dist`; fork does not build sources
     or enable dev mode.
   - Dependencies between all packages in the repository are rewritten to their fork IDs. The
-    requirement is kept when satisfied by the fork's version (or `--version V`), else
+    requirement is kept when satisfied by the fork's version, else
     it becomes `^V`; each rewrite is printed. Dependencies on other packages keep
     their original IDs. Depending on both an original and its fork is refused.
-  - `--replace [--version V] [--force]`: one release commit of the forked folders (with
-    `version` set in each manifest when `--version` is given) and one repository tag
-    `vVERSION` shared by all packages, then each package is installed (dependencies
-    first; a dependency cycle between the forked packages is refused before anything is
-    created) and replaces its original when that original is installed. Uninstalled
-    siblings are installed without creating a replacement binding. Release metadata is checked strictly
-    (`invalid_manifest` for a wrong type). A failed release commit restores the
-    manifests and index; the one tag is created with a message and honors `tag.gpgSign`. If the release fails,
-    nothing is installed. A
-    failed install or replace of one package does not stop the others; the fork is never
-    removed, the command prints per package what failed and how to finish or undo, and
-    exits with status 1 and the first error's kind.
+  - Fork preserves inherited tags and creates no release tag. It leaves packages,
+    replacement bindings, workspace state and dist unchanged. Run `commit` with a new
+    version, then `install DIR ID` and `replace ORIGINAL --with ID` explicitly for
+    each desired package. Fork does not accept `--replace`, `--version` or `--force`.
 
 ```console
 $ gitpm fork tilr/theme tilr/panel --ns me --into forks/me-packages
@@ -1155,15 +1158,15 @@ files remain links only.
 gitpm only stores and reports them; it never interprets them (no exclusivity, no
 "one theme at a time": that is up to the host, which can, for example, group installed
 packages into slots by what they `provide`, without cloning or running anything).
-Authoring is strict, everything else lenient: `commit` and the release step of
-`fork --replace` refuse a key of another type (`invalid_manifest`); installing,
-updating, rolling back, forking without releasing, publishing to a
+Authoring is strict, everything else lenient: `commit` refuses a key of another type
+(`invalid_manifest`); installing,
+updating, rolling back, forking, publishing to a
 catalog and listing treat such a key (and `null`) as absent, so such packages keep
 working (`install`/`update` warn: `Warning: ID VERSION: plugin.json tags
 must be an array of strings; ignored`; the library reports it in
 `InstallResult.warnings`/`RevisionChange.warnings`, and
 `Manifest::metadata_problems()`/`metadata_strict()` give the check). The keys stay in the file as
-they were: `commit`, `fork` and `fork --replace` rewrite `version`, `id`, `forkOf`,
+they were: `commit` and `fork` rewrite `version`, `id`, `forkOf`,
 `replaces` and dependencies but keep the metadata (also the string form of `provides`).
 `init` writes `"title": "NAME"`.
 
@@ -1275,14 +1278,11 @@ let dist = pm.uninstall(id, &confirmed, /* force: ignore dependents */ false)?;
 // Every mutating result carries its dist report (`dist`, or the returned `DistSync`).
 // Forks: the fork repository is always explicit (new folder).
 pm.fork_in_namespace(id, Path::new("/work/demo1-fork"), "me")?;   // sets forkOf + replaces
-let done = pm.fork_replace(id, Path::new("/work/demo1-fork"), "me", None, confirm)?; // + release, install, replace
-if let Some(error) = done.error() { /* fork kept; inspect done.packages for every outcome */ }
 let repo = Path::new("/work/forks/me-packages");               // created as a new folder
 let fork = pm.fork_packages(&["tilr/theme", "tilr/panel"], repo, "me")?; // one repo, deps rewritten
-let done = pm.fork_packages_replace(&ids, repo, "me", Some("2.0.0"), confirm)?; // per-package results
-if let Some(error) = done.error() { /* fork kept; done.packages[i].failed says where */ }
-let pending = done.pending();   // replacements that need confirmation (incompatible consumers)
-pm.fork_replace_resume(&pending, /* confirm */ user_said_yes)?;
+// Explicitly release and install only the desired fork package.
+gitpm::scaffold::commit_package(repo, "2.0.0", Some("me/theme"))?;
+pm.install_package(repo.to_str().unwrap(), Some("me/theme"), InstallTarget::Release)?;
 let plan = pm.replace_plan("vendor/base", "mine/base")?;       // consumers + incompatible
 pm.replace("vendor/base", "mine/base", /* confirm */ !plan.incompatible.is_empty() && yes)?;
 pm.switch_back("vendor/base", confirm, /* force: consumers left broken */ false)?;
@@ -1549,11 +1549,8 @@ download(source, target, package), downloadFromCatalog,
 update(id, target: `Target`, `.recorded` follows the recorded mode), updateAllPlan,
 updateAll (`UpdateAllPlan` with `unchanged`, each with its `reason`, and `dist`), rollback, enable(force), disable(force),
 forget(force), restore, uninstallPlan, uninstall(confirmed, force), fork
-(one source ID, whole repository; `ForkResult`), forkAndReplace(version, confirm; returns a
-`PackageForkReplacement` with every package outcome and pending confirmation), forkPackages
-(`PackageFork`), forkPackagesAndReplace (`PackageForkReplacement`: the fork plus one
-`ForkReplacement` per package and the `pending` list), forkReplaceResume(pending,
-confirm; `ForkResume`: `applied` plans and the first `failed` one), replacePlan, replace, switchBackPlan, switchBack(confirm, force) (`ReplacementPlan` with
+(one source ID, whole repository; `ForkResult`), forkPackages (`PackageFork`),
+replacePlan, replace, switchBackPlan, switchBack(confirm, force) (`ReplacementPlan` with
 `installedVersion`, `dist`), syncDistPlan, syncDist (`DistSync`: deployed,
 removed, unmanaged, skipped, warnings)); every mutating call returns its `DistSync` report
 (`enable`/`disable`/`uninstall` return it, `forget` returns `ForgetResult { cloneKept,
@@ -1565,9 +1562,9 @@ them; `RevisionChange.unchangedReason` says why an update left a package (`pinne
 `Mode`; `force` defaults to false; `InstalledPackage.path` and `CatalogRelease.path` name
 the package folder; `InstalledPackage.clone` names the shared clone; `InstalledPackage`,
 `PackageSummary` and `CatalogRelease` carry the [metadata](#package-metadata); the fork
-records have the names of the library types `gitpm::ForkReplacement`, `PackageFork`,
-`PackageForkReplacement`, `PendingReplacement`, `ForkedPackage`, `DependencyRewrite`,
-`ForkStep`. Free functions, which read without opening, locking or creating the
+records `PackageFork`, `ForkedPackage` and `DependencyRewrite` mirror the library
+types of the same names. The FFI-only `ForkResult` wraps the repository path returned
+by library `fork_in_namespace`. Free functions, which read without opening, locking or creating the
 workspace: `list(root, provides)` and `readState(root)` (`ListView`: `format`,
 `packages`, `replacements`, `forgotten`, `resolved`), `check(root, catalog, customSsh)`
 (`CheckReport`: rows with `source` `.catalog`/`.origin` and `problem`, fork `upstream`

@@ -67,7 +67,7 @@ def single_package_verbs(t: T):
 
 @case(spec=[f"{VERBS}#fork-replace-and-commit-verbs"])
 def fork_replace_and_commit_verbs(t: T):
-    """fork, commit, replace --with, replace --back and fork --replace print their verb lines."""
+    """fork, commit, replace --with, replace --back print their verb lines."""
     base, app = setup(t)
     o = Out(t)
     o.ok("install", base)
@@ -82,10 +82,6 @@ def fork_replace_and_commit_verbs(t: T):
     out = o.ok("replace", BASE, "--back")
     t.eq(len(out), 1, "one line for replace --back")
     t.ok(out[0].startswith(f"{BASE} switched back from {FORK} ({BASE} 0.1.0 for: {APP})"), "switch-back line")
-    out = o.ok("fork", BASE, "--ns", "two", "--into", t.repo("two/base"), "--replace")
-    t.ok(f"two/base forked from {BASE} (repository root)" in out, "fork --replace: fork line")
-    t.ok(any(l.startswith(f"{BASE} replaced by two/base 0.1.0") and l.endswith(f"for: {APP}") for l in out),
-         "fork --replace: replacement line")
     o.no_ok_lines()
 
 

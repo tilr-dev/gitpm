@@ -66,18 +66,22 @@ Before calling the library the CLI SHALL refuse only syntax: unknown or repeated
 #### Scenario: Ref, dev and release
 - **WHEN** the user runs `gitpm install SOURCE --ref x --dev`, `gitpm update ID --dev --release`, or passes `--channel`
 - **THEN** it fails with `--dev conflicts with --ref` (or `--release conflicts with --dev`), or `unknown option: --channel; use --help`, exit status 1, and creates nothing
-- **AND** `--version` outside `install-catalog`/`download-catalog`/`fork --replace` is refused by the CLI as a misplaced option
+- **AND** `--version` outside `install-catalog`/`download-catalog` is refused by the CLI as a misplaced option
 
 #### Scenario: Misplaced flag
 - **WHEN** the user runs `gitpm list --force`
-- **THEN** it fails with `--force is only valid with uninstall/disable/enable/install/install-catalog/forget/replace/fork --replace`
+- **THEN** it fails with `--force is only valid with uninstall/disable/enable/install/install-catalog/forget/replace`
 
 #### Scenario: Flag position
 - **WHEN** the user runs `gitpm uninstall ID --force` or `gitpm uninstall --force ID`
 - **THEN** both behave the same: options may come before or after the positional arguments
 
+#### Scenario: Removed fork options have no side effects
+- **WHEN** `fork` receives `--replace`, `--version V` or `--force`
+- **THEN** it fails as a usage error before opening the workspace or creating the destination
+
 ### Requirement: One output line per affected package
-Every workspace-mutating command (`install`, `install-catalog`, `download`, `download-catalog`, `update`, `update all`, `rollback`, `enable`, `disable`, `forget`, `restore`, `uninstall`, `replace`, `fork --replace`, `sync-dist`) SHALL print one line per affected package in the form `ID <verb> …` (scenario "Single-package verbs"), built from the library result alone without reading state, and SHALL NOT print `OK:` lines. Other commands print what their capability specifies.
+Every workspace-mutating command (`install`, `install-catalog`, `download`, `download-catalog`, `update`, `update all`, `rollback`, `enable`, `disable`, `forget`, `restore`, `uninstall`, `replace`, `sync-dist`) SHALL print one line per affected package in the form `ID <verb> …` (scenario "Single-package verbs"), built from the library result alone without reading state, and SHALL NOT print `OK:` lines. Other commands print what their capability specifies.
 
 #### Scenario: Other author and catalog commands
 - **WHEN** the user runs `init`, `remote`, `fork`, `commit`, `catalog update` or `catalog register`
@@ -96,7 +100,7 @@ Every workspace-mutating command (`install`, `install-catalog`, `download`, `dow
 - **AND** an `update` or `update all` line of a change marked `major` ends with ` (major)` (`acme/greeter updated 1.2.3 → 2.0.0 (major)`; updates, "Major updates are marked"), covered by `update_lines_mark_major_updates`
 
 #### Scenario: Fork, replace and commit verbs
-- **WHEN** the user replaces, switches back or runs `fork --replace`
+- **WHEN** the user replaces, switches back
 - **THEN** the lines are `ORIGINAL replaced by FORK V [(as ORIGINAL V')] for: consumers` and `ORIGINAL switched back from FORK (…)` (exact variants in fork-replacement), built from the `ReplacementPlan`; the `fork` and `commit` lines are specified in fork-replacement and authoring
 
 ### Requirement: JSON output for state and catalog

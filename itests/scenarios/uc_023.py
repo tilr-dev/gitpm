@@ -1,7 +1,7 @@
-"""UC-023: Fork preserves history, edits and provenance (P0).
+"""UC-023: Fork isolates installation work and preserves history and provenance (P0).
 
 vendor/demo 0.1.0 is installed (g3_vendor_installed). Each case adds a tracked edit and an
-untracked file to the installed clone and forks it with `--ns author --into DIR` into a folder
+untracked file to the installed clone and forks the recorded source with `--ns author --into DIR` into a folder
 whose basename differs from the package name.
 """
 
@@ -35,14 +35,22 @@ def history_and_branch(t: T):
     t.has(t.git(dest, "tag", "--list"), "v0.1.0")
 
 
-@case(fixture="g3_vendor_installed", spec=["fork-replacement/fork-copies-an-installed-package"])
+@case(fixture="g3_vendor_installed", spec=["fork-replacement/fork-isolates-source-and-destination-state#installed-clone-has-local-work"])
 def local_changes_preserved_uncommitted(t: T):
-    """Tracked edit and untracked file are copied and stay uncommitted (only plugin.json committed)."""
-    dest, _ = dirty_and_fork(t)
-    t.eq((dest / "dist/index.js").read_text(), EDIT, "tracked edit")
-    t.eq((dest / "notes/untracked.txt").read_text(), "mine\n", "untracked file")
-    status = t.run("git", "-C", dest, "status", "--porcelain", "--untracked-files=all").out
-    t.has(status, " M dist/index.js\n", "?? notes/untracked.txt\n")
+    """Local commits and staged, unstaged and untracked edits stay only in the installation."""
+    clone = t.clone(ID)
+    installed = t.package(ID)["current"]["commit"]
+    original = t.git(clone, "show", f"{installed}:dist/index.js")
+    t.commit(clone, "Installation-only work", {"local-commit.txt": "local commit\n"})
+    t.write(clone, {"staged.txt": "staged work\n"})
+    t.git(clone, "add", "staged.txt")
+    dest, before = dirty_and_fork(t)
+    t.eq((dest / "dist/index.js").read_text().strip(), original, "recorded source content")
+    for path in ("local-commit.txt", "staged.txt", "notes/untracked.txt"):
+        t.ok(not (dest / path).exists(), f"installation-only {path} excluded")
+    t.eq(t.git(dest, "status", "--porcelain", "--untracked-files=all"), "", "clean fork")
+    t.eq(t.rev(dest, "HEAD~1"), installed, "installed revision, excluding local commits")
+    t.same(before, "local installation work and recorded source")
     t.eq(t.git(dest, "show", "--name-only", "--format=", "HEAD"), "plugin.json", "identity commit files")
 
 

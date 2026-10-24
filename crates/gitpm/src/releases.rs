@@ -1,7 +1,7 @@
 //! Release tags are the shared source of truth for installs and catalog generation.
 use crate::catalog::version_key;
 use crate::error::{Error, Result, ensure};
-use crate::{Manifest, model::resolve_ref, packages, transport::git, valid_id};
+use crate::{Manifest, model::resolve_ref, packages, transport, valid_id};
 use std::{collections::BTreeMap, path::Path};
 
 #[derive(Clone, Debug)]
@@ -56,20 +56,22 @@ pub(crate) fn discover_all_with_ssh(
     let id = match expected_id {
         Some(id) => id,
         None if packages::config_at_with_ssh(repo, "HEAD", custom_ssh)?.is_some() => {
-            let head = git(repo, &["rev-parse", "HEAD"], custom_ssh)?;
+            let head = transport::object_id(repo, "HEAD", custom_ssh)?;
             default_id = packages::find_at_with_ssh(repo, &head, None, custom_ssh)?
                 .manifest
                 .id;
             &default_id
         }
         None => {
-            let head: Manifest =
-                serde_json::from_str(&git(repo, &["show", "HEAD:plugin.json"], custom_ssh)?)
-                    .map_err(|e| {
-                        Error::invalid_manifest(format!(
-                            "invalid plugin.json at repository HEAD: {e}"
-                        ))
-                    })?;
+            let head: Manifest = serde_json::from_str(&transport::show_file(
+                repo,
+                "HEAD",
+                "plugin.json",
+                custom_ssh,
+            )?)
+            .map_err(|e| {
+                Error::invalid_manifest(format!("invalid plugin.json at repository HEAD: {e}"))
+            })?;
             default_id = head.id;
             &default_id
         }
@@ -79,7 +81,7 @@ pub(crate) fn discover_all_with_ssh(
     let mut layouts: BTreeMap<String, Result<Option<packages::Layout>>> = BTreeMap::new();
     let mut releases = BTreeMap::new();
     let mut skipped = Vec::new();
-    for name in git(repo, &["tag", "--list"], custom_ssh)?.lines() {
+    for name in transport::tags(repo, custom_ssh)?.lines() {
         // One repository tag names a release of each package present at its commit.
         let Some(version) = name.strip_prefix('v') else {
             continue;
@@ -102,14 +104,12 @@ pub(crate) fn discover_all_with_ssh(
             .clone();
         let (manifest, path) = match layout {
             Ok(None) => {
-                match git(
-                    repo,
-                    &["show", &format!("{commit}:plugin.json")],
-                    custom_ssh,
-                )
-                .and_then(|text| {
-                    serde_json::from_str(&text).map_err(|e| Error::invalid_manifest(e.to_string()))
-                }) {
+                match transport::show_file(repo, &commit, "plugin.json", custom_ssh).and_then(
+                    |text| {
+                        serde_json::from_str(&text)
+                            .map_err(|e| Error::invalid_manifest(e.to_string()))
+                    },
+                ) {
                     Ok(manifest) => (manifest, String::new()),
                     Err(e) => {
                         skip(format!("invalid manifest in release tag {name}: {e}"));
