@@ -11,12 +11,10 @@ EOF is Ctrl-D at the start of a line in canonical mode.
 import os
 import shlex
 import subprocess
-import time
 
 from gitpmtest import R, T, case
 
 ORIGINAL = "vendor/base"
-WARNING = "Warning: old/base provides vendor/base 1.2.0, which these consumers do not accept:"
 
 
 def resolved(t: T) -> dict:
@@ -33,11 +31,10 @@ def gitpm_tty(t: T, *args: str, answer: bytes, timeout: int = 60) -> R:
     master, slave = os.openpty()
     argv = ["gitpm", *map(str, args)]
     print(f"$ {shlex.join(argv)}   (stdin: pty, typed {answer!r})")
+    os.write(master, answer)
     p = subprocess.Popen(argv, cwd=t.root, stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                          text=True)
     os.close(slave)
-    time.sleep(0.3)
-    os.write(master, answer)
     try:
         out, err = p.communicate(timeout=timeout)
     finally:
@@ -69,24 +66,24 @@ def compatible_fork_replaces_without_prompt(t: T):
 
 
 def warned(t: T, r: R):
-    t.has(r.err, WARNING, "  - app/b needs vendor/base >=1.3")
-    t.lacks(r.err, "app/a needs", "lib/mid needs")
+    t.has(r.err, "app/b needs vendor/base >=1.3", "Error kind: incompatible_replacement")
+    t.lacks(r.err, "app/a needs", "lib/mid needs", "Replace anyway?", "[y/N]")
 
 
-@case(fixture="g6_compat_installed", spec=["fork-replacement/compatibility-is-checked-by-versions-only", "cli/prompts-only-on-a-tty#replacement-prompt-declined"])
+@case(fixture="g6_compat_installed", spec=["fork-replacement/compatibility-is-checked-by-versions-only", "cli/prompts-only-on-a-tty#replacement-refusal"])
 def incompatible_fork_answer_no(t: T):
-    """2a. old/base on a TTY: warning names app/b only; answer N → byte-identical, non-zero exit."""
+    """old/base on a TTY: strict refusal names app/b only and changes nothing."""
     before = unchanged(t)
     r = gitpm_tty(t, "replace", ORIGINAL, "--with", "old/base", answer=b"n\n")
     warned(t, r)
-    t.has(r.err, "Replace anyway? [y/N]")
+    t.lacks(r.err, "Replace anyway? [y/N]")
     t.ok(r.code != 0, "non-zero exit")
     t.same(before, "workspace")
 
 
-@case(fixture="g6_compat_installed", spec=["fork-replacement/compatibility-is-checked-by-versions-only", "cli/prompts-only-on-a-tty#replacement-prompt-declined"])
+@case(fixture="g6_compat_installed", spec=["fork-replacement/compatibility-is-checked-by-versions-only", "cli/prompts-only-on-a-tty#replacement-refusal"])
 def incompatible_fork_empty_answer(t: T):
-    """2b. an empty line counts as N."""
+    """An empty terminal input cannot override the strict refusal."""
     before = unchanged(t)
     r = gitpm_tty(t, "replace", ORIGINAL, "--with", "old/base", answer=b"\n")
     warned(t, r)
@@ -96,7 +93,7 @@ def incompatible_fork_empty_answer(t: T):
 
 @case(fixture="g6_compat_installed", spec=["fork-replacement/compatibility-is-checked-by-versions-only", "cli/prompts-only-on-a-tty"])
 def incompatible_fork_eof(t: T):
-    """2c. EOF (Ctrl-D) at the prompt → nothing changes, non-zero exit."""
+    """EOF on terminal input still returns a strict refusal without changes."""
     before = unchanged(t)
     r = gitpm_tty(t, "replace", ORIGINAL, "--with", "old/base", answer=b"\x04")
     warned(t, r)
@@ -106,57 +103,40 @@ def incompatible_fork_eof(t: T):
 
 @case(fixture="g6_compat_installed", spec=["fork-replacement/compatibility-is-checked-by-versions-only", "cli/prompts-only-on-a-tty"])
 def incompatible_fork_answer_yes(t: T):
-    """2d. y → the single global binding switches for ALL consumers, app/b included (reported unsatisfied)."""
+    """An affirmative input cannot override incompatibility; there is no prompt."""
+    before = unchanged(t)
     r = gitpm_tty(t, "replace", ORIGINAL, "--with", "old/base", answer=b"y\n")
     warned(t, r)
-    t.eq(r.code, 0, "exit code")
-    t.eq(t.state().get("replacements"), {ORIGINAL: "old/base"}, "binding")
-    view = resolved(t)
-    t.eq(provider(view, "app/a"), ("old/base", True), "app/a")
-    t.eq(provider(view, "lib/mid"), ("old/base", True), "lib/mid")
-    t.eq(provider(view, "app/b"), ("old/base", False), "app/b (does not accept 1.2.0)")
-    row = next(r for r in view["app/b"]["dependencies"] if r["id"] == ORIGINAL)
-    t.has(row["problem"], "1.2.0", ">=1.3")
-
+    t.ok(r.code != 0, "strict refusal")
+    t.same(before, "workspace")
 
 @case(fixture="g6_compat_installed", spec=["fork-replacement/compatibility-is-checked-by-versions-only#incompatible-consumer-without-a-tty"])
-def incompatible_fork_without_tty_refused(t: T):
-    """3a. stdin is not a TTY: warning printed, typed refusal, nothing changes."""
+def incompatible_fork_without_tty(t: T):
+    """No terminal is needed to report a strict refusal."""
     before = unchanged(t)
-    r = t.gitpm_err("replace", ORIGINAL, "--with", "old/base", kind="incompatible_replacement",
-                 contains=("app/b needs vendor/base >=1.3",))
+    r = t.gitpm_err("replace", ORIGINAL, "--with", "old/base", kind="incompatible_replacement")
     warned(t, r)
-    t.lacks(r.err, "[y/N]")
     t.same(before, "workspace")
-
 
 @case(fixture="g6_compat_installed", spec=["fork-replacement/compatibility-is-checked-by-versions-only"])
-def incompatible_fork_with_force(t: T):
-    """3b. --force without a TTY: applied, warning still printed."""
-    r = t.gitpm_ok("replace", ORIGINAL, "--with", "old/base", "--force")
-    warned(t, r)
-    t.eq(t.state().get("replacements"), {ORIGINAL: "old/base"}, "binding")
-    t.eq(provider(resolved(t), "app/b"), ("old/base", False), "app/b provider")
-
-
-@case(fixture="g6_compat_installed", spec=["fork-replacement/self-replacement-and-cycles-are-refused"])
-def self_replacement_refused(t: T):
-    """4a. vendor/base by itself: refused with an explanation, also with --force and with y on a TTY."""
+def incompatible_fork_force_is_rejected(t: T):
+    """Force is no longer a replacement option."""
     before = unchanged(t)
-    t.gitpm_err("replace", ORIGINAL, "--with", ORIGINAL, kind="invalid_argument",
-             contains="cannot replace vendor/base by itself")
-    t.gitpm_err("replace", ORIGINAL, "--with", ORIGINAL, "--force", kind="invalid_argument", contains="by itself")
-    r = gitpm_tty(t, "replace", ORIGINAL, "--with", ORIGINAL, answer=b"y\n")
-    t.ok(r.code != 0, "refused on a TTY too")
-    t.has(r.err, "by itself", "Error kind: invalid_argument")
+    r = t.gitpm("replace", ORIGINAL, "--with", "old/base", "--force")
+    t.ok(r.code != 0, "force rejected")
+    t.has(r.err, "--force is only valid")
     t.same(before, "workspace")
 
+@case(fixture="g6_compat_installed", spec=["fork-replacement/self-replacement-and-cycles-are-refused"])
+def returning_to_unreplaced_original(t: T):
+    """Using the original as provider is an idempotent checked operation."""
+    t.gitpm_ok("replace", ORIGINAL, "--with", ORIGINAL)
+    t.ok(not t.state().get("replacements"), "no self-binding")
 
 @case(fixture="g6_compat_installed", spec=["fork-replacement/self-replacement-and-cycles-are-refused#cycle"])
 def cyclic_replacement_refused(t: T):
     """4b. With vendor/base → mine/base active, cyc/base (declares it replaces mine/base) cannot provide
-    mine/base, and dep/base (replaces vendor/base but depends on it) cannot provide vendor/base; --force
-    and y do not override."""
+    mine/base, and dep/base (replaces vendor/base but depends on it) cannot provide vendor/base; terminal input cannot override cycles."""
     t.gitpm_ok("replace", ORIGINAL, "--with", "mine/base")
     t.new_package("cyc/base", "0.1.0", extra={"replaces": {"id": "mine/base", "version": "0.1.0"}})
     t.new_package("dep/base", "0.1.0", deps={ORIGINAL: "^1"},
@@ -164,7 +144,7 @@ def cyclic_replacement_refused(t: T):
     t.gitpm_ok("install", t.repo("cyc/base"))
     t.gitpm_ok("install", t.repo("dep/base"))
     before = unchanged(t)
-    for extra in ([], ["--force"]):
+    for extra in ([],):
         t.gitpm_err("replace", "mine/base", "--with", "cyc/base", *extra, kind="invalid_argument",
                  contains=("cyclic replacement", "mine/base provides vendor/base"))
         t.gitpm_err("replace", ORIGINAL, "--with", "dep/base", *extra, kind="invalid_argument",

@@ -235,7 +235,7 @@ fn required_global_fork_replacement_through_the_cli() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("app/a, app/b"));
     assert!(pm(&dir, &["enable", "vendor/base"]).status.success());
-    let out = pm(&dir, &["replace", "vendor/base", "--back"]);
+    let out = pm(&dir, &["replace", "vendor/base", "--with", "vendor/base"]);
     assert!(
         out.status.success(),
         "{}",

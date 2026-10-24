@@ -41,7 +41,10 @@ gitpm install ./hello
 gitpm fork acme/hello --ns me --into ./me-hello   # clone the recorded source as me/hello
 gitpm commit ./me-hello 0.2.0            # explicitly release a new version
 gitpm install ./me-hello me/hello        # explicitly install the desired fork
-gitpm replace acme/hello --with me/hello # explicitly replace its original
+gitpm replace-check acme/hello --with me/hello # report issues and missing installs as JSON
+gitpm replace-resolve acme/hello --with me/hello # explicitly install missing dependencies
+gitpm replace acme/hello --with me/hello # requires a consistent workspace
+gitpm replace acme/hello --with acme/hello # return to the installed, enabled original
 gitpm fork tilr/store tilr/theme --ns me --into ./me-packages   # several packages, one repo
 
 git init -q tilr-packages
@@ -71,3 +74,8 @@ Settings come from flags (`--root`, `--catalog`, `--sources`), then `GITPM_ROOT`
 [repository README](https://github.com/tilr-dev/gitpm#cli-quickstart) for a walkthrough.
 
 License: MIT OR Apache-2.0.
+
+Replacement checks cover every active package. `replace` never installs dependencies,
+never prompts, and accepts neither `--force` nor `--back`. `replace-resolve` installs
+only missing catalog releases; it does not update or enable installed packages or apply
+the proposed binding. Fix incompatible versions explicitly before replacing.

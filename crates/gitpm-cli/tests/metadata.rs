@@ -586,7 +586,7 @@ fn update_all_reports_kept_back_packages_and_replace_back_without_a_replacement(
         "{out}"
     );
     // Nothing to switch back from: a clear refusal, nothing changes.
-    let error = f.fails(&["replace", "tilr/theme", "--back"]);
+    let error = f.fails(&["replace", "tilr/theme", "--with", "tilr/theme"]);
     assert!(
         error.contains("tilr/theme is not replaced")
             && error.contains("Error kind: invalid_argument"),
