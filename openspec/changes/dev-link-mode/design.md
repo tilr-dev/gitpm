@@ -266,3 +266,4 @@ hermetic local repositories and fixture directories, not public services.
   external manifest edits, and snapshot refresh only after validated relink.
 - Keep managed install/update/deploy/lost-work regression coverage; document the
   state representation and command alongside the implementation.
+
