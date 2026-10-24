@@ -1936,26 +1936,24 @@ impl Manager {
                 }
                 let transitioning_build = p.build.is_some();
                 if transitioning_build {
-                    state.packages.get_mut(id).unwrap().clone = Some(clones::repo_key(&p.source));
-                }
-                if transitioning_build {
-                    let relative = p.clone_folder(id);
-                    if let Ok(live) = installed_repo(txn.root(), id, &p) {
-                        builds::guard_retained(&live, id, ssh)?;
-                        txn.repo(&relative, &live)?;
-                    } else {
-                        let repo = txn.scratch("build-transition");
-                        fs::create_dir_all(repo.parent().unwrap())?;
-                        crate::transport::clone_repo(
-                            repo.parent().unwrap(),
-                            &p.source,
-                            "build-transition",
-                            ssh,
-                        )?;
-                        lost_work::record_origin_tags(&repo, ssh)?;
-                        transport::checkout_detached(&repo, &p.current.commit, false, ssh)?;
-                        txn.add_repo(&relative, &repo)?;
-                    }
+                    let cloned = clone_revision(
+                        txn,
+                        &Fetch {
+                            source: &p.source,
+                            target: FetchTarget::Exact(&p.current.commit),
+                            expected: None,
+                            files: None,
+                            package: Some(id),
+                            path: None,
+                        },
+                        "build-transition",
+                        ssh,
+                    )?;
+                    // A clone-free build may share its source with a Git package.
+                    // Reuse its clone through the same ownership and local-work
+                    // guards as an install instead of replacing it with a fresh clone.
+                    let (_, _, key) = place_clone(txn, state, &cloned, &p.source, ssh)?;
+                    state.packages.get_mut(id).unwrap().clone = key;
                 }
                 let detached = if options.detach {
                     let location = p

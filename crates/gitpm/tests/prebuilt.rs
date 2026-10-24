@@ -800,3 +800,73 @@ fn build_restore_requires_active_dependencies() {
 fn build_rollback_requires_active_dependencies() {
     inactive_build_dependency("rollback");
 }
+
+#[test]
+fn clone_free_build_transition_preserves_a_siblings_local_work() {
+    for forgotten in [false, true] {
+        let f = Fixture::new(false);
+        let repo = gitpm::scaffold::init(&f.dir.join("source"), "acme", "widget")
+            .unwrap()
+            .repo;
+        publish_repo(&f, &repo, ID, "1.0.0");
+        let m = f.manager();
+        m.install_from_catalog(ID, None).unwrap();
+        assert!(m.state().unwrap().packages[ID].clone.is_none());
+        fs::create_dir_all(repo.join("apps/widget")).unwrap();
+        fs::rename(
+            repo.join("plugin.json"),
+            repo.join("apps/widget/plugin.json"),
+        )
+        .unwrap();
+        fs::rename(repo.join("dist"), repo.join("apps/widget/dist")).unwrap();
+        fs::create_dir_all(repo.join("apps/lib/dist")).unwrap();
+        fs::write(
+            repo.join("apps/lib/plugin.json"),
+            r#"{"id":"acme/lib","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        fs::write(repo.join("apps/lib/dist/index.js"), "sibling").unwrap();
+        fs::write(repo.join("gitpm.json"), r#"{"packages":["apps/*"]}"#).unwrap();
+        gitpm::scaffold::commit_package(&repo, "2.0.0", Some(ID)).unwrap();
+        git(&repo, &["tag", "acme/lib@1.0.0"]);
+        m.install_package(
+            repo.to_str().unwrap(),
+            Some("acme/lib"),
+            gitpm::InstallTarget::Release,
+        )
+        .unwrap();
+        if forgotten {
+            m.forget("acme/lib").unwrap();
+        }
+        let clone = clone_path(&f.root, &repo);
+        fs::write(clone.join("local.txt"), "keep").unwrap();
+        let before = fs::read(f.root.join("state.json")).unwrap();
+        let error = m
+            .update_with(
+                ID,
+                gitpm::Target::Ref(format!("{ID}@1.0.0")),
+                gitpm::UpdateOptions { detach: true },
+            )
+            .unwrap_err();
+        assert_eq!(error.kind(), "local_changes");
+        assert_eq!(fs::read(clone.join("local.txt")).unwrap(), b"keep");
+        assert_eq!(fs::read(f.root.join("state.json")).unwrap(), before);
+        fs::remove_file(clone.join("local.txt")).unwrap();
+        m.update_with(
+            ID,
+            gitpm::Target::Ref(format!("{ID}@1.0.0")),
+            gitpm::UpdateOptions { detach: true },
+        )
+        .unwrap();
+        if forgotten {
+            m.restore("acme/lib").unwrap();
+        }
+        let state = m.state().unwrap();
+        assert_eq!(state.packages[ID].clone, state.packages["acme/lib"].clone);
+        assert_eq!(
+            fs::read(f.root.join("dist/acme/lib/index.js")).unwrap(),
+            b"sibling"
+        );
+        assert_eq!(fs::read_dir(f.root.join("repos")).unwrap().count(), 1);
+    }
+}
