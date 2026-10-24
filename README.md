@@ -1282,7 +1282,7 @@ let dist = pm.uninstall(id, &confirmed, /* force: ignore dependents */ false)?;
 pm.fork_in_namespace(id, Path::new("/work/demo1-fork"), "me")?;   // sets forkOf + replaces
 let repo = Path::new("/work/forks/me-packages");               // created as a new folder
 let fork = pm.fork_packages(&["tilr/theme", "tilr/panel"], repo, "me")?; // one repo, deps rewritten
-// Explicitly release and install only the desired fork package.
+// Explicitly release all fork packages, then install only the desired package.
 gitpm::scaffold::commit_package(repo, "2.0.0", Some("me/theme"))?;
 pm.install_package(repo.to_str().unwrap(), Some("me/theme"), InstallTarget::Release)?;
 let plan = pm.replace_plan("vendor/base", "mine/base")?;       // consumers + incompatible

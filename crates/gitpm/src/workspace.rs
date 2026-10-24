@@ -5096,15 +5096,18 @@ mod tests {
     }
 
     #[test]
-    fn stable_update_refuses_scoped_tag_with_another_manifest_id() {
+    fn stable_update_ignores_repository_tag_with_another_manifest_id() {
         let (ws, m) = Ws::installed("dan/demo1");
         ws.author.commit("0.1.1");
         write_manifest(&ws.author.path, &make_manifest("dan/renamed", "0.1.1"));
         fixture_git(&ws.author.path, &["add", "."]);
         fixture_git(&ws.author.path, &["commit", "-qm", "rename"]);
         ws.author.tag("0.1.1");
-        let error = ws.refuses("version_conflict", || m.update("dan/demo1"));
-        assert!(error.to_string().contains("manifest ID dan/renamed"));
+        let change = m.update("dan/demo1").unwrap();
+        assert!(!change.changed);
+        assert_eq!(change.to.version, "0.1.0");
+        assert!(change.skipped.is_empty());
+        assert!(change.warnings.is_empty());
     }
 
     #[test]

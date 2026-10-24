@@ -140,7 +140,7 @@ def fork_one_package_of_the_repository(t: T):
     dest = t.root / "forks/suite"
     r = t.gitpm_ok("fork", THEME, "--ns", "me", "--into", dest)
     t.has(r.out, "me/theme forked from tilr/theme (packages/theme)",
-          "Next steps (choose the packages to install and replace):", "--package me/theme", "gitpm replace tilr/theme --with me/theme")
+          "Next steps (choose the packages to install and replace):", "NEW_VERSION", "release all packages", "vNEW_VERSION", "gitpm replace tilr/theme --with me/theme")
     t.eq(json.loads((dest / "gitpm.json").read_text()), {"packages": ["packages/*"]}, "fork gitpm.json")
     t.eq(sorted(p.name for p in (dest / "packages").iterdir()), ["panel", "store", "theme"], "package folders at newest installed revision")
     t.eq(t.rev(dest, "HEAD~1"), t.package(THEME)["current"]["commit"], "newest installed revision")
