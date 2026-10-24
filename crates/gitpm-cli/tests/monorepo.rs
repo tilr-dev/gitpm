@@ -232,7 +232,7 @@ fn uninstalling_one_package_keeps_the_other_working() {
     f.ok(&["update", "tilr/theme"]);
     assert_eq!(f.dist("tilr/theme"), "theme 1.1.0");
     f.ok(&["uninstall", "tilr/theme"]);
-    assert_eq!(f.clones(), 1);
+    assert_eq!(f.clones(), 0);
     assert!(
         f.state()["packages"].as_object().unwrap().is_empty(),
         "nothing left"

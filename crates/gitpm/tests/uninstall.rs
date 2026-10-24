@@ -101,8 +101,10 @@ fn make_all_lost_work(f: &Fixture) {
     fs::write(repo.join("local.txt"), "local commit").unwrap();
     git(&repo, &["add", "local.txt"]);
     git(&repo, &["commit", "-m", "local work"]);
-    git(&repo, &["branch", "work"]);
     git(&repo, &["tag", "mine"]);
+    // Keep HEAD untagged while the tag still points to unpublished work.
+    git(&repo, &["commit", "--allow-empty", "-m", "more local work"]);
+    git(&repo, &["branch", "work"]);
     fs::write(repo.join("dist/index.js"), "edited").unwrap();
     fs::write(repo.join("notes.txt"), "untracked").unwrap();
     fs::create_dir_all(repo.join("node_modules")).unwrap();
@@ -152,7 +154,7 @@ fn plan_lists_each_lost_work_type_including_stash_without_changes() {
     }));
     assert!(has(&LostWork::UnpublishedBranch {
         name: "work".into(),
-        commits: 1
+        commits: 2
     }));
     assert!(has(&LostWork::UnpublishedTag {
         name: "mine".into()
