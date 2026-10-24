@@ -25,7 +25,7 @@ enum Change {
     Delete,
 }
 
-/// Paths (relative to the root, e.g. `packages/dan/demo1`) and what commit does with them.
+/// Paths (relative to the root, e.g. `repos/demo-0123456789abcdef`) and what commit does with them.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Journal {
     paths: BTreeMap<String, Change>,
@@ -49,8 +49,7 @@ fn remove(path: &Path) -> Result<()> {
     }
     Ok(())
 }
-/// Every directory between the root and a managed path (`packages`, `packages/<ns>`,
-/// `dist/<ns>`) must be a real directory: through a symlink a write or delete would
+/// Every directory between the root and a managed path (`dist/<ns>`) must be a real directory: through a symlink a write or delete would
 /// land outside the workspace.
 fn ensure_managed_parents(root: &Path, relative: &str) -> Result<()> {
     let mut current = root.to_path_buf();
@@ -196,8 +195,7 @@ impl Txn {
     fn is_staged(&self, relative: &str) -> bool {
         self.journal.paths.get(relative) == Some(&Change::Replace)
     }
-    /// Writable copy of an installed clone at `relative` (`packages/<id>` or
-    /// `repos/<key>`; `live` is its exact path in the workspace). Symlinks inside the
+    /// Writable copy of an installed clone at `relative` (`repos/<key>`; `live` is its exact path in the workspace). Symlinks inside the
     /// repository are kept as symlinks. Staged once per transaction.
     // TODO: this copies the whole clone (all packages of a shared one, full history) for
     // every operation that changes it; a worktree or a copy of `.git` plus the touched
@@ -260,7 +258,7 @@ impl Txn {
         ));
         Ok(())
     }
-    /// Remove a clone (`packages/<id>` or `repos/<key>`) on commit.
+    /// Remove a clone (`repos/<key>`) on commit.
     pub(crate) fn delete_repo(&mut self, relative: &str) -> Result<()> {
         ensure_managed_parents(&self.root, relative)?;
         remove(&self.staged(relative))?;
@@ -341,16 +339,11 @@ pub(crate) fn recover(root: &Path) -> Result<()> {
     }
 }
 
-/// After a delete, remove the parents it left empty (`dist/<ns>`, `packages/<ns>`,
-/// `repos`); `packages` and `dist` themselves stay, as `Manager::open` creates them.
+/// After a delete, remove the parents it left empty (`dist/<ns>`, `repos`); `dist` itself stays, as `Manager::open` creates them.
 /// Best effort: a folder that is not empty (or cannot be removed) is kept.
 fn remove_empty_parents(root: &Path, relative: &str) {
     let parts: Vec<&str> = relative.split('/').collect();
-    let keep = if matches!(parts[0], "packages" | "dist") {
-        1
-    } else {
-        0
-    };
+    let keep = if parts[0] == "dist" { 1 } else { 0 };
     for depth in (keep + 1..parts.len()).rev() {
         if fs::remove_dir(root.join(parts[..depth].join("/"))).is_err() {
             break;
@@ -447,13 +440,13 @@ fn commit_syncs_journal_state_and_parents() {
     let root = temp.path();
     let mut txn = Txn::begin(root).unwrap();
     // Stage directly to exercise nested new parents, replacements and deletion.
-    for relative in ["dist/new/plugin", "packages/existing/plugin"] {
+    for relative in ["dist/new/plugin", "repos/existing-0123456789abcdef"] {
         let path = txn.dir.join("new").join(relative);
         fs::create_dir_all(&path).unwrap();
         fs::write(path.join("payload"), b"new").unwrap();
         txn.journal.paths.insert(relative.into(), Change::Replace);
     }
-    for relative in ["packages/existing/plugin", "dist/deleted/plugin"] {
+    for relative in ["repos/existing-0123456789abcdef", "dist/deleted/plugin"] {
         fs::create_dir_all(root.join(relative)).unwrap();
         fs::write(root.join(relative).join("payload"), b"old").unwrap();
     }
@@ -476,7 +469,7 @@ fn commit_syncs_journal_state_and_parents() {
         DurabilityEvent::Sync(path) => path.starts_with(root),
         _ => true,
     }));
-    for relative in ["dist/new/plugin", "packages/existing/plugin"] {
+    for relative in ["dist/new/plugin", "repos/existing-0123456789abcdef"] {
         assert!(sync_index(&root.join(DIR).join("new").join(relative).join("payload")) < journal);
     }
     let published = events
@@ -602,16 +595,16 @@ fn commit_syncs_symlink_entries_without_following_targets() {
     let temp = crate::test_support::TempDir::new("txn-sync-symlink");
     let root = temp.path();
     let mut txn = Txn::begin(root).unwrap();
-    let staged = txn.dir.join("new/packages/ns/plugin");
+    let staged = txn.dir.join("new/repos/plugin-0123456789abcdef");
     fs::create_dir_all(&staged).unwrap();
     symlink("missing-target", staged.join("link")).unwrap();
     txn.journal
         .paths
-        .insert("packages/ns/plugin".into(), Change::Replace);
+        .insert("repos/plugin-0123456789abcdef".into(), Change::Replace);
     let _capture = Capture::new();
     txn.commit(&State::default()).unwrap();
     assert_eq!(
-        fs::read_link(root.join("packages/ns/plugin/link")).unwrap(),
+        fs::read_link(root.join("repos/plugin-0123456789abcdef/link")).unwrap(),
         Path::new("missing-target")
     );
     DURABILITY_EVENTS.with(|events| {

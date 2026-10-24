@@ -262,7 +262,7 @@ pub struct InstalledPackage {
     pub catalog: Option<String>,
     /// Package folder in a multi-package repository; `None` for the repository root.
     pub path: Option<String>,
-    /// Shared clone `repos/<clone>` of a multi-package repository; `None`: own clone.
+    /// Source-keyed clone `repos/<clone>` for Git installs; `None` for clone-free prebuilt installs.
     pub clone: Option<String>,
     /// Descriptive metadata from the installed `plugin.json` (stored, not interpreted).
     pub title: Option<String>,
@@ -2502,7 +2502,7 @@ mod tests {
         let plan = UninstallPlan::from(pm::UninstallPlan {
             id: "me/x".into(),
             registered: false,
-            deletes: vec!["/w/packages/me/x".into(), "/w/dist/me/x".into()],
+            deletes: vec!["/w/repos/x-0123456789abcdef".into(), "/w/dist/me/x".into()],
             lost_work: all_lost_work(),
             dependents: vec![],
             dependency_conflict: Some("cannot uninstall me/x, which would reactivate vendor/x: lib is disabled; enable it".into()),
@@ -2512,7 +2512,10 @@ mod tests {
             plan.dependency_conflict.is_some(),
             "dependencyConflict is mirrored"
         );
-        assert_eq!(plan.deletes, ["/w/packages/me/x", "/w/dist/me/x"]);
+        assert_eq!(
+            plan.deletes,
+            ["/w/repos/x-0123456789abcdef", "/w/dist/me/x"]
+        );
         assert_eq!(plan.lost_work.len(), 8);
         assert!(matches!(
             plan.lost_work[5],
@@ -2935,7 +2938,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(
             root.join("state.json"),
-            r#"{"format":1,"packages":{"acme/greeter":{"source":"s","current":{"version":"0.1.0","commit":"c"},"previous":null,"enabled":false,"mode":{"pinned":"acme/greeter@0.1.0"},"metadata":{}}}}"#,
+            r#"{"format":1,"packages":{"acme/greeter":{"source":"s","current":{"version":"0.1.0","commit":"c"},"previous":null,"enabled":false,"clone":"root-0123456789abcdef","mode":{"pinned":"acme/greeter@0.1.0"},"metadata":{}}}}"#,
         )
         .unwrap();
         let manager =
@@ -2984,7 +2987,7 @@ mod tests {
         );
         std::fs::write(
             root.join("state.json"),
-            r#"{"format":1,"packages":{"me/x":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":false,"forkOf":{"id":"vendor/x","version":"0.9.0","commit":"f"},"metadata":{}}}}"#,
+            r#"{"format":1,"packages":{"me/x":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":false,"clone":"x-0123456789abcdef","forkOf":{"id":"vendor/x","version":"0.9.0","commit":"f"},"metadata":{}}}}"#,
         )
         .unwrap();
         let view = read_state(root.to_string_lossy().into()).unwrap();

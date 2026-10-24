@@ -3,7 +3,7 @@
 //!
 //! A package is a folder with a `plugin.json` manifest and a ready `dist/` folder: the root
 //! of a Git repository, or one of the folders its `gitpm.json` lists (see [`packages`]).
-//! A [`Manager`] owns one locked workspace (clones under `packages/` and `repos/`,
+//! A [`Manager`] owns one locked workspace (clones under `repos/`,
 //! deployed `dist/`, `state.json`) and applies every change transactionally. Catalog
 //! functions read and write a static JSON catalog (local folder or HTTP). Author
 //! functions in [`scaffold`] create package repositories and release tags.

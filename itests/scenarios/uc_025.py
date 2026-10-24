@@ -103,11 +103,11 @@ def installed_clone_as_destination(t: T):
 
 @case(fixture="g3_vendor_installed", spec=["fork-replacement/fork-requires-explicit-namespace-and-destination#destination-inside-the-workspace"])
 def new_path_inside_workspace(t: T):
-    """Non-existing managed paths: packages/author/demo, dist/author/demo, ws/forks/x."""
-    for dest in [t.ws / "packages/author/demo", t.ws / "dist/author/demo", t.ws / "forks/x"]:
+    """Non-existing managed paths: repos/unused-0123456789abcdef, dist/author/demo, ws/forks/x."""
+    for dest in [t.ws / "repos/unused-0123456789abcdef", t.ws / "dist/author/demo", t.ws / "forks/x"]:
         refused(t, [ID, "--ns", "author", "--into", dest], "invalid_argument",
                 "outside the managed workspace", [dest])
-    t.ok(not (t.ws / "packages/author").exists() and not (t.ws / "forks").exists(), "no parents created")
+    t.ok(not (t.ws / "repos/unused-0123456789abcdef").exists() and not (t.ws / "forks").exists(), "no parents created")
 
 
 @case(fixture="g3_vendor_installed", spec=["fork-replacement/fork-requires-explicit-namespace-and-destination#destination-inside-the-workspace"])

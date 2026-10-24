@@ -1,5 +1,5 @@
-//! Clones in the workspace: the own clone `packages/<id>` of a package, or the clone
-//! `repos/<key>` shared by every package installed from one multi-package source. A
+//! Clones in the workspace: `repos/<key>` shared by every root or nested package
+//! installed from one source. A
 //! shared clone is used by its registered packages and by forgotten ones
 //! (`State::forgotten`); it is removed with the last of them.
 //!
@@ -77,17 +77,7 @@ pub(super) fn fetch_origin(repo: &Path, prune: bool, custom_ssh: bool) -> Result
     lost_work::record_origin_tags(repo, custom_ssh)
 }
 
-/// The own clone `packages/<id>` (exact spelling, must be a Git repository).
-pub(super) fn package_repo(root: &Path, id: &str) -> Result<PathBuf> {
-    let plugins = root.join("packages");
-    let repo = plugins.join(id);
-    if !exact_path(&plugins, id)? || !repo.join(".git").is_dir() {
-        return Err(Error::RepositoryNotFound { id: id.into() });
-    }
-    Ok(repo)
-}
-
-/// Cache key of the shared clone of a multi-package source, its folder under `repos/`:
+/// Cache key of the shared clone of a source, its folder under `repos/`:
 /// a readable part of the source plus a hash of the exact source string. The only
 /// place a source is turned into a folder name (see `model::valid_clone_key`).
 pub(crate) fn repo_key(source: &str) -> String {
@@ -118,7 +108,7 @@ pub(super) fn installed_repo(root: &Path, id: &str, p: &Installed) -> Result<Pat
         return Err(Error::RepositoryNotFound { id: id.into() });
     }
     let Some(key) = &p.clone else {
-        return package_repo(root, id);
+        return Err(Error::RepositoryNotFound { id: id.into() });
     };
     let repo = root.join("repos").join(key);
     if !exact_path(&root.join("repos"), key)? || !repo.join(".git").is_dir() {
@@ -143,9 +133,9 @@ pub(super) fn clone_users<'a>(
         .collect()
 }
 
-/// A shared clone has one HEAD for several packages, so HEAD must be the installed
-/// commit of one of its users (forgotten ones included) or a tagged commit; anything
-/// else is local work.
+/// A sole user's clone must stay at its recorded Git revision, including a build's
+/// retained previous Git revision. With several users (forgotten ones included),
+/// HEAD may instead be any user's installed revision or a tagged commit.
 pub(super) fn shared_head_moved(
     repo: &Path,
     state: &State,
@@ -154,9 +144,24 @@ pub(super) fn shared_head_moved(
     custom_ssh: bool,
 ) -> Result<Option<LostWork>> {
     let head = transport::object_id(repo, "HEAD", custom_ssh)?;
-    if clone_users(state, key, "")
-        .iter()
-        .any(|(_, p)| p.current.commit == head)
+    let users = clone_users(state, key, "");
+    if let [(_, package)] = users.as_slice() {
+        let recorded = if package.build.is_some() {
+            package
+                .previous
+                .as_ref()
+                .filter(|_| package.previous_build.is_none())
+        } else {
+            Some(&package.current)
+        };
+        return Ok(recorded
+            .filter(|revision| revision.commit != head)
+            .map(|revision| LostWork::HeadMoved {
+                head,
+                recorded: revision.commit.clone(),
+            }));
+    }
+    if users.iter().any(|(_, p)| p.current.commit == head)
         || !transport::tags_at(repo, "HEAD", custom_ssh)?.is_empty()
     {
         return Ok(None);
@@ -218,11 +223,8 @@ pub(super) fn configured_origin(repo: &Path, custom_ssh: bool) -> Option<String>
     transport::config_get(repo, "remote.origin.url", custom_ssh).ok()
 }
 
-/// Stage the verified clone where the package lives: its own `packages/<id>`, or for a
-/// package of a multi-package repository the clone `repos/<key>` shared by every package
-/// of that source. An existing shared clone is reused (guarded like an update, fetched,
-/// checked out at the verified commit); the fresh clone is then discarded.
-/// Returns the staged clone, its workspace-relative path and the shared key.
+/// Stage the verified clone under its source key. An existing clone is reused,
+/// guarded like an update, fetched and checked out at the verified commit.
 pub(super) fn place_clone(
     txn: &mut Txn,
     state: &State,
@@ -231,11 +233,6 @@ pub(super) fn place_clone(
     custom_ssh: bool,
 ) -> Result<(PathBuf, String, Option<String>)> {
     let id = &cloned.manifest.id;
-    if cloned.path.is_none() {
-        let relative = format!("packages/{id}");
-        let staged = txn.add_repo(&relative, &cloned.repo)?;
-        return Ok((staged, relative, None));
-    }
     let key = repo_key(source);
     let relative = format!("repos/{key}");
     let commit = transport::object_id(&cloned.repo, "HEAD", custom_ssh)?;
@@ -352,40 +349,15 @@ pub(super) fn removal(root: &Path, state: &State, id: &str, custom_ssh: bool) ->
             lost_work: Vec::new(),
         });
     }
-    let Some((p, key)) = entry.and_then(|p| Some((p, p.clone.clone()?))) else {
-        // Own clone, registered or forgotten (retained) under `packages/<id>`.
-        let repo = match package_repo(root, id) {
-            Ok(repo) => repo,
-            // A record (forgotten or not) whose clone is gone: only the record (and dist)
-            // remain.
-            Err(Error::RepositoryNotFound { .. }) if entry.is_some() => {
-                return Ok(Removal {
-                    relative: format!("packages/{id}"),
-                    repo: None,
-                    key: None,
-                    lost_work: Vec::new(),
-                });
-            }
-            Err(error) => return Err(error),
-        };
-        let recorded = state.packages.get(id).and_then(|p| {
-            if p.build.is_some() {
-                // Installing a build leaves the retained clone at its Git revision.
-                // After successive builds the previous record is also a build, so
-                // only the repository's work/status checks apply.
-                p.previous
-                    .as_ref()
-                    .filter(|_| p.previous_build.is_none())
-                    .map(|previous| previous.commit.as_str())
-            } else {
-                Some(p.current.commit.as_str())
-            }
-        });
+    let p = entry.ok_or_else(|| Error::RepositoryNotFound { id: id.into() })?;
+    let Some(key) = p.clone.clone() else {
+        // A build-only record owns no Git clone.
+
         return Ok(Removal {
-            relative: format!("packages/{id}"),
-            lost_work: lost_work::detect(&repo, recorded, custom_ssh)?,
-            repo: Some(repo),
+            relative: p.clone_folder(id),
+            repo: None,
             key: None,
+            lost_work: Vec::new(),
         });
     };
     let relative = p.clone_folder(id);

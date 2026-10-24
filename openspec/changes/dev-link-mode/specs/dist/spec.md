@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Deploys copy the committed tree
-Managed deploys SHALL copy committed manifest-selected output (default `<path>/dist`; `"."`: `<path>`) from Git objects, never the working tree. A verified build for that commit is a release cache, deployed without Git/network. It SHALL preserve nested folders and executable bits; symlinks fail with `unsupported`; gitlinks become empty folders with a path-naming actionable warning, without fetching. Links follow "Linked deployments expose the author installation folder".
+Managed Git deploys SHALL copy the resolved commit’s manifest-selected package output (default `<path>/dist`; `"."` selects `<path>`) from Git objects, never the working tree. Builds SHALL deploy cached verified output without Git or network. Both SHALL preserve nested folders and executable bits. Symlinks SHALL fail with `unsupported`. Gitlinks SHALL become empty directories without fetching submodules, with an actionable warning naming the path and advising committing built files instead. Links follow "Linked deployments expose the author installation folder".
 
 #### Scenario: Symlink inside dist
 - **WHEN** a release's package dist contains a symlink
