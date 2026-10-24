@@ -637,10 +637,14 @@ fn catalog_updates_can_alternate_git_and_build_revisions() {
     let clone = worktree_path(&f.root, ID);
     fs::write(clone.join("work.txt"), "keep").unwrap();
     let before = fs::read(f.root.join("state.json")).unwrap();
-    assert_eq!(
-        m.update_to(ID, gitpm::Target::Dev).unwrap_err().kind(),
-        "local_changes"
-    );
+    let error = m
+        .update_with(
+            ID,
+            gitpm::Target::Dev,
+            gitpm::UpdateOptions { detach: true },
+        )
+        .unwrap_err();
+    assert_eq!(error.kind(), "local_changes", "{error:?}");
     assert_eq!(fs::read(f.root.join("state.json")).unwrap(), before);
     assert_eq!(git(&clone, &["status", "--porcelain"]), "?? work.txt");
     gitpm::scaffold::commit(&app, "1.3.0").unwrap();
