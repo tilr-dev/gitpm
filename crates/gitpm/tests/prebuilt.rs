@@ -826,7 +826,6 @@ fn check_sibling_local_work(forgotten: bool) {
     fs::write(repo.join("apps/lib/dist/index.js"), "sibling").unwrap();
     fs::write(repo.join("gitpm.json"), r#"{"packages":["apps/*"]}"#).unwrap();
     gitpm::scaffold::commit_package(&repo, "2.0.0", Some(ID)).unwrap();
-    git(&repo, &["tag", "acme/lib@1.0.0"]);
     m.install_package(
         repo.to_str().unwrap(),
         Some("acme/lib"),
@@ -846,7 +845,7 @@ fn check_sibling_local_work(forgotten: bool) {
     let error = m
         .update_with(
             ID,
-            gitpm::Target::Ref(format!("{ID}@1.0.0")),
+            gitpm::Target::Ref("v1.0.0".into()),
             gitpm::UpdateOptions { detach: true },
         )
         .unwrap_err();
@@ -857,7 +856,7 @@ fn check_sibling_local_work(forgotten: bool) {
     git(&clone, &["checkout", "--detach", &installed_head]);
     m.update_with(
         ID,
-        gitpm::Target::Ref(format!("{ID}@1.0.0")),
+        gitpm::Target::Ref("v1.0.0".into()),
         gitpm::UpdateOptions { detach: true },
     )
     .unwrap();
@@ -884,7 +883,7 @@ fn retained_clone_can_leave_a_build_whose_commit_is_gone_upstream() {
     catalog::register(
         f.catalog.to_str().unwrap(),
         repo.to_str().unwrap(),
-        &format!("{ID}@1.0.0"),
+        "v1.0.0",
     )
     .unwrap();
     let root_file = f.catalog.join("catalog.json");
@@ -900,18 +899,18 @@ fn retained_clone_can_leave_a_build_whose_commit_is_gone_upstream() {
     let clone = clone_path(&f.root, &repo);
     assert_eq!(git(&clone, &["rev-parse", "HEAD"]), first);
     // A retained Git revision remains safe even when no tag names its commit.
-    git(&clone, &["tag", "-d", "acme/widget@1.0.0"]);
+    git(&clone, &["tag", "-d", "v1.0.0"]);
     let plan = m.uninstall_plan(ID).unwrap();
     assert!(plan.lost_work.is_empty(), "{:?}", plan.lost_work);
     // Replace the origin history after A with C, removing build commit B entirely.
     git(&repo, &["reset", "--hard", &first]);
     gitpm::scaffold::commit(&repo, "3.0.0").unwrap();
-    git(&repo, &["tag", "-d", "acme/widget@2.0.0"]);
+    git(&repo, &["tag", "-d", "v2.0.0"]);
     git(&repo, &["reflog", "expire", "--expire=now", "--all"]);
     git(&repo, &["gc", "--prune=now"]);
     m.update_with(
         ID,
-        gitpm::Target::Ref("acme/widget@3.0.0".into()),
+        gitpm::Target::Ref("v3.0.0".into()),
         gitpm::UpdateOptions::default(),
     )
     .unwrap();
