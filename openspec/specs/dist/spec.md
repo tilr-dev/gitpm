@@ -22,7 +22,7 @@ The deployed folder `dist/<namespace>/<name>/` SHALL exist exactly when the pack
 - **THEN** `dist/acme/greeter/` does not exist, `dist/me/greeter/` does, and `acme/greeter` stays `enabled: true` with `active: false` in `list`
 
 ### Requirement: Deploys copy the committed tree
-Git deploys SHALL copy the resolved commit’s manifest-selected package output (default `<path>/dist`; `"."` selects `<path>`) from Git objects, never the working tree. Builds SHALL deploy cached verified output without Git or network. Both SHALL preserve nested folders and executable bits. Symlinks SHALL fail with `unsupported`. Gitlinks SHALL become empty directories without fetching submodules, with an actionable warning naming the path and advising committing built files instead.
+Managed Git deploys SHALL copy the resolved commit’s manifest-selected package output (default `<path>/dist`; `"."` selects `<path>`) from Git objects, never the working tree. Builds SHALL deploy cached verified output without Git or network. Both SHALL preserve nested folders and executable bits. Symlinks SHALL fail with `unsupported`. Gitlinks SHALL become empty directories without fetching submodules, with an actionable warning naming the path and advising committing built files instead. Links follow "Linked deployments expose the author installation folder".
 
 #### Scenario: Symlink inside dist
 - **WHEN** a release's package dist contains a symlink
@@ -228,3 +228,29 @@ When dependency and replacement guards permit it, repeating enable or disable SH
 #### Scenario: Repeat enable repairs missing dist
 - **WHEN** an enabled package is enabled again while another active package has a missing deployed folder
 - **THEN** the operation reconciles dist and restores that folder, preserving workspace state and clone bytes
+
+### Requirement: Linked deployments expose the author installation folder
+For link records, gitpm SHALL deploy `dist/<id>` as a symlink to the author-owned installation folder. It SHALL use the same `plugin.json.dist` folder selection as managed install: `"dist"` by default, or the configured package-relative folder (`"."` selects the package root). gitpm MUST NOT build, watch, copy or change its contents.
+
+#### Scenario: Uncommitted author edits
+- **WHEN** an active linked package's author edits a file in its installation folder
+- **THEN** reading that file through `dist/<id>` returns the edited bytes without a commit or another gitpm operation
+
+#### Scenario: Author-maintained build output
+- **WHEN** the package declares an installation folder and the author writes new output there
+- **THEN** `dist/<id>` resolves to that folder and exposes the new output without gitpm executing a build or watcher
+
+### Requirement: Linked deployments follow activity without owning their target
+Enable, disable, replacement, forget, restore, uninstall and reconciliation SHALL create or remove the linked package's deployed entry according to the existing active-package rules. They MUST NOT require a managed clone for a link record or delete or modify its external target. Missing linked folders SHALL be reported structurally as not deployed, with the link mode retained, and unrelated packages SHALL remain operable under the existing reconciliation rules.
+
+#### Scenario: Disable and enable a link
+- **WHEN** an enabled linked package is disabled and then enabled
+- **THEN** its symlink is removed and recreated, and its external folder keeps its contents
+
+#### Scenario: Author moves the target away
+- **WHEN** a recorded linked folder no longer exists and reconciliation runs for another package
+- **THEN** the report identifies the unavailable linked package and its link mode, and no clone or build output is created for it
+
+#### Scenario: Existing link namespace becomes blocked
+- **WHEN** the namespace directory of an existing link becomes a file or symlink and an independent package is changed
+- **THEN** reconciliation reports the blocked link as not deployed with its descriptor, without traversing the blocked namespace or preventing the independent change
