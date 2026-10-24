@@ -21,7 +21,7 @@ binary, the licenses and the README.
 ## Usage
 
 A package is a Git repository with `plugin.json` (`{"id": "acme/greeter", "version": "0.1.0"}`)
-and a `dist/` folder, released with a tag (`acme/greeter@0.1.0`):
+and a `dist/` folder, released with a tag (`v0.1.0`, shared by every package in the repository):
 
 ```sh
 gitpm install ./acme/greeter         # latest release tag → ./gitpm-workspace
@@ -46,8 +46,9 @@ gitpm fork tilr/store tilr/theme --ns me --into ./me-packages   # several packag
 
 git init -q tilr-packages
 gitpm init tilr/store --into ./tilr-packages   # multi-package repository (gitpm.json, packages/*)
+gitpm commit ./tilr-packages 0.1.1   # release the added package
 gitpm install ./tilr-packages tilr/store   # one package of it; packages share one clone
-gitpm commit ./tilr-packages 0.2.0 --package tilr/store   # tag tilr/store@0.2.0
+gitpm commit ./tilr-packages 0.2.0 --package tilr/store   # all packages at 0.2.0, tag v0.2.0
 ```
 
 `init` and `fork` take an explicit `NAMESPACE/NAME` (for `fork`: `--ns

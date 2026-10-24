@@ -56,18 +56,6 @@ Repository git commands SHALL use closed stdin, `GIT_TERMINAL_PROMPT=0`, empty `
 - **WHEN** a build request stalls or streams an oversized body
 - **THEN** the five-second connect timeout, twenty-second total timeout and 16 MiB streaming bound terminate it with `http`; builds alone follow at most five HTTPS-only redirects
 
-### Requirement: Library-owned Git input
-Exception to "Git never waits for input": a Git ref transaction (`update-ref --stdin`) SHALL get only library-generated input instead of closed stdin, and the input pipe SHALL be closed after writing; user stdin SHALL NOT be inherited, and the other bounds of that requirement (no prompts, lowSpeed limits, batch SSH, 600s kill) SHALL apply unchanged.
-
-#### Scenario: Library-owned ref transaction input
-- **WHEN** release tags are created by `update-ref --stdin`
-- **THEN** only library-generated commands are supplied, followed by EOF, with the same execution timeout
-
-#### Scenario: Git exits before reading the input
-- **WHEN** the Git process closes its input before the library has written it
-- **THEN** the command fails with `git` ("cannot write git input") and no SIGPIPE reaches the host process, which may keep the default SIGPIPE action (FFI)
-- **AND** verified by `transport::system::tests::input_to_a_child_that_closed_stdin_fails_without_sigpipe`
-
 ### Requirement: No option injection
 Single source for option-like input: ID components starting with `-` SHALL be refused with `invalid_id` before any git call, and user refs starting with `-` with `invalid_argument` ("invalid git ref") before they reach git; user refs (install, update, register) SHALL be resolved with `rev-parse --verify --end-of-options`, and positional names (sources, tags, paths) SHALL be passed after `--`. Verified by `identity::valid_part_accepts_1_to_80_safe_ascii_characters`.
 

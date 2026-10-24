@@ -24,7 +24,7 @@ def deps(t: T):
 @deps.check
 def _(t: T):
     for id, (dependencies, extra) in GRAPH.items():
-        manifest = json.loads(t.git(id, "show", f"{id}@1.0.0:plugin.json"))
+        manifest = json.loads(t.git(id, "show", f"v1.0.0:plugin.json"))
         t.eq(manifest.get("dependencies", {}), dependencies, f"{id} dependencies")
         t.eq(manifest.get("replaces"), extra.get("replaces"), f"{id} replaces")
 
@@ -33,7 +33,7 @@ def _(t: T):
 def deps_catalog(t: T):
     """All five packages of `deps` registered at 1.0.0 in /fx/catalog; empty workspace."""
     for id in GRAPH:
-        t.gitpm_ok("register", t.repo(id), "--ref", f"{id}@1.0.0")
+        t.gitpm_ok("register", t.repo(id), "--ref", f"v1.0.0")
 
 
 @deps_catalog.check

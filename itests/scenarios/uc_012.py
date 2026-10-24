@@ -64,15 +64,15 @@ def mode_is_recorded_and_switched(t: T):
     r = t.gitpm_ok("rollback", ID)
     t.eq(t.package(ID)["mode"], {"branch": "main"}, "rollback restores the mode with the revision")
     t.gitpm_err("install", t.repo(ID), "--ref", "HEAD~1", kind="invalid_argument", contains="unknown ref")
-    t.gitpm_ok("update", ID, "--ref", f"{ID}@0.3.0")
-    t.eq(t.package(ID)["mode"], {"pinned": f"{ID}@0.3.0"}, "a tag pins")
+    t.gitpm_ok("update", ID, "--ref", f"v0.3.0")
+    t.eq(t.package(ID)["mode"], {"pinned": f"v0.3.0"}, "a tag pins")
     t.release(ID, "0.5.0")
     before = t.snap(t.ws, git=True)
     r = t.gitpm_ok("update", ID)
-    t.eq(r.out, f"{ID} pinned at 0.3.0 ({ID}@0.3.0)\n", "pinned line")
+    t.eq(r.out, f"{ID} pinned at 0.3.0 (v0.3.0)\n", "pinned line")
     t.same(before, "workspace (pinned)")
     r = t.gitpm_ok("--catalog", "", "check")
-    t.has(r.out, f"pinned ({ID}@0.3.0)")
+    t.has(r.out, "pinned (v0.3.0)")
     r = t.gitpm_ok("update", ID, "--release")
     t.has(r.out, f"{ID} updated 0.3.0 → 0.5.0")
     t.ok("mode" not in t.package(ID), "release mode records no mode")
@@ -81,13 +81,13 @@ def mode_is_recorded_and_switched(t: T):
 @case(fixture="hello", spec=["install-uninstall/install-an-explicit-ref-or-a-branch", "updates/explicit-ref-resolves-against-the-origin#branch-name"])
 def explicit_ref_selects_its_revision(t: T):
     """--ref tag / branch on install, --ref tag on update select exactly that revision and record the mode."""
-    tagged = t.rev(ID, f"{ID}@0.1.0")
+    tagged = t.rev(ID, f"v0.1.0")
     second = t.release(ID, "0.2.0")
     head = t.release(ID, "0.3.0", tag=False)
-    t.gitpm_ok("install", t.repo(ID), "--ref", f"{ID}@0.1.0")
+    t.gitpm_ok("install", t.repo(ID), "--ref", f"v0.1.0")
     t.eq(t.package(ID)["current"], {"version": "0.1.0", "commit": tagged}, "install --ref tag")
-    t.eq(t.package(ID)["mode"], {"pinned": f"{ID}@0.1.0"}, "install --ref tag pins")
-    t.gitpm_ok("update", ID, "--ref", f"{ID}@0.2.0")
+    t.eq(t.package(ID)["mode"], {"pinned": f"v0.1.0"}, "install --ref tag pins")
+    t.gitpm_ok("update", ID, "--ref", f"v0.2.0")
     t.eq(t.package(ID)["current"], {"version": "0.2.0", "commit": second}, "update --ref tag")
     t.eq(t.rev(t.clone(ID)), second, "clone HEAD")
     t.has(dist(t), "dan/hello 0.2.0")
@@ -119,7 +119,7 @@ def install_a_branch_only_the_origin_has(t: T):
 @case(fixture="hello", spec=["cli/option-validation#ref-dev-and-release"])
 def targets_exclude_each_other(t: T):
     """--ref, --dev and --release exclude each other, --channel is gone: usage errors, nothing created."""
-    for args, needle in [(("install", t.repo(ID), "--ref", f"{ID}@0.1.0", "--dev"), "--dev conflicts with --ref"),
+    for args, needle in [(("install", t.repo(ID), "--ref", f"v0.1.0", "--dev"), "--dev conflicts with --ref"),
                          (("install", t.repo(ID), "--channel", "dev"), "unknown option: --channel; use --help"),
                          (("install", t.repo(ID), "--release"), "--release requires update")]:
         r = t.gitpm(*args)
@@ -130,9 +130,9 @@ def targets_exclude_each_other(t: T):
     t.gitpm_ok("install", t.repo(ID))
     t.release(ID, "0.2.0")
     before = t.snap(t.ws, git=True)
-    for args, needle in [(("update", ID, "--ref", f"{ID}@0.2.0", "--dev"), "--dev conflicts with --ref"),
+    for args, needle in [(("update", ID, "--ref", f"v0.2.0", "--dev"), "--dev conflicts with --ref"),
                          (("update", ID, "--dev", "--release"), "--release conflicts with --dev"),
-                         (("update", ID, "--ref", f"{ID}@0.2.0", "--release"), "--release conflicts with --ref"),
+                         (("update", ID, "--ref", f"v0.2.0", "--release"), "--release conflicts with --ref"),
                          (("rollback", ID, "--dev"), "--dev requires install/download/update")]:
         r = t.gitpm(*args)
         t.ok(r.code != 0, f"gitpm {' '.join(args)} fails")

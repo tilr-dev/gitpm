@@ -92,8 +92,8 @@ Each `state.json` `packages.<id>` record is the single source for its format and
 - **THEN** `current` is 0.3.0 and `previous` is 0.2.0 only
 
 #### Scenario: Recorded modes
-- **WHEN** packages were installed without a ref, with `--ref acme/a@1.0.0`, and with `--ref feature`
-- **THEN** the first record has no `mode`, the second `"mode": {"pinned": "acme/a@1.0.0"}`, the third `"mode": {"branch": "feature"}`
+- **WHEN** packages were installed without a ref, with `--ref v1.0.0`, and with `--ref feature`
+- **THEN** the first record has no `mode`, the second `"mode": {"pinned": "v1.0.0"}`, the third `"mode": {"branch": "feature"}`
 
 #### Scenario: Previous revision keeps its mode
 - **WHEN** a package in branch mode `main` is updated with `--release`

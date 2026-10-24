@@ -55,9 +55,9 @@ def all_releases_indexed_once(t: T):
         t.eq(index["versions"], {v: f"versions/{v}/release.json" for v in versions}, f"{id} versions")
         for v in versions:
             release = json.loads(t.catalog_release(id, v).read_text())
-            commit = t.rev(repo, f"{id}@{v}")
+            commit = t.rev(repo, f"v{v}")
             t.eq(release["commit"], commit, f"{id} {v} commit (peeled)")
-            t.eq(release["reference"], f"{id}@{v}", f"{id} {v} reference")
+            t.eq(release["reference"], f"v{v}", f"{id} {v} reference")
             t.eq(release["files"], committed_files(repo, commit), f"{id} {v} committed hashes")
             t.ok("build" not in release, f"{id} {v} no build")
     t.ok(not (t.root / "elsewhere/catalog.json").exists() and not any((t.root / "elsewhere").iterdir()),

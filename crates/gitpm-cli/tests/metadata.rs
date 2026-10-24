@@ -52,8 +52,7 @@ impl Fixture {
         f.write("theme", "1.0.0", THEME);
         f.git(&f.mono, &["add", "--all"]);
         f.git(&f.mono, &["commit", "-q", "-m", "first"]);
-        f.git(&f.mono, &["tag", "tilr/store@1.0.0"]);
-        f.git(&f.mono, &["tag", "tilr/theme@1.0.0"]);
+        f.git(&f.mono, &["tag", "v1.0.0"]);
         f
     }
     fn command(&self, program: impl AsRef<std::ffi::OsStr>) -> Command {
@@ -97,12 +96,21 @@ impl Fixture {
     }
     fn release(&self, name: &str, version: &str, extra: &str) {
         self.write(name, version, extra);
+        for entry in fs::read_dir(self.mono.join("packages")).unwrap() {
+            let path = entry.unwrap().path().join("plugin.json");
+            if path.is_file() {
+                let mut manifest: serde_json::Value =
+                    serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                manifest["version"] = version.into();
+                fs::write(path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+            }
+        }
         self.git(&self.mono, &["add", "--all"]);
         self.git(
             &self.mono,
             &["commit", "-q", "-m", &format!("{name} {version}")],
         );
-        self.git(&self.mono, &["tag", &format!("tilr/{name}@{version}")]);
+        self.git(&self.mono, &["tag", &format!("v{version}")]);
     }
     fn run(&self, args: &[&str]) -> Output {
         self.command(env!("CARGO_BIN_EXE_gitpm"))
@@ -279,8 +287,8 @@ fn wrong_typed_metadata_is_ignored_when_installing_and_refused_when_authoring() 
     assert!(String::from_utf8_lossy(&out.stderr).contains("tilr/store 1.2.0: plugin.json tags"));
     f.ok(&["rollback", "tilr/store"]);
     assert_eq!(resolved(&f.list(&[]), "tilr/store")["title"], "Store");
+    f.write("theme", "1.2.0", r#","tags":"x""#);
     f.release("store", "1.3.0", r#","tags":7"#);
-    f.release("theme", "1.1.0", r#","tags":"x""#);
     f.ok(&["install", f.source(), "tilr/theme"]);
     let out = f.ok(&["update", "all"]);
     assert!(out.contains("tilr/store updated 1.1.0 → 1.3.0"), "{out}");
@@ -289,13 +297,7 @@ fn wrong_typed_metadata_is_ignored_when_installing_and_refused_when_authoring() 
     f.ok(&["fork", "tilr/store", "--ns", "me", "--into", "forks/store"]);
     let fork = f.dir.join("forks/store");
     assert_eq!(f.json(&fork.join("packages/store/plugin.json"))["tags"], 7);
-    let error = f.fails(&[
-        "commit",
-        fork.to_str().unwrap(),
-        "2.0.0",
-        "--package",
-        "me/store",
-    ]);
+    let error = f.fails(&["commit", fork.to_str().unwrap(), "2.0.0"]);
     assert!(
         error.contains("invalid plugin.json: tags must be an array of strings")
             && error.contains("Error kind: invalid_manifest"),
@@ -328,13 +330,7 @@ fn fork_and_commit_carry_the_metadata_unchanged() {
     assert_eq!(m["tags"], serde_json::json!(["ui", "colors"]));
 
     fs::write(fork.join("packages/theme/dist/index.js"), "my theme").unwrap();
-    f.ok(&[
-        "commit",
-        fork.to_str().unwrap(),
-        "1.1.0",
-        "--package",
-        "me/theme",
-    ]);
+    f.ok(&["commit", fork.to_str().unwrap(), "1.1.0"]);
     let m = f.json(&manifest);
     assert_eq!(m["version"], "1.1.0");
     assert_eq!(
@@ -412,7 +408,7 @@ fn catalog_update_publishes_historical_releases_with_wrong_typed_metadata() {
     f.release("store", "1.2.0", r#","title":"New""#);
     fs::write(f.dir.join("sources.txt"), format!("{}\n", f.source())).unwrap();
     let out = f.ok(&["catalog", "update"]);
-    assert!(out.contains("Catalog ready: 4 release(s)"), "{out}");
+    assert!(out.contains("Catalog ready: 6 release(s)"), "{out}");
     let old = f.json(
         &f.dir
             .join("catalog/namespaces/tilr/store/versions/1.1.0/release.json"),
@@ -433,7 +429,7 @@ fn catalog_update_publishes_historical_releases_with_wrong_typed_metadata() {
 fn init_multi_creates_a_multi_package_repository_that_takes_more_packages() {
     let f = Fixture::new();
     let out = f.ok(&["init", "acme/one", "--into", "packages", "--multi"]);
-    assert!(out.contains("Git commit and tag acme/one@0.1.0"), "{out}");
+    assert!(out.contains("Git commit and tag v0.1.0"), "{out}");
     let repo = f.dir.join("packages");
     assert_eq!(
         f.json(&repo.join("gitpm.json")),
@@ -444,10 +440,8 @@ fn init_multi_creates_a_multi_package_repository_that_takes_more_packages() {
     assert_eq!((&m["id"], &m["title"]), (&"acme/one".into(), &"one".into()));
     f.ok(&["init", "acme/two", "--into", "packages"]);
     assert!(repo.join("packages/two/dist/index.js").is_file());
-    assert_eq!(
-        f.git_output(&repo, &["tag", "--list"]),
-        "acme/one@0.1.0\nacme/two@0.1.0"
-    );
+    assert_eq!(f.git_output(&repo, &["tag", "--list"]), "v0.1.0");
+    f.ok(&["commit", repo.to_str().unwrap(), "0.1.1"]);
     f.ok(&["install", repo.to_str().unwrap(), "acme/two"]);
 
     // An empty folder (not a repository yet) works with --multi only.
@@ -500,7 +494,7 @@ fn init_no_release_commits_without_a_tag() {
     assert!(error.contains("Error kind: no_releases"), "{error}");
     // The first version is released later, as the output says.
     let out = f.ok(&["commit", repo.to_str().unwrap(), "0.1.0"]);
-    assert!(out.contains("tag acme/draft@0.1.0"), "{out}");
+    assert!(out.contains("tag v0.1.0"), "{out}");
     assert_eq!(f.git_output(&repo, &["rev-list", "--count", "HEAD"]), "1");
     f.ok(&["install", repo.to_str().unwrap()]);
 
@@ -513,16 +507,10 @@ fn init_no_release_commits_without_a_tag() {
         "--no-release",
     ]);
     assert_eq!(f.git_output(&f.dir.join("multi"), &["tag", "--list"]), "");
-    f.ok(&[
-        "commit",
-        f.dir.join("multi").to_str().unwrap(),
-        "0.1.0",
-        "--package",
-        "acme/a",
-    ]);
+    f.ok(&["commit", f.dir.join("multi").to_str().unwrap(), "0.1.0"]);
     assert_eq!(
         f.git_output(&f.dir.join("multi"), &["tag", "--list"]),
-        "acme/a@0.1.0"
+        "v0.1.0"
     );
 }
 
@@ -545,8 +533,8 @@ fn install_and_update_say_what_they_did() {
     let out = f.ok(&["update", "all"]);
     assert!(
         out.contains("tilr/store updated 1.1.0 → 1.2.0\n")
-            && out.contains("tilr/theme up to date (1.0.0)\n")
-            && out.contains("1 updates, 0 installs, 0 kept back."),
+            && out.contains("tilr/theme updated 1.0.0 → 1.2.0\n")
+            && out.contains("2 updates, 0 installs, 0 kept back."),
         "{out}"
     );
 }
@@ -583,9 +571,9 @@ fn update_all_reports_kept_back_packages_and_replace_back_without_a_replacement(
     f.release("theme", "1.1.0", "");
     let out = f.ok(&["update", "all"]);
     assert!(
-        out.contains("tilr/theme kept back at 1.0.0 (latest 1.1.0: dependency constraints)")
-            && out.contains("tilr/store up to date (1.0.1)")
-            && out.contains("0 updates, 0 installs, 1 kept back."),
+        out.contains("tilr/theme kept back at 1.0.1 (latest 1.1.0: dependency constraints)")
+            && out.contains("tilr/store updated 1.0.1 → 1.1.0")
+            && out.contains("1 updates, 0 installs, 1 kept back."),
         "{out}"
     );
     // Nothing to switch back from: a clear refusal, nothing changes.
@@ -598,10 +586,10 @@ fn update_all_reports_kept_back_packages_and_replace_back_without_a_replacement(
     // A consumer whose dependency was removed with force is skipped with the reason from
     // the plan, not a failure, and the dependency is not installed again.
     f.ok(&["uninstall", "tilr/theme", "--force"]);
-    f.release("store", "1.0.2", r#","dependencies":{"tilr/theme":"~1.0"}"#);
+    f.release("store", "1.2.0", r#","dependencies":{"tilr/theme":"~1.0"}"#);
     let out = f.ok(&["update", "all"]);
     assert!(
-        out.contains("tilr/store skipped at 1.0.1 (dependency tilr/theme is not installed)")
+        out.contains("tilr/store skipped at 1.1.0 (dependency tilr/theme is not installed)")
             && out.contains("0 updates, 0 installs, 0 kept back."),
         "{out}"
     );

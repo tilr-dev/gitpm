@@ -44,7 +44,7 @@ def usage_case(name: str, doc: str, argv, needle: str, spec: str):
 
 for _name, _doc, _argv, _needle, _spec in [
     # 1. flags on the wrong command
-    ("ref_with_fork", "1. --ref with fork", ["fork", ID, "--ns", "mine", "--into", "/fx/forked", "--ref", f"{ID}@0.1.0"],
+    ("ref_with_fork", "1. --ref with fork", ["fork", ID, "--ns", "mine", "--into", "/fx/forked", "--ref", f"v0.1.0"],
      "--ref is not valid for fork", f"{OPT}#misplaced-flag"),
     ("version_with_install", "1. --version with install", ["install", REPO, "--version", "0.1.0"],
      "--version is not valid for install", f"{OPT}#misplaced-flag"),
@@ -216,7 +216,7 @@ def check_tty_term_dumb(t: T):
 def check_exit_code_without_updates(t: T):
     """7. The exit code is 0 with and without updates (README: updates do not change it)."""
     t.eq(t.gitpm("check").code, 0, "with an update")
-    t.gitpm_ok("update", ID, "--ref", f"{ID}@0.2.0")
+    t.gitpm_ok("update", ID, "--ref", f"v0.2.0")
     r = t.gitpm("check")
     t.eq(r.code, 0, "without updates")
     t.has(r.out, "Updates: 0.")

@@ -75,7 +75,7 @@ def restore_registered(t: T):
 @case(fixture="catalog", spec=["catalog/published-versions-are-immutable"])
 def register_same_release(t: T):
     """README: repeated register of the same release is allowed; catalog byte-identical."""
-    second_ok(t, "register", t.repo("dan/hello"), "--ref", "dan/hello@0.1.1")
+    second_ok(t, "register", t.repo("dan/hello"), "--ref", "v0.1.1")
 
 
 @case(fixture="catalog", spec=["catalog/published-versions-are-immutable#regenerate"])
@@ -95,7 +95,7 @@ def commit_existing_version(t: T):
     head, tags = t.rev(repo), t.git(repo, "tag", "--list")
     before = everything(t)
     r = t.gitpm_err("commit", repo, "0.1.1", kind="version_conflict")
-    t.has(r.err.lower(), "tag already exists: dan/hello@0.1.1")
+    t.has(r.err.lower(), "tag already exists: v0.1.1")
     t.same(before, "everything (incl. the uncommitted edit)")
     t.eq((t.rev(repo), t.git(repo, "tag", "--list")), (head, tags), "HEAD and tags")
 

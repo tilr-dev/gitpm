@@ -12,10 +12,10 @@ def hello(t: T):
 @hello.check
 def _(t: T):
     repo = t.repo("dan/hello")
-    t.eq(t.git(repo, "tag", "--list"), "dan/hello@0.1.0", "tags")
+    t.eq(t.git(repo, "tag", "--list"), "v0.1.0", "tags")
     t.eq(t.git(repo, "branch", "--show-current"), "main", "branch")
     t.eq(t.git(repo, "status", "--porcelain"), "", "clean worktree")
-    t.has(t.git(repo, "show", "dan/hello@0.1.0:plugin.json"), '"version": "0.1.0"')
+    t.has(t.git(repo, "show", "v0.1.0:plugin.json"), '"version": "0.1.0"')
 
 
 @fixture(requires=["hello"])
@@ -29,8 +29,8 @@ def hello_releases(t: T):
 @hello_releases.check
 def _(t: T):
     repo = t.repo("dan/hello")
-    t.eq(t.git(repo, "tag", "--list").split(), ["dan/hello@0.1.0", "dan/hello@0.1.1", "dan/hello@0.2.0"], "tags")
-    t.ok(t.rev(repo) != t.rev(repo, "dan/hello@0.2.0"), "HEAD is past the last release")
+    t.eq(t.git(repo, "tag", "--list").split(), ["v0.1.0", "v0.1.1", "v0.2.0"], "tags")
+    t.ok(t.rev(repo) != t.rev(repo, "v0.2.0"), "HEAD is past the last release")
     t.has(t.git(repo, "show", "HEAD:plugin.json"), '"version": "0.2.0"')
 
 
@@ -43,7 +43,7 @@ def numeric(t: T):
 
 @numeric.check
 def _(t: T):
-    t.eq(sorted(t.git("dan/num", "tag", "--list").split()), ["dan/num@1.10.0", "dan/num@1.9.0"], "tags")
+    t.eq(sorted(t.git("dan/num", "tag", "--list").split()), ["v1.10.0", "v1.9.0"], "tags")
 
 
 @fixture(requires=["hello"], gitpm=True)
@@ -56,7 +56,7 @@ def hello_installed(t: T):
 def _(t: T):
     p = t.package("dan/hello")
     t.eq(p["current"]["version"], "0.1.0", "current version")
-    t.eq(p["current"]["commit"], t.rev("dan/hello", "dan/hello@0.1.0"), "current commit")
+    t.eq(p["current"]["commit"], t.rev("dan/hello", "v0.1.0"), "current commit")
     t.eq(p["previous"], None, "previous")
     t.eq(p["enabled"], True, "enabled")
     t.eq(t.rev(t.clone("dan/hello")), p["current"]["commit"], "clone HEAD")
@@ -69,7 +69,7 @@ def catalog(t: T):
     """Local catalog /fx/catalog: dan/hello 0.1.0, 0.1.1, 0.2.0 and dan/num 1.9.0, 1.10.0; empty workspace."""
     for id, versions in [("dan/hello", ["0.1.0", "0.1.1", "0.2.0"]), ("dan/num", ["1.9.0", "1.10.0"])]:
         for v in versions:
-            t.gitpm_ok("register", t.repo(id), "--ref", f"{id}@{v}")
+            t.gitpm_ok("register", t.repo(id), "--ref", f"v{v}")
 
 
 @catalog.check

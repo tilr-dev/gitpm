@@ -31,7 +31,7 @@ pub enum CheckStatus {
     OtherCatalog,
     /// Origin row: the installed version is newer than every release tag of the origin.
     NewerThanOrigin,
-    /// Origin row: the origin has no `ID@VERSION` release tag of the package.
+    /// Origin row: the origin has no `vVERSION` release tag of the package.
     NoReleases,
     /// Origin row: the origin could not be read; see [`CheckRow::problem`].
     OriginUnreachable,
@@ -70,7 +70,7 @@ impl CheckStatus {
 pub enum CheckSource {
     /// The selected catalog.
     Catalog,
-    /// The release tags of the recorded source (`git ls-remote`, nothing fetched).
+    /// The release tags of the recorded source (verified in an isolated temporary clone).
     Origin,
 }
 impl CheckSource {
@@ -207,9 +207,9 @@ fn latest_version(catalog: &Catalog, id: &str, installed: &str) -> Option<String
 /// [`CheckStatus::OtherCatalog`] and never offered an update, unless this catalog has a
 /// different source ([`CheckStatus::DifferentSource`]) or exactly the installed release
 /// ([`CheckStatus::UpToDate`]). Every other package gets an origin row from the release
-/// tags of its recorded source: this runs `git ls-remote --tags --heads` (bounded, once per
-/// source, nothing fetched); a source that is not a URL or an absolute path, or uses a
-/// remote helper, is not queried and its row is [`CheckStatus::OriginUnreachable`].
+/// tags of its recorded source: remote refs and a temporary clone are shared per source;
+/// installed clones and workspace state are unchanged. A source that is not a URL or
+/// an absolute path, or uses a remote helper, is not queried and its row is [`CheckStatus::OriginUnreachable`].
 pub fn compare_in(state: &State, catalog: &Catalog, location: Option<&str>) -> Vec<CheckRow> {
     compare_in_with_ssh(state, catalog, location, false)
 }
@@ -419,9 +419,12 @@ fn upstream(
     }
 }
 
-/// Tags and branches per origin, read once per distinct source with `git ls-remote`.
+/// Remote refs and isolated release snapshots, shared by packages from one origin.
 #[derive(Default)]
-struct Origins(BTreeMap<String, std::result::Result<transport::RemoteRefs, String>>);
+struct Origins {
+    refs: BTreeMap<String, std::result::Result<transport::RemoteRefs, String>>,
+    snapshots: BTreeMap<String, std::result::Result<crate::catalog::Scratch, String>>,
+}
 impl Origins {
     /// Tags and branches of `source`; `Err` is the classified reason the origin was
     /// unreadable.
@@ -430,7 +433,7 @@ impl Origins {
         source: &str,
         custom_ssh: bool,
     ) -> std::result::Result<&transport::RemoteRefs, String> {
-        self.0
+        self.refs
             .entry(source.to_owned())
             .or_insert_with(|| {
                 // Never hand git a source it would run a helper for, or resolve
@@ -448,23 +451,34 @@ impl Origins {
             .as_ref()
             .map_err(Clone::clone)
     }
-    /// The versions of the `ID@VERSION` tags on `source` by name (their manifests are
-    /// verified only when updating); `Err` is the classified reason the origin was
-    /// unreadable.
+    /// Verify the package ID and version at each tag in a temporary clone. Neither
+    /// the installed clone nor the workspace is opened for mutation.
     fn versions(
         &mut self,
         source: &str,
         id: &str,
         custom_ssh: bool,
     ) -> std::result::Result<Vec<String>, String> {
-        let tags = &self.refs(source, custom_ssh)?.tags;
-        let prefix = format!("{id}@");
-        Ok(tags
-            .keys()
-            .filter_map(|name| name.strip_prefix(&prefix))
-            .filter(|version| version_key(version).is_ok())
-            .map(str::to_owned)
-            .collect())
+        // Validate the source before handing it to Git, also for upstream checks.
+        self.refs(source, custom_ssh)?;
+        let snapshot = self
+            .snapshots
+            .entry(source.to_owned())
+            .or_insert_with(|| {
+                let clone = || -> Result<crate::catalog::Scratch> {
+                    let temp = crate::catalog::Scratch::new("pm-check")?;
+                    transport::clone_repo(&temp.0, source, "repo", custom_ssh)?;
+                    Ok(temp)
+                };
+                clone().map_err(|e| crate::auth::failure(&e.to_string()).to_owned())
+            })
+            .as_ref()
+            .map_err(Clone::clone)?;
+        match crate::releases::discover_with_ssh(&snapshot.0.join("repo"), Some(id), custom_ssh) {
+            Ok(tags) => Ok(tags.into_iter().map(|tag| tag.manifest.version).collect()),
+            Err(Error::NoReleases(_)) => Ok(Vec::new()),
+            Err(e) => Err(crate::auth::failure(&e.to_string()).to_owned()),
+        }
     }
     /// Newest of [`Origins::versions`] offered to a package at `installed`.
     fn latest(
@@ -661,7 +675,7 @@ pub struct UnsatisfiedDependency {
 
 /// Read the workspace state without opening it and report every installed package:
 /// from `catalog` when given and it lists the package, otherwise from the release tags
-/// of its recorded origin (`git ls-remote`, nothing fetched or written). An empty or
+/// of its recorded origin (release manifests verified in a temporary clone). An empty or
 /// missing workspace reads nothing. An unreachable origin only marks its own rows
 /// [`CheckStatus::OriginUnreachable`]; a broken or unreadable catalog fails the check.
 pub fn check(root: &Path, catalog: Option<&str>) -> Result<CheckReport> {
@@ -810,7 +824,7 @@ mod tests {
                         } else {
                             "b".repeat(40)
                         },
-                        reference: format!("vendor/demo@{version}"),
+                        reference: format!("v{version}"),
                         files: Default::default(),
                         build: None,
                         path: None,
@@ -1155,6 +1169,21 @@ mod tests {
     }
 
     #[test]
+    fn check_ignores_repository_tags_of_other_package_ids() {
+        use crate::test_support::{Author, TempDir, git, manifest, write_manifest};
+        let dir = TempDir::new("check-tag-membership");
+        let author = Author::new(dir.join("author"), "dan/demo");
+        let manager = crate::Manager::open(dir.join("workspace")).unwrap();
+        manager.install(author.source()).unwrap();
+        write_manifest(&author.path, &manifest("other/demo", "2.0.0"));
+        git(&author.path, &["commit", "-q", "-am", "rename package"]);
+        git(&author.path, &["tag", "v2.0.0"]);
+        let report = check(&dir.join("workspace"), None).unwrap();
+        assert_eq!(report.rows[0].latest.as_deref(), Some("0.1.0"));
+        assert_eq!(report.rows[0].status, CheckStatus::UpToDate);
+    }
+
+    #[test]
     fn check_reads_a_local_v2_catalog() {
         use crate::test_support::{TempDir, release};
         let dir = TempDir::new("check");
@@ -1198,12 +1227,8 @@ mod tests {
         let branch = Author::new(dir.join("branch"), "acme/branch");
         let m = Manager::open_with(&root, Options::default()).unwrap();
         m.install(released.source()).unwrap();
-        m.install_package(
-            pinned.source(),
-            None,
-            InstallTarget::Ref("acme/pinned@0.1.0".into()),
-        )
-        .unwrap();
+        m.install_package(pinned.source(), None, InstallTarget::Ref("v0.1.0".into()))
+            .unwrap();
         m.install_package(branch.source(), None, InstallTarget::Dev)
             .unwrap();
         drop(m);
@@ -1215,7 +1240,7 @@ mod tests {
                 .map(|r| (r.id, r.status, r.mode))
                 .collect()
         };
-        let pinned_mode = Mode::Pinned("acme/pinned@0.1.0".into());
+        let pinned_mode = Mode::Pinned("v0.1.0".into());
         let branch_mode = Mode::Branch("main".into());
         assert_eq!(
             summary(&root),
@@ -1319,9 +1344,9 @@ mod tests {
         // Every origin status, each distinct origin read once.
         let newer = Author::new(dir.join("newer"), "acme/newer");
         let untagged = Author::untagged(dir.join("untagged"), "acme/untagged", "0.1.0");
-        // Tags of other packages and non-release names do not count.
+        // Legacy package tags and non-release names do not count.
         crate::test_support::git(&untagged.path, &["tag", "acme/other@9.0.0"]);
-        crate::test_support::git(&untagged.path, &["tag", "v9.0.0"]);
+        crate::test_support::git(&untagged.path, &["tag", "acme/untagged@9.0.0"]);
         crate::test_support::git(&untagged.path, &["tag", "acme/untagged@banana"]);
         let state = State {
             packages: [

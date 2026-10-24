@@ -42,7 +42,7 @@ context: |
   Catalogs are written only to local folders; publishing/hosting is the user's job.
 
   Compatibility: no backward compatibility before 1.0 (owner decision 2026-10-18, TILR-38):
-  package IDs are always namespace/name, release tags always ID@VERSION, catalogs always the
+  package IDs are always namespace/name, release tags always vVERSION (one version for every package in a repository), catalogs always the
   static file tree; there are no CLI aliases, migrations or compatibility readers, and the FFI
   promises no stability (gitpm-ffi carries the library version). state.json carries
   "format": 1; a gitpm reads and writes only its own format, any other one (or none) is

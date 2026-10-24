@@ -25,7 +25,7 @@ from dagger import DefaultPath, Doc, Ignore, dag, function, object_type
 
 RUST_IMAGE = "rust:1.94.0-bookworm"
 RUNTIME_IMAGE = "debian:bookworm-slim"
-APT = ["git", "python3", "ca-certificates", "curl", "bsdutils", "procps"]
+APT = ["git", "openssh-client", "python3", "ca-certificates", "curl", "bsdutils", "procps"]
 
 # Same paths in every container: test binaries bake CARGO_MANIFEST_DIR and
 # CARGO_BIN_EXE_gitpm (/target/debug/gitpm) at compile time.

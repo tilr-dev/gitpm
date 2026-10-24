@@ -62,17 +62,17 @@ def unreachable_second_source(t: T):
 
 @case(fixture="g4_sources_catalog", spec=["package-ids/broken-historical-tags-are-skipped", "package-ids/release-tag-names#tag-disagrees-with-the-manifest"])
 def broken_latest_tag_in_second_source(t: T):
-    """dan/bad: valid 1.0.0 plus tag dan/bad@2.0.0 whose manifest says 1.0.1 (broken latest):
+    """dan/bad: valid 1.0.0 plus tag v2.0.0 whose manifest says 1.0.1 (broken latest):
     refused (version_conflict), neither dan/bad 1.0.0 nor hello 0.3.0 written; retry after
     deleting the broken tag publishes both."""
     def bad():
         t.new_package("dan/bad", "1.0.0")
         t.release("dan/bad", "1.0.1", tag=False)
-        t.tag("dan/bad", "dan/bad@2.0.0")
+        t.tag("dan/bad", "v2.0.0")
         add_source(t, "../repos/dan/bad")
 
     def fix():
-        t.git("dan/bad", "tag", "-d", "dan/bad@2.0.0")
+        t.git("dan/bad", "tag", "-d", "v2.0.0")
 
     failed_then_retry(t, bad, fix, "version_conflict", "latest release tag is broken")
     t.ok(t.catalog_release("dan/bad", "1.0.0").exists(), "dan/bad 1.0.0 published on retry")
@@ -85,11 +85,11 @@ def malformed_manifest_tag_newer_than_valid(t: T):
     def bad():
         t.new_package("dan/bad", "1.0.0")
         t.commit("dan/bad", "broken", {"plugin.json": "{ not json"})
-        t.tag("dan/bad", "dan/bad@1.1.0")
+        t.tag("dan/bad", "v1.1.0")
         t.commit("dan/bad", "repair", {"plugin.json": json.dumps({"id": "dan/bad", "version": "1.0.0"})})
         add_source(t, "../repos/dan/bad")
 
-    failed_then_retry(t, bad, lambda: t.git("dan/bad", "tag", "-d", "dan/bad@1.1.0"),
+    failed_then_retry(t, bad, lambda: t.git("dan/bad", "tag", "-d", "v1.1.0"),
                       "version_conflict", "latest release tag is broken")
 
 
@@ -99,12 +99,12 @@ def moved_old_release(t: T):
     published record is kept with a warning, and hello 0.3.0 is published (change
     no-tag-immutability)."""
     spaced = t.root / "spaced repos/dan/spaced"
-    original = t.rev(spaced, "dan/spaced@1.0.0")
+    original = t.rev(spaced, "v1.0.0")
     published = t.catalog_release("dan/spaced", "1.0.0").read_bytes()
     commit = t.release(HELLO, "0.3.0")
     t.git(spaced, "checkout", "-q", "-b", "side", original)
     moved = t.commit(spaced, "rewritten 1.0.0", {"dist/index.js": "rewritten\n"})
-    t.tag(spaced, "dan/spaced@1.0.0", force=True)
+    t.tag(spaced, "v1.0.0", force=True)
     t.git(spaced, "checkout", "-q", "main")
     r = update(t)
     t.has(r.err, f"Warning: release dan/spaced@1.0.0: tag now points to {moved[:12]}; the published record is kept")
@@ -147,7 +147,7 @@ def build_metadata_preserved(t: T):
     catalog-update rediscovers the same tag."""
     t.release(HELLO, "0.3.0")
     build = {"url": "https://pkg.example.invalid/hello-0.3.0.tar.zst", "sha256": "ab" * 32}
-    t.gitpm_ok("register", t.repo(HELLO), "--ref", f"{HELLO}@0.3.0",
+    t.gitpm_ok("register", t.repo(HELLO), "--ref", f"v0.3.0",
             "--build-url", build["url"], "--build-sha256", build["sha256"])
     before = t.snap(t.catalog)
     update(t)

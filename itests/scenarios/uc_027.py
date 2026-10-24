@@ -27,12 +27,12 @@ def register_into_new_catalog(t: T):
     """1. A committed scoped tag registered into a new local catalog: exact commit,
     manifest, reference and committed file hashes; nothing installed."""
     t.ok(t.catalog_empty(), "no catalog yet")
-    out = t.gitpm_ok("register", t.repo(ID), "--ref", f"{ID}@0.1.0").json()
-    commit = t.rev(ID, f"{ID}@0.1.0")
+    out = t.gitpm_ok("register", t.repo(ID), "--ref", f"v0.1.0").json()
+    commit = t.rev(ID, f"v0.1.0")
     stored = release(t, "0.1.0")
     t.eq(out, stored, "printed release == stored release.json")
     t.eq(stored["commit"], commit, "commit")
-    t.eq(stored["reference"], f"{ID}@0.1.0", "reference")
+    t.eq(stored["reference"], f"v0.1.0", "reference")
     t.eq(stored["source"], str(t.repo(ID)), "source (canonical path)")
     t.eq(stored["manifest"]["id"], ID, "manifest id")
     t.eq(stored["manifest"]["version"], "0.1.0", "manifest version")
@@ -51,9 +51,9 @@ def identical_registration_is_safe(t: T):
     """2. Repeating the same registration (same tag, or the commit SHA of it) succeeds and
     changes no catalog byte."""
     before = t.snap(t.catalog)
-    t.gitpm_ok("register", t.repo(ID), "--ref", f"{ID}@0.1.1")
+    t.gitpm_ok("register", t.repo(ID), "--ref", f"v0.1.1")
     t.same(before, "catalog after identical re-registration")
-    t.gitpm_ok("register", t.repo(ID), "--ref", t.rev(ID, f"{ID}@0.1.1"))
+    t.gitpm_ok("register", t.repo(ID), "--ref", t.rev(ID, f"v0.1.1"))
     t.same(before, "catalog after re-registration by commit SHA")
     t.ok(not t.ws.exists(), "nothing installed")
 
@@ -65,8 +65,8 @@ def different_commit_same_version_conflicts(t: T):
     before = t.snap(t.catalog)
     old = release(t, "0.1.1")
     t.commit(ID, "rewritten 0.1.1", {"dist/index.js": "rewritten\n"})
-    t.tag(ID, f"{ID}@0.1.1", force=True)
-    r = t.gitpm_err("register", t.repo(ID), "--ref", f"{ID}@0.1.1", kind="version_conflict", contains="immutable")
+    t.tag(ID, f"v0.1.1", force=True)
+    r = t.gitpm_err("register", t.repo(ID), "--ref", f"v0.1.1", kind="version_conflict", contains="immutable")
     t.same(before, "catalog")
     t.eq(release(t, "0.1.1"), old, "stored release")
     t.ok(not t.ws.exists(), "nothing installed")
@@ -82,7 +82,7 @@ def other_source_same_id_conflicts(t: T):
     t.run("git", "clone", "-q", t.repo(ID), mirror, check=True)
     before = t.snap(t.catalog)
     errors = []
-    for ref in [f"{ID}@0.3.0", f"{ID}@0.1.0"]:
+    for ref in [f"v0.3.0", f"v0.1.0"]:
         errors.append(t.gitpm_err("register", mirror, "--ref", ref, kind="catalog", contains="different source").err)
         t.same(before, f"catalog after refused {ref}")
     t.ok(not t.ws.exists(), "nothing installed")
@@ -96,7 +96,7 @@ def uncommitted_dist_does_not_affect_hashes(t: T):
     commit = t.release(ID, "0.3.0", files={"dist/extra.js": "committed extra\n"})
     t.write(ID, {"dist/index.js": "UNCOMMITTED EDIT\n", "dist/extra.js": "dirty\n", "dist/untracked.js": "x\n"})
     others = t.snap(t.catalog / "namespaces/dan/hello/versions", t.catalog / "namespaces/dan/num")
-    t.gitpm_ok("register", t.repo(ID), "--ref", f"{ID}@0.3.0")
+    t.gitpm_ok("register", t.repo(ID), "--ref", f"v0.3.0")
     stored = release(t, "0.3.0")
     t.eq(stored["commit"], commit, "commit")
     t.eq(stored["files"], {"index.js": committed(t.repo(ID), commit, "dist/index.js"),

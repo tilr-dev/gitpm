@@ -59,7 +59,7 @@ impl Fixture {
         fs::write(self.author.join("dist/index.js"), version).unwrap();
         git(&self.author, &["add", "."]);
         git(&self.author, &["commit", "-m", version]);
-        git(&self.author, &["tag", &format!("vendor/module@{version}")]);
+        git(&self.author, &["tag", &format!("v{version}")]);
     }
 }
 impl Drop for Fixture {
@@ -182,7 +182,7 @@ fn fork_clones_source_submodules_and_installs_only_committed_dist() {
     fs::write(f.author.join("src/main.js"), "source, not distribution").unwrap();
     git(&f.author, &["add", "."]);
     git(&f.author, &["commit", "-qm", "source and submodule"]);
-    git(&f.author, &["tag", "-f", "vendor/module@0.1.0"]);
+    git(&f.author, &["tag", "-f", "v0.1.0"]);
     let m = f.installed();
     let original_dist = fs::read(f.root.join("dist/vendor/module/index.js")).unwrap();
     let before = state(&m);
@@ -310,7 +310,7 @@ fn explicit_fork_toggle_update_rollback_does_not_replace_original_identity() {
     fs::write(fork.join("dist/index.js"), "fork release").unwrap();
     git(&fork, &["add", "."]);
     git(&fork, &["commit", "-m", "release"]);
-    git(&fork, &["tag", "mine/module@0.1.1"]);
+    git(&fork, &["tag", "v0.1.1"]);
     m.update("mine/module").unwrap();
     assert_eq!(
         fs::read_to_string(f.root.join("dist/mine/module/index.js")).unwrap(),

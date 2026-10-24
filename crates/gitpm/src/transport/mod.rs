@@ -35,6 +35,7 @@ pub(crate) trait Transport {
     fn repository_root(&self, repo: &Path, custom_ssh: bool) -> Result<String>;
     fn index_path(&self, repo: &Path, custom_ssh: bool) -> Result<String>;
     fn head_subject(&self, repo: &Path, custom_ssh: bool) -> Result<String>;
+    fn commit_count(&self, repo: &Path, reference: &str, custom_ssh: bool) -> Result<String>;
     fn create_tag(&self, repo: &Path, tag: &str, custom_ssh: bool) -> Result<()>;
     fn matching_tags(&self, repo: &Path, pattern: &str, custom_ssh: bool) -> Result<String>;
     fn config_set_local(&self, repo: &Path, key: &str, value: &str, custom_ssh: bool)
@@ -60,7 +61,6 @@ pub(crate) trait Transport {
         custom_ssh: bool,
     ) -> Result<()>;
     fn reset_paths(&self, repo: &Path, paths: &[&str], custom_ssh: bool) -> Result<()>;
-    fn create_tags_at_head(&self, repo: &Path, tags: &[String], custom_ssh: bool) -> Result<()>;
 
     /// Query an object expression (including revision/path and peel expressions).
     fn object_type(&self, repo: &Path, object: &str, custom_ssh: bool) -> Result<String>;
@@ -194,8 +194,16 @@ impl Transport for SystemTransport {
     fn head_subject(&self, repo: &Path, custom_ssh: bool) -> Result<String> {
         system::git(repo, &["log", "-1", "--format=%s"], custom_ssh)
     }
+    fn commit_count(&self, repo: &Path, reference: &str, custom_ssh: bool) -> Result<String> {
+        system::git(repo, &["rev-list", "--count", reference], custom_ssh)
+    }
     fn create_tag(&self, repo: &Path, tag: &str, custom_ssh: bool) -> Result<()> {
-        system::git(repo, &["tag", "--", tag], custom_ssh).map(|_| ())
+        system::git(
+            repo,
+            &["tag", "-m", &format!("Release {tag}"), "--", tag],
+            custom_ssh,
+        )
+        .map(|_| ())
     }
     fn matching_tags(&self, repo: &Path, pattern: &str, custom_ssh: bool) -> Result<String> {
         system::git(repo, &["tag", "--list", "--", pattern], custom_ssh)
@@ -292,19 +300,6 @@ impl Transport for SystemTransport {
         let mut args = vec!["reset", "-q", "--"];
         args.extend_from_slice(paths);
         system::git(repo, &args, custom_ssh).map(|_| ())
-    }
-    fn create_tags_at_head(&self, repo: &Path, tags: &[String], custom_ssh: bool) -> Result<()> {
-        let head = self.object_id(repo, "HEAD", custom_ssh)?;
-        let input: String = tags
-            .iter()
-            .map(|tag| format!("create refs/tags/{tag} {head}\n"))
-            .collect();
-        system::git_with_input(
-            repo,
-            &["update-ref", "--stdin"],
-            input.into_bytes(),
-            custom_ssh,
-        )
     }
 
     fn object_type(&self, repo: &Path, object: &str, custom_ssh: bool) -> Result<String> {
@@ -737,9 +732,6 @@ pub(crate) fn commit(
 pub(crate) fn reset_paths(repo: &Path, paths: &[&str], custom_ssh: bool) -> Result<()> {
     backend().reset_paths(repo, paths, custom_ssh)
 }
-pub(crate) fn create_tags_at_head(repo: &Path, tags: &[String], custom_ssh: bool) -> Result<()> {
-    backend().create_tags_at_head(repo, tags, custom_ssh)
-}
 pub(crate) fn object_type(repo: &Path, object: &str, custom_ssh: bool) -> Result<String> {
     backend().object_type(repo, object, custom_ssh)
 }
@@ -927,4 +919,8 @@ pub(crate) fn remote_tags(repo: &Path, remote: &str, custom_ssh: bool) -> Result
 
 pub(crate) fn artifact_get(url: &str) -> Result<Option<Vec<u8>>> {
     backend().artifact_get(url)
+}
+
+pub(crate) fn commit_count(repo: &Path, reference: &str, custom_ssh: bool) -> Result<String> {
+    backend().commit_count(repo, reference, custom_ssh)
 }

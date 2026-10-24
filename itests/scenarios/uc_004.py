@@ -17,12 +17,12 @@ def inspect_scaffold(t: T, repo: Path, plugin_id: str):
     manifest = json.loads((repo / "plugin.json").read_text())
     t.eq(manifest, {"id": plugin_id, "version": "0.1.0", "dependencies": {}, "title": name}, "plugin.json")
     t.has((repo / "dist/index.js").read_text(), "export const greeting", f"{name} 0.1.0")
-    t.has((repo / "README.md").read_text(), f"# {name}", f"--ref {plugin_id}@0.1.0")
+    t.has((repo / "README.md").read_text(), f"# {name}", f"--ref v0.1.0")
     t.ok((repo / ".gitignore").is_file(), ".gitignore exists")
     t.eq(t.git(repo, "branch", "--show-current"), "main", "branch")
     t.eq(t.git(repo, "rev-list", "--count", "HEAD"), "1", "commits")
-    t.eq(t.git(repo, "tag", "--list"), f"{plugin_id}@0.1.0", "tags")
-    t.eq(t.rev(repo, f"{plugin_id}@0.1.0"), t.rev(repo), "tag points at HEAD")
+    t.eq(t.git(repo, "tag", "--list"), f"v0.1.0", "tags")
+    t.eq(t.rev(repo, f"v0.1.0"), t.rev(repo), "tag points at HEAD")
     t.eq(t.git(repo, "ls-files").split(), [".gitignore", "README.md", "dist/index.js", "plugin.json"], "tracked")
     t.eq(t.git(repo, "status", "--porcelain", "--ignored"), "", "clean tree")
     t.eq(t.git(repo, "remote"), "", "no remote")
@@ -31,7 +31,7 @@ def inspect_scaffold(t: T, repo: Path, plugin_id: str):
 
 
 def install_scaffold(t: T, repo: Path, plugin_id: str):
-    t.gitpm_ok("install", repo, "--ref", f"{plugin_id}@0.1.0")
+    t.gitpm_ok("install", repo, "--ref", f"v0.1.0")
     p = t.package(plugin_id)
     t.eq(p["current"], {"version": "0.1.0", "commit": t.rev(repo)}, "installed release")
     t.eq((t.dist(plugin_id) / "index.js").read_bytes(), (repo / "dist/index.js").read_bytes(), "dist bytes")
@@ -54,7 +54,7 @@ def init_absolute_path_with_spaces(t: T):
     """init into a new absolute path with spaces."""
     repo = t.root / "my packages/sub dir/demo2"
     r = t.gitpm_ok("init", "dan/demo2", "--into", repo)
-    t.has(r.out, "ID: dan/demo2", "dan/demo2@0.1.0")
+    t.has(r.out, "ID: dan/demo2", "v0.1.0")
     inspect_scaffold(t, repo, "dan/demo2")
     install_scaffold(t, repo, "dan/demo2")
 
@@ -89,7 +89,7 @@ def missing_identity_is_repository_local(t: T):
     t.eq(t.git(repo, "log", "-1", "--format=%an <%ae>"), "Package Demo <demo@example.invalid>", "author")
     t.eq(hashlib.sha256(gitconfig.read_bytes()).hexdigest(), digest, "global config unchanged")
     t.eq(list((t.root / "home").iterdir()), [], "nothing written to HOME")
-    t.eq(t.git(repo, "tag", "--list"), "local/demo3@0.1.0", "tag")
+    t.eq(t.git(repo, "tag", "--list"), "v0.1.0", "tag")
 
 
 @case(spec=[SCAFFOLD])

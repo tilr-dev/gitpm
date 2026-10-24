@@ -82,8 +82,8 @@ pub(crate) fn discover_all_with_ssh(
     let mut releases = BTreeMap::new();
     let mut skipped = Vec::new();
     for name in transport::tags(repo, custom_ssh)?.lines() {
-        // Only `ID@VERSION` is a release tag; `vVERSION` and others are ignored.
-        let Some(version) = name.strip_prefix(&format!("{id}@")) else {
+        // One repository tag names a release of each package present at its commit.
+        let Some(version) = name.strip_prefix('v') else {
             continue;
         };
         let Ok(key) = version_key(version) else {
@@ -104,6 +104,9 @@ pub(crate) fn discover_all_with_ssh(
             .clone();
         let (manifest, path) = match layout {
             Ok(None) => {
+                if transport::tree_paths(repo, &commit, "plugin.json", custom_ssh)?.is_empty() {
+                    continue;
+                }
                 match transport::show_file(repo, &commit, "plugin.json", custom_ssh).and_then(
                     |text| {
                         serde_json::from_str(&text)
@@ -131,13 +134,9 @@ pub(crate) fn discover_all_with_ssh(
                 }
                 match layout.packages.into_iter().find(|p| p.manifest.id == id) {
                     Some(package) => (package.manifest, package.path),
-                    None => {
-                        skip(format!(
-                            "tag {name} points to commit {} without package {id}",
-                            &commit[..commit.len().min(12)]
-                        ));
-                        continue;
-                    }
+                    // Repository tags predating this ID (or after its removal) are
+                    // not releases of it, including retained upstream tags in forks.
+                    None => continue,
                 }
             }
             Err(e) => {
@@ -146,10 +145,6 @@ pub(crate) fn discover_all_with_ssh(
             }
         };
         if manifest.id != id {
-            skip(format!(
-                "tag {name} disagrees with manifest ID {}",
-                manifest.id
-            ));
             continue;
         }
         if manifest.version != version {
@@ -181,7 +176,7 @@ pub(crate) fn discover_all_with_ssh(
     ensure!(
         !releases.is_empty(),
         NoReleases,
-        "no release tags for {id}; create {id}@VERSION, or install a branch or commit by ref{}",
+        "no release tags for {id}; create vVERSION, or install a branch or commit by ref{}",
         skipped
             .iter()
             .map(|s| format!("; skipped {}", s.reason))
@@ -262,47 +257,33 @@ mod tests {
     }
 
     #[test]
-    fn scoped_tags_are_discovered_in_numeric_order() {
+    fn repository_tags_are_discovered_in_numeric_order() {
         let dir = TempDir::new("releases");
         let author = Author::new(dir.join("repo"), "dan/demo1");
         let c19 = author.release("1.9.0");
         let c110 = author.release("1.10.0");
         author.release("1.2.0");
         let tags = discover(&author.path, None).unwrap();
-        assert_eq!(
-            names(&tags),
-            [
-                "dan/demo1@0.1.0",
-                "dan/demo1@1.2.0",
-                "dan/demo1@1.9.0",
-                "dan/demo1@1.10.0"
-            ]
-        );
+        assert_eq!(names(&tags), ["v0.1.0", "v1.2.0", "v1.9.0", "v1.10.0"]);
         assert_eq!(tags[2].commit, c19);
         assert_eq!(tags[3].manifest.version, "1.10.0");
         let latest = latest(&author.path, None).unwrap();
-        assert_eq!(
-            (latest.name.as_str(), latest.commit),
-            ("dan/demo1@1.10.0", c110)
-        );
+        assert_eq!((latest.name.as_str(), latest.commit), ("v1.10.0", c110));
     }
 
     #[test]
-    fn v_version_tags_are_not_releases() {
+    fn legacy_package_tags_are_not_releases() {
         let dir = TempDir::new("releases");
-        // A repository with only `v0.1.0` has no releases.
         let author = Author::untagged(dir.join("repo"), "dan/demo1", "0.1.0");
-        git(&author.path, &["tag", "v0.1.0"]);
+        git(&author.path, &["tag", "dan/demo1@0.1.0"]);
         let error = discover_all(&author.path, None).unwrap_err();
         assert_eq!(error.kind(), "no_releases");
-        assert!(!error.to_string().contains("v0.1.0"), "{error}");
-        // Next to `ID@VERSION` on another commit it is neither a release nor a conflict.
         let scoped = Author::new(dir.join("scoped"), "dan/demo1");
         fs::write(scoped.path.join("dist/index.js"), "changed").unwrap();
         git(&scoped.path, &["commit", "-q", "-am", "same version"]);
-        git(&scoped.path, &["tag", "v0.1.0"]);
+        git(&scoped.path, &["tag", "dan/demo1@0.1.0"]);
         let found = discover_all(&scoped.path, None).unwrap();
-        assert_eq!(names(&found.tags), ["dan/demo1@0.1.0"]);
+        assert_eq!(names(&found.tags), ["v0.1.0"]);
         assert!(found.skipped.is_empty(), "{:?}", found.skipped);
     }
 
@@ -312,26 +293,21 @@ mod tests {
         let author = Author::new(dir.join("repo"), "me/demo1");
         for tag in [
             "v1.0",
-            "v0.1.0",
-            "v9.0.0",
-            "v1.0.0-beta",
             "v1.0.0+build",
             "v01.0.0",
             "release-2.0.0",
-            "me/demo1@2.0",
-            "me/demo1@latest",
-            "me/demo1@2.0.0+b1",
-            "me/demo1@2.0.0-beta+b1",
-            "me/demo1@2.0.0-01",
+            "v2.0",
+            "vlatest",
+            "v2.0.0+b1",
+            "v2.0.0-beta+b1",
+            "v2.0.0-01",
+            "me/demo1@0.1.0",
             "vendor/demo1@9.0.0",
             "me/demo10@9.0.0",
         ] {
             git(&author.path, &["tag", tag]);
         }
-        assert_eq!(
-            names(&discover(&author.path, None).unwrap()),
-            ["me/demo1@0.1.0"]
-        );
+        assert_eq!(names(&discover(&author.path, None).unwrap()), ["v0.1.0"]);
     }
 
     #[test]
@@ -347,25 +323,25 @@ mod tests {
         assert_eq!(
             names(&found.tags),
             [
-                "me/demo1@0.1.0",
-                "me/demo1@1.0.0-alpha",
-                "me/demo1@1.0.0-beta",
-                "me/demo1@1.0.0-beta.2",
-                "me/demo1@1.0.0",
-                "me/demo1@2.0.0-rc.1"
+                "v0.1.0",
+                "v1.0.0-alpha",
+                "v1.0.0-beta",
+                "v1.0.0-beta.2",
+                "v1.0.0",
+                "v2.0.0-rc.1"
             ]
         );
-        assert_eq!(latest(&author.path, None).unwrap().name, "me/demo1@1.0.0");
+        assert_eq!(latest(&author.path, None).unwrap().name, "v1.0.0");
         // An installed pre-release sees its own track only.
         assert!(found.offered(Some(&version_key("1.0.0-alpha").unwrap())));
         assert_eq!(
             names(&found.tags),
             [
-                "me/demo1@0.1.0",
-                "me/demo1@1.0.0-alpha",
-                "me/demo1@1.0.0-beta",
-                "me/demo1@1.0.0-beta.2",
-                "me/demo1@1.0.0"
+                "v0.1.0",
+                "v1.0.0-alpha",
+                "v1.0.0-beta",
+                "v1.0.0-beta.2",
+                "v1.0.0"
             ]
         );
     }
@@ -377,27 +353,55 @@ mod tests {
         author.release("0.2.0");
         write_manifest(&author.path, &manifest("me/demo1", "0.3.0"));
         git(&author.path, &["commit", "-q", "-am", "fork"]);
-        git(&author.path, &["tag", "me/demo1@0.3.0"]);
+        git(&author.path, &["tag", "v0.3.0"]);
         let tags = discover(&author.path, None).unwrap();
-        assert_eq!(names(&tags), ["me/demo1@0.3.0"]);
+        assert_eq!(names(&tags), ["v0.3.0"]);
+        let found = discover_all(&author.path, Some("vendor/demo1")).unwrap();
+        assert!(
+            found.skipped.is_empty(),
+            "foreign tags are not broken releases"
+        );
+        assert_eq!(
+            latest(&author.path, Some("vendor/demo1"))
+                .unwrap()
+                .manifest
+                .version,
+            "0.2.0"
+        );
+        assert!(
+            discover_all(&author.path, Some("me/demo1"))
+                .unwrap()
+                .skipped
+                .is_empty()
+        );
         // The upstream ID can still be asked for explicitly.
         let upstream = discover(&author.path, Some("vendor/demo1")).unwrap();
-        assert_eq!(
-            names(&upstream),
-            ["vendor/demo1@0.1.0", "vendor/demo1@0.2.0"]
-        );
+        assert_eq!(names(&upstream), ["v0.1.0", "v0.2.0"]);
+    }
+
+    #[test]
+    fn tags_before_the_root_package_exists_are_not_broken_releases() {
+        let dir = TempDir::new("releases-before-package");
+        let author = Author::new(dir.join("repo"), "dan/demo1");
+        fs::remove_file(author.path.join("plugin.json")).unwrap();
+        git(&author.path, &["commit", "-q", "-am", "remove package"]);
+        git(&author.path, &["tag", "v2.0.0"]);
+        let found = discover_all(&author.path, Some("dan/demo1")).unwrap();
+        assert!(found.skipped.is_empty());
+        found.ensure_latest_is_valid().unwrap();
+        assert_eq!(names(&found.tags), ["v0.1.0"]);
     }
 
     #[test]
     fn tag_disagreeing_with_manifest_version_is_a_conflict() {
         let dir = TempDir::new("releases");
         let author = Author::new(dir.join("repo"), "dan/demo1");
-        git(&author.path, &["tag", "dan/demo1@0.2.0"]);
+        git(&author.path, &["tag", "v0.2.0"]);
         // Discovery skips the broken tag and reports it ...
         let found = discover_all(&author.path, None).unwrap();
-        assert_eq!(names(&found.tags), ["dan/demo1@0.1.0"]);
+        assert_eq!(names(&found.tags), ["v0.1.0"]);
         assert_eq!(found.skipped.len(), 1);
-        assert_eq!(found.skipped[0].name, "dan/demo1@0.2.0");
+        assert_eq!(found.skipped[0].name, "v0.2.0");
         assert!(
             found.skipped[0]
                 .reason
@@ -406,7 +410,7 @@ mod tests {
         // ... but it would be the latest release, so selecting latest fails.
         let error = latest(&author.path, None).unwrap_err();
         assert_eq!(error.kind(), "version_conflict");
-        assert!(error.to_string().contains("dan/demo1@0.2.0"));
+        assert!(error.to_string().contains("v0.2.0"));
     }
 
     #[test]
@@ -415,7 +419,7 @@ mod tests {
         let author = Author::untagged(dir.join("repo"), "dan/demo1", "0.1.0");
         let error = discover(&author.path, None).unwrap_err();
         assert_eq!(error.kind(), "no_releases");
-        assert!(error.to_string().contains("dan/demo1@VERSION"));
+        assert!(error.to_string().contains("vVERSION"));
         assert_eq!(
             latest(&author.path, None).unwrap_err().kind(),
             "no_releases"
@@ -445,38 +449,30 @@ mod tests {
         // An old commit with a broken manifest got a release-looking tag.
         fs::write(author.path.join("plugin.json"), "{broken").unwrap();
         git(&author.path, &["commit", "-q", "-am", "broken"]);
-        git(&author.path, &["tag", "dan/demo1@0.0.1"]);
+        git(&author.path, &["tag", "v0.0.1"]);
         let good = author.release("0.2.0");
         let tags = discover(&author.path, None).expect("valid releases stay discoverable");
-        assert_eq!(names(&tags), ["dan/demo1@0.1.0", "dan/demo1@0.2.0"]);
+        assert_eq!(names(&tags), ["v0.1.0", "v0.2.0"]);
         assert_eq!(latest(&author.path, None).unwrap().commit, good);
         let found = discover_all(&author.path, None).unwrap();
         assert_eq!(found.skipped.len(), 1);
-        assert_eq!(found.skipped[0].name, "dan/demo1@0.0.1");
+        assert_eq!(found.skipped[0].name, "v0.0.1");
         // update and update all pass over it to the newest valid release and report it,
         // as install does.
         let skipped_names = |skipped: &[SkippedTag]| -> Vec<String> {
             skipped.iter().map(|s| s.name.clone()).collect()
         };
         let m = crate::Manager::open(dir.join("ws-update")).unwrap();
-        m.install_package(
-            author.source(),
-            None,
-            InstallTarget::Ref("dan/demo1@0.1.0".into()),
-        )
-        .unwrap();
+        m.install_package(author.source(), None, InstallTarget::Ref("v0.1.0".into()))
+            .unwrap();
         // The ref pinned it; back to releases.
         let change = m.update_to("dan/demo1", crate::Target::Release).unwrap();
         assert_eq!(change.to.commit, good);
-        assert_eq!(skipped_names(&change.skipped), ["dan/demo1@0.0.1"]);
+        assert_eq!(skipped_names(&change.skipped), ["v0.0.1"]);
         assert!(change.skipped[0].reason.contains("invalid manifest"));
         let m = crate::Manager::open(dir.join("ws-update-all")).unwrap();
-        m.install_package(
-            author.source(),
-            None,
-            InstallTarget::Ref("dan/demo1@0.1.0".into()),
-        )
-        .unwrap();
+        m.install_package(author.source(), None, InstallTarget::Ref("v0.1.0".into()))
+            .unwrap();
         // Release mode at 0.1.0 (no user path leads there once a newer release exists:
         // the ref pinned it): drop the mode from the record.
         let state_file = dir.join("ws-update-all/state.json");
@@ -490,10 +486,10 @@ mod tests {
         let plan = m.update_all().unwrap();
         assert_eq!(plan.updates.len(), 1);
         assert_eq!(plan.updates[0].to.commit, good);
-        assert_eq!(skipped_names(&plan.skipped), ["dan/demo1@0.0.1"]);
+        assert_eq!(skipped_names(&plan.skipped), ["v0.0.1"]);
         // An unchanged package reports it too.
         let plan = m.update_all_plan().unwrap();
         assert_eq!(plan.unchanged.len(), 1);
-        assert_eq!(skipped_names(&plan.skipped), ["dan/demo1@0.0.1"]);
+        assert_eq!(skipped_names(&plan.skipped), ["v0.0.1"]);
     }
 }

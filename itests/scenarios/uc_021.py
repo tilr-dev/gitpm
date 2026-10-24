@@ -15,7 +15,7 @@ ID = "dan/hello"
 
 
 def tagged(t: T, version: str) -> str:
-    return t.rev(ID, f"{ID}@{version}")
+    return t.rev(ID, f"v{version}")
 
 
 def retained(t: T):
@@ -86,12 +86,12 @@ def restore_keeps_the_catalog(t: T):
 def restore_refuses_a_moved_head(t: T):
     """The retained clone checked out at another (published) release: restore refuses, HEAD moved."""
     t.gitpm_ok("forget", ID)
-    t.git(t.clone(ID), "checkout", "-q", "--detach", f"{ID}@0.1.1")
+    t.git(t.clone(ID), "checkout", "-q", "--detach", f"v0.1.1")
     before = t.snap(t.ws, git=True)
     t.gitpm_err("restore", ID, kind="local_changes", contains="HEAD moved")
     t.same(before, "workspace")
     no_entry(t)
-    t.git(t.clone(ID), "checkout", "-q", "--detach", f"{ID}@0.1.2")
+    t.git(t.clone(ID), "checkout", "-q", "--detach", f"v0.1.2")
     t.gitpm_ok("restore", ID)
     t.eq(t.package(ID)["current"]["version"], "0.1.2", "restored at the recorded commit")
 
