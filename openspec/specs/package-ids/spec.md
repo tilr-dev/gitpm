@@ -37,7 +37,7 @@ gitpm SHALL NOT derive or default a namespace: every operation that creates a pa
 - **THEN** the library fails with `invalid_id` ("package ID needs a namespace: use NAMESPACE/NAME, for example acme/hello"), the CLI prints `Error kind: invalid_id`, the exit status is 1 and nothing is created
 
 ### Requirement: Release tag names
-The release tag of a package SHALL be `namespace/name@VERSION` with VERSION as in "Version format" (a pre-release included), for tags gitpm creates (`init`, `commit`, `fork --replace`) and for tags it reads, in single- and multi-package repositories. Any other tag, `vVERSION` and versions with build metadata included, SHALL NOT be a release tag. A tag SHALL count only when the manifest at its commit has that ID and version. Verified by `identity::release_tag_is_id_at_version`.
+The release tag of a package SHALL be `namespace/name@VERSION` with VERSION as in "Version format" (a pre-release included), for tags gitpm creates (`init`, `commit`) and for tags it reads, in single- and multi-package repositories. Any other tag, `vVERSION` and versions with build metadata included, SHALL NOT be a release tag. A tag SHALL count only when the manifest at its commit has that ID and version. Verified by `identity::release_tag_is_id_at_version`.
 
 #### Scenario: Tag disagrees with the manifest
 - **WHEN** `acme/hello` at version 1.0.0 gets the newest tag `acme/hello@8.0.0` on a commit whose manifest still says 1.0.0

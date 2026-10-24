@@ -31,10 +31,7 @@ mod fork;
 use clones::{
     guard_clone, installed_repo, package_repo, place_clone, removal, settle_head, shared_head_moved,
 };
-pub use fork::{
-    DependencyRewrite, ForkReplacement, ForkResume, ForkStep, ForkedPackage, PackageFork,
-    PackageForkReplacement, PendingReplacement, ResumeFailure,
-};
+pub use fork::{DependencyRewrite, ForkedPackage, PackageFork};
 
 /// A mode in messages: `release`, `pinned at REF`, `branch NAME`.
 fn mode_text(mode: &Mode) -> String {
@@ -6508,95 +6505,85 @@ mod tests {
     }
 
     #[test]
-    fn a_fork_of_one_package_releases_every_package_in_the_repository() {
+    fn plain_fork_preserves_workspace_until_explicit_install_and_replace() {
         let mono = Mono::new();
-        let m = mono.open();
-        m.install_package(mono.source(), Some("tilr/theme"), InstallTarget::Release)
-            .unwrap();
-        let destination = mono.dir.join("forks/me/theme");
-        let result = m
-            .fork_replace("tilr/theme", &destination, "me", None, false)
-            .unwrap();
-        assert!(result.error().is_none(), "{:?}", result.error());
-        assert_eq!(result.packages.len(), 2);
-        for package in &result.packages {
-            assert_eq!(
-                package.tag.as_deref(),
-                Some(format!("{}@1.0.0", package.id).as_str())
+        for (name, id) in [("store", "demo/a"), ("theme", "demo/b")] {
+            write_manifest(
+                &mono.repo.join(format!("packages/{name}")),
+                &make_manifest(id, "0.2.0"),
             );
-            assert!(package.installed.is_some());
         }
-        let config: packages::Config =
-            serde_json::from_slice(&fs::read(destination.join(packages::CONFIG)).unwrap()).unwrap();
-        assert_eq!(config.packages, ["packages/*"]);
-        let state = m.state().unwrap();
-        assert_eq!(state.replacements["tilr/theme"], "me/theme");
-        assert!(state.packages.contains_key("me/store"));
-        assert!(!state.packages.contains_key("tilr/store"));
-        assert!(!state.replacements.contains_key("tilr/store"));
-        let fork = &state.packages["me/theme"];
-        assert_eq!(fork.path.as_deref(), Some("packages/theme"));
-        assert_eq!(fork.fork_of.as_ref().unwrap().id, "tilr/theme");
-        // A second fork_replace fails before anything is created.
-        let error = m
-            .fork_replace("tilr/theme", &destination, "me", None, false)
-            .unwrap_err();
-        assert_eq!(error.kind(), "invalid_argument");
-    }
-
-    #[test]
-    fn single_fork_replace_exposes_a_siblings_pending_replacement() {
-        let mono = Mono::new();
-        mono.release("store", "2.0.0");
+        mono.commit("Independent A and B");
+        for tag in ["demo/a@0.2.0", "demo/b@0.2.0", "v0.2.0"] {
+            fixture_git(&mono.repo, &["tag", tag]);
+        }
         let m = mono.open();
-        for id in ["tilr/store", "tilr/theme"] {
+        for id in ["demo/a", "demo/b"] {
             m.install_package(mono.source(), Some(id), InstallTarget::Release)
                 .unwrap();
         }
-        let consumer = Author::new(mono.dir.join("consumer"), "app/consumer");
-        let mut manifest = make_manifest("app/consumer", "0.2.0");
-        manifest
-            .dependencies
-            .insert("tilr/store".into(), "^2.0".into());
-        write_manifest(&consumer.path, &manifest);
-        fixture_git(
-            &consumer.path,
-            &["commit", "-qam", "Require incompatible store"],
+        let state_path = mono.root.join("state.json");
+        let state_before = fs::read(&state_path).unwrap();
+        let before = m.state().unwrap();
+        let a_dist = fs::read(mono.root.join("dist/demo/a/index.js")).unwrap();
+        let b_dist = fs::read(mono.root.join("dist/demo/b/index.js")).unwrap();
+        let tags = fixture_git(&mono.repo, &["show-ref", "--tags"]);
+        let destination = mono.dir.join("my-fork");
+        m.fork_in_namespace("demo/a", &destination, "my").unwrap();
+        assert_eq!(fixture_git(&destination, &["show-ref", "--tags"]), tags);
+        assert_eq!(fs::read(&state_path).unwrap(), state_before);
+        assert_eq!(
+            fs::read(mono.root.join("dist/demo/a/index.js")).unwrap(),
+            a_dist
         );
-        consumer.tag("0.2.0");
-        m.install(consumer.source()).unwrap();
-        m.uninstall("tilr/store", &[], true).unwrap();
-        m.install_package(
-            mono.source(),
-            Some("tilr/store"),
-            InstallTarget::Ref("tilr/store@1.0.0".into()),
-        )
-        .unwrap();
-
-        let result = m
-            .fork_replace(
-                "tilr/theme",
-                &mono.dir.join("forks/pending"),
-                "me",
-                None,
-                false,
+        assert_eq!(
+            fs::read(mono.root.join("dist/demo/b/index.js")).unwrap(),
+            b_dist
+        );
+        assert!(!mono.root.join("dist/my").exists());
+        for (name, id, original) in [("store", "my/a", "demo/a"), ("theme", "my/b", "demo/b")] {
+            let manifest: Manifest = serde_json::from_slice(
+                &fs::read(destination.join(format!("packages/{name}/plugin.json"))).unwrap(),
             )
             .unwrap();
-        assert_eq!(result.packages.len(), 2);
-        let theme = result.packages.iter().find(|p| p.id == "me/theme").unwrap();
-        assert!(theme.failed.is_none(), "{:?}", theme.error);
-        assert!(theme.replacement.is_some());
-        let store = result.packages.iter().find(|p| p.id == "me/store").unwrap();
-        assert!(store.installed.is_some());
-        assert_eq!(store.failed, Some(ForkStep::Replace));
-        assert_eq!(result.error().unwrap().kind(), "incompatible_replacement");
-        let pending = result.pending();
-        assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].original, "tilr/store");
-        assert_eq!(pending[0].fork, "me/store");
-        let state = m.state().unwrap();
-        assert_eq!(state.replacements["tilr/theme"], "me/theme");
-        assert!(!state.replacements.contains_key("tilr/store"));
+            assert_eq!(manifest.id, id);
+            assert_eq!(manifest.fork_of.unwrap().id, original);
+            assert_eq!(manifest.replaces.unwrap().id, original);
+        }
+        crate::scaffold::commit_package(&destination, "0.3.0", Some("my/a")).unwrap();
+        let head = fixture_git(&destination, &["rev-parse", "HEAD"]);
+        let error =
+            crate::scaffold::commit_package(&destination, "0.3.0", Some("my/a")).unwrap_err();
+        assert_eq!(error.kind(), "version_conflict");
+        assert!(error.to_string().contains("tag already exists"));
+        assert_eq!(fixture_git(&destination, &["rev-parse", "HEAD"]), head);
+        assert_eq!(fs::read(&state_path).unwrap(), state_before);
+        m.install_package(
+            destination.to_str().unwrap(),
+            Some("my/a"),
+            InstallTarget::Release,
+        )
+        .unwrap();
+        assert!(m.state().unwrap().replacements.is_empty());
+        m.replace("demo/a", "my/a", false).unwrap();
+        let after = m.state().unwrap();
+        assert_eq!(
+            serde_json::to_value(&after.packages["demo/b"]).unwrap(),
+            serde_json::to_value(&before.packages["demo/b"]).unwrap()
+        );
+        assert_eq!(after.replacements.len(), 1);
+        assert_eq!(after.replacements["demo/a"], "my/a");
+        assert!(!after.packages.contains_key("my/b"));
+        assert_eq!(
+            fs::read(mono.root.join("dist/demo/b/index.js")).unwrap(),
+            b_dist
+        );
+        assert_eq!(
+            fs::read(mono.root.join("dist/my/a/index.js")).unwrap(),
+            a_dist
+        );
+        assert!(!mono.root.join("dist/demo/a").exists());
+        assert!(!mono.root.join("dist/my/b").exists());
     }
 
     #[test]
@@ -6682,51 +6669,6 @@ mod tests {
         );
         assert_eq!(fixture_git(&single, &["rev-parse", "HEAD"]), before);
         assert_eq!(fixture_git(&destination, &["rev-parse", "HEAD"]), head);
-    }
-
-    #[test]
-    fn a_failed_release_of_several_packages_keeps_the_fork_and_installs_nothing() {
-        let mono = Mono::new();
-        let m = mono.open();
-        for id in ["tilr/store", "tilr/theme"] {
-            m.install_package(mono.source(), Some(id), InstallTarget::Release)
-                .unwrap();
-        }
-        let result = m
-            .fork_packages_replace(
-                &["tilr/store", "tilr/theme"],
-                &mono.dir.join("forks/me/mono"),
-                "me",
-                Some("2.0.0"),
-                false,
-            )
-            .unwrap();
-        assert!(result.error().is_none(), "{:?}", result.error());
-        assert_eq!(
-            result
-                .packages
-                .iter()
-                .map(|p| p.tag.clone().unwrap())
-                .collect::<Vec<_>>(),
-            ["me/store@2.0.0", "me/theme@2.0.0"]
-        );
-        // A release whose tag exists fails for every package; the fork stays.
-        let third = mono.dir.join("forks/third");
-        // The source already carries this name in a different namespace.
-        fixture_git(&mono.repo, &["tag", "ns3/theme@1.0.0"]);
-        let result = m
-            .fork_packages_replace(&["tilr/theme"], &third, "ns3", None, false)
-            .unwrap();
-        assert_eq!(result.fork.packages.len(), 2);
-        let theme = result
-            .packages
-            .iter()
-            .find(|p| p.id == "ns3/theme")
-            .unwrap();
-        assert_eq!(theme.failed, Some(ForkStep::Release));
-        assert_eq!(result.error().unwrap().kind(), "version_conflict");
-        assert!(third.join("packages/theme/plugin.json").is_file());
-        assert!(!m.state().unwrap().packages.contains_key("ns3/theme"));
     }
 
     #[test]
@@ -7527,7 +7469,7 @@ mod tests {
     }
 
     #[test]
-    fn a_dependency_cycle_between_forks_is_refused_before_anything_is_created() {
+    fn dependency_cycle_between_forks_can_be_copied_without_installing() {
         let mono = Mono::new();
         let m = mono.open();
         m.install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
@@ -7542,24 +7484,6 @@ mod tests {
         mono.tag("store", "1.1.0");
         m.update("tilr/store").unwrap();
         let destination = mono.dir.join("forks/cycle");
-        let error = mono.refuses("dependency_conflict", || {
-            m.fork_packages_replace(
-                &["tilr/store", "tilr/theme"],
-                &destination,
-                "me",
-                None,
-                false,
-            )
-        });
-        assert!(error.to_string().contains("dependency cycle"), "{error}");
-        assert!(
-            error
-                .to_string()
-                .contains("tilr/store → tilr/theme → tilr/store"),
-            "{error}"
-        );
-        assert!(!destination.exists());
-        // Without the install step a cyclic pair can still be forked.
         m.fork_packages(&["tilr/store", "tilr/theme"], &destination, "me")
             .unwrap();
     }

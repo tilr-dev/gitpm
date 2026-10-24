@@ -82,7 +82,7 @@ A disabled package SHALL NOT satisfy a direct dependency of a package that is or
 - **THEN** `install`, `enable`, `update`, `rollback` and `restore` of `app` succeed; `lib` is reported broken (`only_direct_dependencies_must_be_active`)
 
 ### Requirement: Conflicts are explained
-Unsatisfiable dependencies SHALL fail with `dependency_conflict` carrying the solver's explanation that names the packages involved. Cycles between installed packages SHALL resolve normally; only `fork --replace` refuses a dependency cycle between the packages it forks (multi-package-repos, "Dependencies between forks are rewritten"). Verified by `deps::solver_explains_conflicts_naming_both_consumers` and `deps::solver_accepts_cycles_and_reports_missing_packages`.
+Unsatisfiable dependencies SHALL fail with `dependency_conflict` carrying the solver's explanation that names the packages involved. Cycles between installed packages SHALL resolve normally. Verified by `deps::solver_explains_conflicts_naming_both_consumers` and `deps::solver_accepts_cycles_and_reports_missing_packages`.
 
 #### Scenario: Two consumers disagree
 - **WHEN** installed `a` requires `lib ^1` and the new package `b` requires `lib ^2`

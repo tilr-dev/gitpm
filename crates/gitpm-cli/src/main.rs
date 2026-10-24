@@ -158,21 +158,6 @@ fn confirm_replacement(plan: &ReplacementPlan, force: bool) -> Result<bool> {
     );
     Ok(true)
 }
-/// A pending replacement of `fork --replace`: warn and ask on a TTY. Unlike
-/// `confirm_replacement`, a refusal does not cancel the command (the fork is already
-/// released and installed): the replacement stays pending.
-fn confirm_pending(plan: &ReplacementPlan) -> Result<bool> {
-    warn_incompatible(plan);
-    if !io::stdin().is_terminal() {
-        eprintln!("No terminal to confirm; use --force to replace anyway.");
-        return Ok(false);
-    }
-    let yes = ask("Replace anyway?")?;
-    if !yes {
-        eprintln!("{} is not replaced.", plan.original);
-    }
-    Ok(yes)
-}
 fn warn_incompatible(plan: &ReplacementPlan) {
     eprintln!(
         "Warning: {} provides {} {}, which these consumers do not accept:",
@@ -570,124 +555,6 @@ fn print_package_fork(fork: &gitpm::PackageFork) {
         }
     }
 }
-/// `fork ID... --ns NAMESPACE --into DIR --replace`: per package release, install,
-/// replace (one package or several, same output). A replacement the library left
-/// pending (incompatible consumers) is confirmed on a TTY and applied with
-/// `fork_replace_resume`. The fork is never removed; every package that did not finish
-/// says how to finish or undo.
-fn fork_packages_replace(
-    manager: &Manager,
-    ids: &[&str],
-    destination: &Path,
-    namespace: &str,
-    version: Option<&str>,
-    force: bool,
-) -> Result<()> {
-    let outcome = manager.fork_packages_replace(ids, destination, namespace, version, force)?;
-    print_package_fork(&outcome.fork);
-    let mut confirmed = Vec::new();
-    for pending in outcome.pending() {
-        if confirm_pending(&pending.plan)? {
-            confirmed.push(pending);
-        }
-    }
-    let gitpm::ForkResume {
-        applied: resumed,
-        failed: mut resume_failure,
-    } = manager.fork_replace_resume(&confirmed, true);
-    let quoted = scaffold::shell_quote(&outcome.fork.path.to_string_lossy());
-    // Warn about dist/ once, from the report of the last transaction.
-    let last_dist = resumed
-        .last()
-        .map(|plan| &plan.dist)
-        .or_else(|| {
-            let packages = outcome.packages.iter().rev();
-            packages
-                .clone()
-                .find_map(|p| p.replacement.as_ref().map(|plan| &plan.dist))
-                .or_else(|| {
-                    packages
-                        .clone()
-                        .find_map(|p| p.installed.as_ref().map(|i| &i.dist))
-                })
-        })
-        .cloned();
-    let mut first_error = None;
-    for package in outcome.packages {
-        let (original, new_id) = (&package.original, &package.id);
-        if let Some(tag) = &package.tag {
-            println!("Released: {tag}");
-        }
-        if let Some(installed) = &package.installed {
-            warn_skipped(&installed.skipped);
-            warn(&installed.warnings);
-            println!("Installed: {new_id} {}", installed.current.version);
-        }
-        if let Some(plan) = resumed
-            .iter()
-            .find(|plan| plan.original == *original && plan.provider == *new_id)
-        {
-            print_replacement(plan);
-            continue;
-        }
-        // A confirmed replacement that failed on resume reports that failure.
-        let resumed_error = resume_failure
-            .take_if(|f| f.original == *original && f.fork == *new_id)
-            .map(|f| f.error);
-        let error = match (package.failed, resumed_error.or(package.error)) {
-            (None, _) => {
-                if let Some(plan) = &package.replacement {
-                    print_replacement(plan);
-                }
-                continue;
-            }
-            (_, Some(error)) => error,
-            (Some(step), None) => {
-                PmError::InvalidArgument(format!("fork --replace failed at {}", step.name()))
-            }
-        };
-        let step = package
-            .failed
-            .map(gitpm::ForkStep::name)
-            .unwrap_or("replace");
-        eprintln!(
-            "{new_id}: the {step} step failed: {error} (kind: {})",
-            error.kind()
-        );
-        match package.failed {
-            Some(gitpm::ForkStep::Release) => eprintln!(
-                "  Nothing was installed. To finish:\n    gitpm commit {quoted} NEW_VERSION --package {new_id}\n    gitpm install {quoted} {new_id}\n    gitpm replace {original} --with {new_id}"
-            ),
-            Some(gitpm::ForkStep::Install) => eprintln!(
-                "  {new_id} is released but not installed. To finish:\n    gitpm install {quoted} {new_id}\n    gitpm replace {original} --with {new_id}"
-            ),
-            _ => eprintln!(
-                "  {new_id} is installed; {original} is not replaced. To finish:\n    gitpm replace {original} --with {new_id} [--force]\n  To undo: gitpm uninstall {new_id}"
-            ),
-        }
-        first_error.get_or_insert(error);
-    }
-    if let Some(dist) = &last_dist {
-        warn_dist(dist);
-    }
-    match first_error {
-        None => Ok(()),
-        Some(error) => {
-            if outcome.fork.created {
-                eprintln!(
-                    "The fork {} is kept. To undo everything: uninstall the installed forks, then delete {quoted}",
-                    outcome.fork.path.display()
-                );
-            } else {
-                eprintln!(
-                    "The fork {} is kept. To undo everything: uninstall the installed forks, then remove the added package folders from {quoted} (or reset the commit that added them)",
-                    outcome.fork.path.display()
-                );
-            }
-            Err(error.into())
-        }
-    }
-}
 const COMMANDS: &[&str] = &[
     "init",
     "fork",
@@ -815,9 +682,8 @@ Workspace (installed packages):",
                                    all files and the package layout are retained.
                                    Existing destinations are refused. Dependencies
                                    between packages forked together are rewritten
-    [--replace [--version V] [--force]]  then release each fork (tag NS/NAME@V, V defaults
-                                   to the forked version), install it and replace ID with
-                                   it for every consumer",
+                                   No release, installation or replacement is performed;
+                                   use commit, install and replace explicitly",
     },
     Help {
         commands: &["replace"],
@@ -987,7 +853,6 @@ fn run(invocation: &mut Invocation) -> Result<()> {
     let provides = option(&mut args, "--provides")?;
     let multi = flag(&mut args, "--multi")?;
     let no_release = flag(&mut args, "--no-release")?;
-    let replace = flag(&mut args, "--replace")?;
     let back = flag(&mut args, "--back")?;
     let force = flag(&mut args, "--force")?;
     let dry_run = flag(&mut args, "--dry-run")?;
@@ -1036,9 +901,7 @@ fn run(invocation: &mut Invocation) -> Result<()> {
         "--ref is not valid for {command}"
     );
     ensure!(
-        version.is_none()
-            || matches!(command, "install-catalog" | "download-catalog")
-            || (command == "fork" && replace),
+        version.is_none() || matches!(command, "install-catalog" | "download-catalog"),
         "--version is not valid for {command}"
     );
     ensure!(
@@ -1052,9 +915,8 @@ fn run(invocation: &mut Invocation) -> Result<()> {
                     | "install-catalog"
                     | "forget"
                     | "replace"
-            )
-            || (command == "fork" && replace),
-        "--force is only valid with uninstall/disable/enable/install/install-catalog/forget/replace/fork --replace"
+            ),
+        "--force is only valid with uninstall/disable/enable/install/install-catalog/forget/replace"
     );
     ensure!(
         package.is_none()
@@ -1076,10 +938,7 @@ fn run(invocation: &mut Invocation) -> Result<()> {
         (!multi && !no_release) || command == "init",
         "--multi/--no-release require init"
     );
-    ensure!(
-        (!replace && ns.is_none()) || command == "fork",
-        "--ns/--replace require fork"
-    );
+    ensure!(ns.is_none() || command == "fork", "--ns requires fork");
     ensure!(
         (with.is_none() && !back) || command == "replace",
         "--with/--back require replace"
@@ -1177,7 +1036,7 @@ fn run(invocation: &mut Invocation) -> Result<()> {
         identity::valid_part(ns)?;
         ensure!(
             into.is_some(),
-            "fork needs --into DIR: the fork repository (a new folder, or a repository with gitpm.json to add the packages to)"
+            "fork needs --into DIR: the fork repository (a new folder)"
         );
         for other in &args[1..] {
             gitpm::valid_id(other)?;
@@ -1381,37 +1240,26 @@ fn run(invocation: &mut Invocation) -> Result<()> {
             let namespace = ns.as_deref().unwrap_or_default();
             let ids: Vec<&str> = args[1..].iter().map(String::as_str).collect();
             let destination = Path::new(into.as_deref().unwrap_or_default());
-            if replace {
-                fork_packages_replace(
-                    &manager,
-                    &ids,
-                    destination,
-                    namespace,
-                    version.as_deref(),
-                    force,
-                )?;
-            } else {
-                let fork = manager.fork_packages(&ids, destination, namespace)?;
-                print_package_fork(&fork);
-                let quoted = scaffold::shell_quote(&fork.path.to_string_lossy());
+            let fork = manager.fork_packages(&ids, destination, namespace)?;
+            print_package_fork(&fork);
+            let quoted = scaffold::shell_quote(&fork.path.to_string_lossy());
+            println!(
+                "forkOf records each origin; replaces says the fork can stand in for it (used only\nafter an explicit replace). The original installations are unchanged.\n\nNext steps (choose the packages to install and replace):"
+            );
+            for package in &fork.packages {
                 println!(
-                    "forkOf records each origin; replaces says the fork can stand in for it (used only\nafter an explicit replace). The original installations are unchanged.\n\nNext steps (or all at once: add --replace):"
+                    "  gitpm commit {quoted} NEW_VERSION --package {}   commit local edits, tag {}@NEW_VERSION",
+                    package.id, package.id
                 );
-                for package in &fork.packages {
-                    println!(
-                        "  gitpm commit {quoted} NEW_VERSION --package {}   commit local edits, tag {}@NEW_VERSION",
-                        package.id, package.id
-                    );
-                }
-                for package in &fork.packages {
-                    println!("  gitpm install {quoted} {}", package.id);
-                }
-                for package in &fork.packages {
-                    println!("  gitpm replace {} --with {}", package.original, package.id);
-                }
-                if fork.created {
-                    println!("Set your own origin with: gitpm remote {quoted} GIT_URL");
-                }
+            }
+            for package in &fork.packages {
+                println!("  gitpm install {quoted} {}", package.id);
+            }
+            for package in &fork.packages {
+                println!("  gitpm replace {} --with {}", package.original, package.id);
+            }
+            if fork.created {
+                println!("Set your own origin with: gitpm remote {quoted} GIT_URL");
             }
         }
         "install" | "download" => {

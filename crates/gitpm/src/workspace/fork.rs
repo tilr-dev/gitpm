@@ -2,73 +2,6 @@
 use super::*;
 use std::collections::BTreeSet;
 
-/// Step of a fork with `--replace` ([`Manager::fork_packages_replace`]) that failed after
-/// the fork repository was created or changed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ForkStep {
-    /// Committing/tagging the fork's first release.
-    Release,
-    /// Installing the released fork into the workspace.
-    Install,
-    /// Making the installed fork the provider of the original.
-    Replace,
-}
-impl ForkStep {
-    pub fn name(self) -> &'static str {
-        match self {
-            ForkStep::Release => "release",
-            ForkStep::Install => "install",
-            ForkStep::Replace => "replace",
-        }
-    }
-}
-/// What [`Manager::fork_packages_replace`] did for one forked package. The fork
-/// repository is never removed: a failure is reported in `failed`/`error` with what was
-/// done so far.
-#[derive(Clone, Debug, Serialize)]
-pub struct ForkReplacement {
-    pub original: String,
-    pub id: String,
-    /// The fork repository (author folder, outside the workspace).
-    pub path: PathBuf,
-    /// Release tag of the fork, once created.
-    pub tag: Option<String>,
-    pub installed: Option<InstallResult>,
-    pub replacement: Option<ReplacementPlan>,
-    pub failed: Option<ForkStep>,
-    #[serde(skip)]
-    pub error: Option<Error>,
-    /// The replace step needs confirmation (incompatible consumers, not confirmed): the
-    /// plan to show; [`Manager::fork_replace_resume`] applies it once confirmed. `failed`
-    /// is then `Replace` and `error` the `incompatible_replacement` refusal.
-    pub pending: Option<ReplacementPlan>,
-}
-/// Result of [`Manager::fork_replace_resume`]: the replacements applied (in order, each
-/// with its dist report) and the first one that failed, if any.
-#[derive(Clone, Debug, Default, Serialize)]
-pub struct ForkResume {
-    pub applied: Vec<ReplacementPlan>,
-    pub failed: Option<ResumeFailure>,
-}
-/// The pending replacement [`Manager::fork_replace_resume`] stopped at.
-#[derive(Clone, Debug, Serialize)]
-pub struct ResumeFailure {
-    pub original: String,
-    pub fork: String,
-    #[serde(skip)]
-    pub error: Error,
-}
-/// A replacement of `fork --replace` waiting for confirmation (see
-/// [`ForkReplacement::pending`]), as [`Manager::fork_replace_resume`] takes it.
-#[derive(Clone, Debug, Serialize)]
-pub struct PendingReplacement {
-    pub original: String,
-    pub fork: String,
-    /// The plan that was shown for confirmation.
-    pub plan: ReplacementPlan,
-}
-
 /// A dependency of a package rewritten by a fork: `from` (an original) became `to` (its
 /// fork). `new_requirement` is set when `requirement` does not accept the fork's version
 /// and was replaced by `^VERSION`.
@@ -105,33 +38,6 @@ pub struct PackageFork {
     pub packages: Vec<ForkedPackage>,
     pub rewrites: Vec<DependencyRewrite>,
 }
-/// Result of [`Manager::fork_packages_replace`]: the fork plus one [`ForkReplacement`]
-/// per forked package (in install order) with what was done for it.
-#[derive(Clone, Debug, Serialize)]
-pub struct PackageForkReplacement {
-    pub fork: PackageFork,
-    pub packages: Vec<ForkReplacement>,
-}
-impl PackageForkReplacement {
-    /// The first failure (by package order), if any package did not finish.
-    pub fn error(&self) -> Option<&Error> {
-        self.packages.iter().find_map(|p| p.error.as_ref())
-    }
-    /// The replacements waiting for confirmation, in package order.
-    pub fn pending(&self) -> Vec<PendingReplacement> {
-        self.packages
-            .iter()
-            .filter_map(|p| {
-                p.pending.as_ref().map(|plan| PendingReplacement {
-                    original: p.original.clone(),
-                    fork: p.id.clone(),
-                    plan: plan.clone(),
-                })
-            })
-            .collect()
-    }
-}
-
 /// One package to fork: where it comes from and what it becomes.
 struct Source {
     original: String,
@@ -151,10 +57,6 @@ impl Source {
     }
 }
 
-/// A package folder as a pathspec; the root package selects the whole repository.
-fn pathspec(folder: &str) -> &str {
-    if folder.is_empty() { "." } else { folder }
-}
 fn manifest_path(folder: &str) -> String {
     if folder.is_empty() {
         "plugin.json".to_owned()
@@ -164,7 +66,7 @@ fn manifest_path(folder: &str) -> String {
 }
 
 /// Rewrite the dependencies of `m` that name a key of `forks` to the fork (ID, version
-/// the fork is released with); a requirement that does not accept that version becomes
+/// declared by the fork); a requirement that does not accept that version becomes
 /// `^VERSION`. A manifest that already depends on the fork too (or on two originals of
 /// one fork) is refused, whatever the order of its keys.
 fn rewrite_dependencies(
@@ -225,20 +127,6 @@ impl Manager {
     ) -> Result<PathBuf> {
         Ok(self.fork_packages(&[id], destination, namespace)?.path)
     }
-    /// [`Manager::fork_packages_replace`] with one source ID. The entire repository
-    /// is forked, released and installed. Return every package outcome, including
-    /// sibling failures and replacement confirmations.
-    pub fn fork_replace(
-        &self,
-        id: &str,
-        destination: &Path,
-        namespace: &str,
-        version: Option<&str>,
-        confirm: bool,
-    ) -> Result<PackageForkReplacement> {
-        self.fork_packages_replace(&[id], destination, namespace, version, confirm)
-    }
-
     /// Fork installed packages of one repository into `namespace` (new IDs
     /// `NAMESPACE/<same name>`) as the fork repository `destination`:
     ///
@@ -255,152 +143,7 @@ impl Manager {
         destination: &Path,
         namespace: &str,
     ) -> Result<PackageFork> {
-        self.fork_packages_with(ids, destination, namespace, None, false)
-    }
-
-    /// [`Manager::fork_packages`], then release every forked package at once (one commit
-    /// of the changes in their folders, `version` set in each manifest when given, one
-    /// `ID@VERSION` tag per package), install them (dependencies first) and replace each
-    /// original for every consumer (`confirm` as in [`Manager::replace`]). Errors before
-    /// the fork exists are returned as errors and leave nothing behind; after that the
-    /// fork is kept and every package reports its own `failed` step and `error`. A failed
-    /// install or replace of one package does not stop the others.
-    pub fn fork_packages_replace(
-        &self,
-        ids: &[&str],
-        destination: &Path,
-        namespace: &str,
-        version: Option<&str>,
-        confirm: bool,
-    ) -> Result<PackageForkReplacement> {
-        if let Some(version) = version {
-            catalog::version_key(version)?;
-        }
-        let fork = self.fork_packages_with(ids, destination, namespace, version, true)?;
-        // Dependencies first (a cycle was refused before the fork was created).
-        let edges: Vec<(&str, BTreeSet<String>)> = fork
-            .packages
-            .iter()
-            .map(|p| {
-                let subdir = (!p.path.is_empty()).then_some(p.path.as_str());
-                let deps = package_manifest(&fork.path, subdir)
-                    .map(|m| m.dependencies.into_keys().collect())
-                    .unwrap_or_default();
-                (p.id.as_str(), deps)
-            })
-            .collect();
-        let order = install_order(&edges).unwrap_or_else(|_| (0..edges.len()).collect());
-        let mut results: Vec<ForkReplacement> = order
-            .into_iter()
-            .map(|index| {
-                let package = &fork.packages[index];
-                ForkReplacement {
-                    original: package.original.clone(),
-                    id: package.id.clone(),
-                    path: fork.path.clone(),
-                    tag: None,
-                    installed: None,
-                    replacement: None,
-                    failed: None,
-                    error: None,
-                    pending: None,
-                }
-            })
-            .collect();
-        if let Err(error) = release_packages(&fork, version, self.options.custom_ssh) {
-            // The packages are released together: nothing is installed unless all are.
-            for result in &mut results {
-                result.failed = Some(ForkStep::Release);
-                result.error = Some(error.clone());
-            }
-            return Ok(PackageForkReplacement {
-                fork,
-                packages: results,
-            });
-        }
-        let source = fork.path.to_string_lossy().into_owned();
-        for result in &mut results {
-            let version = version.map(str::to_owned).unwrap_or_else(|| {
-                fork.packages
-                    .iter()
-                    .find(|p| p.id == result.id)
-                    .map(|p| p.version.clone())
-                    .unwrap_or_default()
-            });
-            result.tag = Some(identity::release_tag(&result.id, &version));
-            match self.install_package(&source, Some(&result.id), InstallTarget::Release) {
-                Ok(installed) => result.installed = Some(installed),
-                Err(error) => {
-                    result.failed = Some(ForkStep::Install);
-                    result.error = Some(error);
-                }
-            }
-        }
-        let installed_originals = self.state()?.packages;
-        for result in results.iter_mut().filter(|r| r.failed.is_none()) {
-            // An uninstalled sibling is a new installation, with no provider to replace.
-            if !installed_originals.contains_key(&result.original) {
-                continue;
-            }
-            match self.replace(&result.original, &result.id, confirm) {
-                Ok(plan) => result.replacement = Some(plan),
-                Err(error) => {
-                    if let Error::IncompatibleReplacement { .. } = error {
-                        result.pending = self.replace_plan(&result.original, &result.id).ok();
-                    }
-                    result.failed = Some(ForkStep::Replace);
-                    result.error = Some(error);
-                }
-            }
-        }
-        Ok(PackageForkReplacement {
-            fork,
-            packages: results,
-        })
-    }
-
-    /// Apply the pending replacements of a `fork --replace` (see
-    /// [`PackageForkReplacement::pending`]) once the caller confirmed them (`confirm`;
-    /// unconfirmed, an incompatible one is refused as by [`Manager::replace`]). Each is
-    /// planned again under the lock, one transaction per package, in order: when its
-    /// incompatible consumers are no longer the confirmed ones it is refused with
-    /// [`Error::IncompatibleReplacement`]. The first failure stops the run; the result
-    /// lists what was applied (each plan with its dist report) and that failure, and the
-    /// replacements after it stay pending.
-    pub fn fork_replace_resume(&self, pending: &[PendingReplacement], confirm: bool) -> ForkResume {
-        let mut done = ForkResume::default();
-        for item in pending {
-            let applied = self.transaction(|_, state| {
-                let plan = replacement_plan(state, &item.original, Some(&item.fork))?;
-                if plan.incompatible != item.plan.incompatible {
-                    return Err(Error::IncompatibleReplacement {
-                        message: format!(
-                            "the consumers of {} that {} does not satisfy changed since the replacement was confirmed",
-                            item.original, item.fork
-                        ),
-                        id: item.original.clone(),
-                        consumers: plan.incompatible.iter().map(|c| c.id.clone()).collect(),
-                    });
-                }
-                plan.refuse_unless(confirm)?;
-                state
-                    .replacements
-                    .insert(item.original.clone(), item.fork.clone());
-                Ok(plan)
-            });
-            match applied {
-                Ok((plan, dist)) => done.applied.push(ReplacementPlan { dist, ..plan }),
-                Err(error) => {
-                    done.failed = Some(ResumeFailure {
-                        original: item.original.clone(),
-                        fork: item.fork.clone(),
-                        error,
-                    });
-                    break;
-                }
-            }
-        }
-        done
+        self.fork_packages_with(ids, destination, namespace)
     }
 
     /// Absolute fork repository `destination`: refused with `..`, inside the workspace
@@ -452,16 +195,11 @@ impl Manager {
         Ok(destination)
     }
 
-    /// `version`: the version the forks will be released with (for requirement checks).
-    /// `install`: the forks will be installed one after another, so a dependency cycle
-    /// between them is refused before anything is created.
     fn fork_packages_with(
         &self,
         ids: &[&str],
         destination: &Path,
         namespace: &str,
-        version: Option<&str>,
-        install: bool,
     ) -> Result<PackageFork> {
         ensure!(!ids.is_empty(), InvalidArgument, "no package to fork");
         for id in ids {
@@ -617,20 +355,7 @@ impl Manager {
                     base: package.manifest,
                 });
             }
-            if install {
-                // Dependencies between the forks are those between their originals.
-                let edges: Vec<(&str, BTreeSet<String>)> = sources
-                    .iter()
-                    .map(|s| {
-                        (
-                            s.original.as_str(),
-                            s.base.dependencies.keys().cloned().collect(),
-                        )
-                    })
-                    .collect();
-                install_order(&edges)?;
-            }
-            new_fork(&destination, &sources, version, self.options.custom_ssh)
+            new_fork(&destination, &sources, self.options.custom_ssh)
         })();
         if result.is_err() {
             let _ = fs::remove_dir_all(&created);
@@ -639,24 +364,12 @@ impl Manager {
     }
 }
 
-/// The forks a dependency may be rewritten to: original ID → (fork ID, release version).
-fn fork_map(
-    sources: &[Source],
-    manifests: &[Manifest],
-    version: Option<&str>,
-) -> BTreeMap<String, (String, String)> {
+/// The forks a dependency may be rewritten to: original ID → (fork ID, declared version).
+fn fork_map(sources: &[Source], manifests: &[Manifest]) -> BTreeMap<String, (String, String)> {
     sources
         .iter()
         .zip(manifests)
-        .map(|(s, m)| {
-            (
-                s.original.clone(),
-                (
-                    s.id.clone(),
-                    version.map_or_else(|| m.version.clone(), str::to_owned),
-                ),
-            )
-        })
+        .map(|(s, m)| (s.original.clone(), (s.id.clone(), m.version.clone())))
         .collect()
 }
 
@@ -772,12 +485,7 @@ fn fork_base(repo: &Path, sources: &[Source], custom_ssh: bool) -> Result<String
         .to_owned())
 }
 
-fn new_fork(
-    destination: &Path,
-    sources: &[Source],
-    version: Option<&str>,
-    custom_ssh: bool,
-) -> Result<PackageFork> {
+fn new_fork(destination: &Path, sources: &[Source], custom_ssh: bool) -> Result<PackageFork> {
     let root = sources.iter().any(|s| s.path.is_empty());
     for source in sources {
         transport::require_object(
@@ -838,7 +546,7 @@ fn new_fork(
     for source in sources {
         manifests.push(package_manifest(destination, source.subdir())?);
     }
-    let forks = fork_map(sources, &manifests, version);
+    let forks = fork_map(sources, &manifests);
     let mut rewrites = Vec::new();
     for (m, source) in manifests.iter_mut().zip(sources) {
         identify(m, source);
@@ -897,64 +605,6 @@ fn forked(sources: &[Source], manifests: &[Manifest]) -> Vec<ForkedPackage> {
             version: m.version.clone(),
         })
         .collect()
-}
-
-/// Install order of packages given as (ID, dependency IDs), with dependencies first.
-fn install_order(packages: &[(&str, BTreeSet<String>)]) -> Result<Vec<usize>> {
-    fn visit(
-        index: usize,
-        packages: &[(&str, BTreeSet<String>)],
-        path: &mut Vec<usize>,
-        done: &mut BTreeSet<usize>,
-        order: &mut Vec<usize>,
-    ) -> Result<()> {
-        if done.contains(&index) {
-            return Ok(());
-        }
-        if let Some(start) = path.iter().position(|i| *i == index) {
-            let cycle: Vec<&str> = path[start..]
-                .iter()
-                .chain([&index])
-                .map(|i| packages[*i].0)
-                .collect();
-            fail!(
-                DependencyConflict,
-                "dependency cycle between the forked packages: {}; they cannot be installed one after another",
-                cycle.join(" → ")
-            );
-        }
-        path.push(index);
-        for dependency in &packages[index].1 {
-            if let Some(other) = packages.iter().position(|(id, _)| id == dependency) {
-                visit(other, packages, path, done, order)?;
-            }
-        }
-        path.pop();
-        done.insert(index);
-        order.push(index);
-        Ok(())
-    }
-    let (mut path, mut done, mut order) = (Vec::new(), BTreeSet::new(), Vec::new());
-    for index in 0..packages.len() {
-        visit(index, packages, &mut path, &mut done, &mut order)?;
-    }
-    Ok(order)
-}
-
-/// Release the forked packages: set `version` (when given) in each manifest, commit the
-/// changes in their folders once (the whole repository for a root package, like
-/// `commit`), then create all release tags together using the shared authoring path.
-fn release_packages(fork: &PackageFork, version: Option<&str>, custom_ssh: bool) -> Result<()> {
-    let releases: Vec<(Option<&str>, &str)> = fork
-        .packages
-        .iter()
-        .map(|p| {
-            let folder = (!p.path.is_empty()).then_some(p.path.as_str());
-            (folder, version.unwrap_or(&p.version))
-        })
-        .collect();
-    let folders: Vec<&str> = fork.packages.iter().map(|p| pathspec(&p.path)).collect();
-    scaffold::release_packages(&fork.path, &releases, &folders, true, custom_ssh)
 }
 
 #[cfg(test)]
@@ -1020,27 +670,5 @@ mod tests {
         assert_eq!(m.dependencies["me/theme"], "^2.0.0");
         assert_eq!(m.dependencies["x/y"], "*");
         assert_eq!(rewrites[0].new_requirement.as_deref(), Some("^2.0.0"));
-    }
-
-    #[test]
-    fn install_order_puts_dependencies_first_and_names_a_cycle() {
-        let set = |ids: &[&str]| ids.iter().map(|s| (*s).to_owned()).collect::<BTreeSet<_>>();
-        let packages = [
-            ("me/panel", set(&["me/theme", "x/other"])),
-            ("me/theme", set(&["me/base"])),
-            ("me/base", set(&[])),
-        ];
-        assert_eq!(install_order(&packages).unwrap(), [2, 1, 0]);
-        let cyclic = [
-            ("me/a", set(&["me/b"])),
-            ("me/b", set(&["me/c"])),
-            ("me/c", set(&["me/a"])),
-        ];
-        let error = install_order(&cyclic).unwrap_err();
-        assert_eq!(error.kind(), "dependency_conflict");
-        assert!(
-            error.to_string().contains("me/a → me/b → me/c → me/a"),
-            "{error}"
-        );
     }
 }

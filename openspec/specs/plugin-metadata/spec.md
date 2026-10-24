@@ -14,7 +14,7 @@ The manifest MAY carry `title` (string), `description` (string), `provides` (str
 - **THEN** gitpm reports `provides` as `["theme"]` and keeps the string form in the file
 
 ### Requirement: Lenient reading, strict authoring
-`commit` and the release step of `fork --replace` SHALL refuse a metadata key of the wrong type with `invalid_manifest`. `install`, `install-catalog`, `update`, `update all`, `rollback`, `restore`, `fork`, `catalog update`, `catalog register` and `list` SHALL treat such a key (and `null`) as absent. `install`, `install-catalog`, `update` and `update all` SHALL warn on stderr and report it in `InstallResult.warnings` / `RevisionChange.warnings`; `rollback` and `restore` report no warnings.
+`commit` SHALL refuse a metadata key of the wrong type with `invalid_manifest`. `install`, `install-catalog`, `update`, `update all`, `rollback`, `restore`, `fork`, `catalog update`, `catalog register` and `list` SHALL treat such a key (and `null`) as absent. `install`, `install-catalog`, `update` and `update all` SHALL warn on stderr and report it in `InstallResult.warnings` / `RevisionChange.warnings`; `rollback` and `restore` report no warnings.
 
 #### Scenario: Warning text
 - **WHEN** an install ignores a wrong-typed `tags`
@@ -30,7 +30,7 @@ The manifest MAY carry `title` (string), `description` (string), `provides` (str
 - **THEN** the command fails with `invalid_manifest` and nothing is committed
 
 ### Requirement: Metadata survives rewrites
-`commit`, `fork` and `fork --replace` SHALL rewrite `version`, `id`, `forkOf`, `replaces` and dependencies but SHALL keep the metadata keys exactly as they were, in the position the unknown-key rule gives them (package-manifest, "Unknown keys are preserved"). (The `"title": "NAME"` that `init` writes is specified in authoring.) Verified by `fork_and_commit_carry_the_metadata_unchanged`.
+`commit` and `fork` SHALL rewrite `version`, `id`, `forkOf`, `replaces` and dependencies but SHALL keep the metadata keys exactly as they were, in the position the unknown-key rule gives them (package-manifest, "Unknown keys are preserved"). (The `"title": "NAME"` that `init` writes is specified in authoring.) Verified by `fork_and_commit_carry_the_metadata_unchanged`.
 
 #### Scenario: Fork keeps the title
 - **WHEN** `tilr/theme` with `"title": "Theme"` is forked as `me/theme`

@@ -8,6 +8,6 @@
 
 ## 2. CLI and docs
 
-- [ ] 2.1 Parse `fork ID... --from SOURCE --ns NS --into DIR [--ref REF]`; refuse `--ref` without `--from` and `--replace` with `--from`; CLI test asserts no workspace folder is created and the output lines match the installed-package fork
+- [ ] 2.1 Parse `fork ID... --from SOURCE --ns NS --into DIR [--ref REF]`; refuse `--ref` without `--from`; CLI test asserts no workspace folder is created and the output lines match the installed-package fork
 - [ ] 2.2 Document the form in README (fork section) and `crates/gitpm-cli/README.md`; verify the README example runs as written
 - [ ] 2.3 Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace`
