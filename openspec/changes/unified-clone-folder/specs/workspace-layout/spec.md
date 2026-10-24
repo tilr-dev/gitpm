@@ -74,6 +74,6 @@ Each `state.json` `packages.<id>` record is the single source for its format and
 - **WHEN** `tilr/store` (installed from a multi-package repository) is forgotten
 - **THEN** `packages.tilr/store` is removed and `forgotten.tilr/store` keeps its revision and clone key
 
-#### Scenario: Forgetting a root package
+#### Scenario: Forgetting a package with its own clone
 - **WHEN** `acme/greeter` (root package in `repos/<key>`) is forgotten
 - **THEN** `forgotten.acme/greeter` keeps its record, including `catalog`, `enabled` and mode, and the clone stays
