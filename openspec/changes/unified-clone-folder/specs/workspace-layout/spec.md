@@ -53,19 +53,11 @@ Each `state.json` `packages.<id>` record is the single source for its format and
 - **WHEN** a build revision is updated to a Git revision
 - **THEN** previous_build retains the release metadata and catalog location for offline rollback
 
-#### Scenario: Retained clone after a build commit is removed upstream
-- **WHEN** a Git install switches to a build, retains its clone, and the build commit is later removed from the origin
-- **THEN** an explicit update to an available Git ref reuses the retained clone and succeeds without resolving the removed build commit first
-- **AND** build provenance is retained for offline rollback
 
 #### Scenario: Build record format
 - **WHEN** a current or previous revision is a build
 - **THEN** `build` or `previous_build` retains its full release record and catalog location separately from catalog protection; previous retains its mode and source kind for offline rollback, and only current/previous build output is retained
 
-#### Scenario: Git clone identity
-- **WHEN** a root or nested Git package is installed
-- **THEN** its record includes the source-derived `clone` key; `path` is absent for the root and names the package folder otherwise
-- **AND** a Git record without a clone key is invalid data; build-only records remain valid without a clone
 
 ### Requirement: Replacements and forgotten records
 `state.json` SHALL keep `replacements` (the replacement bindings ORIGINAL → FORK, global for the workspace; rules in fork-replacement) and `forgotten` (records of every forgotten package, same format as `packages.<id>`, with a source-keyed Git clone or retained build output; lifecycle in install-uninstall and multi-package-repos).
@@ -77,3 +69,18 @@ Each `state.json` `packages.<id>` record is the single source for its format and
 #### Scenario: Forgetting a package with its own clone
 - **WHEN** `acme/greeter` (root package in `repos/<key>`) is forgotten
 - **THEN** `forgotten.acme/greeter` keeps its record, including `catalog`, `enabled` and mode, and the clone stays
+
+## ADDED Requirements
+
+### Requirement: Unified Git clone identity
+Every Git package record SHALL include a source-derived `clone` key under `repos/`; `path` SHALL identify its folder within that clone and be absent for a root package. Clone-free build records SHALL remain valid without a clone key. A retained clone SHALL be reusable when switching a build back to Git without requiring the build commit to remain on the origin.
+
+#### Scenario: Git clone identity
+- **WHEN** a root or nested Git package is installed
+- **THEN** its record includes the source-derived `clone` key; `path` is absent for the root and names the package folder otherwise
+- **AND** a Git record without a clone key is invalid data; build-only records remain valid without a clone
+
+#### Scenario: Retained clone after a build commit is removed upstream
+- **WHEN** a Git install switches to a build, retains its clone, and the build commit is later removed from the origin
+- **THEN** an explicit update to an available Git ref reuses the retained clone and succeeds without resolving the removed build commit first
+- **AND** build provenance is retained for offline rollback
