@@ -21,7 +21,7 @@ Root and nested Git packages of one source SHALL share a bare repository at `rep
 ### Requirement: Shared clone HEAD handling
 A Git package worktree SHALL be clean and its HEAD SHALL equal the package's recorded current commit before update, rollback, uninstall or restore, regardless of root or nested layout and regardless of other packages or tags. Lost work SHALL produce `local_changes` under the existing confirmation rules for uninstall. The bare repository SHALL never be checked out; its HEAD SHALL NOT govern a package's local-work check. Removing or forgetting one package SHALL NOT move another worktree's HEAD.
 
-#### Scenario: Another tagged commit is still moved HEAD
+#### Scenario: Sole user's HEAD is at another tagged commit
 - **WHEN** the affected worktree HEAD differs from its recorded commit, even at another package revision or a tagged commit
 - **THEN** update, rollback and unconfirmed uninstall refuse with `local_changes` listing `HeadMoved`
 
@@ -29,10 +29,17 @@ A Git package worktree SHALL be clean and its HEAD SHALL equal the package's rec
 - **WHEN** a root or nested Git package worktree contains staged, unstaged or untracked changes
 - **THEN** update, rollback and unconfirmed uninstall refuse with `local_changes` for that package
 
-#### Scenario: Removing a sibling
+#### Scenario: HEAD moves to a remaining package
 - **WHEN** one package from a shared bare repository is removed or forgotten
 - **THEN** remaining worktrees retain their own HEAD and bytes
 
+#### Scenario: Retained clone uses the previous Git revision
+- **WHEN** a build retains a previous Git revision for offline rollback
+- **THEN** the bare repository protects that revision with a keep-alive ref and no package worktree is retained; bare HEAD does not participate in the local-work guard
+
+#### Scenario: Several users permit a tagged HEAD
+- **WHEN** a source has several package worktrees and one worktree HEAD moves to another tagged commit
+- **THEN** operations guarding that package refuse with `local_changes` listing `HeadMoved`, even when another package records that commit
 
 ### Requirement: Forgotten packages of shared clones
 Forgetting a package of a shared clone SHALL keep a `forgotten` record (format in workspace-layout) that still holds its bare repository and Git worktree; `restore` SHALL record it again under the rules of install-uninstall ("Restore preconditions") and deploy it when active; `uninstall` of the forgotten package SHALL remove the record its worktree and, if last, the bare repository. Verified by `a_forgotten_shared_package_keeps_its_clone_until_uninstalled`.

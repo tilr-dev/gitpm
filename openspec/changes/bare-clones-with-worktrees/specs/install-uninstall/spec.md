@@ -54,9 +54,13 @@ gitpm SHALL offer `disable` (disable and undeploy), `forget` (undeploy, move the
 - **WHEN** a clean package worktree at its recorded commit is restored
 - **THEN** the forgotten revisions, catalog binding, enabled flag and mode are preserved, and deployment follows the enabled flag
 
-#### Scenario: Dirty retained worktree
+#### Scenario: Dirty retained clone
 - **WHEN** a forgotten package worktree was edited, including outside its nested package folder
 - **THEN** restore fails with `local_changes` and keeps the forgotten record
+
+#### Scenario: Unpublished commit in a retained clone
+- **WHEN** a forgotten package worktree HEAD is an unpublished commit different from its recorded current commit
+- **THEN** restore fails with `local_changes` listing `HeadMoved`, also in branch mode, and preserves the forgotten record
 
 #### Scenario: Branch mode restore
 - **WHEN** a forgotten branch-mode package worktree HEAD differs from its recorded commit
