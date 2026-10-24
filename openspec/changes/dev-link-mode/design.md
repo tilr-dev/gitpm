@@ -8,7 +8,7 @@ The publishing-folder decision of 2026-10-23 retains the existing `"dist"` defau
 and supersedes the package-root default selected on 2026-10-20. Recommendations below
 are technical proposals, not additional owner decisions.
 
-Baseline inspected: gitpm dev commit `e31c1ac` (2026-10-22). Recheck with `git rev-parse HEAD`
+Baseline inspected: gitpm dev commit `27ceb64` (2026-10-24). Recheck with `git rev-parse HEAD`
 and the paths below when implementing; these observations are not environment
 limitations or workarounds:
 
@@ -81,6 +81,35 @@ Converting a managed installation to/from link must be an explicit library
 operation with a plan, including lost-work checks for any managed clone it removes.
 No existing `update` target should implicitly detach a link. These conversion API
 details are recommendations for implementation review, not new owner decisions.
+
+## Fork preparation and explicit live installation
+
+The fork model inspected on 2026-10-24 only prepares an author repository:
+`fork ID --ns NAMESPACE --into DIR` preserves history and inherited tags, writes
+manifest provenance and a replacement offer, and leaves workspace state and dist
+unchanged. It creates no release and performs no install or replacement.
+The removed fork options `--replace`, `--version` and `--force` have no role in
+the live workflow.
+
+For a single-package repository, the proposed link entry point gives this flow
+(the link command is future functionality, not a currently available command):
+
+```sh
+gitpm fork acme/hello --ns me --into hello-fork
+# Prepare the manifest-selected output yourself if it does not exist.
+gitpm link ./hello-fork
+```
+
+The second command explicitly installs `me/hello` in link mode. No preliminary
+commit or new release is required; edits in the selected installation folder
+become visible immediately. For a multi-package fork, pass the selected package
+folder to link; siblings are not implicitly installed. The original remains
+installed and its replacement binding is unchanged.
+
+Manifest `forkOf` supplies validated discovery provenance, stored as described
+below. Manifest `replaces` remains an offer and must not create a replacement
+binding during link. This research does not add a linked-fork replacement API;
+managed installation and explicit replacement retain their existing contracts.
 
 ## State and revisions (original question 3)
 
@@ -218,6 +247,12 @@ hermetic local repositories and fixture directories, not public services.
 - Create a newer release tag in a local source and verify structured library/FFI
   results for check/update/update-all/dry-run, CLI rendering and unchanged link.
   Include unreachable source, no newer release and dependency-constrained updates.
+- Prepare a fork from a hermetic local installed source; assert that fork alone
+  preserves workspace state, dist and release tags. Explicitly link one selected
+  fork package without a new release; assert live deployment, no sibling installs
+  and no replacement binding. Verify `mode.link.discovery.forkOf` in state/FFI,
+  own-origin versus original-upstream availability, unchanged discovery after
+  external manifest edits, and snapshot refresh only after validated relink.
 - Keep managed install/update/deploy/lost-work regression coverage; document the
   state representation and command alongside the implementation.
 

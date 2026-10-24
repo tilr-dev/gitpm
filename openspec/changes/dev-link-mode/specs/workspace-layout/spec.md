@@ -25,6 +25,14 @@ A fork link SHALL record its validated `forkOf` snapshot as `mode.link.discovery
 - **WHEN** the author changes or removes `forkOf` in the linked manifest after linking
 - **THEN** check still reports original-upstream availability from the recorded provenance; a validated relink may refresh it
 
+#### Scenario: Link a newly prepared fork
+- **WHEN** a repository prepared by fork is explicitly installed in link mode
+- **THEN** the selected package's validated manifest `forkOf` is recorded in `mode.link.discovery.forkOf`, without a top-level `forkOf` or `replaces` and without creating a replacement binding
+
+#### Scenario: Refresh fork provenance explicitly
+- **WHEN** the author explicitly relinks a package after changing its manifest `forkOf` to another valid provenance descriptor
+- **THEN** successful validation refreshes the recorded discovery snapshot and subsequent check and update use the refreshed original-upstream provenance
+
 ### Requirement: Link records follow the workspace format policy
 Link record schema changes SHALL follow workspace-layout "State format versions": format 1 in place before the first public release; later bumps only under its release-milestone policy. No migration or compatibility reader SHALL be added. Foreign formats SHALL be refused with `unsupported` unchanged; README SHALL document workspace recreation.
 

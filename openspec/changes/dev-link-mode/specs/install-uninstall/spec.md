@@ -11,6 +11,11 @@ gitpm SHALL provide a library link operation and equivalent FFI and CLI entry po
 - **WHEN** the selected local package belongs to a multi-package repository
 - **THEN** the link identifies that package and resolves its installation folder relative to its package folder
 
+#### Scenario: Explicitly link a prepared fork
+- **WHEN** the author prepares a repository with `gitpm fork acme/hello --ns me --into hello-fork` and then explicitly links its `me/hello` package
+- **THEN** only that selected package is installed in link mode, without requiring a new release or changing the original's installation or replacement bindings
+- **AND** fork preparation alone neither installs the fork nor publishes a linked deployment; sibling packages remain uninstalled
+
 ### Requirement: Invalid link targets leave no changes
 Linking SHALL refuse invalid manifests with `invalid_manifest` (unparsable JSON with `invalid_data`) and missing installation folders, workspace cycles or targets in workspace managed storage with `workspace`, without changing state or the author folder.
 
