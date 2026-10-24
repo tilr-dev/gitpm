@@ -138,7 +138,11 @@ impl DependencyProvider for Provider<'_> {
                 .map(|(id, p)| {
                     Ok((
                         Package::Id(id.clone()),
-                        Range::higher_than(deps::version(&p.current.version)?),
+                        if p.link().is_some() {
+                            Range::singleton(deps::version(&p.current.version)?)
+                        } else {
+                            Range::higher_than(deps::version(&p.current.version)?)
+                        },
                     ))
                 })
                 .collect::<Result<_>>()?,

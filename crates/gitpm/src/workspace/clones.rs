@@ -114,6 +114,9 @@ pub(crate) fn repo_key(source: &str) -> String {
 
 /// The live clone of a package (registered or forgotten).
 pub(super) fn installed_repo(root: &Path, id: &str, p: &Installed) -> Result<PathBuf> {
+    if p.link().is_some() {
+        return Err(Error::RepositoryNotFound { id: id.into() });
+    }
     let Some(key) = &p.clone else {
         return package_repo(root, id);
     };
@@ -341,6 +344,14 @@ pub(super) struct Removal {
 }
 pub(super) fn removal(root: &Path, state: &State, id: &str, custom_ssh: bool) -> Result<Removal> {
     let entry = state.packages.get(id).or_else(|| state.forgotten.get(id));
+    if entry.is_some_and(|p| p.link().is_some()) {
+        return Ok(Removal {
+            relative: String::new(),
+            repo: None,
+            key: None,
+            lost_work: Vec::new(),
+        });
+    }
     let Some((p, key)) = entry.and_then(|p| Some((p, p.clone.clone()?))) else {
         // Own clone, registered or forgotten (retained) under `packages/<id>`.
         let repo = match package_repo(root, id) {

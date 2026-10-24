@@ -2,31 +2,30 @@
 
 ## Status and evidence
 
-Research dated 2026-10-20; implementation is separate.
+Research dated 2026-10-20 established the contract implemented here.
 Owner decisions of 2026-10-19 select live links and structured reporting.
 The publishing-folder decision of 2026-10-23 retains the existing `"dist"` default
-and supersedes the package-root default selected on 2026-10-20. Recommendations below
-are technical proposals, not additional owner decisions.
+and supersedes the package-root default selected on 2026-10-20. Technical choices below implement these owner decisions.
 
 Baseline inspected: gitpm dev commit `27ceb64` (2026-10-24). Recheck with `git rev-parse HEAD`
 and the paths below when implementing; these observations are not environment
 limitations or workarounds:
 
 - `openspec/specs/install-uninstall/spec.md`, "Install an explicit ref or a branch",
-  and `crates/gitpm/src/model.rs:159`: `--dev` is origin-default-branch following;
+  and `crates/gitpm/src/model.rs` (`Mode`): `--dev` is origin-default-branch following;
   state Mode has Release, Pinned and Branch. The old channel problem is resolved.
 - `openspec/specs/dist/spec.md`, "Deploys copy the committed tree": managed
   deployments select the committed manifest `dist` folder (currently defaulting to
   `<path>/dist`) from Git objects, not live files. A link is an
   explicit exception, not an alternate implementation of that copy operation.
 - `openspec/specs/workspace-layout/spec.md`, "Installed package record", and
-  `crates/gitpm/src/model.rs:133`: current/previous revisions assume an exact
+  `crates/gitpm/src/model.rs` (`Installed`): current/previous revisions assume an exact
   commit. Uncommitted bytes cannot truthfully be described by that revision.
 - `openspec/specs/transactions-locking/spec.md`: staged paths, journal, state-last
   commit, roll-forward recovery, real managed parents. A leaf symlink must not
   relax the managed-parent checks.
-- `crates/gitpm/src/check.rs:86`, `crates/gitpm/src/workspace.rs:113` and
-  `crates/gitpm-ffi/src/lib.rs:303`: mode and update/check reasons already cross
+- `crates/gitpm/src/check.rs` (`CheckRow`), `crates/gitpm/src/workspace.rs`
+  (`UnchangedReason`) and `crates/gitpm-ffi/src/lib.rs` (`Mode`): mode and update/check reasons already cross
   public boundaries, but none represents a live link. Adding a CLI-only warning
   would not satisfy the owner decision on structured library/FFI reporting.
 
@@ -53,7 +52,7 @@ only makes the path resolve to the latest author-written bytes.
 
 ## Entry point and folder resolution
 
-Recommend a distinct `link LOCAL_PACKAGE_PATH` command and matching Manager/FFI
+Use a distinct `link LOCAL_PACKAGE_PATH` command and matching Manager/FFI
 method, rather than `install --dev`: the latter already names remote branch
 following. The library validates and resolves the local package and returns all
 domain errors; CLI only parses paths and prints results. No remote URL is a link
@@ -75,12 +74,12 @@ missing-output rule remains `invalid_manifest`. Neither case instructs gitpm to 
 No build script or hook from the package is executed. Existing source validation
 rules still govern any optional origin used for release discovery.
 
-For already-recorded IDs, recommend explicit conflict handling rather than
-silently replacing another source. Exact same-link reentry can be idempotent.
-Converting a managed installation to/from link must be an explicit library
-operation with a plan, including lost-work checks for any managed clone it removes.
-No existing `update` target should implicitly detach a link. These conversion API
-details are recommendations for implementation review, not new owner decisions.
+For already-recorded link IDs, validated relink refreshes the manifest snapshot
+and may select a new output folder. An unexpected deployed leaf is a conflict.
+Managed installations must first be explicitly uninstalled using the existing
+removal plan and lost-work checks, then linked; no update target converts a link.
+Returning to managed installation likewise requires explicit uninstall followed
+by install. External files remain outside every removal plan.
 
 ## Fork preparation and explicit live installation
 
@@ -91,8 +90,7 @@ unchanged. It creates no release and performs no install or replacement.
 The removed fork options `--replace`, `--version` and `--force` have no role in
 the live workflow.
 
-For a single-package repository, the proposed link entry point gives this flow
-(the link command is future functionality, not a currently available command):
+For a single-package repository, the link entry point gives this flow:
 
 ```sh
 gitpm fork acme/hello --ns me --into hello-fork
@@ -119,7 +117,7 @@ explicit step.
 ## State and revisions (original question 3)
 
 Dan requires an explicit link marker and delegates the concrete format to this
-design. Recommend a discriminated package record: managed packages retain their
+design. Use a discriminated package record: managed packages retain their
 revision/mode history; link records carry `mode` as `{"link": {...}}` — the same object
 shape as the current `{"pinned": REF}` / `{"branch": NAME}` — with canonical
 package and installation paths. Do not fake a clone key,
@@ -203,7 +201,7 @@ in the external repository do not block removal of its link, because none is
 deleted. Force and confirmed-lost-work options cannot authorize target deletion.
 Managed clones keep all existing lost-work protections, including when switching
 away from a managed installation. Linking a workspace-owned checkout must not
-permit its later removal as if no external user relied on it: recommend refusing
+permit its later removal as if no external user relied on it: refuse
 targets within this workspace's managed storage, with a clear `workspace` error.
 
 ## Release checks and structured reporting (original questions 3–4)
@@ -240,7 +238,7 @@ including error kinds. A public link method is required alongside the CLI.
 
 ## Implementation and verification plan
 
-See `tasks.md` for future work, deliberately unchecked until implemented. Use
+See `tasks.md` for the implementation plan. Use
 hermetic local repositories and fixture directories, not public services.
 
 - Edit a target file after linking and read the deployed path immediately; assert
@@ -269,7 +267,3 @@ hermetic local repositories and fixture directories, not public services.
 - Keep managed install/update/deploy/lost-work regression coverage; document the
   state representation and command alongside the implementation.
 
-## Handoff
-
-This research opens the change without archiving it (Dan, 2026-10-20).
-A separate implementation task owns the remaining work and archive.

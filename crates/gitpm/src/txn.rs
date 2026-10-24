@@ -248,6 +248,18 @@ impl Txn {
         )?);
         Ok(staged)
     }
+    /// Stage a leaf symlink. Journal and cleanup own the entry, never its target.
+    pub(crate) fn deploy_link(&mut self, id: &str, target: &Path) -> Result<()> {
+        let staged = self.stage_dist(id)?;
+        fs::remove_dir(&staged)?;
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, &staged)?;
+        #[cfg(not(unix))]
+        return Err(Error::Unsupported(
+            "live links require Unix symlinks".into(),
+        ));
+        Ok(())
+    }
     /// Remove a clone (`packages/<id>` or `repos/<key>`) on commit.
     pub(crate) fn delete_repo(&mut self, relative: &str) -> Result<()> {
         ensure_managed_parents(&self.root, relative)?;
