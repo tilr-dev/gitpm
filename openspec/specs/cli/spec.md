@@ -11,7 +11,7 @@ The CLI SHALL offer exactly the commands of its full usage (`gitpm --help`), eac
 
 #### Scenario: Command list
 - **WHEN** the user reads `gitpm --help`
-- **THEN** the commands are `init`, `commit`, `remote` (authoring); `fork`, `replace` (fork-replacement); `auth check` (git-safety); `catalog show`, `catalog update`, `catalog register`, `check` (catalog); `catalog links` (below); `install`, `install-catalog`, `download`, `download-catalog`, `forget`, `restore`, `uninstall` (install-uninstall); `enable`, `disable`, `sync-dist` (dist); `update`, `rollback` (updates); `list` (below)
+- **THEN** the commands are `init`, `commit`, `remote` (authoring); `fork`, `replace`, `replace-check`, `replace-resolve` (fork-replacement); `auth check` (git-safety); `catalog show`, `catalog update`, `catalog register`, `check` (catalog); `catalog links` (below); `install`, `install-catalog`, `download`, `download-catalog`, `forget`, `restore`, `uninstall` (install-uninstall); `enable`, `disable`, `sync-dist` (dist); `update`, `rollback` (updates); `list` (below)
 
 #### Scenario: Catalog links
 - **WHEN** the user runs `gitpm --catalog ./catalog catalog links`
@@ -32,6 +32,10 @@ The CLI SHALL offer exactly the commands of its full usage (`gitpm --help`), eac
 #### Scenario: Removed command
 - **WHEN** the user runs a command that is not in the list, including the former `create`, `migrate-catalog`, `info`, `catalog-update` and `register`
 - **THEN** it fails with `unknown command: X; use --help`
+
+#### Scenario: Replacement forms
+- **WHEN** a caller uses `replace`, `replace-check` or `replace-resolve`
+- **THEN** each takes `ORIGINAL --with PROVIDER`; `replace-check` prints a JSON report without mutations and `replace-resolve` explicitly installs missing dependencies; `replace --back` and `replace --force` are rejected
 
 ### Requirement: Settings come from flags, environment, defaults
 The CLI SHALL resolve `--root DIR` / `GITPM_ROOT` (default `./gitpm-workspace`), `--catalog LOC` / `GITPM_CATALOG` (no default), `--sources FILE` / `GITPM_SOURCES` (default `./sources.txt`), flag first. There SHALL be no config file; `PM_*` variables SHALL be ignored. Verified by `custom_ssh_is_shared_by_auth_install_catalog_and_check`, `gitpm_variables_set_root_catalog_and_sources`, `legacy_pm_variables_are_ignored`, `defaults_are_relative_to_the_current_directory`.
@@ -81,7 +85,7 @@ Before calling the library the CLI SHALL refuse only syntax: unknown or repeated
 - **THEN** it fails as a usage error before opening the workspace or creating the destination
 
 ### Requirement: One output line per affected package
-Every workspace-mutating command (`install`, `install-catalog`, `download`, `download-catalog`, `update`, `update all`, `rollback`, `enable`, `disable`, `forget`, `restore`, `uninstall`, `replace`, `sync-dist`) SHALL print one line per affected package in the form `ID <verb> …` (scenario "Single-package verbs"), built from the library result alone without reading state, and SHALL NOT print `OK:` lines. Other commands print what their capability specifies.
+Every workspace-mutating command (`install`, `install-catalog`, `download`, `download-catalog`, `update`, `update all`, `rollback`, `enable`, `disable`, `forget`, `restore`, `uninstall`, `replace`, `replace-resolve`, `sync-dist`) SHALL print one line per affected package in the form `ID <verb> …` (scenario "Single-package verbs"), built from the library result alone without reading state, and SHALL NOT print `OK:` lines. Other commands print what their capability specifies.
 
 #### Scenario: Other author and catalog commands
 - **WHEN** the user runs `init`, `remote`, `fork`, `commit`, `catalog update` or `catalog register`
@@ -91,7 +95,7 @@ Every workspace-mutating command (`install`, `install-catalog`, `download`, `dow
 - **WHEN** `update all` updates one package and finds another current
 - **THEN** it prints `a updated 1.0.0 → 1.1.0`, `b up to date (2.0.0)` and `1 updates, 0 installs, 0 kept back.`, the second line taken from the plan's `unchanged` list (updates)
 - **AND** a kept-back package prints `c kept back at V (latest L: REASON)` with the message of the plan's `HeldBack.reason`, and a broken consumer `d skipped at V (dependency DEP is not installed)` from its `unchanged` reason
-- **AND** this is covered by `mutating_commands_print_one_line_per_package_and_no_ok_lines`, `forget_says_whether_the_clone_was_kept` and `update_all_reports_kept_back_packages_and_replace_back_without_a_replacement`
+- **AND** this is covered by `mutating_commands_print_one_line_per_package_and_no_ok_lines`, `forget_says_whether_the_clone_was_kept` and `update_all_reports_kept_back_packages_and_replace_with_original_without_a_replacement`
 
 #### Scenario: Single-package verbs
 - **WHEN** the user installs, updates, rolls back, enables, disables, forgets, restores and uninstalls `acme/greeter`
@@ -100,7 +104,7 @@ Every workspace-mutating command (`install`, `install-catalog`, `download`, `dow
 - **AND** an `update` or `update all` line of a change marked `major` ends with ` (major)` (`acme/greeter updated 1.2.3 → 2.0.0 (major)`; updates, "Major updates are marked"), covered by `update_lines_mark_major_updates`
 
 #### Scenario: Fork, replace and commit verbs
-- **WHEN** the user replaces, switches back
+- **WHEN** the user replaces a package or returns through replace ORIGINAL --with ORIGINAL
 - **THEN** the lines are `ORIGINAL replaced by FORK V [(as ORIGINAL V')] for: consumers` and `ORIGINAL switched back from FORK (…)` (exact variants in fork-replacement), built from the `ReplacementPlan`; the `fork` and `commit` lines are specified in fork-replacement and authoring
 
 ### Requirement: JSON output for state and catalog
@@ -168,15 +172,15 @@ On failure the CLI SHALL print `Error: MESSAGE` to stderr, for a library error a
 - **AND** `0.5.0-dev+0b146cf` is a SemVer pre-release and sorts below `0.5.0` although it was built after it; that is intended: a dev build is not that release
 
 ### Requirement: Prompts only on a TTY
-The CLI SHALL prompt (`[y/N]`, on stderr) only when stdin is a terminal, for uninstall with lost work and for incompatible replacements; without a TTY, and unless `--force`, it SHALL call the library unconfirmed, which refuses as install-uninstall and fork-replacement specify. A declined prompt is a CLI error without `Error kind` (exit status 1). Library calls never prompt (git-safety, "One subprocess boundary").
-
-#### Scenario: Replacement prompt declined
-- **WHEN** a replacement is incompatible, stdin is a TTY and the user answers `n`
-- **THEN** the CLI fails with `replacement cancelled; nothing was changed`
+The CLI SHALL prompt (`[y/N]`, on stderr) only when stdin is a terminal for uninstall with lost work. Without a TTY and unless `--force`, it SHALL call the library unconfirmed, which refuses as install-uninstall specifies. A declined prompt is a CLI error without `Error kind` (exit status 1). Library calls never prompt. Replacement SHALL never prompt.
 
 #### Scenario: Uninstall prompt stream
-- **WHEN** an uninstall with lost work asks `Delete anyway? [y/N]`
-- **THEN** the question is written to stderr, so stdout carries only result lines
+- **WHEN** uninstall asks `Delete anyway? [y/N]`
+- **THEN** the question is written to stderr
+
+#### Scenario: Replacement prompt declined
+- **WHEN** a replacement is inconsistent and terminal input contains n
+- **THEN** the CLI returns the library error without asking for or reading confirmation
 
 ### Requirement: The library owns domain behavior
 The CLI SHALL delegate domain validation, dependency resolution and workspace mutations to the library, limiting itself to argv/environment parsing, presentation, hints and terminal prompts. Equivalent CLI and library operations SHALL produce the same package state and deployed bytes. Verified by `workspace::every_operation_rejects_invalid_ids_without_changes`.
