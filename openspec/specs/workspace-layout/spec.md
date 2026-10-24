@@ -81,7 +81,7 @@ Verified by `workspace::open_ds_store_with_other_content_is_refused`.
 - **THEN** opening the state fails with `unsupported`
 
 ### Requirement: Installed package record
-Each `state.json` `packages.<id>` record is the single source for its format and SHALL hold `source`, `current` and `previous` revisions (`version`, `commit`; `previous` also `mode`), `enabled`, `mode` (`{"pinned": REF}`, `{"branch": NAME}`, omitted for releases), and optional `forkOf`, `dependencies`, `replaces`, protecting `catalog`, `clone`, `path` and `metadata`. At most one previous SHALL be kept. Verified by `model::state_round_trips_byte_for_byte`.
+Each `state.json` `packages.<id>` managed record SHALL hold `source`, `current`, at most one `previous`, `enabled`, and optional `mode`, `forkOf`, `dependencies`, `replaces`, `catalog`, `clone`, `path`, `metadata`. Revisions contain `version` and `commit`; `previous` also retains mode. Links follow "Link record format". Verified by `model::state_round_trips_byte_for_byte`.
 
 #### Scenario: Fresh install has no previous revision
 - **WHEN** a package was just installed
@@ -98,6 +98,10 @@ Each `state.json` `packages.<id>` record is the single source for its format and
 #### Scenario: Previous revision keeps its mode
 - **WHEN** a package in branch mode `main` is updated with `--release`
 - **THEN** `previous` is `{"version": …, "commit": …, "mode": {"branch": "main"}}` (a `previous` in release mode has no `mode`), so `rollback` restores both
+
+#### Scenario: Managed field semantics
+- **WHEN** a managed package record includes optional fields
+- **THEN** mode is `{"pinned": REF}` or `{"branch": NAME}` (omitted for releases), catalog protects a verified catalog installation, and clone is the source-derived Git-clone key
 
 #### Scenario: Previous build provenance
 - **WHEN** a build revision is updated to a Git revision
@@ -144,3 +148,51 @@ Every Git package record SHALL include a source-derived `clone` key under `repos
 - **WHEN** a Git install switches to a build, retains its clone, and the build commit is later removed from the origin
 - **THEN** an explicit update to an available Git ref reuses the retained clone and succeeds without resolving the removed build commit first
 - **AND** build provenance is retained for offline rollback
+
+### Requirement: State distinguishes external links from managed revisions
+State SHALL support explicit link records with canonical absolute package and installation-folder paths, enabled status, a validated manifest snapshot and release-discovery source when available. Link records MUST NOT claim their contents equal an installed commit or the external repository is a managed clone.
+
+#### Scenario: Record a live folder
+- **WHEN** a local package is linked successfully
+- **THEN** state explicitly records link mode and its canonical target, without an invented installed commit or managed-clone key
+
+#### Scenario: Manifest edited outside gitpm
+- **WHEN** the author edits the linked package manifest after linking
+- **THEN** state keeps its last validated manifest snapshot until an explicit validated relink refreshes it
+
+### Requirement: Link record format
+A link record SHALL hold `mode` as `{"link": {"packageRoot": PATH, "target": PATH}}`, optional validated `mode.link.discovery` provenance, plus `source` (when available), `enabled`, `version` (declared), `dependencies`, `metadata` and optional validated top-level `replaces` in the managed-record format. It MUST NOT hold `current`, `previous`, `clone`, `path`, `catalog` or `forkOf`.
+
+#### Scenario: Link record fields
+- **WHEN** a package is linked
+- **THEN** its record has `mode.link.packageRoot` and `mode.link.target` and no `current`, `previous` or `clone`
+
+#### Scenario: Replacement offer is a validated snapshot
+- **WHEN** the author edits the linked manifest's `replaces` after linking
+- **THEN** state retains the validated top-level offer until an explicit validated relink refreshes the manifest snapshot under existing dependency and replacement checks
+
+### Requirement: Linked fork discovery preserves validated provenance
+A fork link SHALL record its validated `forkOf` snapshot as `mode.link.discovery.forkOf`, with the same field shapes and source validation as package-manifest. Check and update SHALL use this snapshot for original-upstream discovery until validated relink refreshes it, without rereading external manifest edits into state.
+
+#### Scenario: Fork manifest changed outside gitpm
+- **WHEN** the author changes or removes `forkOf` in the linked manifest after linking
+- **THEN** check still reports original-upstream availability from the recorded provenance; a validated relink may refresh it
+
+#### Scenario: Link a newly prepared fork
+- **WHEN** a repository prepared by fork is explicitly installed in link mode
+- **THEN** the selected package's validated manifest `forkOf` is recorded in `mode.link.discovery.forkOf`, without a top-level `forkOf`; its validated manifest `replaces` offer is stored at the record top level in the managed-record format, without creating a replacement binding
+
+#### Scenario: Refresh fork provenance explicitly
+- **WHEN** the author explicitly relinks a package after changing its manifest `forkOf` to another valid provenance descriptor
+- **THEN** successful validation refreshes the recorded discovery snapshot and subsequent check and update use the refreshed original-upstream provenance
+
+### Requirement: Link records follow the workspace format policy
+Link record schema changes SHALL follow workspace-layout "State format versions": format 1 in place before the first public release; later bumps only under its release-milestone policy. No migration or compatibility reader SHALL be added. Foreign formats SHALL be refused with `unsupported` unchanged; README SHALL document workspace recreation.
+
+#### Scenario: Old workspace reader
+- **WHEN** a gitpm opens state of another format
+- **THEN** it refuses with `unsupported` without rewriting it; README directs the user to recreate the workspace rather than migrate it
+
+#### Scenario: Forgotten external link
+- **WHEN** a linked package is forgotten
+- **THEN** its forgotten record retains link identity and target without treating the author's repository as a retained managed clone
