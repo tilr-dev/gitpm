@@ -357,7 +357,7 @@ def ssh_passphrase_without_agent_never_prompts(t: T):
 def neighbours(t: T) -> tuple[Path, Path]:
     stage, backup = t.root / ".ws.stage", t.root / ".ws.backup"
     t.write(stage, {"user.txt": "my notes\n", "sub/data.bin": bytes(range(256))})
-    t.write(backup, {"notes.txt": "keep\n", "packages/dan/hello/fake.txt": "not a package\n", "state.json": "{}\n"})
+    t.write(backup, {"notes.txt": "keep\n", "repos/fake-0123456789abcdef/fake.txt": "not a package\n", "state.json": "{}\n"})
     return stage, backup
 
 

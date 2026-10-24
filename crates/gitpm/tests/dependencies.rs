@@ -239,7 +239,9 @@ fn local_source_clones_ignore_transient_server_info() {
         with_transient_server_info(&repo, || manager.install_from_catalog("app/local", None))
             .unwrap();
     assert_eq!(installed.id, "app/local");
-    let clone = f.path("workspace/packages/app/local");
+    let clone = f
+        .path("workspace")
+        .join(manager.state().unwrap().packages["app/local"].clone_folder("app/local"));
     assert_eq!(git(&clone, &["remote", "get-url", "origin"]), source);
     assert!(!clone.join(".git/objects/info/packs_controlled").exists());
     assert!(!clone.join(".git/objects/info/alternates").exists());
@@ -854,7 +856,13 @@ fn dependents_guard_disable_forget_and_uninstall() {
     m.disable("other/x").unwrap();
 
     // One refusal tells everything: the dependents and the work uninstall would lose.
-    fs::write(f.path("workspace/packages/lib/core/notes.txt"), "mine").unwrap();
+    fs::write(
+        f.path("workspace")
+            .join(m.state().unwrap().packages["lib/core"].clone_folder("lib/core"))
+            .join("notes.txt"),
+        "mine",
+    )
+    .unwrap();
     let error = f.refuses("has_dependents", || m.uninstall("lib/core", &[], false));
     let Error::HasDependents { lost_work, .. } = &error else {
         panic!("{error:?}")
@@ -1329,7 +1337,10 @@ fn update_all_preserves_local_work_and_never_partially_deploys() {
         m.install_from_catalog(id, None).unwrap();
         f.publish(&cat, id, "2.0.0", &[]);
     }
-    let local = f.path("workspace/packages/x/b/dist/local.js");
+    let local = f
+        .path("workspace")
+        .join(m.state().unwrap().packages["x/b"].clone_folder("x/b"))
+        .join("dist/local.js");
     fs::write(&local, "local work").unwrap();
     f.refuses("local_changes", || m.update_all());
     f.refuses("local_changes", || m.update_all_plan());
