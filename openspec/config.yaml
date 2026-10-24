@@ -76,8 +76,8 @@ context: |
 
   Glossary (canonical terms for every spec, proposal and design):
   - package: the unit gitpm manages (a folder with a manifest and committed output, or its catalog prebuilt archive). Prose
-    and literal names say "package": the state key `packages`, the workspace folder
-    `packages/`, the API names `PackageManager`, `InstalledPackage`, `PackageSummary`, and
+    and literal names say "package": the state key `packages`, the workspace clone folder
+    `repos/`, the API names `PackageManager`, `InstalledPackage`, `PackageSummary`, and
     messages. "plugin" remains only in the file name `plugin.json`.
   - manifest: a package's `plugin.json`. catalog package index: the per-package file
     `namespaces/<ns>/<name>/plugin.json` of the catalog. Never call either one "plugin.json"

@@ -189,6 +189,7 @@ class T:
 
     def gitpm(self, *args, **kw) -> R:
         """Run gitpm; the command word goes through COMMANDS."""
+        self._remember_clones()
         return self.run("gitpm", *gitpm_argv(args), **kw)
 
     def gitpm_ok(self, *args, **kw) -> R:
@@ -297,8 +298,31 @@ class T:
             raise Failure(f"{id} is not in state.json (have: {', '.join(packages) or 'none'})")
         return packages[id]
 
-    def clone(self, id: str) -> Path:
-        return self.ws / "packages" / id
+    def _remember_clones(self):
+        if not hasattr(self, "_clone_keys"):
+            self._clone_keys = {}
+        try:
+            state = self.state()
+        except (ValueError, OSError):
+            return
+        for id, record in (state.get("packages", {}) | state.get("forgotten", {})).items():
+            if record.get("clone"):
+                self._clone_keys[id] = record["clone"]
+
+    def clone(self, id: str, root: Path | None = None) -> Path:
+        self._remember_clones()
+        key = self._clone_keys.get(id)
+        if root is not None and (root / "state.json").exists():
+            state = json.loads((root / "state.json").read_text())
+            record = (state.get("packages", {}) | state.get("forgotten", {})).get(id, {})
+            key = record.get("clone", key)
+        if key is None:
+            source = str(self.repo(id).resolve())
+            name = source.rstrip("/").replace(":", "/").rsplit("/", 1)[-1].removesuffix(".git")
+            name = "".join(c for c in name if c.isascii() and (c.isalnum() or c in "-_"))[:40].lstrip("-")
+            digest = hashlib.sha256(source.encode()).hexdigest()[:16]
+            key = f"{name}-{digest}" if name else digest
+        return (root or self.ws) / "repos" / key
 
     def dist(self, id: str) -> Path:
         return self.ws / "dist" / id

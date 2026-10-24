@@ -170,7 +170,7 @@ def committed_txn(t: T, applied: list[str]) -> Path:
     shutil.copytree(t.ws, after, symlinks=True)
     t.gitpm_ok("--root", after, "update", ID)
     txn = t.ws / ".pm-txn"
-    paths = [f"dist/{ID}", f"packages/{ID}"]
+    paths = [f"dist/{ID}", str(t.clone(ID).relative_to(t.ws))]
     for rel in paths:
         shutil.copytree(after / rel, txn / "new" / rel, symlinks=True)
     shutil.copyfile(after / "state.json", txn / "state.json")

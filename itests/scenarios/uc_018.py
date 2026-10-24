@@ -145,7 +145,7 @@ def prompt_declined(t: T, make):
         r, prompted = tty_gitpm(t, "uninstall", ID, answer=answer)
         t.ok(prompted, "confirmation prompt shown")
         t.has(r.out, *expected)
-        t.has(r.out, f"packages/{ID}", f"dist/{ID}", f"state.json entry {ID}", "Delete anyway? [y/N]")
+        t.has(r.out, str(t.clone(ID).relative_to(t.ws)), f"dist/{ID}", f"state.json entry {ID}", "Delete anyway? [y/N]")
         t.ok(r.code != 0, f"answer {answer!r}: non-zero exit")
         g.unchanged(f"answer {answer!r}")
 

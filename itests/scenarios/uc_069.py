@@ -174,11 +174,11 @@ def forget_removes_restore_redeploys(t: T):
 
 @case(fixture="g2_demos_installed", spec=["dist/empty-parent-folders-are-removed#last-package-of-a-namespace"])
 def uninstall_removes_empty_namespace_folders(t: T):
-    """uninstall A (the only package of namespace vendor) removes dist/vendor and packages/vendor."""
+    """uninstall A (the only package of namespace vendor) removes dist/vendor and its unused clone."""
     t.eq(t.gitpm_ok("uninstall", A).out, f"{A} uninstalled\n", "output")
     t.not_installed(A)
     t.ok(not (t.ws / "dist/vendor").exists(), "dist/vendor removed")
-    t.ok(not (t.ws / "packages/vendor").exists(), "packages/vendor removed")
+    t.ok(not t.clone(A).exists(), "unused clone removed")
     deployed(t, B)
 
 

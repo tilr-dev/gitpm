@@ -269,9 +269,8 @@ pub struct Installed {
     /// Catalog the package was installed from (canonical location); `None` for Git installs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catalog: Option<String>,
-    /// Cache key of the shared clone `repos/<clone>` of a multi-package repository (one
-    /// per source, used by every package installed from it); `None`: the package's own
-    /// clone `packages/<id>`.
+    /// Source key of the clone `repos/<clone>`, shared by root and nested packages.
+    /// Absent only for build installs that have never retained a Git clone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clone: Option<String>,
     /// Package folder inside the repository (from `gitpm.json`); `None`: the root.
@@ -289,19 +288,18 @@ impl Installed {
         self.replaces = m.replaces.clone();
         self.metadata = m.metadata();
     }
-    /// The root package of its repository (no `gitpm.json` at the installed revision):
-    /// `path` is `None`. Independent of where the clone lives: a root package that moved
-    /// into a package folder keeps its own clone `packages/<id>` but is no longer a root
-    /// package.
+    /// Whether the package lives at the repository root.
     pub fn is_root_package(&self) -> bool {
         self.path.is_none()
     }
-    /// Workspace-relative folder of the clone: `repos/<clone>` (shared) or `packages/<id>`.
-    pub fn clone_folder(&self, id: &str) -> String {
-        match &self.clone {
-            Some(key) => format!("repos/{key}"),
-            None => format!("packages/{id}"),
-        }
+    /// Workspace-relative clone folder. Build-to-Git transitions without a retained
+    /// clone stage their new clone at the same source-derived destination.
+    pub fn clone_folder(&self, _id: &str) -> String {
+        let key = self
+            .clone
+            .clone()
+            .unwrap_or_else(|| crate::workspace::clones::repo_key(&self.source));
+        format!("repos/{key}")
     }
 }
 
@@ -319,7 +317,7 @@ pub struct State {
     /// consumer in this workspace.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub replacements: BTreeMap<String, String>,
-    /// Forgotten packages (own or shared clone), with their whole record: the clone is
+    /// Forgotten packages, with their whole record: the clone is
     /// kept (their `dist/` is not: they are not installed), a shared clone still counts
     /// them as users, and `restore` records them again as they were.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -387,6 +385,11 @@ impl State {
                 );
                 crate::catalog::validate_release(release, id, &release.manifest.version)?;
             }
+            ensure!(
+                p.build.is_some() || p.clone.is_some(),
+                InvalidData,
+                "Git package {id} has no clone key in state.json"
+            );
             if let Some(key) = &p.clone {
                 valid_clone_key(key)?;
             }
@@ -462,8 +465,7 @@ pub struct InstalledPackage {
     /// Package folder inside the source repository; `None` for the repository root.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
-    /// Cache key of the shared clone `repos/<clone>` (as in state); `None`: the
-    /// package's own clone `packages/<id>`.
+    /// Source key of the clone `repos/<clone>`; absent for clone-free builds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clone: Option<String>,
     /// Descriptive metadata of the installed revision (`plugin.json`); always present
@@ -1153,6 +1155,7 @@ mod tests {
         "commit": "a17e286b69daa620096f78fa54153696b8459b6b"
       },
       "enabled": false,
+      "clone": "repo-0123456789abcdef",
       "metadata": {
         "title": "Demo",
         "description": null,
@@ -1178,6 +1181,7 @@ mod tests {
         "version": "0.9.0",
         "commit": "0123456789abcdef0123456789abcdef01234567"
       },
+      "clone": "repo-0123456789abcdef",
       "metadata": {
         "title": null,
         "description": null,
@@ -1196,6 +1200,7 @@ mod tests {
       "mode": {
         "branch": "main"
       },
+      "clone": "repo-0123456789abcdef",
       "metadata": {
         "title": null,
         "description": null,
@@ -1318,6 +1323,22 @@ mod tests {
         );
         let ok = format!(r#"{{"format":1,"packages":{{}},"forgotten":{{"a/b":{entry}}}}}"#);
         assert_eq!(State::parse(ok.as_bytes()).unwrap().forgotten.len(), 1);
+    }
+
+    #[test]
+    fn git_records_require_clone_keys_even_when_forgotten() {
+        let without_keys = STATE.replace("      \"clone\": \"repo-0123456789abcdef\",\n", "");
+        assert_eq!(
+            State::parse(without_keys.as_bytes()).unwrap_err().kind(),
+            "invalid_data"
+        );
+        let forgotten = without_keys
+            .replacen("\"packages\"", "\"forgotten\"", 1)
+            .replace("\"format\": 1,", "\"format\": 1, \"packages\": {},");
+        assert_eq!(
+            State::parse(forgotten.as_bytes()).unwrap_err().kind(),
+            "invalid_data"
+        );
     }
 
     #[test]

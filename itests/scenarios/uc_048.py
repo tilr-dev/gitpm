@@ -94,7 +94,7 @@ def fork_disabled_original_enabled(t: T):
     """Fork mine/demo installed beside vendor/demo; disable the fork: flags and provenance
     kept, clones unchanged, only dist/mine/demo removed."""
     forkof = t.package("mine/demo")["forkOf"]
-    before = t.snap(t.ws / "packages", t.dist("vendor/demo"), git=True)
+    before = t.snap(t.ws / "repos", t.dist("vendor/demo"), git=True)
     t.gitpm_ok("disable", "mine/demo")
     t.eq((t.package("mine/demo")["enabled"], t.package("vendor/demo")["enabled"]), (False, True), "enabled flags")
     t.eq(t.package("mine/demo")["forkOf"], forkof, "provenance")
@@ -108,7 +108,7 @@ def original_disabled_fork_enabled(t: T):
     """Disable the original while its fork is installed: no replacement appears, clones and
     dist/mine/demo unchanged, dist/vendor/demo removed until enable."""
     fork_installed(t)
-    before = t.snap(t.ws / "packages", t.dist("mine/demo"), git=True)
+    before = t.snap(t.ws / "repos", t.dist("mine/demo"), git=True)
     t.gitpm_ok("disable", "vendor/demo")
     t.eq((t.package("mine/demo")["enabled"], t.package("vendor/demo")["enabled"]), (True, False), "enabled flags")
     t.ok(not t.state().get("replacements"), "no replacement")

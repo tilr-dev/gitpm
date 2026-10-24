@@ -71,8 +71,8 @@ def list_disable_enable_offline(t: T):
     """Offline: list, disable and enable work from the clones alone; disable removes only the
     dist folder, enable redeploys the same bytes and restores the exact state."""
     catalog = offline(t)
-    files = t.snap(t.ws / "packages", t.ws / "dist")
-    clones = t.snap(t.ws / "packages")
+    files = t.snap(t.ws / "repos", t.ws / "dist")
+    clones = t.snap(t.ws / "repos")
     state = t.state()
     listed = t.gitpm_ok("list").json()
     t.eq(sorted(listed["packages"]), [ID, FORK], "list works offline")

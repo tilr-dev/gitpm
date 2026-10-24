@@ -3,6 +3,8 @@
 //! install/update lines, empty folders after removal).
 //! Hermetic: the CLI and Git run with a cleared environment, a fixture HOME/TMPDIR and
 //! Git config; every path is inside a per-test temp directory removed on drop.
+mod common;
+use common::clone_path;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -38,6 +40,7 @@ impl Fixture {
             "[user]\n\tname = Test\n\temail = test@example.invalid\n[init]\n\tdefaultBranch = main\n[commit]\n\tgpgsign = false\n[tag]\n\tgpgsign = false\n",
         )
         .unwrap();
+        let dir = fs::canonicalize(dir).unwrap();
         let f = Self {
             mono: dir.join("mono"),
             dir,
@@ -548,14 +551,14 @@ fn removal_leaves_no_empty_namespace_or_clone_folders() {
     f.ok(&["uninstall", "tilr/theme"]);
     assert!(!workspace.join("dist/tilr").exists());
     assert!(!workspace.join("repos").exists());
-    assert!(workspace.join("dist").is_dir() && workspace.join("packages").is_dir());
+    assert!(workspace.join("dist").is_dir() && !workspace.join("packages").exists());
 
-    // A root package's own clone packages/<ns>/<name> as well.
+    // A root package uses the same source-keyed clone layout.
     f.ok(&["init", "acme/solo", "--into", "solo"]);
     f.ok(&["install", f.dir.join("solo").to_str().unwrap()]);
-    assert!(workspace.join("packages/acme/solo").is_dir());
+    assert!(clone_path(&workspace, &f.dir.join("solo")).is_dir());
     f.ok(&["uninstall", "acme/solo"]);
-    assert!(!workspace.join("packages/acme").exists());
+    assert!(!workspace.join("repos").exists());
     assert!(!workspace.join("dist/acme").exists());
 }
 

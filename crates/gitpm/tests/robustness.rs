@@ -1,3 +1,5 @@
+mod common;
+use common::clone_path;
 use gitpm::{Manager, scaffold};
 use std::{
     fs,
@@ -77,7 +79,7 @@ fn ignored_work_survives_rejected_operations_and_fork() {
     let m = f.installed();
     f.release("0.1.1");
     m.update("vendor/module").unwrap();
-    let repo = f.root.join("packages/vendor/module");
+    let repo = clone_path(&f.root, &f.author);
     fs::create_dir_all(repo.join("node_modules")).unwrap();
     fs::write(repo.join("node_modules/private.txt"), "irreplaceable").unwrap();
     let before = state(&m);
@@ -106,7 +108,7 @@ fn ignored_work_survives_rejected_operations_and_fork() {
 fn fork_records_source_revision_and_immediate_parent() {
     let f = Fixture::new();
     let m = f.installed();
-    let repo = f.root.join("packages/vendor/module");
+    let repo = clone_path(&f.root, &f.author);
     git(&repo, &["config", "user.name", "Test"]);
     git(&repo, &["config", "user.email", "test@example.invalid"]);
     let installed = git(&repo, &["rev-parse", "HEAD"]);
@@ -185,7 +187,7 @@ fn fork_clones_source_submodules_and_installs_only_committed_dist() {
     let original_dist = fs::read(f.root.join("dist/vendor/module/index.js")).unwrap();
     let before = state(&m);
     // Fork needs only recorded metadata and the source, even without an installed clone.
-    fs::remove_dir_all(f.root.join("packages/vendor/module")).unwrap();
+    fs::remove_dir_all(clone_path(&f.root, &f.author)).unwrap();
     let fork = m
         .fork_in_namespace("vendor/module", &f.dir.join("fork"), "mine")
         .unwrap();
@@ -273,7 +275,7 @@ fn corrupt_state_is_not_overwritten() {
 fn forgotten_dirty_clone_cannot_be_overwritten_by_install_or_restore() {
     let f = Fixture::new();
     let m = f.installed();
-    let local = f.root.join("packages/vendor/module/local.txt");
+    let local = clone_path(&f.root, &f.author).join("local.txt");
     fs::write(&local, "keep").unwrap();
     m.forget("vendor/module").unwrap();
     assert!(m.install(f.author.to_str().unwrap()).is_err());

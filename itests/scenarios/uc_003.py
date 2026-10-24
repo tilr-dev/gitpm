@@ -81,4 +81,4 @@ def release_and_update_keep_the_id(t: T):
     state = t.gitpm_ok("list").json()
     t.eq(sorted(state["packages"]), ["first/keep"], "installed IDs")
     t.eq(t.package("first/keep")["current"]["version"], "0.1.1", "updated under its own ID")
-    t.ok(t.clone("first/keep").is_dir() and not (t.ws / "packages/second").exists(), "clone path kept")
+    t.ok(t.clone("first/keep").is_dir() and not (t.ws / "packages").exists(), "clone path kept")

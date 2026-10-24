@@ -2,6 +2,8 @@
 //! packages (installed, enabled, not replaced), whatever command changed the state.
 //! Hermetic: the CLI and Git run with a cleared environment, a fixture HOME/TMPDIR and
 //! Git config; every path is inside a per-test temp directory removed on drop.
+mod common;
+use common::clone_path;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -31,7 +33,9 @@ impl Fixture {
             "[user]\n\tname = Test\n\temail = test@example.invalid\n[init]\n\tdefaultBranch = main\n[commit]\n\tgpgsign = false\n[tag]\n\tgpgsign = false\n",
         )
         .unwrap();
-        Self { dir }
+        Self {
+            dir: fs::canonicalize(dir).unwrap(),
+        }
     }
     fn command(&self, program: impl AsRef<std::ffi::OsStr>) -> Command {
         let mut command = Command::new(program);
@@ -594,7 +598,7 @@ fn a_namespace_path_that_is_not_a_folder_blocks_nothing_else() {
 fn a_missing_clone_is_reported_and_blocks_only_its_own_dist() {
     let f = Fixture::new();
     f.original_and_fork();
-    fs::remove_dir_all(f.root().join("packages/vendor")).unwrap();
+    fs::remove_dir_all(clone_path(&f.root(), &f.path("vendor/demo"))).unwrap();
     fs::remove_dir_all(f.root().join("dist/vendor")).unwrap();
     f.ok(&["init", "other/pkg", "--into", "other/pkg"]);
     let out = f.run(&["install", f.path("other/pkg").to_str().unwrap()]);
@@ -673,7 +677,7 @@ fn every_deploy_copies_the_committed_tree_with_nested_files_and_exec_bits() {
     f.ok(&["update", "vendor/demo"]);
     check("update");
     // Uncommitted edits in the clone are never deployed.
-    let clone = f.root().join("packages/vendor/demo");
+    let clone = clone_path(&f.root(), &f.path("vendor/demo"));
     fs::write(clone.join("dist/index.js"), "edited").unwrap();
     f.ok(&["replace", "vendor/demo", "--with", "dan/demo"]);
     f.ok(&["replace", "vendor/demo", "--back"]);
@@ -730,7 +734,7 @@ fn forget_says_whether_the_clone_was_kept() {
         out,
         "dan/demo forgotten (clone kept; restore re-registers it)\n"
     );
-    fs::remove_dir_all(f.root().join("packages/vendor/demo")).unwrap();
+    fs::remove_dir_all(clone_path(&f.root(), &f.path("vendor/demo"))).unwrap();
     let out = f.ok(&["forget", "vendor/demo"]);
     assert_eq!(
         out,
@@ -760,7 +764,11 @@ fn uninstall_refusal_of_a_reactivation_comes_before_the_prompt() {
     f.ok(&["update", "vendor/demo"]);
     f.ok(&["replace", "vendor/demo", "--with", "dan/demo"]);
     f.ok(&["disable", "lib/x", "--force"]);
-    fs::write(f.root().join("packages/dan/demo/notes.txt"), "work").unwrap();
+    fs::write(
+        clone_path(&f.root(), &f.path("dan/demo")).join("notes.txt"),
+        "work",
+    )
+    .unwrap();
     let util_linux = Command::new("script")
         .arg("--version")
         .output()
@@ -789,7 +797,11 @@ fn uninstall_refusal_of_a_reactivation_comes_before_the_prompt() {
         "{stderr}"
     );
     assert!(!String::from_utf8_lossy(&out.stdout).contains("uninstalled"));
-    assert!(f.root().join("packages/dan/demo/notes.txt").exists());
+    assert!(
+        clone_path(&f.root(), &f.path("dan/demo"))
+            .join("notes.txt")
+            .exists()
+    );
 }
 
 /// A release with a configurable output folder, either at root or inside a monorepo.
@@ -854,10 +866,8 @@ fn declared_output_folders_install_redeploy_and_verify_catalog() {
             assert!(!deployed.join("sibling").exists());
             assert!(!deployed.join(".git").exists());
             let state = f.state();
-            let clone = match state["packages"]["test/output"]["clone"].as_str() {
-                Some(key) => f.root().join("repos").join(key),
-                None => f.root().join("packages/test/output"),
-            };
+            let key = state["packages"]["test/output"]["clone"].as_str().unwrap();
+            let clone = f.root().join("repos").join(key);
             let package = if mono {
                 clone.join("packages/demo")
             } else {
