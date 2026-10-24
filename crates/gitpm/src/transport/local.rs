@@ -180,19 +180,6 @@ fn typed_refs_and_history_preserve_reachability() {
         .unwrap();
     fs::write(root.join("package/data"), "third").unwrap();
     git(repo, &["commit", "-qam", "third"]);
-    let third = fixture(repo, &["rev-parse", "HEAD"]);
-    assert_eq!(
-        transport
-            .head_history(repo, HeadHistory::Unreferenced { keep: &[] }, false)
-            .unwrap(),
-        format!("{third}\tthird")
-    );
-    assert!(
-        transport
-            .head_history(repo, HeadHistory::Unreferenced { keep: &[&third] }, false)
-            .unwrap()
-            .is_empty()
-    );
     fs::write(root.join("package/data"), "stashed").unwrap();
     git(repo, &["stash", "push", "-qm", "saved"]);
     assert!(!transport.stashes(repo, false).unwrap().is_empty());
@@ -272,4 +259,41 @@ fn typed_authoring_tags_are_atomic_on_conflict() {
     super::create_tags_at_head(repo, &["new".into(), "other".into()], false).unwrap();
     assert_eq!(fixture(repo, &["rev-parse", "new"]), head);
     assert_eq!(fixture(repo, &["rev-parse", "other"]), head);
+}
+
+#[test]
+fn bare_sources_have_independent_worktrees_and_report_stash_refs() {
+    let source = repository();
+    let storage = TempDir::new("bare-worktrees");
+    let transport: &dyn Transport = &SystemTransport;
+    transport
+        .clone_bare(
+            storage.path(),
+            source.path().to_str().unwrap(),
+            "source",
+            false,
+        )
+        .unwrap();
+    let bare = storage.join("source");
+    assert_eq!(
+        fixture(&bare, &["rev-parse", "--is-bare-repository"]),
+        "true"
+    );
+    assert!(
+        transport
+            .refs(&bare, "refs/heads/", false)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(transport.stashes(&bare, false).unwrap().is_empty());
+    let commit = fixture(source.path(), &["rev-parse", "HEAD"]);
+    transport
+        .add_worktree(&bare, &storage.join("checkout"), &commit, false)
+        .unwrap();
+    fs::write(storage.join("checkout/package/data"), "saved work").unwrap();
+    git(
+        &storage.join("checkout"),
+        &["stash", "push", "-qm", "saved"],
+    );
+    assert!(transport.stashes(&bare, false).unwrap().contains("saved"));
 }

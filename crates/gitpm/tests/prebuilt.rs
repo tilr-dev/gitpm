@@ -1,6 +1,6 @@
 //! Real loopback downloads through the public library API without a source repository.
 mod common;
-use common::clone_path;
+use common::{clone_path, worktree_path};
 use gitpm::{
     Manager, Manifest, Options,
     catalog::{self, Build, FileDigest, Release},
@@ -199,6 +199,7 @@ impl Fixture {
     fn no_clone(&self) {
         assert!(!self.root.join("packages").exists());
         assert!(!self.root.join("repos").exists());
+        assert!(!self.root.join("worktrees").exists());
     }
 }
 impl Drop for Fixture {
@@ -418,7 +419,7 @@ fn build_can_switch_to_git_and_rollback_in_both_directions() {
                 &f.root,
                 std::path::Path::new(&m.state().unwrap().packages[ID].source)
             )
-            .join(".git")
+            .join("objects")
             .exists()
         );
         let git_bytes = fs::read(f.dist()).unwrap();
@@ -452,7 +453,7 @@ fn git_release_without_build_remains_a_git_install() {
             &f.root,
             std::path::Path::new(&m.state().unwrap().packages[ID].source)
         )
-        .join(".git")
+        .join("objects")
         .exists()
     );
 }
@@ -629,11 +630,11 @@ fn catalog_updates_can_alternate_git_and_build_revisions() {
     assert!(m.state().unwrap().packages[ID].build.is_none());
     m.rollback(ID).unwrap();
     assert_eq!(m.state().unwrap().packages[ID].current.version, "1.2.0");
+    assert!(!worktree_path(&f.root, ID).exists());
+    m.rollback(ID).unwrap();
+    assert_eq!(m.state().unwrap().packages[ID].current.version, "1.1.0");
     // Existing local Git work must survive an explicit transition request.
-    let clone = clone_path(
-        &f.root,
-        std::path::Path::new(&m.state().unwrap().packages[ID].source),
-    );
+    let clone = worktree_path(&f.root, ID);
     fs::write(clone.join("work.txt"), "keep").unwrap();
     let before = fs::read(f.root.join("state.json")).unwrap();
     assert_eq!(
@@ -846,31 +847,25 @@ fn check_sibling_local_work(forgotten: bool) {
     if forgotten {
         m.forget("acme/lib").unwrap();
     }
-    let clone = clone_path(&f.root, &repo);
+    let clone = worktree_path(&f.root, "acme/lib");
     let installed_head = git(&clone, &["rev-parse", "HEAD"]);
     fs::write(clone.join("local.txt"), "keep").unwrap();
     git(&clone, &["add", "local.txt"]);
     git(&clone, &["commit", "-m", "local sibling work"]);
     let local_head = git(&clone, &["rev-parse", "HEAD"]);
-    let before = fs::read(f.root.join("state.json")).unwrap();
-    let error = m
-        .update_with(
-            ID,
-            gitpm::Target::Ref(format!("{ID}@1.0.0")),
-            gitpm::UpdateOptions { detach: true },
-        )
-        .unwrap_err();
-    assert_eq!(error.kind(), "local_changes");
-    assert_eq!(fs::read(clone.join("local.txt")).unwrap(), b"keep");
-    assert_eq!(fs::read(f.root.join("state.json")).unwrap(), before);
-    assert_eq!(git(&clone, &["rev-parse", "HEAD"]), local_head);
-    git(&clone, &["checkout", "--detach", &installed_head]);
     m.update_with(
         ID,
         gitpm::Target::Ref(format!("{ID}@1.0.0")),
         gitpm::UpdateOptions { detach: true },
     )
     .unwrap();
+    assert_eq!(fs::read(clone.join("local.txt")).unwrap(), b"keep");
+    assert_eq!(git(&clone, &["rev-parse", "HEAD"]), local_head);
+    assert_eq!(
+        git(&worktree_path(&f.root, ID), &["rev-parse", "HEAD"]),
+        m.state().unwrap().packages[ID].current.commit
+    );
+    git(&clone, &["checkout", "--detach", &installed_head]);
     if forgotten {
         m.restore("acme/lib").unwrap();
     }
@@ -908,7 +903,11 @@ fn retained_clone_can_leave_a_build_whose_commit_is_gone_upstream() {
     m.update(ID).unwrap();
     assert!(m.state().unwrap().packages[ID].build.is_some());
     let clone = clone_path(&f.root, &repo);
-    assert_eq!(git(&clone, &["rev-parse", "HEAD"]), first);
+    assert!(!worktree_path(&f.root, ID).exists());
+    assert_eq!(
+        git(&clone, &["rev-parse", "refs/gitpm/acme/widget/previous"]),
+        first
+    );
     // A retained Git revision remains safe even when no tag names its commit.
     git(&clone, &["tag", "-d", "acme/widget@1.0.0"]);
     let plan = m.uninstall_plan(ID).unwrap();
@@ -938,7 +937,7 @@ fn retained_clone_can_leave_a_build_whose_commit_is_gone_upstream() {
             .version,
         "2.0.0"
     );
-    assert!(clone.join(".git").is_dir());
+    assert!(clone.join("objects").is_dir());
     m.rollback(ID).unwrap();
     assert!(m.state().unwrap().packages[ID].build.is_some());
 }

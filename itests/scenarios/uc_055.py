@@ -63,7 +63,7 @@ def bound(t: T, version: str = "1.0.0"):
 @case(fixture="g6_replaced", spec=["dist/inactive-packages-change-state-and-clone-only#update-of-a-replaced-package", "fork-replacement/active-fork-rules"])
 def original_release_does_not_switch_back(t: T):
     """The original's new release is installed independently; consumers stay on the fork."""
-    fork_files = t.snap(t.clone(FORK), t.dist(FORK))
+    fork_files = t.snap(t.worktree(FORK), t.dist(FORK))
     sha = t.release(ORIGINAL, "1.1.0")
     t.gitpm_ok("update", ORIGINAL)
     t.eq(t.package(ORIGINAL)["current"], {"version": "1.1.0", "commit": sha}, "original updated")
@@ -81,7 +81,7 @@ def fork_update_preserves_binding(t: T):
     p = t.package(FORK)
     t.eq(p["current"], {"version": "1.0.2", "commit": sha}, "fork current")
     t.eq(p["previous"], previous, "fork previous")
-    t.eq(t.rev(t.clone(FORK)), sha, "fork clone HEAD")
+    t.eq(t.rev(t.worktree(FORK)), sha, "fork clone HEAD")
     t.eq((t.dist(FORK) / "index.js").read_text(), "fork payload 2\n", "provider payload")
     bound(t, "1.1.0")
 
@@ -96,7 +96,7 @@ def fork_rollback_follows_revision(t: T):
     p = t.package(FORK)
     t.eq(p["current"], before, "fork current after rollback")
     t.eq(p["previous"]["version"], "1.0.2", "fork previous after rollback")
-    t.eq(t.rev(t.clone(FORK)), before["commit"], "fork clone HEAD")
+    t.eq(t.rev(t.worktree(FORK)), before["commit"], "fork clone HEAD")
     t.eq((t.dist(FORK) / "index.js").read_text(), FORK_PAYLOAD, "provider payload")
     bound(t, "1.0.0")
 

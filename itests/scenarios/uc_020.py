@@ -18,7 +18,7 @@ def state_text(t: T) -> str:
 
 def files(t: T):
     """Every clone (full .git) and dist of A and B."""
-    return t.snap(t.clone(A), t.dist(A), t.clone(B), t.dist(B), git=True)
+    return t.snap(t.worktree(A), t.dist(A), t.worktree(B), t.dist(B), git=True)
 
 
 def expect_only_enabled_changed(t: T, before: str, enabled: bool):
@@ -33,7 +33,7 @@ def expect_only_enabled_changed(t: T, before: str, enabled: bool):
 def disable_changes_only_enabled_flag(t: T):
     """disable A: only packages.A.enabled flips in state.json, dist/A is removed; clones and B's dist identical."""
     before = state_text(t)
-    payload = t.snap(t.clone(A), t.clone(B), t.dist(B), git=True)
+    payload = t.snap(t.worktree(A), t.worktree(B), t.dist(B), git=True)
     t.gitpm_ok("disable", A)
     expect_only_enabled_changed(t, before, False)
     t.same(payload, "clones of A and B, dist of B")
@@ -78,7 +78,7 @@ def enable_of_enabled_plugin_is_noop(t: T):
 def repeated_enable_repairs_missing_dist(t: T):
     """enable an already enabled A while dist/B is missing: dist/B comes back, state.json and clones unchanged."""
     state, payload = state_text(t), files(t)
-    clones = t.snap(t.clone(A), t.clone(B), git=True)
+    clones = t.snap(t.worktree(A), t.worktree(B), git=True)
     shutil.rmtree(t.dist(B))
     t.gitpm_ok("enable", A)
     t.eq(state_text(t), state, "state.json unchanged")
@@ -100,14 +100,14 @@ def update_of_disabled_plugin_keeps_it_disabled(t: T):
     """Disable A, release A 0.2.0, update A: succeeds, enabled stays false, no dist until enable
     (which deploys 0.2.0); B untouched."""
     t.gitpm_ok("disable", A)
-    b = t.snap(t.clone(B), t.dist(B), git=True)
+    b = t.snap(t.worktree(B), t.dist(B), git=True)
     b_entry = t.package(B)
     commit = t.release(A, "0.2.0")
     t.gitpm_ok("update", A)
     p = t.package(A)
     t.eq(p["enabled"], False, "still disabled")
     t.eq(p["current"], {"version": "0.2.0", "commit": commit}, "current")
-    t.eq(t.rev(t.clone(A)), commit, "clone HEAD")
+    t.eq(t.rev(t.worktree(A)), commit, "clone HEAD")
     t.ok(not t.dist(A).exists(), "no dist/A while disabled")
     t.same(b, "B clone and dist")
     t.eq(t.package(B), b_entry, "B state entry")

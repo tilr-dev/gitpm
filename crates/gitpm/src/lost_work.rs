@@ -191,7 +191,7 @@ fn unpublished_refs(repo: &Path, prefix: &str, custom_ssh: bool) -> Result<Vec<(
 
 /// Local branches and tags with commits no remote-tracking branch contains, and stash
 /// entries: work that survives a checkout but is easy to lose track of.
-fn hidden(repo: &Path, check_remote: bool, custom_ssh: bool) -> Result<Vec<LostWork>> {
+pub(crate) fn hidden(repo: &Path, check_remote: bool, custom_ssh: bool) -> Result<Vec<LostWork>> {
     let mut items = Vec::new();
     for (name, commits) in unpublished_refs(repo, "refs/heads/", custom_ssh)? {
         items.push(LostWork::UnpublishedBranch { name, commits });
@@ -296,48 +296,6 @@ pub(crate) fn detect(
     }
     items.extend(hidden(repo, false, custom_ssh)?);
     Ok(items)
-}
-
-/// Commits reachable from HEAD that no remote-tracking branch and no tag contains:
-/// work only this clone has (a restore would record it as if it were published).
-pub(crate) fn unpublished_head_commits(repo: &Path, custom_ssh: bool) -> Result<Vec<LostWork>> {
-    Ok(transport::head_history(
-        repo,
-        transport::HeadHistory::Unpublished { exclude_tags: true },
-        custom_ssh,
-    )?
-    .lines()
-    .map(|line| {
-        let (commit, summary) = line.split_once('\t').unwrap_or((line, ""));
-        LostWork::UnpublishedCommit {
-            commit: commit.into(),
-            summary: summary.into(),
-        }
-    })
-    .collect())
-}
-
-/// Commits that moving HEAD away would leave unreachable: reachable from HEAD but from
-/// no branch, tag, remote-tracking ref or `keep` commit.
-pub(crate) fn unreferenced_head_commits(
-    repo: &Path,
-    keep: &[&str],
-    custom_ssh: bool,
-) -> Result<Vec<LostWork>> {
-    Ok(transport::head_history(
-        repo,
-        transport::HeadHistory::Unreferenced { keep },
-        custom_ssh,
-    )?
-    .lines()
-    .map(|line| {
-        let (commit, summary) = line.split_once('\t').unwrap_or((line, ""));
-        LostWork::UnpublishedCommit {
-            commit: commit.into(),
-            summary: summary.into(),
-        }
-    })
-    .collect())
 }
 
 /// `LocalChanges` with the message of the most important category (as before the split).

@@ -16,7 +16,7 @@ def at(t: T, version: str, commit: str, previous: str | None):
     p = t.package(ID)
     t.eq(p["current"], {"version": version, "commit": commit}, "current")
     t.eq((p["previous"] or {}).get("version"), previous, "previous version")
-    t.eq(t.rev(t.clone(ID)), commit, "clone HEAD")
+    t.eq(t.rev(t.worktree(ID)), commit, "clone HEAD")
     t.eq((t.dist(ID) / "index.js").read_text(), blob(t, commit), "dist bytes")
 
 

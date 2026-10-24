@@ -32,7 +32,7 @@ def _(t: T):
         p = t.package(id)
         t.eq(p["current"], {"version": "0.1.0", "commit": t.rev(id)}, f"{id} current")
         t.eq(p["enabled"], True, f"{id} enabled")
-        t.eq(t.rev(t.clone(id)), p["current"]["commit"], f"{id} clone HEAD")
+        t.eq(t.rev(t.worktree(id)), p["current"]["commit"], f"{id} clone HEAD")
         t.has((t.dist(id) / "index.js").read_text(), f"{id} 0.1.0")
     t.eq(sorted(t.state()["packages"]), ["author/demo", "vendor/demo"], "installed")
 
@@ -87,9 +87,9 @@ def _(t: T):
     t.eq(p["current"], {"version": "0.1.2", "commit": t.rev(HELLO, f"{HELLO}@0.1.2")}, "current")
     t.eq(p["previous"], {"version": "0.1.1", "commit": t.rev(HELLO, f"{HELLO}@0.1.1")}, "previous")
     t.eq(p["enabled"], True, "enabled")
-    t.eq(t.rev(t.clone(HELLO)), p["current"]["commit"], "clone HEAD")
+    t.eq(t.rev(t.worktree(HELLO)), p["current"]["commit"], "clone HEAD")
     t.has((t.dist(HELLO) / "index.js").read_text(), "dan/hello 0.1.2")
-    t.eq(t.git(t.clone(HELLO), "status", "--porcelain", "--ignored"), "", "clean clone")
+    t.eq(t.git(t.worktree(HELLO), "status", "--porcelain", "--ignored"), "", "clean clone")
 
 
 @fixture(requires=["g2_hello_history"], gitpm=True)
@@ -108,5 +108,5 @@ def _(t: T):
     t.eq(t.package("dan/other")["current"]["version"], "0.1.0", "dan/other installed")
     t.has(t.git(HELLO, "tag", "--list"), f"{HELLO}@0.1.3")
     for id in [HELLO, "dan/other"]:
-        t.eq(t.git(t.clone(id), "status", "--porcelain", "--ignored"), "", f"{id} clean clone")
-        t.eq(t.git(t.clone(id), "stash", "list"), "", f"{id} no stash")
+        t.eq(t.git(t.worktree(id), "status", "--porcelain", "--ignored"), "", f"{id} clean clone")
+        t.eq(t.git(t.worktree(id), "stash", "list"), "", f"{id} no stash")

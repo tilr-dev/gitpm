@@ -14,7 +14,7 @@ def g1_ws_catalog(t: T):
 def _(t: T):
     p = t.package("dan/hello")
     t.eq(p["current"]["version"], "0.1.1", "installed version")
-    t.eq(t.rev(t.clone("dan/hello")), p["current"]["commit"], "clone HEAD")
+    t.eq(t.rev(t.worktree("dan/hello")), p["current"]["commit"], "clone HEAD")
     t.has((t.dist("dan/hello") / "index.js").read_text(), "dan/hello 0.1.1")
     t.ok(t.catalog_index("dan/hello").is_file(), "catalog index of dan/hello")
     t.has(t.gitpm_ok("check").out, "update available")

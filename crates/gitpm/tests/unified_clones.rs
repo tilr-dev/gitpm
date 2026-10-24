@@ -29,7 +29,7 @@ impl Drop for TempDir {
     }
 }
 
-fn git(repo: &Path, args: &[&str]) {
+fn git(repo: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .arg("-C")
         .arg(repo)
@@ -41,6 +41,7 @@ fn git(repo: &Path, args: &[&str]) {
         "{args:?}: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
 #[test]
@@ -61,7 +62,10 @@ fn root_to_nested_lifecycle_keeps_one_clone_and_all_owners() {
     assert!(key.starts_with("source-"));
     assert!(initial.path.is_none());
     let clone = root.join("repos").join(&key);
-    assert!(clone.join(".git").is_dir());
+    assert!(clone.join("objects").is_dir());
+    assert!(!clone.join(".git").exists());
+    assert_eq!(git(&clone, &["rev-parse", "--is-bare-repository"]), "true");
+    assert!(root.join("worktrees/acme/root/.git").is_file());
 
     fs::create_dir_all(source.join("apps/root")).unwrap();
     fs::rename(
@@ -83,14 +87,14 @@ fn root_to_nested_lifecycle_keeps_one_clone_and_all_owners() {
 
     // Refused mutations leave both state and deployed output unchanged.
     let before = fs::read(root.join("state.json")).unwrap();
-    fs::write(clone.join("local.txt"), "local work").unwrap();
+    fs::write(root.join("worktrees/acme/root/local.txt"), "local work").unwrap();
     assert_eq!(
         manager.update("acme/root").unwrap_err().kind(),
         "local_changes"
     );
     assert_eq!(fs::read(root.join("state.json")).unwrap(), before);
     assert!(root.join("dist/acme/root/index.js").is_file());
-    fs::remove_file(clone.join("local.txt")).unwrap();
+    fs::remove_file(root.join("worktrees/acme/root/local.txt")).unwrap();
 
     manager.update("acme/root").unwrap();
     manager
@@ -108,7 +112,22 @@ fn root_to_nested_lifecycle_keeps_one_clone_and_all_owners() {
     );
     assert_eq!(state.packages["acme/sibling"].clone.as_ref(), Some(&key));
     assert_eq!(fs::read_dir(root.join("repos")).unwrap().count(), 1);
+    let sibling_head = git(&root.join("worktrees/acme/sibling"), &["rev-parse", "HEAD"]);
+    let sibling_manifest =
+        fs::read(root.join("worktrees/acme/sibling/apps/sibling/plugin.json")).unwrap();
     manager.rollback("acme/root").unwrap();
+    assert_eq!(
+        git(&root.join("worktrees/acme/root"), &["rev-parse", "HEAD"]),
+        initial.current.commit
+    );
+    assert_eq!(
+        git(&root.join("worktrees/acme/sibling"), &["rev-parse", "HEAD"]),
+        sibling_head
+    );
+    assert_eq!(
+        fs::read(root.join("worktrees/acme/sibling/apps/sibling/plugin.json")).unwrap(),
+        sibling_manifest
+    );
     assert!(
         manager.state().unwrap().packages["acme/root"]
             .path
@@ -122,7 +141,7 @@ fn root_to_nested_lifecycle_keeps_one_clone_and_all_owners() {
     manager.forget("acme/root").unwrap();
     manager.uninstall("acme/sibling", &[], false).unwrap();
     assert!(
-        clone.join(".git").is_dir(),
+        clone.join("objects").is_dir(),
         "forgotten owner retains the clone"
     );
     manager.restore("acme/root").unwrap();
@@ -151,4 +170,95 @@ fn legacy_clones_are_left_untouched_and_never_used() {
         fs::read_to_string(legacy.join("local.txt")).unwrap(),
         "keep"
     );
+}
+
+#[test]
+fn root_and_nested_worktrees_guard_dirty_files_and_every_moved_head() {
+    for nested in [false, true] {
+        let dir = TempDir::new();
+        let source = scaffold::init(&dir.path().join("source"), "acme", "root")
+            .unwrap()
+            .repo;
+        if nested {
+            fs::create_dir_all(source.join("apps/root")).unwrap();
+            fs::rename(
+                source.join("plugin.json"),
+                source.join("apps/root/plugin.json"),
+            )
+            .unwrap();
+            fs::rename(source.join("dist"), source.join("apps/root/dist")).unwrap();
+            fs::write(source.join("gitpm.json"), r#"{"packages":["apps/*"]}"#).unwrap();
+            scaffold::commit_package(&source, "0.2.0", Some("acme/root")).unwrap();
+        }
+        let root = dir.path().join("workspace");
+        let manager = Manager::open(&root).unwrap();
+        manager.install(source.to_str().unwrap()).unwrap();
+        scaffold::commit_package(&source, "0.3.0", Some("acme/root")).unwrap();
+        manager.update("acme/root").unwrap();
+        let record = manager.state().unwrap().packages["acme/root"].clone();
+        let checkout = root.join("worktrees/acme/root");
+        let payload = checkout.join(if nested {
+            "apps/root/dist/index.js"
+        } else {
+            "dist/index.js"
+        });
+        let original = fs::read(&payload).unwrap();
+        let state = fs::read(root.join("state.json")).unwrap();
+        let deployed = fs::read(root.join("dist/acme/root/index.js")).unwrap();
+        for staged in [false, true] {
+            fs::write(&payload, "local edits").unwrap();
+            if staged {
+                git(&checkout, &["add", "--all"]);
+            }
+            for result in [
+                manager.update("acme/root").map(|_| ()),
+                manager.rollback("acme/root").map(|_| ()),
+                manager.uninstall("acme/root", &[], false).map(|_| ()),
+            ] {
+                assert_eq!(result.unwrap_err().kind(), "local_changes");
+            }
+            assert_eq!(fs::read(&payload).unwrap(), b"local edits");
+            assert_eq!(fs::read(root.join("state.json")).unwrap(), state);
+            assert_eq!(
+                fs::read(root.join("dist/acme/root/index.js")).unwrap(),
+                deployed
+            );
+            git(&checkout, &["reset", "--hard", &record.current.commit]);
+        }
+        fs::write(checkout.join("untracked.txt"), "keep").unwrap();
+        for result in [
+            manager.update("acme/root").map(|_| ()),
+            manager.rollback("acme/root").map(|_| ()),
+            manager.uninstall("acme/root", &[], false).map(|_| ()),
+        ] {
+            assert_eq!(result.unwrap_err().kind(), "local_changes");
+        }
+        fs::remove_file(checkout.join("untracked.txt")).unwrap();
+        assert_eq!(fs::read(&payload).unwrap(), original);
+        // A published previous revision still differs from this package's current HEAD.
+        git(
+            &checkout,
+            &["checkout", "--detach", &record.previous.unwrap().commit],
+        );
+        for result in [
+            manager.update("acme/root").map(|_| ()),
+            manager.rollback("acme/root").map(|_| ()),
+            manager.uninstall("acme/root", &[], false).map(|_| ()),
+        ] {
+            let error = result.unwrap_err();
+            assert_eq!(error.kind(), "local_changes");
+            assert!(
+                matches!(error, gitpm::Error::LocalChanges { items, .. } if items.iter().any(|item| matches!(item, gitpm::LostWork::HeadMoved { .. })))
+            );
+        }
+        manager.forget("acme/root").unwrap();
+        assert_eq!(
+            manager.restore("acme/root").unwrap_err().kind(),
+            "local_changes"
+        );
+        git(&checkout, &["checkout", "--detach", &record.current.commit]);
+        manager.restore("acme/root").unwrap();
+        manager.uninstall("acme/root", &[], false).unwrap();
+        assert!(!checkout.exists());
+    }
 }

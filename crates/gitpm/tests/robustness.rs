@@ -1,5 +1,5 @@
 mod common;
-use common::clone_path;
+use common::{clone_path, worktree_path};
 use gitpm::{Manager, scaffold};
 use std::{
     fs,
@@ -79,7 +79,7 @@ fn ignored_work_survives_rejected_operations_and_fork() {
     let m = f.installed();
     f.release("0.1.1");
     m.update("vendor/module").unwrap();
-    let repo = clone_path(&f.root, &f.author);
+    let repo = worktree_path(&f.root, "vendor/module");
     fs::create_dir_all(repo.join("node_modules")).unwrap();
     fs::write(repo.join("node_modules/private.txt"), "irreplaceable").unwrap();
     let before = state(&m);
@@ -108,7 +108,7 @@ fn ignored_work_survives_rejected_operations_and_fork() {
 fn fork_records_source_revision_and_immediate_parent() {
     let f = Fixture::new();
     let m = f.installed();
-    let repo = clone_path(&f.root, &f.author);
+    let repo = worktree_path(&f.root, "vendor/module");
     git(&repo, &["config", "user.name", "Test"]);
     git(&repo, &["config", "user.email", "test@example.invalid"]);
     let installed = git(&repo, &["rev-parse", "HEAD"]);
@@ -275,7 +275,7 @@ fn corrupt_state_is_not_overwritten() {
 fn forgotten_dirty_clone_cannot_be_overwritten_by_install_or_restore() {
     let f = Fixture::new();
     let m = f.installed();
-    let local = clone_path(&f.root, &f.author).join("local.txt");
+    let local = worktree_path(&f.root, "vendor/module").join("local.txt");
     fs::write(&local, "keep").unwrap();
     m.forget("vendor/module").unwrap();
     assert!(m.install(f.author.to_str().unwrap()).is_err());

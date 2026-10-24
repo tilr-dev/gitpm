@@ -243,11 +243,14 @@ fn local_source_clones_ignore_transient_server_info() {
         .path("workspace")
         .join(manager.state().unwrap().packages["app/local"].clone_folder("app/local"));
     assert_eq!(git(&clone, &["remote", "get-url", "origin"]), source);
-    assert!(!clone.join(".git/objects/info/packs_controlled").exists());
-    assert!(!clone.join(".git/objects/info/alternates").exists());
+    assert!(!clone.join("objects/info/packs_controlled").exists());
+    assert!(!clone.join("objects/info/alternates").exists());
     fs::remove_dir_all(repo).unwrap();
     assert_eq!(
-        git(&clone, &["show", "HEAD:dist/index.js"]),
+        git(
+            &clone,
+            &["show", "refs/gitpm/app/local/current:dist/index.js"]
+        ),
         "app/local 1.0.0"
     );
 }
@@ -858,7 +861,7 @@ fn dependents_guard_disable_forget_and_uninstall() {
     // One refusal tells everything: the dependents and the work uninstall would lose.
     fs::write(
         f.path("workspace")
-            .join(m.state().unwrap().packages["lib/core"].clone_folder("lib/core"))
+            .join("worktrees/lib/core")
             .join("notes.txt"),
         "mine",
     )
@@ -1339,7 +1342,7 @@ fn update_all_preserves_local_work_and_never_partially_deploys() {
     }
     let local = f
         .path("workspace")
-        .join(m.state().unwrap().packages["x/b"].clone_folder("x/b"))
+        .join("worktrees/x/b")
         .join("dist/local.js");
     fs::write(&local, "local work").unwrap();
     f.refuses("local_changes", || m.update_all());

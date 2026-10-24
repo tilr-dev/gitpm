@@ -241,4 +241,4 @@ def _(t: T):
     t.eq(p["current"], {"version": "0.1.0", "commit": t.rev("dan/hello", "dan/hello@0.1.0")}, "current")
     t.eq(p["previous"], None, "previous")
     t.ok(p.get("catalog"), "catalog recorded")
-    t.eq(t.rev(t.clone("dan/hello")), p["current"]["commit"], "clone HEAD")
+    t.eq(t.rev(t.worktree("dan/hello")), p["current"]["commit"], "clone HEAD")

@@ -7,6 +7,7 @@ new/, old/, state.json); the real-process interruptions are in UC-046. No power-
 durability or atomic visibility to external readers is claimed.
 """
 
+import hashlib
 import json
 import shutil
 import signal
@@ -151,7 +152,7 @@ def uncommitted_transaction_is_discarded_on_next_open(t: T):
     stays exactly as it was."""
     before = t.snap(t.ws)
     txn = t.ws / ".pm-txn"
-    shutil.copytree(t.clone(ID), txn / "new/packages" / ID, symlinks=True)
+    shutil.copytree(t.worktree(ID), txn / "new/worktrees" / ID, symlinks=True)
     t.write(txn, {f"new/dist/{ID}/index.js": "half-staged\n", "state.json": "{ partial",
                   "scratch/incoming/plugin.json": "{}"})
     out = t.gitpm_ok("list").json()
@@ -168,13 +169,16 @@ def committed_txn(t: T, applied: list[str]) -> Path:
     t.release(ID, "0.1.1")
     after = t.root / "ws-after"
     shutil.copytree(t.ws, after, symlinks=True)
+    t.rebind_worktrees(after)
     t.gitpm_ok("--root", after, "update", ID)
     txn = t.ws / ".pm-txn"
-    paths = [f"dist/{ID}", str(t.clone(ID).relative_to(t.ws))]
+    paths = [f"dist/{ID}", str(t.worktree(ID).relative_to(t.ws)), str(t.clone(ID).relative_to(t.ws))]
     for rel in paths:
         shutil.copytree(after / rel, txn / "new" / rel, symlinks=True)
     shutil.copyfile(after / "state.json", txn / "state.json")
-    (txn / "journal.json").write_text(json.dumps({"paths": {p: "replace" for p in paths}}, indent=2))
+    admin = str(t.clone(ID).relative_to(t.ws) / "worktrees" / hashlib.sha256(ID.encode()).hexdigest())
+    (txn / "journal.json").write_text(json.dumps({"paths": {p: "replace" for p in paths},
+                                                  "worktrees": {f"worktrees/{ID}": admin}}, indent=2))
     for rel in applied:
         (txn / "old" / rel).parent.mkdir(parents=True, exist_ok=True)
         (t.ws / rel).rename(txn / "old" / rel)
@@ -187,7 +191,7 @@ def rolled_forward(t: T, after: Path):
     t.eq(json.loads((t.ws / "state.json").read_text())["packages"][ID]["current"],
          json.loads((after / "state.json").read_text())["packages"][ID]["current"], "state rolled forward")
     t.eq(rel_snap(t.dist(ID)), rel_snap(after / "dist" / ID), "dist rolled forward")
-    t.eq(t.rev(t.clone(ID)), t.rev(ID, f"{ID}@0.1.1"), "clone HEAD rolled forward")
+    t.eq(t.rev(t.worktree(ID)), t.rev(ID, f"{ID}@0.1.1"), "clone HEAD rolled forward")
 
 
 @case(fixture="hello_installed", spec=["transactions-locking/crash-recovery#crash-during-commit"])

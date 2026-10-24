@@ -34,7 +34,7 @@ def at(t: T, version: str, previous: str | None, enabled: bool = True, catalog: 
     if previous:
         t.eq(p["previous"]["commit"], t.rev(ID, f"{ID}@{previous}"), "previous commit")
     t.eq(p["enabled"], enabled, "enabled")
-    t.eq(t.rev(t.clone(ID)), commit, "clone HEAD")
+    t.eq(t.rev(t.worktree(ID)), commit, "clone HEAD")
     if enabled:
         t.eq((t.dist(ID) / "index.js").read_text(), payload(t, version), "dist bytes")
     else:
@@ -107,7 +107,7 @@ def rollback_swaps(t: T):
 def disable_enable_toggle_only_the_flag(t: T):
     """disable / enable change only `enabled` and remove / redeploy dist (same bytes)."""
     journey(t, "toggle")
-    files = t.snap(t.clone(ID), t.dist(ID), git=True)
+    files = t.snap(t.worktree(ID), t.dist(ID), git=True)
     t.gitpm_ok("disable", ID)
     at(t, "0.1.0", "0.1.1", enabled=False)
     t.gitpm_ok("enable", ID)
@@ -120,7 +120,7 @@ def forget_restore_keeps_the_record(t: T):
     """forget keeps the clone and the record, removes dist and drops the entry; restore records it
     again as it was (previous and catalog origin kept) and deploys the same dist bytes."""
     journey(t, "forget")
-    files = t.snap(t.clone(ID), t.dist(ID), git=True)
+    files = t.snap(t.worktree(ID), t.dist(ID), git=True)
     t.gitpm_ok("forget", ID)
     t.ok(ID not in t.state()["packages"], "entry forgotten")
     t.ok(not t.dist(ID).exists(), "dist removed while forgotten")

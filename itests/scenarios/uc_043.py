@@ -45,7 +45,7 @@ def tracked_setup(t, c):
 
 
 def tracked_verify(t, f):
-    expected = t.git(t.clone(A), "show", f"{installed(t)}:dist/index.js")
+    expected = t.git(t.worktree(A), "show", f"{installed(t)}:dist/index.js")
     t.eq((f / "dist/index.js").read_text().strip(), expected, "committed source bytes")
 
 
@@ -118,7 +118,7 @@ def refused_case(kind: str):
 
     def fn(t: T):
         t.release(A, "0.1.2")
-        setup(t, t.clone(A))
+        setup(t, t.worktree(A))
         before = everything(t)
         entry = t.package(A)
 
@@ -132,7 +132,7 @@ def refused_case(kind: str):
         for answer, what in [("n\n", "N"), ("\n", "empty"), ("", "EOF")]:
             r = tty(t, ["uninstall", A], answer)
             t.ok(r.code != 0, f"TTY answer {what}: non-zero exit (got {r.code})")
-            t.has(r.out, f"Uninstall {A} would delete:", str(t.clone(A)), str(t.dist(A)),
+            t.has(r.out, f"Uninstall {A} would delete:", str(t.worktree(A)), str(t.dist(A)),
                   f"state.json entry {A}", "Local work that would be lost:", needle, "Delete anyway? [y/N]")
             t.same(before, f"everything after TTY answer {what}")
         t.eq(t.package(A), entry, "state entry")
@@ -157,8 +157,8 @@ def confirmed_case(kind: str):
     setup, needle, _ = KINDS[kind]
 
     def fn(t: T):
-        setup(t, t.clone(A))
-        keep = t.snap(*[t.clone(i) for i in OTHERS], *[t.dist(i) for i in OTHERS], t.root / "repos", git=True)
+        setup(t, t.worktree(A))
+        keep = t.snap(*[t.worktree(i) for i in OTHERS], *[t.dist(i) for i in OTHERS], t.root / "repos", git=True)
         state = t.state()
         r = tty(t, ["uninstall", A], "y\n")
         t.eq(r.code, 0, "exit code")
@@ -182,10 +182,10 @@ for _kind in KINDS:
 @case(fixture="g3_trio_installed", spec=["install-uninstall/uninstall-is-planned-and-confirmed"])
 def forced_uninstall(t: T):
     """All kinds of local work at once: --force deletes without a prompt (also on a TTY)."""
-    clone = t.clone(A)
+    clone = t.worktree(A)
     for kind in ["unpublished_branch", "unpublished_tag", "stash", "tracked_edit", "staged", "untracked", "ignored"]:
         KINDS[kind][0](t, clone)
-    keep = t.snap(*[t.clone(i) for i in OTHERS], *[t.dist(i) for i in OTHERS], t.root / "repos", git=True)
+    keep = t.snap(*[t.worktree(i) for i in OTHERS], *[t.dist(i) for i in OTHERS], t.root / "repos", git=True)
     r = tty(t, ["uninstall", A, "--force"])
     t.eq(r.code, 0, "exit code")
     t.lacks(r.out, "Delete anyway")
@@ -195,10 +195,10 @@ def forced_uninstall(t: T):
 
 @case(fixture="g3_trio_installed", spec=["install-uninstall/cli-confirmation-flow-for-uninstall#no-tty"])
 def forced_uninstall_without_tty(t: T):
-    clone = t.clone(A)
+    clone = t.worktree(A)
     for kind in ["stash", "ignored", "untracked"]:
         KINDS[kind][0](t, clone)
-    keep = t.snap(*[t.clone(i) for i in OTHERS], *[t.dist(i) for i in OTHERS], t.root / "repos", git=True)
+    keep = t.snap(*[t.worktree(i) for i in OTHERS], *[t.dist(i) for i in OTHERS], t.root / "repos", git=True)
     t.gitpm_ok("uninstall", A, "--force")
     t.not_installed(A)
     t.same(keep, "unrelated packages and author repositories")

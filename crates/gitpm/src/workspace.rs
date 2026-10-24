@@ -29,7 +29,7 @@ use std::{
 mod builds;
 pub(crate) mod clones;
 mod fork;
-use clones::{guard_clone, installed_repo, place_clone, removal, settle_head, shared_head_moved};
+use clones::{guard_clone, installed_repo, place_clone, removal, source_repo};
 pub use fork::{DependencyRewrite, ForkedPackage, PackageFork};
 
 /// A mode in messages: `release`, `pinned at REF`, `branch NAME`.
@@ -855,6 +855,24 @@ impl Manager {
         let mut state = self.state()?;
         let before = state.clone();
         let value = action(&mut txn, &mut state)?;
+        // A build retains a source store only while its previous revision is Git.
+        let mut released = BTreeSet::new();
+        for (id, package) in state.packages.iter_mut().chain(&mut state.forgotten) {
+            if package.build.is_some()
+                && (package.previous.is_none() || package.previous_build.is_some())
+                && let Some(key) = package.clone.take()
+            {
+                let relative = format!("repos/{key}");
+                txn.remove_worktree(id, &relative)?;
+                released.insert(key);
+            }
+        }
+        for key in released {
+            if clones::clone_users(&state, &key, "").is_empty() {
+                txn.delete_repo(&format!("repos/{key}"))?;
+            }
+        }
+
         settle_dist(&mut txn, &before, &state, self.options.custom_ssh)?;
         let mut report = DistSync {
             warnings: txn.warnings.clone(),
@@ -885,7 +903,7 @@ impl Manager {
         txn.commit(&state)?;
         for key in live {
             let repo = self.root.join("repos").join(key);
-            if repo.join(".git").is_dir() {
+            if repo.join("objects").is_dir() {
                 // Best effort: the change is committed; the next fetch syncs again.
                 let _ = clones::sync_refs(&repo, &state, key, self.options.custom_ssh);
             }
@@ -1083,7 +1101,7 @@ impl Manager {
             let cloned = clone_revision(txn, &fetch, "incoming", self.options.custom_ssh)?;
             let m = cloned.manifest.clone();
             if let Some(installed) = state.packages.get(&m.id).filter(|p| p.source == source) {
-                let resolved = revision(&cloned.repo, &m, self.options.custom_ssh)?;
+                let resolved = Revision { version: m.version.clone(), commit: cloned.commit.clone(), ..Default::default() };
                 // Only an explicit ref or the default branch asks for a mode.
                 let requested_mode = (matches!(
                     fetch.target,
@@ -1440,18 +1458,20 @@ impl Manager {
         for (number, (relative, ids)) in groups.iter().enumerate() {
             let first = &ids[0];
             let key = state.packages[first].clone.as_deref();
-            let live = installed_repo(txn.root(), first, &state.packages[first])?;
-            guard_clone(
-                &live,
-                state,
-                first,
-                key,
-                "local commits detected; update would discard them",
-                "unpublished local work blocks update all",
-                true,
-                self.options.custom_ssh,
-            )
-            .map_err(|error| error.with_package(first))?;
+            for id in ids {
+                let live = installed_repo(txn.root(), id, &state.packages[id])?;
+                guard_clone(
+                    &live,
+                    state,
+                    id,
+                    "local commits detected; update would discard them",
+                    "unpublished local work blocks update all",
+                    true,
+                    self.options.custom_ssh,
+                )
+                .map_err(|error| error.with_package(id))?;
+            }
+            let live = source_repo(txn.root(), first, &state.packages[first])?;
             // Scratch copies ensure even held-back repositories keep their original refs.
             let repo = txn.scratch(&format!("upgrade-{number}"));
             copy_tree(&live, &repo, true)?;
@@ -1465,7 +1485,7 @@ impl Manager {
                 let mut newest = current.clone();
                 let mut versions = BTreeMap::new();
                 // Read at the installed commit, from the recorded package folder: a shared
-                // clone's HEAD may be another package's revision, and a root package may
+                // source's bare HEAD does not identify a package revision, and a root package may
                 // have moved into a package folder since.
                 let current_manifest = packages::find_at_with_ssh(
                     &repo,
@@ -1740,13 +1760,12 @@ impl Manager {
                         found.subdir().unwrap_or("(root)")
                     );
                 }
-                transport::checkout_detached(
-                    &repo,
-                    &release.commit,
-                    false,
-                    self.options.custom_ssh,
-                )?;
-                let actual = package_manifest(&repo, release.path.as_deref())
+                if txn.staged_repo(&relative).is_none() {
+                    txn.add_repo(&relative, &repo)?;
+                }
+                let checkout =
+                    txn.worktree(id, &relative, &release.commit, self.options.custom_ssh)?;
+                let actual = package_manifest(&checkout, release.path.as_deref())
                     .map_err(|error| error.with_package(id))?;
                 if protected {
                     verify_catalog_manifest(&actual, release)?;
@@ -1756,7 +1775,7 @@ impl Manager {
                         Error::version_conflict("release manifest changed".into()).with_package(id)
                     );
                 }
-                let next = revision(&repo, m, self.options.custom_ssh)?;
+                let next = revision(&checkout, m, self.options.custom_ssh)?;
                 let installed = state.packages.get_mut(id).unwrap();
                 plan.updates.push(RevisionChange {
                     id: id.clone(),
@@ -1909,7 +1928,6 @@ impl Manager {
                                     &live,
                                     state,
                                     id,
-                                    p.clone.as_deref(),
                                     "local commits detected",
                                     "unpublished work blocks update",
                                     true,
@@ -1937,45 +1955,20 @@ impl Manager {
                 let transitioning_build = p.build.is_some();
                 if transitioning_build {
                     let mut retained = p.clone();
-                    retained
-                        .clone
-                        .get_or_insert_with(|| clones::repo_key(&p.source));
-                    if let Ok(live) = installed_repo(txn.root(), id, &retained) {
-                        if p.clone.is_some() {
-                            builds::guard_retained(&live, id, ssh)?;
-                        } else {
-                            // A clone-free build can join an installed or forgotten
-                            // sibling's clone, with all of its local-work guards.
-                            guard_clone(
-                                &live,
-                                state,
-                                id,
-                                retained.clone.as_deref(),
-                                "local commits block transition to Git",
-                                "unpublished work blocks transition to Git",
-                                true,
-                                ssh,
-                            )?;
-                        }
-                        txn.repo(&p.clone_folder(id), &live)?;
-                        state.packages.get_mut(id).unwrap().clone = retained.clone;
-                    } else {
-                        let cloned = clone_revision(
-                            txn,
-                            &Fetch {
-                                source: &p.source,
-                                target: FetchTarget::Exact(&p.current.commit),
-                                expected: None,
-                                files: None,
-                                package: Some(id),
-                                path: None,
-                            },
-                            "build-transition",
-                            ssh,
-                        )?;
-                        let (_, _, key) = place_clone(txn, state, &cloned, &p.source, ssh)?;
-                        state.packages.get_mut(id).unwrap().clone = key;
+                    retained.clone.get_or_insert_with(|| clones::repo_key(&p.source));
+                    let relative = retained.clone_folder(id);
+                    match source_repo(txn.root(), id, &retained) {
+                        Ok(live) => { txn.repo(&relative, &live)?; },
+                        Err(Error::RepositoryNotFound { .. }) => {
+                            let scratch = txn.scratch("build-transition");
+                            fs::create_dir_all(scratch.parent().unwrap())?;
+                            transport::clone_bare(scratch.parent().unwrap(), &p.source, "build-transition", ssh)?;
+                            lost_work::record_origin_tags(&scratch, ssh)?;
+                            txn.add_repo(&relative, &scratch)?;
+                        },
+                        Err(error) => return Err(error),
                     }
+                    state.packages.get_mut(id).unwrap().clone = retained.clone;
                 }
                 let detached = if options.detach {
                     let location = p
@@ -2004,6 +1997,14 @@ impl Manager {
                          it lists; detach it to follow a ref or branch of its origin"
                     );
                 }
+                let relative = p.clone_folder(id);
+                if !transitioning_build {
+                    let live = installed_repo(txn.root(), id, &p)?;
+                    guard_clone(&live, state, id,
+                        "local commits detected; update would discard them",
+                        "local branches, tags or stash hold unpublished work; keep or remove them before updating",
+                        true, ssh)?;
+                }
                 if let (Target::Recorded, Mode::Pinned(reference), None) =
                     (&target, &p.mode, &detached)
                 {
@@ -2014,28 +2015,13 @@ impl Manager {
                         Vec::new(),
                     ));
                 }
-                let relative = p.clone_folder(id);
-                let live = match txn.staged_repo(&relative) {
+                let repo = match txn.staged_repo(&relative) {
                     Some(staged) => staged,
-                    None => installed_repo(txn.root(), id, &p)?,
+                    None => {
+                        let live = source_repo(txn.root(), id, &p)?;
+                        txn.repo(&relative, &live)?
+                    }
                 };
-                let mut guard_state = state.clone();
-                if transitioning_build {
-                    guard_state.packages.get_mut(id).unwrap().current.commit =
-                        transport::object_id(&live, "HEAD", ssh)?;
-                }
-                guard_clone(
-                    &live,
-                    &guard_state,
-                    id,
-                    p.clone.as_deref(),
-                    "local commits detected; update would discard them",
-                    "local branches, tags or stash hold unpublished work; \
-                     keep or remove them before updating",
-                    true,
-                    self.options.custom_ssh,
-                )?;
-                let repo = txn.repo(&relative, &live)?;
                 // Mirror the origin's tags exactly: a deleted release disappears, a moved one
                 // is seen at its new commit (tags are not policed; the installed revision is
                 // kept by commit). Local tags holding unpublished commits were refused above.
@@ -2184,8 +2170,8 @@ impl Manager {
                         path.as_deref().unwrap_or("(root)")
                     );
                 }
-                transport::checkout_detached(&repo, &next_commit, false, self.options.custom_ssh)?;
-                let m = package_manifest(&repo, path.as_deref())?;
+                let checkout = txn.worktree(id, &relative, &next_commit, ssh)?;
+                let m = package_manifest(&checkout, path.as_deref())?;
                 ensure!(
                     m.id == id,
                     InvalidManifest,
@@ -2212,7 +2198,7 @@ impl Manager {
                     None => self.options.catalog.clone(),
                 };
                 self.check_change(txn, state, id, &m, dependency_catalog.as_deref())?;
-                let next = revision(&repo, &m, self.options.custom_ssh)?;
+                let next = revision(&checkout, &m, self.options.custom_ssh)?;
                 let entry = state.packages.get_mut(id).unwrap();
                 entry.previous = Some(p.current.with_mode(&p.mode));
                 entry.previous_build = p.build.clone();
@@ -2284,7 +2270,6 @@ impl Manager {
                             &live,
                             state,
                             id,
-                            p.clone.as_deref(),
                             "local commits detected",
                             "unpublished work blocks rollback",
                             false,
@@ -2292,6 +2277,7 @@ impl Manager {
                         )?;
                     }
                     self.check_change(txn, state, id, &build.release.manifest, None)?;
+                    if p.build.is_none() { txn.remove_worktree(id, &p.clone_folder(id))?; }
                     let entry = state.packages.get_mut(id).unwrap();
                     entry.previous = Some(p.current.with_mode(&p.mode));
                     entry.previous_build = p.build.clone();
@@ -2319,22 +2305,13 @@ impl Manager {
                     });
                 }
                 let relative = p.clone_folder(id);
-                let live = installed_repo(txn.root(), id, &p)?;
-                let mut guard_state = state.clone();
-                if p.build.is_some() {
-                    guard_state.packages.get_mut(id).unwrap().current = previous.without_mode();
+                if p.build.is_none() {
+                    let worktree = installed_repo(txn.root(), id, &p)?;
+                    guard_clone(&worktree, state, id, "local commits detected",
+                        "local branches, tags or stash hold unpublished work; keep or remove them before rolling back",
+                        false, ssh)?;
                 }
-                guard_clone(
-                    &live,
-                    &guard_state,
-                    id,
-                    p.clone.as_deref(),
-                    "local commits detected",
-                    "local branches, tags or stash hold unpublished work; \
-                     keep or remove them before rolling back",
-                    false,
-                    self.options.custom_ssh,
-                )?;
+                let live = source_repo(txn.root(), id, &p)?;
                 // The previous commit can be gone: pruned after the origin deleted or moved
                 // the tag that held it.
                 let previous_commit = format!("{}^{{commit}}", previous.commit);
@@ -2353,13 +2330,8 @@ impl Manager {
                     }
                     Err(error) => return Err(error),
                 };
-                transport::checkout_detached(
-                    &repo,
-                    &previous.commit,
-                    false,
-                    self.options.custom_ssh,
-                )?;
-                let m = package_manifest(&repo, path.as_deref())?;
+                let checkout = txn.worktree(id, &relative, &previous.commit, ssh)?;
+                let m = package_manifest(&checkout, path.as_deref())?;
                 ensure!(
                     m.id == id && m.version == previous.version,
                     InvalidManifest,
@@ -2458,8 +2430,8 @@ impl Manager {
     /// guard of [`Manager::set_enabled_with`]). Replacements this package provides are
     /// dropped (their consumers go back to the original, whose `dist/` is deployed
     /// again). The whole record is kept in `State::forgotten` (source-keyed clone), so
-    /// `restore` records it again as it was and `uninstall` finds it; a shared clone's
-    /// HEAD moves to a registered package's revision if it was this package's. A package
+    /// `restore` records it again as it was and `uninstall` finds it. Its worktree
+    /// stays at its recorded commit, independently of siblings. A package
     /// whose clone is gone keeps no `forgotten` record: there is nothing to restore.
     pub fn forget_with(&self, id: &str, force: bool) -> Result<ForgetResult> {
         valid_id(id)?;
@@ -2480,28 +2452,27 @@ impl Manager {
             match installed_repo(txn.root(), id, &installed) {
                 // Nothing to restore: only the record (and dist) are dropped.
                 Err(Error::RepositoryNotFound { .. }) => {
+                    if let Some(key) = &installed.clone {
+                        let relative = installed.clone_folder(id);
+                        txn.remove_worktree(id, &relative)?;
+                        if clones::clone_users(state, key, id).is_empty() {
+                            txn.delete_repo(&relative)?;
+                        }
+                    }
                     txn.delete_dist(id)?;
                     return Ok(false);
                 }
                 Err(error) => return Err(error),
                 Ok(_) => {}
             }
-            let shared = installed.clone.clone();
-            let relative = installed.clone_folder(id);
             state.forgotten.insert(id.to_owned(), installed);
-            if let Some(key) = shared {
-                settle_head(txn, state, &key, id, &relative, self.options.custom_ssh)?;
-            }
             Ok(true)
         })
         .map(|(clone_kept, dist)| ForgetResult { clone_kept, dist })
     }
-    /// Record a forgotten package again from its `forgotten` record (own or shared
-    /// clone): revisions, `catalog`, `enabled` and mode are kept. Release and pinned mode
-    /// take the recorded commit (a shared clone is checked out there when its HEAD is
-    /// another user's revision); branch mode takes HEAD as found when it is the recorded
-    /// commit or a published descendant of it. Lost work (file changes, unpublished
-    /// commits, a moved HEAD) refuses with `local_changes`. Deployed when active.
+    /// Record a forgotten Git or build package again with its recorded revisions,
+    /// catalog, enabled flag and mode. Git worktrees must be clean and at the
+    /// recorded commit, including branch mode. Deploy when active.
     pub fn restore(&self, id: &str) -> Result<InstallResult> {
         valid_id(id)?;
         let (result, dist) = self.transaction(|txn, state| {
@@ -2542,58 +2513,18 @@ impl Manager {
         let relative = record.clone_folder(id);
         // The clone is gone: `repository_not_found`, like a restore without a record.
         let live = installed_repo(txn.root(), id, &record)?;
-        clean(&live, id, self.options.custom_ssh)?;
+        guard_clone(
+            &live,
+            state,
+            id,
+            "worktree HEAD moved away from the recorded revision",
+            "unpublished work blocks restore",
+            false,
+            self.options.custom_ssh,
+        )?;
         let recorded = record.current.commit.clone();
-        let head = transport::object_id(&live, "HEAD", self.options.custom_ssh)?;
-        // Commits only this clone has are lost work in every mode.
-        let unpublished = lost_work::unpublished_head_commits(&live, self.options.custom_ssh)?;
-        if !unpublished.is_empty() {
-            return Err(Error::LocalChanges {
-                id: id.into(),
-                message: format!("the clone {relative} has unpublished commits"),
-                items: unpublished,
-            });
-        }
-        // Branch mode takes HEAD as found when it moved forward on its own branch: a
-        // descendant of the recorded commit that the origin's branch contains.
-        let on_branch = |branch: &str| {
-            transport::require_ancestor(&live, &recorded, &head, self.options.custom_ssh).is_ok()
-                && transport::require_ancestor(
-                    &live,
-                    &head,
-                    &format!("refs/remotes/origin/{branch}"),
-                    self.options.custom_ssh,
-                )
-                .is_ok()
-        };
-        let follows = matches!(&record.mode, Mode::Branch(branch) if on_branch(branch));
-        let commit = if head == recorded || follows {
-            head.clone()
-        } else {
-            // A shared clone's HEAD may be another user's revision; anything else moved.
-            let moved = match record.clone.as_deref() {
-                Some(key) => shared_head_moved(&live, state, key, id, self.options.custom_ssh)?,
-                None => Some(LostWork::HeadMoved {
-                    head: head.clone(),
-                    recorded: recorded.clone(),
-                }),
-            };
-            if let Some(item) = moved {
-                return Err(Error::LocalChanges {
-                    id: id.into(),
-                    message: format!(
-                        "HEAD of the clone {relative} moved away from the recorded revision"
-                    ),
-                    items: vec![item],
-                });
-            }
-            recorded.clone()
-        };
-        if commit != head {
-            let staged = txn.repo(&relative, &live)?;
-            transport::checkout_detached(&staged, &commit, true, self.options.custom_ssh)?;
-        }
-        let repo = txn.staged_repo(&relative).unwrap_or(live);
+        let commit = recorded.clone();
+        let repo = live;
         let path =
             match packages::find_at_with_ssh(&repo, &commit, Some(id), self.options.custom_ssh) {
                 Ok(found) => found.subdir().map(str::to_owned),
@@ -2658,6 +2589,10 @@ impl Manager {
         let state = self.state()?;
         let removal = removal(&self.root, &state, id, self.options.custom_ssh)?;
         let mut deletes = Vec::new();
+        let checkout = self.root.join("worktrees").join(id);
+        if checkout.is_dir() {
+            deletes.push(checkout.to_string_lossy().into_owned());
+        }
         if let Some(repo) = &removal.repo {
             deletes.push(repo.to_string_lossy().into_owned());
         }
@@ -2683,8 +2618,8 @@ impl Manager {
     /// Remove state entry, repository and dist; replacements this package provides are
     /// dropped (the originals become active again and their `dist/` is deployed). For a
     /// package of a shared clone the clone
-    /// stays while other packages (registered or forgotten) use it, and its HEAD moves to
-    /// one of theirs. A forgotten package is uninstalled the same way (its `dist/`, its
+    /// stays while other packages (registered or forgotten) use it. Each package's
+    /// detached worktree is removed independently. A forgotten package is uninstalled the same way (its `dist/`, its
     /// record and the clone if it was the last user); so is a recorded package whose
     /// clone is gone (only its record and `dist/` remain, nothing is lost). Local work
     /// (changes, untracked/ignored files, unpublished commits/branches/tags, stash) not
@@ -2713,18 +2648,11 @@ impl Manager {
             state.packages.remove(id);
             state.forgotten.remove(id);
             state.replacements.retain(|_, fork| fork != id);
-            match (&removal.repo, &removal.key) {
-                (Some(_), _) => txn.delete_repo(&removal.relative)?,
-                // Other packages keep the shared clone; its HEAD goes to one of theirs.
-                (None, Some(key)) => settle_head(
-                    txn,
-                    state,
-                    key,
-                    id,
-                    &removal.relative,
-                    self.options.custom_ssh,
-                )?,
-                (None, None) => {}
+            if removal.key.is_some() {
+                txn.remove_worktree(id, &removal.relative)?;
+            }
+            if removal.repo.is_some() {
+                txn.delete_repo(&removal.relative)?;
             }
             txn.delete_dist(id)?;
             Ok(())
@@ -3062,9 +2990,10 @@ impl<'a> Fetch<'a> {
     }
 }
 
-/// A verified scratch clone checked out at the revision to install.
+/// A scratch bare source with a verified installation revision.
 struct Cloned {
     repo: PathBuf,
+    commit: String,
     manifest: Manifest,
     /// Package folder (`None`: the repository root).
     path: Option<String>,
@@ -3074,19 +3003,19 @@ struct Cloned {
     mode: Mode,
 }
 
-/// Clone into the transaction's scratch area, check out and verify the revision.
+/// Bare-clone into scratch and verify the selected revision from its Git objects.
 fn clone_revision(txn: &Txn, fetch: &Fetch, name: &str, custom_ssh: bool) -> Result<Cloned> {
     let repo = txn.scratch(name);
     let parent = repo.parent().unwrap();
     fs::create_dir_all(parent)?;
-    crate::transport::clone_repo(parent, fetch.source, name, custom_ssh)?;
+    crate::transport::clone_bare(parent, fetch.source, name, custom_ssh)?;
     // A fresh clone has exactly the origin's tags.
     lost_work::record_origin_tags(&repo, custom_ssh)?;
     let mut skipped = Vec::new();
     let (commit, mode) = match fetch.target {
         FetchTarget::Exact(commit) => (resolve_ref(&repo, commit, custom_ssh)?, Mode::Release),
-        // The fresh clone has the origin's branches as `refs/remotes/origin/*` only (and
-        // a local branch for the default one, which is never used).
+        // Source branches exist only under refs/remotes/origin; package checkouts
+        // are detached worktrees created when adopting the verified revision.
         FetchTarget::Ref(reference) => resolve_upstream_ref(&repo, reference, custom_ssh)?,
         FetchTarget::Dev => resolve_upstream_ref(&repo, "HEAD", custom_ssh)?,
         FetchTarget::Latest => {
@@ -3147,14 +3076,8 @@ fn clone_revision(txn: &Txn, fetch: &Fetch, name: &str, custom_ssh: bool) -> Res
             found.subdir().unwrap_or("(root)")
         );
     }
-    transport::checkout_detached(&repo, &commit, false, custom_ssh)?;
     let path = found.subdir().map(str::to_owned);
-    let m = package_manifest(&repo, path.as_deref())?;
-    ensure!(
-        m.id == found.manifest.id,
-        InvalidManifest,
-        "package manifest changed during checkout"
-    );
+    let m = found.manifest;
     if let Some(expected) = fetch.expected {
         ensure!(
             serde_json::to_value(&m)? == serde_json::to_value(expected)?,
@@ -3179,6 +3102,7 @@ fn clone_revision(txn: &Txn, fetch: &Fetch, name: &str, custom_ssh: bool) -> Res
     }
     Ok(Cloned {
         repo,
+        commit,
         manifest: m,
         path,
         expected_files: fetch.files.cloned(),
@@ -3380,8 +3304,8 @@ fn catalog_candidates(
     Ok((releases, upstream))
 }
 /// The installed revision of `id` must be the release record of its version in the
-/// verified catalog at `location`: the same source and commit, and (checked out in
-/// `repo`, a clone of that source) the same package folder, manifest and file hashes.
+/// verified catalog at `location`: the same source, commit, package folder,
+/// manifest and exported file hashes in the source object store.
 fn verify_installed_release(
     txn: &Txn,
     repo: &Path,
@@ -3406,8 +3330,7 @@ fn verify_installed_release(
         Catalog,
         "catalog package folder of {id}@{version} does not match git revision"
     );
-    transport::checkout_detached(repo, &release.commit, false, custom_ssh)?;
-    let actual = package_manifest(repo, release.path.as_deref())?;
+    let actual = found.manifest;
     let staged = txn.scratch("verify-installed-dist");
     if staged.exists() {
         fs::remove_dir_all(&staged)?;
@@ -3787,9 +3710,7 @@ mod tests {
             (ws, m)
         }
         fn repo(&self) -> PathBuf {
-            self.root
-                .join("repos")
-                .join(clones::repo_key(self.author.source()))
+            self.root.join("worktrees").join(&self.author.id)
         }
         fn dist(&self) -> PathBuf {
             self.root.join("dist").join(&self.author.id)
@@ -4145,8 +4066,8 @@ mod tests {
 
     #[test]
     fn update_all_recovers_every_plugin_after_an_interrupted_commit() {
-        // Two repositories, two payloads and state.json: nine journal renames.
-        for renames in 0..9 {
+        // Two bare stores, two worktrees, two payloads and state: thirteen renames.
+        for renames in 0..13 {
             let (ws, m) = Ws::installed("x/a");
             let other = ws.other_author("other", "x/b");
             m.install(other.source()).unwrap();
@@ -4161,6 +4082,9 @@ mod tests {
                 assert_eq!(installed.current.version, "0.2.0", "crash after {renames}");
                 assert_eq!(installed.previous.as_ref().unwrap().version, "0.1.0");
                 assert_eq!(installed.current.commit, author.head());
+                let checkout = ws.root.join("worktrees").join(&author.id);
+                assert_eq!(head_of(&checkout), installed.current.commit);
+                assert!(fixture_git(&checkout, &["status", "--porcelain"]).is_empty());
                 assert_eq!(
                     tree_hash(&ws.root.join("dist").join(&author.id)),
                     tree_hash(&author.path.join("dist"))
@@ -4468,7 +4392,7 @@ mod tests {
             (r.id.as_str(), r.current.commit.as_str()),
             ("dan/demo1", first.as_str())
         );
-        assert!(ws.repo().join(".git").is_dir());
+        assert!(ws.repo().join(".git").is_file());
         assert!(ws.root.join("dist/dan/demo1/index.js").is_file());
         m.uninstall("dan/demo1", &[], false).unwrap();
         let r = m
@@ -4585,7 +4509,7 @@ mod tests {
         let (ws, m) = Ws::installed("dan/demo1");
         m.forget("dan/demo1").unwrap();
         assert!(m.list().unwrap().is_empty());
-        assert!(ws.repo().join(".git").is_dir() && !ws.dist().exists());
+        assert!(ws.repo().join(".git").is_file() && !ws.dist().exists());
         let error = ws.refuses("already_installed", || m.install(ws.author.source()));
         assert!(
             error
@@ -4720,14 +4644,14 @@ mod tests {
             let error = ws.refuses("local_changes", || m.restore(id));
             assert!(
                 matches!(&error, Error::LocalChanges { items, .. }
-                    if items.iter().any(|i| matches!(i, LostWork::UnpublishedCommit { .. }))),
+                    if items.iter().any(|i| matches!(i, LostWork::HeadMoved { .. }))),
                 "{target:?}: {error:?}"
             );
         }
     }
 
     #[test]
-    fn branch_mode_restore_takes_a_published_head() {
+    fn branch_mode_restore_refuses_a_published_moved_head() {
         let id = "dan/demo1";
         let ws = Ws::new(id);
         let m = ws.open();
@@ -4736,24 +4660,15 @@ mod tests {
             .unwrap()
             .current;
         m.forget(id).unwrap();
-        let next = ws.author.commit("0.2.0");
+        ws.author.commit("0.2.0");
         fixture_git(&ws.repo(), &["fetch", "-q", "origin"]);
         fixture_git(&ws.repo(), &["checkout", "-q", "--detach", "origin/main"]);
-        let restored = m.restore(id).unwrap();
-        assert_eq!(
-            (restored.current.version.as_str(), restored.current.commit),
-            ("0.2.0", next)
+        let error = ws.refuses("local_changes", || m.restore(id));
+        assert!(
+            matches!(error, Error::LocalChanges { items, .. } if items.iter().any(|item| matches!(item, LostWork::HeadMoved { .. })))
         );
-        let p = &m.state().unwrap().packages[id];
-        assert_eq!(p.mode, Mode::Branch("main".into()));
-        assert_eq!(
-            p.previous.as_ref(),
-            Some(&recorded.with_mode(&Mode::Branch("main".into())))
-        );
-        assert!(read(&ws.dist().join("index.js")).contains("0.2.0"));
+        assert_eq!(m.state().unwrap().forgotten[id].current, recorded);
     }
-
-    // ---- update / rollback ----------------------------------------------------------
 
     #[test]
     fn update_and_rollback_swap_revisions_and_redeploy() {
@@ -5527,10 +5442,7 @@ mod tests {
             assert!(!state.packages[id].enabled, "{id}");
             assert!(state.packages[id].mode.is_release(), "{id}");
             assert!(
-                ws.root
-                    .join(state.packages[id].clone_folder(id))
-                    .join(".git")
-                    .is_dir(),
+                ws.root.join("worktrees").join(id).join(".git").is_file(),
                 "{id}"
             );
             assert!(!ws.root.join("dist").join(id).exists(), "{id}");
@@ -6430,7 +6342,7 @@ mod tests {
             outside
                 .join("dan")
                 .join(clones::repo_key(ws.author.source()))
-                .join(".git")
+                .join("objects")
                 .is_dir()
         );
         ws.author.release("0.2.0");
@@ -6443,6 +6355,23 @@ mod tests {
         std::os::unix::fs::symlink(outside.join("dan"), ws.root.join("dist/dan")).unwrap();
         ws.refuses("workspace", || m.uninstall("dan/demo1", &[], true));
         assert!(outside.join("dan/demo1").is_dir());
+    }
+
+    #[test]
+    fn symlinked_worktree_parents_are_never_followed() {
+        for relative in ["worktrees", "worktrees/dan"] {
+            let (ws, m) = Ws::installed("dan/demo1");
+            ws.author.release("0.2.0");
+            m.update("dan/demo1").unwrap();
+            let outside = ws.dir.join("outside");
+            fs::rename(ws.root.join(relative), &outside).unwrap();
+            std::os::unix::fs::symlink(&outside, ws.root.join(relative)).unwrap();
+            let before = tree_hash(&outside);
+            ws.refuses("workspace", || m.update_to("dan/demo1", Target::Release));
+            ws.refuses("workspace", || m.rollback("dan/demo1"));
+            ws.refuses("workspace", || m.uninstall("dan/demo1", &[], true));
+            assert_eq!(tree_hash(&outside), before);
+        }
     }
 
     #[test]
@@ -6781,8 +6710,12 @@ mod tests {
                 .unwrap();
         }
         let plan = m.uninstall_plan("tilr/store").unwrap();
-        assert_eq!(plan.deletes.len(), 1, "{:?}", plan.deletes);
-        assert!(plan.deletes[0].ends_with("dist/tilr/store"));
+        assert_eq!(plan.deletes.len(), 2, "{:?}", plan.deletes);
+        assert!(
+            plan.deletes
+                .iter()
+                .any(|path| path.ends_with("dist/tilr/store"))
+        );
         m.uninstall("tilr/store", &[], false).unwrap();
         assert!(!mono.root.join("dist/tilr/store").exists());
         assert_eq!(mono.clones().len(), 1);
@@ -6795,11 +6728,11 @@ mod tests {
         assert_eq!(mono.clones().len(), 1);
         m.uninstall("tilr/store", &[], false).unwrap();
         // The last package takes the clone with it; local work there is guarded.
-        let clone = mono.root.join("repos").join(&mono.clones()[0]);
+        let clone = mono.root.join("worktrees/tilr/theme");
         fs::write(clone.join("scratch.txt"), "mine").unwrap();
         mono.refuses("local_changes", || m.update("tilr/theme"));
         let plan = m.uninstall_plan("tilr/theme").unwrap();
-        assert_eq!(plan.deletes.len(), 2);
+        assert_eq!(plan.deletes.len(), 3);
         assert!(!plan.lost_work.is_empty());
         mono.refuses("local_changes", || m.uninstall("tilr/theme", &[], false));
         m.uninstall(
@@ -7256,9 +7189,8 @@ mod tests {
         )
         .unwrap();
         m.forget("tilr/theme").unwrap();
-        // The shared clone's HEAD is store's revision on side: a published descendant of
-        // theme's commit, but not on main. Theme comes back at its recorded commit.
-        let store_head = head_of(&mono.clone_dir());
+        // Store has its own revision on side; theme comes back at its recorded commit.
+        let store_head = head_of(&mono.root.join("worktrees/tilr/store"));
         assert_ne!(store_head, theme.commit);
         let restored = m.restore("tilr/theme").unwrap();
         assert_eq!(restored.current, theme);
@@ -7287,8 +7219,10 @@ mod tests {
         );
         fixture_git(&ws.repo(), &["fetch", "-q", "origin"]);
         fixture_git(&ws.repo(), &["checkout", "-q", "--detach", "origin/main"]);
-        let error = ws.refuses("dependency_conflict", || m.restore(id));
-        assert!(error.to_string().contains("dan/missing"), "{error}");
+        let error = ws.refuses("local_changes", || m.restore(id));
+        assert!(
+            matches!(error, Error::LocalChanges { items, .. } if items.iter().any(|item| matches!(item, LostWork::HeadMoved { .. })))
+        );
         assert!(m.state().unwrap().forgotten.contains_key(id));
     }
 
@@ -7371,38 +7305,32 @@ mod tests {
             .current;
         m.install_package(mono.source(), Some("tilr/theme"), InstallTarget::Dev)
             .unwrap();
-        // Release mode, disabled: restored at its recorded commit although the shared
-        // clone's HEAD has moved on to theme's newer revision meanwhile.
+        // Release mode, disabled: theme's separate worktree can advance while store
+        // retains its recorded revision.
         m.disable("tilr/store").unwrap();
         m.forget("tilr/store").unwrap();
         mono.write("theme", "1.1.0", &[]);
         let next = mono.commit("theme 1.1.0");
         m.update("tilr/theme").unwrap();
-        assert_eq!(head_of(&mono.clone_dir()), next);
+        assert_eq!(head_of(&mono.root.join("worktrees/tilr/theme")), next);
         let restored = m.restore("tilr/store").unwrap();
         assert_eq!(restored.current, store);
         assert!(restored.dist.deployed.is_empty());
         let state = m.state().unwrap();
         let p = &state.packages["tilr/store"];
         assert!(!p.enabled && p.mode == Mode::Release && p.current == store);
-        // Branch mode: a published HEAD the user checked out is taken as found.
+        // A published moved HEAD in the forgotten package is still local work.
         m.forget("tilr/theme").unwrap();
         mono.write("theme", "1.2.0", &[]);
-        let newer = mono.commit("theme 1.2.0");
-        fixture_git(&mono.clone_dir(), &["fetch", "-q", "origin"]);
-        fixture_git(
-            &mono.clone_dir(),
-            &["checkout", "-q", "--detach", "origin/main"],
-        );
-        let restored = m.restore("tilr/theme").unwrap();
+        mono.commit("theme 1.2.0");
+        let theme = mono.root.join("worktrees/tilr/theme");
+        fixture_git(&theme, &["fetch", "-q", "origin"]);
+        fixture_git(&theme, &["checkout", "-q", "--detach", "origin/main"]);
+        mono.refuses("local_changes", || m.restore("tilr/theme"));
         assert_eq!(
-            (restored.current.version.as_str(), restored.current.commit),
-            ("1.2.0", newer)
+            m.state().unwrap().forgotten["tilr/theme"].current.commit,
+            next
         );
-        let p = &m.state().unwrap().packages["tilr/theme"];
-        assert_eq!(p.mode, Mode::Branch("main".into()));
-        assert_eq!(p.previous.as_ref().unwrap().commit, next);
-        assert!(mono.root.join("dist/tilr/theme/index.js").is_file());
     }
 
     // ---- regressions: forks, shared clones, layouts ------------------------------------
@@ -7418,7 +7346,7 @@ mod tests {
 
     #[test]
     fn a_single_fork_of_a_shared_package_commits_on_the_fork_branch() {
-        // B1: the shared clone's HEAD is theme's newer revision, store is installed older.
+        // Theme and store have separate worktrees at different recorded revisions.
         let mono = Mono::new();
         let m = mono.open();
         m.install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
@@ -7427,7 +7355,10 @@ mod tests {
         mono.release("theme", "1.1.0");
         m.install_package(mono.source(), Some("tilr/theme"), InstallTarget::Release)
             .unwrap();
-        assert_ne!(head_of(&mono.clone_dir()), store_commit);
+        assert_eq!(
+            head_of(&mono.root.join("worktrees/tilr/store")),
+            store_commit
+        );
         let destination = mono.dir.join("forks/store");
         let path = m
             .fork_in_namespace("tilr/store", &destination, "me")
@@ -7539,7 +7470,7 @@ mod tests {
         );
         // The last registered user goes; the forgotten one still holds the clone.
         let plan = m.uninstall_plan("tilr/theme").unwrap();
-        assert_eq!(plan.deletes.len(), 1, "{:?}", plan.deletes);
+        assert_eq!(plan.deletes.len(), 2, "{:?}", plan.deletes);
         m.uninstall("tilr/theme", &[], false).unwrap();
         assert_eq!(mono.clones().len(), 1);
         let restored = m.restore("tilr/store").unwrap();
@@ -7559,7 +7490,7 @@ mod tests {
         m.forget("tilr/store").unwrap();
         let plan = m.uninstall_plan("tilr/store").unwrap();
         assert!(!plan.registered);
-        assert_eq!(plan.deletes.len(), 1, "{:?}", plan.deletes);
+        assert_eq!(plan.deletes.len(), 2, "{:?}", plan.deletes);
         m.uninstall("tilr/store", &[], false).unwrap();
         assert!(mono.clones().is_empty());
         assert!(!mono.root.join("dist/tilr/store").exists());
@@ -7571,58 +7502,32 @@ mod tests {
     }
 
     #[test]
-    fn removing_a_package_moves_the_shared_head_to_a_remaining_one() {
-        // B5: theme follows the default branch, so HEAD is an untagged commit.
+    fn removing_a_package_keeps_other_worktree_head_and_local_files() {
         let mono = Mono::new();
         let m = mono.open();
         for id in ["tilr/store", "tilr/theme"] {
             m.install_package(mono.source(), Some(id), InstallTarget::Release)
                 .unwrap();
         }
-        let store = m.state().unwrap().packages["tilr/store"]
-            .current
-            .commit
-            .clone();
+        let store = mono.root.join("worktrees/tilr/store");
+        let theme = mono.root.join("worktrees/tilr/theme");
+        let recorded = head_of(&store);
         mono.write("theme", "1.1.0", &[]);
         let dev = mono.commit("theme work");
         m.update_to("tilr/theme", Target::Dev).unwrap();
-        assert_eq!(head_of(&mono.clone_dir()), dev);
-        // forget: HEAD goes to store's revision, store keeps updating.
+        assert_eq!(head_of(&theme), dev);
+        fs::write(store.join("scratch.txt"), "mine").unwrap();
         m.forget("tilr/theme").unwrap();
-        assert_eq!(head_of(&mono.clone_dir()), store);
+        assert_eq!(head_of(&theme), dev);
         m.restore("tilr/theme").unwrap();
-        assert_eq!(head_of(&mono.clone_dir()), dev);
-        // uninstall with local work in the clone: HEAD moves, the file stays.
-        fs::write(mono.clone_dir().join("scratch.txt"), "mine").unwrap();
         m.uninstall("tilr/theme", &[], false).unwrap();
-        assert_eq!(head_of(&mono.clone_dir()), store);
-        assert_eq!(read(&mono.clone_dir().join("scratch.txt")), "mine");
-        fs::remove_file(mono.clone_dir().join("scratch.txt")).unwrap();
+        assert!(!theme.exists());
+        assert_eq!(head_of(&store), recorded);
+        assert_eq!(read(&store.join("scratch.txt")), "mine");
+        fs::remove_file(store.join("scratch.txt")).unwrap();
         mono.release("store", "1.1.0");
         m.update("tilr/store").unwrap();
         assert_eq!(mono.dist("store"), "store 1.1.0");
-
-        // An edit that the move would overwrite refuses the removal; nothing changes.
-        mono.write("theme", "1.2.0", &[]);
-        mono.commit("more theme work");
-        m.install_package(mono.source(), Some("tilr/theme"), InstallTarget::Dev)
-            .unwrap();
-        fs::write(
-            mono.clone_dir().join("packages/theme/dist/index.js"),
-            "edit",
-        )
-        .unwrap();
-        let error = mono.refuses("local_changes", || m.uninstall("tilr/theme", &[], false));
-        assert!(
-            error
-                .to_string()
-                .contains("must move to the installed revision"),
-            "{error}"
-        );
-        assert_eq!(
-            read(&mono.clone_dir().join("packages/theme/dist/index.js")),
-            "edit"
-        );
     }
 
     #[test]
@@ -7701,7 +7606,7 @@ mod tests {
         mono.release("theme", "1.1.0");
         m.install_package(mono.source(), Some("tilr/theme"), InstallTarget::Release)
             .unwrap();
-        let clone = mono.clone_dir();
+        let clone = mono.root.join("worktrees/tilr/store");
         fs::write(clone.join("packages/store/dist/index.js"), "store edit").unwrap();
         let destination = mono.dir.join("forks/both");
         m.fork_packages(&["tilr/store", "tilr/theme"], &destination, "me")

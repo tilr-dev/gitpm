@@ -97,7 +97,7 @@ def forced_provider_removal_drops_binding(t: T):
 def switch_back_to_compatible_original(t: T):
     """replace --back: no prompt, every consumer on vendor/base again; fork keeps history and edits."""
     fork_entry = t.package(FORK)
-    fork_files = t.snap(t.clone(FORK), t.dist(FORK), git=True)
+    fork_files = t.snap(t.worktree(FORK), t.dist(FORK), git=True)
     fork_author = t.snap(t.repo(FORK), git=True)
     r = t.gitpm_ok("replace", ORIGINAL, "--back")
     t.lacks(r.err, "Warning", "[y/N]")
@@ -214,8 +214,8 @@ def remove_unused_clean_fork(t: T):
 
 def dirty_unused_fork(t: T):
     t.gitpm_ok("replace", ORIGINAL, "--back")
-    (t.clone(FORK) / "dist/index.js").write_text("local edit\n")
-    (t.clone(FORK) / "notes.txt").write_text("unpublished\n")
+    (t.worktree(FORK) / "dist/index.js").write_text("local edit\n")
+    (t.worktree(FORK) / "notes.txt").write_text("unpublished\n")
 
 
 @case(fixture="g6_replaced", spec=["install-uninstall/cli-confirmation-flow-for-uninstall#no-tty"])

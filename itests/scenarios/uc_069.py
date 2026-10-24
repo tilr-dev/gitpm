@@ -25,7 +25,7 @@ FORK_PAYLOAD = "export const greeting = 'fork payload';\n"
 def committed(t: T, id: str, path: str = "dist/index.js") -> str:
     """The bytes of `path` at the installed commit of `id` (from its clone)."""
     commit = t.package(id)["current"]["commit"]
-    return t.run("git", "-C", t.clone(id), "show", f"{commit}:{path}", quiet=True, check=True).out
+    return t.run("git", "-C", t.worktree(id), "show", f"{commit}:{path}", quiet=True, check=True).out
 
 
 def resolved(t: T) -> dict:
@@ -59,7 +59,7 @@ def disable_removes_enable_redeploys(t: T):
 def enable_deploys_committed_tree_not_working_tree(t: T):
     """An uncommitted edit in A's clone is never deployed by enable."""
     t.gitpm_ok("disable", A)
-    (t.clone(A) / "dist/index.js").write_text("export const greeting = 'uncommitted';\n")
+    (t.worktree(A) / "dist/index.js").write_text("export const greeting = 'uncommitted';\n")
     t.gitpm_ok("enable", A)
     deployed(t, A)
     t.lacks((t.dist(A) / "index.js").read_text(), "uncommitted")
@@ -163,7 +163,7 @@ def gitlinks_warn_at_publication_and_deploy(t: T):
                                           "dist/empty-parent-folders-are-removed#last-package-of-a-namespace"])
 def forget_removes_restore_redeploys(t: T):
     """forget A removes dist/A (and the empty dist/vendor) but keeps the clone; restore deploys it."""
-    clone = t.snap(t.clone(A), git=True)
+    clone = t.snap(t.worktree(A), git=True)
     t.gitpm_ok("forget", A)
     t.ok(not t.dist(A).exists(), "dist/A removed")
     t.ok(not (t.ws / "dist/vendor").exists(), "empty dist/vendor removed")
@@ -178,7 +178,7 @@ def uninstall_removes_empty_namespace_folders(t: T):
     t.eq(t.gitpm_ok("uninstall", A).out, f"{A} uninstalled\n", "output")
     t.not_installed(A)
     t.ok(not (t.ws / "dist/vendor").exists(), "dist/vendor removed")
-    t.ok(not t.clone(A).exists(), "unused clone removed")
+    t.ok(not t.worktree(A).exists(), "unused clone removed")
     deployed(t, B)
 
 
@@ -268,7 +268,7 @@ def update_of_replaced_package_deploys_nothing_until_back(t: T):
     commit = t.release(ORIGINAL, "1.1.0")
     t.gitpm_ok("update", ORIGINAL)
     t.eq(t.package(ORIGINAL)["current"], {"version": "1.1.0", "commit": commit}, "state")
-    t.eq(t.rev(t.clone(ORIGINAL)), commit, "clone HEAD")
+    t.eq(t.rev(t.worktree(ORIGINAL)), commit, "clone HEAD")
     t.ok(not t.dist(ORIGINAL).exists(), "no dist/vendor/base while replaced")
     t.gitpm_ok("replace", ORIGINAL, "--back", "--force")
     t.has((t.dist(ORIGINAL) / "index.js").read_text(), f"{ORIGINAL} 1.1.0")

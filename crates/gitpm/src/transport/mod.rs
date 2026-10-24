@@ -16,9 +16,8 @@ pub(crate) enum Fetch<'a> {
 }
 /// Reachability rules for local HEAD history diagnostics.
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum HeadHistory<'a> {
+pub(crate) enum HeadHistory {
     Unpublished { exclude_tags: bool },
-    Unreferenced { keep: &'a [&'a str] },
 }
 
 /// Which paths a commit includes, preserving authoring's staging semantics.
@@ -103,7 +102,6 @@ pub(crate) trait Transport {
     fn refs_with_objects(&self, repo: &Path, prefix: &str, custom_ssh: bool) -> Result<String>;
     fn delete_ref(&self, repo: &Path, name: &str, custom_ssh: bool) -> Result<()>;
     fn update_ref(&self, repo: &Path, name: &str, object: &str, custom_ssh: bool) -> Result<()>;
-    fn tags_at(&self, repo: &Path, revision: &str, custom_ssh: bool) -> Result<String>;
     fn config_get(&self, repo: &Path, key: &str, custom_ssh: bool) -> Result<String>;
     /// Read a config blob as NUL-delimited entries, each with a newline between key and value.
     fn config_blob(&self, repo: &Path, object: &str, custom_ssh: bool) -> Result<String>;
@@ -153,12 +151,8 @@ pub(crate) trait Transport {
     fn refs(&self, repo: &Path, prefix: &str, custom_ssh: bool) -> Result<String>;
     fn unpublished_count(&self, repo: &Path, reference: &str, custom_ssh: bool) -> Result<String>;
     fn stashes(&self, repo: &Path, custom_ssh: bool) -> Result<String>;
-    fn head_history(
-        &self,
-        repo: &Path,
-        selection: HeadHistory<'_>,
-        custom_ssh: bool,
-    ) -> Result<String>;
+    fn head_history(&self, repo: &Path, selection: HeadHistory, custom_ssh: bool)
+    -> Result<String>;
     fn ls_remote(&self, source: &str, custom_ssh: bool, start_error: &str) -> Result<LsRemote>;
     fn ls_remote_refs(&self, source: &str, custom_ssh: bool) -> Result<RemoteRefs>;
     fn http_get(&self, url: &str) -> Result<Option<Vec<u8>>>;
@@ -170,6 +164,14 @@ pub(crate) trait Transport {
         destination: &str,
         custom_ssh: bool,
     ) -> Result<()>;
+    fn clone_bare(
+        &self,
+        parent: &Path,
+        source: &str,
+        destination: &str,
+        custom_ssh: bool,
+    ) -> Result<()>;
+    fn add_worktree(&self, repo: &Path, path: &Path, commit: &str, custom_ssh: bool) -> Result<()>;
     fn fetch(&self, repo: &Path, request: Fetch<'_>, custom_ssh: bool) -> Result<()>;
     fn set_remote_head(&self, repo: &Path, remote: &str, custom_ssh: bool) -> Result<()>;
     fn remote_tags(&self, repo: &Path, remote: &str, custom_ssh: bool) -> Result<String>;
@@ -385,9 +387,6 @@ impl Transport for SystemTransport {
     fn update_ref(&self, repo: &Path, name: &str, object: &str, custom_ssh: bool) -> Result<()> {
         system::git(repo, &["update-ref", name, object], custom_ssh).map(|_| ())
     }
-    fn tags_at(&self, repo: &Path, revision: &str, custom_ssh: bool) -> Result<String> {
-        system::git(repo, &["tag", "--points-at", revision], custom_ssh)
-    }
     fn config_get(&self, repo: &Path, key: &str, custom_ssh: bool) -> Result<String> {
         system::git(repo, &["config", "--get", key], custom_ssh)
     }
@@ -567,12 +566,23 @@ impl Transport for SystemTransport {
         )
     }
     fn stashes(&self, repo: &Path, custom_ssh: bool) -> Result<String> {
-        system::git(repo, &["stash", "list"], custom_ssh)
+        if self
+            .verified_object_id(repo, "refs/stash", custom_ssh)
+            .is_err()
+        {
+            return Ok(String::new());
+        }
+        // Unlike `stash list`, reading the stash reflog also works in bare stores.
+        system::git(
+            repo,
+            &["reflog", "show", "--format=%gd: %gs", "refs/stash"],
+            custom_ssh,
+        )
     }
     fn head_history(
         &self,
         repo: &Path,
-        selection: HeadHistory<'_>,
+        selection: HeadHistory,
         custom_ssh: bool,
     ) -> Result<String> {
         // Bound the displayed history while keeping reachability checks exact.
@@ -589,10 +599,6 @@ impl Transport for SystemTransport {
                 if exclude_tags {
                     args.push("--tags");
                 }
-            }
-            HeadHistory::Unreferenced { keep } => {
-                args.extend(["--branches", "--tags", "--remotes"]);
-                args.extend(keep.iter().copied());
             }
         }
         system::git(repo, &args, custom_ssh)
@@ -622,6 +628,58 @@ impl Transport for SystemTransport {
             custom_ssh,
         )?;
         Ok(())
+    }
+    fn clone_bare(
+        &self,
+        parent: &Path,
+        source: &str,
+        destination: &str,
+        custom_ssh: bool,
+    ) -> Result<()> {
+        system::git(
+            parent,
+            &["clone", "--bare", "--no-local", "--", source, destination],
+            custom_ssh,
+        )?;
+        let repo = parent.join(destination);
+        // Bare clone creates local branches; explicit remote tracking keeps upstream
+        // resolution and publication checks identical to a normal source clone.
+        self.config_set_local(
+            &repo,
+            "remote.origin.fetch",
+            "+refs/heads/*:refs/remotes/origin/*",
+            custom_ssh,
+        )?;
+        self.fetch(
+            &repo,
+            Fetch::Tags {
+                remote: "origin",
+                prune: false,
+            },
+            custom_ssh,
+        )?;
+        self.set_remote_head(&repo, "origin", custom_ssh)?;
+        // Source branches are remote-tracking refs, never manager-created local work.
+        system::git(
+            &repo,
+            &["symbolic-ref", "HEAD", "refs/remotes/origin/HEAD"],
+            custom_ssh,
+        )?;
+        for reference in self.refs(&repo, "refs/heads/", custom_ssh)?.lines() {
+            self.delete_ref(&repo, reference, custom_ssh)?;
+        }
+        Ok(())
+    }
+    fn add_worktree(&self, repo: &Path, path: &Path, commit: &str, custom_ssh: bool) -> Result<()> {
+        let path = path
+            .to_str()
+            .ok_or_else(|| crate::Error::InvalidArgument("worktree path is not UTF-8".into()))?;
+        system::git(
+            repo,
+            &["worktree", "add", "--detach", "--", path, commit],
+            custom_ssh,
+        )
+        .map(|_| ())
     }
     fn fetch(&self, repo: &Path, request: Fetch<'_>, custom_ssh: bool) -> Result<()> {
         match request {
@@ -790,9 +848,6 @@ pub(crate) fn delete_ref(repo: &Path, name: &str, custom_ssh: bool) -> Result<()
 pub(crate) fn update_ref(repo: &Path, name: &str, object: &str, custom_ssh: bool) -> Result<()> {
     backend().update_ref(repo, name, object, custom_ssh)
 }
-pub(crate) fn tags_at(repo: &Path, revision: &str, custom_ssh: bool) -> Result<String> {
-    backend().tags_at(repo, revision, custom_ssh)
-}
 pub(crate) fn config_get(repo: &Path, key: &str, custom_ssh: bool) -> Result<String> {
     backend().config_get(repo, key, custom_ssh)
 }
@@ -893,7 +948,7 @@ pub(crate) fn stashes(repo: &Path, custom_ssh: bool) -> Result<String> {
 }
 pub(crate) fn head_history(
     repo: &Path,
-    selection: HeadHistory<'_>,
+    selection: HeadHistory,
     custom_ssh: bool,
 ) -> Result<String> {
     backend().head_history(repo, selection, custom_ssh)
@@ -914,6 +969,17 @@ pub(crate) fn clone_repo(
     custom_ssh: bool,
 ) -> Result<()> {
     backend().clone_repo(parent, source, destination, custom_ssh)
+}
+pub(crate) fn clone_bare(
+    parent: &Path,
+    source: &str,
+    destination: &str,
+    custom_ssh: bool,
+) -> Result<()> {
+    backend().clone_bare(parent, source, destination, custom_ssh)
+}
+pub(crate) fn add_worktree(repo: &Path, path: &Path, commit: &str, custom_ssh: bool) -> Result<()> {
+    backend().add_worktree(repo, path, commit, custom_ssh)
 }
 pub(crate) fn fetch(repo: &Path, request: Fetch<'_>, custom_ssh: bool) -> Result<()> {
     backend().fetch(repo, request, custom_ssh)

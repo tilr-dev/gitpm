@@ -122,7 +122,7 @@ def install_refuses_unreachable_build(t: T):
     before = t.snap(t.ws) if t.ws.exists() else None
     t.gitpm_err("install-catalog", ID, "--version", "0.3.0", env={"PATH": path}, kind="http")
     t.ok(log.exists(), "artifact request made")
-    t.ok(not t.clone(ID).exists(), "no clone created")
+    t.ok(not t.worktree(ID).exists(), "no clone created")
     t.ok(not t.dist(ID).exists(), "nothing deployed")
     if before is not None:
         t.same(before, "workspace")
@@ -161,11 +161,11 @@ def builds_install_update_and_rollback_without_clones(t: T):
             t.catalog_release(ID, version).write_text(json.dumps(record))
         t.repo(ID).rename(t.root / "source-unavailable")
         t.gitpm_ok("install-catalog", ID, "--version", "0.3.0")
-        t.ok(not t.clone(ID).exists(), "no Git clone")
+        t.ok(not t.worktree(ID).exists(), "no Git clone")
         t.eq(t.package(ID)["current"]["version"], "0.3.0", "explicit build version")
         t.gitpm_ok("update", ID)
         t.eq(t.package(ID)["current"]["version"], "0.4.0", "updated from build")
-        t.ok(not t.clone(ID).exists(), "update creates no clone")
+        t.ok(not t.worktree(ID).exists(), "update creates no clone")
         for artifact in served.iterdir():
             artifact.unlink()
         t.gitpm_ok("rollback", ID)
@@ -173,7 +173,7 @@ def builds_install_update_and_rollback_without_clones(t: T):
         t.gitpm_ok("disable", ID)
         t.gitpm_ok("enable", ID)
         t.ok(t.dist(ID).is_dir(), "cached build redeployed")
-        t.ok(not t.clone(ID).exists(), "lifecycle creates no clone")
+        t.ok(not t.worktree(ID).exists(), "lifecycle creates no clone")
     finally:
         server.shutdown()
         server.server_close()

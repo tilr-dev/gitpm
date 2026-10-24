@@ -23,7 +23,7 @@ def install_dev_installs_default_branch_head(t: T):
     p = t.package(ID)
     t.eq(p["current"], {"version": "0.2.0", "commit": head}, "current")
     t.eq(p["mode"], {"branch": "main"}, "mode")
-    t.eq(t.rev(t.clone(ID)), head, "clone HEAD")
+    t.eq(t.rev(t.worktree(ID)), head, "clone HEAD")
     t.has(dist(t), "dan/hello 0.2.0")
     t.lacks((t.ws / "state.json").read_text(), "channel")
 
@@ -89,7 +89,7 @@ def explicit_ref_selects_its_revision(t: T):
     t.eq(t.package(ID)["mode"], {"pinned": f"{ID}@0.1.0"}, "install --ref tag pins")
     t.gitpm_ok("update", ID, "--ref", f"{ID}@0.2.0")
     t.eq(t.package(ID)["current"], {"version": "0.2.0", "commit": second}, "update --ref tag")
-    t.eq(t.rev(t.clone(ID)), second, "clone HEAD")
+    t.eq(t.rev(t.worktree(ID)), second, "clone HEAD")
     t.has(dist(t), "dan/hello 0.2.0")
     t.gitpm_ok("update", ID, "--ref", "main")
     t.eq(t.package(ID)["current"], {"version": "0.3.0", "commit": head}, "update --ref upstream branch")
