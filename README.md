@@ -1010,9 +1010,12 @@ packages/theme/dist/…
   folder, absent for a root package) per Git package, and only the manifest-selected output folder relative to `<path>` is deployed to `dist/<namespace>/<name>`.
   Updating, rolling back or uninstalling one package leaves the other packages alone; the
   clone is removed with the last package that uses it (its local work is guarded then,
-  as for any clone). Since the clone has one HEAD for all its packages, HEAD only counts
-  as moved when it is neither an installed revision of one of them nor a tagged commit;
-  when a package is uninstalled or forgotten, HEAD moves to the installed revision of a
+  as for any clone). With exactly one installed or forgotten user, HEAD must stay at
+  that user's recorded Git revision, even if another commit is tagged. For a build
+  retaining a Git clone, this is its previous Git installation's revision. Root and
+  nested packages follow the same rule. With several installed or forgotten users,
+  HEAD only counts as moved when it is neither a user's recorded current revision nor
+  a tagged commit. When a package is uninstalled or forgotten, HEAD moves to the installed revision of a
   remaining one (working-tree changes are kept; if they conflict with that revision the
   operation is refused). A root package keeps the same source-keyed clone when it
   later moves into a package folder (`path` set, `clone` unchanged).
