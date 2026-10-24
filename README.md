@@ -160,7 +160,7 @@ replacement offer. Editing the external manifest does not change that snapshot;
 run `link` again to validate and refresh it, including an explicitly changed output
 folder. New dependencies must already be satisfied by installed providers. A
 managed installation of the same ID must be explicitly uninstalled first; linking
-never silently converts it. Workspace-owned folders and cycles are refused.
+never silently converts it. Workspace-owned folders, cycles and non-UTF-8 canonical paths are refused with `workspace`.
 
 A live record has no installed revision or owned clone:
 

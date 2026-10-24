@@ -318,6 +318,24 @@ fn joint_updates_keep_link_constraints_while_updating_healthy_packages() {
     data["dependencies"] = json!({"acme/dependency":">=0.2.0"});
     write_manifest(&package, &data);
     assert_eq!(m.link(&package).unwrap_err().kind(), "dependency_conflict");
+    // A forced removal must not let the link reinstall its missing dependency.
+    m.uninstall("acme/dependency", &[], true).unwrap();
+    let preview = m.update_all_plan().unwrap();
+    assert!(preview.installs.is_empty());
+    let unchanged = preview
+        .unchanged
+        .iter()
+        .find(|u| u.id == "acme/consumer")
+        .unwrap();
+    let Some(UnchangedReason::DevLinked {
+        availability,
+        dependency_problems,
+    }) = &unchanged.reason
+    else {
+        panic!("link disposition lost")
+    };
+    assert!(matches!(availability.mode, Mode::Link(_)));
+    assert!(!dependency_problems.is_empty());
 }
 
 #[test]
@@ -529,5 +547,34 @@ fn blocked_link_namespace_does_not_block_an_unrelated_package() {
         assert!(f.root.join("dist/other/healthy").is_dir());
         assert!(fs::read_dir(&outside).unwrap().next().is_none());
         assert!(package.join("dist").is_dir());
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn non_utf8_package_or_output_paths_are_refused_before_state_changes() {
+    use std::{
+        ffi::OsString,
+        os::unix::{ffi::OsStringExt, fs::symlink},
+    };
+    for invalid_target_only in [false, true] {
+        let f = Fixture::new();
+        let mut package = f.author("encoding");
+        let m = f.manager();
+        let invalid = f.dir.join(OsString::from_vec(b"author-\xff".to_vec()));
+        if invalid_target_only {
+            fs::rename(package.join("dist"), &invalid).unwrap();
+            symlink(&invalid, package.join("dist")).unwrap();
+        } else {
+            fs::rename(&package, &invalid).unwrap();
+            package = invalid;
+        }
+        let state = fs::read(f.root.join("state.json")).unwrap();
+        let manifest = fs::read(package.join("plugin.json")).unwrap();
+        assert_eq!(m.link(&package).unwrap_err().kind(), "workspace");
+        assert_eq!(fs::read(f.root.join("state.json")).unwrap(), state);
+        assert_eq!(fs::read(package.join("plugin.json")).unwrap(), manifest);
+        assert!(!f.root.join("dist/acme/encoding").exists());
+        assert!(package.join("dist/index.js").is_file());
     }
 }

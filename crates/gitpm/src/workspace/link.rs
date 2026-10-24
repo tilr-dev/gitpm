@@ -11,6 +11,12 @@ pub struct LinkResult {
     pub dist: DistSync,
 }
 
+fn recorded_path(path: &Path) -> Result<String> {
+    path.to_str()
+        .map(str::to_owned)
+        .require(Error::Workspace, "link paths must be valid UTF-8")
+}
+
 impl Manager {
     /// Link a local package's validated output. Relinking refreshes its manifest
     /// snapshot; switching an existing managed installation requires uninstall first.
@@ -50,8 +56,8 @@ impl Manager {
             .filter(|s| crate::auth::validate_recorded(s).is_ok())
             .unwrap_or_default();
         let descriptor = LinkDescriptor {
-            package_root: package.to_string_lossy().into_owned(),
-            target: target.to_string_lossy().into_owned(),
+            package_root: recorded_path(&package)?,
+            target: recorded_path(&target)?,
             discovery: m.fork_of.clone().map(|fork_of| LinkDiscovery { fork_of }),
         };
         let mode = Mode::Link(descriptor);
@@ -143,6 +149,14 @@ impl Manager {
 mod tests {
     use super::*;
     use crate::test_support::{Author, TempDir};
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_link_paths_cannot_be_recorded_lossily() {
+        use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+        let path = PathBuf::from(OsString::from_vec(b"/author-\xff/dist".to_vec()));
+        assert_eq!(recorded_path(&path).unwrap_err().kind(), "workspace");
+    }
 
     #[test]
     fn link_entries_recover_at_every_commit_rename_without_restoring_author_bytes() {
