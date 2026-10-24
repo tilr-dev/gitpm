@@ -56,3 +56,7 @@ Enable, disable, replacement, forget, restore, uninstall and reconciliation SHAL
 #### Scenario: Author moves the target away
 - **WHEN** a recorded linked folder no longer exists and reconciliation runs for another package
 - **THEN** the report identifies the unavailable linked package and its link mode, and no clone or build output is created for it
+
+#### Scenario: Existing link namespace becomes blocked
+- **WHEN** the namespace directory of an existing link becomes a file or symlink and an independent package is changed
+- **THEN** reconciliation reports the blocked link as not deployed with its descriptor, without traversing the blocked namespace or preventing the independent change

@@ -3099,6 +3099,22 @@ fn dist_drift_unstaged(
         .cloned()
         .collect();
     for (id, p) in &state.packages {
+        if !state.is_active(id) {
+            continue;
+        }
+        // A blocked namespace is unmanaged, and its active packages remain undeployed.
+        let namespace = id.split_once('/').map(|(ns, _)| ns);
+        if let Some(ns) = namespace
+            && blocked.iter().any(|b| b == ns)
+        {
+            plan.skipped.push(SkippedDist {
+                id: id.clone(),
+                reason: format!("dist/{ns} is not a folder"),
+                clone_missing: false,
+                link: p.link().cloned(),
+            });
+            continue;
+        }
         if let Some(link) = p.link() {
             if !state.is_active(id) || staged.contains(id) {
                 continue;
@@ -3128,19 +3144,6 @@ fn dist_drift_unstaged(
             continue;
         }
         if !state.is_active(id) || present.contains(id) {
-            continue;
-        }
-        // A blocked namespace is unmanaged, and its active packages remain undeployed.
-        let namespace = id.split_once('/').map(|(ns, _)| ns);
-        if let Some(ns) = namespace
-            && blocked.iter().any(|b| b == ns)
-        {
-            plan.skipped.push(SkippedDist {
-                id: id.clone(),
-                reason: format!("dist/{ns} is not a folder"),
-                clone_missing: false,
-                link: p.link().cloned(),
-            });
             continue;
         }
         if let Some(build) = &p.build {

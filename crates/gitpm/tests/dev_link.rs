@@ -499,3 +499,35 @@ fn linking_refuses_unowned_dist_entries_including_dangling_symlinks() {
     );
     assert_eq!(fs::read(f.root.join("state.json")).unwrap(), state);
 }
+
+#[cfg(unix)]
+#[test]
+fn blocked_link_namespace_does_not_block_an_unrelated_package() {
+    use std::os::unix::fs::symlink;
+    for symlink_parent in [false, true] {
+        let f = Fixture::new();
+        let package = f.author("blocked");
+        let healthy = f.author("independent");
+        let mut data = manifest(&healthy);
+        data["id"] = "other/healthy".into();
+        write_manifest(&healthy, &data);
+        let m = f.manager();
+        m.link(&package).unwrap();
+        fs::remove_file(f.root.join("dist/acme/blocked")).unwrap();
+        fs::remove_dir(f.root.join("dist/acme")).unwrap();
+        let outside = f.dir.join("outside");
+        fs::create_dir(&outside).unwrap();
+        if symlink_parent {
+            symlink(&outside, f.root.join("dist/acme")).unwrap();
+        } else {
+            fs::write(f.root.join("dist/acme"), "obstacle").unwrap();
+        }
+        let report = m.link(&healthy).unwrap().dist;
+        assert_eq!(report.skipped[0].id, "acme/blocked");
+        assert!(report.skipped[0].link.is_some());
+        assert!(m.state().unwrap().packages["acme/blocked"].link().is_some());
+        assert!(f.root.join("dist/other/healthy").is_dir());
+        assert!(fs::read_dir(&outside).unwrap().next().is_none());
+        assert!(package.join("dist").is_dir());
+    }
+}
