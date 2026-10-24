@@ -202,8 +202,8 @@ pub(super) fn place_clone(
     } else {
         txn.add_repo(&relative, &cloned.repo)?
     };
-    // A reused source may need the selected commit fetched; protect installed objects.
-    if transport::require_object(&staged, &cloned.commit, custom_ssh).is_err() {
+    // Reused objects can already exist while origin refs have changed.
+    if live.exists() || transport::require_object(&staged, &cloned.commit, custom_ssh).is_err() {
         fetch_tags(&staged, state, &key, false, custom_ssh)?;
     }
     let worktree = txn.worktree(id, &relative, &cloned.commit, custom_ssh)?;

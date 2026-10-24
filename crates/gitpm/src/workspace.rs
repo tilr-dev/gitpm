@@ -5578,6 +5578,11 @@ mod tests {
             plan.deletes,
             [
                 ws.repo().to_string_lossy().into_owned(),
+                ws.root
+                    .join("repos")
+                    .join(clones::repo_key(ws.author.source()))
+                    .to_string_lossy()
+                    .into_owned(),
                 ws.dist().to_string_lossy().into_owned()
             ]
         );
@@ -5585,7 +5590,17 @@ mod tests {
         m.forget("dan/demo1").unwrap();
         let plan = m.uninstall_plan("dan/demo1").unwrap();
         assert!(!plan.registered);
-        assert_eq!(plan.deletes, [ws.repo().to_string_lossy().into_owned()]);
+        assert_eq!(
+            plan.deletes,
+            [
+                ws.repo().to_string_lossy().into_owned(),
+                ws.root
+                    .join("repos")
+                    .join(clones::repo_key(ws.author.source()))
+                    .to_string_lossy()
+                    .into_owned()
+            ]
+        );
         m.uninstall("dan/demo1", &[], false).unwrap();
         assert!(!ws.repo().exists() && !ws.dist().exists());
         assert!(m.list().unwrap().is_empty());
@@ -6274,15 +6289,10 @@ mod tests {
         linked.release("0.2.0");
         m.update("dan/linked").unwrap();
         assert!(
-            fs::symlink_metadata(
-                ws.root
-                    .join("repos")
-                    .join(clones::repo_key(linked.source()))
-                    .join("manifest-link")
-            )
-            .unwrap()
-            .file_type()
-            .is_symlink()
+            fs::symlink_metadata(ws.root.join("worktrees/dan/linked").join("manifest-link"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
         );
         // A symlink inside dist/ is refused before anything is committed.
         let bad = ws.other_author("bad", "dan/bad");
@@ -7981,7 +7991,8 @@ mod tests {
             ],
         );
         // The clone goes with its last package: its plan lists the hand-made tag.
-        m.uninstall("tilr/theme", &[], false).unwrap();
+        let theme = m.uninstall_plan("tilr/theme").unwrap();
+        m.uninstall("tilr/theme", &theme.lost_work, false).unwrap();
         let plan = m.uninstall_plan("tilr/store").unwrap();
         assert!(
             plan.lost_work.contains(&LostWork::UnpublishedTag {
