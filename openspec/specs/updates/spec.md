@@ -57,7 +57,7 @@ An update that follows releases SHALL compare versions only and SHALL never down
 - **AND** this is covered by `a_deleted_tag_in_a_shared_clone_is_reported_not_fatal` and `a_broken_installed_release_tag_is_named_as_skipped`
 
 ### Requirement: Update mirrors the origin's tags
-A single-package update of a package with its own clone SHALL mirror the origin's tags (pruned and force-fetched): a deleted release disappears from the clone, a moved one is seen at its new commit (package-ids). When the deleted tag is the installed (newest) release, `update ID` and `update all` report the package up to date with a warning ("Stable update never downgrades"). Verified by `stable_update_follows_deleted_and_moved_upstream_tags`.
+An update of a Git package SHALL mirror the origin's tags (pruned and force-fetched): a deleted release disappears from the clone, a moved one is seen at its new commit (package-ids). When the deleted tag is the installed (newest) release, `update ID` and `update all` report the package up to date with a warning ("Stable update never downgrades"). Verified by `stable_update_follows_deleted_and_moved_upstream_tags`.
 
 #### Scenario: Deleted installed release tag
 - **WHEN** the origin deletes the release tag of the installed (newest) version
