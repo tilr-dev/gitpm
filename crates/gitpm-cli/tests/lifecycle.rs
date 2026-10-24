@@ -32,6 +32,7 @@ impl Fixture {
             "[user]\n\tname = Test\n\temail = test@example.invalid\n[init]\n\tdefaultBranch = main\n[commit]\n\tgpgsign = false\n[tag]\n\tgpgsign = false\n",
         )
         .unwrap();
+        let dir = fs::canonicalize(dir).unwrap();
         let f = Self {
             repo: dir.join("upstream"),
             root: dir.join("workspace"),

@@ -33,7 +33,9 @@ impl Fixture {
             "[user]\n\tname = Test\n\temail = test@example.invalid\n[init]\n\tdefaultBranch = main\n[commit]\n\tgpgsign = false\n[tag]\n\tgpgsign = false\n",
         )
         .unwrap();
-        Self { dir }
+        Self {
+            dir: fs::canonicalize(dir).unwrap(),
+        }
     }
     fn command(&self, program: impl AsRef<std::ffi::OsStr>) -> Command {
         let mut command = Command::new(program);
