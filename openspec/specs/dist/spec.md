@@ -197,11 +197,11 @@ An active package whose clone or installed commit is missing SHALL be skipped by
 - **THEN** it prints the `would be deployed to` / `would be removed from` lines and `Nothing was changed (--dry-run).` and changes nothing; `sync_dist_plan` lists undeployable packages in `skipped` and does not fail
 
 ### Requirement: Empty parent folders are removed
-Removing a package SHALL also remove the folders it leaves empty (`dist/<namespace>`, `repos`). Verified by `removal_leaves_no_empty_namespace_or_clone_folders`.
+Removing a package SHALL also remove the folders it leaves empty (`dist/<namespace>`, `packages/<namespace>`, `repos`). Verified by `removal_leaves_no_empty_namespace_or_clone_folders`.
 
 #### Scenario: Last package of a namespace
 - **WHEN** the only package of namespace `acme` is uninstalled
-- **THEN** `dist/acme/` and the unused `repos/` no longer exist
+- **THEN** `dist/acme/` and `packages/acme/` no longer exist
 
 ### Requirement: Mutating results carry the dist report
 Every mutating library operation SHALL return, inside its result, the reconciliation report of its transaction: `deployed`, `removed`, `unmanaged` (paths under `dist/` left alone) and `skipped` (active packages not deployed, each with its reason). The library SHALL NOT print it; the CLI turns `unmanaged` and `skipped` into warnings (cli, "Warnings go to stderr") and an FFI host reads the same fields. Verified by `workspace::mutating_results_carry_the_dist_report`.
