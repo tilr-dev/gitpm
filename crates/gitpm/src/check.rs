@@ -264,21 +264,42 @@ fn rows(
             let own_catalog = installed.catalog.is_some()
                 && (protecting.is_some()
                     || catalog.and_then(|(_, location)| location) == installed.catalog.as_deref());
-            let mut row = match &installed.mode {
-                Mode::Release => protecting
+            let build_catalog = installed
+                .build
+                .as_ref()
+                .and_then(|b| b.location.as_deref())
+                .and_then(|location| own.get(location).map(|c| (c, Some(location))));
+            let mut row = if installed.build.is_some() {
+                build_catalog
+                    .or(protecting)
                     .or(catalog)
-                    .and_then(|(catalog, location)| catalog_row(id, installed, catalog, location))
-                    .map(|row| match own_catalog {
-                        true => protected_row(row, id, installed, &mut origins, custom_ssh),
-                        false => row,
+                    .and_then(|(c, location)| catalog_row(id, installed, c, location))
+                    .unwrap_or_else(|| {
+                        let mut row = new_row(id, installed, CheckSource::Catalog);
+                        row.status = CheckStatus::NoVersions;
+                        row
                     })
-                    .unwrap_or_else(|| origin_row(id, installed, &mut origins, custom_ssh)),
-                Mode::Pinned(_) => {
-                    let mut row = new_row(id, installed, CheckSource::Origin);
-                    row.status = CheckStatus::Pinned;
-                    row
+            } else {
+                match &installed.mode {
+                    Mode::Release => protecting
+                        .or(catalog)
+                        .and_then(|(catalog, location)| {
+                            catalog_row(id, installed, catalog, location)
+                        })
+                        .map(|row| match own_catalog {
+                            true => protected_row(row, id, installed, &mut origins, custom_ssh),
+                            false => row,
+                        })
+                        .unwrap_or_else(|| origin_row(id, installed, &mut origins, custom_ssh)),
+                    Mode::Pinned(_) => {
+                        let mut row = new_row(id, installed, CheckSource::Origin);
+                        row.status = CheckStatus::Pinned;
+                        row
+                    }
+                    Mode::Branch(branch) => {
+                        branch_row(id, installed, branch, &mut origins, custom_ssh)
+                    }
                 }
-                Mode::Branch(branch) => branch_row(id, installed, branch, &mut origins, custom_ssh),
             };
             if installed
                 .catalog
@@ -325,7 +346,7 @@ fn protected_row(
     origins: &mut Origins,
     custom_ssh: bool,
 ) -> CheckRow {
-    if row.status != CheckStatus::UpToDate {
+    if installed.build.is_some() || row.status != CheckStatus::UpToDate {
         return row;
     }
     let top = row.latest.as_deref().unwrap_or(&row.installed);
@@ -714,8 +735,18 @@ pub(crate) fn check_state(
         .filter_map(|p| p.catalog.clone())
         .filter(|recorded| crate::catalog::is_verified(recorded).is_ok_and(|v| !v))
         .collect();
+    let mut own = BTreeMap::new();
+    for installed in state.packages.values() {
+        if let Some(recorded) = installed.build.as_ref().and_then(|b| b.location.as_ref())
+            && !own.contains_key(recorded)
+        {
+            own.insert(
+                recorded.clone(),
+                crate::catalog::selected_for_check(recorded, state)?,
+            );
+        }
+    }
     let Some(location) = location else {
-        let mut own = BTreeMap::new();
         for installed in state.packages.values() {
             if let Some(recorded) = &installed.catalog
                 && !own.contains_key(recorded)
@@ -733,7 +764,7 @@ pub(crate) fn check_state(
     Ok(rows(
         state,
         Some((&snapshot, canonical.as_deref())),
-        &BTreeMap::new(),
+        &own,
         &unverified,
         custom_ssh,
     ))

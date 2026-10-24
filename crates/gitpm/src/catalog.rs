@@ -242,7 +242,8 @@ fn validate_release_payload(release: &Release, id: &str) -> Result<()> {
     }
     if let Some(build) = &release.build {
         ensure!(
-            build.url.starts_with("https://")
+            (build.url.starts_with("https://")
+                || (build.url.starts_with("http://") && ensure_secure_url(&build.url).is_ok()))
                 && build.url.len() > 8
                 && !build.url.chars().any(char::is_whitespace),
             Catalog,
@@ -940,6 +941,13 @@ pub fn register_package_report_with_options(
     build: Option<Build>,
     ssh_options: &crate::Options,
 ) -> Result<RegisterReport> {
+    if let Some(build) = &build {
+        ensure!(
+            build.url.starts_with("https://"),
+            Catalog,
+            "build URL must use HTTPS"
+        );
+    }
     let custom_ssh = ssh_options.custom_ssh;
     let catalog_path = local_file(url)?.require(Error::InvalidArgument, WRITE_NEEDS_LOCAL)?;
     ensure!(

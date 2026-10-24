@@ -357,7 +357,19 @@ pub(super) fn removal(root: &Path, state: &State, id: &str, custom_ssh: bool) ->
             }
             Err(error) => return Err(error),
         };
-        let recorded = state.packages.get(id).map(|p| p.current.commit.as_str());
+        let recorded = state.packages.get(id).and_then(|p| {
+            if p.build.is_some() {
+                // Installing a build leaves the retained clone at its Git revision.
+                // After successive builds the previous record is also a build, so
+                // only the repository's work/status checks apply.
+                p.previous
+                    .as_ref()
+                    .filter(|_| p.previous_build.is_none())
+                    .map(|previous| previous.commit.as_str())
+            } else {
+                Some(p.current.commit.as_str())
+            }
+        });
         return Ok(Removal {
             relative: format!("packages/{id}"),
             lost_work: lost_work::detect(&repo, recorded, custom_ssh)?,

@@ -365,9 +365,20 @@ fn ls_remote_command(source: &str, custom_ssh: bool) -> Result<Command> {
 /// is an error, so a catalog cannot be moved to another host silently) and bodies
 /// over 16 MiB are refused.
 pub fn http_get(url: &str) -> Result<Option<Vec<u8>>> {
+    http_get_with(url, false)
+}
+
+pub fn artifact_get(url: &str) -> Result<Option<Vec<u8>>> {
+    http_get_with(url, true)
+}
+
+fn http_get_with(url: &str, artifact: bool) -> Result<Option<Vec<u8>>> {
     let mut command = Command::new("curl");
+    command.arg("--disable");
+    if artifact {
+        command.args(["--location", "--max-redirs", "5", "--proto-redir", "=https"]);
+    }
     command.args([
-        "--disable",
         "--silent",
         "--show-error",
         "--connect-timeout",
@@ -668,6 +679,9 @@ mod tests {
     }
 
     fn streamed_response(size: usize, status: u16) -> Result<Option<Vec<u8>>> {
+        streamed_response_with(size, status, false)
+    }
+    fn streamed_response_with(size: usize, status: u16, build: bool) -> Result<Option<Vec<u8>>> {
         use std::{io::Write, net::TcpListener};
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/catalog.json", listener.local_addr().unwrap());
@@ -709,9 +723,40 @@ mod tests {
             "--url",
             &url,
         ]);
-        let result = http_response(command);
+        let result = if build {
+            artifact_get(&url)
+        } else {
+            http_response(command)
+        };
         server.join().unwrap();
         result
+    }
+
+    #[test]
+    fn build_responses_are_bounded_and_refuse_http_redirects() {
+        assert_eq!(
+            streamed_response_with(HTTP_BODY_LIMIT + 1, 200, true)
+                .unwrap_err()
+                .kind(),
+            "http"
+        );
+        use std::{io::Write, net::TcpListener};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/artifact", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                stream.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+            }
+            stream.write_all(b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:9/forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        });
+        let error = artifact_get(&url).unwrap_err();
+        server.join().unwrap();
+        assert_eq!(error.kind(), "http");
+        assert!(error.to_string().contains("disabled"), "{error}");
     }
 
     #[test]

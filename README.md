@@ -23,8 +23,9 @@ ready output folder (`dist/` by default): the repository root, or one of several
 lists ([multi-package repositories](#multi-package-repositories)). `dist` selects the output
 folder (default `"dist"`, `"."` means the package root); `buildCommand` is descriptive only;
 with `buildRequired` (default false), a missing folder is refused with `invalid_manifest`
-naming the build command when supplied. Installing clones the
-repository into a workspace and copies the package's declared output folder; nothing is built or executed.
+naming the build command when supplied. Git installs clone the
+repository and copy the package's declared output folder. A catalog release with
+`build: {url, sha256}` installs its ready `.tar.gz` output without cloning; nothing is built or executed.
 Releases are Git tags `namespace/name@VERSION`.
 The catalog is a tree of static JSON files (local folder or HTTP) with exact commits and
 file hashes. It is optional: without one, packages are installed and updated straight
@@ -424,6 +425,19 @@ Changed in 0.5:
   upgrading) run `gitpm sync-dist` (FFI `syncDist`) once.
 
 Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING**):
+
+- **BREAKING:** Catalog releases with `build {url, sha256}` now install from that archive,
+  rather than ignoring it. Artifacts are `.tar.gz`, with output files at the archive root;
+  only regular files and directories are accepted. Both archive SHA-256 and the exact
+  release `files` hashes and sizes are verified before workspace changes. Build requests
+  have the catalog's 16 MiB download limit and timeout, with at most five HTTPS-only
+  redirects (initial loopback HTTP is accepted for local testing).
+  Build revisions retain their catalog location and release metadata in state, separately
+  from verified-catalog protection, and store current/previous verified output under
+  `builds/<id>/<archive-sha256>/`. Updates use the recorded catalog; rollback, enable and
+  `sync-dist` use local output without network access. Ref/dev/detach updates switch to
+  Git. Fork continues cloning the recorded source repository. Existing library and FFI
+  install/update/rollback entrypoints support both sources; the CLI only presents results.
 
 - **BREAKING:** Manifests accept `dist` (a package-relative folder, default `"dist"`; `"."` selects
   the package root), `buildCommand` (a descriptive string) and `buildRequired`
