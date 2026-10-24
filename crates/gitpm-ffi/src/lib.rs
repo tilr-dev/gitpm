@@ -2548,6 +2548,10 @@ mod tests {
                 let _ = catalog_release;
                 vec!["installFromCatalog", "catalogRelease"]
             }),
+            ("link", {
+                let _ = PackageManager::link;
+                vec!["link"]
+            }),
             ("install", {
                 let _ = PackageManager::install;
                 vec!["install"]
