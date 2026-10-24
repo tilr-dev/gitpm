@@ -7,7 +7,7 @@ Defines the on-disk workspace a `Manager` owns: its folders, `state.json` and it
 ## Requirements
 
 ### Requirement: Workspace folders
-A workspace root SHALL contain `state.json` (installed packages, replacement bindings, forgotten records), `dist/<ns>/<name>/` (deployed folder of an active package), `repos/<name>-<hash>/` (source-keyed clone for root and nested Git packages; `repos/` only while a clone exists) and `.pm-txn/` only while a transaction runs or after one was interrupted. Verified by `workspace::open_creates_the_workspace_layout_and_lock`.
+A workspace root SHALL contain `state.json` (installed packages, replacement bindings, forgotten records), `packages/<ns>/<name>/` (own clone of a package from a single-package repository), `dist/<ns>/<name>/` (deployed folder of an active package), `repos/<name>-<hash>/` (shared clone of a multi-package repository; `repos/` only while one exists) and `.pm-txn/` only while a transaction runs or after one was interrupted. Verified by `workspace::open_creates_the_workspace_layout_and_lock`.
 
 #### Scenario: A command on a missing workspace root
 - **WHEN** a command that opens a workspace (transactions-locking, "Workspace lock") names a workspace root that does not exist
@@ -15,7 +15,7 @@ A workspace root SHALL contain `state.json` (installed packages, replacement bin
 
 #### Scenario: Opening a new workspace
 - **WHEN** a Manager opens a root that does not exist
-- **THEN** the workspace root is created with `dist/` and a `state.json` of `{"format": 1, "packages": {}}` written to a temporary file and renamed into place, and the workspace lock file (transactions-locking, "Workspace lock") is created beside it
+- **THEN** the workspace root is created with `packages/`, `dist/` and a `state.json` of `{"format": 1, "packages": {}}` written to a temporary file and renamed into place, and the workspace lock file (transactions-locking, "Workspace lock") is created beside it
 
 #### Scenario: Crash while creating state.json
 - **WHEN** the process dies while a new workspace's `state.json` is written
@@ -31,10 +31,6 @@ A workspace root SHALL contain `state.json` (installed packages, replacement bin
 #### Scenario: Build cache transactions
 - **WHEN** a build install or update changes its retained output
 - **THEN** `builds/<id>` keeps the verified current and previous output without a clone, and cache changes use workspace transactions
-
-#### Scenario: Existing legacy clone directory
-- **WHEN** a workspace contains a legacy `packages/` directory
-- **THEN** opening does not migrate, consult or automatically remove its clones, and new Git installs use only `repos/`
 
 ### Requirement: Foreign directories are refused
 Opening a non-empty directory (one holding anything but `.DS_Store` and gitpm's own staged state `.state.json-<pid>-<counter>.tmp`, see "Workspace folders") that has no `state.json` SHALL fail with `workspace` ("refusing nonempty directory without state.json") and change nothing inside that directory (its parent folder and the workspace lock file beside it may already exist). Single source for a corrupt `state.json`: it SHALL block every operation with `invalid_data` and MUST NOT be overwritten.
@@ -81,7 +77,7 @@ Verified by `workspace::open_ds_store_with_other_content_is_refused`.
 - **THEN** opening the state fails with `unsupported`
 
 ### Requirement: Installed package record
-Each `state.json` `packages.<id>` record is the single source for its format and SHALL hold `source`, `current` and `previous` revisions (`version`, `commit`; `previous` also `mode`), `enabled`, `mode` (`{"pinned": REF}`, `{"branch": NAME}`, omitted for releases), and optional `forkOf`, `dependencies`, `replaces`, protecting `catalog`, `clone`, `path` and `metadata`. At most one previous SHALL be kept. Verified by `model::state_round_trips_byte_for_byte`.
+Each `state.json` `packages.<id>` record is the single source for its format and SHALL hold `source`, `current` and `previous` revisions (`version`, `commit`; `previous` also `mode`), `enabled`, `mode` (`{"pinned": REF}`, `{"branch": NAME}`, omitted for releases), and optional `forkOf`, `dependencies`, `replaces`, protecting `catalog`, shared `clone`, `path` and `metadata`. At most one previous SHALL be kept. Verified by `model::state_round_trips_byte_for_byte`.
 
 #### Scenario: Fresh install has no previous revision
 - **WHEN** a package was just installed
@@ -108,14 +104,14 @@ Each `state.json` `packages.<id>` record is the single source for its format and
 - **THEN** `build` or `previous_build` retains its full release record and catalog location separately from catalog protection; previous retains its mode and source kind for offline rollback, and only current/previous build output is retained
 
 ### Requirement: Replacements and forgotten records
-`state.json` SHALL keep `replacements` (the replacement bindings ORIGINAL → FORK, global for the workspace; rules in fork-replacement) and `forgotten` (records of every forgotten package, same format as `packages.<id>`, with a source-keyed Git clone or retained build output; lifecycle in install-uninstall and multi-package-repos).
+`state.json` SHALL keep `replacements` (the replacement bindings ORIGINAL → FORK, global for the workspace; rules in fork-replacement) and `forgotten` (records of every forgotten package, same format as `packages.<id>`, own clone or shared clone alike; lifecycle in install-uninstall and multi-package-repos).
 
 #### Scenario: Forgetting a package of a shared clone
 - **WHEN** `tilr/store` (installed from a multi-package repository) is forgotten
 - **THEN** `packages.tilr/store` is removed and `forgotten.tilr/store` keeps its revision and clone key
 
 #### Scenario: Forgetting a package with its own clone
-- **WHEN** `acme/greeter` (root package in `repos/<key>`) is forgotten
+- **WHEN** `acme/greeter` (own clone `packages/acme/greeter`) is forgotten
 - **THEN** `forgotten.acme/greeter` keeps its record, including `catalog`, `enabled` and mode, and the clone stays
 
 ### Requirement: Downgrade is not protected
@@ -131,16 +127,3 @@ A workspace SHALL be usable only by a gitpm that writes its state format, in eit
 #### Scenario: Invalid options on a new root
 - **WHEN** a host opens `new-ws`, which does not exist, with an invalid Options value
 - **THEN** opening fails, and neither `new-ws` nor `.new-ws.lock` exists afterwards
-
-### Requirement: Unified Git clone identity
-Every Git package record SHALL include a source-derived `clone` key under `repos/`; `path` SHALL identify its folder within that clone and be absent for a root package. Clone-free build records SHALL remain valid without a clone key. A retained clone SHALL be reusable when switching a build back to Git without requiring the build commit to remain on the origin.
-
-#### Scenario: Git clone identity
-- **WHEN** a root or nested Git package is installed
-- **THEN** its record includes the source-derived `clone` key; `path` is absent for the root and names the package folder otherwise
-- **AND** a Git record without a clone key is invalid data; build-only records remain valid without a clone
-
-#### Scenario: Retained clone after a build commit is removed upstream
-- **WHEN** a Git install switches to a build, retains its clone, and the build commit is later removed from the origin
-- **THEN** an explicit update to an available Git ref reuses the retained clone and succeeds without resolving the removed build commit first
-- **AND** build provenance is retained for offline rollback

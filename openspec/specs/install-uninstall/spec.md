@@ -77,7 +77,7 @@ Installing an ID that is installed from a different source (including a `file://
 - **THEN** the command fails with `already_installed`
 
 #### Scenario: Forgotten but retained
-- **WHEN** `acme/greeter` was forgotten and its clone `repos/<key>` is retained, and the user installs it again
+- **WHEN** `acme/greeter` was forgotten and its clone `packages/acme/greeter` is retained, and the user installs it again
 - **THEN** the command fails with `already_installed` ("acme/greeter was forgotten and its clone is kept") and the workspace is unchanged
 - **AND** the message names no command; the CLI adds a `Hint:` line naming `gitpm restore ID` and `gitpm uninstall ID` (the same holds for a forgotten package of a shared clone)
 
@@ -134,14 +134,14 @@ gitpm SHALL offer three removal levels: `disable` (set `enabled: false`, remove 
 - **THEN** it returns `ForgetResult { clone_kept, dist }`; `clone_kept` is false when the clone was gone and no `forgotten` record was kept ("Removing a package whose clone is gone")
 
 ### Requirement: Restore preconditions
-`restore ID` SHALL record the package again from its `forgotten` record (Git or build) as it was; branch mode takes HEAD when it moved on along the origin's branch (dependencies checked). It SHALL refuse with `local_changes` on lost work and with `already_installed` when the ID is recorded, and print `ID restored V`. Verified by `workspace::restore_keeps_the_forgotten_record`, `restore_in_a_shared_clone_ignores_another_branch_s_revision` and `branch_mode_restore_checks_dependencies`.
+`restore ID` SHALL record the package again from its `forgotten` record (own or shared clone) as it was; branch mode takes HEAD when it moved on along the origin's branch (dependencies checked). It SHALL refuse with `local_changes` on lost work and with `already_installed` when the ID is recorded, and print `ID restored V`. Verified by `workspace::restore_keeps_the_forgotten_record`, `restore_in_a_shared_clone_ignores_another_branch_s_revision` and `branch_mode_restore_checks_dependencies`.
 
 #### Scenario: Restored record
-- **WHEN** a clean retained clone of `acme/greeter`, forgotten while disabled and bound to a catalog, is restored
+- **WHEN** a clean retained own clone of `acme/greeter`, forgotten while disabled and bound to a catalog, is restored
 - **THEN** state records the forgotten revisions, `catalog`, `enabled: false` and mode unchanged, and nothing is deployed because it is disabled
 
 #### Scenario: Dirty retained clone
-- **WHEN** `acme/greeter` was forgotten, a file in `repos/<key>` was edited and the user runs `restore acme/greeter`
+- **WHEN** `acme/greeter` was forgotten, a file in `packages/acme/greeter` was edited and the user runs `restore acme/greeter`
 - **THEN** the command fails with `local_changes` and the package stays out of state
 
 #### Scenario: Unpublished commit in a retained clone
@@ -208,10 +208,10 @@ Uninstall SHALL delete only what the workspace owns (the clone inside the worksp
 - **THEN** it fails with `dependency_conflict` naming `lib` as disabled (dependencies, "enable needs active dependencies"), while `enable lib` followed by `enable app` succeeds
 
 ### Requirement: Removing a package whose clone is gone
-`uninstall ID` and `forget ID` of a recorded Git package whose clone is gone SHALL succeed without confirmation, drop the record and deployed folder, keep no forgotten record, and retain dependent guards (dependencies, "Dependents guard removal"). Builds intentionally have no clone and SHALL follow the cache lifecycle below. Verified by `workspace::uninstall_and_forget_of_a_package_without_clone_drop_the_record`.
+`uninstall ID` and `forget ID` of a recorded Git package whose own or shared clone is gone SHALL succeed without confirmation, drop the record and deployed folder, keep no forgotten record, and retain dependent guards (dependencies, "Dependents guard removal"). Builds intentionally have no clone and SHALL follow the cache lifecycle below. Verified by `workspace::uninstall_and_forget_of_a_package_without_clone_drop_the_record`.
 
 #### Scenario: Clone deleted by hand
-- **WHEN** `repos/<key>` was deleted by hand while `acme/greeter` is recorded and active, and the user runs `uninstall acme/greeter`
+- **WHEN** `packages/acme/greeter` was deleted by hand while `acme/greeter` is recorded and active, and the user runs `uninstall acme/greeter`
 - **THEN** it prints `acme/greeter uninstalled`, the record and `dist/acme/greeter/` are gone, and later commands warn no more
 
 #### Scenario: Forget without a clone
