@@ -1,4 +1,6 @@
 //! Confirmation-by-plan uninstall: lost-work detection, refusal, confirmed delete, exact IDs.
+mod common;
+use common::clone_path;
 use gitpm::{Error, LostWork, Manager, scaffold};
 use std::{
     collections::BTreeSet,
@@ -41,13 +43,13 @@ impl Fixture {
         let root = dir.join("workspace");
         let m = Manager::open(&root).unwrap();
         m.install(author.to_str().unwrap()).unwrap();
-        let repo = root.join("packages/vendor/module");
+        let repo = clone_path(&root, &author);
         git(&repo, &["config", "user.name", "Test"]);
         git(&repo, &["config", "user.email", "test@example.invalid"]);
         (Self { dir, root }, m)
     }
     fn repo(&self) -> PathBuf {
-        self.root.join("packages/vendor/module")
+        clone_path(&self.root, &self.dir.join("module"))
     }
     fn snapshot(&self) -> (Vec<u8>, String, String, Vec<u8>) {
         (
@@ -99,8 +101,8 @@ fn make_all_lost_work(f: &Fixture) {
     fs::write(repo.join("local.txt"), "local commit").unwrap();
     git(&repo, &["add", "local.txt"]);
     git(&repo, &["commit", "-m", "local work"]);
-    git(&repo, &["branch", "work"]);
     git(&repo, &["tag", "mine"]);
+    git(&repo, &["branch", "work"]);
     fs::write(repo.join("dist/index.js"), "edited").unwrap();
     fs::write(repo.join("notes.txt"), "untracked").unwrap();
     fs::create_dir_all(repo.join("node_modules")).unwrap();
@@ -114,7 +116,7 @@ fn clean_clone_plan_is_empty_and_uninstall_needs_no_confirmation() {
     assert!(plan.lost_work.is_empty(), "{:?}", plan.lost_work);
     assert!(plan.registered);
     assert_eq!(plan.deletes.len(), 2);
-    assert!(plan.deletes[0].ends_with("packages/vendor/module"));
+    assert_eq!(Path::new(&plan.deletes[0]), f.repo());
     assert!(plan.deletes[1].ends_with("dist/vendor/module"));
     m.uninstall("vendor/module", &[], false).unwrap();
     assert!(!f.repo().exists());

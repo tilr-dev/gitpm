@@ -33,7 +33,7 @@ def check_installed(t: T, root, tag: str):
     t.eq(p["source"], str(t.repo(ID).resolve()), "source")
     listed = t.gitpm_ok("--root", root, "list").json()
     t.eq(listed["packages"][ID]["current"], {"version": version, "commit": sha}, "list current")
-    clone, dist = root / "packages" / ID, root / "dist" / ID
+    clone, dist = t.clone(ID, root), root / "dist" / ID
     t.eq(t.rev(clone), sha, "clone HEAD")
     t.eq((dist / "index.js").read_text(), blob(t, ID, tag), "dist/index.js bytes")
     t.eq(sorted(str(p.relative_to(dist)) for p in dist.rglob("*") if p.is_file()),

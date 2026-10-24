@@ -193,7 +193,7 @@ $ gitpm update acme/greeter --release
 acme/greeter updated 0.1.0 → 0.2.0 (major)
 ```
 
-`forget ID` keeps the whole record in `state.json` under `forgotten` (own clone or shared
+`forget ID` keeps the whole record in `state.json` under `forgotten` (with its source-keyed
 clone) and `restore ID` records it again as it was: revisions, `catalog`, the `enabled`
 flag and the mode. A release-mode or pinned package comes back at its recorded commit; a
 branch-mode package takes the clone's HEAD as found when it is the recorded commit or a
@@ -489,8 +489,8 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   single- and multi-package repositories, and are ignored without a warning (a
   repository with only `v1.0.0` fails install with `no_releases`); `init` and `commit`
   never create them. Migration: tag `ID@VERSION` on the release commits.
-- `state.json` format 1: installed packages are under `packages` (was `plugins`), own
-  clones in the workspace folder `packages/` (was `plugins/`). Any other format, or a
+- `state.json` format 1: installed packages are under `packages` (was `plugins`), Git
+  clones in the workspace folder `repos/<name-hash>/`. Any other format, or a
   file without `format`, is refused with `unsupported` and never rewritten; there is no
   migration. Migration: re-create the workspace (install its packages again into a new
   workspace root).
@@ -513,7 +513,7 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   | FFI `InstalledPlugin`, `PluginSummary` | `InstalledPackage`, `PackageSummary` |
   | FFI `OverviewItem.plugin(depth, plugin)` | `OverviewItem.package(depth, package)` |
   | FFI `CatalogFormat`, `CatalogOverview.format` | removed |
-  | workspace `plugins/<ns>/<name>/` | `packages/<ns>/<name>/` |
+  | workspace `plugins/<ns>/<name>/` | `repos/<name-hash>/` |
 
 - v1 catalogs are refused: a monolithic `catalog.json` (`{"plugins": …}`) fails every
   read and write with `catalog`; `legacy/<id>/` folders and releases without file
@@ -875,15 +875,14 @@ Catalog commands (`catalog show`, `catalog links`, `catalog update`, `catalog re
 
 ```text
 state.json              {"format": 1, "packages": …}: installed packages, replacements, forgotten records
-packages/<ns>/<name>/   own clone of a root package
-repos/<name>-<hash>/    shared clone of a multi-package source
+repos/<name>-<hash>/    source-keyed clone of root and nested Git packages
 dist/<ns>/<name>/       deployed files of an active package
 .pm-txn/                an interrupted operation (finished or discarded on open)
 ```
 
 A new workspace root may be empty or contain only `.DS_Store`; Finder metadata is
 preserved. New workspaces publish `state.json` by writing `.state.json-<pid>-<n>.tmp`
-inside the root and renaming it into place before creating `packages/` and `dist/`,
+inside the root and renaming it into place before creating `dist/`,
 so the root may be a mount point of its own. An interrupted write leaves no partial
 state: when the root holds nothing but such files (and `.DS_Store`), the next open
 removes them under the workspace lock and finishes creation. Any other content
@@ -1002,16 +1001,19 @@ packages/theme/dist/…
   repository a given ID must match its manifest. `--ref` and `--dev` (the origin's default
   branch) work per package, and each package records its own mode.
 - Workspace: the packages of one source share one clone, `repos/<name>-<hash of the
-  source>`; state records `clone` (the cache key of that clone) and `path` (the package
-  folder) per package, and only the manifest-selected output folder relative to `<path>` is deployed to `dist/<namespace>/<name>`.
+  source>`; state records `clone` (the source key of that clone) and `path` (the package
+  folder, absent for a root package) per Git package, and only the manifest-selected output folder relative to `<path>` is deployed to `dist/<namespace>/<name>`.
   Updating, rolling back or uninstalling one package leaves the other packages alone; the
   clone is removed with the last package that uses it (its local work is guarded then,
-  as for any clone). Since the clone has one HEAD for all its packages, HEAD only counts
-  as moved when it is neither an installed revision of one of them nor a tagged commit;
-  when a package is uninstalled or forgotten, HEAD moves to the installed revision of a
+  as for any clone). With exactly one installed or forgotten user, HEAD must stay at
+  that user's recorded Git revision, even if another commit is tagged. For a build
+  retaining a Git clone, this is its previous Git installation's revision. Root and
+  nested packages follow the same rule. With several installed or forgotten users,
+  HEAD only counts as moved when it is neither a user's recorded current revision nor
+  a tagged commit. When a package is uninstalled or forgotten, HEAD moves to the installed revision of a
   remaining one (working-tree changes are kept; if they conflict with that revision the
-  operation is refused). A root package keeps its own `packages/<id>` clone, also when it
-  later moves into a package folder (`path` set, `clone` absent).
+  operation is refused). A root package keeps the same source-keyed clone when it
+  later moves into a package folder (`path` set, `clone` unchanged).
 - Shared clones keep `refs/gitpm/<namespace>/<name>/current` and `.../previous` for every
   package that uses them (registered or forgotten), updated with each change and deleted
   with the package, so an upstream rewrite, a pruned tag or `git gc` never loses another
@@ -1243,7 +1245,7 @@ $ gitpm list --provides theme | jq '.resolved[] | {id, title, description, provi
 
   | gitpm | state format |
   | --- | --- |
-  | Before the first public release | 1: packages under `packages`, own clones in `packages/` |
+  | Before the first public release | 1: packages under `packages`, Git clones in `repos/` |
 
 ## API overview
 

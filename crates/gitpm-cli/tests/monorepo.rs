@@ -1,6 +1,8 @@
 //! End-to-end tests of multi-package repositories (`gitpm.json`) and explicit fork workflows.
 //! Hermetic: the CLI and Git run with a cleared environment, a fixture HOME/TMPDIR and
 //! Git config; every path is inside a per-test temp directory removed on drop.
+mod common;
+use common::clone_path;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -32,6 +34,7 @@ impl Fixture {
             "[user]\n\tname = Test\n\temail = test@example.invalid\n[init]\n\tdefaultBranch = main\n[commit]\n\tgpgsign = false\n[tag]\n\tgpgsign = false\n",
         )
         .unwrap();
+        let dir = fs::canonicalize(dir).unwrap();
         let f = Self {
             mono: dir.join("mono"),
             dir,
@@ -272,8 +275,12 @@ fn legacy_root_repository_installs_and_updates_as_before() {
     };
     release("1.0.0");
     f.ok(&["install", legacy.to_str().unwrap()]);
-    assert!(f.dir.join("workspace/packages/acme/hello/.git").is_dir());
-    assert_eq!(f.clones(), 0);
+    assert!(
+        clone_path(&f.dir.join("workspace"), &legacy)
+            .join(".git")
+            .is_dir()
+    );
+    assert_eq!(f.clones(), 1);
     let entry = &f.state()["packages"]["acme/hello"];
     assert!(
         entry.get("path").is_none() && entry.get("repo").is_none(),

@@ -235,6 +235,7 @@ pub(crate) fn state_with(id: &str, source: &str, version: &str, commit: &str) ->
             id.to_owned(),
             crate::Installed {
                 source: source.into(),
+                clone: Some(crate::workspace::clones::repo_key(source)),
                 current: crate::Revision {
                     version: version.into(),
                     commit: commit.into(),

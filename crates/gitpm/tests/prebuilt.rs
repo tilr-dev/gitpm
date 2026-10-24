@@ -1,4 +1,6 @@
 //! Real loopback downloads through the public library API without a source repository.
+mod common;
+use common::clone_path;
 use gitpm::{
     Manager, Manifest, Options,
     catalog::{self, Build, FileDigest, Release},
@@ -195,7 +197,7 @@ impl Fixture {
         catalog::hash_files(&self.root).unwrap()
     }
     fn no_clone(&self) {
-        assert!(!self.root.join("packages/acme/widget").exists());
+        assert!(!self.root.join("packages").exists());
         assert!(!self.root.join("repos").exists());
     }
 }
@@ -411,7 +413,14 @@ fn build_can_switch_to_git_and_rollback_in_both_directions() {
         m.update_with(ID, target, gitpm::UpdateOptions { detach: detached })
             .unwrap();
         assert!(m.state().unwrap().packages[ID].build.is_none());
-        assert!(f.root.join("packages/acme/widget/.git").exists());
+        assert!(
+            clone_path(
+                &f.root,
+                std::path::Path::new(&m.state().unwrap().packages[ID].source)
+            )
+            .join(".git")
+            .exists()
+        );
         let git_bytes = fs::read(f.dist()).unwrap();
         assert_ne!(git_bytes, b"built");
         m.rollback(ID).unwrap();
@@ -438,7 +447,14 @@ fn git_release_without_build_remains_a_git_install() {
     let m = f.manager();
     m.install_from_catalog(ID, None).unwrap();
     assert!(m.state().unwrap().packages[ID].build.is_none());
-    assert!(f.root.join("packages/acme/widget/.git").exists());
+    assert!(
+        clone_path(
+            &f.root,
+            std::path::Path::new(&m.state().unwrap().packages[ID].source)
+        )
+        .join(".git")
+        .exists()
+    );
 }
 
 #[test]
@@ -572,7 +588,7 @@ fn build_dependencies_install_and_update_together_without_clones() {
         assert_eq!(state.packages[ID].current.version, "1.1.0");
         assert!(state.packages["acme/lib"].build.is_some());
         assert!(state.packages["acme/lib"].enabled);
-        assert!(!f.root.join("packages/acme/lib").exists());
+        assert!(!f.root.join("packages").exists());
         f.no_clone();
     }
 }
@@ -614,7 +630,10 @@ fn catalog_updates_can_alternate_git_and_build_revisions() {
     m.rollback(ID).unwrap();
     assert_eq!(m.state().unwrap().packages[ID].current.version, "1.2.0");
     // Existing local Git work must survive an explicit transition request.
-    let clone = f.root.join("packages/acme/widget");
+    let clone = clone_path(
+        &f.root,
+        std::path::Path::new(&m.state().unwrap().packages[ID].source),
+    );
     fs::write(clone.join("work.txt"), "keep").unwrap();
     let before = fs::read(f.root.join("state.json")).unwrap();
     assert_eq!(
@@ -780,4 +799,146 @@ fn build_restore_requires_active_dependencies() {
 #[test]
 fn build_rollback_requires_active_dependencies() {
     inactive_build_dependency("rollback");
+}
+
+#[test]
+fn clone_free_build_transition_preserves_a_siblings_local_work() {
+    check_sibling_local_work(false);
+}
+
+#[test]
+fn clone_free_build_transition_preserves_a_forgotten_siblings_local_work() {
+    check_sibling_local_work(true);
+}
+
+fn check_sibling_local_work(forgotten: bool) {
+    let f = Fixture::new(false);
+    let repo = gitpm::scaffold::init(&f.dir.join("source"), "acme", "widget")
+        .unwrap()
+        .repo;
+    publish_repo(&f, &repo, ID, "1.0.0");
+    let m = f.manager();
+    m.install_from_catalog(ID, None).unwrap();
+    assert!(m.state().unwrap().packages[ID].clone.is_none());
+    fs::create_dir_all(repo.join("apps/widget")).unwrap();
+    fs::rename(
+        repo.join("plugin.json"),
+        repo.join("apps/widget/plugin.json"),
+    )
+    .unwrap();
+    fs::rename(repo.join("dist"), repo.join("apps/widget/dist")).unwrap();
+    fs::create_dir_all(repo.join("apps/lib/dist")).unwrap();
+    fs::write(
+        repo.join("apps/lib/plugin.json"),
+        r#"{"id":"acme/lib","version":"1.0.0"}"#,
+    )
+    .unwrap();
+    fs::write(repo.join("apps/lib/dist/index.js"), "sibling").unwrap();
+    fs::write(repo.join("gitpm.json"), r#"{"packages":["apps/*"]}"#).unwrap();
+    gitpm::scaffold::commit_package(&repo, "2.0.0", Some(ID)).unwrap();
+    git(&repo, &["tag", "acme/lib@1.0.0"]);
+    m.install_package(
+        repo.to_str().unwrap(),
+        Some("acme/lib"),
+        gitpm::InstallTarget::Release,
+    )
+    .unwrap();
+    if forgotten {
+        m.forget("acme/lib").unwrap();
+    }
+    let clone = clone_path(&f.root, &repo);
+    let installed_head = git(&clone, &["rev-parse", "HEAD"]);
+    fs::write(clone.join("local.txt"), "keep").unwrap();
+    git(&clone, &["add", "local.txt"]);
+    git(&clone, &["commit", "-m", "local sibling work"]);
+    let local_head = git(&clone, &["rev-parse", "HEAD"]);
+    let before = fs::read(f.root.join("state.json")).unwrap();
+    let error = m
+        .update_with(
+            ID,
+            gitpm::Target::Ref(format!("{ID}@1.0.0")),
+            gitpm::UpdateOptions { detach: true },
+        )
+        .unwrap_err();
+    assert_eq!(error.kind(), "local_changes");
+    assert_eq!(fs::read(clone.join("local.txt")).unwrap(), b"keep");
+    assert_eq!(fs::read(f.root.join("state.json")).unwrap(), before);
+    assert_eq!(git(&clone, &["rev-parse", "HEAD"]), local_head);
+    git(&clone, &["checkout", "--detach", &installed_head]);
+    m.update_with(
+        ID,
+        gitpm::Target::Ref(format!("{ID}@1.0.0")),
+        gitpm::UpdateOptions { detach: true },
+    )
+    .unwrap();
+    if forgotten {
+        m.restore("acme/lib").unwrap();
+    }
+    let state = m.state().unwrap();
+    assert_eq!(state.packages[ID].clone, state.packages["acme/lib"].clone);
+    assert_eq!(
+        fs::read(f.root.join("dist/acme/lib/index.js")).unwrap(),
+        b"sibling"
+    );
+    assert_eq!(fs::read_dir(f.root.join("repos")).unwrap().count(), 1);
+}
+
+#[test]
+fn retained_clone_can_leave_a_build_whose_commit_is_gone_upstream() {
+    let f = Fixture::new(true);
+    let repo = gitpm::scaffold::init(&f.dir.join("source"), "acme", "widget")
+        .unwrap()
+        .repo;
+    gitpm::scaffold::commit(&repo, "1.0.0").unwrap();
+    let first = git(&repo, &["rev-parse", "HEAD"]);
+    catalog::register(
+        f.catalog.to_str().unwrap(),
+        repo.to_str().unwrap(),
+        &format!("{ID}@1.0.0"),
+    )
+    .unwrap();
+    let root_file = f.catalog.join("catalog.json");
+    let mut catalog_root: serde_json::Value =
+        serde_json::from_slice(&fs::read(&root_file).unwrap()).unwrap();
+    catalog_root["verified"] = json!(true);
+    fs::write(root_file, catalog_root.to_string()).unwrap();
+    let m = f.manager();
+    m.install_from_catalog(ID, None).unwrap();
+    publish_repo(&f, &repo, ID, "2.0.0");
+    m.update(ID).unwrap();
+    assert!(m.state().unwrap().packages[ID].build.is_some());
+    let clone = clone_path(&f.root, &repo);
+    assert_eq!(git(&clone, &["rev-parse", "HEAD"]), first);
+    // A retained Git revision remains safe even when no tag names its commit.
+    git(&clone, &["tag", "-d", "acme/widget@1.0.0"]);
+    let plan = m.uninstall_plan(ID).unwrap();
+    assert!(plan.lost_work.is_empty(), "{:?}", plan.lost_work);
+    // Replace the origin history after A with C, removing build commit B entirely.
+    git(&repo, &["reset", "--hard", &first]);
+    gitpm::scaffold::commit(&repo, "3.0.0").unwrap();
+    git(&repo, &["tag", "-d", "acme/widget@2.0.0"]);
+    git(&repo, &["reflog", "expire", "--expire=now", "--all"]);
+    git(&repo, &["gc", "--prune=now"]);
+    m.update_with(
+        ID,
+        gitpm::Target::Ref("acme/widget@3.0.0".into()),
+        gitpm::UpdateOptions::default(),
+    )
+    .unwrap();
+    let state = m.state().unwrap();
+    assert_eq!(state.packages[ID].current.version, "3.0.0");
+    assert!(state.packages[ID].build.is_none());
+    assert_eq!(
+        state.packages[ID]
+            .previous_build
+            .as_ref()
+            .unwrap()
+            .release
+            .manifest
+            .version,
+        "2.0.0"
+    );
+    assert!(clone.join(".git").is_dir());
+    m.rollback(ID).unwrap();
+    assert!(m.state().unwrap().packages[ID].build.is_some());
 }
