@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Installed package record
-Each `state.json` `packages.<id>` record (single source for its format) SHALL hold `source`, `current` and `previous` revisions (`version`, `commit`; `previous` also `mode`), `enabled`, `mode` (`{"pinned": REF}`, `{"branch": NAME}`, omitted for releases), and when present `forkOf`, `dependencies`, `replaces`, `catalog` (protecting verified catalog), `clone` (shared-clone key), `path` and `metadata`. At most one `previous` SHALL be kept. Verified by `model::state_round_trips_byte_for_byte`.
+Each `state.json` `packages.<id>` record is the single source for its format and SHALL hold `source`, `current` and `previous` revisions (`version`, `commit`; `previous` also `mode`), `enabled`, `mode` (`{"pinned": REF}`, `{"branch": NAME}`, omitted for releases), and optional `forkOf`, `dependencies`, `replaces`, protecting `catalog`, shared `clone`, `path` and `metadata`. At most one previous SHALL be kept. Verified by `model::state_round_trips_byte_for_byte`.
 
 #### Scenario: Fresh install has no previous revision
 - **WHEN** a package was just installed
@@ -18,3 +18,12 @@ Each `state.json` `packages.<id>` record (single source for its format) SHALL ho
 #### Scenario: Previous revision keeps its mode
 - **WHEN** a package in branch mode `main` is updated with `--release`
 - **THEN** `previous` is `{"version": …, "commit": …, "mode": {"branch": "main"}}` (a `previous` in release mode has no `mode`), so `rollback` restores both
+
+#### Scenario: Previous build provenance
+- **WHEN** a build revision is updated to a Git revision
+- **THEN** previous_build retains the release metadata and catalog location for offline rollback
+
+#### Scenario: Build record format
+- **WHEN** a current or previous revision is a build
+- **THEN** `build` or `previous_build` retains its full release record and catalog location separately from catalog protection; previous retains its mode and source kind for offline rollback, and only current/previous build output is retained
+

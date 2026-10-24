@@ -254,4 +254,3 @@ fn assert_selected_commit_preserves_unrelated_changes(scope: CommitScope<'_>) {
         "package/data"
     );
 }
-

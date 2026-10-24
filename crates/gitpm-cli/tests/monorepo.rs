@@ -251,20 +251,46 @@ fn uninstalling_one_package_keeps_the_other_working() {
 }
 
 #[test]
-fn a_tag_on_a_commit_without_its_package_is_a_clear_error() {
+fn repository_tags_without_the_package_are_ignored_without_warnings() {
     let f = Fixture::new();
+    f.ok(&["install", f.source(), "tilr/store"]);
     fs::remove_dir_all(f.mono.join("packages/store")).unwrap();
+    f.write("theme", "2.0.0", "");
     f.git(&f.mono, &["add", "--all"]);
     f.git(&f.mono, &["commit", "-q", "-m", "drop store"]);
     f.git(&f.mono, &["tag", "v2.0.0"]);
-    let error = f.fails(&["install", f.source(), "tilr/store"]);
+    let check = f
+        .command(env!("CARGO_BIN_EXE_gitpm"))
+        .args(["--root", f.dir.join("workspace").to_str().unwrap(), "check"])
+        .output()
+        .unwrap();
     assert!(
-        error.contains("v2.0.0 points to commit") && error.contains("without package"),
-        "{error}"
+        check.status.success(),
+        "{}",
+        String::from_utf8_lossy(&check.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&check.stdout).contains("update available"));
+    let update = f.run(&["update", "tilr/store"]);
+    assert!(
+        update.status.success(),
+        "{}",
+        String::from_utf8_lossy(&update.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&update.stderr).contains("Warning:"));
+    f.ok(&["uninstall", "tilr/store"]);
+    let install = f.run(&["install", f.source(), "tilr/store"]);
+    assert!(
+        install.status.success(),
+        "{}",
+        String::from_utf8_lossy(&install.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&install.stderr).contains("Warning:"));
+    assert_eq!(
+        f.state()["packages"]["tilr/store"]["current"]["version"],
+        "1.0.0"
     );
     let error = f.fails(&["install", f.source(), "tilr/store", "--ref", "v2.0.0"]);
     assert!(error.contains("not in this repository"), "{error}");
-    assert!(!f.dir.join("workspace/dist/tilr").exists());
 }
 
 #[test]
@@ -395,7 +421,13 @@ fn init_into_and_commit_releases_all_packages_and_additions_inherit_version() {
             "0.3.0"
         );
     }
-    f.ok(&["install", repo.to_str().unwrap(), "acme/two"]);
+    let install = f.run(&["install", repo.to_str().unwrap(), "acme/two"]);
+    assert!(
+        install.status.success(),
+        "{}",
+        String::from_utf8_lossy(&install.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&install.stderr).contains("Warning:"));
     f.ok(&["install", repo.to_str().unwrap(), "acme/one"]);
     assert_eq!(f.dist("acme/two"), "two v2");
     assert_eq!(f.clones(), 1);
@@ -961,8 +993,19 @@ fn explicit_fork_release_preserves_inherited_release_tag() {
         .output()
         .unwrap();
     assert!(source_tag.status.success());
-    f.ok(&["fork", "tilr/store", "--ns", "me", "--into", "forks/default"]);
-    let error = f.fails(&["commit", f.dir.join("forks/default").to_str().unwrap(), "1.0.0"]);
+    f.ok(&[
+        "fork",
+        "tilr/store",
+        "--ns",
+        "me",
+        "--into",
+        "forks/default",
+    ]);
+    let error = f.fails(&[
+        "commit",
+        f.dir.join("forks/default").to_str().unwrap(),
+        "1.0.0",
+    ]);
     assert!(error.contains("tag already exists: v1.0.0"), "{error}");
     assert!(error.contains("version_conflict"), "{error}");
     let inherited = f
@@ -1040,7 +1083,6 @@ fn commit_honors_ssh_tag_signing_without_an_editor() {
     }
 }
 
-
 #[test]
 fn commit_package_selects_result_and_still_releases_every_package() {
     let f = Fixture::new();
@@ -1059,4 +1101,3 @@ fn commit_package_selects_result_and_still_releases_every_package() {
         "1.1.0"
     );
 }
-

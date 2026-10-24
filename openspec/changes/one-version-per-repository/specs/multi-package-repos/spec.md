@@ -6,11 +6,11 @@
 ## MODIFIED Requirements
 
 ### Requirement: Repository releases
-All packages of a repository SHALL share one version and the single release tag `vVERSION` (package-ids, "Release tag names"). The package set SHALL be read from `gitpm.json` at the tagged commit so a package may move between releases. A tag whose commit lacks a selected package SHALL be skipped as a broken tag (package-ids). Legacy `ID@VERSION` tags and other non-release tags SHALL be ignored without a warning.
+All packages of a repository SHALL share one version and the single release tag `vVERSION` (package-ids, "Release tag names"). The package set SHALL be read from `gitpm.json` at the tagged commit so a package may move between releases. A tag whose commit lacks the selected package ID SHALL be ignored without a warning and SHALL NOT be a broken release of that package (package-ids). Legacy `ID@VERSION` tags and other non-release tags SHALL be ignored without a warning.
 
 #### Scenario: Newest tag lacks its package
 - **WHEN** the newest tag `v0.3.0` points to a commit without the selected package `tilr/store`
-- **THEN** it is skipped ("tag NAME points to commit … without package ID") and, being the newest, makes selecting the latest release fail with `version_conflict` as package-ids specifies; an older such tag only produces the warning
+- **THEN** it is ignored without warnings; install, update, check and catalog update consider only releases containing `tilr/store`
 
 #### Scenario: Independent releases
 - **WHEN** `v0.2.0` releases both `tilr/store` and `tilr/theme` at 0.2.0, and the user updates only installed `tilr/store` with no dependency requiring an update of `tilr/theme`

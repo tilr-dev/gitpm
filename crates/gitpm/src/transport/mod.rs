@@ -198,7 +198,12 @@ impl Transport for SystemTransport {
         system::git(repo, &["rev-list", "--count", reference], custom_ssh)
     }
     fn create_tag(&self, repo: &Path, tag: &str, custom_ssh: bool) -> Result<()> {
-        system::git(repo, &["tag", "-m", &format!("Release {tag}"), "--", tag], custom_ssh).map(|_| ())
+        system::git(
+            repo,
+            &["tag", "-m", &format!("Release {tag}"), "--", tag],
+            custom_ssh,
+        )
+        .map(|_| ())
     }
     fn matching_tags(&self, repo: &Path, pattern: &str, custom_ssh: bool) -> Result<String> {
         system::git(repo, &["tag", "--list", "--", pattern], custom_ssh)

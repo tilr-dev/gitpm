@@ -32,7 +32,7 @@ def at(t: T, version: str, previous: str | None, enabled: bool = True, catalog: 
     t.eq(p["current"], {"version": version, "commit": commit}, "current")
     t.eq(p["previous"]["version"] if p["previous"] else None, previous, "previous")
     if previous:
-        t.eq(p["previous"]["commit"], t.rev(ID, f"{ID}@{previous}"), "previous commit")
+        t.eq(p["previous"]["commit"], t.rev(ID, f"v{previous}"), "previous commit")
     t.eq(p["enabled"], enabled, "enabled")
     t.eq(t.rev(t.clone(ID)), commit, "clone HEAD")
     if enabled:

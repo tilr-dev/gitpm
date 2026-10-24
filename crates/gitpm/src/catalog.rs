@@ -799,10 +799,10 @@ pub fn lookup(location: &str, id: &str, version: Option<&str>) -> Result<Release
     root_directory(location)?;
     fail!(Catalog, "package not found in catalog: {id}")
 }
-struct Scratch(PathBuf);
+pub(crate) struct Scratch(pub(crate) PathBuf);
 impl Scratch {
     /// Unique directory under the OS temporary directory (also across threads).
-    fn new(prefix: &str) -> Result<Self> {
+    pub(crate) fn new(prefix: &str) -> Result<Self> {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
             "{prefix}-{}-{}-{}",

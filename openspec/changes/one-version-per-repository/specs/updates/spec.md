@@ -54,7 +54,7 @@ An update whose target resolves to the installed commit but records another mode
 - **THEN** it prints `acme/greeter pinned at 0.2.0 (v0.2.0)` and the record says `{"pinned": "v0.2.0"}`
 
 ### Requirement: Protected packages update through their catalog
-A protected package (recorded `catalog`) SHALL update only to versions its verified catalog lists, read from the recorded location whatever `Options.catalog` is; the release commit, package folder, manifest and file hashes SHALL match the record before any change (`catalog` otherwise). `update ID --detach` (`Manager::update_with`) SHALL drop the protection and update from the origin in one transaction. Verified by `workspace::protected_packages_update_only_to_catalog_versions`.
+Protected packages SHALL update only to versions in their recorded verified catalog, whatever `Options.catalog` is. Git targets SHALL match recorded source, commit, path, manifest and hashes before any change (`catalog` otherwise); builds SHALL verify archive and files without Git. `update ID --detach` (`Manager::update_with`) SHALL drop protection and update from origin in one transaction. Verified by `workspace::protected_packages_update_only_to_catalog_versions`.
 
 #### Scenario: Newer tag not in the catalog
 - **WHEN** protected `acme/greeter` 0.2.0 has the tag `v0.3.0` on its origin but the verified catalog lists only 0.1.0 and 0.2.0
@@ -80,6 +80,14 @@ A protected package (recorded `catalog`) SHALL update only to versions its verif
 - **WHEN** the user runs `update acme/greeter --detach`
 - **THEN** it prints `acme/greeter detached from catalog LOCATION; it now follows its origin` and `acme/greeter updated 0.2.0 → 0.3.0 (major)`, the record loses `catalog` and later updates follow the origin
 - **AND** a detach with no newer release is still a change (`workspace::detach_without_a_new_release_is_a_change`); detaching an unprotected package fails with `invalid_argument`; `update all --detach` is a usage error (exit status 1)
+
+#### Scenario: Detach a protected build
+- **WHEN** a protected build is updated with detach or an explicit Git ref or dev target
+- **THEN** the transition stages a Git clone, drops protection and deploys Git output atomically
+
+#### Scenario: Build provenance and protection
+- **WHEN** an unverified catalog supplies a build
+- **THEN** recorded build provenance does not imply protection; an explicit ref, branch or dev target transitions a build to Git atomically, while protected Git packages require detach for refs
 
 ### Requirement: Pre-releases are opt-in
 Install, update and `update all` SHALL never pick a pre-release implicitly. A pre-release SHALL be installed only when named (`--ref v1.3.0-beta.1`, `install-catalog ID --version 1.3.0-beta.1`, a dependency range naming it). Once one is installed in release mode, `update` and `update all` SHALL also consider newer pre-releases of the same MAJOR.MINOR.PATCH besides every newer release. A pre-release tag not considered never blocks an update. Verified by `workspace::pre_releases_are_opt_in`.

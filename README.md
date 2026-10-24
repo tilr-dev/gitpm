@@ -322,7 +322,7 @@ forkOf records each origin; replaces says the fork can stand in for it (used onl
 after an explicit replace). The original installations are unchanged.
 
 Next steps (choose the packages to install and replace):
-  gitpm commit '/…/hello-fork' NEW_VERSION --package me/hello   commit local edits, tag vNEW_VERSION
+  gitpm commit '/…/hello-fork' NEW_VERSION   commit local edits, release all packages with tag vNEW_VERSION
   gitpm install '/…/hello-fork' me/hello
   gitpm replace acme/hello --with me/hello
 Set your own origin with: gitpm remote '/…/hello-fork' GIT_URL
@@ -845,8 +845,10 @@ installed (and enabled, unless downloading) and otherwise fails with
 `check` needs no catalog either. Every installed package gets one row: from the catalog
 when one is given and lists the package (column `SOURCE` `catalog`), otherwise from its
 recorded origin (`origin`): `git ls-remote --tags --heads` of `packages.<id>.source`, read once per
-source, without fetching or changing the clone. The newest `vVERSION` tag counts by name
-(its manifest is verified only when updating). Origin rows say `up to date`, `update
+source. Release manifests are verified in an isolated temporary clone, shared per source,
+without changing installed clones or workspace state. Only `vVERSION` tags containing the
+requested package ID with the matching version count as its releases; tags without that ID
+are ignored silently. Origin rows say `up to date`, `update
 available`, `newer than origin`, `no releases on origin` or `origin unreachable` (with a
 hint such as "The Git server is unreachable. …"; git's own output is never shown), or
 `version cannot be compared` for a malformed installed version. An unreachable origin only
@@ -1300,7 +1302,7 @@ Modules with free functions (no workspace lock needed):
 | --- | --- |
 | `list` | `list_with(root, &ListOptions)` → `ListView` (raw state + `resolved`; `provides` filter) |
 | `catalog` | `browse` (`CatalogOverview.verified`), `is_verified`, `list`, `links`, `lookup`, `selected`, `register`, `register_build`, `register_package`, `update_sources` (progress callback), `hash_files`, `version_key`, `validate_location`, `ensure_publishable` |
-| `check` | `read_state` (does not create/lock), `compare`/`compare_in` (run `git ls-remote` for packages the catalog does not list), `check(root, catalog: Option)` → `CheckReport` (`catalog_verified`); `CheckStatus::message()`, `CheckRow::message()`, `CheckSource` |
+| `check` | `read_state` (does not create/lock), `compare`/`compare_in` (read remote refs and verify release manifests in a temporary clone for packages the catalog does not list), `check(root, catalog: Option)` → `CheckReport` (`catalog_verified`); `CheckStatus::message()`, `CheckRow::message()`, `CheckSource` |
 | `auth` | `check(source, &Options)` — `git ls-remote` only; refuses credentials in the URL, stores nothing (SSH itself records a new host's key, `accept-new`); failures are `auth`, except `git` when the check does not finish in 10 s |
 | `scaffold` | `init(dir, namespace, name)` (the `init --into` rule; the only way to create a package besides `create_package`), `init_with` (`InitOptions { multi, release }`), `create_package` (into a multi-package repo), `commit`, `commit_package` (`Commit { package, version, tag }`), `release_current`, `set_remote`, `shell_quote` |
 | `packages` | `config_at`, `layout_at` (packages and defective folders of a commit), `packages_at` (strict), `find_at` (one package of a commit), `read_config`, `packages_in` (working tree), `matches`, `validate_pattern` |

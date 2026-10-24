@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Release tag names
-The release tag of a repository SHALL be `vVERSION` with VERSION as in "Version format" (a pre-release included), for tags gitpm creates (`init`, `commit`, `fork --replace`) and for tags it reads, in single- and multi-package repositories.
+The release tag of a repository SHALL be `vVERSION` with VERSION as in "Version format" (a pre-release included), for tags gitpm creates (`init`, `commit`) and for tags it reads, in single- and multi-package repositories.
 
 #### Scenario: Release tag names contract
 - **WHEN** gitpm reads or writes repository release tags
@@ -39,8 +39,13 @@ The release tag of a repository SHALL be `vVERSION` with VERSION as in "Version 
 - **WHEN** a repository has tags `v2.0.0+b1`, `vlatest` and `dan/demo1@2.0.0` besides valid releases
 - **THEN** those tags are not releases: install, update and `catalog update` never select them and do not warn about them
 
+#### Scenario: Repository tag does not contain this package
+- **WHEN** a `vVERSION` tag points to a commit without the requested package ID, including a commit with another manifest ID
+- **THEN** it is not a release of this package and is ignored without warnings, even when newer than all valid releases
+- **AND** a version mismatch for a present package with the requested ID remains a broken release tag
+
 ### Requirement: Broken historical tags are skipped
-Single source for broken release tags: a broken historical release tag (invalid manifest, manifest mismatch, package missing at the commit) SHALL be skipped, not fail discovery; install, `update ID` and `update all` SHALL return it (`InstallResult.skipped`, `RevisionChange.skipped`, `UpdateAllPlan.skipped`). A skipped tag newer than every valid release SHALL still fail selection ("Bad newest tag"). Verified by `releases::bad_historical_tag_does_not_hide_valid_releases`.
+Single source for broken release tags: a broken historical release tag (invalid manifest or version mismatch for the requested package ID) SHALL be skipped, not fail discovery; install, `update ID` and `update all` SHALL return it (`InstallResult.skipped`, `RevisionChange.skipped`, `UpdateAllPlan.skipped`). A skipped tag newer than every valid release SHALL still fail selection ("Bad newest tag"). Verified by `releases::bad_historical_tag_does_not_hide_valid_releases`.
 
 #### Scenario: Bad newest tag
 - **WHEN** the newest tag is broken and an older one is valid

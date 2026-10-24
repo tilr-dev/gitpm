@@ -104,6 +104,9 @@ pub(crate) fn discover_all_with_ssh(
             .clone();
         let (manifest, path) = match layout {
             Ok(None) => {
+                if transport::tree_paths(repo, &commit, "plugin.json", custom_ssh)?.is_empty() {
+                    continue;
+                }
                 match transport::show_file(repo, &commit, "plugin.json", custom_ssh).and_then(
                     |text| {
                         serde_json::from_str(&text)
@@ -131,13 +134,9 @@ pub(crate) fn discover_all_with_ssh(
                 }
                 match layout.packages.into_iter().find(|p| p.manifest.id == id) {
                     Some(package) => (package.manifest, package.path),
-                    None => {
-                        skip(format!(
-                            "tag {name} points to commit {} without package {id}",
-                            &commit[..commit.len().min(12)]
-                        ));
-                        continue;
-                    }
+                    // Repository tags predating this ID (or after its removal) are
+                    // not releases of it, including retained upstream tags in forks.
+                    None => continue,
                 }
             }
             Err(e) => {
@@ -146,10 +145,6 @@ pub(crate) fn discover_all_with_ssh(
             }
         };
         if manifest.id != id {
-            skip(format!(
-                "tag {name} disagrees with manifest ID {}",
-                manifest.id
-            ));
             continue;
         }
         if manifest.version != version {
@@ -361,9 +356,40 @@ mod tests {
         git(&author.path, &["tag", "v0.3.0"]);
         let tags = discover(&author.path, None).unwrap();
         assert_eq!(names(&tags), ["v0.3.0"]);
+        let found = discover_all(&author.path, Some("vendor/demo1")).unwrap();
+        assert!(
+            found.skipped.is_empty(),
+            "foreign tags are not broken releases"
+        );
+        assert_eq!(
+            latest(&author.path, Some("vendor/demo1"))
+                .unwrap()
+                .manifest
+                .version,
+            "0.2.0"
+        );
+        assert!(
+            discover_all(&author.path, Some("me/demo1"))
+                .unwrap()
+                .skipped
+                .is_empty()
+        );
         // The upstream ID can still be asked for explicitly.
         let upstream = discover(&author.path, Some("vendor/demo1")).unwrap();
         assert_eq!(names(&upstream), ["v0.1.0", "v0.2.0"]);
+    }
+
+    #[test]
+    fn tags_before_the_root_package_exists_are_not_broken_releases() {
+        let dir = TempDir::new("releases-before-package");
+        let author = Author::new(dir.join("repo"), "dan/demo1");
+        fs::remove_file(author.path.join("plugin.json")).unwrap();
+        git(&author.path, &["commit", "-q", "-am", "remove package"]);
+        git(&author.path, &["tag", "v2.0.0"]);
+        let found = discover_all(&author.path, Some("dan/demo1")).unwrap();
+        assert!(found.skipped.is_empty());
+        found.ensure_latest_is_valid().unwrap();
+        assert_eq!(names(&found.tags), ["v0.1.0"]);
     }
 
     #[test]

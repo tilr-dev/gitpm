@@ -45,7 +45,7 @@ def release_commits_all_changes(t: T):
     head = t.rev(repo)
     t.eq(t.rev(repo, f"v0.1.1"), head, "tag points at HEAD")
     t.eq(t.git(repo, "rev-parse", "HEAD~1"), parent, "exactly one new commit")
-    t.eq(t.git(repo, "log", "-1", "--format=%s"), f"Release {ID} 0.1.1", "message")
+    t.eq(t.git(repo, "log", "-1", "--format=%s"), "Release 0.1.1", "message")
     t.eq(json.loads(t.git(repo, "show", "HEAD:plugin.json"))["version"], "0.1.1", "committed version")
     t.eq(json.loads((repo / "plugin.json").read_text())["version"], "0.1.1", "worktree version")
     changed = sorted(t.git(repo, "diff", "--name-status", "HEAD~1", "HEAD").splitlines())

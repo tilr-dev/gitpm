@@ -31,7 +31,7 @@
 - **AND** the author is warned that `dist/vendor` is a Git submodule whose files will not be installed, probably a mistake; commit built files to dist instead of a submodule
 
 ### Requirement: check compares installed packages with their catalog or origin
-`check(root, catalog)` (CLI, FFI) SHALL be read-only (no open, lock or creation) and report one row per installed package: by mode, else from its verified catalog for a protected package (`other_catalog` under another one), else from the catalog listing it, else its origin. Each row SHALL carry a status, message, `source` and `problem` (scenarios). The report SHALL list replacements and unsatisfied dependencies. Verified by `check::check_without_catalog_reads_each_origin`.
+`check(root, catalog)` (CLI, FFI) SHALL be read-only (no open, lock or creation), reporting one row per package with status, message, `source` and `problem`, plus replacements and unsatisfied dependencies. Git selection SHALL be by mode, verified protection (`other_catalog` under another catalog), selected catalog listing it, then origin. Builds SHALL read recorded catalogs without Git. Verified by `check::check_without_catalog_reads_each_origin`.
 
 #### Scenario: Statuses
 - **WHEN** `check` reports a package
@@ -58,7 +58,7 @@
 #### Scenario: Origin row
 - **WHEN** `acme/greeter` 0.1.0 was installed from `./greeter`, which now also has the tag `v0.2.0`, and no catalog is given (or the catalog does not list it)
 - **THEN** its row is `update_available` with latest `0.2.0` and source `origin`
-- **AND** the origin's release tags are read with `git ls-remote` without fetching or changing the clone; the newest `vVERSION` tag counts by name, and its manifest is verified only when updating
+- **AND** the origin's branches are read with `git ls-remote`; release manifests are checked in an isolated temporary clone without changing the installed clone or workspace, and only tags containing the requested package ID with the matching version count as releases
 - **AND** tags are compared by name: an origin tag of the installed version that points to another commit is `up_to_date` (stated limitation; the commit is not compared)
 
 #### Scenario: Recorded modes in check
@@ -66,7 +66,7 @@
 - **THEN** the pinned row is `pinned` with its ref and needs no origin query, and the branch row compares the installed commit with the HEAD of `main` on the origin (`up_to_date`, or `update_available` when it moved); release-mode packages are compared by release as above
 
 #### Scenario: Protected package with a newer upstream
-- **WHEN** `acme/greeter` 0.2.0 is protected by a verified catalog whose latest is 0.2.0 and its origin has the tag `v0.3.0`
+- **WHEN** Git-installed `acme/greeter` 0.2.0 is protected by a verified catalog whose latest is 0.2.0 and its origin has the tag `v0.3.0`
 - **THEN** its row is `upstream_not_in_catalog` ("upstream 0.3.0 not in catalog", the origin's version in `origin_latest`), `latest` is the catalog's 0.2.0 and no update is offered, with or without the catalog given
 - **AND** this is covered by `workspace::check_compares_protected_packages_with_their_catalog`
 
@@ -87,6 +87,10 @@
 #### Scenario: Exit status
 - **WHEN** `gitpm check` finds an update available, or finds none
 - **THEN** the exit status is 0 in both cases; only a failed `check` exits 1
+
+#### Scenario: Check a build without a selected catalog
+- **WHEN** a build package is installed and check runs without a catalog option
+- **THEN** it compares the recorded catalog, including an unverified one, without a clone or origin query, and never probes the unavailable Git source
 
 ### Requirement: Verified catalogs
 A catalog whose top-level `catalog.json` has `"verified": true` SHALL be verified; any other is unverified and serves discovery only. Writers SHALL keep the flag. A verified catalog SHALL take new versions only through `catalog register`; `catalog update` into it SHALL fail with `invalid_argument`. Verified by `catalog::verified_catalog_takes_only_registered_versions` and `verified_catalog_protects_updates_and_detach_drops_it`.

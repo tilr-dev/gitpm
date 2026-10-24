@@ -58,7 +58,7 @@ def old_mismatched_tag_is_skipped(t: T):
 
 @case(fixture="numeric", spec=["package-ids/release-tag-names#tag-disagrees-with-the-manifest", "package-ids/broken-historical-tags-are-skipped"])
 def broken_tag_newer_than_valid(t: T):
-    """3. Tag dan/num@9.0.0 on the 1.10.0 commit: stable install and catalog-update into a
+    """3. Tag v9.0.0 on the 1.10.0 commit: stable install and catalog-update into a
     fresh catalog fail (version_conflict, "latest release tag is broken"); nothing written."""
     t.tag(ID, f"v9.0.0", f"v1.10.0")
     t.gitpm_err("install", t.repo(ID), kind="version_conflict", contains="latest release tag is broken")
@@ -68,9 +68,9 @@ def broken_tag_newer_than_valid(t: T):
     t.ok(t.catalog_empty(), "fresh catalog not created")
 
 
-@case(fixture="numeric", spec=["catalog/catalog-generated-from-git-release-tags", "package-ids/release-tag-names#scoped-tag"])
+@case(fixture="numeric", spec=["catalog/catalog-generated-from-git-release-tags", "package-ids/release-tag-names#vversion-tag-of-a-scoped-single-package-repository"])
 def fork_ignores_original_tags(t: T):
-    """4. A fork into namespace `me` keeps dan/num tags; catalog-update of the fork source
+    """4. A fork into namespace `me` keeps upstream repository tags; catalog-update of the fork source
     publishes only me/num releases."""
     t.gitpm_ok("install", t.repo(ID))
     fork = t.root / "forks/num"

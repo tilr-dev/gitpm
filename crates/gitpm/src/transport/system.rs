@@ -215,7 +215,6 @@ pub(super) fn git_raw(repo: &Path, args: &[&str], custom_ssh: bool) -> Result<Ve
     Ok(output.stdout)
 }
 
-
 /// Tags and branches of a remote, as `git ls-remote` lists them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RemoteRefs {

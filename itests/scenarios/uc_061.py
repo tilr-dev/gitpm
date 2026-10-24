@@ -183,11 +183,11 @@ def case_variant_after_forget_refused(t: T):
 # ---------------------------------------------------------------- 4-7. tags
 
 def bad_history(t: T):
-    """dan/bt: tag v0.0.1 on a commit without plugin.json, then a valid dan/bt@1.0.0."""
+    """dan/bt: tag v0.0.1 on malformed plugin.json, then a valid v1.0.0."""
     repo = t.repo("dan/bt")
     repo.mkdir(parents=True)
     t.git(repo, "init", "-q", "-b", "main")
-    t.commit(repo, "before the manifest", {"README.md": "early\n"})
+    t.commit(repo, "broken manifest", {"plugin.json": "{broken\n"})
     t.tag(repo, "v0.0.1")
     sha = t.release("dan/bt", "1.0.0")
     return repo, sha
@@ -195,7 +195,7 @@ def bad_history(t: T):
 
 @case(spec=["package-ids/broken-historical-tags-are-skipped#one-bad-old-tag", "install-uninstall/install-the-latest-release-of-a-git-source"])
 def bad_historical_tag_skipped_by_install(t: T):
-    """4. Stable install picks 1.0.0 and warns about dan/bt@0.0.1."""
+    """4. Stable install picks 1.0.0 and warns about v0.0.1."""
     repo, sha = bad_history(t)
     r = t.gitpm_ok("install", repo)
     t.eq(t.package("dan/bt")["current"], {"version": "1.0.0", "commit": sha}, "installed")
@@ -204,7 +204,7 @@ def bad_historical_tag_skipped_by_install(t: T):
 
 @case(spec=["package-ids/broken-historical-tags-are-skipped#one-bad-old-tag"])
 def bad_historical_tag_skipped_by_catalog_update(t: T):
-    """4. catalog-update registers 1.0.0 and warns about dan/bt@0.0.1."""
+    """4. catalog-update registers 1.0.0 and warns about v0.0.1."""
     repo, sha = bad_history(t)
     sources(t, repo)
     r = t.gitpm_ok("catalog-update")

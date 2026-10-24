@@ -6761,7 +6761,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tag_without_its_package_is_refused_clearly() {
+    fn a_tag_without_its_package_is_ignored() {
         let mono = Mono::new();
         let m = mono.open();
         // v2.0.0 points at a commit where only theme exists.
@@ -6769,13 +6769,11 @@ mod tests {
         mono.write("theme", "2.0.0", &[]);
         mono.commit("drop store");
         mono.tag("store", "2.0.0");
-        let error = mono.refuses("version_conflict", || {
-            m.install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
-        });
-        assert!(
-            error.to_string().contains("without package tilr/store"),
-            "{error}"
-        );
+        let installed = m
+            .install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
+            .unwrap();
+        assert_eq!(installed.current.version, "1.0.0");
+        assert!(installed.skipped.is_empty());
         let error = mono.refuses("invalid_argument", || {
             m.install_package(
                 mono.source(),

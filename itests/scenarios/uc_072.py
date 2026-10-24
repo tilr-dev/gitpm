@@ -2,7 +2,7 @@
 
 /fx/repos/suite is made with `gitpm init tilr/store --into suite --multi` plus `init`
 of tilr/theme and tilr/panel into it (fixture fork_suite: gitpm.json `packages/*`, one
-release 0.1.1 per package). fork_suite_installed adds tilr/store and tilr/theme installed
+shared release 0.1.1). fork_suite_installed adds tilr/store and tilr/theme installed
 with `install SRC ID`, sharing one clone `ws/repos/suite-<hash>`.
 """
 
@@ -135,21 +135,21 @@ def register_package_and_catalog_update(t: T):
                                             "fork-replacement/fork-metadata#fork-manifest",
                                             "fork-replacement/fork-isolates-source-and-destination-state#repository-starting-revision"])
 def fork_one_package_of_the_repository(t: T):
-    """Fork uses the newest installed revision, excluding packages introduced later."""
+    """Fork copies every package at the newest installed repository revision."""
     before = t.snap(t.ws, suite(t), git=True)
     dest = t.root / "forks/suite"
     r = t.gitpm_ok("fork", THEME, "--ns", "me", "--into", dest)
     t.has(r.out, "me/theme forked from tilr/theme (packages/theme)",
           "Next steps (choose the packages to install and replace):", "--package me/theme", "gitpm replace tilr/theme --with me/theme")
     t.eq(json.loads((dest / "gitpm.json").read_text()), {"packages": ["packages/*"]}, "fork gitpm.json")
-    t.eq(sorted(p.name for p in (dest / "packages").iterdir()), ["store", "theme"], "package folders at newest installed revision")
+    t.eq(sorted(p.name for p in (dest / "packages").iterdir()), ["panel", "store", "theme"], "package folders at newest installed revision")
     t.eq(t.rev(dest, "HEAD~1"), t.package(THEME)["current"]["commit"], "newest installed revision")
-    for name in ("store", "theme"):
+    for name in ("store", "theme", "panel"):
         sibling = json.loads((dest / "packages" / name / "plugin.json").read_text())
         t.eq(sibling["id"], f"me/{name}", f"{name} renamed")
-        current = t.package(f"tilr/{name}")["current"]
+        current = t.package(THEME)["current"]
         t.eq(sibling["forkOf"], {"id": f"tilr/{name}", **current,
-                               "source": t.package(f"tilr/{name}")["source"]}, f"{name} provenance")
+                               "source": t.package(THEME)["source"]}, f"{name} provenance")
     m = json.loads((dest / "packages/theme/plugin.json").read_text())
     theme = t.package(THEME)["current"]
     t.eq((m["id"], m["forkOf"], m["replaces"]),
@@ -170,15 +170,19 @@ def fork_uses_all_installed_revisions_and_starting_revision_siblings(t: T):
     source = suite(t)
     store = t.package(STORE)["current"]
     store_dist = t.git(source, "show", f"{store['commit']}:packages/store/dist/index.js")
-    theme_manifest = json.loads((source / "packages/theme/plugin.json").read_text())
-    theme_manifest["version"] = "0.1.1"
-    base = t.commit(source, "Release theme with an uninstalled sibling", {
-        "packages/theme/plugin.json": json.dumps(theme_manifest) + "\n",
+    manifests = {}
+    for name in ("store", "theme", "panel"):
+        path = f"packages/{name}/plugin.json"
+        manifest = json.loads((source / path).read_text())
+        manifest["version"] = "0.1.2"
+        manifests[path] = json.dumps(manifest) + "\n"
+    base = t.commit(source, "Release repository with an uninstalled sibling", {
+        **manifests,
         "packages/store/dist/index.js": "newer store work\n",
         "packages/panel/dist/index.js": "panel at installed base\n",
         "base-marker.txt": "installed base\n",
     })
-    t.tag(source, "v0.1.1")
+    t.tag(source, "v0.1.2")
     t.gitpm_ok("update", THEME)
     t.eq(t.package(THEME)["current"]["commit"], base, "newest installed sibling")
     t.commit(source, "Later source-only work", {
@@ -192,8 +196,8 @@ def fork_uses_all_installed_revisions_and_starting_revision_siblings(t: T):
     t.eq((dest / "base-marker.txt").read_text(), "installed base\n", "root at starting revision")
     t.eq((dest / "packages/store/dist/index.js").read_text().strip(), store_dist, "older installed store restored")
     t.eq((dest / "packages/panel/dist/index.js").read_text(), "panel at installed base\n", "uninstalled panel at starting revision")
-    for name, version, commit in (("store", "0.1.0", store["commit"]),
-                                  ("theme", "0.1.1", base), ("panel", "0.1.0", base)):
+    for name, version, commit in (("store", "0.1.1", store["commit"]),
+                                  ("theme", "0.1.2", base), ("panel", "0.1.2", base)):
         manifest = json.loads((dest / "packages" / name / "plugin.json").read_text())
         t.eq(manifest["id"], f"me/{name}", f"{name} renamed")
         t.eq(manifest["forkOf"], {"id": f"tilr/{name}", "version": version,

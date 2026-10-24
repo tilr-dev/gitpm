@@ -4,7 +4,7 @@ vendor/demo 0.1.0 installed (g3_vendor_installed); the fork author/demo lives in
 /fx/repos/author/demo.
 
 updating_fork_leaves_original: the fork repository also holds the upstream tag
-vendor/demo@0.1.1 (fetched from upstream); updating the fork must not count that tag as
+v0.1.1 (fetched from upstream); updating the fork must not count that tag as
 local work. updating_fork_without_upstream_tags checks the same without that tag.
 """
 
@@ -60,7 +60,8 @@ def inherited_vendor_tags_are_not_fork_releases(t: T):
     """A fork without its own release tag has no stable release (vendor tags do not count)."""
     dest = fork(t)
     t.has(t.git(dest, "tag", "--list"), "v0.1.0")
-    t.gitpm_err("install", dest, kind="version_conflict")
+    r = t.gitpm_err("install", dest, kind="no_releases")
+    t.lacks(r.err, "Warning:")
     t.not_installed(NEW)
 
 
@@ -85,7 +86,7 @@ def both_released(t: T):
     return dest, mine, theirs
 
 
-@case(fixture="g3_vendor_installed", spec=["package-ids/release-tag-names#scoped-tag"])
+@case(fixture="g3_vendor_installed", spec=["package-ids/release-tag-names#vversion-tag-of-a-scoped-single-package-repository"])
 def distinct_repository_tags_do_not_conflict(t: T):
     dest, mine, theirs = both_released(t)
     t.eq(t.rev(dest, "v0.1.2"), mine, "fork tag")

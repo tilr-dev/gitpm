@@ -340,7 +340,11 @@ pub(crate) fn release_packages(
             return Ok(());
         }
         let message = format!("Release {version}");
-        let scope = if only { CommitScope::Only(folders) } else { CommitScope::Index };
+        let scope = if only {
+            CommitScope::Only(folders)
+        } else {
+            CommitScope::Index
+        };
         transport::commit(repo, &message, scope, custom_ssh)
     })();
     if let Err(error) = committed {

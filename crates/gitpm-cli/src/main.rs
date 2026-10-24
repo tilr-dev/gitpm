@@ -1261,12 +1261,9 @@ fn run(invocation: &mut Invocation) -> Result<()> {
             println!(
                 "forkOf records each origin; replaces says the fork can stand in for it (used only\nafter an explicit replace). The original installations are unchanged.\n\nNext steps (choose the packages to install and replace):"
             );
-            for package in &fork.packages {
-                println!(
-                    "  gitpm commit {quoted} NEW_VERSION --package {}   commit local edits, tag vNEW_VERSION",
-                    package.id
-                );
-            }
+            println!(
+                "  gitpm commit {quoted} NEW_VERSION   commit local edits, release all packages with tag vNEW_VERSION"
+            );
             for package in &fork.packages {
                 println!("  gitpm install {quoted} {}", package.id);
             }

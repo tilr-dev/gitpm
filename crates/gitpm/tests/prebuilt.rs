@@ -137,7 +137,7 @@ impl Fixture {
             },
             source: self.dir.join("unavailable-source").to_string_lossy().into(),
             commit: sha(version.as_bytes())[..40].into(),
-            reference: format!("{ID}@{version}"),
+            reference: format!("v{version}"),
             files: BTreeMap::from([(
                 "index.js".into(),
                 FileDigest {
@@ -365,7 +365,7 @@ fn git(repo: &std::path::Path, args: &[&str]) -> String {
 fn build_can_switch_to_git_and_rollback_in_both_directions() {
     for target in [
         gitpm::Target::Dev,
-        gitpm::Target::Ref(format!("{ID}@1.0.0")),
+        gitpm::Target::Ref("v1.0.0".into()),
         gitpm::Target::Release,
     ] {
         let mut f = Fixture::new(true);
@@ -382,7 +382,7 @@ fn build_can_switch_to_git_and_rollback_in_both_directions() {
         let mut release = catalog::register_build(
             f.catalog.to_str().unwrap(),
             repo.to_str().unwrap(),
-            &format!("{ID}@1.0.0"),
+            "v1.0.0",
             Some(Build {
                 url: format!(
                     "{}/1.0.0.tar.gz",
@@ -431,7 +431,7 @@ fn git_release_without_build_remains_a_git_install() {
     let release = catalog::register(
         f.catalog.to_str().unwrap(),
         repo.to_str().unwrap(),
-        &format!("{ID}@1.0.0"),
+        "v1.0.0",
     )
     .unwrap();
     f.write_release(&release);
@@ -524,7 +524,7 @@ fn publish_repo(f: &Fixture, repo: &std::path::Path, id: &str, version: &str) ->
     let mut release = catalog::register_build(
         f.catalog.to_str().unwrap(),
         repo.to_str().unwrap(),
-        &format!("{id}@{version}"),
+        &format!("v{version}"),
         Some(Build {
             url: format!("{}{name}", f.server.url.replace("http://", "https://")),
             sha256: sha(&bytes),
@@ -586,12 +586,7 @@ fn catalog_updates_can_alternate_git_and_build_revisions() {
     let m = f.manager();
     m.install_from_catalog(ID, None).unwrap();
     gitpm::scaffold::commit(&app, "1.1.0").unwrap();
-    catalog::register(
-        f.catalog.to_str().unwrap(),
-        app.to_str().unwrap(),
-        &format!("{ID}@1.1.0"),
-    )
-    .unwrap();
+    catalog::register(f.catalog.to_str().unwrap(), app.to_str().unwrap(), "v1.1.0").unwrap();
     m.update(ID).unwrap();
     assert!(m.state().unwrap().packages[ID].build.is_none());
     // Protect the Git install before publishing another build, so updates follow this catalog.
@@ -624,12 +619,7 @@ fn catalog_updates_can_alternate_git_and_build_revisions() {
     assert_eq!(fs::read(f.root.join("state.json")).unwrap(), before);
     assert_eq!(git(&clone, &["status", "--porcelain"]), "?? work.txt");
     gitpm::scaffold::commit(&app, "1.3.0").unwrap();
-    catalog::register(
-        f.catalog.to_str().unwrap(),
-        app.to_str().unwrap(),
-        &format!("{ID}@1.3.0"),
-    )
-    .unwrap();
+    catalog::register(f.catalog.to_str().unwrap(), app.to_str().unwrap(), "v1.3.0").unwrap();
     assert_eq!(m.update(ID).unwrap_err().kind(), "local_changes");
     assert_eq!(fs::read(clone.join("work.txt")).unwrap(), b"keep");
     assert!(!m.uninstall_plan(ID).unwrap().lost_work.is_empty());

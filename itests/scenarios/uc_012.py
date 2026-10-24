@@ -72,7 +72,7 @@ def mode_is_recorded_and_switched(t: T):
     t.eq(r.out, f"{ID} pinned at 0.3.0 (v0.3.0)\n", "pinned line")
     t.same(before, "workspace (pinned)")
     r = t.gitpm_ok("--catalog", "", "check")
-    t.has(r.out, f"pinned ({ID}@0.3.0)")
+    t.has(r.out, "pinned (v0.3.0)")
     r = t.gitpm_ok("update", ID, "--release")
     t.has(r.out, f"{ID} updated 0.3.0 → 0.5.0")
     t.ok("mode" not in t.package(ID), "release mode records no mode")
