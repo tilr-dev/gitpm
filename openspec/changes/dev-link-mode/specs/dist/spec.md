@@ -29,6 +29,10 @@ Every managed-record deploy SHALL copy the resolved commit’s package folder se
 - **THEN** install and subsequent deploys copy that committed folder, relative to the package root, including nested files and executable bits
 - **AND** uncommitted edits and files outside the selected folder are not deployed
 
+#### Scenario: Repair missing deployed build output
+- **WHEN** an active build package has no deployed folder and sync-dist runs
+- **THEN** its verified local output is deployed without Git or network access
+
 ## ADDED Requirements
 
 ### Requirement: Linked deployments expose the author installation folder

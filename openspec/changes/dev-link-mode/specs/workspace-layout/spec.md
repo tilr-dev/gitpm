@@ -72,3 +72,11 @@ Each `state.json` `packages.<id>` managed record SHALL hold `source`, `current`,
 #### Scenario: Managed field semantics
 - **WHEN** a managed package record includes optional fields
 - **THEN** mode is `{"pinned": REF}` or `{"branch": NAME}` (omitted for releases), catalog protects a verified catalog installation, and clone is the shared-clone key
+
+#### Scenario: Previous build provenance
+- **WHEN** a build revision is updated to a Git revision
+- **THEN** previous_build retains the release metadata and catalog location for offline rollback
+
+#### Scenario: Build record format
+- **WHEN** a current or previous revision is a build
+- **THEN** `build` or `previous_build` retains its full release record and catalog location separately from catalog protection; previous retains its mode and source kind for offline rollback, and only current/previous build output is retained
