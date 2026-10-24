@@ -781,6 +781,9 @@ mod tests {
         let installed = Installed {
             // A missing local path: an origin lookup fails fast, without network.
             source: "/nonexistent/pm-check/demo.git".into(),
+            clone: Some(crate::workspace::clones::repo_key(
+                "/nonexistent/pm-check/demo.git",
+            )),
             current: Revision {
                 version: "1.9.0".into(),
                 commit: "a".repeat(40),
