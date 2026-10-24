@@ -3137,14 +3137,17 @@ fn dist_drift_unstaged(
                 continue;
             }
             let leaf = root.join("dist").join(id);
-            if let Ok(meta) = fs::symlink_metadata(&leaf) {
-                ensure!(
-                    meta.file_type().is_symlink()
-                        && fs::read_link(&leaf)? == Path::new(&link.target),
-                    Workspace,
-                    "unexpected linked deployment entry: {}",
-                    leaf.display()
-                );
+            if let Ok(meta) = fs::symlink_metadata(&leaf)
+                && (!meta.file_type().is_symlink()
+                    || fs::read_link(&leaf)? != Path::new(&link.target))
+            {
+                plan.skipped.push(SkippedDist {
+                    id: id.clone(),
+                    reason: format!("unexpected linked deployment entry: {}", leaf.display()),
+                    clone_missing: false,
+                    link: Some(link.clone()),
+                });
+                continue;
             }
             if !Path::new(&link.target).is_dir() {
                 plan.skipped.push(SkippedDist {

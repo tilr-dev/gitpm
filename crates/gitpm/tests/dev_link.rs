@@ -550,6 +550,73 @@ fn blocked_link_namespace_does_not_block_an_unrelated_package() {
     }
 }
 
+#[cfg(unix)]
+fn foreign_link_leaf_does_not_block_an_unrelated_package(symlink_leaf: bool) {
+    use std::os::unix::fs::symlink;
+    let f = Fixture::new();
+    let package = f.author("blocked");
+    let healthy = f.author("independent");
+    let mut data = manifest(&healthy);
+    data["id"] = "other/healthy".into();
+    write_manifest(&healthy, &data);
+    let m = f.manager();
+    m.link(&package).unwrap();
+    let descriptor = m.state().unwrap().packages["acme/blocked"].link().cloned();
+    let leaf = f.root.join("dist/acme/blocked");
+    fs::remove_file(&leaf).unwrap();
+    let outside = f.dir.join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("sentinel"), "external content").unwrap();
+    if symlink_leaf {
+        symlink(&outside, &leaf).unwrap();
+    } else {
+        fs::create_dir(&leaf).unwrap();
+        fs::write(leaf.join("sentinel"), "foreign content").unwrap();
+    }
+    let report = m.link(&healthy).unwrap().dist;
+    assert_eq!(report.skipped.len(), 1);
+    assert_eq!(report.skipped[0].id, "acme/blocked");
+    assert_eq!(report.skipped[0].link, descriptor);
+    assert!(!report.deployed.iter().any(|id| id == "acme/blocked"));
+    assert_eq!(
+        m.state().unwrap().packages["acme/blocked"].link(),
+        descriptor.as_ref()
+    );
+    assert!(f.root.join("dist/other/healthy").is_dir());
+    assert_eq!(
+        fs::read_to_string(outside.join("sentinel")).unwrap(),
+        "external content"
+    );
+    if symlink_leaf {
+        assert_eq!(fs::read_link(&leaf).unwrap(), outside);
+    } else {
+        assert!(
+            !fs::symlink_metadata(&leaf)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            fs::read_to_string(leaf.join("sentinel")).unwrap(),
+            "foreign content"
+        );
+    }
+    assert!(package.join("dist/index.js").is_file());
+    assert_eq!(m.link(&package).unwrap_err().kind(), "workspace");
+}
+
+#[cfg(unix)]
+#[test]
+fn retargeted_link_leaf_does_not_block_an_unrelated_package() {
+    foreign_link_leaf_does_not_block_an_unrelated_package(true);
+}
+
+#[cfg(unix)]
+#[test]
+fn foreign_folder_link_leaf_does_not_block_an_unrelated_package() {
+    foreign_link_leaf_does_not_block_an_unrelated_package(false);
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn non_utf8_package_or_output_paths_are_refused_before_state_changes() {
