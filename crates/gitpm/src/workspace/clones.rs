@@ -231,12 +231,13 @@ pub(super) fn removal(root: &Path, state: &State, id: &str, custom_ssh: bool) ->
         .or_else(|| state.forgotten.get(id))
         .ok_or_else(|| Error::RepositoryNotFound { id: id.into() })?;
     let relative = p.clone_folder(id);
-    let key = p.clone.clone();
     let bare = match source_repo(root, id, p) {
         Ok(bare) => Some(bare),
         Err(Error::RepositoryNotFound { .. }) => None,
         Err(error) => return Err(error),
     };
+    // Without its source store, the orphan checkout may contain unrecoverable work.
+    let key = bare.as_ref().and(p.clone.clone());
     let repo = if key
         .as_ref()
         .is_some_and(|key| clone_users(state, key, id).is_empty())

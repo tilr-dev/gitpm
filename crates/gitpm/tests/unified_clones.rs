@@ -262,3 +262,30 @@ fn root_and_nested_worktrees_guard_dirty_files_and_every_moved_head() {
         assert!(!checkout.exists());
     }
 }
+
+#[test]
+fn missing_bare_preserves_orphan_worktree_on_removal() {
+    for forget in [false, true] {
+        let dir = TempDir::new();
+        let source = scaffold::init(&dir.path().join("source"), "acme", "root")
+            .unwrap()
+            .repo;
+        let root = dir.path().join("workspace");
+        let manager = Manager::open(&root).unwrap();
+        manager.install(source.to_str().unwrap()).unwrap();
+        let record = manager.state().unwrap().packages["acme/root"].clone();
+        let checkout = root.join("worktrees/acme/root");
+        fs::write(checkout.join("scratch.txt"), "keep my work").unwrap();
+        fs::remove_dir_all(root.join("repos").join(record.clone.unwrap())).unwrap();
+        if forget {
+            manager.forget("acme/root").unwrap();
+        } else {
+            manager.uninstall("acme/root", &[], false).unwrap();
+        }
+        assert_eq!(
+            fs::read(checkout.join("scratch.txt")).unwrap(),
+            b"keep my work"
+        );
+        assert!(!manager.state().unwrap().packages.contains_key("acme/root"));
+    }
+}

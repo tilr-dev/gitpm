@@ -70,6 +70,10 @@ gitpm SHALL offer `disable` (disable and undeploy), `forget` (undeploy, move the
 - **WHEN** `repos/<key>` or its package worktree was deleted by hand while `acme/greeter` is recorded and active, and the user runs `uninstall acme/greeter`
 - **THEN** it prints `acme/greeter uninstalled`, the record and `dist/acme/greeter/` are gone, and later commands warn no more
 
+#### Scenario: Orphan worktree survives missing source storage
+- **WHEN** a package bare repository was deleted by hand while its worktree still contains local files, and the package is uninstalled or forgotten
+- **THEN** the record and deployed folder are removed while the orphan worktree and its files remain untouched
+
 #### Scenario: Forget without a clone
 - **WHEN** the same package is forgotten instead
 - **THEN** it prints `acme/greeter forgotten (no clone; record and dist removed)` (`clone_kept` false), the record is dropped and no `forgotten` record is kept, because there is nothing to restore; a later `restore acme/greeter` fails with `repository_not_found`

@@ -941,3 +941,52 @@ fn retained_clone_can_leave_a_build_whose_commit_is_gone_upstream() {
     m.rollback(ID).unwrap();
     assert!(m.state().unwrap().packages[ID].build.is_some());
 }
+
+#[test]
+fn releasing_last_retained_clone_refuses_unpublished_work() {
+    let f = Fixture::new(true);
+    let repo = gitpm::scaffold::init(&f.dir.join("source"), "acme", "widget")
+        .unwrap()
+        .repo;
+    gitpm::scaffold::commit(&repo, "1.0.0").unwrap();
+    catalog::register(
+        f.catalog.to_str().unwrap(),
+        repo.to_str().unwrap(),
+        &format!("{ID}@1.0.0"),
+    )
+    .unwrap();
+    let root_file = f.catalog.join("catalog.json");
+    let mut catalog_root: serde_json::Value =
+        serde_json::from_slice(&fs::read(&root_file).unwrap()).unwrap();
+    catalog_root["verified"] = json!(true);
+    fs::write(root_file, catalog_root.to_string()).unwrap();
+    let m = f.manager();
+    m.install_from_catalog(ID, None).unwrap();
+    publish_repo(&f, &repo, ID, "2.0.0");
+    m.update(ID).unwrap();
+
+    let bare = clone_path(&f.root, &repo);
+    let tree = git(&bare, &["rev-parse", "HEAD^{tree}"]);
+    let head = git(&bare, &["rev-parse", "HEAD"]);
+    let local = git(
+        &bare,
+        &[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit-tree",
+            &tree,
+            "-p",
+            &head,
+            "-m",
+            "local work",
+        ],
+    );
+    git(&bare, &["tag", "local-work", &local]);
+    let state = fs::read(f.root.join("state.json")).unwrap();
+    publish_repo(&f, &repo, ID, "3.0.0");
+    assert_eq!(m.update(ID).unwrap_err().kind(), "local_changes");
+    assert_eq!(fs::read(f.root.join("state.json")).unwrap(), state);
+    assert_eq!(git(&bare, &["rev-parse", "refs/tags/local-work"]), local);
+}

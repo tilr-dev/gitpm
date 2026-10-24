@@ -856,7 +856,7 @@ impl Manager {
         let before = state.clone();
         let value = action(&mut txn, &mut state)?;
         // A build retains a source store only while its previous revision is Git.
-        let mut released = BTreeSet::new();
+        let mut released = BTreeMap::new();
         for (id, package) in state.packages.iter_mut().chain(&mut state.forgotten) {
             if package.build.is_some()
                 && (package.previous.is_none() || package.previous_build.is_some())
@@ -864,12 +864,22 @@ impl Manager {
             {
                 let relative = format!("repos/{key}");
                 txn.remove_worktree(id, &relative)?;
-                released.insert(key);
+                released.insert(key, id.clone());
             }
         }
-        for key in released {
+        for (key, id) in released {
             if clones::clone_users(&state, &key, "").is_empty() {
-                txn.delete_repo(&format!("repos/{key}"))?;
+                let relative = format!("repos/{key}");
+                let bare = txn
+                    .staged_repo(&relative)
+                    .unwrap_or_else(|| self.root.join(&relative));
+                if bare.is_dir() {
+                    let hidden = lost_work::hidden(&bare, false, self.options.custom_ssh)?;
+                    if !hidden.is_empty() {
+                        return Err(lost_work::refusal(&id, hidden));
+                    }
+                }
+                txn.delete_repo(&relative)?;
             }
         }
 
@@ -2452,10 +2462,21 @@ impl Manager {
             match installed_repo(txn.root(), id, &installed) {
                 // Nothing to restore: only the record (and dist) are dropped.
                 Err(Error::RepositoryNotFound { .. }) => {
-                    if let Some(key) = &installed.clone {
+                    let source = match clones::source_repo(txn.root(), id, &installed) {
+                        Ok(bare) => Some(bare),
+                        Err(Error::RepositoryNotFound { .. }) => None,
+                        Err(error) => return Err(error),
+                    };
+                    if let Some(key) = &installed.clone
+                        && let Some(bare) = source
+                    {
                         let relative = installed.clone_folder(id);
                         txn.remove_worktree(id, &relative)?;
                         if clones::clone_users(state, key, id).is_empty() {
+                            let hidden = lost_work::hidden(&bare, false, self.options.custom_ssh)?;
+                            if !hidden.is_empty() {
+                                return Err(lost_work::refusal(id, hidden));
+                            }
                             txn.delete_repo(&relative)?;
                         }
                     }
@@ -2590,7 +2611,7 @@ impl Manager {
         let removal = removal(&self.root, &state, id, self.options.custom_ssh)?;
         let mut deletes = Vec::new();
         let checkout = self.root.join("worktrees").join(id);
-        if checkout.is_dir() {
+        if removal.key.is_some() && checkout.is_dir() {
             deletes.push(checkout.to_string_lossy().into_owned());
         }
         if let Some(repo) = &removal.repo {
