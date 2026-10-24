@@ -120,8 +120,8 @@ Single source for `has_dependents`: `disable`, `forget` and `uninstall` SHALL re
 - **THEN** it fails with `has_dependents` naming `app`; with `--force` lib is removed
 
 #### Scenario: Forced removal and switching back
-- **WHEN** the user passes --force to disable, forget or uninstall
-- **THEN** removal is allowed and broken consumers are reported; returning through replace ORIGINAL --with ORIGINAL has no force bypass
+- **WHEN** the user passes `--force` to `disable`, `forget` or `uninstall`, or runs `replace ORIGINAL --back` while ORIGINAL is not installed or disabled
+- **THEN** a forced removal is allowed (the consumers are reported broken), and switching back follows the same rule (fork-replacement, "Switching back")
 
 ### Requirement: Broken consumers are reported, not enforced
 After a forced removal, already broken consumers SHALL be reported (in `list` dependency entries, `check` "Unsatisfied dependency" lines and as skipped in `update all`) but SHALL NOT block unrelated operations; `update all` SHALL leave them at their installed revision, out of its solve, and SHALL never install a dependency that was removed with force for them. Verified by `update_all_skips_broken_consumers_and_never_reinstalls`.
@@ -153,9 +153,9 @@ State SHALL keep each package's dependency edges (the `packages.<id>.dependencie
 - **THEN** `app` is enabled and deployed, and `list` reports its dependency on `lib` as unsatisfied
 
 #### Scenario: Original with an inactive dependency
-- **WHEN** `me/base` replaces `vendor/base`, `vendor/base` requires `lib ^1`, `lib` is disabled, and the user runs `disable me/base` or `replace vendor/base --with vendor/base`
+- **WHEN** `me/base` replaces `vendor/base`, `vendor/base` requires `lib ^1`, `lib` is disabled, and the user runs `disable me/base` or `replace vendor/base --back`
 - **THEN** it fails with `dependency_conflict` ("lib is disabled; enable it") and nothing changes; `disable me/base --force` disables it anyway and `vendor/base` is reported broken
 
 #### Scenario: Reactivated original
-- **WHEN** dropping a binding makes ORIGINAL active again (`disable`, `forget` or `uninstall` of the replacing package, or `replace ORIGINAL --with ORIGINAL`)
-- **THEN** ORIGINAL's direct dependencies are checked the same way: the removals refuse with `dependency_conflict` unless forced, `replace ORIGINAL --with ORIGINAL` refuses without a force bypass
+- **WHEN** dropping a binding makes ORIGINAL active again (`disable`, `forget` or `uninstall` of the replacing package, or `replace ORIGINAL --back`)
+- **THEN** ORIGINAL's direct dependencies are checked the same way: the removals refuse with `dependency_conflict` unless forced, `replace --back` refuses without a force bypass
