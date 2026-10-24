@@ -55,12 +55,17 @@ Releases SHALL be per package with tags `ID@VERSION` (package-ids, "Release tag 
 - **THEN** it fails with `invalid_argument` (`repository has 2 packages at commit …; choose one by ID: tilr/store (packages/store), tilr/theme (packages/theme)`)
 
 ### Requirement: One shared clone per source
-Packages of one source SHALL share one clone `repos/<name>-<hash of the source>`; state SHALL record `clone` and `path` per package and only the committed manifest dist folder relative to `<path>` (default `<path>/dist`) SHALL be deployed. Single source for removing a shared clone: it SHALL be removed with the last package (recorded or forgotten) that uses it, with its lost work guarded then. Fetching into it takes the origin's tags as they are (package-ids).
+Root and nested Git packages of one source SHALL share one clone `repos/<name>-<hash of the source>`; state SHALL record a source-derived `clone` key for every Git package and `path` for a nested package (absent for a root package) and only the committed manifest dist folder relative to `<path>` (default `<path>/dist`) SHALL be deployed. Single source for removing a shared clone: it SHALL be removed with the last package (recorded or forgotten) that uses it, with its lost work guarded then. Fetching into it takes the origin's tags as they are (package-ids).
 
 #### Scenario: Uninstall one of two
 - **WHEN** `tilr/store` and `tilr/theme` share a clone and `tilr/store` is uninstalled
 - **THEN** the clone stays and `tilr/theme` keeps working
 - **AND** this is covered by `uninstalling_one_package_keeps_the_other_working`
+
+#### Scenario: Clone-free build switches to Git beside a sibling
+- **WHEN** a clone-free build switches to a Git ref and an installed or forgotten sibling already uses the same source-keyed clone
+- **THEN** the transition reuses that clone with the usual local-work guards and refuses without changes if it holds local work
+- **AND** a successful transition records the shared clone key and preserves the sibling and its deployed output
 
 ### Requirement: Shared clone HEAD handling
 HEAD of a shared clone SHALL count as moved only when it is neither an installed revision of one of its packages nor a tagged commit; when a package is uninstalled or forgotten, HEAD SHALL move to the installed revision of a remaining one, keeping working-tree changes or refusing with `local_changes` if they conflict. Verified by `removing_a_package_moves_the_shared_head_to_a_remaining_one`.
@@ -89,11 +94,11 @@ Forgetting a package of a shared clone SHALL keep a `forgotten` record (format i
 - **THEN** it is recorded in state at its recorded revision with its recorded `enabled` flag, and `dist/tilr/store/` is deployed when it is enabled
 
 ### Requirement: Root package that moved into a folder
-A root package SHALL keep its own `packages/<id>` clone when a later release moves it into a package folder (`path` set, `clone` absent) and SHALL keep updating and forking. Verified by `a_root_package_moved_into_a_folder_keeps_updating_and_forks`.
+A root package SHALL keep its source-keyed `repos/<key>` clone when a later release moves it into a package folder (`path` set, `clone` unchanged) and SHALL keep updating and forking. Verified by `a_root_package_moved_into_a_folder_keeps_updating_and_forks`.
 
 #### Scenario: Move into packages/
 - **WHEN** an installed root package's next release lives in `packages/store` under a new `gitpm.json`
-- **THEN** `update` succeeds and state records `path` `packages/store`
+- **THEN** `update` succeeds and state records `path` `packages/store` and preserves its `clone` key, so other packages from the same source reuse the clone
 
 ### Requirement: Forking packages of one repository
 `fork ID [ID...]` SHALL accept only installed IDs from one recorded source, else `invalid_argument` listing IDs and sources. It SHALL clone the whole repository, retain all files and the package layout, and rename every package into the new namespace with `forkOf` and `replaces`. Dependencies between repository packages SHALL be rewritten. A root package SHALL stay at the root; no package subset SHALL be selected.
