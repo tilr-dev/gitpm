@@ -21,11 +21,12 @@ A root package SHALL keep its source-keyed `repos/<key>` clone when a later rele
 - **THEN** `update` succeeds and state records `path` `packages/store` and preserves its `clone` key, so other packages from the same source reuse the clone
 
 ### Requirement: Shared clone HEAD handling
-For a clone with exactly one installed or forgotten user, HEAD SHALL count as moved when it differs from that user's recorded Git revision, even if HEAD is tagged. For a build retaining a Git clone, the recorded Git revision SHALL be its previous revision when that revision is a Git installation. With several installed or forgotten users, HEAD SHALL count as moved only when it is neither a recorded current revision of one of those users nor a tagged commit. These rules SHALL apply equally to root and nested packages. When a package is uninstalled or forgotten and another installed package remains, HEAD SHALL move to that remaining package's installed revision, keeping working-tree changes or refusing with `local_changes` if they conflict. Verified by `removing_a_package_moves_the_shared_head_to_a_remaining_one`.
+With one installed or forgotten user, HEAD SHALL count as moved when it differs from that user's recorded Git revision, even if tagged. With several users, HEAD SHALL count as moved only when it is neither a user's recorded current revision nor a tagged commit. Root and nested packages SHALL follow the same rule. Removal or forgetting SHALL move HEAD to a remaining installed package, preserving working-tree changes or refusing with `local_changes` on conflict.
 
 #### Scenario: HEAD moves to a remaining package
 - **WHEN** the clone's HEAD is at `tilr/store`'s revision and `tilr/store` is uninstalled
-- **THEN** HEAD moves to `tilr/theme`'s installed revision
+- **THEN** HEAD moves to `tilr/theme`'s installed revision, keeping working-tree changes or refusing with `local_changes` if they conflict
+- **AND** this is covered by `removing_a_package_moves_the_shared_head_to_a_remaining_one`
 
 #### Scenario: Sole user's HEAD is at another tagged commit
 - **WHEN** a root or nested package is the clone's only installed or forgotten user and HEAD differs from its recorded Git revision, even at another tagged commit
