@@ -17,7 +17,7 @@ def entry(t: T, root, id: str):
 
 def files_of(t: T, root, id: str):
     """Clone (with full .git) and dist of one installation."""
-    return t.snap(t.clone(id, root), root / "dist" / id, git=True)
+    return t.snap(t.worktree(id, root), root / "dist" / id, git=True)
 
 
 def authors(t: T):
@@ -32,9 +32,9 @@ def same_basename_coexists(t: T):
     t.eq(sorted(p["id"] for p in state["resolved"]), [A, V], "resolved list")
     for id in [V, A]:
         t.eq(t.package(id)["source"], str(t.repo(id).resolve()), f"{id} source")
-        t.eq(t.rev(t.clone(id)), t.rev(id), f"{id} clone HEAD")
+        t.eq(t.rev(t.worktree(id)), t.rev(id), f"{id} clone HEAD")
         t.eq((t.dist(id) / "index.js").read_text(), f'export const greeting = "{id} 0.1.0";\n', f"{id} dist")
-    t.ok(t.rev(t.clone(V)) != t.rev(t.clone(A)), "distinct clones")
+    t.ok(t.rev(t.worktree(V)) != t.rev(t.worktree(A)), "distinct clones")
     t.ok(not (t.ws / "repos/demo").exists() and not (t.ws / "dist/demo").exists(), "no basename-only paths")
 
 
@@ -49,7 +49,7 @@ def second_workspace_is_independent(t: T):
     t.same(first, "first workspace")
     t.gitpm_ok("--root", other, "uninstall", V)
     t.eq(json.loads((other / "state.json").read_text())["packages"], {}, "other root empty again")
-    t.ok(not (t.clone(V, other)).exists() and not (other / "dist" / V).exists(), "other root files removed")
+    t.ok(not (t.worktree(V, other)).exists() and not (other / "dist" / V).exists(), "other root files removed")
     t.same(first, "first workspace")
     t.same(sources, "author repositories")
 
@@ -78,7 +78,7 @@ def disable_one_leaves_others(t: T):
     other = t.root / "ws2"
     t.gitpm_ok("--root", other, "install", t.repo(A))
     v_entry, v_files = entry(t, t.ws, V), files_of(t, t.ws, V)
-    a_clone = t.snap(t.clone(A), git=True)
+    a_clone = t.snap(t.worktree(A), git=True)
     ws2, sources = t.snap(other, git=True), authors(t)
     a_before = entry(t, t.ws, A)
     t.gitpm_ok("disable", A)

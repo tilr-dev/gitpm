@@ -62,7 +62,7 @@ def frozen(t: T) -> dict:
     """What the user sees as installed: state bytes, dist bytes, clone HEAD."""
     return {"state": (t.ws / "state.json").read_bytes(),
             "dist": (t.dist(ID) / "index.js").read_bytes(),
-            "head": t.rev(t.clone(ID))}
+            "head": t.rev(t.worktree(ID))}
 
 
 def journal(t: T) -> dict | None:
@@ -75,7 +75,7 @@ def updated(t: T):
     t.eq(p["current"]["version"], "0.1.1", "current after recovery")
     t.eq(p["previous"]["version"], "0.1.0", "previous after recovery")
     t.has((t.dist(ID) / "index.js").read_text(), "dan/hello 0.1.1")
-    t.eq(t.rev(t.clone(ID)), t.rev(ID, f"v0.1.1"), "clone HEAD after recovery")
+    t.eq(t.rev(t.worktree(ID)), t.rev(ID, f"v0.1.1"), "clone HEAD after recovery")
     t.ok(not (t.ws / ".pm-txn").exists(), "no transaction left")
 
 
@@ -114,7 +114,7 @@ def activation_failure(t: T, readonly: str):
     r = gitpm_nobody(t, "update", ID)
     t.ok(r.code == 1, "update failed")
     t.has(r.err, "Permission denied", "Error kind: io")
-    t.eq(journal(t), {"paths": {f"dist/{ID}": "replace", str(t.clone(ID).relative_to(t.ws)): "replace"}}, "committed journal kept")
+    t.eq(journal(t), {"paths": {f"dist/{ID}": "replace", str(t.worktree(ID).relative_to(t.ws)): "replace"}}, "committed journal kept")
     t.eq(json.loads((t.ws / "state.json").read_text()), json.loads(before["state"]), "state.json still the previous one")
     t.ok((t.ws / "state.json").read_bytes() == before["state"], "state.json complete and unchanged")
     (t.ws / readonly).chmod(0o755)
@@ -127,7 +127,7 @@ def activation_failure_at_first_move_rolls_forward(t: T):
     clone stay active; the next open finishes the decided commit."""
     before = activation_failure(t, "dist/dan")
     t.eq((t.dist(ID) / "index.js").read_bytes(), before["dist"], "previous dist still active")
-    t.eq(t.rev(t.clone(ID)), before["head"], "previous clone still active")
+    t.eq(t.rev(t.worktree(ID)), before["head"], "previous clone still active")
     # list only reads; the next command that opens the workspace finishes the commit.
     t.eq(gitpm_nobody(t, "sync-dist").code, 0, "next open succeeds")
     updated(t)
@@ -139,7 +139,7 @@ def activation_failure_midway_rolls_forward(t: T):
     commit forward instead of leaving a mixed installation."""
     before = activation_failure(t, "repos")
     t.has((t.dist(ID) / "index.js").read_text(), "0.1.1")
-    t.eq(t.rev(t.clone(ID)), before["head"], "clone not moved yet")
+    t.eq(t.rev(t.worktree(ID)), before["head"], "clone not moved yet")
     r = gitpm_nobody(t, "disable", ID)
     t.eq(r.code, 0, "next mutation succeeds")
     t.eq(t.package(ID)["enabled"], False, "the new mutation applied after recovery")
@@ -175,7 +175,7 @@ def update_killed_after_staging_is_discarded(t: T):
     before = t.snap(t.ws)
     r = t.gitpm("update", ID, env=killer(t))
     t.eq(r.code, -9, "gitpm was killed")
-    staged = t.ws / ".pm-txn/new" / t.clone(ID).relative_to(t.ws)
+    staged = t.ws / ".pm-txn/new" / t.worktree(ID).relative_to(t.ws)
     t.ok(staged.is_dir(), "the staged copy was left by the killed process")
     t.eq(journal(t), None, "no journal: the commit was never decided")
     t.eq(t.package(ID)["current"]["version"], "0.1.0", "previous version still installed")
@@ -192,11 +192,12 @@ def install_killed_after_clone_is_discarded(t: T):
     before = t.snap(t.ws)
     r = t.gitpm("install", t.repo(ID), env=killer(t))
     t.eq(r.code, -9, "gitpm was killed")
-    t.ok((t.ws / ".pm-txn/scratch/incoming/.git").is_dir(), "the scratch clone was left behind")
+    staged_clone = t.ws / ".pm-txn/new" / t.clone(ID).relative_to(t.ws)
+    t.ok((staged_clone / "objects").is_dir(), "the staged bare clone was left behind")
     t.eq(journal(t), None, "no journal")
     t.eq(t.state().get("packages"), {}, "nothing registered")
     # list is read-only: it leaves the scratch area to the next command that opens.
-    t.ok((t.ws / ".pm-txn/scratch/incoming/.git").is_dir(), "list left the scratch clone alone")
+    t.ok((staged_clone / "objects").is_dir(), "list left the staged clone alone")
     t.gitpm_ok("sync-dist")
     t.same(before, "workspace after the next open")
     t.not_installed(ID)

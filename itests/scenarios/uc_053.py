@@ -51,9 +51,9 @@ def provenance_alone_does_not_redirect(t: T):
 def explicit_replacement_is_global_and_inspectable(t: T):
     """replace vendor/base --with mine/base: persisted binding, both consumers on the fork payload,
     original installed and addressable, unrelated package untouched, binding survives a new process."""
-    other = t.snap(t.clone("other/x"), t.dist("other/x"))
+    other = t.snap(t.worktree("other/x"), t.dist("other/x"))
     other_entry = t.package("other/x")
-    original_files = t.snap(t.clone(ORIGINAL))
+    original_files = t.snap(t.worktree(ORIGINAL))
     original_entry = t.package(ORIGINAL)
 
     r = t.gitpm_ok("replace", ORIGINAL, "--with", FORK)
@@ -102,7 +102,7 @@ def new_consumer_after_replacement_resolves_to_fork(t: T):
     """app/c (vendor/base ^1.0) installed after the replacement resolves to mine/base; nothing new fetched."""
     t.gitpm_ok("replace", ORIGINAL, "--with", FORK)
     before = sorted(t.state()["packages"])
-    original = t.snap(t.clone(ORIGINAL), t.dist(ORIGINAL))  # dist absent: replaced
+    original = t.snap(t.worktree(ORIGINAL), t.dist(ORIGINAL))  # dist absent: replaced
     t.gitpm_ok("install-catalog", "app/c")
     t.eq(sorted(t.state()["packages"]), sorted(before + ["app/c"]), "only app/c added")
     t.same(original, "original clone and dist")

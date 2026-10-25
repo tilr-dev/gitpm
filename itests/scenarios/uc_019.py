@@ -43,7 +43,7 @@ def valid_update_succeeds(t: T, version: str):
     p = t.package(ID)
     t.eq(p["current"], {"version": version, "commit": commit}, "current after the valid update")
     t.eq(p["previous"]["version"], "0.1.2", "previous after the valid update")
-    t.eq(t.rev(t.clone(ID)), commit, "clone HEAD")
+    t.eq(t.rev(t.worktree(ID)), commit, "clone HEAD")
     t.eq((t.dist(ID) / "index.js").read_text(), f'export const greeting = "{ID} {version}";\n', "dist")
 
 

@@ -18,7 +18,7 @@ def row(out: str, id: str) -> str:
 
 
 def mine_payload(t: T):
-    return t.snap(t.ws / "state.json", t.clone(M), t.dist(M), git=True)
+    return t.snap(t.ws / "state.json", t.worktree(M), t.dist(M), git=True)
 
 
 @case(fixture="g3_fork_catalog", spec=["fork-replacement/fork-metadata", "cli/json-output-for-state-and-catalog#list"])

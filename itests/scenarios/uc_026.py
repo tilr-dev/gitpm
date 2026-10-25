@@ -23,7 +23,7 @@ def unscoped_id_is_refused(t: T):
     """install of the unscoped `demo` fails with invalid_id and creates nothing."""
     t.gitpm_err("install", t.repo(LEGACY), kind="invalid_id", contains="namespace/name")
     t.ok(not t.ws.exists() or not t.state().get("packages"), "nothing installed")
-    t.ok(not t.clone(LEGACY).exists() and not t.dist(LEGACY).exists(), "no clone or dist")
+    t.ok(not t.worktree(LEGACY).exists() and not t.dist(LEGACY).exists(), "no clone or dist")
 
 
 @case(fixture="g3_legacy", spec=["package-ids/release-tag-names#vversion-tag-of-a-scoped-single-package-repository"])

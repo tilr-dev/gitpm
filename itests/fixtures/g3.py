@@ -51,9 +51,9 @@ def _(t: T):
     for id in ["dan/a", "dan/b", "other/c"]:
         p = t.package(id)
         t.eq(p["enabled"], True, f"{id} enabled")
-        t.eq(t.rev(t.clone(id)), p["current"]["commit"], f"{id} clone HEAD")
+        t.eq(t.rev(t.worktree(id)), p["current"]["commit"], f"{id} clone HEAD")
         t.has((t.dist(id) / "index.js").read_text(), f"{id} {p['current']['version']}")
-        t.eq(t.git(t.clone(id), "status", "--porcelain", "--ignored"), "", f"{id} clone clean")
+        t.eq(t.git(t.worktree(id), "status", "--porcelain", "--ignored"), "", f"{id} clone clean")
     t.ok(t.catalog_empty(), "no catalog")
 
 
@@ -81,8 +81,8 @@ def _(t: T):
     t.eq(p["current"], {"version": "0.1.0", "commit": t.rev("vendor/demo", "v0.1.0")}, "current")
     t.eq(p["source"], str(t.repo("vendor/demo")), "source")
     t.ok("forkOf" not in p, "no forkOf")
-    t.eq(t.rev(t.clone("vendor/demo")), p["current"]["commit"], "clone HEAD")
-    t.eq(t.git(t.clone("vendor/demo"), "status", "--porcelain", "--ignored"), "", "clone clean")
+    t.eq(t.rev(t.worktree("vendor/demo")), p["current"]["commit"], "clone HEAD")
+    t.eq(t.git(t.worktree("vendor/demo"), "status", "--porcelain", "--ignored"), "", "clone clean")
 
 
 @fixture()

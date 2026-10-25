@@ -682,7 +682,7 @@ fn every_deploy_copies_the_committed_tree_with_nested_files_and_exec_bits() {
     f.ok(&["update", "vendor/demo"]);
     check("update");
     // Uncommitted edits in the clone are never deployed.
-    let clone = clone_path(&f.root(), &f.path("vendor/demo"));
+    let clone = f.root().join("worktrees/vendor/demo");
     fs::write(clone.join("dist/index.js"), "edited").unwrap();
     f.ok(&["replace", "vendor/demo", "--with", "dan/demo"]);
     f.ok(&["replace", "vendor/demo", "--with", "vendor/demo"]);
@@ -762,7 +762,7 @@ fn uninstall_refusal_of_a_reactivation_comes_before_the_prompt() {
     f.ok(&["replace", "vendor/demo", "--with", "dan/demo"]);
     f.ok(&["disable", "lib/x", "--force"]);
     fs::write(
-        clone_path(&f.root(), &f.path("dan/demo")).join("notes.txt"),
+        f.root().join("worktrees/dan/demo").join("notes.txt"),
         "work",
     )
     .unwrap();
@@ -795,7 +795,8 @@ fn uninstall_refusal_of_a_reactivation_comes_before_the_prompt() {
     );
     assert!(!String::from_utf8_lossy(&out.stdout).contains("uninstalled"));
     assert!(
-        clone_path(&f.root(), &f.path("dan/demo"))
+        f.root()
+            .join("worktrees/dan/demo")
             .join("notes.txt")
             .exists()
     );
@@ -862,9 +863,7 @@ fn declared_output_folders_install_redeploy_and_verify_catalog() {
             assert!(!deployed.join("outside").exists());
             assert!(!deployed.join("sibling").exists());
             assert!(!deployed.join(".git").exists());
-            let state = f.state();
-            let key = state["packages"]["test/output"]["clone"].as_str().unwrap();
-            let clone = f.root().join("repos").join(key);
+            let clone = f.root().join("worktrees/test/output");
             let package = if mono {
                 clone.join("packages/demo")
             } else {
