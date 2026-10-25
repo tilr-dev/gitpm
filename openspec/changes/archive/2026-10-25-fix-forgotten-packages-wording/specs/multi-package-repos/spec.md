@@ -11,4 +11,3 @@ Forgetting a package of a shared clone SHALL keep a `forgotten` record (format i
 #### Scenario: Restore from shared clone
 - **WHEN** `tilr/store` was forgotten and the user runs `restore tilr/store`
 - **THEN** it is recorded in state at its recorded revision with its recorded `enabled` flag, and `dist/tilr/store/` is deployed when it is enabled
-
