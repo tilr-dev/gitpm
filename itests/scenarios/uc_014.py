@@ -142,7 +142,7 @@ def conflicting_ids(t: T):
     t.not_installed("Dan/hello")
 
 
-@case(fixture="hello_installed", spec=["dist/deploys-copy-the-committed-tree"])
+@case(fixture="hello_installed", spec=["dist/symlinks-and-submodules-in-dist#symlink-inside-dist"])
 def symlinks_in_dist_cannot_escape(t: T):
     """dist/ entries that are symlinks (to a file outside, to a parent dir) are refused before deploy."""
     for name, link, target in [("filelink", "dist/index.js", "/etc/passwd"),
@@ -157,7 +157,7 @@ def symlinks_in_dist_cannot_escape(t: T):
         t.not_installed(id)
 
 
-@case(fixture="hello_installed", spec=["dist/deploys-copy-the-committed-tree"])
+@case(fixture="hello_installed", spec=["dist/symlinks-and-submodules-in-dist#submodule-inside-dist"])
 def submodule_in_dist_deploys_empty_folder(t: T):
     """A committed gitlink in dist/ deploys an empty folder and warns."""
     repo, sha = bad_repo(t, "submodule", {
