@@ -7,24 +7,11 @@ Defines forking an installed package into an author repository under a new names
 ## Requirements
 
 ### Requirement: Fork copies an installed package
-`fork ID [ID...] --ns NAMESPACE --into DIR` SHALL Git-clone the recorded installation source with history at installed revisions, into a new repository with every package renamed to `NAMESPACE/<same name>`. It SHALL leave the installation unchanged, set the source as `upstream`, accept only installed IDs without `--from`, and exclude local installation work.
+`fork ID [ID...] --ns NAMESPACE --into DIR` SHALL Git-clone the recorded installation source with history at installed revisions, into a new repository with every package renamed to `NAMESPACE/<same name>`. It SHALL leave the installation unchanged, set the source as `upstream`, accept only installed IDs, and exclude local installation work.
 
 #### Scenario: Fork one package
 - **WHEN** the user runs `gitpm fork acme/hello --ns me --into hello-fork`
 - **THEN** `hello-fork` is a Git clone whose `plugin.json` has `id` `me/hello`, the output contains `me/hello forked from acme/hello (repository root)`, and `acme/hello` is still installed
-
-#### Scenario: Fork an uninstalled repository
-- **WHEN** `gitpm fork acme/theme --from ./plugins --ns me --into ./my-plugins` is run without a workspace
-- **THEN** it clones the newest stable `vVERSION` release whose commit contains `acme/theme`, renames every package and rewrites internal dependencies, preserving repository files and layout
-- **AND** tags without that ID and legacy `ID@VERSION` tags are ignored; no workspace is opened, created or locked
-
-#### Scenario: Explicit revision
-- **WHEN** `--from SOURCE --ref REF` is supplied
-- **THEN** any Git revision may be selected, even an untagged commit or branch; every supplied ID must exist at that commit
-
-#### Scenario: Source package selection
-- **WHEN** no ID is supplied for a source with multiple packages, or an ID does not exist at the selected revision
-- **THEN** fork fails with `invalid_argument` listing the available packages and leaves no destination
 
 ### Requirement: Fork requires explicit namespace and destination
 `fork` SHALL require explicit `--ns NAMESPACE` and `--into DIR`. DIR MUST be new, outside the workspace and the source repository, without `..`. Existing destinations SHALL be refused unchanged. A failed fork SHALL remove directories it created.
@@ -52,7 +39,7 @@ Defines forking an installed package into an author repository under a new names
 - **AND** a later explicit `commit` with an existing release tag still fails with a tag conflict
 
 ### Requirement: Fork metadata
-The fork manifest SHALL get `forkOf` `{id, version, commit, source}` and `replaces` `{id, version}` from its revision of the cloned source (the installed revision for installed packages from that source, the starting revision for other packages); with `--from`, all packages SHALL record the resolved commit; `source` SHALL be the recorded source or canonicalized explicit source. Metadata and unknown keys SHALL be kept. HEAD SHALL be attached to a new branch `fork` (`fork-2`, … when taken).
+The fork manifest SHALL get `forkOf` `{id, version, commit, source}` and `replaces` `{id, version}` from its revision of the cloned source (the installed revision for installed packages from that source, the starting revision for other packages); `source` SHALL be the recorded source. Metadata and unknown keys SHALL be kept. HEAD SHALL be attached to a new branch `fork` (`fork-2`, … when taken).
 
 #### Scenario: Fork manifest
 - **WHEN** `acme/hello` 1.0.0, installed from `https://git.example/acme/hello.git`, is forked into namespace `me`
@@ -234,7 +221,7 @@ Forking SHALL keep the existing installation model: install the fork's committed
 - **THEN** `demo/b` remains unchanged and `my/b` is not automatically installed
 
 ### Requirement: Fork isolates source and destination state
-With `--from SOURCE`, fork SHALL clone the explicit source without reading or locking a workspace, exclude uncommitted source edits, and reject destinations inside a local source. Without `--from`, fork SHALL exclude local installation work and use only the recorded source at installed revisions. It SHALL reject unsupported recorded sources and existing destinations without changing the installation or an existing destination.
+Fork SHALL exclude local installation work and use only the recorded source at installed revisions. It SHALL reject unsupported recorded sources and existing destinations without changing the installation or an existing destination.
 
 #### Scenario: Unsupported recorded source
 - **WHEN** installation metadata names a remote helper or a relative source
