@@ -68,7 +68,6 @@ Verified by `catalog::validate_release_checks_identity_commit_paths_and_build` a
 - **WHEN** the sources file lists the same repository twice, also in another spelling of its path
 - **THEN** `catalog update` reads it once and indexes each release once
 
-
 #### Scenario: Submodule inside dist
 - **WHEN** the release contains a Git submodule at `dist/vendor`
 - **THEN** publication succeeds, hashing the staged export with an empty `vendor/` directory
@@ -100,7 +99,6 @@ A published version SHALL NOT change; a rejected `catalog register` or `catalog 
 #### Scenario: Invalid build metadata
 - **WHEN** `--build-url` is `http://…` or the SHA-256 is malformed
 - **THEN** catalog register fails with `catalog` ("build URL must use HTTPS" / "invalid build SHA-256") and no release is published (an empty top-level `catalog.json` may already have been created)
-
 
 #### Scenario: Submodule inside dist
 - **WHEN** the release contains a Git submodule at `dist/vendor`
@@ -311,3 +309,12 @@ Builds SHALL be tar.gz with output at the root, verified against archive SHA-256
 #### Scenario: Unsafe archive entry
 - **WHEN** an archive contains a link, special file or unsafe path
 - **THEN** it is refused before commit and cannot write outside staging
+
+### Requirement: Release output selection
+Build SHALL be preferred over Git; its output is the archive root, while Git output is the committed manifest-selected folder (default dist/).
+
+Verified by `declared_output_folders_install_redeploy_and_verify_catalog` and `install_update_and_offline_rollback_need_no_repository`.
+
+#### Scenario: Declared folder hashes
+- **WHEN** a Git release selects its root or a custom output folder
+- **THEN** catalog generation and verification hash exactly the same committed files as deployment
