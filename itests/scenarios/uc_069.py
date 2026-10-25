@@ -113,7 +113,7 @@ def export_ignore_deploys_and_hashes_committed_bytes(t: T):
 
 @case(fixture="catalog", spec=["catalog/register-one-version#submodule-inside-dist",
                                "catalog/catalog-generated-from-git-release-tags#submodule-inside-dist",
-                               "dist/deploys-copy-the-committed-tree#submodule-inside-dist"])
+                               "dist/symlinks-and-submodules-in-dist#submodule-inside-dist"])
 def gitlinks_warn_at_publication_and_deploy(t: T):
     """Authors and users see warnings; protected deploys keep gitlinks empty."""
     id = "b7222c4f-97a2-57f1-9a18-648afa1243e4"

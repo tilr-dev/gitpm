@@ -92,7 +92,7 @@ def invalid_version(t: T):
         t.not_installed("d135a7cf-1c63-549a-93cb-8f89656b2ced")
 
 
-@case(fixture="hello_installed", spec=["dist/a-revision-without-dist-is-refused#deploy-from-git-objects"])
+@case(fixture="hello_installed", spec=["dist/missing-output-diagnostics#deploy-from-git-objects"])
 def missing_dist(t: T):
     """No dist/ in the commit: rejected before anything is installed."""
     repo, sha = bad_repo(t, "nodist", {"plugin.json": manifest(id="8c16c3c5-6273-5fab-98f8-ac5e6e7fc904", version="0.1.0"),
@@ -142,7 +142,7 @@ def conflicting_ids(t: T):
     t.not_installed("9e0bb12a-06cf-5bd4-8340-6cdcd96cc6f3")
 
 
-@case(fixture="hello_installed", spec=["dist/deploys-copy-the-committed-tree"])
+@case(fixture="hello_installed", spec=["dist/symlinks-and-submodules-in-dist#symlink-inside-dist"])
 def symlinks_in_dist_cannot_escape(t: T):
     """dist/ entries that are symlinks (to a file outside, to a parent dir) are refused before deploy."""
     for name, link, target in [("filelink", "dist/index.js", "/etc/passwd"),
@@ -157,7 +157,7 @@ def symlinks_in_dist_cannot_escape(t: T):
         t.not_installed(id)
 
 
-@case(fixture="hello_installed", spec=["dist/deploys-copy-the-committed-tree"])
+@case(fixture="hello_installed", spec=["dist/symlinks-and-submodules-in-dist#submodule-inside-dist"])
 def submodule_in_dist_deploys_empty_folder(t: T):
     """A committed gitlink in dist/ deploys an empty folder and warns."""
     repo, sha = bad_repo(t, "submodule", {
