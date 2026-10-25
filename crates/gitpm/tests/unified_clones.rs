@@ -46,9 +46,11 @@ fn git(repo: &Path, args: &[&str]) -> String {
 }
 
 fn installed_workspace(dir: &TempDir) -> (PathBuf, PathBuf, Manager) {
-    let source = scaffold::init(&dir.path().join("source"), "acme", "root")
-        .unwrap()
-        .repo;
+    let source = common::author(
+        &dir.path().join("source"),
+        "365ade82-57cd-53a7-a61f-c790d46cba87",
+        "root",
+    );
     let root = dir.path().join("workspace");
     let manager = Manager::open(&root).unwrap();
     manager.install(source.to_str().unwrap()).unwrap();
@@ -59,8 +61,8 @@ fn installed_workspace(dir: &TempDir) -> (PathBuf, PathBuf, Manager) {
 fn copied_workspace_repairs_links_and_keeps_source_unchanged() {
     let dir = TempDir::new();
     let (source, root, original) = installed_workspace(&dir);
-    let record = original.state().unwrap().packages["acme/root"].clone();
-    let checkout = root.join("worktrees/acme/root");
+    let record = original.state().unwrap().packages["365ade82-57cd-53a7-a61f-c790d46cba87"].clone();
+    let checkout = root.join("worktrees/365ade82-57cd-53a7-a61f-c790d46cba87");
     let original_gitfile = fs::read(checkout.join(".git")).unwrap();
     let original_state = fs::read(root.join("state.json")).unwrap();
     let original_head = git(&checkout, &["rev-parse", "HEAD"]);
@@ -76,7 +78,7 @@ fn copied_workspace_repairs_links_and_keeps_source_unchanged() {
     );
     let manager = Manager::open(&copied).unwrap();
     assert_eq!(manager.list().unwrap().len(), 1);
-    let copied_checkout = copied.join("worktrees/acme/root");
+    let copied_checkout = copied.join("worktrees/365ade82-57cd-53a7-a61f-c790d46cba87");
     assert_eq!(
         fs::canonicalize(git(&copied_checkout, &["rev-parse", "--git-common-dir"])).unwrap(),
         copied.join("repos").join(record.clone.as_ref().unwrap())
@@ -91,12 +93,18 @@ fn copied_workspace_repairs_links_and_keeps_source_unchanged() {
         record.current.commit
     );
     scaffold::commit_package(&source, "0.2.0", None).unwrap();
-    manager.update("acme/root").unwrap();
+    manager
+        .update("365ade82-57cd-53a7-a61f-c790d46cba87")
+        .unwrap();
     assert_eq!(git(&copied_checkout, &["status", "--porcelain"]), "");
-    manager.rollback("acme/root").unwrap();
+    manager
+        .rollback("365ade82-57cd-53a7-a61f-c790d46cba87")
+        .unwrap();
     assert_eq!(git(&copied_checkout, &["status", "--porcelain"]), "");
     assert_eq!(git(&copied_checkout, &["rev-parse", "HEAD"]), original_head);
-    manager.uninstall("acme/root", &[], false).unwrap();
+    manager
+        .uninstall("365ade82-57cd-53a7-a61f-c790d46cba87", &[], false)
+        .unwrap();
     assert!(manager.list().unwrap().is_empty());
     assert!(!copied_checkout.exists());
     assert_eq!(fs::read(root.join("state.json")).unwrap(), original_state);
@@ -109,19 +117,27 @@ fn copied_workspace_repairs_links_and_keeps_source_unchanged() {
 fn moved_workspace_repairs_forgotten_worktrees_without_losing_local_work() {
     let dir = TempDir::new();
     let (_source, root, manager) = installed_workspace(&dir);
-    manager.forget("acme/root").unwrap();
-    fs::write(root.join("worktrees/acme/root/local.txt"), "keep me").unwrap();
+    manager
+        .forget("365ade82-57cd-53a7-a61f-c790d46cba87")
+        .unwrap();
+    fs::write(
+        root.join("worktrees/365ade82-57cd-53a7-a61f-c790d46cba87/local.txt"),
+        "keep me",
+    )
+    .unwrap();
     drop(manager);
     let moved = dir.path().join("moved");
     fs::rename(&root, &moved).unwrap();
     let before_state = fs::read(moved.join("state.json")).unwrap();
     let manager = Manager::open(&moved).unwrap();
-    let checkout = moved.join("worktrees/acme/root");
+    let checkout = moved.join("worktrees/365ade82-57cd-53a7-a61f-c790d46cba87");
     assert_eq!(git(&checkout, &["status", "--porcelain"]), "?? local.txt");
     assert_eq!(fs::read(checkout.join("local.txt")).unwrap(), b"keep me");
     assert_eq!(fs::read(moved.join("state.json")).unwrap(), before_state);
     fs::remove_file(checkout.join("local.txt")).unwrap();
-    manager.restore("acme/root").unwrap();
+    manager
+        .restore("365ade82-57cd-53a7-a61f-c790d46cba87")
+        .unwrap();
     assert_eq!(git(&checkout, &["status", "--porcelain"]), "");
     let gitfile = checkout.join(".git");
     let modified = fs::metadata(&gitfile).unwrap().modified().unwrap();
@@ -141,9 +157,11 @@ fn opening_workspace_through_alias_preserves_correct_links() {
         time::{Duration, SystemTime},
     };
     let dir = TempDir::new();
-    let source = scaffold::init(&dir.path().join("source"), "acme", "root")
-        .unwrap()
-        .repo;
+    let source = common::author(
+        &dir.path().join("source"),
+        "365ade82-57cd-53a7-a61f-c790d46cba87",
+        "root",
+    );
     let real = dir.path().join("real");
     fs::create_dir(&real).unwrap();
     let alias = dir.path().join("alias");
@@ -151,7 +169,7 @@ fn opening_workspace_through_alias_preserves_correct_links() {
     let root = alias.join("workspace");
     let manager = Manager::open(&root).unwrap();
     manager.install(source.to_str().unwrap()).unwrap();
-    let gitfile = root.join("worktrees/acme/root/.git");
+    let gitfile = root.join("worktrees/365ade82-57cd-53a7-a61f-c790d46cba87/.git");
     let content = fs::read(&gitfile).unwrap();
     // A fixed old timestamp makes rewrites observable without clock resolution races.
     let stamp = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
@@ -171,7 +189,7 @@ fn opening_workspace_through_alias_preserves_correct_links() {
     );
     assert_eq!(
         git(
-            &root.join("worktrees/acme/root"),
+            &root.join("worktrees/365ade82-57cd-53a7-a61f-c790d46cba87"),
             &["status", "--porcelain"]
         ),
         ""
@@ -183,7 +201,7 @@ fn opening_workspace_restores_missing_link_files() {
     for target in [".git", "gitdir", "commondir"] {
         let dir = TempDir::new();
         let (_source, root, manager) = installed_workspace(&dir);
-        let checkout = root.join("worktrees/acme/root");
+        let checkout = root.join("worktrees/365ade82-57cd-53a7-a61f-c790d46cba87");
         let gitfile = checkout.join(".git");
         let content = fs::read_to_string(&gitfile).unwrap();
         let admin = Path::new(content.trim().strip_prefix("gitdir: ").unwrap());
@@ -213,8 +231,8 @@ fn opening_workspace_restores_missing_link_files() {
 fn opening_workspace_refuses_symlinked_worktree_metadata_and_parents() {
     use std::os::unix::fs::symlink;
     for target in [
-        "worktrees/acme/root/.git",
-        "worktrees/acme",
+        "worktrees/365ade82-57cd-53a7-a61f-c790d46cba87/.git",
+        "worktrees/365ade82-57cd-53a7-a61f-c790d46cba87",
         "repos",
         "gitdir",
         "commondir",
@@ -223,7 +241,10 @@ fn opening_workspace_refuses_symlinked_worktree_metadata_and_parents() {
         let (_source, root, manager) = installed_workspace(&dir);
         drop(manager);
         let path = if matches!(target, "gitdir" | "commondir") {
-            let gitfile = fs::read_to_string(root.join("worktrees/acme/root/.git")).unwrap();
+            let gitfile = fs::read_to_string(
+                root.join("worktrees/365ade82-57cd-53a7-a61f-c790d46cba87/.git"),
+            )
+            .unwrap();
             Path::new(gitfile.trim().strip_prefix("gitdir: ").unwrap()).join(target)
         } else {
             root.join(target)
