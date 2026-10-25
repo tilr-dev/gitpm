@@ -22,7 +22,7 @@ The deployed folder `dist/<namespace>/<name>/` SHALL exist exactly when the pack
 - **THEN** `dist/acme/greeter/` does not exist, `dist/me/greeter/` does, and `acme/greeter` stays `enabled: true` with `active: false` in `list`
 
 ### Requirement: Deploys copy the committed tree
-Git deploys SHALL copy the resolved commit’s manifest-selected package output (default `<path>/dist`; `"."` selects `<path>`) from Git objects, never the working tree. Builds SHALL deploy cached verified output without Git or network. Both SHALL preserve nested folders and executable bits. Symlinks SHALL fail with `unsupported`. Gitlinks SHALL become empty directories without fetching submodules, with an actionable warning naming the path and advising committing built files instead.
+Managed Git deploys SHALL copy committed manifest-selected output (default `<path>/dist`; `"."`: `<path>`) from Git objects, never the working tree. Builds SHALL deploy cached verified output without Git/network. Both SHALL preserve nested folders and executable bits. Symlinks SHALL fail with `unsupported`; gitlinks SHALL become empty folders without fetching, with a path-naming warning to commit built files instead. Links follow "Linked deployments expose the author installation folder".
 
 #### Scenario: Symlink inside dist
 - **WHEN** a release's package dist contains a symlink
@@ -89,10 +89,10 @@ A Git revision without its declared output folder (default dist/) SHALL fail wit
 - **THEN** `dist/acme/greeter/` is removed and `dist/me/greeter/` still holds the fork's files
 
 ### Requirement: Switching back redeploys the original
-`replace ORIGINAL --back` SHALL deploy `dist/ORIGINAL/` again from ORIGINAL's clone at its installed commit (and package folder), without a checkout of a shared clone; the former replacing package stays deployed while it is installed and enabled.
+`replace ORIGINAL --with ORIGINAL` SHALL deploy `dist/ORIGINAL/` again from ORIGINAL's clone at its installed commit (and package folder), without a checkout of a shared clone; the former replacing package stays deployed while it is installed and enabled.
 
 #### Scenario: Back to the original
-- **WHEN** `acme/greeter` was replaced by `me/greeter` and the user runs `replace acme/greeter --back`
+- **WHEN** `acme/greeter` was replaced by `me/greeter` and the user runs `replace acme/greeter --with acme/greeter`
 - **THEN** `dist/acme/greeter/` is deployed again and `dist/me/greeter/` remains
 
 ### Requirement: Enable and disable deploy and remove
@@ -111,11 +111,11 @@ A Git revision without its declared output folder (default dist/) SHALL fail wit
 - **THEN** `dist/app/` is not created
 
 ### Requirement: Inactive packages change state and clone only
-`download`, and `install`, `update` and `rollback` of a replaced or disabled package, SHALL change state and clone only; its deployed folder SHALL appear only on `replace --back` or `enable`. Verified by `update_and_rollback_of_a_replaced_package_leave_dist_alone_until_back`, `installing_a_package_that_is_replaced_deploys_nothing` and `workspace::download_records_disabled_packages_and_dependencies`.
+`download`, and `install`, `update` and `rollback` of a replaced or disabled package, SHALL change state and clone only; its deployed folder SHALL appear only on `replace ORIGINAL --with ORIGINAL` or `enable`. Verified by `update_and_rollback_of_a_replaced_package_leave_dist_alone_until_back`, `installing_a_package_that_is_replaced_deploys_nothing` and `workspace::download_records_disabled_packages_and_dependencies`.
 
 #### Scenario: Update of a replaced package
 - **WHEN** a replaced `acme/greeter` is updated from 0.1.0 to 0.2.0
-- **THEN** its state shows 0.2.0, `dist/acme/greeter/` still does not exist, and a later `replace acme/greeter --back` deploys 0.2.0
+- **THEN** its state shows 0.2.0, `dist/acme/greeter/` still does not exist, and a later `replace acme/greeter --with acme/greeter` deploys 0.2.0
 
 #### Scenario: Download deploys nothing
 - **WHEN** the user runs `download ./greeter`
@@ -129,7 +129,7 @@ A Git revision without its declared output folder (default dist/) SHALL fail wit
 - **THEN** `dist/acme/greeter/` is removed by the first and deployed again by the second
 
 ### Requirement: Every mutating command reconciles all of dist
-Every mutating command (install, `install-catalog`, `download`, `download-catalog`, update, `update all`, rollback, replace, `replace --back`, enable, disable, forget, restore, uninstall, `sync-dist`) SHALL, inside its transaction, deploy the missing deployed folders of active packages and remove those of inactive known packages. An existing deployed folder of an active package MUST NOT be rewritten. Verified by `any_mutating_command_reconciles_the_whole_dist`.
+Every mutating command (install, `install-catalog`, `download`, `download-catalog`, update, `update all`, rollback, replace, `replace ORIGINAL --with ORIGINAL`, enable, disable, forget, restore, uninstall, `sync-dist`) SHALL, inside its transaction, deploy the missing deployed folders of active packages and remove those of inactive known packages. An existing deployed folder of an active package MUST NOT be rewritten. Verified by `any_mutating_command_reconciles_the_whole_dist`.
 
 #### Scenario: Repeated install
 - **WHEN** `install` finds the package already installed and enabled from the same source
@@ -228,3 +228,29 @@ When dependency and replacement guards permit it, repeating enable or disable SH
 #### Scenario: Repeat enable repairs missing dist
 - **WHEN** an enabled package is enabled again while another active package has a missing deployed folder
 - **THEN** the operation reconciles dist and restores that folder, preserving workspace state and clone bytes
+
+### Requirement: Linked deployments expose the author installation folder
+For link records, gitpm SHALL deploy `dist/<id>` as a symlink to the author-owned installation folder. It SHALL use the same `plugin.json.dist` folder selection as managed install: `"dist"` by default, or the configured package-relative folder (`"."` selects the package root). gitpm MUST NOT build, watch, copy or change its contents.
+
+#### Scenario: Uncommitted author edits
+- **WHEN** an active linked package's author edits a file in its installation folder
+- **THEN** reading that file through `dist/<id>` returns the edited bytes without a commit or another gitpm operation
+
+#### Scenario: Author-maintained build output
+- **WHEN** the package declares an installation folder and the author writes new output there
+- **THEN** `dist/<id>` resolves to that folder and exposes the new output without gitpm executing a build or watcher
+
+### Requirement: Linked deployments follow activity without owning their target
+Enable, disable, replacement, forget, restore, uninstall and reconciliation SHALL create or remove the linked package's deployed entry according to the existing active-package rules. They MUST NOT require a managed clone for a link record or delete or modify its external target. Missing linked folders SHALL be reported structurally as not deployed, with the link mode retained, and unrelated packages SHALL remain operable under the existing reconciliation rules.
+
+#### Scenario: Disable and enable a link
+- **WHEN** an enabled linked package is disabled and then enabled
+- **THEN** its symlink is removed and recreated, and its external folder keeps its contents
+
+#### Scenario: Author moves the target away
+- **WHEN** a recorded linked folder no longer exists and reconciliation runs for another package
+- **THEN** the report identifies the unavailable linked package and its link mode, and no clone or build output is created for it
+
+#### Scenario: Existing link namespace becomes blocked
+- **WHEN** the namespace directory of an existing link becomes a file or symlink and an independent package is changed
+- **THEN** reconciliation reports the blocked link as not deployed with its descriptor, without traversing the blocked namespace or preventing the independent change

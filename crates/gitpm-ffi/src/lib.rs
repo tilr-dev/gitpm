@@ -76,7 +76,7 @@ pub enum PmError {
         dependents: Vec<String>,
         lost_work: Vec<LostWork>,
     },
-    /// `consumers` do not accept the new provider's version; retry with `confirm`.
+    /// `consumers` do not accept the new provider's version; replacement is refused.
     #[error("{message}")]
     IncompatibleReplacement {
         id: String,
@@ -185,7 +185,7 @@ impl From<pm::Revision> for Revision {
     }
 }
 
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct ForkOf {
     pub id: String,
     pub version: String,
@@ -247,7 +247,8 @@ impl From<pm::deps::DependencyStatus> for DependencyStatus {
 pub struct InstalledPackage {
     pub id: String,
     pub source: String,
-    pub current: Revision,
+    pub current: Option<Revision>,
+    pub version: Option<String>,
     pub previous: Option<Revision>,
     pub enabled: bool,
     /// What `update(id, .recorded)` follows: releases, a pinned ref or a branch.
@@ -280,7 +281,8 @@ impl From<pm::InstalledPackage> for InstalledPackage {
         Self {
             id: p.id,
             source: p.source,
-            current: p.current.into(),
+            current: p.current.map(Into::into),
+            version: p.version,
             previous: p.previous.map(Into::into),
             enabled: p.enabled,
             mode: p.mode.into(),
@@ -307,9 +309,16 @@ pub enum Mode {
     /// Follows the newest release.
     Release,
     /// Fixed at a tag or commit, as the user gave it.
-    Pinned { reference: String },
+    Pinned {
+        reference: String,
+    },
     /// Follows the HEAD of this branch of the origin.
-    Branch { name: String },
+    Branch {
+        name: String,
+    },
+    Link {
+        descriptor: LinkDescriptor,
+    },
 }
 impl From<pm::Mode> for Mode {
     fn from(mode: pm::Mode) -> Self {
@@ -317,6 +326,66 @@ impl From<pm::Mode> for Mode {
             pm::Mode::Release => Mode::Release,
             pm::Mode::Pinned(reference) => Mode::Pinned { reference },
             pm::Mode::Branch(name) => Mode::Branch { name },
+            pm::Mode::Link(link) => Mode::Link {
+                descriptor: link.into(),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct LinkDescriptor {
+    pub package_root: String,
+    pub target: String,
+    pub discovery: Option<LinkDiscovery>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct LinkDiscovery {
+    pub fork_of: ForkOf,
+}
+impl From<pm::LinkDescriptor> for LinkDescriptor {
+    fn from(l: pm::LinkDescriptor) -> Self {
+        Self {
+            package_root: l.package_root,
+            target: l.target,
+            discovery: l.discovery.map(|d| LinkDiscovery {
+                fork_of: d.fork_of.into(),
+            }),
+        }
+    }
+}
+impl From<LinkDescriptor> for pm::LinkDescriptor {
+    fn from(l: LinkDescriptor) -> Self {
+        Self {
+            package_root: l.package_root,
+            target: l.target,
+            discovery: l.discovery.map(|d| pm::LinkDiscovery {
+                fork_of: pm::ForkOf {
+                    id: d.fork_of.id,
+                    version: d.fork_of.version,
+                    commit: d.fork_of.commit,
+                    source: d.fork_of.source,
+                },
+            }),
+        }
+    }
+}
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct LinkResult {
+    pub id: String,
+    pub version: String,
+    pub mode: Mode,
+    pub refreshed: bool,
+    pub dist: DistSync,
+}
+impl From<pm::LinkResult> for LinkResult {
+    fn from(r: pm::LinkResult) -> Self {
+        Self {
+            id: r.id,
+            version: r.version,
+            mode: r.mode.into(),
+            refreshed: r.refreshed,
+            dist: r.dist.into(),
         }
     }
 }
@@ -324,6 +393,10 @@ impl From<pm::Mode> for Mode {
 /// Why an update left a package where it was.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
 pub enum UnchangedReason {
+    DevLinked {
+        availability: Box<CheckRow>,
+        dependency_problems: Vec<String>,
+    },
     /// Pinned to `reference`: only an explicit target moves it.
     Pinned { reference: String },
     /// Branch mode (`updateAll`): the branch history no longer contains the installed
@@ -344,6 +417,13 @@ pub enum UnchangedReason {
 impl From<pm::UnchangedReason> for UnchangedReason {
     fn from(reason: pm::UnchangedReason) -> Self {
         match reason {
+            pm::UnchangedReason::DevLinked {
+                availability,
+                dependency_problems,
+            } => UnchangedReason::DevLinked {
+                availability: Box::new((*availability).into()),
+                dependency_problems,
+            },
             pm::UnchangedReason::Pinned { reference } => UnchangedReason::Pinned { reference },
             pm::UnchangedReason::Diverged { branch } => UnchangedReason::Diverged { branch },
             pm::UnchangedReason::BranchGone { branch } => UnchangedReason::BranchGone { branch },
@@ -410,11 +490,11 @@ pub struct ReplacementPlan {
     pub version: String,
     pub current: Option<String>,
     pub consumers: Vec<String>,
-    /// Non-empty: ask the user, then call again with `confirm = true`.
+    /// Non-empty: replacement is refused.
     pub incompatible: Vec<IncompatibleConsumer>,
     /// Installed version of `provider` (the fork; the original when switching back).
     pub installed_version: Option<String>,
-    /// Reconciliation report of `replace`/`switchBack` (empty for a plan).
+    /// Reconciliation report of `replace` (empty for a plan).
     pub dist: DistSync,
 }
 impl From<pm::ReplacementPlan> for ReplacementPlan {
@@ -435,6 +515,51 @@ impl From<pm::ReplacementPlan> for ReplacementPlan {
                 .collect(),
             installed_version: p.installed_version,
             dist: p.dist.into(),
+        }
+    }
+}
+/// One unsatisfied dependency of an active package.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ReplacementIssue {
+    pub consumer: String,
+    pub dependency: DependencyStatus,
+}
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ReplacementCheck {
+    pub plan: ReplacementPlan,
+    pub issues: Vec<ReplacementIssue>,
+    pub missing: std::collections::HashMap<String, String>,
+    pub resolution_error: Option<String>,
+}
+impl From<pm::ReplacementCheck> for ReplacementCheck {
+    fn from(c: pm::ReplacementCheck) -> Self {
+        Self {
+            plan: c.plan.into(),
+            issues: c
+                .issues
+                .into_iter()
+                .map(|i| ReplacementIssue {
+                    consumer: i.consumer,
+                    dependency: i.dependency.into(),
+                })
+                .collect(),
+            missing: c.missing.into_iter().collect(),
+            resolution_error: c.resolution_error,
+        }
+    }
+}
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ReplacementResolution {
+    pub installed: Vec<InstalledDependency>,
+    pub check: ReplacementCheck,
+    pub dist: DistSync,
+}
+impl From<pm::ReplacementResolution> for ReplacementResolution {
+    fn from(r: pm::ReplacementResolution) -> Self {
+        Self {
+            installed: r.installed.into_iter().map(Into::into).collect(),
+            check: r.check.into(),
+            dist: r.dist.into(),
         }
     }
 }
@@ -731,6 +856,7 @@ pub struct SkippedDist {
     pub reason: String,
     /// The clone is gone: uninstall or forget drops the record.
     pub clone_missing: bool,
+    pub link: Option<LinkDescriptor>,
 }
 impl From<pm::DistSync> for DistSync {
     fn from(s: pm::DistSync) -> Self {
@@ -746,6 +872,7 @@ impl From<pm::DistSync> for DistSync {
                     id: s.id,
                     reason: s.reason,
                     clone_missing: s.clone_missing,
+                    link: s.link.map(Into::into),
                 })
                 .collect(),
         }
@@ -765,6 +892,7 @@ impl From<DistSync> for pm::DistSync {
                     id: s.id,
                     reason: s.reason,
                     clone_missing: s.clone_missing,
+                    link: s.link.map(Into::into),
                 })
                 .collect(),
         }
@@ -823,7 +951,7 @@ impl From<pm::UninstallPlan> for UninstallPlan {
     }
 }
 
-#[derive(Debug, Clone, Copy, uniffi::Enum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum CheckStatus {
     DifferentSource,
     InvalidCatalogData,
@@ -877,7 +1005,7 @@ impl From<pm::check::CheckSource> for CheckSource {
     }
 }
 
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct CheckRow {
     pub id: String,
     pub installed: String,
@@ -903,7 +1031,7 @@ pub struct CheckRow {
     /// A newer pre-release that is not offered (pre-releases are opt-in).
     pub prerelease: Option<String>,
 }
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct Upstream {
     pub id: String,
     /// Original version the fork started from.
@@ -985,7 +1113,8 @@ impl From<pm::check::CheckReport> for CheckReport {
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct PackageRecord {
     pub source: String,
-    pub current: Revision,
+    pub current: Option<Revision>,
+    pub version: Option<String>,
     pub previous: Option<Revision>,
     pub enabled: bool,
     pub mode: Mode,
@@ -1003,9 +1132,11 @@ pub struct PackageRecord {
 }
 impl From<pm::Installed> for PackageRecord {
     fn from(p: pm::Installed) -> Self {
+        let linked = p.link().is_some();
         Self {
             source: p.source,
-            current: p.current.into(),
+            version: linked.then(|| p.current.version.clone()),
+            current: (!linked).then(|| p.current.into()),
             previous: p.previous.map(Into::into),
             enabled: p.enabled,
             mode: p.mode.into(),
@@ -1316,6 +1447,9 @@ impl PackageManager {
     pub fn root(&self) -> String {
         self.inner.root().to_string_lossy().into_owned()
     }
+    pub fn link(&self, package: String) -> Result<LinkResult> {
+        Ok(self.inner.link(package)?.into())
+    }
     pub fn list(&self) -> Result<Vec<InstalledPackage>> {
         Ok(self.inner.list()?.into_iter().map(Into::into).collect())
     }
@@ -1457,31 +1591,23 @@ impl PackageManager {
     pub fn replace_plan(&self, original: String, replacement: String) -> Result<ReplacementPlan> {
         Ok(self.inner.replace_plan(&original, &replacement)?.into())
     }
-    /// Make `replacement` the provider of `original` for every consumer. Unsatisfied
-    /// consumers refuse with `IncompatibleReplacement` unless `confirm`. Removes
-    /// `dist/<original>`; the replacement keeps its own `dist/`.
-    pub fn replace(
+    /// Refuse incompatible provider dependencies (transitively) or active consumers'
+    /// requirements on the original; unrelated breakage is diagnostic only.
+    /// No confirmation or automatic installs.
+    pub fn replace(&self, original: String, replacement: String) -> Result<ReplacementPlan> {
+        Ok(self.inner.replace(&original, &replacement)?.into())
+    }
+    /// Read-only check of the complete proposed workspace.
+    pub fn replace_check(&self, original: String, replacement: String) -> Result<ReplacementCheck> {
+        Ok(self.inner.replace_check(&original, &replacement)?.into())
+    }
+    /// Explicitly install missing dependencies, without applying the replacement.
+    pub fn replace_resolve(
         &self,
         original: String,
         replacement: String,
-        confirm: bool,
-    ) -> Result<ReplacementPlan> {
-        Ok(self.inner.replace(&original, &replacement, confirm)?.into())
-    }
-    pub fn switch_back_plan(&self, original: String) -> Result<ReplacementPlan> {
-        Ok(self.inner.switch_back_plan(&original)?.into())
-    }
-    /// Every consumer uses the installed original again (same confirmation rule);
-    /// `dist/<original>` is deployed again. Consumers the original does not serve (not
-    /// installed, disabled) refuse with `HasDependents` unless `force`.
-    #[uniffi::method(default(force = false))]
-    pub fn switch_back(
-        &self,
-        original: String,
-        confirm: bool,
-        force: bool,
-    ) -> Result<ReplacementPlan> {
-        Ok(self.inner.switch_back(&original, confirm, force)?.into())
+    ) -> Result<ReplacementResolution> {
+        Ok(self.inner.replace_resolve(&original, &replacement)?.into())
     }
     /// Fork the entire source repository of an installed package into a new folder
     /// `destination` outside the workspace. Every package receives a new namespace;
@@ -1705,6 +1831,7 @@ mod tests {
                         id: "x/one".into(),
                         reason: "clone missing".into(),
                         clone_missing: true,
+                        link: None,
                     }],
                     ..Default::default()
                 }),
@@ -1991,7 +2118,8 @@ mod tests {
         let package = InstalledPackage::from(pm::InstalledPackage {
             id: "me/x".into(),
             source: "src".into(),
-            current: revision("1.0.0"),
+            current: Some(revision("1.0.0")),
+            version: None,
             previous: Some(revision("0.9.0")),
             enabled: false,
             mode: pm::Mode::Branch("main".into()),
@@ -2033,8 +2161,8 @@ mod tests {
         assert_eq!(package.tags, ["ui", "dark"]);
         assert_eq!(
             (
-                package.current.version.as_str(),
-                package.current.commit.as_str()
+                package.current.as_ref().unwrap().version.as_str(),
+                package.current.as_ref().unwrap().commit.as_str()
             ),
             ("1.0.0", "1.0.0-commit")
         );
@@ -2153,6 +2281,7 @@ mod tests {
                 id: "me/y".into(),
                 reason: "clone missing".into(),
                 clone_missing: true,
+                link: None,
             }],
         };
         let check_report = |dist: &DistSync| {
@@ -2394,6 +2523,34 @@ mod tests {
             installed_version: Some("0.3.0".into()),
             dist: report(),
         };
+        let replacement_report = pm::ReplacementCheck {
+            plan: replacement.clone(),
+            issues: vec![pm::ReplacementIssue {
+                consumer: "app/x".into(),
+                dependency: pm::deps::DependencyStatus {
+                    id: "lib/new".into(),
+                    requirement: "^1".into(),
+                    provider: None,
+                    version: None,
+                    satisfied: false,
+                    problem: Some("not installed".into()),
+                },
+            }],
+            missing: std::collections::BTreeMap::from([("lib/new".into(), "1.0.0".into())]),
+            resolution_error: None,
+        };
+        let ffi_report = ReplacementCheck::from(replacement_report.clone());
+        assert_eq!(ffi_report.issues[0].consumer, "app/x");
+        assert_eq!(ffi_report.issues[0].dependency.id, "lib/new");
+        assert_eq!(ffi_report.missing["lib/new"], "1.0.0");
+        assert!(ffi_report.resolution_error.is_none());
+        let resolution = ReplacementResolution::from(pm::ReplacementResolution {
+            check: replacement_report,
+            installed: vec![],
+            dist: pm::DistSync::default(),
+        });
+        assert_eq!(resolution.check.plan.provider, replacement.provider);
+        assert!(resolution.installed.is_empty());
         let ffi = ReplacementPlan::from(replacement.clone());
         assert_eq!(ffi.installed_version.as_deref(), Some("0.3.0"));
         assert_eq!(ffi.incompatible[0].requirement, "^2");
@@ -2456,6 +2613,10 @@ mod tests {
                 let _ = catalog_release;
                 vec!["installFromCatalog", "catalogRelease"]
             }),
+            ("link", {
+                let _ = PackageManager::link;
+                vec!["link"]
+            }),
             ("install", {
                 let _ = PackageManager::install;
                 vec!["install"]
@@ -2517,9 +2678,15 @@ mod tests {
             ("replace", {
                 let _ = PackageManager::replace_plan;
                 let _ = PackageManager::replace;
-                let _ = PackageManager::switch_back_plan;
-                let _ = PackageManager::switch_back;
-                vec!["replacePlan", "replace", "switchBackPlan", "switchBack"]
+                vec!["replacePlan", "replace"]
+            }),
+            ("replace-check", {
+                let _ = PackageManager::replace_check;
+                vec!["replaceCheck"]
+            }),
+            ("replace-resolve", {
+                let _ = PackageManager::replace_resolve;
+                vec!["replaceResolve"]
             }),
             ("sync-dist", {
                 let _ = PackageManager::sync_dist_plan;
@@ -2904,12 +3071,18 @@ mod tests {
         assert_eq!((list[0].id.as_str(), list[0].enabled), ("me/x", false));
         assert_eq!(list[0].fork_of.as_ref().unwrap().id, "vendor/x");
         assert_eq!(view.format, 1);
-        assert_eq!(view.packages["me/x"].current.version, "1.0.0");
+        assert_eq!(
+            view.packages["me/x"].current.as_ref().unwrap().version,
+            "1.0.0"
+        );
 
         let manager =
             PackageManager::open(root.to_string_lossy().into(), ManagerOptions::default()).unwrap();
         assert_eq!(manager.root(), root.to_string_lossy());
-        assert_eq!(manager.list().unwrap()[0].current.version, "1.0.0");
+        assert_eq!(
+            manager.list().unwrap()[0].current.as_ref().unwrap().version,
+            "1.0.0"
+        );
         // Without a catalog check asks the origin; "s" is unreachable: a row, no error.
         let report = check(root.to_string_lossy().into(), None, true).unwrap();
         assert!(matches!(

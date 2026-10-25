@@ -137,6 +137,87 @@ lib/core enabled
 acme/app enabled
 ```
 
+### Live author folders
+
+```sh
+gitpm link ./hello                   # link this package's ready dist/ output
+gitpm link ./repo/packages/theme     # select one package, leaving siblings alone
+gitpm check
+gitpm update all --dry-run
+gitpm uninstall acme/hello           # remove the workspace entry; keep the author tree
+```
+
+`link LOCAL_PACKAGE_PATH` (library `Manager::link`, FFI `PackageManager.link`)
+validates the local manifest and publishes `dist/<namespace>/<name>` as a symlink
+to its canonical absolute installation folder. As for managed installs,
+`plugin.json.dist` defaults to `"dist"`; `"."` selects the package root and any other
+valid package-relative folder selects that output. Prepare missing output yourself:
+gitpm never builds or watches it. Author edits become visible through the deployed
+path immediately, including uncommitted files. The host may still need to reload.
+
+Linking snapshots identity, declared version, dependencies, metadata and the
+replacement offer. Editing the external manifest does not change that snapshot;
+run `link` again to validate and refresh it, including an explicitly changed output
+folder. New dependencies must already be satisfied by installed providers. A
+managed installation of the same ID must be explicitly uninstalled first; linking
+never silently converts it. Workspace-owned folders, cycles and non-UTF-8 canonical paths are refused with `workspace`.
+
+A live record has no installed revision or owned clone:
+
+```json
+{
+  "mode": {"link": {"packageRoot": "/work/hello", "target": "/work/hello/dist"}},
+  "enabled": true,
+  "version": "0.1.0",
+  "dependencies": {},
+  "metadata": {"title": null, "description": null, "provides": [], "tags": []}
+}
+```
+
+`source` is recorded when a usable origin is available. Link records omit
+`current`, `previous`, `clone`, `path`, `catalog` and top-level `forkOf`. The library's
+resolved `InstalledPackage.current` and FFI `InstalledPackage.current` /
+`PackageRecord.current` are optional: links instead carry `version`. A version on
+a link is a declared snapshot, not a guarantee of reproducible bytes. State format
+stays 1 before the first public release; recreate an incompatible workspace by
+installing its packages again in a new root. There is no migration reader; foreign
+formats are refused unchanged with `unsupported`.
+
+Check and updates query releases without fetching into the author's repository.
+Update results carry `dev_linked` disposition with a structured availability row
+and separate dependency problems. A newer release, no releases or an unreachable
+source is reported explicitly alongside link mode. Even an explicit `--ref`,
+`--dev`, `--release` or `--detach` keeps a link unchanged. Joint updates hold its
+recorded version and dependencies fixed while healthy managed packages can update.
+Dry-run reports the same disposition without writing anything.
+
+Disable, enable, forget, restore, replacement and reconciliation manage only the
+workspace symlink and state. A forgotten link retains its descriptor; missing
+output is reported with its link descriptor in `DistSync.skipped`. Uninstall plans
+list the owned workspace entry and never list the author folder for deletion.
+Dirty files, staged work, ignored output, stashes and unpublished refs in that
+folder remain untouched, including forced removal. Rollback fails with
+`no_previous_version`. Transactions stage and recover symlink entries with state
+published last; external files are never snapshotted or rolled back. Atomicity
+covers workspace entries and state, not a concurrent external build's whole output.
+
+Fork preparation and live installation are separate:
+
+```sh
+gitpm fork acme/hello --ns me --into hello-fork
+# Build the manifest-selected output yourself if needed.
+gitpm link ./hello-fork
+gitpm replace acme/hello --with me/hello
+```
+
+Fork alone changes no workspace installation, deployment or release tags. Link
+installs only the selected fork package, without a release or replacement binding.
+The last explicit step uses the validated top-level `replaces` offer and existing
+compatibility/dependency checks. Consumers then load the live fork deployment.
+Its original-upstream discovery uses the validated
+`mode.link.discovery.forkOf` snapshot until relink refreshes it; changing the
+external provenance or offer alone has no effect.
+
 ### Releases, pinned refs and branches
 
 Every installed package has a mode, recorded in `state.json` as `mode` (omitted in
@@ -349,8 +430,10 @@ gitpm --root ./workspace replace demo/a --with my/a
 An explicit `commit` still refuses an existing release tag. Fork does not delete
 inherited tags or choose a new version automatically. Installing `my/a` does not
 automatically install a sibling `my/b` unless dependency resolution requires it.
-`replace` handles incompatible consumers with its usual TTY confirmation or
-explicit `--force` and prints the provider's installed and declared versions.
+`replace` refuses incompatible consumers without changing the workspace. Use
+`replace-check` for diagnostics and `replace-resolve` to explicitly install missing
+dependencies; replace has no TTY confirmation or `--force` bypass. Successful output
+prints the provider's installed and declared versions.
 
 Output: stdout carries the result lines (one per affected package for workspace-mutating
 commands, JSON for `list`, `catalog links` and `catalog register`); everything else goes to stderr:
@@ -396,7 +479,7 @@ Changed in 0.5:
   | `forget`, `restore` | `ID forgotten (clone kept; restore re-registers it)`, `ID restored VERSION` |
   | `uninstall` | `ID uninstalled` |
   | `replace --with` | `ORIGINAL replaced by FORK VERSION [(as ORIGINAL V)] for: consumers` (was `ORIGINAL → FORK …`) |
-  | `replace --back` | `ORIGINAL switched back from FORK (ORIGINAL VERSION for: consumers); FORK stays installed and enabled (disable or uninstall it if not wanted)` |
+  | `replace ORIGINAL --with ORIGINAL` | `ORIGINAL switched back from FORK (ORIGINAL VERSION for: consumers); FORK stays installed and enabled (disable or uninstall it if not wanted)` |
   | `fork` | `FORK forked from ORIGINAL (FOLDER)` (was `Forked: ORIGINAL → FORK …`) |
   | `commit` | `ID committed VERSION (local commit and tag TAG)` |
   | `migrate-catalog` | `Catalog migrated: LOCATION (format v2, one folder per plugin)` (was silent) |
@@ -418,13 +501,19 @@ Changed in 0.5:
   `plugins/<namespace>`, `repos`).
 - `dist/` holds only active packages (installed, enabled, not replaced; see
   [Workspace layout](#workspace-layout-and-dist)): `replace` removes the original's
-  `dist/`, `replace --back` and `enable` deploy it again, `disable` and `forget` remove
+  `dist/`, `replace ORIGINAL --with ORIGINAL` and `enable` deploy it again, `disable` and `forget` remove
   it. Hosts no longer need `resolved[].replacing`/`.enabled` to pick what to load: load
   everything under `dist/` (or use the new `resolved[].active`). A workspace written by 0.4 keeps every installed package
   there: the first mutating command fixes it; until then (only read-only commands since
   upgrading) run `gitpm sync-dist` (FFI `syncDist`) once.
 
 Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING**):
+
+- **BREAKING:** Explicit `link` installs live author output with `Mode::Link` and a
+  discriminated state record. Resolved library and FFI package views make `current`
+  optional and expose a declared `version` for links. `dev_linked` update reasons
+  carry release availability and dependency problems; skipped deployment reports
+  retain link descriptors. See [live author folders](#live-author-folders).
 
 - **BREAKING:** Catalog releases with `build {url, sha256}` now install from that archive,
   rather than ignoring it. Artifacts are `.tar.gz`, with output files at the archive root;
@@ -698,7 +787,7 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   disabled dependency (dependencies are pulled as usual); `install` over a package
   downloaded (disabled) from the same source enables it and prints `installed …`
   (`already installed` only for an enabled package). The `--force` usage error is now
-  `--force is only valid with uninstall/disable/enable/install/install-catalog/forget/replace`.
+  `--force is only valid with uninstall/disable/enable/install/install-catalog/forget`.
 - New `download SOURCE [ID] [--package ID] [--ref REF | --dev]` and `download-catalog
   ID [--version V]`: clone, verify and record like `install`/`install-catalog`, but
   disabled and without deploying; missing dependencies are downloaded disabled. Output
@@ -723,17 +812,12 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   missing, disabled or of another version), and `dependents` names only those consumers
   (disabling an active fork used to be refused always, naming the originals). The
   reactivated original's dependencies are checked like `enable` (`dependency_conflict`;
-  forceable for the removals, not for `replace --back`). Migration: `disable --force` of
+  forceable for the removals, not for `replace ORIGINAL --with ORIGINAL`). Migration: `disable --force` of
   a fork is no longer needed when the original serves its consumers.
 - `replace ORIGINAL --with FORK` requires ORIGINAL to be installed (`not_installed`);
-  `replace ORIGINAL --back` with ORIGINAL not installed drops the binding (was
-  `not_installed`), refusing with `has_dependents` unless `--force` when consumers would
-  break, and prints `ORIGINAL switched back from FORK (ORIGINAL is not installed; broken:
-  …)`; its `ReplacementPlan` has `installed_version: None` and an empty `version`.
-  `Manager::switch_back(original, confirm, force)` (FFI `switchBack(original, confirm,
-  force)`): consumers a missing or disabled original does not serve refuse with
-  `has_dependents` unless `force`. Migration: install the original before replacing it;
-  pass `force` to switch back anyway.
+  Returning now uses `replace ORIGINAL --with ORIGINAL` with the same replacement dependency
+  check: an absent or disabled original refuses without a force bypass. The former
+  `switch_back` API and replacement confirmation have been removed.
 - Uninstall is bound to its plan: `Manager::uninstall(id, confirmed: &[LostWork], force)`
   replaces `uninstall(id, confirm)` and `uninstall_with(id, confirm, force)` (both
   removed) and refuses with `local_changes` listing the work not in `confirmed`;
@@ -753,7 +837,7 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   (no clone; record and dist removed)` when the clone was gone. Migration: read `.dist`.
 - A replacing package is always enabled: a `state.json` binding an original to a disabled
   package (produced by gitpm ≤0.5 `disable --force` or a hand edit) is refused with
-  `invalid_data`, and the `replace --back` line always ends `; FORK stays installed and
+  `invalid_data`, and the `replace ORIGINAL --with ORIGINAL` line always ends `; FORK stays installed and
   enabled (…)`. Migration: remove the entry from `replacements` in `state.json`.
 - No tag policing: a moved (retagged) or deleted release tag no longer fails `update`,
   `update all`, an install or update of a sibling in a shared clone, or `catalog update`
@@ -911,7 +995,7 @@ the FFI `InstalledPackage`) has `active`: exactly this rule, so a host using `li
 not derive it. `enabled` is not `active`: a replaced package stays `enabled: true` with
 `active: false`. `list --provides SERVICE` keeps inactive packages (it is a status view).
 
-- Every deploy (install, update, rollback, restore, `replace --back`, enable, reconcile)
+- Every deploy (install, update, rollback, restore, `replace ORIGINAL --with ORIGINAL`, enable, reconcile)
   copies the folder its committed manifest selects with `dist` (default `<path>/dist`)
   from the clone's Git objects using
   `git ls-tree` and `git cat-file`, never the working tree: uncommitted edits in a clone are not deployed,
@@ -926,7 +1010,7 @@ not derive it. `enabled` is not `active`: a replaced package stays `enabled: tru
   installs and protected updates check that export before committing the transaction.
 - `replace X --with Y` removes `dist/X/`; nothing of `Y` is copied there; `dist/Y/` stays.
   `X` must be installed (`not_installed`) and `Y` enabled (`invalid_argument`: "Y is
-  disabled; enable it first"), so a replacement never leaves nothing loaded. `replace X --back` deploys `dist/X/` again from
+  disabled; enable it first"), so a replacement never leaves nothing loaded. `replace X --with X` deploys `dist/X/` again from
   `X`'s clone at its installed commit (`packages.X.current.commit`, folder `path` of a
   multi-package clone), so a shared clone whose HEAD is another package's revision needs
   no checkout. `Y` stays deployed: two packages providing the same service is the host's
@@ -938,13 +1022,13 @@ not derive it. `enabled` is not `active`: a replaced package stays `enabled: tru
   (`dependency_conflict`, `dist/X/` not created) while a dependency of X is not
   satisfied by an active package, unless `--force`.
 - `download`, and `install`, `update` and `rollback` of a replaced or disabled package,
-  change state and clone only; its `dist/` appears on `replace --back` / `enable`.
+  change state and clone only; its `dist/` appears on `replace ORIGINAL --with ORIGINAL` / `enable`.
   An explicit `replace` deploys the fork and removes the original's `dist/`.
 - `forget X` removes `dist/X/` (the clone stays); `restore X` deploys it when it is
   active (a package forgotten while disabled stays disabled). Disabling, forgetting or
   uninstalling a replacement drops its bindings, so each active original it replaced is
   deployed again. Uninstalling or forgetting the original `X` keeps the binding `X → Y`:
-  installing `X` again leaves it replaced (no `dist/X/`) until `replace X --back`.
+  installing `X` again leaves it replaced (no `dist/X/`) until `replace X --with X`.
 - Every change goes through the same transaction as the state, so a crash leaves state
   and `dist/` consistent; empty `dist/<namespace>` folders are removed.
 
@@ -1292,9 +1376,11 @@ let fork = pm.fork_packages(&["tilr/theme", "tilr/panel"], repo, "me")?; // one 
 // Explicitly release all fork packages, then install only the desired package.
 gitpm::scaffold::commit_package(repo, "2.0.0", Some("me/theme"))?;
 pm.install_package(repo.to_str().unwrap(), Some("me/theme"), InstallTarget::Release)?;
-let plan = pm.replace_plan("vendor/base", "mine/base")?;       // consumers + incompatible
-pm.replace("vendor/base", "mine/base", /* confirm */ !plan.incompatible.is_empty() && yes)?;
-pm.switch_back("vendor/base", confirm, /* force: consumers left broken */ false)?;
+let check = pm.replace_check("vendor/base", "mine/base")?; // issues + missing catalog releases
+// Only an explicit caller decision installs the missing dependencies:
+if !check.missing.is_empty() { pm.replace_resolve("vendor/base", "mine/base")?; }
+pm.replace("vendor/base", "mine/base")?; // rechecks; no confirm, force or auto-install
+pm.replace("vendor/base", "vendor/base")?; // remove binding with the same check
 pm.set_enabled_with(id, false, force)?;  pm.forget_with(id, force)?;
 let sync = pm.sync_dist()?;   // dist/ = active packages; Err(NotDeployed) if some cannot be
 pm.list()?;  pm.state()?;  pm.check()?;  pm.browse_catalog()?;  pm.catalog_release(id, None)?;
@@ -1470,36 +1556,54 @@ not enforced, so they do not block unrelated operations.
 ### Replacement by a fork
 
 A fork declares `"replaces": {"id": "vendor/base", "version": "1.4.0"}` (`fork` sets
-it to the forked version). Nothing is redirected until `replace(original, fork,
-confirm)`: then the single global binding `state.replacements[original] = fork`
-makes every consumer of `original` — existing and future — resolve to the fork, which
-the solver sees as `original` at the declared version. Compatibility is by versions
-only: consumers whose requirement the declared version does not satisfy are listed in
-`ReplacementPlan.incompatible` and refuse with `incompatible_replacement` unless
-confirmed. Self-replacement and cycles are always refused. Replacing again switches the
-binding; `switch_back` returns all consumers to the installed original (same
-confirmation rule). The original must be installed to be replaced (`not_installed`)
-and the fork enabled to become the provider; a fork update must keep declaring
-`replaces`. Uninstalling or forgetting the original keeps the binding (a reinstalled
-original stays replaced until `switch_back`). A replaced original has no `dist/` (see
-[Workspace layout](#workspace-layout-and-dist)).
+it to the forked version). `replace(original, fork)` sets the single global binding
+`state.replacements[original] = fork`. Every consumer resolves the original through
+the fork at its declared version. The original must be installed; the fork must be
+installed, enabled and declare that it replaces the original. Cycles are refused.
+
+`replace_check(original, provider)` is a dry run over the entire resulting active
+workspace. It returns `ReplacementCheck { plan, issues, missing, resolution_error }`:
+issues name each consumer and its unsatisfied dependency; missing maps absent package
+IDs to selected catalog versions for the proposed provider, including transitives. Unrelated
+existing broken consumers remain in issues but do not block replace or resolve; their
+missing dependencies are not reinstalled. When no catalog
+solution exists, missing is empty and resolution_error explains the failure.
+Installed versions stay fixed. Disabled or incompatible installed providers require
+explicit user action. This is separate from the existing update `check`.
+
+`replace_resolve(original, provider)` recomputes the check, then explicitly installs
+missing dependencies from the configured catalog in one transaction. Its result contains
+`installed`, the updated `check`, and `dist`. It does not enable or update installed
+packages or apply the binding. If no consistent solution exists it changes nothing.
+A subsequent `replace` checks current state again, installs nothing, and refuses incompatibility in the provider dependency closure or requirements of
+active consumers on the original without changing workspace state, clones or dist. Consumer version
+mismatches use `incompatible_replacement`; other dependency problems use
+`dependency_conflict`. There is no confirmation or force bypass.
+
+Passing the original as provider without an existing binding succeeds after the same
+checks and prints `ORIGINAL already uses original VERSION`.
+
+The CLI equivalents are:
+
+```sh
+gitpm replace-check vendor/base --with mine/base   # JSON diagnostics, no changes
+gitpm replace-resolve vendor/base --with mine/base # explicit missing installs
+gitpm replace vendor/base --with mine/base         # apply only when consistent
+gitpm replace vendor/base --with vendor/base       # return to the original
+```
+
+Returning removes the binding with the same consistency check. The original must be
+installed and enabled; the fork stays installed and enabled. `--back`, `switch_back`
+and `switch_back_plan` have been removed. Replace accepts no `--force`.
 
 #### Removing a replacement
 
-One rule for `disable`, `forget` and `uninstall` of an active fork: each drops the
-binding and deploys the original again when it is active (a later `enable` of the fork
-does not restore the binding). They refuse with `has_dependents` unless `force` only
-when a consumer would break afterwards: the original is not installed, disabled, or of a
-version the consumer does not accept. `dependents` names exactly those consumers; when
-the installed original satisfies everyone, no force is needed. The reactivated original
-is checked like `enable`: a direct dependency of it that no active package satisfies
-refuses with `dependency_conflict` unless `force`. `switch_back` (`replace ORIGINAL
---back`) follows the same rule: consumers a missing or disabled original does not serve
-refuse with `has_dependents` unless `force` (CLI `--force`; `confirm` covers only
-incompatible versions). For an original that is not installed only the binding is
-dropped, and its
-`ReplacementPlan` has no `installed_version` and an empty `version` (CLI: `ORIGINAL
-switched back from FORK (ORIGINAL is not installed; broken: consumers)`).
+`disable`, `forget` and `uninstall` of an active fork drop its binding and deploy the
+original again when active. These removal operations retain their existing force
+rules: `has_dependents` when consumers would break, and `dependency_conflict` when the
+reactivated original has inactive dependencies. A later enable does not restore the
+binding. Uninstalling or forgetting the original keeps the binding; reinstalling it
+leaves it replaced until `replace ORIGINAL --with ORIGINAL`.
 
 ### Catalog
 
@@ -1560,8 +1664,9 @@ update(id, target: `Target`, `.recorded` follows the recorded mode), updateAllPl
 updateAll (`UpdateAllPlan` with `unchanged`, each with its `reason`, and `dist`), rollback, enable(force), disable(force),
 forget(force), restore, uninstallPlan, uninstall(confirmed, force), fork
 (one source ID, whole repository; `ForkResult`), forkPackages (`PackageFork`),
-replacePlan, replace, switchBackPlan, switchBack(confirm, force) (`ReplacementPlan` with
-`installedVersion`, `dist`), syncDistPlan, syncDist (`DistSync`: deployed,
+replacePlan, replace (without confirmation), replaceCheck (`ReplacementCheck`),
+replaceResolve (`ReplacementResolution`); replacement plans carry
+`installedVersion`, `dist`; syncDistPlan, syncDist (`DistSync`: deployed,
 removed, unmanaged, skipped, warnings)); every mutating call returns its `DistSync` report
 (`enable`/`disable`/`uninstall` return it, `forget` returns `ForgetResult { cloneKept,
 dist }`, `InstallResult`, `RevisionChange`,

@@ -14,7 +14,7 @@ The FFI crate SHALL generate the Swift module `Gitpm` over the C module `GitpmFF
 - **THEN** it can `import Gitpm` and call `PackageManager.open(root:options:)`
 
 ### Requirement: Manager surface
-`PackageManager` SHALL be opened with `open(root, ManagerOptions)` and expose every locked workspace operation (catalog reads, install, download, updates, rollback, enable/disable, forget/restore, uninstall, fork, replace, switch back, sync-dist, with their plans); free functions: `list`, `check`, `readState`, `catalogLinks`, `authCheck`, `browseCatalog`, `catalogRelease`, `describeLostWork`, `uninstallRefusal` (throws `UninstallPlan::refusal`); author and catalog writers are not exposed.
+`PackageManager` SHALL be opened with `open(root, ManagerOptions)` and expose every locked workspace operation (catalog reads, install, download, updates, rollback, enable/disable, forget/restore, uninstall, fork, replace, replacement check/resolve, sync-dist, with their plans); free functions: `list`, `check`, `readState`, `catalogLinks`, `authCheck`, `browseCatalog`, `catalogRelease`, `describeLostWork`, `uninstallRefusal` (throws `UninstallPlan::refusal`).
 
 #### Scenario: Which calls open the workspace
 - **WHEN** a host calls a `PackageManager` method, or one of the free functions `list`, `check`, `readState`
@@ -35,7 +35,7 @@ The FFI crate SHALL generate the Swift module `Gitpm` over the C module `GitpmFF
 
 #### Scenario: Method names
 - **WHEN** Swift bindings are generated
-- **THEN** `PackageManager` has `install` (optional `package`, `force`), `installFromCatalog(force)`, `download`, `downloadFromCatalog`, `update`, `updateAllPlan`, `updateAll`, `rollback`, `enable(force)`, `disable(force)`, `forget(force)` (returning `ForgetResult`), `restore`, `uninstallPlan`, `uninstall(confirmed, force)` (`confirmed` the lost-work items the user saw), `fork`, `forkPackages`, `replacePlan`, `replace`, `switchBackPlan`, `switchBack(confirm, force)`, `syncDistPlan` and `syncDist`; `check` is a free function, not a method
+- **THEN** `PackageManager` has `install` (optional `package`, `force`), `installFromCatalog(force)`, `download`, `downloadFromCatalog`, `update`, `updateAllPlan`, `updateAll`, `rollback`, `enable(force)`, `disable(force)`, `forget(force)` (returning `ForgetResult`), `restore`, `uninstallPlan`, `uninstall(confirmed, force)` (`confirmed` the lost-work items the user saw), `fork`, `forkPackages`, `replacePlan`, `replaceCheck`, `replaceResolve`, `replace` (without confirmation), `syncDistPlan` and `syncDist`; `check` is a free function, not a method
 
 #### Scenario: Catalog generation is not exposed
 - **WHEN** a host looks for `catalog update`, `catalog register`, `init` or `commit` in the bindings
@@ -45,6 +45,10 @@ The FFI crate SHALL generate the Swift module `Gitpm` over the C module `GitpmFF
 - **WHEN** a host uses the fork API
 - **THEN** `fork` and `forkPackages` prepare the editable repository without releasing, installing or replacing packages
 - **AND** composed fork/release/install/replace and fork resume methods are not exported
+
+#### Scenario: Explicit consistency methods
+- **WHEN** a host calls replaceCheck(original, replacement)
+- **THEN** it receives the same dependency issues and missing installs as the library, without changing the workspace; replaceResolve explicitly installs missing dependencies without applying the binding
 
 ### Requirement: Errors keep kind and message
 Library errors SHALL map to the `PmError` enum, one case per kind, each with the full `message` and the library's structured fields (`id` for every error about a package, `LocalChanges.items`, `HasDependents.dependents` and `lostWork`, `IncompatibleReplacement.consumers`, `NotDeployed.sync`); `Other { kind, message }` SHALL carry a kind added to the non-exhaustive library enum later.
@@ -176,3 +180,18 @@ FFI records SHALL carry the version flags of the library results: `RevisionChang
 #### Scenario: Host with its own SSH command
 - **WHEN** a host that sets `GIT_SSH` for its process opens a `PackageManager` with `customSsh: true` and installs from an SSH URL
 - **THEN** gitpm passes no SSH command of its own and git uses `GIT_SSH`, as `authCheck` does
+
+### Requirement: Link capability and status cross the library boundary
+**BREAKING**: library and FFI SHALL expose the link operation, structured link descriptors in state/list, and link disposition with optional available version and discovery problem in check/update/update-all. Removal plans SHALL distinguish workspace entries from external targets. Link mode SHALL remain visible when availability is unknown or another problem occurs. CLI SHALL only render library results, without inferring mode or implementing version comparison or discovery policy.
+
+#### Scenario: Host discovers a release for a link
+- **WHEN** an FFI client checks or updates a linked package whose source offers a newer release
+- **THEN** it receives link mode, the available version and unchanged disposition as structured data, without parsing CLI text
+
+#### Scenario: List without release discovery
+- **WHEN** a client lists packages or reads state containing a link record
+- **THEN** its result identifies the external target and link mode without requiring a network request
+
+#### Scenario: Thin CLI presentation
+- **WHEN** the library reports that version 0.4.0 is available for a dev-linked package
+- **THEN** the CLI explicitly reports version 0.4.0 available and that the package is dev-linked and was not updated

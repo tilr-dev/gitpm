@@ -82,7 +82,7 @@ impl CheckSource {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct CheckRow {
     pub id: String,
     pub installed: String,
@@ -281,7 +281,7 @@ fn rows(
                     })
             } else {
                 match &installed.mode {
-                    Mode::Release => protecting
+                    Mode::Release | Mode::Link(_) => protecting
                         .or(catalog)
                         .and_then(|(catalog, location)| {
                             catalog_row(id, installed, catalog, location)
@@ -297,6 +297,10 @@ fn rows(
                     }
                 }
             };
+            if installed.link().is_some() && row.status == CheckStatus::SameVersionDifferentCommit {
+                row.status = CheckStatus::UpToDate;
+                row.update_available = false;
+            }
             if installed
                 .catalog
                 .as_ref()
@@ -306,8 +310,7 @@ fn rows(
                 row.problem = Some(CATALOG_NO_LONGER_VERIFIED.into());
             }
             row.upstream = installed
-                .fork_of
-                .as_ref()
+                .discovery_fork()
                 .map(|base| upstream(base, catalog.map(|(c, _)| c), &mut origins, custom_ssh));
             row
         })

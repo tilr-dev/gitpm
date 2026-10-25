@@ -145,6 +145,7 @@ pub mod check {
             };
             match &row.mode {
                 Mode::Release => {}
+                Mode::Link(_) => status.push_str("; dev-linked and unchanged"),
                 Mode::Pinned(reference) => status.push_str(&format!(" ({reference})")),
                 Mode::Branch(branch) => status.push_str(&format!(" (branch {branch})")),
             }

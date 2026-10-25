@@ -38,13 +38,14 @@ pub use error::{Error, Result};
 pub use list::{ListOptions, ListView, list_with};
 pub use lost_work::LostWork;
 pub use model::{
-    ForkOf, Installed, InstalledPackage, Manifest, Metadata, Mode, Replaces, Revision,
-    STATE_FORMAT, State, valid_id,
+    ForkOf, Installed, InstalledPackage, LinkDescriptor, LinkDiscovery, Manifest, Metadata, Mode,
+    Replaces, Revision, STATE_FORMAT, State, valid_id,
 };
 pub use workspace::{
     DependencyRewrite, DistSync, ForgetResult, ForkedPackage, HeldBack, HeldBackReason,
-    IncompatibleConsumer, InstallResult, InstallTarget, InstalledDependency, Manager, Options,
-    PackageFork, ReplacementPlan, RevisionChange, SkippedDist, Target, Unchanged, UnchangedReason,
+    IncompatibleConsumer, InstallResult, InstallTarget, InstalledDependency, LinkResult, Manager,
+    Options, PackageFork, ReplacementCheck, ReplacementIssue, ReplacementPlan,
+    ReplacementResolution, RevisionChange, SkippedDist, Target, Unchanged, UnchangedReason,
     UninstallPlan, UpdateAllPlan, UpdateOptions,
 };
 

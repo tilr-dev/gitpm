@@ -203,7 +203,7 @@ fn required_global_fork_replacement_through_the_cli() {
     {
         assert_eq!(consumer["dependencies"][0]["provider"], "mine/base");
     }
-    // Incompatible fork without a terminal: refused, nothing changes; --force applies.
+    // Incompatible fork refuses without changes; force is rejected too.
     let before = fs::read(dir.join("workspace/state.json")).unwrap();
     let out = pm(&dir, &["replace", "vendor/base", "--with", "old/base"]);
     assert!(!out.status.success());
@@ -217,21 +217,18 @@ fn required_global_fork_replacement_through_the_cli() {
         &dir,
         &["replace", "vendor/base", "--with", "old/base", "--force"],
     );
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(String::from_utf8_lossy(&out.stderr).contains("Warning"));
-    assert_eq!(list(&dir)["replacements"]["vendor/base"], "old/base");
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--force is only valid"));
+    assert_eq!(fs::read(dir.join("workspace/state.json")).unwrap(), before);
+    assert_eq!(list(&dir)["replacements"]["vendor/base"], "mine/base");
     // The active provider is guarded while the original cannot take its consumers
     // over (here: disabled); switching back frees it.
     assert!(pm(&dir, &["disable", "vendor/base"]).status.success());
-    let out = pm(&dir, &["disable", "old/base"]);
+    let out = pm(&dir, &["disable", "mine/base"]);
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("app/a, app/b"));
     assert!(pm(&dir, &["enable", "vendor/base"]).status.success());
-    let out = pm(&dir, &["replace", "vendor/base", "--back"]);
+    let out = pm(&dir, &["replace", "vendor/base", "--with", "vendor/base"]);
     assert!(
         out.status.success(),
         "{}",

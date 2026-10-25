@@ -14,6 +14,7 @@ use std::path::Path;
 struct Invocation {
     command: String,
     id: String,
+    with: Option<String>,
     /// The catalog location is an HTTP(S) URL.
     remote_catalog: bool,
     /// `--into DIR` and `--multi` of `init`.
@@ -51,6 +52,7 @@ fn hint(invocation: &Invocation, error: &PmError) -> Option<String> {
     let Invocation {
         command,
         id,
+        with,
         remote_catalog,
         into,
         multi,
@@ -59,9 +61,6 @@ fn hint(invocation: &Invocation, error: &PmError) -> Option<String> {
         PmError::AlreadyInstalled { id, .. } => format!(
             "if {id} was forgotten, `gitpm restore {id}` records it again and `gitpm uninstall {id}` removes its clone"
         ),
-        PmError::HasDependents { id, .. } if command == "replace" => {
-            format!("`gitpm replace {id} --back --force` does it anyway")
-        }
         PmError::HasDependents { id, .. } => {
             format!("`gitpm {command} {id} --force` does it anyway")
         }
@@ -93,6 +92,12 @@ fn hint(invocation: &Invocation, error: &PmError) -> Option<String> {
         // The library refused to enable over an inactive dependency.
         PmError::DependencyConflict(_) if command == "enable" => {
             format!("`gitpm enable {id} --force` enables it anyway")
+        }
+        PmError::DependencyConflict(_) if command == "replace" => {
+            let provider = with.as_deref()?;
+            format!(
+                "`gitpm replace-check {id} --with {provider}` shows dependency issues; `gitpm replace-resolve {id} --with {provider}` installs missing dependencies when resolvable; fix incompatible or disabled installed dependencies first"
+            )
         }
         PmError::NotDeployed { sync, .. } => {
             let skipped = sync.skipped.first()?;
@@ -136,41 +141,6 @@ fn ask(question: &str) -> Result<bool> {
     }
     Ok(matches!(answer.trim().to_lowercase().as_str(), "y" | "yes"))
 }
-/// Show which consumers a replacement would leave unsatisfied and decide: no conflict
-/// → go; TTY → ask [y/N] (no: the command is cancelled); no TTY → only with --force (the
-/// warning is still printed).
-fn confirm_replacement(plan: &ReplacementPlan, force: bool) -> Result<bool> {
-    if plan.incompatible.is_empty() {
-        return Ok(false);
-    }
-    warn_incompatible(plan);
-    if force {
-        return Ok(true);
-    }
-    if !io::stdin().is_terminal() {
-        // Unconfirmed: the library refuses with its typed incompatible_replacement error.
-        eprintln!("No terminal to confirm; use --force to replace anyway.");
-        return Ok(false);
-    }
-    ensure!(
-        ask("Replace anyway?")?,
-        "replacement cancelled; nothing was changed"
-    );
-    Ok(true)
-}
-fn warn_incompatible(plan: &ReplacementPlan) {
-    eprintln!(
-        "Warning: {} provides {} {}, which these consumers do not accept:",
-        plan.provider, plan.original, plan.version
-    );
-    for consumer in &plan.incompatible {
-        eprintln!(
-            "  - {} needs {} {}",
-            consumer.id, plan.original, consumer.requirement
-        );
-    }
-    eprintln!("The replacement applies to every consumer in this workspace.");
-}
 fn option(args: &mut Vec<String>, key: &str) -> Result<Option<String>> {
     ensure!(
         args.iter().filter(|a| *a == key).count() <= 1,
@@ -199,6 +169,19 @@ fn confirm_lost_work(plan: &gitpm::UninstallPlan) -> Result<bool> {
         eprintln!("  - {}", item.describe());
     }
     ask("Delete anyway?")
+}
+/// Report the former provider after removing a replacement binding.
+fn print_return_to_original(plan: &ReplacementPlan) {
+    let fork = plan.current.as_deref().unwrap_or_default();
+    let consumers = if plan.consumers.is_empty() {
+        "no installed consumers".to_owned()
+    } else {
+        format!("for: {}", plan.consumers.join(", "))
+    };
+    println!(
+        "{} switched back from {fork} ({} {} {consumers}); {fork} stays installed and enabled (disable or uninstall it if not wanted)",
+        plan.original, plan.original, plan.version
+    );
 }
 /// `ORIGINAL replaced by PROVIDER INSTALLED_VERSION for: consumers`; the version
 /// consumers see (a fork's declared `replaces.version`) is added when it differs.
@@ -283,29 +266,6 @@ fn print_installed(result: &gitpm::InstallResult, requested: Option<&str>) {
         }
     }
     warn_dist(&result.dist);
-}
-/// `replace ORIGINAL --back`: which replacement was dropped and who uses the original now.
-fn print_switch_back(plan: &ReplacementPlan) {
-    let consumers = match (&plan.installed_version, plan.consumers.is_empty()) {
-        (_, true) => "no installed consumers".to_owned(),
-        (Some(_), false) => format!("for: {}", plan.consumers.join(", ")),
-        (None, false) => format!("broken: {}", plan.consumers.join(", ")),
-    };
-    // The installed original's version, or (switching back to one that is not installed)
-    // that it is missing.
-    let installed = match &plan.installed_version {
-        Some(version) => version.clone(),
-        None => "is not installed;".to_owned(),
-    };
-    // switch_back refuses when nothing is replaced, so `current` names the fork, which is
-    // enabled (a replacing package always is) and not touched.
-    let fork = plan.current.as_deref().unwrap_or_default();
-    let remains =
-        format!("; {fork} stays installed and enabled (disable or uninstall it if not wanted)");
-    println!(
-        "{} switched back from {fork} ({} {installed} {consumers}){remains}",
-        plan.original, plan.original
-    );
 }
 /// `update all`: one line per installed package (updated, up to date or kept back) from
 /// the plan, then the new dependencies and the totals.
@@ -449,6 +409,7 @@ fn change_line(change: &gitpm::RevisionChange, verb: &str) -> String {
 fn unchanged_line(id: &str, version: &str, reason: Option<&gitpm::UnchangedReason>) -> String {
     match reason {
         None => format!("{id} up to date ({version})"),
+        Some(reason @ gitpm::UnchangedReason::DevLinked { .. }) => format!("{id}: {reason}"),
         Some(gitpm::UnchangedReason::Pinned { reference }) => {
             format!("{id} pinned at {version} ({reference})")
         }
@@ -476,12 +437,14 @@ fn mode_line(id: &str, version: &str, mode: &gitpm::Mode) -> String {
         gitpm::Mode::Pinned(reference) => format!("{id} pinned at {version} ({reference})"),
         gitpm::Mode::Branch(branch) => format!("{id} follows branch {branch} at {version}"),
         gitpm::Mode::Release => format!("{id} follows releases at {version}"),
+        gitpm::Mode::Link(_) => format!("{id} dev-linked at {version}"),
     }
 }
 /// `, pinned at REF` / `, following branch B` for the already-installed line.
 fn mode_note(mode: &gitpm::Mode) -> String {
     match mode {
         gitpm::Mode::Release => String::new(),
+        gitpm::Mode::Link(_) => ", dev-linked".into(),
         gitpm::Mode::Pinned(reference) => format!(", pinned at {reference}"),
         gitpm::Mode::Branch(branch) => format!(", following branch {branch}"),
     }
@@ -568,6 +531,7 @@ const COMMANDS: &[&str] = &[
     "commit",
     "install-catalog",
     "install",
+    "link",
     "download-catalog",
     "download",
     "list",
@@ -580,6 +544,8 @@ const COMMANDS: &[&str] = &[
     "restore",
     "uninstall",
     "replace",
+    "replace-check",
+    "replace-resolve",
     "sync-dist",
 ];
 const DEFAULT_ROOT: &str = "gitpm-workspace";
@@ -596,6 +562,10 @@ const HELP: &[Help] = &[
         text: "gitpm [--root DIR] [--catalog DIR_OR_JSON_OR_URL] COMMAND
 
 Workspace (installed packages):",
+    },
+    Help {
+        commands: &["link"],
+        text: "  link LOCAL_PACKAGE_PATH         live-link the manifest-selected output; relink refreshes metadata",
     },
     Help {
         commands: &["install"],
@@ -688,17 +658,19 @@ Workspace (installed packages):",
     },
     Help {
         commands: &["replace"],
-        text: "  replace ORIGINAL --with FORK [--force]  make FORK provide ORIGINAL for every consumer;
-                                   ORIGINAL must be installed; removes dist/ORIGINAL
-                                   (FORK keeps its own dist/)",
+        text: "  replace ORIGINAL --with PROVIDER  apply a consistent global replacement;
+                                   use ORIGINAL as PROVIDER to remove the binding;
+                                   no confirmation, force or automatic installs",
     },
     Help {
-        commands: &["replace"],
-        text: "  replace ORIGINAL --back [--force]  switch every consumer back to the installed ORIGINAL
-                                   and deploy dist/ORIGINAL again
-                                   (incompatible consumers: asks on a TTY, else --force);
-                                   without an installed ORIGINAL only drops the
-                                   replacement (consumers that break: --force)",
+        commands: &["replace-check"],
+        text: "  replace-check ORIGINAL --with PROVIDER  report workspace issues and missing installs as JSON;
+                                   does not change the workspace",
+    },
+    Help {
+        commands: &["replace-resolve"],
+        text: "  replace-resolve ORIGINAL --with PROVIDER  explicitly install missing dependencies
+                                   from the catalog without applying the binding",
     },
     Help {
         commands: &["sync-dist"],
@@ -857,7 +829,6 @@ fn run(invocation: &mut Invocation) -> Result<()> {
     let multi = flag(&mut args, "--multi")?;
     let no_release = flag(&mut args, "--no-release")?;
     let no_catalog = flag(&mut args, "--no-catalog")?;
-    let back = flag(&mut args, "--back")?;
     let force = flag(&mut args, "--force")?;
     let dry_run = flag(&mut args, "--dry-run")?;
     let dev = flag(&mut args, "--dev")?;
@@ -917,15 +888,9 @@ fn run(invocation: &mut Invocation) -> Result<()> {
         !force
             || matches!(
                 command,
-                "uninstall"
-                    | "disable"
-                    | "enable"
-                    | "install"
-                    | "install-catalog"
-                    | "forget"
-                    | "replace"
+                "uninstall" | "disable" | "enable" | "install" | "install-catalog" | "forget"
             ),
-        "--force is only valid with uninstall/disable/enable/install/install-catalog/forget/replace"
+        "--force is only valid with uninstall/disable/enable/install/install-catalog/forget"
     );
     ensure!(
         package.is_none()
@@ -949,12 +914,12 @@ fn run(invocation: &mut Invocation) -> Result<()> {
     );
     ensure!(ns.is_none() || command == "fork", "--ns requires fork");
     ensure!(
-        (with.is_none() && !back) || command == "replace",
-        "--with/--back require replace"
+        with.is_none() || matches!(command, "replace" | "replace-check" | "replace-resolve"),
+        "--with requires replace/replace-check/replace-resolve"
     );
     ensure!(
-        command != "replace" || with.is_some() != back,
-        "replace needs exactly one of --with FORK or --back"
+        !matches!(command, "replace" | "replace-check" | "replace-resolve") || with.is_some(),
+        "{command} needs --with PROVIDER"
     );
     let expected = match command {
         "catalog show" | "catalog update" | "list" | "check" | "catalog links" | "sync-dist" => 1,
@@ -975,6 +940,7 @@ fn run(invocation: &mut Invocation) -> Result<()> {
     *invocation = Invocation {
         command: command.to_owned(),
         id: id.to_owned(),
+        with: with.clone(),
         remote_catalog: catalog_location
             .as_deref()
             .is_some_and(|l| catalog::is_local(l).is_ok_and(|local| !local)),
@@ -1029,6 +995,8 @@ fn run(invocation: &mut Invocation) -> Result<()> {
             | "install-catalog"
             | "download-catalog"
             | "replace"
+            | "replace-check"
+            | "replace-resolve"
             | "fork"
     ) && !update_all
     {
@@ -1285,6 +1253,11 @@ fn run(invocation: &mut Invocation) -> Result<()> {
                 println!("Set your own origin with: gitpm remote {quoted} GIT_URL");
             }
         }
+        "link" => {
+            let result = manager.link(id)?;
+            println!("{} dev-linked {}", result.id, result.version);
+            print_dist_sync(&result.dist, false);
+        }
         "install" | "download" => {
             let target = match (&reference, dev) {
                 (Some(reference), _) => gitpm::InstallTarget::Ref(reference.clone()),
@@ -1367,23 +1340,37 @@ fn run(invocation: &mut Invocation) -> Result<()> {
             warn_dist(&forgotten.dist);
         }
         "replace" => {
-            let plan = match &with {
-                Some(fork) => manager.replace_plan(id, fork)?,
-                None => manager.switch_back_plan(id)?,
-            };
-            let confirm = confirm_replacement(&plan, force)?;
-            let done = match &with {
-                Some(fork) => {
-                    let done = manager.replace(id, fork, confirm)?;
-                    print_replacement(&done);
-                    done
+            let done = manager.replace(id, with.as_deref().unwrap())?;
+            if done.provider == done.original {
+                if done.current.is_some() {
+                    print_return_to_original(&done);
+                } else {
+                    println!("{} already uses original {}", done.original, done.version);
                 }
-                None => {
-                    let done = manager.switch_back(id, confirm, force)?;
-                    print_switch_back(&done);
-                    done
-                }
-            };
+            } else {
+                print_replacement(&done);
+            }
+            warn_dist(&done.dist);
+        }
+        "replace-check" => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(
+                    &manager.replace_check(id, with.as_deref().unwrap())?
+                )?
+            );
+        }
+        "replace-resolve" => {
+            let done = manager.replace_resolve(id, with.as_deref().unwrap())?;
+            for installed in &done.installed {
+                warn(&installed.warnings);
+                print_fetched(
+                    &installed.id,
+                    &installed.current.version,
+                    &installed.source,
+                    installed.enabled,
+                );
+            }
             warn_dist(&done.dist);
         }
         "restore" => {

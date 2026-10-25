@@ -231,6 +231,21 @@ pub enum Mode {
     Pinned(String),
     /// Follows the HEAD of this branch of the origin.
     Branch(String),
+    /// Live author-owned output; no installed commit or owned clone.
+    Link(LinkDescriptor),
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LinkDescriptor {
+    pub package_root: String,
+    pub target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery: Option<LinkDiscovery>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LinkDiscovery {
+    pub fork_of: ForkOf,
 }
 impl Mode {
     pub fn is_release(&self) -> bool {
@@ -244,8 +259,37 @@ pub struct BuildInstall {
     pub location: Option<String>,
     pub release: crate::catalog::Release,
 }
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default)]
 pub struct Installed {
+    /// Verified build provenance; distinct from catalog protection.
+    pub build: Option<BuildInstall>,
+    /// Provenance of the previous revision, retained for offline rollback.
+    pub previous_build: Option<BuildInstall>,
+    pub source: String,
+    pub current: Revision,
+    pub previous: Option<Revision>,
+    pub enabled: bool,
+    /// What `update` follows; omitted in release mode.
+    pub mode: Mode,
+    pub fork_of: Option<ForkOf>,
+    /// Dependency edges of the current revision (copied from its manifest).
+    pub dependencies: BTreeMap<String, String>,
+    pub replaces: Option<Replaces>,
+    /// Catalog the package was installed from (canonical location); `None` for Git installs.
+    pub catalog: Option<String>,
+    /// Cache key of the shared clone `repos/<clone>` of a multi-package repository (one
+    /// per source, used by every package installed from it); `None`: the package's own
+    /// clone `packages/<id>`.
+    pub clone: Option<String>,
+    /// Package folder inside the repository (from `gitpm.json`); `None`: the root.
+    pub path: Option<String>,
+    /// Descriptive metadata of the current revision's manifest. Required in format 1: a
+    /// record without it is `invalid_data`.
+    pub metadata: Metadata,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(remote = "Installed")]
+struct InstalledFields {
     /// Verified build provenance; distinct from catalog protection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<BuildInstall>,
@@ -280,7 +324,93 @@ pub struct Installed {
     /// record without it is `invalid_data`.
     pub metadata: Metadata,
 }
+impl Serialize for Installed {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Fields<'a>(#[serde(with = "InstalledFields")] &'a Installed);
+        let mut value = serde_json::to_value(Fields(self)).map_err(serde::ser::Error::custom)?;
+        if matches!(self.mode, Mode::Link(_)) {
+            let object = value.as_object_mut().unwrap();
+            for key in [
+                "current",
+                "previous",
+                "clone",
+                "path",
+                "catalog",
+                "forkOf",
+                "build",
+                "previous_build",
+            ] {
+                object.remove(key);
+            }
+            if self.source.is_empty() {
+                object.remove("source");
+            }
+            object.insert("version".into(), self.current.version.clone().into());
+            object.insert(
+                "dependencies".into(),
+                serde_json::to_value(&self.dependencies).map_err(serde::ser::Error::custom)?,
+            );
+        }
+        value.serialize(serializer)
+    }
+}
+impl<'de> Deserialize<'de> for Installed {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let mut value = serde_json::Value::deserialize(deserializer)?;
+        if value.get("mode").and_then(|m| m.get("link")).is_some() {
+            let object = value.as_object_mut().unwrap();
+            for key in [
+                "current",
+                "previous",
+                "clone",
+                "path",
+                "catalog",
+                "forkOf",
+                "build",
+                "previous_build",
+            ] {
+                if object.contains_key(key) {
+                    return Err(serde::de::Error::custom(format!(
+                        "link record cannot hold {key}"
+                    )));
+                }
+            }
+            let version = object
+                .remove("version")
+                .ok_or_else(|| serde::de::Error::custom("link record requires version"))?;
+            if !version.is_string() || !object.contains_key("dependencies") {
+                return Err(serde::de::Error::custom("invalid link snapshot"));
+            }
+            object.insert(
+                "current".into(),
+                serde_json::json!({"version": version, "commit": ""}),
+            );
+            object.entry("source").or_insert(serde_json::json!(""));
+        }
+        InstalledFields::deserialize(value).map_err(serde::de::Error::custom)
+    }
+}
+
 impl Installed {
+    pub fn link(&self) -> Option<&LinkDescriptor> {
+        match &self.mode {
+            Mode::Link(link) => Some(link),
+            _ => None,
+        }
+    }
+    /// Validated provenance, including the nested link discovery snapshot.
+    pub fn discovery_fork(&self) -> Option<&ForkOf> {
+        self.link()
+            .and_then(|l| l.discovery.as_ref())
+            .map(|d| &d.fork_of)
+            .or(self.fork_of.as_ref())
+    }
     /// Take the manifest-derived fields of a new current revision.
     pub(crate) fn adopt(&mut self, m: &Manifest) {
         self.fork_of = m.fork_of.clone();
@@ -368,6 +498,30 @@ impl State {
             .map_err(|e| Error::InvalidData(format!("invalid workspace state.json: {e}")))?;
         for (id, p) in state.packages.iter().chain(&state.forgotten) {
             valid_id(id)?;
+            if let Some(link) = p.link() {
+                for path in [&link.package_root, &link.target] {
+                    let path = Path::new(path);
+                    ensure!(
+                        path.is_absolute()
+                            && path.components().all(|c| !matches!(
+                                c,
+                                std::path::Component::ParentDir | std::path::Component::CurDir
+                            )),
+                        InvalidData,
+                        "invalid absolute link path of {id}"
+                    );
+                }
+                crate::catalog::version_key(&p.current.version)?;
+                let m = Manifest {
+                    id: id.clone(),
+                    version: p.current.version.clone(),
+                    dependencies: p.dependencies.clone(),
+                    replaces: p.replaces.clone(),
+                    fork_of: p.discovery_fork().cloned(),
+                    ..Default::default()
+                };
+                validate_manifest(&m)?;
+            }
             for (build, revision) in p
                 .build
                 .iter()
@@ -386,7 +540,7 @@ impl State {
                 crate::catalog::validate_release(release, id, &release.manifest.version)?;
             }
             ensure!(
-                p.build.is_some() || p.clone.is_some(),
+                p.link().is_some() || p.build.is_some() || p.clone.is_some(),
                 InvalidData,
                 "Git package {id} has no clone key in state.json"
             );
@@ -447,7 +601,11 @@ pub(crate) fn valid_clone_key(key: &str) -> Result<()> {
 pub struct InstalledPackage {
     pub id: String,
     pub source: String,
-    pub current: Revision,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current: Option<Revision>,
+    /// Declared snapshot version for a live link.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
     pub previous: Option<Revision>,
     pub enabled: bool,
     /// What `update` follows (omitted in release mode).
@@ -494,7 +652,8 @@ impl State {
             .map(|(id, p, metadata)| InstalledPackage {
                 id: id.clone(),
                 source: p.source.clone(),
-                current: p.current.clone(),
+                current: p.link().is_none().then(|| p.current.clone()),
+                version: p.link().map(|_| p.current.version.clone()),
                 previous: p.previous.clone(),
                 enabled: p.enabled,
                 mode: p.mode.clone(),
@@ -545,6 +704,27 @@ pub(crate) fn manifest(repo: &Path) -> Result<Manifest> {
     })?;
     let m: Manifest = serde_json::from_slice(&bytes)
         .map_err(|e| Error::invalid_manifest(format!("invalid plugin.json: {e}")))?;
+    validate_manifest(&m)?;
+    let folder = m.dist_folder();
+    if !repo.join(folder).is_dir() {
+        return Err(m.missing_dist(format!("package must contain a ready {folder}/ directory")));
+    }
+    if folder != "." {
+        let mut current = repo.to_path_buf();
+        for component in folder.split('/') {
+            current.push(component);
+            ensure!(
+                !fs::symlink_metadata(&current)?.file_type().is_symlink(),
+                Unsupported,
+                "symlinks are not supported: {}",
+                current.display()
+            );
+        }
+    }
+    Ok(m)
+}
+
+pub(crate) fn validate_manifest(m: &Manifest) -> Result<()> {
     valid_id(&m.id)?;
     if let Some(base) = &m.fork_of {
         valid_id(&base.id)?;
@@ -592,25 +772,9 @@ pub(crate) fn manifest(repo: &Path) -> Result<Manifest> {
         );
         crate::catalog::version_key(&replaces.version)?;
     }
-    crate::deps::validate(&m)?;
+    crate::deps::validate(m)?;
     m.validate_dist()?;
-    let folder = m.dist_folder();
-    if !repo.join(folder).is_dir() {
-        return Err(m.missing_dist(format!("package must contain a ready {folder}/ directory")));
-    }
-    if folder != "." {
-        let mut current = repo.to_path_buf();
-        for component in folder.split('/') {
-            current.push(component);
-            ensure!(
-                !fs::symlink_metadata(&current)?.file_type().is_symlink(),
-                Unsupported,
-                "symlinks are not supported: {}",
-                current.display()
-            );
-        }
-    }
-    Ok(m)
+    Ok(())
 }
 
 /// Manifest of the package in `path` (`None`: the root) of a checked-out repository.
@@ -1384,7 +1548,7 @@ mod tests {
                 .is_none()
         );
         assert_eq!(list[0].source, "git@github.com:dan/demo1.git");
-        assert_eq!(list[0].current.version, "0.1.1");
+        assert_eq!(list[0].current.as_ref().unwrap().version, "0.1.1");
         assert_eq!(
             list[0].previous.as_ref().unwrap().commit,
             "a17e286b69daa620096f78fa54153696b8459b6b"

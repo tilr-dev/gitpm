@@ -97,7 +97,7 @@ def step6_fork_update(t: T, fork):
 def step7_switch_back(t: T, fork):
     fork_head = t.rev(t.clone(FORK))
     fork_author = t.snap(fork, git=True)
-    t.gitpm_ok("replace", ORIGINAL, "--back")
+    t.gitpm_ok("replace", ORIGINAL, "--with", ORIGINAL)
     t.ok("replacements" not in t.state(), "binding removed")
     t.eq(providers(t), {c: ORIGINAL for c in CONSUMERS}, "providers")
     t.eq(provider_payload(t), sha(t.dist(ORIGINAL) / "index.js"), "original payload")
@@ -161,7 +161,7 @@ def s7_switch_back(t: T):
 @case(fixture="g6_replaced", spec=["install-uninstall/only-manager-owned-files-are-deleted#uninstalling-a-fork"])
 def s8_uninstall_clean_fork(t: T):
     """8. after switching back the clean fork uninstalls; no dependents."""
-    t.gitpm_ok("replace", ORIGINAL, "--back")
+    t.gitpm_ok("replace", ORIGINAL, "--with", ORIGINAL)
     step8_uninstall_fork(t)
 
 

@@ -104,6 +104,9 @@ pub(crate) fn repo_key(source: &str) -> String {
 
 /// The live clone of a package (registered or forgotten).
 pub(super) fn installed_repo(root: &Path, id: &str, p: &Installed) -> Result<PathBuf> {
+    if p.link().is_some() {
+        return Err(Error::RepositoryNotFound { id: id.into() });
+    }
     let Some(key) = &p.clone else {
         return Err(Error::RepositoryNotFound { id: id.into() });
     };
@@ -338,9 +341,18 @@ pub(super) struct Removal {
 }
 pub(super) fn removal(root: &Path, state: &State, id: &str, custom_ssh: bool) -> Result<Removal> {
     let entry = state.packages.get(id).or_else(|| state.forgotten.get(id));
+    if entry.is_some_and(|p| p.link().is_some()) {
+        return Ok(Removal {
+            relative: String::new(),
+            repo: None,
+            key: None,
+            lost_work: Vec::new(),
+        });
+    }
     let p = entry.ok_or_else(|| Error::RepositoryNotFound { id: id.into() })?;
     let Some(key) = p.clone.clone() else {
         // A build-only record owns no Git clone.
+
         return Ok(Removal {
             relative: p.clone_folder(id),
             repo: None,
