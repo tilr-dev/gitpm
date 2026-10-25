@@ -17,6 +17,13 @@ On open, a Manager SHALL repair stale Git links between existing managed checkou
 #### Scenario: Repeated open
 - **WHEN** a workspace with correct worktree links is opened again
 - **THEN** its Git metadata is not rewritten
+- **AND** this holds when the selected root contains a symlink alias
+
+#### Scenario: Missing link files
+- **GIVEN** a managed checkout and its admin directory both exist but `.git`, `gitdir` or `commondir` is missing
+- **WHEN** a Manager opens the workspace
+- **THEN** the missing link files are restored and the worktree remains usable
+- **AND** other I/O errors are propagated
 
 #### Scenario: Records without a worktree
 - **WHEN** the workspace contains build or external link records, absent checkouts or absent registrations

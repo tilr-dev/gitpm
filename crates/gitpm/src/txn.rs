@@ -90,6 +90,14 @@ fn write_worktree_links(root: &Path, checkout: &Path, admin: &Path) -> Result<()
     sync_parents(root, admin)
 }
 
+fn worktree_link_matches(path: &Path, expected: &[u8]) -> Result<bool> {
+    match fs::read(path) {
+        Ok(content) => Ok(content == expected),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
 /// Opening a relocated workspace repairs links independently of transactions.
 /// Use state-derived paths only: a copied gitfile can still name another workspace.
 pub(crate) fn repair_worktree_links(root: &Path, state: &State) -> Result<()> {
@@ -111,11 +119,22 @@ pub(crate) fn repair_worktree_links(root: &Path, state: &State) -> Result<()> {
             continue;
         }
         validate_worktree_links(&checkout, &admin)?;
-        if fs::read(checkout.join(".git"))? != format!("gitdir: {}\n", admin.display()).as_bytes()
-            || fs::read(admin.join("gitdir"))?
-                != format!("{}\n", checkout.join(".git").display()).as_bytes()
-            || fs::read(admin.join("commondir"))? != b"../..\n"
-        {
+        let links = [
+            (
+                checkout.join(".git"),
+                format!("gitdir: {}\n", admin.display()),
+            ),
+            (
+                admin.join("gitdir"),
+                format!("{}\n", checkout.join(".git").display()),
+            ),
+            (admin.join("commondir"), "../..\n".to_owned()),
+        ];
+        let mut stale = false;
+        for (path, expected) in links {
+            stale |= !worktree_link_matches(&path, expected.as_bytes())?;
+        }
+        if stale {
             repairs.push((checkout, admin));
         }
     }

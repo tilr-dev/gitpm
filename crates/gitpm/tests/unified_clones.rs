@@ -134,6 +134,81 @@ fn moved_workspace_repairs_forgotten_worktrees_without_losing_local_work() {
 
 #[cfg(unix)]
 #[test]
+fn opening_workspace_through_alias_preserves_correct_links() {
+    use std::{
+        os::unix::fs::symlink,
+        time::{Duration, SystemTime},
+    };
+    let dir = TempDir::new();
+    let source = scaffold::init(&dir.path().join("source"), "acme", "root")
+        .unwrap()
+        .repo;
+    let real = dir.path().join("real");
+    fs::create_dir(&real).unwrap();
+    let alias = dir.path().join("alias");
+    symlink(&real, &alias).unwrap();
+    let root = alias.join("workspace");
+    let manager = Manager::open(&root).unwrap();
+    manager.install(source.to_str().unwrap()).unwrap();
+    let gitfile = root.join("worktrees/acme/root/.git");
+    let content = fs::read(&gitfile).unwrap();
+    // A fixed old timestamp makes rewrites observable without clock resolution races.
+    let stamp = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+    fs::File::options()
+        .write(true)
+        .open(&gitfile)
+        .unwrap()
+        .set_modified(stamp)
+        .unwrap();
+    let modified = fs::metadata(&gitfile).unwrap().modified().unwrap();
+    drop(manager);
+    let _manager = Manager::open(&root).unwrap();
+    assert_eq!(fs::read(&gitfile).unwrap(), content);
+    assert_eq!(
+        fs::metadata(&gitfile).unwrap().modified().unwrap(),
+        modified
+    );
+    assert_eq!(
+        git(
+            &root.join("worktrees/acme/root"),
+            &["status", "--porcelain"]
+        ),
+        ""
+    );
+}
+
+#[test]
+fn opening_workspace_restores_missing_link_files() {
+    for target in [".git", "gitdir", "commondir"] {
+        let dir = TempDir::new();
+        let (_source, root, manager) = installed_workspace(&dir);
+        let checkout = root.join("worktrees/acme/root");
+        let gitfile = checkout.join(".git");
+        let content = fs::read_to_string(&gitfile).unwrap();
+        let admin = Path::new(content.trim().strip_prefix("gitdir: ").unwrap());
+        let paths = [
+            gitfile.clone(),
+            admin.join("gitdir"),
+            admin.join("commondir"),
+        ];
+        let expected = paths.each_ref().map(|p| fs::read(p).unwrap());
+        let missing = if target == ".git" {
+            gitfile
+        } else {
+            admin.join(target)
+        };
+        fs::remove_file(missing).unwrap();
+        drop(manager);
+        let _manager = Manager::open(&root).unwrap();
+        for (path, bytes) in paths.iter().zip(expected) {
+            assert_eq!(fs::read(path).unwrap(), bytes);
+        }
+        assert_eq!(git(&checkout, &["status", "--porcelain"]), "");
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn opening_workspace_refuses_symlinked_worktree_metadata_and_parents() {
     use std::os::unix::fs::symlink;
     for target in [
