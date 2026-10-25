@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Installed package record
-Each `state.json` `packages.<id>` record is the single source for its format and SHALL hold `source`, `current` and `previous` revisions (`version`, `commit`; `previous` also `mode`), `enabled`, `mode` (`{"pinned": REF}`, `{"branch": NAME}`, omitted for releases), and optional `forkOf`, `dependencies`, `replaces`, protecting `catalog`, shared `clone`, `path` and `metadata`. At most one previous SHALL be kept. Verified by `model::state_round_trips_byte_for_byte`.
+Each `state.json` `packages.<id>` managed record SHALL hold `source`, `current`, at most one `previous`, `enabled`, and optional `mode`, `forkOf`, `dependencies`, `replaces`, `catalog`, `clone`, `path`, `metadata`. Revisions contain `version` and `commit`; `previous` also retains mode. Links follow "Link record format". Verified by `model::state_round_trips_byte_for_byte`.
 
 #### Scenario: Fresh install has no previous revision
 - **WHEN** a package was just installed
@@ -26,3 +26,8 @@ Each `state.json` `packages.<id>` record is the single source for its format and
 #### Scenario: Build record format
 - **WHEN** a current or previous revision is a build
 - **THEN** `build` or `previous_build` retains its full release record and catalog location separately from catalog protection; previous retains its mode and source kind for offline rollback, and only current/previous build output is retained
+
+#### Scenario: Managed field semantics
+- **WHEN** a managed package record includes optional fields
+- **THEN** mode is `{"pinned": REF}` or `{"branch": NAME}` (omitted for releases), catalog protects a verified catalog installation, and clone is the source-derived Git-clone key
+

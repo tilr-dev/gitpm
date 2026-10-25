@@ -25,7 +25,7 @@ Update and rollback SHALL refuse with `local_changes` when the clone has any los
 - **THEN** update fails with `local_changes` and nothing changes
 
 ### Requirement: update follows the recorded mode
-`update ID` without a target SHALL follow the package's recorded mode: release mode moves to the newest release, branch mode to the branch HEAD, and a pinned package SHALL stay unchanged with reason `pinned` (CLI: `ID pinned at V (REF)`). `--ref REF` and `--dev` SHALL move the package and record the new mode as at install (install-uninstall); `--release` SHALL return it to release mode at the newest release. Verified by `workspace::update_follows_and_switches_the_recorded_mode`.
+Managed `update ID` SHALL follow recorded mode: release moves to the newest release, branch to HEAD, pinned stays with reason `pinned` (CLI: `ID pinned at V (REF)`). Explicit targets SHALL switch managed mode as at install. Links follow "Linked packages report releases without automatic replacement", including explicit targets. Verified by `workspace::update_follows_and_switches_the_recorded_mode`.
 
 #### Scenario: Pinned package
 - **WHEN** `acme/greeter` was installed with `--ref v0.1.0`, 0.2.0 is released and the user runs `update acme/greeter`
@@ -34,6 +34,11 @@ Update and rollback SHALL refuse with `local_changes` when the clone has any los
 #### Scenario: Back to releases
 - **WHEN** the user then runs `update acme/greeter --release`
 - **THEN** it prints `acme/greeter updated 0.1.0 → 0.2.0 (major)` and the record has no `mode`
+
+#### Scenario: Explicit managed targets
+- **WHEN** a managed package is updated with `--ref REF`, `--dev` or `--release`
+- **THEN** the target and recorded mode follow install semantics: explicit ref, origin default branch or newest release respectively
+
 
 ### Requirement: An explicit return to releases may go down
 `update ID --release` SHALL move to the newest release also when it is below the installed version; following releases (`update ID` in release mode) never goes down. Verified by `workspace::stable_update_never_downgrades`.
@@ -148,7 +153,7 @@ An update that follows releases SHALL compare versions only and SHALL never down
 - **THEN** the package is pinned to the tag's new commit and the CLI warns `release tag vV now points to COMMIT`
 
 ### Requirement: Update mirrors the origin's tags
-A single-package update of a package with its own clone SHALL mirror the origin's tags (pruned and force-fetched): a deleted release disappears from the clone, a moved one is seen at its new commit (package-ids). When the deleted tag is the installed (newest) release, `update ID` and `update all` report the package up to date with a warning ("Stable update never downgrades"). Verified by `stable_update_follows_deleted_and_moved_upstream_tags`.
+An update of a Git package SHALL mirror the origin's tags (pruned and force-fetched): a deleted release disappears from the clone, a moved one is seen at its new commit (package-ids). When the deleted tag is the installed (newest) release, `update ID` and `update all` report the package up to date with a warning ("Stable update never downgrades"). Verified by `stable_update_follows_deleted_and_moved_upstream_tags`.
 
 #### Scenario: Deleted installed release tag
 - **WHEN** the origin deletes the release tag of the installed (newest) version
