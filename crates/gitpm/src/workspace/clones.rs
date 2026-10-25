@@ -96,6 +96,9 @@ pub(crate) fn repo_key(source: &str) -> String {
 
 /// The source object store, independent of package worktree lifetime.
 pub(super) fn source_repo(root: &Path, id: &str, p: &Installed) -> Result<PathBuf> {
+    if p.link().is_some() {
+        return Err(Error::RepositoryNotFound { id: id.into() });
+    }
     let key = p
         .clone
         .as_ref()
@@ -225,11 +228,16 @@ pub(super) struct Removal {
     pub(super) lost_work: Vec<LostWork>,
 }
 pub(super) fn removal(root: &Path, state: &State, id: &str, custom_ssh: bool) -> Result<Removal> {
-    let p = state
-        .packages
-        .get(id)
-        .or_else(|| state.forgotten.get(id))
-        .ok_or_else(|| Error::RepositoryNotFound { id: id.into() })?;
+    let entry = state.packages.get(id).or_else(|| state.forgotten.get(id));
+    if entry.is_some_and(|p| p.link().is_some()) {
+        return Ok(Removal {
+            relative: String::new(),
+            repo: None,
+            key: None,
+            lost_work: Vec::new(),
+        });
+    }
+    let p = entry.ok_or_else(|| Error::RepositoryNotFound { id: id.into() })?;
     let relative = p.clone_folder(id);
     let bare = match source_repo(root, id, p) {
         Ok(bare) => Some(bare),

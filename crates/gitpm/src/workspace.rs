@@ -29,8 +29,10 @@ use std::{
 mod builds;
 pub(crate) mod clones;
 mod fork;
+mod link;
 use clones::{guard_clone, installed_repo, place_clone, removal, source_repo};
 pub use fork::{DependencyRewrite, ForkedPackage, PackageFork};
+pub use link::LinkResult;
 
 /// A mode in messages: `release`, `pinned at REF`, `branch NAME`.
 fn mode_text(mode: &Mode) -> String {
@@ -38,6 +40,7 @@ fn mode_text(mode: &Mode) -> String {
         Mode::Release => "release".into(),
         Mode::Pinned(reference) => format!("pinned at {reference}"),
         Mode::Branch(branch) => format!("branch {branch}"),
+        Mode::Link(_) => "dev-linked".into(),
     }
 }
 
@@ -105,6 +108,11 @@ impl From<InstallTarget> for Target {
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum UnchangedReason {
+    /// Live link, unchanged; discovery is separate from this disposition.
+    DevLinked {
+        availability: Box<CheckRow>,
+        dependency_problems: Vec<String>,
+    },
     /// Pinned to `reference` (a tag or commit): only an explicit target moves it.
     Pinned { reference: String },
     /// Branch mode: the history of `branch` on the origin no longer contains the
@@ -130,6 +138,27 @@ pub enum UnchangedReason {
 impl fmt::Display for UnchangedReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            UnchangedReason::DevLinked {
+                availability,
+                dependency_problems,
+            } => {
+                let result = if availability.update_available {
+                    write!(
+                        f,
+                        "version {} is available; package is dev-linked and was not updated",
+                        availability.latest.as_deref().unwrap_or("unknown")
+                    )
+                } else if let Some(problem) = &availability.problem {
+                    write!(f, "dev-linked and unchanged; release discovery: {problem}")
+                } else {
+                    write!(f, "dev-linked and unchanged; {}", availability.message())
+                };
+                result?;
+                if !dependency_problems.is_empty() {
+                    write!(f, "; dependencies: {}", dependency_problems.join("; "))?;
+                }
+                Ok(())
+            }
             UnchangedReason::Pinned { reference } => write!(f, "pinned to {reference}"),
             UnchangedReason::Diverged { branch } => write!(f, "history of {branch} diverged"),
             UnchangedReason::BranchGone { branch } => write!(f, "branch {branch} is gone"),
@@ -449,6 +478,9 @@ pub struct SkippedDist {
     /// The package's clone is gone (`reason` "clone missing"): only uninstalling or
     /// forgetting it (which drops the record without confirmation) ends the skip.
     pub clone_missing: bool,
+    /// Link identity remains visible even when the author output is unavailable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link: Option<crate::LinkDescriptor>,
 }
 impl DistSync {
     pub fn is_empty(&self) -> bool {
@@ -1366,7 +1398,7 @@ impl Manager {
         // One scratch copy per clone: the packages of a multi-package source share it.
         let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for (id, installed) in &state.packages {
-            if installed.build.is_some() {
+            if installed.build.is_some() || installed.link().is_some() {
                 continue;
             }
             groups
@@ -1529,6 +1561,7 @@ impl Manager {
                 // revision, a branch-mode package gets its branch HEAD as only candidate.
                 match &installed.mode {
                     Mode::Release => {}
+                    Mode::Link(_) => unreachable!("links are fixed candidates"),
                     Mode::Pinned(reference) => {
                         reasons.insert(
                             id.clone(),
@@ -1721,6 +1754,57 @@ impl Manager {
             }
             repos.insert(relative.clone(), repo);
         }
+        // Links contribute a single fixed snapshot to the joint solve. Discovery
+        // is read-only and its outcome cannot change that candidate.
+        let link_rows: BTreeMap<_, _> = if state.packages.values().any(|p| p.link().is_some()) {
+            check::check_with_options(txn.root(), self.options.catalog.as_deref(), &self.options)?
+                .rows
+        } else {
+            Vec::new()
+        }
+        .into_iter()
+        .filter(|r| matches!(r.mode, Mode::Link(_)))
+        .map(|r| (r.id.clone(), r))
+        .collect();
+        for (id, p) in &state.packages {
+            if p.link().is_none() {
+                continue;
+            }
+            let version = deps::version(&p.current.version)?;
+            let m = Manifest {
+                id: id.clone(),
+                version: p.current.version.clone(),
+                dependencies: p.dependencies.clone(),
+                replaces: p.replaces.clone(),
+                ..Default::default()
+            };
+            candidates.insert(
+                id.clone(),
+                BTreeMap::from([(
+                    version,
+                    catalog::Release {
+                        manifest: m,
+                        source: p.source.clone(),
+                        commit: String::new(),
+                        reference: String::new(),
+                        files: BTreeMap::new(),
+                        build: None,
+                        path: None,
+                    },
+                )]),
+            );
+            latest.insert(id.clone(), p.current.version.clone());
+            reasons.insert(
+                id.clone(),
+                UnchangedReason::DevLinked {
+                    availability: Box::new(link_rows[id].clone()),
+                    dependency_problems: deps::broken_dependencies(state, id)
+                        .into_iter()
+                        .map(|d| format!("{}: {}", d.id, d.problem.unwrap_or_default()))
+                        .collect(),
+                },
+            );
+        }
         let crate::upgrade::Solution {
             selected,
             active_new,
@@ -1908,6 +1992,36 @@ impl Manager {
                     .get(id)
                     .cloned()
                     .ok_or_else(|| Error::NotInstalled { id: id.into() })?;
+                if p.link().is_some() {
+                    let row = check::check_with_options(
+                        txn.root(),
+                        self.options.catalog.as_deref(),
+                        &self.options,
+                    )?
+                    .rows
+                    .into_iter()
+                    .find(|r| r.id == id)
+                    .unwrap();
+                    return Ok(RevisionChange {
+                        id: id.into(),
+                        from: p.current.clone(),
+                        to: p.current.clone(),
+                        changed: false,
+                        major: false,
+                        warnings: Vec::new(),
+                        skipped: Vec::new(),
+                        unchanged_reason: Some(UnchangedReason::DevLinked {
+                            availability: Box::new(row),
+                            dependency_problems: deps::broken_dependencies(state, id)
+                                .into_iter()
+                                .map(|d| format!("{}: {}", d.id, d.problem.unwrap_or_default()))
+                                .collect(),
+                        }),
+                        mode: p.mode.clone(),
+                        detached: None,
+                        dist: DistSync::default(),
+                    });
+                }
                 let unchanged = |reason: Option<UnchangedReason>, skipped| RevisionChange {
                     id: id.into(),
                     from: p.current.clone(),
@@ -2455,6 +2569,10 @@ impl Manager {
             }
             let installed = state.packages.remove(id).unwrap();
             state.replacements.retain(|_, fork| fork != id);
+            if installed.link().is_some() {
+                state.forgotten.insert(id.to_owned(), installed);
+                return Ok(false);
+            }
             if installed.build.is_some() {
                 state.forgotten.insert(id.to_owned(), installed);
                 return Ok(true);
@@ -2521,13 +2639,15 @@ impl Manager {
         id: &str,
         record: Installed,
     ) -> Result<InstallResult> {
-        if record.build.is_some() {
+        if record.build.is_some() || record.link().is_some() {
             let result = builds::build_result(id, &record, false);
             state.forgotten.remove(id);
             state.packages.insert(id.into(), record.clone());
             if state.is_active(id) {
                 deps::refuse_inactive_dependencies(state, id, "restore", false)?;
-                deploy_committed(txn, id, &record, self.options.custom_ssh)?;
+                if record.link().is_none() {
+                    deploy_committed(txn, id, &record, self.options.custom_ssh)?;
+                }
             }
             return Ok(result);
         }
@@ -2622,7 +2742,7 @@ impl Manager {
             deletes.push(cache.to_string_lossy().into_owned());
         }
         let dist = self.root.join("dist").join(id);
-        if dist.exists() {
+        if fs::symlink_metadata(&dist).is_ok() {
             deletes.push(dist.to_string_lossy().into_owned());
         }
         let after = without_provider(&state, id, true);
@@ -2785,8 +2905,9 @@ impl Manager {
                         // Settled as "nothing to deploy" (the live dist is missing).
                         txn.delete_dist(&id)?;
                         plan.skipped.push(SkippedDist {
-                            id,
+                            id: id.clone(),
                             clone_missing: matches!(error, Error::RepositoryNotFound { .. }),
+                            link: state.packages[&id].link().cloned(),
                             reason: error.to_string(),
                         });
                     }
@@ -2832,7 +2953,8 @@ fn settle_dist(txn: &mut Txn, before: &State, after: &State, custom_ssh: bool) -
             }
         }
     }
-    let drift = dist_drift(txn.root(), after, custom_ssh)?;
+    let staged = txn.staged_dists().into_iter().collect();
+    let drift = dist_drift_unstaged(txn.root(), after, custom_ssh, &staged)?;
     for id in txn.staged_dists().into_iter().chain(drift.removed) {
         if !after.is_active(&id) {
             txn.delete_dist(&id)?;
@@ -2852,6 +2974,15 @@ fn settle_dist(txn: &mut Txn, before: &State, after: &State, custom_ssh: bool) -
 /// Stage `dist/<id>` from the package's `dist/` at its installed commit (see
 /// [`Txn::deploy`]); the clone must exist.
 fn deploy_committed(txn: &mut Txn, id: &str, p: &Installed, custom_ssh: bool) -> Result<()> {
+    if let Some(link) = p.link() {
+        ensure!(
+            Path::new(&link.target).is_dir(),
+            Workspace,
+            "linked output unavailable: {}",
+            link.target
+        );
+        return txn.deploy_link(id, Path::new(&link.target));
+    }
     if let Some(build) = &p.build {
         return builds::deploy_build(txn, id, build);
     }
@@ -2871,6 +3002,14 @@ fn deploy_committed(txn: &mut Txn, id: &str, p: &Installed, custom_ssh: bool) ->
 
 /// Compare `dist/` with the active packages of `state` (read-only).
 fn dist_drift(root: &Path, state: &State, custom_ssh: bool) -> Result<DistSync> {
+    dist_drift_unstaged(root, state, custom_ssh, &BTreeSet::new())
+}
+fn dist_drift_unstaged(
+    root: &Path,
+    state: &State,
+    custom_ssh: bool,
+    staged: &BTreeSet<String>,
+) -> Result<DistSync> {
     let mut plan = DistSync::default();
     let dist = root.join("dist");
     // Known IDs come from installed and forgotten records.
@@ -2926,7 +3065,7 @@ fn dist_drift(root: &Path, state: &State, custom_ssh: bool) -> Result<DistSync> 
         .cloned()
         .collect();
     for (id, p) in &state.packages {
-        if !state.is_active(id) || present.contains(id) {
+        if !state.is_active(id) {
             continue;
         }
         // A blocked namespace is unmanaged, and its active packages remain undeployed.
@@ -2938,7 +3077,42 @@ fn dist_drift(root: &Path, state: &State, custom_ssh: bool) -> Result<DistSync> 
                 id: id.clone(),
                 reason: format!("dist/{ns} is not a folder"),
                 clone_missing: false,
+                link: p.link().cloned(),
             });
+            continue;
+        }
+        if let Some(link) = p.link() {
+            if !state.is_active(id) || staged.contains(id) {
+                continue;
+            }
+            let leaf = root.join("dist").join(id);
+            if let Ok(meta) = fs::symlink_metadata(&leaf)
+                && (!meta.file_type().is_symlink()
+                    || fs::read_link(&leaf)? != Path::new(&link.target))
+            {
+                plan.skipped.push(SkippedDist {
+                    id: id.clone(),
+                    reason: format!("unexpected linked deployment entry: {}", leaf.display()),
+                    clone_missing: false,
+                    link: Some(link.clone()),
+                });
+                continue;
+            }
+            if !Path::new(&link.target).is_dir() {
+                plan.skipped.push(SkippedDist {
+                    id: id.clone(),
+                    reason: format!("dev-linked output unavailable: {}", link.target),
+                    clone_missing: false,
+                    link: Some(link.clone()),
+                });
+                continue;
+            }
+            if !present.contains(id) {
+                plan.deployed.push(id.clone());
+            }
+            continue;
+        }
+        if !state.is_active(id) || present.contains(id) {
             continue;
         }
         if let Some(build) = &p.build {
@@ -2949,6 +3123,7 @@ fn dist_drift(root: &Path, state: &State, custom_ssh: bool) -> Result<DistSync> 
                     id: id.clone(),
                     reason: "cached build missing".into(),
                     clone_missing: false,
+                    link: None,
                 });
             }
             continue;
@@ -2966,6 +3141,7 @@ fn dist_drift(root: &Path, state: &State, custom_ssh: bool) -> Result<DistSync> 
                 id: id.clone(),
                 reason: reason.to_owned(),
                 clone_missing,
+                link: None,
             }),
             None => plan.deployed.push(id.clone()),
         }
@@ -4205,7 +4381,11 @@ mod tests {
             drop(m);
             let m = ws.open();
             let p = &m.list().unwrap()[0];
-            assert_eq!(p.current.version, "0.2.0", "crash after {renames}");
+            assert_eq!(
+                p.current.as_ref().unwrap().version,
+                "0.2.0",
+                "crash after {renames}"
+            );
             assert_eq!(p.previous.as_ref().unwrap().version, "0.1.0");
             assert_eq!(
                 fixture_git(&ws.repo(), &["rev-parse", "HEAD"]),
@@ -4389,7 +4569,10 @@ mod tests {
         );
         let list = m.list().unwrap();
         assert_eq!(
-            (list.len(), list[0].current.version.as_str()),
+            (
+                list.len(),
+                list[0].current.as_ref().unwrap().version.as_str()
+            ),
             (1, "1.10.0")
         );
         ws.no_leftovers();
@@ -5415,6 +5598,7 @@ mod tests {
                 id: "dan/other".into(),
                 reason: "clone missing".into(),
                 clone_missing: true,
+                link: None,
             }]
         );
         assert_eq!(m.enable(id).unwrap().skipped.len(), 1);
@@ -8145,6 +8329,7 @@ mod tests {
                 id: id.into(),
                 reason: "installed commit missing from its clone".into(),
                 clone_missing: false,
+                link: None,
             }]
         );
         fs::remove_dir_all(ws.repo()).unwrap();
