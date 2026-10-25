@@ -75,3 +75,9 @@ A failed `replace ORIGINAL --with PROVIDER` with a dependency conflict SHALL sug
 - **WHEN** the user runs `replace ORIGINAL --with PROVIDER`
 - **THEN** it refuses without changing the workspace, names the consumer, dependency requirement and selected missing versions without claiming that no catalog is configured
 - **AND** the hint points to `gitpm replace-check ORIGINAL --with PROVIDER` and `gitpm replace-resolve ORIGINAL --with PROVIDER`
+
+#### Scenario: An installed dependency cannot be resolved by installing missing releases
+- **GIVEN** the replacement requires an incompatible or disabled installed dependency
+- **WHEN** `replace ORIGINAL --with PROVIDER` reports a dependency conflict
+- **THEN** its hint describes checking dependency issues and installing missing dependencies only when resolvable
+- **AND** it tells the caller to fix incompatible or disabled installed dependencies first

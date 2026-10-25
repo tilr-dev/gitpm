@@ -1090,6 +1090,25 @@ fn replacement_missing_dependencies_suggest_explicit_resolution() {
     assert!(f.dist("lib/new").is_none());
     f.ok(&["replace-resolve", "vendor/demo", "--with", "dan/demo"]);
     f.ok(&["replace", "vendor/demo", "--with", "dan/demo"]);
+    f.ok(&["replace", "vendor/demo", "--with", "vendor/demo"]);
+    // Resolution cannot change an incompatible installed version.
+    f.ok(&["uninstall", "lib/new", "--force"]);
+    f.release("lib/new", "incompatible dependency", "2.0.0");
+    f.ok(&["install", f.path("lib/new").to_str().unwrap()]);
+    let before = f.state();
+    let error = f.fails(&["replace", "vendor/demo", "--with", "dan/demo"]);
+    assert!(error.contains("Error kind: dependency_conflict"), "{error}");
+    assert!(error.contains("shows dependency issues"), "{error}");
+    assert!(
+        error.contains("installs missing dependencies when resolvable"),
+        "{error}"
+    );
+    assert!(
+        error.contains("fix incompatible or disabled installed dependencies first"),
+        "{error}"
+    );
+    f.fails(&["replace-resolve", "vendor/demo", "--with", "dan/demo"]);
+    assert_eq!(before, f.state());
 }
 
 #[test]

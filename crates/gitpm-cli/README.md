@@ -83,3 +83,9 @@ that dependency closure and active consumers' version requirements on the origin
 block replacement. Unrelated existing breakage remains diagnostic and does not cause
 resolve to reinstall force-removed dependencies. Fix incompatible versions explicitly
 before replacing.
+
+On a replacement dependency conflict, the CLI suggests `replace-check ORIGINAL --with
+PROVIDER` to inspect dependency issues and `replace-resolve ORIGINAL --with PROVIDER`
+to install missing dependencies when resolvable. Fix incompatible or disabled installed
+dependencies first. Replacement refusal uses the configured catalog to list available
+missing versions; it does not install them.

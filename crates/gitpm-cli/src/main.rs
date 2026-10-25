@@ -96,7 +96,7 @@ fn hint(invocation: &Invocation, error: &PmError) -> Option<String> {
         PmError::DependencyConflict(_) if command == "replace" => {
             let provider = with.as_deref()?;
             format!(
-                "`gitpm replace-check {id} --with {provider}` shows what is missing; `gitpm replace-resolve {id} --with {provider}` installs it"
+                "`gitpm replace-check {id} --with {provider}` shows dependency issues; `gitpm replace-resolve {id} --with {provider}` installs missing dependencies when resolvable; fix incompatible or disabled installed dependencies first"
             )
         }
         PmError::NotDeployed { sync, .. } => {
