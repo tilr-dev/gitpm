@@ -413,15 +413,16 @@ pub fn fork_source_with(
         "destination has no existing ancestor",
     )?;
     let real = fs::canonicalize(ancestor)?.join(destination.strip_prefix(ancestor).unwrap());
+    let local_source = local_source_path(&source)?;
     ensure!(
-        !Path::new(&source).is_absolute() || !real.starts_with(&source),
+        !local_source.is_some_and(|source| real.starts_with(source)),
         InvalidArgument,
         "fork destination must be outside the source repository"
     );
     let ssh = options.custom_ssh;
     clone_fork(&source, &destination, ssh, |repo| {
         let commit = match reference {
-            Some(reference) => resolve_upstream_ref(repo, reference, ssh)?.0,
+            Some(reference) => resolve_source_ref(repo, reference, ssh)?,
             None => match releases::latest_with_ssh(repo, ids.first().copied(), ssh) {
                 Ok(tag) => tag.commit,
                 Err(Error::NoReleases(message)) => {
@@ -484,6 +485,50 @@ pub fn fork_source_with(
         }
         new_fork(repo, &sources, ssh)
     })
+}
+
+/// A fresh clone has no stale local branches. Resolve normal Git expressions,
+/// translating branch names to origin refs when they are not local branches.
+fn resolve_source_ref(repo: &Path, reference: &str, custom_ssh: bool) -> Result<String> {
+    match resolve_ref(repo, reference, custom_ssh) {
+        Ok(commit) => Ok(commit),
+        Err(error) => {
+            let branch = reference.strip_prefix("refs/heads/").unwrap_or(reference);
+            resolve_ref(repo, &format!("refs/remotes/origin/{branch}"), custom_ssh)
+                .map_err(|_| error)
+        }
+    }
+}
+
+/// Git treats file:// URLs as local paths, including their percent escapes.
+/// Check their canonical path too, without changing the source URL recorded in metadata.
+fn local_source_path(source: &str) -> Result<Option<PathBuf>> {
+    if Path::new(source).is_absolute() {
+        return Ok(Some(fs::canonicalize(source)?));
+    }
+    let Some(url) = source.strip_prefix("file://") else {
+        return Ok(None);
+    };
+    let (_, path) = url
+        .split_once('/')
+        .require(Error::InvalidArgument, "file URL needs an absolute path")?;
+    let mut decoded = Vec::new();
+    let mut bytes = path.bytes();
+    while let Some(byte) = bytes.next() {
+        if byte == b'%' {
+            let hex = |byte: Option<u8>| byte.and_then(|b| (b as char).to_digit(16));
+            let high =
+                hex(bytes.next()).require(Error::InvalidArgument, "invalid file URL escape")?;
+            let low =
+                hex(bytes.next()).require(Error::InvalidArgument, "invalid file URL escape")?;
+            decoded.push((high * 16 + low) as u8);
+        } else {
+            decoded.push(byte);
+        }
+    }
+    let path = String::from_utf8(decoded)
+        .map_err(|_| Error::InvalidArgument("file URL path must be UTF-8".into()))?;
+    Ok(Some(fs::canonicalize(format!("/{path}"))?))
 }
 
 /// Clone a fresh repository and remove only newly created paths if preparation fails.
@@ -895,6 +940,68 @@ mod tests {
                 .is_err()
             );
         }
+    }
+
+    #[test]
+    fn fork_source_accepts_revision_expressions_and_nondefault_branches() {
+        use crate::test_support::{Author, TempDir, git};
+        let temp = TempDir::new("fork-source-expressions");
+        let author = Author::new(temp.join("source"), "acme/theme");
+        let first = author.head();
+        author.commit("0.2.0");
+        git(&author.path, &["branch", "topic"]);
+        for (i, reference) in ["HEAD~1", "topic~1", "refs/heads/topic~1", "v0.1.0^{commit}"]
+            .iter()
+            .enumerate()
+        {
+            let dest = temp.join(format!("fork-{i}"));
+            fork_source(
+                author.source(),
+                &["acme/theme"],
+                Some(reference),
+                "me",
+                &dest,
+            )
+            .unwrap();
+            assert_eq!(
+                package_manifest(&dest, None)
+                    .unwrap()
+                    .fork_of
+                    .unwrap()
+                    .commit,
+                first
+            );
+        }
+    }
+
+    #[test]
+    fn fork_source_file_url_cannot_create_destination_inside_source() {
+        use crate::test_support::{Author, TempDir, git};
+        let temp = TempDir::new("fork-source-file-url");
+        let author = Author::new(temp.join("source with spaces"), "acme/theme");
+        let before = git(&author.path, &["status", "--porcelain"]);
+        for source in [
+            format!("file://{}", author.source()),
+            format!("file://localhost{}", author.source().replace(' ', "%20")),
+        ] {
+            let dest = author.path.join("nested/fork");
+            let error = fork_source(&source, &["acme/theme"], None, "me", &dest).unwrap_err();
+            assert_eq!(error.kind(), "invalid_argument");
+            assert!(!author.path.join("nested").exists());
+        }
+        assert_eq!(git(&author.path, &["status", "--porcelain"]), before);
+        let url = format!("file://localhost{}", author.source().replace(' ', "%20"));
+        let dest = temp.join("outside-source");
+        fork_source(&url, &["acme/theme"], None, "me", &dest).unwrap();
+        assert_eq!(
+            package_manifest(&dest, None)
+                .unwrap()
+                .fork_of
+                .unwrap()
+                .source
+                .as_deref(),
+            Some(url.as_str())
+        );
     }
 
     fn with_dependencies(id: &str, dependencies: &[(&str, &str)]) -> Manifest {
