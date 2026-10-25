@@ -490,14 +490,31 @@ pub fn fork_source_with(
 /// A fresh clone has no stale local branches. Resolve normal Git expressions,
 /// translating branch names to origin refs when they are not local branches.
 fn resolve_source_ref(repo: &Path, reference: &str, custom_ssh: bool) -> Result<String> {
-    match resolve_ref(repo, reference, custom_ssh) {
-        Ok(commit) => Ok(commit),
-        Err(error) => {
-            let branch = reference.strip_prefix("refs/heads/").unwrap_or(reference);
-            resolve_ref(repo, &format!("refs/remotes/origin/{branch}"), custom_ssh)
-                .map_err(|_| error)
-        }
+    ensure!(
+        !reference.is_empty() && !reference.starts_with('-'),
+        InvalidArgument,
+        "invalid git ref"
+    );
+    if let Ok(commit) = resolve_ref(repo, reference, custom_ssh) {
+        return Ok(commit);
     }
+    let branch = reference.strip_prefix("refs/heads/").unwrap_or(reference);
+    if let Ok(commit) = resolve_ref(repo, &format!("refs/remotes/origin/{branch}"), custom_ssh) {
+        return Ok(commit);
+    }
+    // A clone fetches heads and tags, but an explicit ref may live elsewhere.
+    // Fetch its base name, then apply any ancestry expression to the fetched commit.
+    let split = reference.find(['~', '^']).unwrap_or(reference.len());
+    let (base, expression) = reference.split_at(split);
+    transport::fetch(
+        repo,
+        transport::Fetch::Revision {
+            remote: "origin",
+            revision: base,
+        },
+        custom_ssh,
+    )?;
+    resolve_ref(repo, &format!("FETCH_HEAD{expression}"), custom_ssh)
 }
 
 /// Git treats file:// URLs as local paths, including their percent escapes.
@@ -972,6 +989,35 @@ mod tests {
                 first
             );
         }
+    }
+
+    #[test]
+    fn fork_source_fetches_explicit_refs_outside_heads_and_tags() {
+        use crate::test_support::{Author, TempDir, git};
+        let temp = TempDir::new("fork-source-custom-ref");
+        let author = Author::new(temp.join("source"), "acme/theme");
+        git(&author.path, &["checkout", "--orphan", "temporary"]);
+        let commit = author.commit("0.2.0");
+        git(&author.path, &["update-ref", "refs/custom/review", &commit]);
+        git(&author.path, &["checkout", "main"]);
+        git(&author.path, &["branch", "-D", "temporary"]);
+        let dest = temp.join("fork");
+        fork_source(
+            author.source(),
+            &["acme/theme"],
+            Some("refs/custom/review"),
+            "me",
+            &dest,
+        )
+        .unwrap();
+        assert_eq!(
+            package_manifest(&dest, None)
+                .unwrap()
+                .fork_of
+                .unwrap()
+                .commit,
+            commit
+        );
     }
 
     #[test]
