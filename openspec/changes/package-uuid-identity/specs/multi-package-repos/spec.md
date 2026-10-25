@@ -3,12 +3,12 @@
 ### Requirement: Package structure and repository uniqueness
 Every package SHALL need a canonical UUID unique in the repository and a required nonunique name alias, a manifest and a committed package output folder selected by its manifest dist (default dist/) (neither a symlink; the missing package dist message is in dist), and packages MUST NOT nest.
 
-Verified by `packages::invalid_package_sets_are_refused` and `packages::ids_differing_only_in_case_make_both_folders_defective`.
+Verified by `packages::invalid_package_sets_are_refused` and `packages::duplicate_uuids_make_both_folders_defective`.
 
 #### Scenario: Duplicate UUIDs
 - **WHEN** two packages of the repository have the same UUID
 - **THEN** both folders are defective, even if their name aliases differ
-- **AND** this is covered by `packages::ids_differing_only_in_case_make_both_folders_defective`
+- **AND** this is covered by `packages::duplicate_uuids_make_both_folders_defective`
 
 ### Requirement: Package validity is per package
 Only the package being installed, updated or registered must be valid at its commit; a defective sibling SHALL NOT block it.
