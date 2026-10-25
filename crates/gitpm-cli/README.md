@@ -69,6 +69,19 @@ and dist unchanged. Use `commit`, `install` and `replace` explicitly; an existin
 release tag still conflicts with `commit`. The removed fork options `--replace`,
 `--version` and `--force` are refused before any changes.
 
+Use `fork ID [ID...] --from SOURCE --ns NAMESPACE --into DIR [--ref REF]` to fork a
+Git path or URL without opening, creating or locking a workspace. Without `--ref`,
+it selects the newest stable `vVERSION` release containing the first ID; every ID
+must exist there. Tags without that ID and legacy `ID@VERSION` tags are ignored.
+`--ref` accepts any revision, branch or untagged commit and requires `--from` for
+fork. Omit IDs only for a single-package source. Every package is retained and
+renamed; the destination must be new and outside the local source repository.
+For example, after `gitpm init acme/hello --into ./hello`, run:
+
+```sh
+gitpm fork acme/hello --from ./hello --ns me --into ./hello-fork
+```
+
 Everything works on local folders; nothing is built, executed, pushed or uploaded.
 Settings come from flags (`--root`, `--catalog`, `--sources`), then `GITPM_ROOT`,
 `GITPM_CATALOG` and `GITPM_SOURCES`; there is no config file. Run `gitpm --help` for all commands, and see the
