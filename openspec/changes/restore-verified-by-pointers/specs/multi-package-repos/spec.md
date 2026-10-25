@@ -10,7 +10,7 @@ Verified by `workspace::a_defective_sibling_does_not_block_a_package`.
 - **THEN** the install succeeds
 
 ### Requirement: One shared clone per source
-Root and nested Git packages of one source SHALL share `repos/<name>-<hash of the source>`. State SHALL record `clone` and, for nested packages, `path`; only the committed manifest output relative to that path SHALL be deployed. The clone SHALL be removed only with its last installed or forgotten user, guarding lost work then. Fetching mirrors origin tags (package-ids).
+Root and nested Git packages of one source SHALL share a bare repository at `repos/<name>-<hash of the source>`. State SHALL record `clone` and, for nested packages, `path`; only the committed manifest output relative to that path SHALL be deployed. The bare repository SHALL be removed only with its last installed or forgotten user, guarding lost work then. Fetching mirrors origin tags (package-ids).
 
 Verified by `two_packages_share_one_clone_and_follow_repository_releases`.
 
@@ -21,8 +21,12 @@ Verified by `two_packages_share_one_clone_and_follow_repository_releases`.
 
 #### Scenario: Clone-free build switches to Git beside a sibling
 - **WHEN** a clone-free build switches to a Git ref and an installed or forgotten sibling already uses the same source-keyed clone
-- **THEN** the transition reuses that clone with the usual local-work guards and refuses without changes if it holds local work
+- **THEN** the transition reuses that clone without checking out or moving a sibling worktree; only the affected package worktree is guarded
 - **AND** a successful transition records the shared clone key and preserves the sibling and its deployed output
+
+#### Scenario: Sibling install preserves an unpublished colliding tag
+- **WHEN** installing another package would fetch an origin tag over a different local tag holding unpublished work
+- **THEN** install refuses with `local_changes`, preserving the local tag, package worktrees and state
 
 ## ADDED Requirements
 
@@ -35,3 +39,12 @@ Verified by `packages::invalid_package_sets_are_refused` and `packages::ids_diff
 - **WHEN** two packages of the repository have IDs differing only in letter case
 - **THEN** both folders are defective
 - **AND** this is covered by `packages::ids_differing_only_in_case_make_both_folders_defective`
+
+### Requirement: Independent package worktrees
+Each Git package SHALL have its own detached worktree at its recorded current commit.
+
+Verified by `root_to_nested_lifecycle_keeps_one_clone_and_all_owners`.
+
+#### Scenario: Independent package revisions
+- **WHEN** two packages from one source are installed at different commits and one is updated or rolled back
+- **THEN** each worktree HEAD matches its own recorded commit, and the other worktree and its files remain unchanged
