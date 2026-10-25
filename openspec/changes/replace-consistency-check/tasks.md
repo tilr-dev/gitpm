@@ -8,3 +8,5 @@
 
 - [x] Limit blocking checks and explicit installs to the replacement dependency closure while reporting unrelated existing breakage.
 - [x] Specify and report self-replacement without an existing binding.
+
+- [x] Clarify replacement refusal diagnostics and explicit check/resolve guidance with a configured catalog.

@@ -14,6 +14,7 @@ use std::path::Path;
 struct Invocation {
     command: String,
     id: String,
+    with: Option<String>,
     /// The catalog location is an HTTP(S) URL.
     remote_catalog: bool,
     /// `--into DIR` and `--multi` of `init`.
@@ -51,6 +52,7 @@ fn hint(invocation: &Invocation, error: &PmError) -> Option<String> {
     let Invocation {
         command,
         id,
+        with,
         remote_catalog,
         into,
         multi,
@@ -90,6 +92,12 @@ fn hint(invocation: &Invocation, error: &PmError) -> Option<String> {
         // The library refused to enable over an inactive dependency.
         PmError::DependencyConflict(_) if command == "enable" => {
             format!("`gitpm enable {id} --force` enables it anyway")
+        }
+        PmError::DependencyConflict(_) if command == "replace" => {
+            let provider = with.as_deref()?;
+            format!(
+                "`gitpm replace-check {id} --with {provider}` shows what is missing; `gitpm replace-resolve {id} --with {provider}` installs it"
+            )
         }
         PmError::NotDeployed { sync, .. } => {
             let skipped = sync.skipped.first()?;
@@ -915,6 +923,7 @@ fn run(invocation: &mut Invocation) -> Result<()> {
     *invocation = Invocation {
         command: command.to_owned(),
         id: id.to_owned(),
+        with: with.clone(),
         remote_catalog: catalog_location
             .as_deref()
             .is_some_and(|l| catalog::is_local(l).is_ok_and(|local| !local)),

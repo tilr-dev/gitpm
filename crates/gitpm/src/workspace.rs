@@ -2764,7 +2764,7 @@ impl Manager {
                 replacement,
                 self.options.catalog.as_deref(),
             )?;
-            check.refuse_unresolvable()?;
+            check.refuse_unresolvable(state)?;
             let missing = check
                 .missing
                 .iter()
@@ -2778,7 +2778,7 @@ impl Manager {
                 replacement,
                 self.options.catalog.as_deref(),
             )?;
-            check.refuse()?;
+            check.refuse(state)?;
             Ok(ReplacementResolution {
                 installed,
                 check,
@@ -2793,9 +2793,13 @@ impl Manager {
     /// removes its binding. No dependencies are installed and there is no force bypass.
     pub fn replace(&self, original: &str, replacement: &str) -> Result<ReplacementPlan> {
         let (plan, dist) = self.transaction(|_, state| {
-            // Replacement itself never needs a catalog: all dependencies must exist now.
-            let check = replacement_check(state, original, replacement, None)?;
-            check.refuse()?;
+            let check = replacement_check(
+                state,
+                original,
+                replacement,
+                self.options.catalog.as_deref(),
+            )?;
+            check.refuse(state)?;
             apply_replacement(state, original, replacement);
             Ok(check.plan)
         })?;
@@ -3600,17 +3604,17 @@ pub struct ReplacementResolution {
 }
 
 impl ReplacementCheck {
-    fn refuse_unresolvable(&self) -> Result<()> {
+    fn refuse_unresolvable(&self, state: &State) -> Result<()> {
         self.refuse_incompatible()?;
         if self.resolution_error.is_some() {
-            return Err(self.conflict());
+            return Err(self.conflict(state));
         }
         Ok(())
     }
-    fn refuse(&self) -> Result<()> {
+    fn refuse(&self, state: &State) -> Result<()> {
         self.refuse_incompatible()?;
         if !self.missing.is_empty() || self.resolution_error.is_some() {
-            return Err(self.conflict());
+            return Err(self.conflict(state));
         }
         Ok(())
     }
@@ -3640,11 +3644,37 @@ impl ReplacementCheck {
                 .collect(),
         })
     }
-    fn conflict(&self) -> Error {
+    fn conflict(&self, state: &State) -> Error {
         Error::DependencyConflict(self.resolution_error.clone().unwrap_or_else(|| {
+            let mut next = state.clone();
+            apply_replacement(&mut next, &self.plan.original, &self.plan.provider);
+            let mut pending = vec![self.plan.provider.clone()];
+            let mut visited = BTreeSet::new();
+            let mut needs = Vec::new();
+            while let Some(id) = pending.pop() {
+                if !visited.insert(id.clone()) {
+                    continue;
+                }
+                for dependency in deps::status(&next, &next.packages[&id]) {
+                    if let Some(provider) = dependency.provider {
+                        pending.push(provider);
+                    } else if self.missing.contains_key(&dependency.id) {
+                        needs.push(format!(
+                            "{id} needs {} {} (not installed)",
+                            dependency.id, dependency.requirement
+                        ));
+                    }
+                }
+            }
+            let missing = self
+                .missing
+                .iter()
+                .map(|(id, version)| format!("{id} {version}"))
+                .collect::<Vec<_>>()
+                .join(", ");
             format!(
-                "replacement requires missing dependencies: {:?}",
-                self.missing
+                "{}; replacement installs nothing; missing: {missing}",
+                needs.join("; ")
             )
         }))
     }

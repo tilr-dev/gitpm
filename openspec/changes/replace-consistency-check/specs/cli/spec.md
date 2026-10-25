@@ -64,3 +64,14 @@ The CLI SHALL prompt (`[y/N]`, on stderr) only when stdin is a terminal for unin
 #### Scenario: Replacement prompt declined
 - **WHEN** a replacement is inconsistent and terminal input contains n
 - **THEN** the CLI returns the library error without asking for or reading confirmation
+
+## ADDED Requirements
+
+### Requirement: Replacement dependency conflict guidance
+A failed `replace ORIGINAL --with PROVIDER` with a dependency conflict SHALL suggest explicit replacement checking and resolution using the supplied original and provider IDs.
+
+#### Scenario: Missing dependencies with a configured catalog
+- **GIVEN** a catalog is configured and the replacement provider needs an absent dependency available in that catalog
+- **WHEN** the user runs `replace ORIGINAL --with PROVIDER`
+- **THEN** it refuses without changing the workspace, names the consumer, dependency requirement and selected missing versions without claiming that no catalog is configured
+- **AND** the hint points to `gitpm replace-check ORIGINAL --with PROVIDER` and `gitpm replace-resolve ORIGINAL --with PROVIDER`

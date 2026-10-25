@@ -1053,6 +1053,46 @@ fn replacement_check_resolve_cli_and_removed_options() {
 }
 
 #[test]
+fn replacement_missing_dependencies_suggest_explicit_resolution() {
+    let f = Fixture::new();
+    f.ok(&["init", "lib/new", "--into", "lib/new"]);
+    f.release("lib/new", "dependency", "1.0.0");
+    f.ok(&[
+        "catalog",
+        "register",
+        f.path("lib/new").to_str().unwrap(),
+        "--ref",
+        "HEAD",
+    ]);
+    f.original_and_fork();
+    let path = f.path("dan/demo/plugin.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    manifest["dependencies"] = serde_json::json!({"lib/new": "^1"});
+    fs::write(&path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+    f.release("dan/demo", "fork", "0.2.1");
+    f.ok(&["update", "dan/demo"]);
+    f.ok(&["uninstall", "lib/new", "--force"]);
+    let before = f.state();
+    let error = f.fails(&["replace", "vendor/demo", "--with", "dan/demo"]);
+    assert!(!error.contains("no catalog configured"), "{error}");
+    assert!(error.contains("dan/demo needs lib/new ^1"), "{error}");
+    assert!(error.contains("lib/new 1.0.0"), "{error}");
+    assert!(
+        error.contains("gitpm replace-check vendor/demo --with dan/demo"),
+        "{error}"
+    );
+    assert!(
+        error.contains("gitpm replace-resolve vendor/demo --with dan/demo"),
+        "{error}"
+    );
+    assert_eq!(before, f.state());
+    assert!(f.dist("lib/new").is_none());
+    f.ok(&["replace-resolve", "vendor/demo", "--with", "dan/demo"]);
+    f.ok(&["replace", "vendor/demo", "--with", "dan/demo"]);
+}
+
+#[test]
 fn replacing_original_with_itself_without_binding_reports_no_change() {
     let f = Fixture::new();
     f.original_and_fork();

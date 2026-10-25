@@ -2009,9 +2009,15 @@ fn replacement_check_resolve_and_atomic_apply() {
     );
     assert!(check.resolution_error.is_none());
     assert_eq!(before, f.snapshot());
-    f.refuses("dependency_conflict", || {
-        m.replace("vendor/base", "mine/base")
-    });
+    let error = f
+        .refuses("dependency_conflict", || {
+            m.replace("vendor/base", "mine/base")
+        })
+        .to_string();
+    assert!(!error.contains("no catalog configured"), "{error}");
+    assert!(error.contains("mine/base needs lib/new ^1"), "{error}");
+    assert!(error.contains("lib/leaf 1.0.0, lib/new 1.0.0"), "{error}");
+    assert!(!error.contains("{\""), "{error}");
     assert_eq!(before, f.snapshot());
     let resolved = m.replace_resolve("vendor/base", "mine/base").unwrap();
     assert_eq!(resolved.installed.len(), 2);
@@ -2200,9 +2206,14 @@ fn replacement_scope_keeps_unrelated_forced_breakage_and_checks_transitives() {
         check.missing,
         BTreeMap::from([("lib/leaf".into(), "1.0.0".into())])
     );
-    f.refuses("dependency_conflict", || {
-        m.replace("vendor/base", "mine/base")
-    });
+    let error = f
+        .refuses("dependency_conflict", || {
+            m.replace("vendor/base", "mine/base")
+        })
+        .to_string();
+    assert!(error.contains("lib/mid needs lib/leaf ^1"), "{error}");
+    assert!(error.contains("missing: lib/leaf 1.0.0"), "{error}");
+    assert!(!error.contains("lib/unrelated"), "{error}");
     let resolved = m.replace_resolve("vendor/base", "mine/base").unwrap();
     assert_eq!(resolved.installed.len(), 1);
     assert!(!m.state().unwrap().packages.contains_key("lib/unrelated"));
