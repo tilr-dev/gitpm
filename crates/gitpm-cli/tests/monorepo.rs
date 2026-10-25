@@ -688,9 +688,9 @@ fn explicit_forks_replace_two_packages_and_switch_back() {
     assert_eq!(state["replacements"]["tilr/panel"], "me/panel");
     let fork = f.dir.join("forks/me/mono");
     assert_eq!(manifest(&fork.join("packages/theme"))["version"], "1.0.1");
-    f.ok(&["replace", "tilr/theme", "--back"]);
-    f.ok(&["replace", "tilr/panel", "--back"]);
-    f.ok(&["replace", "tilr/store", "--back"]);
+    f.ok(&["replace", "tilr/theme", "--with", "tilr/theme"]);
+    f.ok(&["replace", "tilr/panel", "--with", "tilr/panel"]);
+    f.ok(&["replace", "tilr/store", "--with", "tilr/store"]);
     let state = f.state();
     assert_eq!(provider_of(&state, "app/uses-theme"), "tilr/theme");
     assert_eq!(provider_of(&state, "app/uses-panel"), "tilr/panel");

@@ -98,7 +98,7 @@ def replace_and_switch_back(t: T):
     for c in ["app/a", "app/b"]:
         row = view[c]["dependencies"][0]
         t.eq((row["provider"], row["satisfied"]), ("mine/base", True), f"{c} provider")
-    t.gitpm_ok("replace", "vendor/base", "--back")
+    t.gitpm_ok("replace", "vendor/base", "--with", "vendor/base")
     t.ok("replacements" not in t.state(), "replacements empty (skipped when empty)")
     view = resolved(t)
     t.ok(not view["mine/base"].get("dependents"), "fork has no dependents")
