@@ -5,6 +5,10 @@ Every package SHALL need a canonical UUID unique in the repository and a require
 
 Verified by `packages::invalid_package_sets_are_refused` and `packages::duplicate_uuids_make_both_folders_defective`.
 
+#### Scenario: Case variants
+- **WHEN** a package uses an uppercase spelling of a UUID
+- **THEN** its manifest is invalid because only canonical lowercase UUIDs are accepted
+
 #### Scenario: Duplicate UUIDs
 - **WHEN** two packages of the repository have the same UUID
 - **THEN** both folders are defective, even if their name aliases differ
