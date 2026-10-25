@@ -48,11 +48,12 @@ gitpm SHALL offer `disable` (disable and undeploy), `forget` (undeploy, move the
 - **THEN** it returns `ForgetResult { clone_kept, dist }`; `clone_kept` is false when the clone was gone and no `forgotten` record was kept ("Removing a package whose clone is gone")
 
 ### Requirement: Restore preconditions
-`restore ID` SHALL record the package again from its forgotten Git or build record as it was, checking dependencies. A Git worktree SHALL be clean and at its recorded commit, also in branch mode; restore SHALL NOT adopt a different HEAD. Restore SHALL refuse with `local_changes` on lost work, `repository_not_found` when required Git storage is missing, and `already_installed` when the ID is recorded, and print `ID restored V`. Verified by `restore_keeps_the_forgotten_record`, `restore_refuses_dirty_clones_and_needs_a_forgotten_record`, `restore_refuses_an_unpublished_commit_in_every_mode`, `branch_mode_restore_refuses_a_published_moved_head`, and `root_and_nested_worktrees_guard_dirty_files_and_every_moved_head`.
+`restore ID` SHALL record the package again from its forgotten Git or build record as it was, checking dependencies. A Git worktree SHALL be clean and at its recorded commit, also in branch mode; restore SHALL NOT adopt a different HEAD. Restore SHALL refuse with `local_changes` on lost work, `repository_not_found` when required Git storage is missing, and `already_installed` when the ID is recorded, and print `ID restored V`.
 
 #### Scenario: Restored record
 - **WHEN** a clean package worktree at its recorded commit is restored
 - **THEN** the forgotten revisions, catalog binding, enabled flag and mode are preserved, and deployment follows the enabled flag
+- **AND** Verified by `restore_keeps_the_forgotten_record`, `restore_refuses_dirty_clones_and_needs_a_forgotten_record`, `restore_refuses_an_unpublished_commit_in_every_mode`, `branch_mode_restore_refuses_a_published_moved_head`, and `root_and_nested_worktrees_guard_dirty_files_and_every_moved_head`.
 
 #### Scenario: Dirty retained clone
 - **WHEN** a forgotten package worktree was edited, including outside its nested package folder

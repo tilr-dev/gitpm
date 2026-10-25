@@ -857,6 +857,24 @@ fn check_sibling_local_work(forgotten: bool) {
     git(&clone, &["add", "local.txt"]);
     git(&clone, &["commit", "-m", "local sibling work"]);
     let local_head = git(&clone, &["rev-parse", "HEAD"]);
+    git(&clone, &["tag", "local-work", &local_head]);
+    let before = fs::read(f.root.join("state.json")).unwrap();
+    assert_eq!(
+        m.update_with(
+            ID,
+            gitpm::Target::Ref(format!("{ID}@1.0.0")),
+            gitpm::UpdateOptions { detach: true }
+        )
+        .unwrap_err()
+        .kind(),
+        "local_changes"
+    );
+    assert_eq!(
+        git(&clone, &["rev-parse", "refs/tags/local-work"]),
+        local_head
+    );
+    assert_eq!(fs::read(f.root.join("state.json")).unwrap(), before);
+    git(&clone, &["tag", "-d", "local-work"]);
     m.update_with(
         ID,
         gitpm::Target::Ref(format!("{ID}@1.0.0")),
@@ -993,4 +1011,72 @@ fn releasing_last_retained_clone_refuses_unpublished_work() {
     assert_eq!(m.update(ID).unwrap_err().kind(), "local_changes");
     assert_eq!(fs::read(f.root.join("state.json")).unwrap(), state);
     assert_eq!(git(&bare, &["rev-parse", "refs/tags/local-work"]), local);
+}
+
+#[test]
+fn retained_build_transition_refuses_unpublished_tags() {
+    for catalog_update in [false, true] {
+        let f = Fixture::new(true);
+        let repo = gitpm::scaffold::init(&f.dir.join("source"), "acme", "widget")
+            .unwrap()
+            .repo;
+        gitpm::scaffold::commit(&repo, "1.0.0").unwrap();
+        catalog::register(
+            f.catalog.to_str().unwrap(),
+            repo.to_str().unwrap(),
+            &format!("{ID}@1.0.0"),
+        )
+        .unwrap();
+        let root_file = f.catalog.join("catalog.json");
+        let mut root: serde_json::Value =
+            serde_json::from_slice(&fs::read(&root_file).unwrap()).unwrap();
+        root["verified"] = json!(true);
+        fs::write(root_file, root.to_string()).unwrap();
+        let m = f.manager();
+        m.install_from_catalog(ID, None).unwrap();
+        publish_repo(&f, &repo, ID, "2.0.0");
+        m.update(ID).unwrap();
+        let bare = clone_path(&f.root, &repo);
+        let tree = git(&bare, &["rev-parse", "HEAD^{tree}"]);
+        let local = git(
+            &bare,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit-tree",
+                &tree,
+                "-m",
+                "local work",
+            ],
+        );
+        git(&bare, &["tag", "local-work", &local]);
+        gitpm::scaffold::commit(&repo, "3.0.0").unwrap();
+        catalog::register(
+            f.catalog.to_str().unwrap(),
+            repo.to_str().unwrap(),
+            &format!("{ID}@3.0.0"),
+        )
+        .unwrap();
+        let before = fs::read(f.root.join("state.json")).unwrap();
+        let update = || {
+            if catalog_update {
+                m.update(ID)
+            } else {
+                m.update_with(
+                    ID,
+                    gitpm::Target::Ref(format!("{ID}@3.0.0")),
+                    gitpm::UpdateOptions { detach: true },
+                )
+            }
+        };
+        assert_eq!(update().unwrap_err().kind(), "local_changes");
+        assert_eq!(git(&bare, &["rev-parse", "refs/tags/local-work"]), local);
+        assert_eq!(fs::read(f.root.join("state.json")).unwrap(), before);
+        assert!(!worktree_path(&f.root, ID).exists());
+        git(&bare, &["tag", "-d", "local-work"]);
+        update().unwrap();
+        assert!(m.state().unwrap().packages[ID].build.is_none());
+    }
 }

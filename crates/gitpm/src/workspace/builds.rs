@@ -235,6 +235,13 @@ impl Manager {
                         true,
                         ssh,
                     )?;
+                } else {
+                    lost_work::require_no_hidden_for_update(
+                        &live,
+                        id,
+                        "unpublished work blocks update",
+                        ssh,
+                    )?;
                 }
                 let relative = p.clone_folder(id);
                 let repo = txn.repo(&relative, &live)?;

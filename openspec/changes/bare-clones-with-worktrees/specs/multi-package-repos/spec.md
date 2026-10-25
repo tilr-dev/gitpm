@@ -23,7 +23,7 @@ Root and nested Git packages of one source SHALL share a bare repository at `rep
 
 
 ### Requirement: Shared clone HEAD handling
-A Git package worktree SHALL be clean and its HEAD SHALL equal the package's recorded current commit before update, rollback, uninstall or restore, regardless of root or nested layout and regardless of other packages or tags. Lost work SHALL produce `local_changes` under the existing confirmation rules for uninstall. The bare repository SHALL never be checked out; its HEAD SHALL NOT govern a package's local-work check. Removing or forgetting one package SHALL NOT move another worktree's HEAD. When other users retain the bare repository, uninstall SHALL report worktree file changes, moved HEAD, and HEAD commits unreachable from surviving refs after removing this package's keep-alive refs; shared branches, tags and stash SHALL count only when the bare repository is removed.
+A Git package worktree SHALL be clean with HEAD at its recorded current commit before update, rollback, uninstall or restore, regardless of layout or siblings. Lost work SHALL yield `local_changes` under uninstall confirmation rules. Bare HEAD SHALL NOT govern this check. Removing or forgetting one package SHALL NOT move another worktree's HEAD. Shared refs SHALL count as lost work only when removing the bare repository.
 
 #### Scenario: Moved worktree HEAD refuses even at a tagged commit
 - **WHEN** the affected worktree HEAD differs from its recorded commit, even at another package revision or a tagged commit

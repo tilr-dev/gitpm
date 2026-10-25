@@ -31,7 +31,7 @@ A workspace SHALL contain `state.json` (packages, replacements, forgotten record
 - **THEN** opening does not migrate, consult or automatically remove its clones, and new Git installs use only `repos/`
 
 ### Requirement: Installed package record
-Each `state.json` `packages.<id>` managed record SHALL hold `source`, `current`, at most one `previous`, `enabled`, and optional `mode`, `forkOf`, `dependencies`, `replaces`, `catalog`, `clone`, `path`, `metadata`. Revisions contain `version` and `commit`; `previous` also retains mode. Links follow "Link record format". Git worktree paths SHALL derive from the ID; `path` selects the package folder inside that tree. Builds SHALL own no worktree. Verified by `model::state_round_trips_byte_for_byte`.
+Each `state.json` `packages.<id>` managed record SHALL hold `source`, `current`, at most one `previous`, `enabled`, and optional `mode`, `forkOf`, `dependencies`, `replaces`, `catalog`, `clone`, `path`, `metadata`. Revisions contain `version` and `commit`; `previous` also retains mode. Links follow "Link record format". Git worktree paths SHALL derive from ID; `path` selects the package folder inside that tree. Builds SHALL own no worktree. Verified by `model::state_round_trips_byte_for_byte`.
 
 #### Scenario: Fresh install has no previous revision
 - **WHEN** a package was just installed
@@ -97,3 +97,7 @@ Only a current Git installation SHALL own a package worktree, retained while for
 #### Scenario: Forgotten Git package
 - **WHEN** a Git package is forgotten and restored
 - **THEN** its own worktree is retained and reused at the recorded commit
+
+#### Scenario: Build transition preserves unpublished source refs
+- **WHEN** a retained build or a clone-free build beside a sibling switches to Git and fetching would discard unpublished refs in the reused bare repository
+- **THEN** the transition refuses with `local_changes` and preserves refs and state, without guarding the sibling worktree's HEAD or files

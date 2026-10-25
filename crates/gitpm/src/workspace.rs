@@ -2085,6 +2085,12 @@ impl Manager {
                     let relative = retained.clone_folder(id);
                     match source_repo(txn.root(), id, &retained) {
                         Ok(live) => {
+                            lost_work::require_no_hidden_for_update(
+                                &live,
+                                id,
+                                "unpublished work blocks update",
+                                ssh,
+                            )?;
                             txn.repo(&relative, &live)?;
                         }
                         Err(Error::RepositoryNotFound { .. }) => {
