@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Known manifest keys
-The manifest SHALL require id, name and version and MAY carry dist, buildCommand, buildRequired, dependencies, forkOf and replaces. IDs MUST be canonical UUIDs and versions MUST be valid; forkOf and replaces MUST name another ID and take no unknown keys. forkOf.source MUST be a Git URL or absolute path.
+The manifest SHALL require id, name and version and MAY carry dist, buildCommand, buildRequired, dependencies, forkOf and replaces. IDs MUST be canonical UUIDs, name MUST be 1 to 80 ASCII letters, digits, `-` or `_` and MUST NOT start with `-` and versions MUST be valid; forkOf and replaces MUST name another ID and take no unknown keys. forkOf.source MUST be a Git URL or absolute path.
 
 Verified by `model::manifest_parses_minimal_and_fork_manifests` and `model::manifest_rejections_have_precise_kinds`.
 
