@@ -52,7 +52,7 @@ All packages of a repository SHALL share one version and the single release tag 
 ### Requirement: One shared clone per source
 Root and nested Git packages of one source SHALL share `repos/<name>-<hash of the source>`. State SHALL record `clone` and, for nested packages, `path`; only the committed manifest output relative to that path SHALL be deployed. The clone SHALL be removed only with its last installed or forgotten user, guarding lost work then. Fetching mirrors origin tags (package-ids).
 
-Verified by `two_packages_of_one_repository_share_one_clone_and_update_independently`.
+Verified by `two_packages_share_one_clone_and_follow_repository_releases`.
 
 #### Scenario: Uninstall one of two
 - **WHEN** `tilr/store` and `tilr/theme` share a clone and `tilr/store` is uninstalled
