@@ -75,6 +75,67 @@ impl Drop for Fixture {
         }
     }
 }
+/// Include Git internals and empty folders, so isolation covers every managed file.
+fn workspace_snapshot(root: &Path) -> std::collections::BTreeMap<PathBuf, Option<Vec<u8>>> {
+    fn visit(
+        root: &Path,
+        path: &Path,
+        out: &mut std::collections::BTreeMap<PathBuf, Option<Vec<u8>>>,
+    ) {
+        for entry in fs::read_dir(path).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                out.insert(path.strip_prefix(root).unwrap().to_owned(), None);
+                visit(root, &path, out);
+            } else {
+                out.insert(
+                    path.strip_prefix(root).unwrap().to_owned(),
+                    Some(fs::read(path).unwrap()),
+                );
+            }
+        }
+    }
+    let mut out = std::collections::BTreeMap::new();
+    visit(root, root, &mut out);
+    out
+}
+
+#[test]
+fn simultaneously_open_workspaces_keep_install_and_removal_isolated() {
+    let (f, active) = Fixture::installed();
+    // Same basename in another parent also exercises the process-wide lock set.
+    let staged_root = f.dir.join("staging/workspace");
+    let staged = Manager::open(&staged_root).unwrap();
+    let active_before = workspace_snapshot(&f.root);
+    let source = f.dir.join("module");
+    staged.install(source.to_str().unwrap()).unwrap();
+    assert_eq!(workspace_snapshot(&f.root), active_before);
+    assert_eq!(staged.list().unwrap().len(), 1);
+    assert_eq!(active.list().unwrap().len(), 1);
+    let staged_before = workspace_snapshot(&staged_root);
+    active.uninstall("vendor/module", &[], false).unwrap();
+    assert!(active.list().unwrap().is_empty());
+    assert!(!f.root.join("dist/vendor/module").exists());
+    assert_eq!(workspace_snapshot(&staged_root), staged_before);
+    active.install(source.to_str().unwrap()).unwrap();
+    assert_eq!(workspace_snapshot(&staged_root), staged_before);
+    let active_before = workspace_snapshot(&f.root);
+    staged.uninstall("vendor/module", &[], false).unwrap();
+    assert!(staged.list().unwrap().is_empty());
+    assert!(!staged_root.join("packages/vendor/module").exists());
+    assert_eq!(workspace_snapshot(&f.root), active_before);
+    drop((active, staged));
+    // Reopening reads independent persisted state, rather than an in-memory cache.
+    assert_eq!(Manager::open(&f.root).unwrap().list().unwrap().len(), 1);
+    assert!(
+        Manager::open(&staged_root)
+            .unwrap()
+            .list()
+            .unwrap()
+            .is_empty()
+    );
+}
+
 fn kinds(items: &[LostWork]) -> BTreeSet<&'static str> {
     items
         .iter()

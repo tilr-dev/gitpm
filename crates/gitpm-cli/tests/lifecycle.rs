@@ -153,6 +153,155 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn every_command_uses_explicit_paths_without_touching_another_workspace() {
+    let f = Fixture::new();
+    f.install();
+    let selected = f.dir.join("staging/workspace");
+    let other_before = tree_snapshot(&f.root);
+    // Both cwd and GITPM_ROOT point at the active workspace. Only --root selects staging.
+    let run = |args: &[&str]| {
+        let mut command = f.pm();
+        // Direct-origin lifecycle commands do not need a catalog. The fixture's
+        // catalog directory is populated later by the catalog command group.
+        if !matches!(args[0], "catalog" | "install-catalog" | "download-catalog") {
+            command.env_remove("GITPM_CATALOG");
+        }
+        let out = command
+            .current_dir(&f.root)
+            .arg("--root")
+            .arg(&selected)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            tree_snapshot(&f.root),
+            other_before,
+            "{args:?} changed the other workspace"
+        );
+        assert!(!f.root.join("gitpm-workspace").exists());
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let repo = f.repo.to_str().unwrap();
+    run(&["install", repo]);
+    assert_eq!(
+        fs::read_to_string(selected.join("dist/dan/hello/index.js")).unwrap(),
+        "hello v1"
+    );
+    let list: serde_json::Value = serde_json::from_str(&run(&["list"])).unwrap();
+    assert!(list["packages"]["dan/hello"].is_object());
+    run(&["check"]);
+    f.release("2.0.0", "hello v2");
+    run(&["update", "dan/hello"]);
+    assert_eq!(
+        fs::read_to_string(selected.join("dist/dan/hello/index.js")).unwrap(),
+        "hello v2"
+    );
+    run(&["rollback", "dan/hello"]);
+    assert_eq!(
+        fs::read_to_string(selected.join("dist/dan/hello/index.js")).unwrap(),
+        "hello v1"
+    );
+    run(&["update", "all", "--dry-run"]);
+    run(&["update", "all"]);
+    run(&["disable", "dan/hello"]);
+    assert!(!selected.join("dist/dan/hello").exists());
+    run(&["enable", "dan/hello"]);
+    run(&["sync-dist", "--dry-run"]);
+    run(&["sync-dist"]);
+    run(&["forget", "dan/hello"]);
+    run(&["restore", "dan/hello"]);
+
+    let fork = f.dir.join("fork");
+    let fork = fork.to_str().unwrap();
+    run(&["fork", "dan/hello", "--ns", "other", "--into", fork]);
+    run(&["commit", fork, "2.0.1"]);
+    run(&["install", fork]);
+    run(&["replace", "dan/hello", "--with", "other/hello"]);
+    assert!(!selected.join("dist/dan/hello").exists());
+    run(&["replace", "dan/hello", "--back"]);
+    assert!(selected.join("dist/dan/hello").exists());
+    run(&["uninstall", "other/hello", "--force"]);
+    run(&["uninstall", "dan/hello"]);
+    run(&["download", repo]);
+    assert!(!selected.join("dist/dan/hello").exists());
+    run(&["uninstall", "dan/hello"]);
+
+    run(&["catalog", "register", repo, "--ref", "dan/hello@2.0.0"]);
+    let sources = f.dir.join("sources.txt");
+    fs::write(&sources, format!("{repo}\n")).unwrap();
+    run(&["catalog", "update", "--sources", sources.to_str().unwrap()]);
+    run(&["catalog", "show"]);
+    run(&["catalog", "links"]);
+    run(&["install-catalog", "dan/hello"]);
+    assert!(selected.join("dist/dan/hello").exists());
+    run(&["uninstall", "dan/hello"]);
+    run(&["download-catalog", "dan/hello"]);
+    assert!(!selected.join("dist/dan/hello").exists());
+    run(&["uninstall", "dan/hello"]);
+
+    // Repository-only commands must not even open the explicitly selected workspace.
+    let absent = f.dir.join("must-not-open");
+    let author = f.dir.join("author");
+    let author = author.to_str().unwrap();
+    for args in [
+        vec!["init", "new/demo", "--into", author],
+        vec!["commit", author, "0.2.0"],
+        vec!["remote", author, repo],
+        vec!["auth", "check", repo],
+        vec!["catalog", "show"],
+        vec!["catalog", "links"],
+        vec!["catalog", "update", "--sources", sources.to_str().unwrap()],
+        vec!["catalog", "register", repo, "--ref", "dan/hello@2.0.0"],
+    ] {
+        let out = f
+            .pm()
+            .current_dir(&f.root)
+            .arg("--root")
+            .arg(&absent)
+            .args(&args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(!absent.exists(), "{args:?} opened a workspace");
+        assert!(!f.dir.join(".must-not-open.lock").exists());
+        assert_eq!(tree_snapshot(&f.root), other_before);
+    }
+}
+
+fn tree_snapshot(root: &Path) -> std::collections::BTreeMap<PathBuf, Option<Vec<u8>>> {
+    fn visit(
+        root: &Path,
+        path: &Path,
+        out: &mut std::collections::BTreeMap<PathBuf, Option<Vec<u8>>>,
+    ) {
+        for entry in fs::read_dir(path).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                out.insert(path.strip_prefix(root).unwrap().to_owned(), None);
+                visit(root, &path, out);
+            } else {
+                out.insert(
+                    path.strip_prefix(root).unwrap().to_owned(),
+                    Some(fs::read(path).unwrap()),
+                );
+            }
+        }
+    }
+    let mut out = std::collections::BTreeMap::new();
+    visit(root, root, &mut out);
+    out
+}
+
+#[test]
 fn lifecycle_and_three_removal_levels() {
     let f = Fixture::new();
     f.install();
