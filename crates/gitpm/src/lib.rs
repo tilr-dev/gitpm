@@ -41,6 +41,7 @@ pub use model::{
     ForkOf, Installed, InstalledPackage, LinkDescriptor, LinkDiscovery, Manifest, Metadata, Mode,
     Replaces, Revision, STATE_FORMAT, State, valid_id,
 };
+pub use workspace::fork;
 pub use workspace::{
     DependencyRewrite, DistSync, ForgetResult, ForkedPackage, HeldBack, HeldBackReason,
     IncompatibleConsumer, InstallResult, InstallTarget, InstalledDependency, LinkResult, Manager,

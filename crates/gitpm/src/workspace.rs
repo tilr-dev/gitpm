@@ -28,7 +28,7 @@ use std::{
 
 mod builds;
 pub(crate) mod clones;
-mod fork;
+pub mod fork;
 mod link;
 use clones::{guard_clone, installed_repo, place_clone, removal, source_repo};
 pub use fork::{DependencyRewrite, ForkedPackage, PackageFork};
@@ -889,30 +889,31 @@ impl Manager {
         let before = state.clone();
         let value = action(&mut txn, &mut state)?;
         // A build retains a source store only while its previous revision is Git.
-        let mut released = BTreeMap::new();
+        let mut released: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for (id, package) in state.packages.iter_mut().chain(&mut state.forgotten) {
             if package.build.is_some()
                 && (package.previous.is_none() || package.previous_build.is_some())
                 && let Some(key) = package.clone.take()
             {
-                let relative = format!("repos/{key}");
-                txn.remove_worktree(id, &relative)?;
-                released.insert(key, id.clone());
+                released.entry(key).or_default().push(id.clone());
             }
         }
-        for (key, id) in released {
+        for (key, ids) in released {
+            let relative = format!("repos/{key}");
             if clones::clone_users(&state, &key, "").is_empty() {
-                let relative = format!("repos/{key}");
                 let bare = txn
                     .staged_repo(&relative)
                     .unwrap_or_else(|| self.root.join(&relative));
                 if bare.is_dir() {
                     let hidden = lost_work::hidden(&bare, false, self.options.custom_ssh)?;
                     if !hidden.is_empty() {
-                        return Err(lost_work::refusal(&id, hidden));
+                        return Err(lost_work::refusal(&ids[0], hidden));
                     }
                 }
                 txn.delete_repo(&relative)?;
+            }
+            for id in ids {
+                txn.remove_worktree(&id, &relative)?;
             }
         }
 
@@ -2620,7 +2621,6 @@ impl Manager {
                         && let Some(bare) = source
                     {
                         let relative = installed.clone_folder(id);
-                        txn.remove_worktree(id, &relative)?;
                         if clones::clone_users(state, key, id).is_empty() {
                             let hidden = lost_work::hidden(&bare, false, self.options.custom_ssh)?;
                             if !hidden.is_empty() {
@@ -2628,6 +2628,7 @@ impl Manager {
                             }
                             txn.delete_repo(&relative)?;
                         }
+                        txn.remove_worktree(id, &relative)?;
                     }
                     txn.delete_dist(id)?;
                     return Ok(false);
@@ -2820,11 +2821,11 @@ impl Manager {
             state.packages.remove(id);
             state.forgotten.remove(id);
             state.replacements.retain(|_, fork| fork != id);
-            if removal.key.is_some() {
-                txn.remove_worktree(id, &removal.relative)?;
-            }
             if removal.repo.is_some() {
                 txn.delete_repo(&removal.relative)?;
+            }
+            if removal.key.is_some() {
+                txn.remove_worktree(id, &removal.relative)?;
             }
             txn.delete_dist(id)?;
             Ok(())
