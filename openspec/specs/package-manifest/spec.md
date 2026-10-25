@@ -14,7 +14,7 @@ A package SHALL be a folder in a Git repository (the repository root, or a folde
 - **THEN** install fails with `invalid_manifest` ("missing plugin.json: …")
 
 ### Requirement: Known manifest keys
-The manifest SHALL require id, name and version and MAY carry dist, buildCommand, buildRequired, dependencies, forkOf and replaces. IDs MUST be canonical UUIDs, name MUST be 1 to 80 ASCII letters, digits, `-` or `_` and MUST NOT start with `-` and versions MUST be valid; forkOf and replaces MUST name another ID and take no unknown keys. forkOf.source MUST be a Git URL or absolute path. dist defaults to "dist", buildRequired to false. Build commands SHALL be descriptive only, never executed.
+The manifest SHALL require id and version and MAY carry dist, buildCommand, buildRequired, dependencies, forkOf and replaces. IDs and versions MUST be valid; forkOf and replaces MUST name another ID and take no unknown keys. forkOf.source MUST be a Git URL or absolute path. dist defaults to "dist", buildRequired to false. Build commands SHALL be descriptive only, never executed.
 
 #### Scenario: Field shapes
 - **WHEN** optional fields are supplied
@@ -22,7 +22,7 @@ The manifest SHALL require id, name and version and MAY carry dist, buildCommand
 - **AND** forkOf and replaces versions follow package-ids "Version format"
 
 #### Scenario: Minimal manifest
-- **WHEN** `plugin.json` is `{"id": "d135a7cf-1c63-549a-93cb-8f89656b2ced", "name": "greeter", "version": "0.1.0"}`
+- **WHEN** `plugin.json` is `{"id": "acme/greeter", "version": "0.1.0"}`
 - **THEN** it is a valid manifest with no dependencies
 
 #### Scenario: Invalid forkOf
@@ -45,10 +45,6 @@ The manifest SHALL require id, name and version and MAY carry dist, buildCommand
 - **WHEN** dist is empty, absolute, contains a parent component or a backslash
 - **THEN** the manifest is refused with invalid_manifest
 
-#### Scenario: Legacy manifest refused
-- **WHEN** a manifest has a scoped ID or omits its name
-- **THEN** it is refused without migrating or rewriting it
-
 ### Requirement: Unknown keys are preserved
 Single source for unknown keys: top-level keys gitpm does not know SHALL be accepted and SHALL be written back unchanged whenever gitpm rewrites the manifest (`commit`, `fork`), after the known keys and in their original order relative to each other. The metadata keys (plugin-metadata) count as unknown keys for this rule. Verified by `model::manifest_keeps_unknown_top_level_keys_through_read_and_write` and `model::manifest_keeps_the_original_order_of_unknown_keys`.
 
@@ -67,5 +63,5 @@ Manifests written by gitpm SHALL be pretty-printed JSON with a trailing newline 
 `forkOf` SHALL only record where a fork came from; it MUST NOT redirect any consumer. `replaces` SHALL declare that the package can stand in for another ID at a version, and it SHALL take effect only after an explicit replace (see fork-replacement).
 
 #### Scenario: Installing a fork changes no consumer
-- **WHEN** a fork with `forkOf` and `replaces` for `c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9` is installed
-- **THEN** consumers of `c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9` still resolve to `c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9` until `replace c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 --with FORK` is run
+- **WHEN** a fork with `forkOf` and `replaces` for `vendor/base` is installed
+- **THEN** consumers of `vendor/base` still resolve to `vendor/base` until `replace vendor/base --with FORK` is run

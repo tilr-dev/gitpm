@@ -7,7 +7,7 @@ Defines the static JSON catalog: its single format, a tree of static files, rele
 ## Requirements
 
 ### Requirement: Catalog is a tree of static files
-A catalog SHALL be a tree of JSON files: schema-1 directory links, a schema-1 package index `packages/<uuid>/plugin.json` with `id`, `source`, `versions` and `latest`, and one `versions/<V>/release.json` per version. `latest` SHALL summarize the selected release's version and metadata. Lookup by ID SHALL NOT walk the tree. Any other schema value, a v1 monolithic `catalog.json` included, SHALL be refused with `catalog`.
+A catalog SHALL be a tree of JSON files: schema-1 directory links, a schema-1 package index `namespaces/<ns>/<name>/plugin.json` with `id`, `source`, `versions` and `latest`, and one `versions/<V>/release.json` per version. `latest` SHALL summarize the selected release's version and metadata. Lookup by ID SHALL NOT walk the tree. Any other schema value, a v1 monolithic `catalog.json` included, SHALL be refused with `catalog`.
 
 #### Scenario: Unknown schema
 - **WHEN** a directory file or catalog package index has `"schema": 2`
@@ -22,13 +22,13 @@ A catalog SHALL be a tree of JSON files: schema-1 directory links, a schema-1 pa
 - **THEN** `catalog show`/`browse` fail with `catalog` ("catalog nesting is too deep")
 
 #### Scenario: Direct lookup
-- **WHEN** the directory indexes are damaged but `packages/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/` is intact
-- **THEN** `install-catalog ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc` still finds the release
+- **WHEN** the directory indexes are damaged but `namespaces/dan/demo1/` is intact
+- **THEN** `install-catalog dan/demo1` still finds the release
 - **AND** this is covered by `catalog::v2_layout_links_directories_bottom_up` and `split_catalog_hashes_and_direct_lookup_are_independent_of_directory_indexes`
 
 #### Scenario: Release summary in the index
-- **WHEN** a catalog is generated and the latest release of `f851f609-bb81-52d6-bfef-33798624782c` has a title and provides
-- **THEN** `packages/f851f609-bb81-52d6-bfef-33798624782c/plugin.json` holds `latest {version, title, description, provides, tags}`, equal to the normalized manifest metadata in its `release.json`; directory files `{"schema": 1, "directories": {…}}` carry only links
+- **WHEN** a catalog is generated and the latest release of `tilr/theme` has a title and provides
+- **THEN** `namespaces/tilr/theme/plugin.json` holds `latest {version, title, description, provides, tags}`, equal to the normalized manifest metadata in its `release.json`; directory files `{"schema": 1, "directories": {…}}` carry only links
 
 #### Scenario: Summary selection and regeneration
 - **WHEN** a catalog is generated or a release is registered, including an older version or an already published version
@@ -42,17 +42,13 @@ Single source for the release record: a release SHALL record the whole `manifest
 - **WHEN** a catalog holds an unscoped release of the v1 era without `files`
 - **THEN** reading it fails with `catalog`; no release may omit file hashes
 
-#### Scenario: UUID release without hashes
-- **WHEN** a UUID release record has an empty `files` while its commit has `dist/index.js`
+#### Scenario: Namespaced release without hashes
+- **WHEN** a namespaced release record has an empty `files` while its commit has `dist/index.js`
 - **THEN** the release is refused with `catalog` instead of skipping verification
 
 #### Scenario: Declared folder hashes
 - **WHEN** a Git release selects its root or a custom output folder
 - **THEN** catalog generation and verification hash exactly the same committed files as deployment
-
-#### Scenario: Namespaced release without hashes
-- **WHEN** a legacy scoped-ID release record has no file hashes
-- **THEN** it is refused with `catalog`; neither the old identity nor missing integrity data is migrated
 
 ### Requirement: Catalog generated from Git release tags
 `catalog update [--sources FILE]` SHALL read listed repositories (paths relative to FILE; blank and comment lines ignored), validate all sources before writing, discover every `vVERSION` release, pin commits, hash dist and write the catalog. Only packages listed at repository HEAD SHALL be published; broken historical tags SHALL be skipped as in package-ids, and releases of removed sources retained.
@@ -67,8 +63,8 @@ Single source for the release record: a release SHALL record the whole `manifest
 - **AND** this is covered by `catalog_update_keeps_published_records_when_tags_move` and `catalog_update_validates_every_source_before_writing_and_retains_removed_sources`
 
 #### Scenario: Package removed from gitpm.json at HEAD
-- **WHEN** a multi-package repository tagged `v0.1.0` with package `188c5166-1379-5b70-b8e8-dd3947dad886` but no longer lists `packages/old` in `gitpm.json` at HEAD, and the catalog has no `188c5166-1379-5b70-b8e8-dd3947dad886` yet
-- **THEN** `catalog update` publishes the releases of the packages listed at HEAD and no release of `188c5166-1379-5b70-b8e8-dd3947dad886`
+- **WHEN** a multi-package repository tagged `v0.1.0` with package `tilr/old` but no longer lists `packages/old` in `gitpm.json` at HEAD, and the catalog has no `tilr/old` yet
+- **THEN** `catalog update` publishes the releases of the packages listed at HEAD and no release of `tilr/old`
 
 #### Scenario: Duplicate source lines
 - **WHEN** the sources file lists the same repository twice, also in another spelling of its path
@@ -105,6 +101,7 @@ Published versions SHALL be immutable, with tag `vVERSION` and display `ID@VERSI
 #### Scenario: Invalid build metadata
 - **WHEN** `--build-url` is `http://…` or the SHA-256 is malformed
 - **THEN** catalog register fails with `catalog` ("build URL must use HTTPS" / "invalid build SHA-256") and no release is published (an empty top-level `catalog.json` may already have been created)
+
 
 #### Scenario: Submodule inside dist
 - **WHEN** the release contains a Git submodule at `dist/vendor`
@@ -168,7 +165,7 @@ A package installed from a verified catalog, and each dependency pulled from it,
 Single source for working without a catalog: a direct install SHALL record its source, and updates and `check` SHALL query that origin (updates). Only catalog commands, `install-catalog` and installing missing dependencies SHALL need a catalog; without one the library's catalog reads fail with `invalid_argument` ("no catalog configured"; CLI message: cli). Verified by `workspace::catalog_operations_need_a_configured_catalog` and `lifecycle_and_three_removal_levels`.
 
 #### Scenario: Lifecycle without a catalog
-- **WHEN** no catalog is configured and the user runs `install ./greeter`, `update`, `rollback`, `forget`, `restore` and `uninstall` for `d135a7cf-1c63-549a-93cb-8f89656b2ced`
+- **WHEN** no catalog is configured and the user runs `install ./greeter`, `update`, `rollback`, `forget`, `restore` and `uninstall` for `acme/greeter`
 - **THEN** every command succeeds
 
 #### Scenario: check without a catalog
@@ -206,7 +203,7 @@ Single source for working without a catalog: a direct install SHALL record its s
 - **THEN** `check` checks the installed source through the origin fallback, without suggesting the unrelated catalog release
 
 #### Scenario: Origin row
-- **WHEN** `d135a7cf-1c63-549a-93cb-8f89656b2ced` 0.1.0 was installed from `./greeter`, which now also has the tag `v0.2.0`, and no catalog is given (or the catalog does not list it)
+- **WHEN** `acme/greeter` 0.1.0 was installed from `./greeter`, which now also has the tag `v0.2.0`, and no catalog is given (or the catalog does not list it)
 - **THEN** its row is `update_available` with latest `0.2.0` and source `origin`
 - **AND** the origin's tag and branch names are read with `git ls-remote`; candidate tags are shallow-fetched with `--depth=1 --filter=blob:none` newest first until a manifest with the requested ID is found, without checking out dist or changing the installed clone or workspace
 - **AND** tags are compared by name: an origin tag of the installed version that points to another commit is `up_to_date` (stated limitation; the commit is not compared)
@@ -216,7 +213,7 @@ Single source for working without a catalog: a direct install SHALL record its s
 - **THEN** the pinned row is `pinned` with its ref and needs no origin query, and the branch row compares the installed commit with the HEAD of `main` on the origin (`up_to_date`, or `update_available` when it moved); release-mode packages are compared by release as above
 
 #### Scenario: Protected package with a newer upstream
-- **WHEN** Git-installed `d135a7cf-1c63-549a-93cb-8f89656b2ced` 0.2.0 is protected by a verified catalog whose latest is 0.2.0 and its origin has the tag `v0.3.0`
+- **WHEN** Git-installed `acme/greeter` 0.2.0 is protected by a verified catalog whose latest is 0.2.0 and its origin has the tag `v0.3.0`
 - **THEN** its row is `up_to_date`, `latest` is the catalog's 0.2.0 and origin is not queried, with or without the catalog explicitly given
 - **AND** this is covered by `workspace::check_compares_protected_packages_with_their_catalog`
 
@@ -276,23 +273,23 @@ A catalog whose top-level `catalog.json` has `"verified": true` SHALL be verifie
 - **THEN** the overview has `verified` true and `catalog show` prints `Verified: yes (protects the packages installed from it)`
 
 #### Scenario: Another source claims an ID
-- **WHEN** `d135a7cf-1c63-549a-93cb-8f89656b2ced` was registered from `https://git.example/acme/greeter.git` and someone registers `d135a7cf-1c63-549a-93cb-8f89656b2ced` from another source
-- **THEN** catalog register fails with `catalog` ("registered from a different source"): the ID-to-source binding ("Published versions are immutable") is the UUID-to-source ownership of a verified catalog, whose owner sets the flag by hand (no command sets it)
+- **WHEN** `acme/greeter` was registered from `https://git.example/acme/greeter.git` and someone registers `acme/greeter` from another source
+- **THEN** catalog register fails with `catalog` ("registered from a different source"): the ID-to-source binding ("Published versions are immutable") is the namespace ownership of a verified catalog, whose owner sets the flag by hand (no command sets it)
 
 ### Requirement: Catalog versions follow SemVer and show pre-releases
 Catalog versions SHALL be ordered by SemVer precedence (package-ids, "Version format"); pre-releases are listed by `catalog show` and installable with `--version`. The latest version of a package (`PackageSummary.latest`, an install without `--version`, what `check` compares with) SHALL be its newest version that is not a pre-release (updates, "Pre-releases are opt-in"). A `check` row SHALL carry `major` and `prerelease`. Verified by `catalog::latest_skips_pre_releases_and_check_marks_major`.
 
 #### Scenario: Catalog with a beta
-- **WHEN** the catalog has `d135a7cf-1c63-549a-93cb-8f89656b2ced` 1.2.0 and 1.3.0-beta.1 and the user runs `install-catalog d135a7cf-1c63-549a-93cb-8f89656b2ced`
-- **THEN** 1.2.0 is installed; `install-catalog d135a7cf-1c63-549a-93cb-8f89656b2ced --version 1.3.0-beta.1` installs the beta in release mode, and `update` then follows it to newer pre-releases of 1.3.0 and to the newest release
+- **WHEN** the catalog has `acme/greeter` 1.2.0 and 1.3.0-beta.1 and the user runs `install-catalog acme/greeter`
+- **THEN** 1.2.0 is installed; `install-catalog acme/greeter --version 1.3.0-beta.1` installs the beta in release mode, and `update` then follows it to newer pre-releases of 1.3.0 and to the newest release
 
 #### Scenario: check output
 - **WHEN** 1.2.0 is installed and the catalog has 2.0.0 and 2.1.0-rc.1
 - **THEN** the row says `update available; pre-release 2.1.0-rc.1` with LATEST `2.0.0 (major)`; the row carries `major` true and `prerelease` `2.1.0-rc.1`
 
 #### Scenario: Pre-releases only
-- **WHEN** the catalog lists `b4db3752-788f-590f-815a-60e10be71ae5` only at 1.0.0-beta.1
-- **THEN** `catalog show` shows `latest: pre-releases only`, `install-catalog b4db3752-788f-590f-815a-60e10be71ae5` fails with `catalog` and `install-catalog b4db3752-788f-590f-815a-60e10be71ae5 --version 1.0.0-beta.1` installs it
+- **WHEN** the catalog lists `acme/beta` only at 1.0.0-beta.1
+- **THEN** `catalog show` shows `latest: pre-releases only`, `install-catalog acme/beta` fails with `catalog` and `install-catalog acme/beta --version 1.0.0-beta.1` installs it
 
 #### Scenario: Origin rows
 - **WHEN** a package without a catalog is at 1.1.0 and its origin has the tags `v2.0.0-beta.1` and later `v2.0.0`
