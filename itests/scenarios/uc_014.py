@@ -92,7 +92,7 @@ def invalid_version(t: T):
         t.not_installed(f"bad/{name}")
 
 
-@case(fixture="hello_installed", spec=["dist/a-revision-without-dist-is-refused#deploy-from-git-objects"])
+@case(fixture="hello_installed", spec=["dist/missing-output-diagnostics#deploy-from-git-objects"])
 def missing_dist(t: T):
     """No dist/ in the commit: rejected before anything is installed."""
     repo, sha = bad_repo(t, "nodist", {"plugin.json": manifest(id="bad/nodist", version="0.1.0"),
