@@ -68,7 +68,7 @@ def unknown_manifest_fields_and_missing_version(t: T):
     repo, sha = bad_repo(t, "extra", {"plugin.json": manifest(id="bad/extra", version="0.1.0", pinned=True), **DIST})
     t.gitpm_ok("install", repo, "--ref", sha)
     t.eq(t.package("bad/extra")["current"]["version"], "0.1.0", "installed version")
-    t.eq(json.loads((t.clone("bad/extra") / "plugin.json").read_text())["pinned"], True, "unknown field kept")
+    t.eq(json.loads((t.worktree("bad/extra") / "plugin.json").read_text())["pinned"], True, "unknown field kept")
 
 
 @case(fixture="hello_installed", spec=["package-ids/package-id-syntax#unsafe-components-are-refused", "package-ids/package-id-syntax#empty-namespace"])
@@ -118,7 +118,7 @@ def dist_with_only_placeholder_recorded(t: T):
     """Contract unspecified: dist/ holding only an empty .gitkeep. Recorded; only safety is asserted."""
     id = "bad/keep"
     repo, sha = bad_repo(t, "keep", {"plugin.json": manifest(id=id, version="0.1.0"), "dist/.gitkeep": ""})
-    sentinel = t.snap(t.clone(SENTINEL), t.dist(SENTINEL), git=True)
+    sentinel = t.snap(t.worktree(SENTINEL), t.dist(SENTINEL), git=True)
     r = t.gitpm("install", repo, "--ref", sha)
     if r.code == 0:
         print("  RECORDED: a dist/ with only an empty placeholder file installs")

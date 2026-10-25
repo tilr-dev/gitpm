@@ -33,7 +33,7 @@ def check_installed(t: T, root, tag: str):
     t.eq(p["source"], str(t.repo(ID).resolve()), "source")
     listed = t.gitpm_ok("--root", root, "list").json()
     t.eq(listed["packages"][ID]["current"], {"version": version, "commit": sha}, "list current")
-    clone, dist = t.clone(ID, root), root / "dist" / ID
+    clone, dist = t.worktree(ID, root), root / "dist" / ID
     t.eq(t.rev(clone), sha, "clone HEAD")
     t.eq((dist / "index.js").read_text(), blob(t, ID, tag), "dist/index.js bytes")
     t.eq(sorted(str(p.relative_to(dist)) for p in dist.rglob("*") if p.is_file()),
@@ -75,8 +75,8 @@ def uncommitted_source_edits_are_not_installed(t: T):
     check_installed(t, t.ws, f"v0.1.1")
     t.lacks((t.dist(ID) / "index.js").read_text(), "UNCOMMITTED")
     t.ok(not (t.dist(ID) / "new.js").exists(), "untracked dist/new.js not deployed")
-    t.ok(not (t.clone(ID) / "dist/new.js").exists(), "untracked dist/new.js not in clone")
-    t.eq(t.git(t.clone(ID), "status", "--porcelain", "--ignored"), "", "clone is clean")
+    t.ok(not (t.worktree(ID) / "dist/new.js").exists(), "untracked dist/new.js not in clone")
+    t.eq(t.git(t.worktree(ID), "status", "--porcelain", "--ignored"), "", "clone is clean")
     t.same(source, "author repository (edits kept, nothing committed)")
     t.has(t.git(ID, "status", "--porcelain"), "dist/index.js", "dist/new.js")
 

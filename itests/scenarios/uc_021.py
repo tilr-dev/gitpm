@@ -19,7 +19,7 @@ def tagged(t: T, version: str) -> str:
 
 
 def retained(t: T):
-    return t.snap(t.clone(ID), t.dist(ID), git=True)
+    return t.snap(t.worktree(ID), t.dist(ID), git=True)
 
 
 def no_entry(t: T):
@@ -29,7 +29,7 @@ def no_entry(t: T):
 @case(fixture="g2_hello_history", spec=["dist/forget-restore-and-uninstall-settle-dist", "install-uninstall/three-removal-levels"])
 def forget_removes_state_only(t: T):
     """forget: the state entry is gone; the clone (with .git) stays byte-identical, dist/ID is removed."""
-    files = t.snap(t.clone(ID), git=True)
+    files = t.snap(t.worktree(ID), git=True)
     record = t.package(ID)
     t.gitpm_ok("forget", ID)
     no_entry(t)
@@ -86,12 +86,12 @@ def restore_keeps_the_catalog(t: T):
 def restore_refuses_a_moved_head(t: T):
     """The retained clone checked out at another (published) release: restore refuses, HEAD moved."""
     t.gitpm_ok("forget", ID)
-    t.git(t.clone(ID), "checkout", "-q", "--detach", f"v0.1.1")
+    t.git(t.worktree(ID), "checkout", "-q", "--detach", f"v0.1.1")
     before = t.snap(t.ws, git=True)
     t.gitpm_err("restore", ID, kind="local_changes", contains="HEAD moved")
     t.same(before, "workspace")
     no_entry(t)
-    t.git(t.clone(ID), "checkout", "-q", "--detach", f"v0.1.2")
+    t.git(t.worktree(ID), "checkout", "-q", "--detach", f"v0.1.2")
     t.gitpm_ok("restore", ID)
     t.eq(t.package(ID)["current"]["version"], "0.1.2", "restored at the recorded commit")
 
@@ -137,7 +137,7 @@ def missing_retained_clone(t: T):
 def malformed_retained_manifest(t: T):
     """Retained clone whose manifest is edited (uncommitted) or committed broken (unpublished): restore refuses."""
     t.gitpm_ok("forget", ID)
-    clone = t.clone(ID)
+    clone = t.worktree(ID)
     (clone / "plugin.json").write_text("{ broken")
     before = t.snap(t.ws, git=True)
     r = t.gitpm_err("restore", ID)
@@ -155,7 +155,7 @@ def malformed_retained_manifest(t: T):
 def retained_manifest_with_other_id(t: T):
     """Retained clone with a commit renaming the package: unpublished work, restore refuses, nothing fabricated."""
     t.gitpm_ok("forget", ID)
-    clone = t.clone(ID)
+    clone = t.worktree(ID)
     (clone / "plugin.json").write_text('{"id": "dan/renamed", "version": "0.1.2"}\n')
     t.git(clone, "commit", "-q", "-am", "rename")
     before = t.snap(t.ws, git=True)

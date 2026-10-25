@@ -1,8 +1,6 @@
 //! End-to-end tests of the `gitpm` binary on local Git repositories and catalogs.
 //! Hermetic: each test runs the CLI with a cleared environment, a fixture HOME/TMPDIR
 //! and Git config, and every GITPM_* path inside its own temp directory.
-mod common;
-use common::clone_path;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -325,13 +323,13 @@ fn lifecycle_and_three_removal_levels() {
     assert_eq!(f.content(), "hello v2");
     f.cli(&["forget", "dan/hello"], true);
     assert!(f.state()["packages"].as_object().unwrap().is_empty());
-    assert!(clone_path(&f.root, &f.repo).join(".git").exists());
+    assert!(f.root.join("worktrees/dan/hello").join(".git").exists());
     assert!(!f.root.join("dist/dan/hello").exists());
     f.cli(&["restore", "dan/hello"], true);
     assert_eq!(f.state()["packages"]["dan/hello"]["enabled"], true);
     assert_eq!(f.content(), "hello v2");
     f.cli(&["uninstall", "dan/hello"], true);
-    assert!(!clone_path(&f.root, &f.repo).exists());
+    assert!(!f.root.join("worktrees/dan/hello").exists());
     assert!(!f.root.join("dist/dan/hello").exists());
 }
 #[test]
@@ -377,7 +375,7 @@ fn lifecycle_and_check_without_a_catalog() {
         "{out}"
     );
     f.cli_without_catalog(&["uninstall", "dan/hello"], true);
-    assert!(!clone_path(&f.root, &f.repo).exists());
+    assert!(!f.root.join("worktrees/dan/hello").exists());
 }
 #[test]
 fn failed_update_keeps_files_and_state() {
@@ -402,12 +400,21 @@ fn failed_update_keeps_files_and_state() {
 fn protects_local_edits_and_force_is_explicit() {
     let f = Fixture::new();
     f.install();
-    fs::write(clone_path(&f.root, &f.repo).join("my-work.txt"), "keep me").unwrap();
+    fs::write(
+        f.root.join("worktrees/dan/hello").join("my-work.txt"),
+        "keep me",
+    )
+    .unwrap();
     f.cli(&["update", "dan/hello"], false);
     f.cli(&["uninstall", "dan/hello"], false);
-    assert!(clone_path(&f.root, &f.repo).join("my-work.txt").exists());
+    assert!(
+        f.root
+            .join("worktrees/dan/hello")
+            .join("my-work.txt")
+            .exists()
+    );
     f.cli(&["uninstall", "dan/hello", "--force"], true);
-    assert!(!clone_path(&f.root, &f.repo).exists());
+    assert!(!f.root.join("worktrees/dan/hello").exists());
 }
 #[test]
 fn rejects_duplicate_path_escape_and_missing_payload() {
@@ -748,7 +755,7 @@ fn init_requires_a_namespace_and_never_prompts_or_reads_the_environment() {
 fn fork_clones_recorded_source_and_preserves_original_installation() {
     let f = Fixture::new();
     f.install();
-    let installed = clone_path(&f.root, &f.repo);
+    let installed = f.root.join("worktrees/dan/hello");
     fs::write(installed.join("dist/index.js"), "local edit").unwrap();
     fs::write(installed.join("notes.txt"), "untracked work").unwrap();
     let state = fs::read(f.root.join("state.json")).unwrap();
@@ -814,7 +821,7 @@ fn fork_rejects_managed_destinations_and_unknown_plugins() {
     let f = Fixture::new();
     f.install();
     // A fork repository inside a managed repository is refused.
-    let installed = clone_path(&f.root, &f.repo);
+    let installed = f.root.join("worktrees/dan/hello");
     let out = f
         .pm()
         .current_dir(&installed)
@@ -933,7 +940,7 @@ fn namespaced_fork_and_original_coexist_and_release_independently() {
     );
     f.cli(&["rollback", "dan/demo"], true);
     f.cli(&["uninstall", "dan", "--force"], false); // namespace is not a package
-    assert!(clone_path(&f.root, &fork).join(".git").exists());
+    assert!(f.root.join("worktrees/dan/demo").join(".git").exists());
     f.cli(&["uninstall", "dan/demo"], true);
     assert!(f.root.join("dist/vendor/demo/index.js").exists());
     assert!(
@@ -956,8 +963,8 @@ fn namespaces_reject_path_traversal_and_unscoped_ids() {
     f.cli(&["init", "hello/demo", "--into", "hello/demo"], true);
     assert!(source.join("plugin.json").exists());
     f.cli(&["install", source.to_str().unwrap()], true);
-    assert!(clone_path(&f.root, &f.repo).join(".git").exists());
-    assert!(clone_path(&f.root, &source).join(".git").exists());
+    assert!(f.root.join("worktrees/dan/hello").join(".git").exists());
+    assert!(f.root.join("worktrees/hello/demo").join(".git").exists());
 }
 
 #[test]
@@ -1540,7 +1547,7 @@ fn auth_check_is_read_only_and_accepts_empty_repositories() {
 fn uninstall_without_tty_refuses_and_lists_lost_work_including_stash() {
     let f = Fixture::new();
     f.install();
-    let repo = clone_path(&f.root, &f.repo);
+    let repo = f.root.join("worktrees/dan/hello");
     let git = |args: &[&str]| f.git_in(&repo, args);
     git(&["config", "user.name", "Test"]);
     git(&["config", "user.email", "test@example.invalid"]);
@@ -1560,7 +1567,7 @@ fn uninstall_without_tty_refuses_and_lists_lost_work_including_stash() {
     assert!(stderr.contains("stash: stash@{0}"), "{stderr}");
     assert!(!String::from_utf8_lossy(&out.stdout).contains("[y/N]"));
     assert_eq!(f.state(), before);
-    assert!(repo.join(".git").is_dir());
+    assert!(repo.join(".git").is_file());
 
     // One refusal tells everything: a consumer and the lost work, from the plan.
     let app = f.dir.join("app");
@@ -1588,7 +1595,7 @@ fn uninstall_without_tty_refuses_and_lists_lost_work_including_stash() {
             && stderr.contains("Error kind: has_dependents"),
         "{stderr}"
     );
-    assert!(repo.join(".git").is_dir());
+    assert!(repo.join(".git").is_file());
     f.cli(&["uninstall", "dan/hello", "--force"], true);
     assert!(!repo.exists());
 }
@@ -1601,7 +1608,7 @@ fn uninstall_on_tty_asks_before_losing_work() {
     }
     let f = Fixture::new();
     f.install();
-    let repo = clone_path(&f.root, &f.repo);
+    let repo = f.root.join("worktrees/dan/hello");
     fs::write(repo.join("notes.txt"), "untracked work").unwrap();
     // BSD script(1) takes the command as arguments; util-linux needs -c.
     let util_linux = Command::new("script")
@@ -2783,7 +2790,7 @@ fn catalog_package_with_pre_releases_only() {
 fn update_all_local_work_prints_the_library_message_unchanged() {
     let f = Fixture::new();
     f.install();
-    let repo = clone_path(&f.root, &f.repo);
+    let repo = f.root.join("worktrees/dan/hello");
     let git = |args: &[&str]| f.git_in(&repo, args);
     fs::write(repo.join("local.txt"), "local work").unwrap();
     git(&["add", "local.txt"]);

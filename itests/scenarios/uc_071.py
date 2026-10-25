@@ -41,7 +41,7 @@ def apply_updates_and_keeps_back(t: T):
     t.eq(lines(r.out), ["app/a up to date (1.0.0)", "app/c up to date (1.0.0)", KEPT,
                         "other/x updated 1.0.0 → 1.1.0", "1 updates, 0 installs, 1 kept back."], "output")
     t.eq(t.package("other/x")["current"], {"version": "1.1.0", "commit": commit}, "other/x state")
-    t.eq(t.rev(t.clone("other/x")), commit, "other/x clone HEAD")
+    t.eq(t.rev(t.worktree("other/x")), commit, "other/x clone HEAD")
     t.has((t.dist("other/x") / "index.js").read_text(), "other/x 1.1.0")
     t.eq(t.package(CORE)["current"]["version"], "1.1.0", "lib/core not upgraded past its dependents")
     t.eq(sorted(t.state()["packages"]), ["app/a", "app/c", CORE, "other/x"], "nothing removed")
@@ -93,7 +93,7 @@ def local_work_refuses_without_partial_deploy(t: T):
     """A dirty other/x clone blocks update all (local_changes) even for the other packages."""
     t.release("other/x", "1.1.0")
     t.release("app/a", "1.0.1", deps={CORE: "^1.0"})
-    (t.clone("other/x") / "dist/index.js").write_text("local edit\n")
+    (t.worktree("other/x") / "dist/index.js").write_text("local edit\n")
     before = t.snap(t.ws, git=True)
     t.gitpm_err("update", "all", kind="local_changes")
     t.same(before, "workspace")

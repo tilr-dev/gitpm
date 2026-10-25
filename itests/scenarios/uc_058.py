@@ -98,7 +98,7 @@ def catalog_install_pulls_dependency(t: T):
     t.eq(core["current"], {"version": "1.1.0", "commit": registered(t, CORE, "1.1.0")["commit"]},
          "lib/core current (max matching ^1.0)")
     t.eq(state["packages"]["app/a"]["dependencies"], {CORE: "^1.0"}, "dependency edge in state")
-    t.eq(t.rev(t.clone(CORE)), core["current"]["commit"], "lib/core clone HEAD")
+    t.eq(t.rev(t.worktree(CORE)), core["current"]["commit"], "lib/core clone HEAD")
     t.has((t.dist(CORE) / "index.js").read_text(), "lib/core 1.1.0")
     view = resolved(t)
     row = view["app/a"]["dependencies"][0]
@@ -167,7 +167,7 @@ def shared_dependency_single_copy(t: T):
     t.gitpm_ok("install-catalog", "app/c")
     t.eq(sorted(t.state()["packages"]), ["app/a", "app/c", CORE], "one lib/core")
     t.eq(resolved(t)[CORE].get("dependents"), ["app/a", "app/c"], "dependents")
-    core = t.snap(t.clone(CORE), t.dist(CORE))
+    core = t.snap(t.worktree(CORE), t.dist(CORE))
     t.gitpm_ok("uninstall", "app/a")
     t.not_installed("app/a")
     t.same(core, "lib/core clone and dist")
@@ -235,7 +235,7 @@ def download_then_enable_in_dependency_order(t: T):
     t.ok(lines[1].startswith(f"downloaded {CORE}@1.1.0 from ") and lines[1].endswith(" (disabled)"), lines[1])
     for id in ["app/a", CORE]:
         t.eq(t.package(id)["enabled"], False, f"{id} disabled")
-        t.ok((t.clone(id) / ".git").is_dir(), f"{id} clone")
+        t.ok((t.worktree(id) / ".git").is_file(), f"{id} clone")
         t.ok(not t.dist(id).exists(), f"no dist/{id}")
     before = t.snap(t.ws)
     r = t.gitpm_err("enable", "app/a", kind="dependency_conflict", contains=f"{CORE} is disabled; enable it")
@@ -285,7 +285,7 @@ def direct_download_deploys_nothing(t: T):
     r = t.gitpm_ok("download", t.repo("other/x"))
     t.ok(r.out.startswith("downloaded other/x@1.0.0 from ") and r.out.endswith(" (disabled)\n"), r.out)
     t.eq(t.package("other/x")["enabled"], False, "disabled")
-    t.ok((t.clone("other/x") / ".git").is_dir(), "clone")
+    t.ok((t.worktree("other/x") / ".git").is_file(), "clone")
     t.ok(not t.dist("other/x").exists(), "no dist")
 
 

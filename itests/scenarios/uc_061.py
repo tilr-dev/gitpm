@@ -147,7 +147,7 @@ def case_setup(t: T):
     t.gitpm_ok("install", t.repo("dan/p"))
     for pid in ("Dan/p", "Dan/q"):
         t.new_package(pid, "1.0.0")
-    return t.snap(t.clone("dan/p"), t.dist("dan/p"), git=True)
+    return t.snap(t.worktree("dan/p"), t.dist("dan/p"), git=True)
 
 
 @case(spec=["package-ids/case-colliding-ids-are-refused"])
@@ -173,7 +173,7 @@ def case_variant_after_forget_refused(t: T):
     """3. forget dan/p (clone kept, dist removed) then install Dan/p: refused as a letter-case collision."""
     case_setup(t)
     t.gitpm_ok("forget", "dan/p")
-    before = t.snap(t.clone("dan/p"), t.dist("dan/p"), git=True)
+    before = t.snap(t.worktree("dan/p"), t.dist("dan/p"), git=True)
     r = t.gitpm("install", t.repo("Dan/p"))
     refused = r.code != 0 and ("letter case" in r.err)
     t.ok(refused, f"install Dan/p after forget refused for letter case (exit {r.code})")
@@ -266,7 +266,7 @@ def tag_off_default_branch_install(t: T):
     sha = off_branch(t)
     t.gitpm_ok("install", t.repo("dan/side"), "--ref", "v2.0.0")
     t.eq(t.package("dan/side")["current"], {"version": "2.0.0", "commit": sha}, "installed")
-    t.eq(t.rev(t.clone("dan/side")), sha, "clone HEAD")
+    t.eq(t.rev(t.worktree("dan/side")), sha, "clone HEAD")
     t.has((t.dist("dan/side") / "index.js").read_text(), "dan/side 2.0.0")
 
 

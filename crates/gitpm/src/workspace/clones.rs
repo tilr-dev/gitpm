@@ -1,12 +1,4 @@
-//! Clones in the workspace: `repos/<key>` shared by every root or nested package
-//! installed from one source. A
-//! shared clone is used by its registered packages and by forgotten ones
-//! (`State::forgotten`); it is removed with the last of them.
-//!
-//! A shared clone has one HEAD, but several installed revisions. Each user's current
-//! and previous revision is kept reachable by `refs/gitpm/<id>/current` and
-//! `refs/gitpm/<id>/previous`, so a fetch that prunes or overwrites the tag or branch
-//! that held a sibling's revision (an upstream rewrite) can never let `git gc` drop it.
+//! Bare source repositories and independent package worktrees.
 use super::*;
 
 /// Prefix of the refs that keep the installed revisions of a shared clone reachable.
@@ -102,16 +94,35 @@ pub(crate) fn repo_key(source: &str) -> String {
     }
 }
 
-/// The live clone of a package (registered or forgotten).
-pub(super) fn installed_repo(root: &Path, id: &str, p: &Installed) -> Result<PathBuf> {
+/// The source object store, independent of package worktree lifetime.
+pub(super) fn source_repo(root: &Path, id: &str, p: &Installed) -> Result<PathBuf> {
     if p.link().is_some() {
         return Err(Error::RepositoryNotFound { id: id.into() });
     }
-    let Some(key) = &p.clone else {
-        return Err(Error::RepositoryNotFound { id: id.into() });
-    };
+    let key = p
+        .clone
+        .as_ref()
+        .ok_or_else(|| Error::RepositoryNotFound { id: id.into() })?;
+    txn::ensure_managed_parents(root, &format!("repos/{key}"))?;
     let repo = root.join("repos").join(key);
-    if !exact_path(&root.join("repos"), key)? || !repo.join(".git").is_dir() {
+    if !exact_path(&root.join("repos"), key)?
+        || !repo.join("HEAD").is_file()
+        || !repo.join("objects").is_dir()
+    {
+        return Err(Error::RepositoryNotFound { id: id.into() });
+    }
+    Ok(repo)
+}
+
+/// Git installations own a worktree; builds may retain only their source objects.
+pub(super) fn installed_repo(root: &Path, id: &str, p: &Installed) -> Result<PathBuf> {
+    let bare = source_repo(root, id, p)?;
+    if p.build.is_some() {
+        return Ok(bare);
+    }
+    txn::ensure_managed_parents(root, &format!("worktrees/{id}"))?;
+    let repo = root.join("worktrees").join(id);
+    if !exact_path(&root.join("worktrees"), id)? || !repo.join(".git").is_file() {
         return Err(Error::RepositoryNotFound { id: id.into() });
     }
     Ok(repo)
@@ -133,83 +144,28 @@ pub(super) fn clone_users<'a>(
         .collect()
 }
 
-/// A sole user's clone must stay at its recorded Git revision, including a build's
-/// retained previous Git revision. With several users (forgotten ones included),
-/// HEAD may instead be any user's installed revision or a tagged commit.
-pub(super) fn shared_head_moved(
-    repo: &Path,
-    state: &State,
-    key: &str,
-    id: &str,
-    custom_ssh: bool,
-) -> Result<Option<LostWork>> {
-    let head = transport::object_id(repo, "HEAD", custom_ssh)?;
-    let users = clone_users(state, key, "");
-    if let [(_, package)] = users.as_slice() {
-        let recorded = if package.build.is_some() {
-            package
-                .previous
-                .as_ref()
-                .filter(|_| package.previous_build.is_none())
-        } else {
-            Some(&package.current)
-        };
-        return Ok(recorded
-            .filter(|revision| revision.commit != head)
-            .map(|revision| LostWork::HeadMoved {
-                head,
-                recorded: revision.commit.clone(),
-            }));
-    }
-    if users.iter().any(|(_, p)| p.current.commit == head)
-        || !transport::tags_at(repo, "HEAD", custom_ssh)?.is_empty()
-    {
-        return Ok(None);
-    }
-    Ok(Some(LostWork::HeadMoved {
-        head,
-        recorded: state
-            .packages
-            .get(id)
-            .or_else(|| state.forgotten.get(id))
-            .map(|p| p.current.commit.clone())
-            .unwrap_or_default(),
-    }))
-}
-
 /// Local-work guard before an operation copies and changes a clone: no file changes,
-/// HEAD at the installed revision (any user's revision for a shared clone), no
+/// HEAD at this package's recorded revision, no
 /// unpublished branches/tags/stash.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "clone guard inputs include the caller SSH policy"
-)]
 pub(super) fn guard_clone(
     live: &Path,
     state: &State,
     id: &str,
-    key: Option<&str>,
     head_message: &str,
     hidden_message: &str,
     for_update: bool,
     custom_ssh: bool,
 ) -> Result<()> {
-    clean(live, id, custom_ssh)?;
-    match key {
-        None => {
-            let recorded = &state.packages[id].current.commit;
-            lost_work::require_head(live, id, recorded, head_message, custom_ssh)?;
-        }
-        Some(key) => {
-            if let Some(item) = shared_head_moved(live, state, key, id, custom_ssh)? {
-                return Err(Error::LocalChanges {
-                    id: id.into(),
-                    message: head_message.into(),
-                    items: vec![item],
-                });
-            }
-        }
+    let package = state
+        .packages
+        .get(id)
+        .or_else(|| state.forgotten.get(id))
+        .ok_or_else(|| Error::RepositoryNotFound { id: id.into() })?;
+    if package.build.is_some() {
+        return Ok(());
     }
+    clean(live, id, custom_ssh)?;
+    lost_work::require_head(live, id, &package.current.commit, head_message, custom_ssh)?;
     if for_update {
         lost_work::require_no_hidden_for_update(live, id, hidden_message, custom_ssh)
     } else {
@@ -223,8 +179,7 @@ pub(super) fn configured_origin(repo: &Path, custom_ssh: bool) -> Option<String>
     transport::config_get(repo, "remote.origin.url", custom_ssh).ok()
 }
 
-/// Stage the verified clone under its source key. An existing clone is reused,
-/// guarded like an update, fetched and checked out at the verified commit.
+/// Adopt/reuse the bare source and create only this package's detached worktree.
 pub(super) fn place_clone(
     txn: &mut Txn,
     state: &State,
@@ -235,104 +190,52 @@ pub(super) fn place_clone(
     let id = &cloned.manifest.id;
     let key = repo_key(source);
     let relative = format!("repos/{key}");
-    let commit = transport::object_id(&cloned.repo, "HEAD", custom_ssh)?;
     let live = txn.root().join(&relative);
     let staged = if let Some(staged) = txn.staged_repo(&relative) {
         staged
     } else if fs::symlink_metadata(&live).is_ok() {
         ensure!(
-            live.join(".git").is_dir()
+            live.join("HEAD").is_file()
+                && live.join("objects").is_dir()
                 && configured_origin(&live, custom_ssh).as_deref() == Some(source),
             Workspace,
-            "{relative} exists but is not the clone of {source}"
+            "{relative} exists but is not the bare repository of {source}"
         );
-        clean(&live, id, custom_ssh)?;
-        if let Some(item) = shared_head_moved(&live, state, &key, id, custom_ssh)? {
-            return Err(Error::LocalChanges {
-                id: id.clone(),
-                message: format!("the shared clone {relative} has local commits"),
-                items: vec![item],
-            });
-        }
-        lost_work::require_no_hidden_for_update(
-            &live,
-            id,
-            &format!("the shared clone {relative} holds unpublished work"),
-            custom_ssh,
-        )?;
         txn.repo(&relative, &live)?
     } else {
-        let staged = txn.add_repo(&relative, &cloned.repo)?;
-        return Ok((staged, relative, Some(key)));
+        txn.add_repo(&relative, &cloned.repo)?
     };
-    fetch_tags(&staged, state, &key, false, custom_ssh)?;
-    transport::checkout_detached(&staged, &commit, false, custom_ssh)?;
-    let m = package_manifest(&staged, cloned.path.as_deref())?;
+    // Reused objects can already exist while origin refs have changed.
+    if live.exists() || transport::require_object(&staged, &cloned.commit, custom_ssh).is_err() {
+        let mut overwritten = Vec::new();
+        for item in lost_work::hidden(&staged, false, custom_ssh)? {
+            if let LostWork::UnpublishedTag { name } = &item {
+                let reference = format!("refs/tags/{name}");
+                let local = transport::object_id(&staged, &reference, custom_ssh)?;
+                if transport::verified_object_id(&cloned.repo, &reference, custom_ssh)
+                    .is_ok_and(|incoming| incoming != local)
+                {
+                    overwritten.push(item);
+                }
+            }
+        }
+        if !overwritten.is_empty() {
+            return Err(lost_work::refusal(id, overwritten));
+        }
+        fetch_tags(&staged, state, &key, false, custom_ssh)?;
+    }
+    let worktree = txn.worktree(id, &relative, &cloned.commit, custom_ssh)?;
+    let m = package_manifest(&worktree, cloned.path.as_deref())?;
     ensure!(
         serde_json::to_value(&m)? == serde_json::to_value(&cloned.manifest)?,
         VersionConflict,
-        "package {id} differs between the shared clone and its source"
+        "package {id} differs between the bare repository and its source"
     );
-    Ok((staged, relative, Some(key)))
+    Ok((worktree, relative, Some(key)))
 }
 
-/// After `id` stopped using the shared clone `key` (`rest` is the state without it as
-/// a registered package), make HEAD the installed commit of a remaining user: registered
-/// ones first, else forgotten ones. A HEAD left at the removed package's revision (an
-/// untagged dev commit, say) would block every other package as moved HEAD. The
-/// checkout keeps working-tree changes; when they conflict, the operation is refused.
-pub(super) fn settle_head(
-    txn: &mut Txn,
-    rest: &State,
-    key: &str,
-    except: &str,
-    relative: &str,
-    custom_ssh: bool,
-) -> Result<()> {
-    let users = clone_users(rest, key, except);
-    let registered: Vec<_> = users
-        .iter()
-        .filter(|(id, _)| rest.packages.contains_key(*id))
-        .collect();
-    let candidates = if registered.is_empty() {
-        users.iter().collect()
-    } else {
-        registered
-    };
-    let Some((target_id, target)) = candidates.first() else {
-        return Ok(());
-    };
-    let live = txn.root().join(relative);
-    if !live.join(".git").is_dir() {
-        return Ok(());
-    }
-    let repo = txn.staged_repo(relative).unwrap_or_else(|| live.clone());
-    let head = transport::object_id(&repo, "HEAD", custom_ssh)?;
-    if candidates.iter().any(|(_, p)| p.current.commit == head) {
-        return Ok(());
-    }
-    let staged = txn.repo(relative, &live)?;
-    if let Err(error) =
-        transport::checkout_detached(&staged, &target.current.commit, true, custom_ssh)
-    {
-        let items = match clean(&staged, target_id, custom_ssh) {
-            Err(Error::LocalChanges { items, .. }) => items,
-            _ => Vec::new(),
-        };
-        return Err(Error::LocalChanges {
-            id: except.into(),
-            message: format!(
-                "the shared clone {relative} must move to the installed revision of {target_id}, but its local changes conflict with that revision; commit, stash or discard them first ({error})"
-            ),
-            items,
-        });
-    }
-    Ok(())
-}
-
-/// What uninstalling `id` removes: its clone unless other packages (registered or
-/// forgotten) still use it (then `repo` is `None` and `key` names the shared clone whose
-/// HEAD may have to move), and the local work lost with that.
+/// What uninstalling `id` removes: its worktree, and the source repository only
+/// when no installed or forgotten package still needs it, with any lost work.
 pub(super) struct Removal {
     pub(super) relative: String,
     pub(super) repo: Option<PathBuf>,
@@ -350,58 +253,47 @@ pub(super) fn removal(root: &Path, state: &State, id: &str, custom_ssh: bool) ->
         });
     }
     let p = entry.ok_or_else(|| Error::RepositoryNotFound { id: id.into() })?;
-    let Some(key) = p.clone.clone() else {
-        // A build-only record owns no Git clone.
-
-        return Ok(Removal {
-            relative: p.clone_folder(id),
-            repo: None,
-            key: None,
-            lost_work: Vec::new(),
-        });
-    };
     let relative = p.clone_folder(id);
-    let live = match installed_repo(root, id, p) {
-        Ok(live) => live,
-        // A record (forgotten or not) whose shared clone is gone: only the record (and
-        // dist) remain.
-        Err(Error::RepositoryNotFound { .. }) => {
-            return Ok(Removal {
-                relative,
-                repo: None,
-                key: None,
-                lost_work: Vec::new(),
-            });
-        }
+    let bare = match source_repo(root, id, p) {
+        Ok(bare) => Some(bare),
+        Err(Error::RepositoryNotFound { .. }) => None,
         Err(error) => return Err(error),
     };
-    let others = clone_users(state, &key, id);
-    if !others.is_empty() {
-        // HEAD moves to another user's revision: commits only HEAD holds would be lost.
-        let head = transport::object_id(&live, "HEAD", custom_ssh)?;
-        let keep: Vec<&str> = others
-            .iter()
-            .map(|(_, p)| p.current.commit.as_str())
-            .collect();
-        let mut lost_work = Vec::new();
-        if !keep.contains(&head.as_str()) {
-            lost_work = lost_work::unreferenced_head_commits(&live, &keep, custom_ssh)?;
+    // Without its source store, the orphan checkout may contain unrecoverable work.
+    let key = bare.as_ref().and(p.clone.clone());
+    let repo = if key
+        .as_ref()
+        .is_some_and(|key| clone_users(state, key, id).is_empty())
+    {
+        bare.clone()
+    } else {
+        None
+    };
+    let mut lost_work = Vec::new();
+    if p.build.is_none() {
+        match installed_repo(root, id, p) {
+            Ok(worktree) => {
+                lost_work = if repo.is_some() {
+                    lost_work::detect(&worktree, Some(&p.current.commit), custom_ssh)?
+                } else {
+                    lost_work::worktree_removal(&worktree, id, &p.current.commit, custom_ssh)?
+                };
+            }
+            Err(Error::RepositoryNotFound { .. }) => {}
+            Err(error) => return Err(error),
         }
-        return Ok(Removal {
-            relative,
-            repo: None,
-            key: Some(key),
-            lost_work,
-        });
     }
-    let mut lost_work = lost_work::detect(&live, None, custom_ssh)?;
-    if let Some(item) = shared_head_moved(&live, state, &key, id, custom_ssh)? {
-        lost_work.insert(0, item);
+    if let Some(bare) = &repo {
+        for item in lost_work::hidden(bare, false, custom_ssh)? {
+            if !lost_work.contains(&item) {
+                lost_work.push(item);
+            }
+        }
     }
     Ok(Removal {
         relative,
-        repo: Some(live),
-        key: Some(key),
+        repo,
+        key,
         lost_work,
     })
 }

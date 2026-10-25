@@ -11,3 +11,8 @@ pub fn clone_path(root: &Path, source: &Path) -> PathBuf {
     };
     root.join(record.clone_folder(""))
 }
+
+/// Detached checkout owned by one installed or forgotten Git package.
+pub fn worktree_path(root: &Path, id: &str) -> PathBuf {
+    root.join("worktrees").join(id)
+}

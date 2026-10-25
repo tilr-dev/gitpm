@@ -274,13 +274,12 @@ $ gitpm update acme/greeter --release
 acme/greeter updated 0.1.0 → 0.2.0 (major)
 ```
 
-`forget ID` keeps the whole record in `state.json` under `forgotten` (with its source-keyed
-clone) and `restore ID` records it again as it was: revisions, `catalog`, the `enabled`
-flag and the mode. A release-mode or pinned package comes back at its recorded commit; a
-branch-mode package takes the clone's HEAD as found when it is the recorded commit or a
-commit after it that the origin's branch contains (and its dependencies are satisfied;
-`dependency_conflict` otherwise). A dirty clone, commits no remote branch or tag contains, or a
-HEAD moved elsewhere refuse with `local_changes`.
+`forget ID` keeps the whole record in `state.json` under `forgotten`, together with
+its bare source repository and individual Git worktree (or cached build output).
+`restore ID` records it again with its revisions, catalog binding, enabled flag and
+mode unchanged. In every Git mode, the package worktree must be clean and its HEAD
+must equal the recorded commit. Edited files, unpublished work or a different HEAD
+refuse with `local_changes`.
 
 ### Catalogs
 
@@ -508,6 +507,15 @@ Changed in 0.5:
   upgrading) run `gitpm sync-dist` (FFI `syncDist`) once.
 
 Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING**):
+
+- **BREAKING:** Source clones in `repos/<key>` are bare repositories. Each installed
+  Git package has a detached worktree in `worktrees/<namespace>/<name>` at its own
+  recorded commit. Updating or removing one package leaves sibling worktrees intact.
+  Update, rollback, restore and unconfirmed uninstall reject local changes or a moved
+  HEAD in the affected worktree. Builds have no worktree; Git objects needed for
+  offline rollback remain in the bare repository. Forgotten Git packages retain their
+  worktree. State remains format 1; recreate old workspaces. Opening does not migrate
+  or automatically delete legacy checked-out clones.
 
 - **BREAKING:** Explicit `link` installs live author output with `Mode::Link` and a
   discriminated state record. Resolved library and FFI package views make `current`
@@ -974,7 +982,8 @@ Catalog commands (`catalog show`, `catalog links`, `catalog update`, `catalog re
 
 ```text
 state.json              {"format": 1, "packages": …}: installed packages, replacements, forgotten records
-repos/<name>-<hash>/    source-keyed clone of root and nested Git packages
+repos/<name>-<hash>/    bare source repository shared by Git packages
+worktrees/<ns>/<name>/  detached worktree at this Git package's recorded commit
 dist/<ns>/<name>/       deployed files of an active package
 .pm-txn/                an interrupted operation (finished or discarded on open)
 ```
@@ -1011,9 +1020,8 @@ not derive it. `enabled` is not `active`: a replaced package stays `enabled: tru
 - `replace X --with Y` removes `dist/X/`; nothing of `Y` is copied there; `dist/Y/` stays.
   `X` must be installed (`not_installed`) and `Y` enabled (`invalid_argument`: "Y is
   disabled; enable it first"), so a replacement never leaves nothing loaded. `replace X --with X` deploys `dist/X/` again from
-  `X`'s clone at its installed commit (`packages.X.current.commit`, folder `path` of a
-  multi-package clone), so a shared clone whose HEAD is another package's revision needs
-  no checkout. `Y` stays deployed: two packages providing the same service is the host's
+  `X`'s bare repository at its installed commit (`packages.X.current.commit`, folder
+  `path` for a nested package), without changing any worktree. `Y` stays deployed: two packages providing the same service is the host's
   concern.
 - `disable X` removes `dist/X/`; `enable X` deploys it again the same way. Disabling a
   package that replaces another drops the binding and deploys the original again when
@@ -1098,20 +1106,18 @@ packages/theme/dist/…
   needs none; `--ref vVERSION` still requires a package ID when several are listed. For a single-package
   repository a given ID must match its manifest. `--ref` and `--dev` (the origin's default
   branch) work per package, and each package records its own mode.
-- Workspace: the packages of one source share one clone, `repos/<name>-<hash of the
-  source>`; state records `clone` (the source key of that clone) and `path` (the package
-  folder, absent for a root package) per Git package, and only the manifest-selected output folder relative to `<path>` is deployed to `dist/<namespace>/<name>`.
-  Updating, rolling back or uninstalling one package leaves the other packages alone; the
-  clone is removed with the last package that uses it (its local work is guarded then,
-  as for any clone). With exactly one installed or forgotten user, HEAD must stay at
-  that user's recorded Git revision, even if another commit is tagged. For a build
-  retaining a Git clone, this is its previous Git installation's revision. Root and
-  nested packages follow the same rule. With several installed or forgotten users,
-  HEAD only counts as moved when it is neither a user's recorded current revision nor
-  a tagged commit. When a package is uninstalled or forgotten, HEAD moves to the installed revision of a
-  remaining one (working-tree changes are kept; if they conflict with that revision the
-  operation is refused). A root package keeps the same source-keyed clone when it
-  later moves into a package folder (`path` set, `clone` unchanged).
+- Workspace: packages of one source share one bare repository in
+  `repos/<name>-<hash of the source>`. State records its `clone` key and the package
+  folder `path` (absent for a root package). Every Git package has its own detached
+  worktree at `worktrees/<namespace>/<name>`, with HEAD at its recorded commit.
+  Update, rollback and restore require that worktree to be clean and at that commit;
+  uninstall reports its local work for confirmation. These rules apply equally to
+  root and nested packages, even if other packages use the same source.
+  Removing or forgetting a package leaves sibling HEADs and files untouched.
+  Forget retains the worktree; uninstall removes it and removes the bare repository
+  only with its last user. Builds have no worktree, retaining source objects only
+  for a previous Git revision. A root package that moves into a folder keeps its
+  source key and worktree identity, changing only `path`.
 - Shared clones keep `refs/gitpm/<namespace>/<name>/current` and `.../previous` for every
   package that uses them (registered or forgotten), updated with each change and deleted
   with the package, so an upstream rewrite, a pruned tag or `git gc` never loses another

@@ -13,7 +13,7 @@ def check_numeric_max(t: T, id: str):
     t.eq(p["current"], {"version": "1.10.0", "commit": tagged}, "current (numeric maximum)")
     t.ok(p["current"]["commit"] != t.rev(id), "untagged HEAD (1.11.0) not chosen")
     t.ok(p["current"]["commit"] != t.rev(id, f"v1.9.0"), "newest tagged commit (1.9.0) not chosen")
-    t.eq(t.rev(t.clone(id)), tagged, "clone HEAD")
+    t.eq(t.rev(t.worktree(id)), tagged, "clone HEAD")
     t.eq((t.dist(id) / "index.js").read_text(), f'export const greeting = "{id} 1.10.0";\n', "dist")
 
 

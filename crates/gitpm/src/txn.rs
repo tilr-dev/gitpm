@@ -29,6 +29,56 @@ enum Change {
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Journal {
     paths: BTreeMap<String, Change>,
+    #[serde(default)]
+    worktrees: BTreeMap<String, String>,
+}
+
+fn worktree_admin(id: &str) -> String {
+    use sha2::{Digest, Sha256};
+    crate::catalog::hex(&Sha256::digest(id.as_bytes()))
+}
+
+/// Bind both sides explicitly: staging and journal renames change both locations.
+/// The writes are repeatable so recovery can finish after either side was persisted.
+fn bind_worktree(root: &Path, checkout: &Path, admin: &Path) -> Result<()> {
+    for directory in [checkout, admin] {
+        if !fs::symlink_metadata(directory)?.is_dir() {
+            return Err(Error::Workspace(format!(
+                "worktree directory is not a real directory: {}",
+                directory.display()
+            )));
+        }
+    }
+    for path in [
+        checkout.join(".git"),
+        admin.join("gitdir"),
+        admin.join("commondir"),
+    ] {
+        if fs::symlink_metadata(&path).is_ok_and(|meta| !meta.is_file()) {
+            return Err(Error::Workspace(format!(
+                "worktree metadata is not a regular file: {}",
+                path.display()
+            )));
+        }
+    }
+    fs::write(
+        checkout.join(".git"),
+        format!("gitdir: {}\n", admin.display()),
+    )?;
+    fs::write(
+        admin.join("gitdir"),
+        format!("{}\n", checkout.join(".git").display()),
+    )?;
+    fs::write(admin.join("commondir"), "../..\n")?;
+    for path in [
+        checkout.join(".git"),
+        admin.join("gitdir"),
+        admin.join("commondir"),
+    ] {
+        sync_path(&path)?;
+    }
+    sync_parents(root, checkout)?;
+    sync_parents(root, admin)
 }
 
 pub(crate) struct Txn {
@@ -51,7 +101,7 @@ fn remove(path: &Path) -> Result<()> {
 }
 /// Every directory between the root and a managed path (`dist/<ns>`) must be a real directory: through a symlink a write or delete would
 /// land outside the workspace.
-fn ensure_managed_parents(root: &Path, relative: &str) -> Result<()> {
+pub(crate) fn ensure_managed_parents(root: &Path, relative: &str) -> Result<()> {
     let mut current = root.to_path_buf();
     let parts: Vec<&str> = relative.split('/').collect();
     for part in &parts[..parts.len() - 1] {
@@ -197,9 +247,7 @@ impl Txn {
     }
     /// Writable copy of an installed clone at `relative` (`repos/<key>`; `live` is its exact path in the workspace). Symlinks inside the
     /// repository are kept as symlinks. Staged once per transaction.
-    // TODO: this copies the whole clone (all packages of a shared one, full history) for
-    // every operation that changes it; a worktree or a copy of `.git` plus the touched
-    // folders would be cheaper for large repositories.
+    // Bare objects and refs are copied once; package worktrees are staged separately.
     pub(crate) fn repo(&mut self, relative: &str, live: &Path) -> Result<PathBuf> {
         ensure_managed_parents(&self.root, relative)?;
         let staged = self.staged(relative);
@@ -222,6 +270,81 @@ impl Txn {
         fs::rename(clone, &staged)?;
         self.journal.paths.insert(relative.into(), Change::Replace);
         Ok(staged)
+    }
+    /// Stage a detached package checkout using the transaction's staged bare store.
+    pub(crate) fn worktree(
+        &mut self,
+        id: &str,
+        bare_relative: &str,
+        commit: &str,
+        custom_ssh: bool,
+    ) -> Result<PathBuf> {
+        crate::model::valid_id(id)?;
+        let relative = format!("worktrees/{id}");
+        ensure_managed_parents(&self.root, &relative)?;
+        let bare = self.staged_repo(bare_relative).ok_or_else(|| {
+            Error::Workspace(format!(
+                "bare repository {bare_relative} must be staged before its worktree"
+            ))
+        })?;
+        let staged = self.staged(&relative);
+        let admin = bare.join("worktrees").join(worktree_admin(id));
+        if !self.is_staged(&relative) {
+            let live = self.root.join(&relative);
+            if present(&live) && !admin.is_dir() {
+                return Err(Error::Workspace(format!(
+                    "{relative} exists but is not a package worktree"
+                )));
+            }
+            if present(&live) && admin.is_dir() {
+                copy_tree(&live, &staged, true)?;
+                bind_worktree(&self.root, &staged, &admin)?;
+            } else {
+                if let Some(parent) = staged.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                crate::transport::add_worktree(&bare, &staged, commit, custom_ssh)?;
+                let gitfile = fs::read_to_string(staged.join(".git"))?;
+                let original = gitfile.trim().strip_prefix("gitdir: ").ok_or_else(|| {
+                    Error::Workspace("Git created an invalid worktree link".into())
+                })?;
+                let original = Path::new(original);
+                if original.parent().map(fs::canonicalize).transpose()?
+                    != Some(fs::canonicalize(bare.join("worktrees"))?)
+                {
+                    return Err(Error::Workspace(
+                        "Git created a worktree outside its bare store".into(),
+                    ));
+                }
+                if original != admin {
+                    fs::rename(original, &admin)?;
+                }
+                bind_worktree(&self.root, &staged, &admin)?;
+            }
+            self.journal.paths.insert(relative.clone(), Change::Replace);
+        }
+        crate::transport::checkout_detached(&staged, commit, false, custom_ssh)?;
+        self.journal.worktrees.insert(
+            relative,
+            format!("{bare_relative}/worktrees/{}", worktree_admin(id)),
+        );
+        Ok(staged)
+    }
+
+    /// Remove only this package's checkout and its registration in the staged bare store.
+    pub(crate) fn remove_worktree(&mut self, id: &str, bare_relative: &str) -> Result<()> {
+        crate::model::valid_id(id)?;
+        if let Some(bare) = self.staged_repo(bare_relative) {
+            remove(&bare.join("worktrees").join(worktree_admin(id)))?;
+        } else if self.journal.paths.get(bare_relative) != Some(&Change::Delete)
+            && present(&self.root.join(bare_relative))
+        {
+            let bare = self.repo(bare_relative, &self.root.join(bare_relative))?;
+            remove(&bare.join("worktrees").join(worktree_admin(id)))?;
+        }
+        let relative = format!("worktrees/{id}");
+        self.journal.worktrees.remove(&relative);
+        self.delete_repo(&relative)
     }
     /// Stage `dist/<id>` from `<package>/dist` at `commit` of the (staged or live) clone
     /// at `repo_relative`; `package` is the folder inside the repository (`None`: root).
@@ -297,6 +420,39 @@ impl Txn {
         self.journal.paths.get(&format!("dist/{id}")) == Some(&Change::Replace)
     }
     pub(crate) fn commit(mut self, state: &State) -> Result<()> {
+        // Replacing a bare store relocates even the admin directories belonging to
+        // untouched sibling checkouts. Journal all surviving links before deciding.
+        for (id, package) in state.packages.iter().chain(&state.forgotten) {
+            if package.build.is_some() {
+                continue;
+            }
+            let Some(key) = &package.clone else { continue };
+            let relative = format!("worktrees/{id}");
+            if self.journal.paths.get(&relative) == Some(&Change::Delete) {
+                continue;
+            }
+            let checkout = self
+                .staged_repo(&relative)
+                .unwrap_or_else(|| self.root.join(&relative));
+            if !present(&checkout) {
+                continue;
+            }
+            let bare_relative = format!("repos/{key}");
+            let Some(bare) = self.staged_repo(&bare_relative) else {
+                // Unchanged stores keep their existing checkout associations. A
+                // missing unrelated store must not block a dist-only operation.
+                continue;
+            };
+            if !bare.join("worktrees").join(worktree_admin(id)).is_dir() {
+                return Err(Error::Workspace(format!(
+                    "worktree registration missing for {id}"
+                )));
+            }
+            self.journal.worktrees.insert(
+                relative,
+                format!("{bare_relative}/worktrees/{}", worktree_admin(id)),
+            );
+        }
         fs::write(
             self.dir.join("state.json"),
             serde_json::to_vec_pretty(state)?,
@@ -385,6 +541,11 @@ fn apply(root: &Path, dir: &Path) -> Result<()> {
         sync_parents(root, live.parent().unwrap())?;
         sync_parents(root, staged.parent().unwrap())?;
         sync_parents(root, old.parent().unwrap())?;
+    }
+    for (checkout, admin) in &journal.worktrees {
+        ensure_managed_parents(root, checkout)?;
+        ensure_managed_parents(root, admin)?;
+        bind_worktree(root, &root.join(checkout), &root.join(admin))?;
     }
     let state = dir.join("state.json");
     if present(&state) {

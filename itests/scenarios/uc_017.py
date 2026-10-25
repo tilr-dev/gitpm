@@ -17,7 +17,7 @@ def at(t: T, current: str, previous: str | None):
     p = t.package(ID)
     t.eq(p["current"], {"version": current, "commit": tagged(t, current)}, "current")
     t.eq(p["previous"], previous and {"version": previous, "commit": tagged(t, previous)}, "previous")
-    t.eq(t.rev(t.clone(ID)), tagged(t, current), "clone HEAD")
+    t.eq(t.rev(t.worktree(ID)), tagged(t, current), "clone HEAD")
     if p["enabled"]:
         t.eq((t.dist(ID) / "index.js").read_text(), f'export const greeting = "{ID} {current}";\n', "dist")
     else:
@@ -73,7 +73,7 @@ def corrupt_previous(t: T, change):
     t.same(before, "workspace (active installation intact)")
     p = t.package(ID)
     t.eq(p["current"], {"version": "0.1.2", "commit": tagged(t, "0.1.2")}, "current")
-    t.eq(t.rev(t.clone(ID)), tagged(t, "0.1.2"), "clone HEAD")
+    t.eq(t.rev(t.worktree(ID)), tagged(t, "0.1.2"), "clone HEAD")
     t.has((t.dist(ID) / "index.js").read_text(), f"{ID} 0.1.2")
     t.eq([str(p) for p in t.ws.rglob("*.pm-txn*")], [], "no leftover transaction")
     return r
@@ -118,7 +118,7 @@ def corrupt_previous_snapshot_fails_safely(t: T):
 @case(fixture="g2_hello_history", spec=["dist/a-revision-without-dist-is-refused"])
 def previous_with_missing_payload_fails_safely(t: T):
     """previous points to a commit of the clone without dist/: refused, active install intact."""
-    clone = t.clone(ID)
+    clone = t.worktree(ID)
     t.git(clone, "checkout", "-q", "--detach", tagged(t, "0.1.1"))
     t.git(clone, "rm", "-q", "-r", "dist")
     t.git(clone, "commit", "-q", "-m", "drop dist")
