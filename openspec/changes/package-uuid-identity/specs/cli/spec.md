@@ -36,7 +36,7 @@ The CLI SHALL offer exactly the commands of its full usage (`gitpm --help`), eac
 - **THEN** package selectors and replacement arguments are UUIDs, authoring uses `init NAME --into DIR`, and forking uses `fork UUID [UUID...] --into DIR` without `--ns`
 
 ### Requirement: Option validation
-Before calling the library the CLI SHALL refuse only syntax: unknown or repeated options, misplaced options (for example `--dry-run` outside `update all`/`sync-dist`), exclusive options (`--ref`, `--dev`, `--release`), values outside a fixed set and wrong argument counts, with a message ending `; use --help` where applicable (usage errors without `Error kind`). Domain combinations are checked by the library. Verified by `usage_errors_name_the_problem_and_create_nothing`.
+Before calling the library the CLI SHALL refuse syntax errors: unknown, repeated or misplaced options, conflicting options, values outside a fixed set and wrong argument counts. Usage errors SHALL omit `Error kind` and end with `; use --help` where applicable. The library SHALL check domain combinations. Verified by `usage_errors_name_the_problem_and_create_nothing`.
 
 #### Scenario: Ref, dev and release
 - **WHEN** the user runs `gitpm install SOURCE --ref x --dev`, `gitpm update ID --dev --release`, or passes `--channel`
