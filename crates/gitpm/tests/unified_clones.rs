@@ -44,6 +44,130 @@ fn git(repo: &Path, args: &[&str]) -> String {
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
+fn installed_workspace(dir: &TempDir) -> (PathBuf, PathBuf, Manager) {
+    let source = scaffold::init(&dir.path().join("source"), "acme", "root")
+        .unwrap()
+        .repo;
+    let root = dir.path().join("workspace");
+    let manager = Manager::open(&root).unwrap();
+    manager.install(source.to_str().unwrap()).unwrap();
+    (source, root, manager)
+}
+
+#[test]
+fn copied_workspace_repairs_links_and_keeps_source_unchanged() {
+    let dir = TempDir::new();
+    let (source, root, original) = installed_workspace(&dir);
+    let record = original.state().unwrap().packages["acme/root"].clone();
+    let checkout = root.join("worktrees/acme/root");
+    let original_gitfile = fs::read(checkout.join(".git")).unwrap();
+    let original_state = fs::read(root.join("state.json")).unwrap();
+    let original_head = git(&checkout, &["rev-parse", "HEAD"]);
+    let copied = dir.path().join("copied");
+    assert!(
+        Command::new("cp")
+            .arg("-R")
+            .arg(&root)
+            .arg(&copied)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let manager = Manager::open(&copied).unwrap();
+    assert_eq!(manager.list().unwrap().len(), 1);
+    let copied_checkout = copied.join("worktrees/acme/root");
+    assert_eq!(
+        fs::canonicalize(git(&copied_checkout, &["rev-parse", "--git-common-dir"])).unwrap(),
+        copied.join("repos").join(record.clone.as_ref().unwrap())
+    );
+    assert_eq!(
+        git(&copied_checkout, &["rev-parse", "--show-toplevel"]),
+        copied_checkout.to_str().unwrap()
+    );
+    assert_eq!(git(&copied_checkout, &["status", "--porcelain"]), "");
+    assert_eq!(
+        git(&copied_checkout, &["rev-parse", "HEAD"]),
+        record.current.commit
+    );
+    scaffold::commit_package(&source, "0.2.0", None).unwrap();
+    manager.update("acme/root").unwrap();
+    assert_eq!(git(&copied_checkout, &["status", "--porcelain"]), "");
+    manager.rollback("acme/root").unwrap();
+    assert_eq!(git(&copied_checkout, &["status", "--porcelain"]), "");
+    assert_eq!(git(&copied_checkout, &["rev-parse", "HEAD"]), original_head);
+    manager.uninstall("acme/root", &[], false).unwrap();
+    assert!(manager.list().unwrap().is_empty());
+    assert!(!copied_checkout.exists());
+    assert_eq!(fs::read(root.join("state.json")).unwrap(), original_state);
+    assert_eq!(fs::read(checkout.join(".git")).unwrap(), original_gitfile);
+    assert_eq!(git(&checkout, &["rev-parse", "HEAD"]), original_head);
+    assert_eq!(git(&checkout, &["status", "--porcelain"]), "");
+}
+
+#[test]
+fn moved_workspace_repairs_forgotten_worktrees_without_losing_local_work() {
+    let dir = TempDir::new();
+    let (_source, root, manager) = installed_workspace(&dir);
+    manager.forget("acme/root").unwrap();
+    fs::write(root.join("worktrees/acme/root/local.txt"), "keep me").unwrap();
+    drop(manager);
+    let moved = dir.path().join("moved");
+    fs::rename(&root, &moved).unwrap();
+    let before_state = fs::read(moved.join("state.json")).unwrap();
+    let manager = Manager::open(&moved).unwrap();
+    let checkout = moved.join("worktrees/acme/root");
+    assert_eq!(git(&checkout, &["status", "--porcelain"]), "?? local.txt");
+    assert_eq!(fs::read(checkout.join("local.txt")).unwrap(), b"keep me");
+    assert_eq!(fs::read(moved.join("state.json")).unwrap(), before_state);
+    fs::remove_file(checkout.join("local.txt")).unwrap();
+    manager.restore("acme/root").unwrap();
+    assert_eq!(git(&checkout, &["status", "--porcelain"]), "");
+    let gitfile = checkout.join(".git");
+    let modified = fs::metadata(&gitfile).unwrap().modified().unwrap();
+    drop(manager);
+    let _manager = Manager::open(&moved).unwrap();
+    assert_eq!(
+        fs::metadata(&gitfile).unwrap().modified().unwrap(),
+        modified
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn opening_workspace_refuses_symlinked_worktree_metadata_and_parents() {
+    use std::os::unix::fs::symlink;
+    for target in [
+        "worktrees/acme/root/.git",
+        "worktrees/acme",
+        "repos",
+        "gitdir",
+        "commondir",
+    ] {
+        let dir = TempDir::new();
+        let (_source, root, manager) = installed_workspace(&dir);
+        drop(manager);
+        let path = if matches!(target, "gitdir" | "commondir") {
+            let gitfile = fs::read_to_string(root.join("worktrees/acme/root/.git")).unwrap();
+            Path::new(gitfile.trim().strip_prefix("gitdir: ").unwrap()).join(target)
+        } else {
+            root.join(target)
+        };
+        let outside = dir.path().join("outside");
+        fs::rename(&path, &outside).unwrap();
+        symlink(&outside, &path).unwrap();
+        let before = fs::read(root.join("state.json")).unwrap();
+        let error = Manager::open(&root).err().expect("unsafe path refused");
+        assert_eq!(error.kind(), "workspace");
+        assert_eq!(fs::read(root.join("state.json")).unwrap(), before);
+        assert!(
+            fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+}
+
 #[test]
 fn root_to_nested_lifecycle_keeps_one_clone_and_all_owners() {
     let dir = TempDir::new();

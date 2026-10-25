@@ -848,7 +848,7 @@ impl Manager {
             write_initial_state(&real)?;
         }
         fs::create_dir_all(root.join("dist"))?;
-        manager.state()?;
+        txn::repair_worktree_links(&real, &manager.state()?)?;
         Ok(manager)
     }
     pub fn root(&self) -> &Path {
