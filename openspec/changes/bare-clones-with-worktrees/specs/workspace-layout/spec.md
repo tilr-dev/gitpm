@@ -57,6 +57,10 @@ Each `state.json` `packages.<id>` managed record SHALL hold `source`, `current`,
 - **WHEN** a current or previous revision is a build
 - **THEN** `build` or `previous_build` retains its full release record and catalog location separately from catalog protection; previous retains its mode and source kind for offline rollback, and only current/previous build output is retained
 
+#### Scenario: Managed field semantics
+- **WHEN** a managed package record includes optional fields
+- **THEN** mode is `{"pinned": REF}` or `{"branch": NAME}` (omitted for releases), catalog protects a verified catalog installation, and clone is the source-derived Git-clone key
+
 ### Requirement: Replacements and forgotten records
 `state.json` SHALL keep `replacements` (the replacement bindings ORIGINAL → FORK, global for the workspace; rules in fork-replacement) and `forgotten` (records of every forgotten package, same format as `packages.<id>`, with a source-keyed bare repository and package worktree, or retained build output; lifecycle in install-uninstall and multi-package-repos).
 
