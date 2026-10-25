@@ -106,6 +106,7 @@ Published versions SHALL be immutable, with tag `vVERSION` and display `ID@VERSI
 - **WHEN** `--build-url` is `http://…` or the SHA-256 is malformed
 - **THEN** catalog register fails with `catalog` ("build URL must use HTTPS" / "invalid build SHA-256") and no release is published (an empty top-level `catalog.json` may already have been created)
 
+
 #### Scenario: Submodule inside dist
 - **WHEN** the release contains a Git submodule at `dist/vendor`
 - **THEN** publication succeeds, hashing the staged export with an empty `vendor/` directory

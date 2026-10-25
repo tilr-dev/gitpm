@@ -1130,11 +1130,11 @@ mod tests {
             summary,
             [
                 (
-                    "bacf6322-3731-5678-9dc6-c623c89c72a7",
+                    "826a054b-0fad-5e5a-8890-f87c6452943b",
                     CheckStatus::OriginUnreachable
                 ),
                 (
-                    "826a054b-0fad-5e5a-8890-f87c6452943b",
+                    "bacf6322-3731-5678-9dc6-c623c89c72a7",
                     CheckStatus::OriginUnreachable
                 ),
                 (
@@ -1273,8 +1273,20 @@ mod tests {
         value["manifest"]["id"] = "c3d20c6a-6408-5e35-8cf1-9e3ebc5725a9".into();
         fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
         let rows = check_state(&state, cat.to_str(), false).unwrap();
-        assert_eq!(rows[0].status, CheckStatus::InvalidCatalogData);
-        assert_eq!(rows[1].status, CheckStatus::UpToDate);
+        assert_eq!(
+            rows.iter()
+                .find(|row| row.id == "a9283cd6-70d6-5936-8fd5-cf5a907fed13")
+                .unwrap()
+                .status,
+            CheckStatus::InvalidCatalogData
+        );
+        assert_eq!(
+            rows.iter()
+                .find(|row| row.id == "559d0351-3e39-5cf9-a1cf-cc24de772fd7")
+                .unwrap()
+                .status,
+            CheckStatus::UpToDate
+        );
         assert!(
             crate::catalog::lookup(
                 cat.to_str().unwrap(),
@@ -1475,14 +1487,14 @@ mod tests {
                     branch_mode.clone()
                 ),
                 (
-                    "96eae968-7cde-52da-bf95-bfc5c0e039d1".into(),
-                    CheckStatus::Pinned,
-                    pinned_mode.clone()
-                ),
-                (
                     "2454b358-69da-5cd4-aed8-7a2632f29b76".into(),
                     CheckStatus::UpToDate,
                     Mode::Release
+                ),
+                (
+                    "96eae968-7cde-52da-bf95-bfc5c0e039d1".into(),
+                    CheckStatus::Pinned,
+                    pinned_mode.clone()
                 ),
             ]
         );
@@ -1502,14 +1514,14 @@ mod tests {
                     branch_mode
                 ),
                 (
-                    "96eae968-7cde-52da-bf95-bfc5c0e039d1".into(),
-                    CheckStatus::Pinned,
-                    pinned_mode.clone()
-                ),
-                (
                     "2454b358-69da-5cd4-aed8-7a2632f29b76".into(),
                     CheckStatus::UpdateAvailable,
                     Mode::Release
+                ),
+                (
+                    "96eae968-7cde-52da-bf95-bfc5c0e039d1".into(),
+                    CheckStatus::Pinned,
+                    pinned_mode.clone()
                 ),
             ]
         );
@@ -1528,7 +1540,9 @@ mod tests {
             false,
             false,
         )
-        .remove(1);
+        .into_iter()
+        .find(|row| row.id == "96eae968-7cde-52da-bf95-bfc5c0e039d1")
+        .unwrap();
         assert_eq!(
             (row.status, row.problem, row.mode),
             (CheckStatus::Pinned, None, pinned_mode)
@@ -1645,14 +1659,14 @@ mod tests {
             statuses,
             [
                 (
-                    "d135a7cf-1c63-549a-93cb-8f89656b2ced".into(),
-                    CheckStatus::UpToDate,
-                    Some("0.2.0".into())
-                ),
-                (
                     "769ccb53-e0de-5311-9e8b-815d9ad1cbcd".into(),
                     CheckStatus::NewerThanOrigin,
                     Some("0.1.0".into())
+                ),
+                (
+                    "d135a7cf-1c63-549a-93cb-8f89656b2ced".into(),
+                    CheckStatus::UpToDate,
+                    Some("0.2.0".into())
                 ),
                 (
                     "d98860c4-754e-51e3-b473-cff9f2429ea3".into(),
@@ -1885,7 +1899,13 @@ mod tests {
                 row.problem
             );
         }
-        let upstream = rows[2].upstream.as_ref().unwrap();
+        let upstream = rows
+            .iter()
+            .find(|row| row.id == "e628c4ae-44fd-51b4-982c-c89a575e9f6c")
+            .unwrap()
+            .upstream
+            .as_ref()
+            .unwrap();
         assert!(
             upstream
                 .problem

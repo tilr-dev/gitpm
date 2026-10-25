@@ -6652,11 +6652,10 @@ mod tests {
         let (ws, m) = Ws::installed(id);
         let other_id = "bd282222-297a-57fb-99d4-0357a8a70172";
         let other = ws.other_author("sibling", other_id);
-        let mut manifest = crate::model::manifest(&other.path).unwrap();
-        manifest.name = crate::model::manifest(&ws.author.path).unwrap().name;
-        write_manifest(&other.path, &manifest);
-        fixture_git(&other.path, &["add", "."]);
-        fixture_git(&other.path, &["commit", "-qm", "Use the same alias"]);
+        assert_eq!(
+            crate::model::manifest(&other.path).unwrap().name,
+            crate::model::manifest(&ws.author.path).unwrap().name
+        );
         m.install_package(other.source(), None, InstallTarget::Ref("HEAD".into()))
             .unwrap();
         assert_eq!(m.list().unwrap().len(), 2);
@@ -7156,6 +7155,7 @@ mod tests {
                 match name {
                     "store" => "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
                     "theme" => "f851f609-bb81-52d6-bfef-33798624782c",
+                    "dock" => "4ec10364-80f2-5ed8-b2ff-594149bfecb5",
                     _ => panic!("unknown fixture package"),
                 },
                 version,
@@ -7203,6 +7203,7 @@ mod tests {
                     .join(match name {
                         "store" => "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
                         "theme" => "f851f609-bb81-52d6-bfef-33798624782c",
+                        "dock" => "4ec10364-80f2-5ed8-b2ff-594149bfecb5",
                         _ => panic!("unknown fixture package"),
                     })
                     .join("index.js"),
@@ -8064,8 +8065,8 @@ mod tests {
         assert_eq!(
             updated,
             [
-                "807b9715-06b4-55c2-add2-59b487bfa42e",
-                "78d36dc2-2c10-5dc8-a889-056564906e06"
+                "78d36dc2-2c10-5dc8-a889-056564906e06",
+                "807b9715-06b4-55c2-add2-59b487bfa42e"
             ]
         );
         assert_eq!(
@@ -8117,7 +8118,6 @@ mod tests {
         assert_eq!(
             reasons,
             [
-                ("807b9715-06b4-55c2-add2-59b487bfa42e", None),
                 (
                     "03c25ec4-f583-513d-adfb-092fb98d8dba",
                     Some(UnchangedReason::Pinned {
@@ -8130,6 +8130,7 @@ mod tests {
                         branch: "main".into()
                     })
                 ),
+                ("807b9715-06b4-55c2-add2-59b487bfa42e", None),
             ]
         );
     }
