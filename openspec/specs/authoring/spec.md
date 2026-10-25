@@ -7,26 +7,30 @@ Defines the author-side commands that create package repositories and releases: 
 ## Requirements
 
 ### Requirement: init creates a package with its first release
-When creating a repository, `init NAMESPACE/NAME --into DIR` SHALL scaffold a package with a manifest (`id`, `version` 0.1.0, `"title": "NAME"`), a demo `dist/index.js`, one commit and the tag `v0.1.0`. A `DIR` that does not exist SHALL become a single-package repository. `--into` is required and nothing SHALL ever be overwritten. Verified by `scaffold::init_into_a_new_folder_makes_a_tagged_single_package_repository` and `scaffold::init_never_overwrites_and_validates_ids`.
+`init NAME --into DIR` SHALL scaffold a package with a manifest (a newly generated UUID `id`, `"name": "NAME"`, `version` 0.1.0, `"title": "NAME"`), a demo `dist/index.js`, one commit and the tag `v0.1.0`. A `DIR` that does not exist SHALL become a single-package repository. `--into` is required and nothing SHALL ever be overwritten. Verified by `scaffold::init_into_a_new_folder_makes_a_tagged_single_package_repository` and `scaffold::init_never_overwrites_and_validates_ids`.
 
 #### Scenario: Scaffold files and commit
-- **WHEN** `init acme/hello --into hello` creates a new single-package repository
-- **THEN** it also writes `.gitignore` and `README.md`, and the one commit is `Create hello 0.1.0` (a package added to a multi-package repository gets `Create acme/hello VERSION` using the current repository version)
+- **WHEN** `init hello --into hello` creates a new single-package repository
+- **THEN** it also writes `.gitignore` and `README.md`, and the one commit is `Create hello 0.1.0` (a package added to a multi-package repository gets `Create UUID VERSION` using the current repository version)
 
 #### Scenario: New package repository
-- **WHEN** the user runs `gitpm init acme/hello --into hello`
-- **THEN** `hello` is a Git repository at tag `v0.1.0` and the output contains `Created:`, `ID: acme/hello` and `Version 0.1.0: Git commit and tag v0.1.0.`
+- **WHEN** the user runs `gitpm init hello --into hello`
+- **THEN** `hello` is a Git repository at tag `v0.1.0` and the output contains `Created:`, `ID: UUID` matching the manifest and `Version 0.1.0: Git commit and tag v0.1.0.`
 
 #### Scenario: init without --into
-- **WHEN** the user runs `gitpm init acme/hello`
+- **WHEN** the user runs `gitpm init hello`
 - **THEN** it fails with `init needs --into DIR: …` and creates nothing
 
 #### Scenario: Former alias
-- **WHEN** the user runs `gitpm create acme/hello --into hello`
+- **WHEN** the user runs `gitpm create hello --into hello`
 - **THEN** it fails with `unknown command: create; use --help` and creates nothing
 
+#### Scenario: Generated identity survives release
+- **WHEN** `init hello --into hello` creates a package and `commit` releases it again
+- **THEN** its manifest has a generated UUID and name `hello`, and the UUID is unchanged by the release
+
 ### Requirement: init into a multi-package repository
-`init` into an existing repository SHALL add a package at its shared version (0.1.0 if empty), commit only the new folder and config, and create no tag. It SHALL use the first `PREFIX/*` pattern, else add `packages/NAME` to the config. A repository without config or root package SHALL get `packages/*`. Dirty config, invalid roots and duplicate folders/IDs SHALL be refused with `invalid_argument`, changing nothing.
+`init` into an existing repository SHALL add a package at its shared version (0.1.0 if empty), commit only the new folder and config, and create no tag. It SHALL use the first `PREFIX/*` pattern with the generated UUID as the folder name, else add `packages/<uuid>` to the config. A repository without config or root package SHALL get `packages/*`. Dirty config, invalid roots and duplicate folders/UUIDs SHALL be refused with `invalid_argument`, changing nothing.
 
 #### Scenario: Root is a package
 - **WHEN** the repository root has a manifest and no `gitpm.json`
@@ -41,10 +45,8 @@ When creating a repository, `init NAMESPACE/NAME --into DIR` SHALL scaffold a pa
 - **THEN** init is refused with `pass the repository root`
 
 #### Scenario: Second package with the same name
-- **WHEN** `a/ui` exists in the repository and the user runs `init b/ui --into REPO`
-- **THEN** it is refused with `invalid_argument` naming the package that has the folder
-- **AND** this is covered by `scaffold::packages_are_added_to_a_multi_package_repository_and_released_by_id` and `scaffold::new_packages_follow_the_first_folder_pattern`
-- **AND** an ID differing only in letter case from an existing package is refused as in package-ids ("Case-colliding IDs are refused")
+- **WHEN** the repository already has a package named `ui` and the user runs `init ui --into REPO`
+- **THEN** it adds another package with name `ui`, a fresh UUID and a distinct UUID folder, preserving the first package
 
 #### Scenario: Add a package after a release
 - **WHEN** an existing repository has packages at 1.2.0 and the tag `v1.2.0`, and the author adds another package with `init`
@@ -59,8 +61,8 @@ When creating a repository, `init NAMESPACE/NAME --into DIR` SHALL scaffold a pa
 - **THEN** the new repository is removed (an adopted empty folder is left empty) and the error is returned
 
 #### Scenario: Start a multi-package repository from nothing
-- **WHEN** the user runs `gitpm init tilr/runtime --into repos/p --multi --no-release`
-- **THEN** `repos/p` has `gitpm.json` and `packages/runtime`, one commit and no tag, and the suggested release command uses 0.1.0
+- **WHEN** the user runs `gitpm init runtime --into repos/p --multi --no-release`
+- **THEN** `repos/p` has `gitpm.json` and `packages/<uuid>`, one commit and no tag, and the suggested release command uses 0.1.0
 
 #### Scenario: Tag fails when adding to an existing repository
 - **WHEN** a package is added to an existing multi-package repository at version 1.2.0, with or without `--no-release`, and a tag command would fail
@@ -78,8 +80,8 @@ When creating a repository, `init NAMESPACE/NAME --into DIR` SHALL scaffold a pa
 - **THEN** it fails with `invalid_manifest` (rule in plugin-metadata, "Lenient reading, strict authoring")
 
 #### Scenario: Release one package of a multi-package repository
-- **WHEN** the author runs `gitpm commit ./tilr-packages 0.2.0 --package tilr/store`
-- **THEN** every package is set to 0.2.0, one commit and one tag `v0.2.0` are created, and it prints `tilr/store committed 0.2.0 (local commit and tag v0.2.0)`
+- **WHEN** the author runs `gitpm commit ./tilr-packages 0.2.0 --package 76a9b591-60f3-5c7f-9e1c-31648fc73bfd`
+- **THEN** every package is set to 0.2.0, one commit and one tag `v0.2.0` are created, and it prints `76a9b591-60f3-5c7f-9e1c-31648fc73bfd committed 0.2.0 (local commit and tag v0.2.0)`
 
 #### Scenario: Release a pre-release
 - **WHEN** the author runs `gitpm commit ./hello 1.3.0-beta.1`
@@ -150,5 +152,5 @@ gitpm SHALL NOT write a Git identity into an existing repository; without a conf
 `commit_package` SHALL return `{package, version, tag}` of the repository release it made; `package` is the selected package ID and does not restrict which packages are released (the tag as in package-ids, "Release tag names"), and the CLI SHALL print its line from that result without computing the tag itself. Verified by `scaffold::commit_package_returns_package_version_and_tag`.
 
 #### Scenario: Result of a release
-- **WHEN** the author runs `gitpm commit ./tilr-plugins 0.2.0 --package tilr/store`
-- **THEN** the library returns package `tilr/store`, version `0.2.0` and tag `v0.2.0`, and the CLI prints `tilr/store committed 0.2.0 (local commit and tag v0.2.0)`
+- **WHEN** the author runs `gitpm commit ./tilr-plugins 0.2.0 --package 76a9b591-60f3-5c7f-9e1c-31648fc73bfd`
+- **THEN** the library returns package `76a9b591-60f3-5c7f-9e1c-31648fc73bfd`, version `0.2.0` and tag `v0.2.0`, and the CLI prints `76a9b591-60f3-5c7f-9e1c-31648fc73bfd committed 0.2.0 (local commit and tag v0.2.0)`
