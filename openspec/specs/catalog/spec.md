@@ -321,12 +321,3 @@ Builds SHALL be tar.gz with output at the root, verified against archive SHA-256
 #### Scenario: Force origin despite configured catalog
 - **WHEN** the configured catalog lists 1.0.0, the origin has 2.0.0 and a Git-installed package is checked with `--no-catalog`
 - **THEN** the row comes from origin with latest 2.0.0, and the selected catalog is not read
-
-### Requirement: Release output selection
-Build SHALL be preferred over Git; its output is the archive root, while Git output is the committed manifest-selected folder (default dist/).
-
-Verified by `declared_output_folders_install_redeploy_and_verify_catalog` and `install_update_and_offline_rollback_need_no_repository`.
-
-#### Scenario: Declared folder hashes
-- **WHEN** a Git release selects its root or a custom output folder
-- **THEN** catalog generation and verification hash exactly the same committed files as deployment
