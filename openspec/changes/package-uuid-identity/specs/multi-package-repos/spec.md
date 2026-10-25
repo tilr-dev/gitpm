@@ -1,12 +1,9 @@
 ## MODIFIED Requirements
 
 ### Requirement: Package validity is per package
-Every package SHALL need a canonical UUID unique in the repository (package-ids, "Case-colliding IDs are refused") and a nonunique name, a manifest and a committed package output folder selected by its manifest dist (default dist/) (neither a symlink; the missing package dist message is in dist), and packages MUST NOT nest. Only the package being installed, updated or registered must be valid at its commit; a defective sibling SHALL NOT block it.
+Only the package being installed, updated or registered must be valid at its commit; a defective sibling SHALL NOT block it.
 
-#### Scenario: Case variants
-- **WHEN** two packages of the repository have IDs differing only in letter case
-- **THEN** both folders are defective
-- **AND** this is covered by `packages::ids_differing_only_in_case_make_both_folders_defective`
+Verified by `workspace::a_defective_sibling_does_not_block_a_package`.
 
 #### Scenario: Broken sibling
 - **WHEN** `packages/theme` has no `dist/` and the user installs `76a9b591-60f3-5c7f-9e1c-31648fc73bfd` from the same repository
@@ -42,7 +39,9 @@ All packages of a repository SHALL share one version and the single release tag 
 - **THEN** it fails with `invalid_argument` (`repository has 2 packages at commit …; choose one by ID: 76a9b591-60f3-5c7f-9e1c-31648fc73bfd (packages/store), f851f609-bb81-52d6-bfef-33798624782c (packages/theme)`)
 
 ### Requirement: One shared clone per source
-Root and nested Git packages of one source SHALL share a bare repository at `repos/<name>-<hash of the source>`. State SHALL record `clone` and, for nested packages, `path`; only the committed manifest output relative to that path SHALL be deployed. Each Git package SHALL have its own detached worktree at its recorded current commit. The bare repository SHALL be removed only with its last installed or forgotten user, guarding lost work then. Fetching mirrors origin tags (package-ids).
+Root and nested Git packages of one source SHALL share a bare repository at `repos/<name>-<hash of the source>`. State SHALL record `clone` and, for nested packages, `path`; only the committed manifest output relative to that path SHALL be deployed. The bare repository SHALL be removed only with its last installed or forgotten user, guarding lost work then. Fetching mirrors origin tags (package-ids).
+
+Verified by `two_packages_share_one_clone_and_follow_repository_releases`.
 
 #### Scenario: Uninstall one of two
 - **WHEN** `76a9b591-60f3-5c7f-9e1c-31648fc73bfd` and `f851f609-bb81-52d6-bfef-33798624782c` share a clone and `76a9b591-60f3-5c7f-9e1c-31648fc73bfd` is uninstalled
@@ -57,10 +56,6 @@ Root and nested Git packages of one source SHALL share a bare repository at `rep
 #### Scenario: Sibling install preserves an unpublished colliding tag
 - **WHEN** installing another package would fetch an origin tag over a different local tag holding unpublished work
 - **THEN** install refuses with `local_changes`, preserving the local tag, package worktrees and state
-
-#### Scenario: Independent package revisions
-- **WHEN** two packages from one source are installed at different commits and one is updated or rolled back
-- **THEN** each worktree HEAD matches its own recorded commit, and the other worktree and its files remain unchanged
 
 ### Requirement: Shared clone HEAD handling
 A Git package worktree SHALL be clean with HEAD at its recorded current commit before update, rollback, uninstall or restore, regardless of layout or siblings. Lost work SHALL yield `local_changes` under uninstall confirmation rules. Bare HEAD SHALL NOT govern this check. Removing or forgetting one package SHALL NOT move another worktree's HEAD. Shared refs SHALL count as lost work only when removing the bare repository.

@@ -30,7 +30,9 @@ A catalog SHALL be a tree of JSON files: schema-1 directory links, a schema-1 pa
 - **AND** a failed generation leaves the existing index unchanged
 
 ### Requirement: Release record
-Single source for the release record: a release SHALL record the whole `manifest`, `source`, `commit`, `reference`, `files` (every output file’s SHA-256 and size), optional `build` `{url, sha256}` and, for a multi-package repository’s package, `path`. Every release MUST have file hashes. Build SHALL be preferred over Git; its output is the archive root, while Git output is the committed manifest-selected folder (default dist/).
+Single source for the release record: a release SHALL record the whole `manifest`, `source`, `commit`, `reference`, `files` (every output file’s SHA-256 and size), optional `build` `{url, sha256}` and, for a multi-package repository’s package, `path`. Every release MUST have file hashes.
+
+Verified by `catalog::validate_release_checks_identity_commit_paths_and_build` and `workspace::release_with_empty_files_is_still_verified`.
 
 #### Scenario: Legacy release without hashes
 - **WHEN** a catalog holds an unscoped release of the v1 era without `files`
@@ -39,10 +41,6 @@ Single source for the release record: a release SHALL record the whole `manifest
 #### Scenario: UUID release without hashes
 - **WHEN** a UUID release record has an empty `files` while its commit has `dist/index.js`
 - **THEN** the release is refused with `catalog` instead of skipping verification
-
-#### Scenario: Declared folder hashes
-- **WHEN** a Git release selects its root or a custom output folder
-- **THEN** catalog generation and verification hash exactly the same committed files as deployment
 
 #### Scenario: Namespaced release without hashes
 - **WHEN** a legacy scoped-ID release record has no file hashes

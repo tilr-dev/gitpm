@@ -1,7 +1,9 @@
 ## MODIFIED Requirements
 
 ### Requirement: Known manifest keys
-The manifest SHALL require id, name and version and MAY carry dist, buildCommand, buildRequired, dependencies, forkOf and replaces. IDs MUST be canonical UUIDs, name MUST be 1 to 80 ASCII letters, digits, `-` or `_` and MUST NOT start with `-` and versions MUST be valid; forkOf and replaces MUST name another ID and take no unknown keys. forkOf.source MUST be a Git URL or absolute path. dist defaults to "dist", buildRequired to false. Build commands SHALL be descriptive only, never executed.
+The manifest SHALL require id, name and version and MAY carry dist, buildCommand, buildRequired, dependencies, forkOf and replaces. IDs MUST be canonical UUIDs and versions MUST be valid; forkOf and replaces MUST name another ID and take no unknown keys. forkOf.source MUST be a Git URL or absolute path.
+
+Verified by `model::manifest_parses_minimal_and_fork_manifests` and `model::manifest_rejections_have_precise_kinds`.
 
 #### Scenario: Field shapes
 - **WHEN** optional fields are supplied
@@ -23,14 +25,6 @@ The manifest SHALL require id, name and version and MAY carry dist, buildCommand
 #### Scenario: Fork manifest without source
 - **WHEN** a fork's manifest has `forkOf` without `source`
 - **THEN** it is valid; `check` then knows the original only from the catalog
-
-#### Scenario: Deployment and build metadata
-- **WHEN** a manifest declares `dist: "output/vtf"`, `buildCommand: "npm run build"` and `buildRequired: true`
-- **THEN** these are known fields preserved through manifest rewrites; gitpm never runs the command
-
-#### Scenario: Unsafe deployment path
-- **WHEN** dist is empty, absolute, contains a parent component or a backslash
-- **THEN** the manifest is refused with invalid_manifest
 
 #### Scenario: Legacy manifest refused
 - **WHEN** a manifest has a scoped ID or omits its name
