@@ -1347,16 +1347,16 @@ $ gitpm list --provides theme | jq '.resolved[] | {id, title, description, provi
   only when gitpm from the previous public release would misread the change. Bump it as
   a separate step in the release milestone, at most once per release.
 
+  | gitpm | state format |
+  | --- | --- |
+  | Before the first public release | 1: packages under `packages`, Git clones in `repos/` |
+
 - A complete workspace can be copied or moved to another root. Opening it through a
   Manager (for example, `gitpm --root NEW_ROOT sync-dist`) repairs stale Git worktree
   links under the workspace lock, including retained forgotten packages. Read-only
   commands such as `list` read state without repairing links. Repair preserves local
   work and the source workspace; external links and recorded source locations keep
   their existing targets.
-
-  | gitpm | state format |
-  | --- | --- |
-  | Before the first public release | 1: packages under `packages`, Git clones in `repos/` |
 
 ## API overview
 
