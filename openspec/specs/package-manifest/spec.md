@@ -59,16 +59,3 @@ Manifests written by gitpm SHALL be pretty-printed JSON with a trailing newline 
 #### Scenario: Installing a fork changes no consumer
 - **WHEN** a fork with `forkOf` and `replaces` for `vendor/base` is installed
 - **THEN** consumers of `vendor/base` still resolve to `vendor/base` until `replace vendor/base --with FORK` is run
-
-### Requirement: Deployment and build metadata defaults
-dist defaults to "dist", buildRequired to false. Build commands SHALL be descriptive only, never executed.
-
-Verified by `declared_output_fork_preserves_build_metadata_without_running_it` and `declared_output_rejects_invalid_fields`.
-
-#### Scenario: Deployment and build metadata
-- **WHEN** a manifest declares `dist: "output/vtf"`, `buildCommand: "npm run build"` and `buildRequired: true`
-- **THEN** these are known fields preserved through manifest rewrites; gitpm never runs the command
-
-#### Scenario: Unsafe deployment path
-- **WHEN** dist is empty, absolute, contains a parent component or a backslash
-- **THEN** the manifest is refused with invalid_manifest
