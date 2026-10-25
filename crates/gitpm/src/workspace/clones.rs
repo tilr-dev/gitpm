@@ -207,6 +207,21 @@ pub(super) fn place_clone(
     };
     // Reused objects can already exist while origin refs have changed.
     if live.exists() || transport::require_object(&staged, &cloned.commit, custom_ssh).is_err() {
+        let mut overwritten = Vec::new();
+        for item in lost_work::hidden(&staged, false, custom_ssh)? {
+            if let LostWork::UnpublishedTag { name } = &item {
+                let reference = format!("refs/tags/{name}");
+                let local = transport::object_id(&staged, &reference, custom_ssh)?;
+                if transport::verified_object_id(&cloned.repo, &reference, custom_ssh)
+                    .is_ok_and(|incoming| incoming != local)
+                {
+                    overwritten.push(item);
+                }
+            }
+        }
+        if !overwritten.is_empty() {
+            return Err(lost_work::refusal(id, overwritten));
+        }
         fetch_tags(&staged, state, &key, false, custom_ssh)?;
     }
     let worktree = txn.worktree(id, &relative, &cloned.commit, custom_ssh)?;
@@ -258,7 +273,11 @@ pub(super) fn removal(root: &Path, state: &State, id: &str, custom_ssh: bool) ->
     if p.build.is_none() {
         match installed_repo(root, id, p) {
             Ok(worktree) => {
-                lost_work = lost_work::detect(&worktree, Some(&p.current.commit), custom_ssh)?;
+                lost_work = if repo.is_some() {
+                    lost_work::detect(&worktree, Some(&p.current.commit), custom_ssh)?
+                } else {
+                    lost_work::worktree_removal(&worktree, id, &p.current.commit, custom_ssh)?
+                };
             }
             Err(Error::RepositoryNotFound { .. }) => {}
             Err(error) => return Err(error),

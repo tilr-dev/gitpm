@@ -16,8 +16,14 @@ pub(crate) enum Fetch<'a> {
 }
 /// Reachability rules for local HEAD history diagnostics.
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum HeadHistory {
-    Unpublished { exclude_tags: bool },
+pub(crate) enum HeadHistory<'a> {
+    Unpublished {
+        exclude_tags: bool,
+    },
+    /// HEAD commits not retained after removing this package's keep-alive refs.
+    WorktreeRemoval {
+        id: &'a str,
+    },
 }
 
 /// Which paths a commit includes, preserving authoring's staging semantics.
@@ -151,8 +157,12 @@ pub(crate) trait Transport {
     fn refs(&self, repo: &Path, prefix: &str, custom_ssh: bool) -> Result<String>;
     fn unpublished_count(&self, repo: &Path, reference: &str, custom_ssh: bool) -> Result<String>;
     fn stashes(&self, repo: &Path, custom_ssh: bool) -> Result<String>;
-    fn head_history(&self, repo: &Path, selection: HeadHistory, custom_ssh: bool)
-    -> Result<String>;
+    fn head_history(
+        &self,
+        repo: &Path,
+        selection: HeadHistory<'_>,
+        custom_ssh: bool,
+    ) -> Result<String>;
     fn ls_remote(&self, source: &str, custom_ssh: bool, start_error: &str) -> Result<LsRemote>;
     fn ls_remote_refs(&self, source: &str, custom_ssh: bool) -> Result<RemoteRefs>;
     fn http_get(&self, url: &str) -> Result<Option<Vec<u8>>>;
@@ -582,7 +592,7 @@ impl Transport for SystemTransport {
     fn head_history(
         &self,
         repo: &Path,
-        selection: HeadHistory,
+        selection: HeadHistory<'_>,
         custom_ssh: bool,
     ) -> Result<String> {
         // Bound the displayed history while keeping reachability checks exact.
@@ -593,7 +603,18 @@ impl Transport for SystemTransport {
             "HEAD",
             "--not",
         ];
+        let retained;
         match selection {
+            HeadHistory::WorktreeRemoval { id } => {
+                let current = format!("refs/gitpm/{id}/current");
+                let previous = format!("refs/gitpm/{id}/previous");
+                retained = self.refs(repo, "refs/", custom_ssh)?;
+                args.extend(
+                    retained
+                        .lines()
+                        .filter(|name| *name != current && *name != previous),
+                );
+            }
             HeadHistory::Unpublished { exclude_tags } => {
                 args.push("--remotes");
                 if exclude_tags {
@@ -948,7 +969,7 @@ pub(crate) fn stashes(repo: &Path, custom_ssh: bool) -> Result<String> {
 }
 pub(crate) fn head_history(
     repo: &Path,
-    selection: HeadHistory,
+    selection: HeadHistory<'_>,
     custom_ssh: bool,
 ) -> Result<String> {
     backend().head_history(repo, selection, custom_ssh)

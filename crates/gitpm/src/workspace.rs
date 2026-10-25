@@ -2079,17 +2079,26 @@ impl Manager {
                 let transitioning_build = p.build.is_some();
                 if transitioning_build {
                     let mut retained = p.clone();
-                    retained.clone.get_or_insert_with(|| clones::repo_key(&p.source));
+                    retained
+                        .clone
+                        .get_or_insert_with(|| clones::repo_key(&p.source));
                     let relative = retained.clone_folder(id);
                     match source_repo(txn.root(), id, &retained) {
-                        Ok(live) => { txn.repo(&relative, &live)?; },
+                        Ok(live) => {
+                            txn.repo(&relative, &live)?;
+                        }
                         Err(Error::RepositoryNotFound { .. }) => {
                             let scratch = txn.scratch("build-transition");
                             fs::create_dir_all(scratch.parent().unwrap())?;
-                            transport::clone_bare(scratch.parent().unwrap(), &p.source, "build-transition", ssh)?;
+                            transport::clone_bare(
+                                scratch.parent().unwrap(),
+                                &p.source,
+                                "build-transition",
+                                ssh,
+                            )?;
                             lost_work::record_origin_tags(&scratch, ssh)?;
                             txn.add_repo(&relative, &scratch)?;
-                        },
+                        }
                         Err(error) => return Err(error),
                     }
                     state.packages.get_mut(id).unwrap().clone = retained.clone;
@@ -2134,10 +2143,16 @@ impl Manager {
                 let relative = p.clone_folder(id);
                 if !transitioning_build {
                     let live = installed_repo(txn.root(), id, &p)?;
-                    guard_clone(&live, state, id,
+                    guard_clone(
+                        &live,
+                        state,
+                        id,
                         "local commits detected; update would discard them",
-                        "local branches, tags or stash hold unpublished work; keep or remove them before updating",
-                        true, ssh)?;
+                        "local branches, tags or stash hold unpublished work; \
+                         keep or remove them before updating",
+                        true,
+                        ssh,
+                    )?;
                 }
                 let repo = match txn.staged_repo(&relative) {
                     Some(staged) => staged,
@@ -2401,7 +2416,9 @@ impl Manager {
                         )?;
                     }
                     self.check_change(txn, state, id, &build.release.manifest, None)?;
-                    if p.build.is_none() { txn.remove_worktree(id, &p.clone_folder(id))?; }
+                    if p.build.is_none() {
+                        txn.remove_worktree(id, &p.clone_folder(id))?;
+                    }
                     let entry = state.packages.get_mut(id).unwrap();
                     entry.previous = Some(p.current.with_mode(&p.mode));
                     entry.previous_build = p.build.clone();
@@ -2431,9 +2448,16 @@ impl Manager {
                 let relative = p.clone_folder(id);
                 if p.build.is_none() {
                     let worktree = installed_repo(txn.root(), id, &p)?;
-                    guard_clone(&worktree, state, id, "local commits detected",
-                        "local branches, tags or stash hold unpublished work; keep or remove them before rolling back",
-                        false, ssh)?;
+                    guard_clone(
+                        &worktree,
+                        state,
+                        id,
+                        "local commits detected",
+                        "local branches, tags or stash hold unpublished work; \
+                         keep or remove them before rolling back",
+                        false,
+                        ssh,
+                    )?;
                 }
                 let live = source_repo(txn.root(), id, &p)?;
                 // The previous commit can be gone: pruned after the origin deleted or moved
@@ -8142,6 +8166,38 @@ mod tests {
     }
 
     #[test]
+    fn sibling_install_preserves_an_unpublished_colliding_tag() {
+        let mono = Mono::new();
+        let m = mono.open();
+        m.install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
+            .unwrap();
+        let checkout = mono.root.join("worktrees/tilr/store");
+        fixture_git(&checkout, &["commit", "--allow-empty", "-m", "local only"]);
+        let local = fixture_git(&checkout, &["rev-parse", "HEAD"]);
+        fixture_git(&checkout, &["tag", "-f", "tilr/theme@1.0.0"]);
+        let recorded = m.state().unwrap().packages["tilr/store"]
+            .current
+            .commit
+            .clone();
+        fixture_git(&checkout, &["checkout", "--detach", &recorded]);
+        let state = fs::read(mono.root.join("state.json")).unwrap();
+        assert_eq!(
+            m.install_package(mono.source(), Some("tilr/theme"), InstallTarget::Release)
+                .unwrap_err()
+                .kind(),
+            "local_changes"
+        );
+        assert_eq!(
+            fixture_git(
+                &mono.clone_dir(),
+                &["rev-parse", "refs/tags/tilr/theme@1.0.0"]
+            ),
+            local
+        );
+        assert_eq!(fs::read(mono.root.join("state.json")).unwrap(), state);
+    }
+
+    #[test]
     fn origin_tags_are_read_from_the_origin_never_from_local_tags() {
         let mono = Mono::new();
         fixture_git(&mono.repo, &["tag", "extra"]);
@@ -8175,8 +8231,8 @@ mod tests {
             ],
         );
         // The clone goes with its last package: its plan lists the hand-made tag.
-        let theme = m.uninstall_plan("tilr/theme").unwrap();
-        m.uninstall("tilr/theme", &theme.lost_work, false).unwrap();
+        assert!(m.uninstall_plan("tilr/theme").unwrap().lost_work.is_empty());
+        m.uninstall("tilr/theme", &[], false).unwrap();
         let plan = m.uninstall_plan("tilr/store").unwrap();
         assert!(
             plan.lost_work.contains(&LostWork::UnpublishedTag {

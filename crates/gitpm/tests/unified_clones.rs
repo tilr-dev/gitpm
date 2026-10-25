@@ -289,3 +289,32 @@ fn missing_bare_preserves_orphan_worktree_on_removal() {
         assert!(!manager.state().unwrap().packages.contains_key("acme/root"));
     }
 }
+
+#[test]
+fn reinstall_preserves_orphan_worktree_after_missing_bare() {
+    let dir = TempDir::new();
+    let source = scaffold::init(&dir.path().join("source"), "acme", "root")
+        .unwrap()
+        .repo;
+    let root = dir.path().join("workspace");
+    let manager = Manager::open(&root).unwrap();
+    manager.install(source.to_str().unwrap()).unwrap();
+    let record = manager.state().unwrap().packages["acme/root"].clone();
+    let checkout = root.join("worktrees/acme/root");
+    fs::write(checkout.join("scratch.txt"), "keep my work").unwrap();
+    fs::remove_dir_all(root.join("repos").join(record.clone.unwrap())).unwrap();
+    manager.uninstall("acme/root", &[], false).unwrap();
+    let state = fs::read(root.join("state.json")).unwrap();
+    let error = manager.install(source.to_str().unwrap()).unwrap_err();
+    assert_eq!(error.kind(), "workspace");
+    assert!(
+        error
+            .to_string()
+            .contains("exists but is not a package worktree")
+    );
+    assert_eq!(
+        fs::read(checkout.join("scratch.txt")).unwrap(),
+        b"keep my work"
+    );
+    assert_eq!(fs::read(root.join("state.json")).unwrap(), state);
+}

@@ -291,6 +291,11 @@ impl Txn {
         let admin = bare.join("worktrees").join(worktree_admin(id));
         if !self.is_staged(&relative) {
             let live = self.root.join(&relative);
+            if present(&live) && !admin.is_dir() {
+                return Err(Error::Workspace(format!(
+                    "{relative} exists but is not a package worktree"
+                )));
+            }
             if present(&live) && admin.is_dir() {
                 copy_tree(&live, &staged, true)?;
                 bind_worktree(&self.root, &staged, &admin)?;

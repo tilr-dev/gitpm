@@ -13,23 +13,31 @@ Root and nested Git packages of one source SHALL share a bare repository at `rep
 - **THEN** the transition reuses that clone without checking out or moving a sibling worktree; only the affected package worktree is guarded
 - **AND** a successful transition records the shared clone key and preserves the sibling and its deployed output
 
+#### Scenario: Sibling install preserves an unpublished colliding tag
+- **WHEN** installing another package would fetch an origin tag over a different local tag holding unpublished work
+- **THEN** install refuses with `local_changes`, preserving the local tag, package worktrees and state
+
 #### Scenario: Independent package revisions
 - **WHEN** two packages from one source are installed at different commits and one is updated or rolled back
 - **THEN** each worktree HEAD matches its own recorded commit, and the other worktree and its files remain unchanged
 
 
 ### Requirement: Shared clone HEAD handling
-A Git package worktree SHALL be clean and its HEAD SHALL equal the package's recorded current commit before update, rollback, uninstall or restore, regardless of root or nested layout and regardless of other packages or tags. Lost work SHALL produce `local_changes` under the existing confirmation rules for uninstall. The bare repository SHALL never be checked out; its HEAD SHALL NOT govern a package's local-work check. Removing or forgetting one package SHALL NOT move another worktree's HEAD.
+A Git package worktree SHALL be clean and its HEAD SHALL equal the package's recorded current commit before update, rollback, uninstall or restore, regardless of root or nested layout and regardless of other packages or tags. Lost work SHALL produce `local_changes` under the existing confirmation rules for uninstall. The bare repository SHALL never be checked out; its HEAD SHALL NOT govern a package's local-work check. Removing or forgetting one package SHALL NOT move another worktree's HEAD. When other users retain the bare repository, uninstall SHALL report worktree file changes, moved HEAD, and HEAD commits unreachable from surviving refs after removing this package's keep-alive refs; shared branches, tags and stash SHALL count only when the bare repository is removed.
 
-#### Scenario: Sole user's HEAD is at another tagged commit
+#### Scenario: Moved worktree HEAD refuses even at a tagged commit
 - **WHEN** the affected worktree HEAD differs from its recorded commit, even at another package revision or a tagged commit
 - **THEN** update, rollback and unconfirmed uninstall refuse with `local_changes` listing `HeadMoved`
+
+#### Scenario: Shared refs survive one package removal
+- **WHEN** a clean worktree at its recorded commit is uninstalled while another package retains the bare repository
+- **THEN** surviving shared refs require no confirmation, and only HEAD commits not retained by refs other than the removed package's keep-alive refs are listed as unpublished commits
 
 #### Scenario: Dirty package worktree
 - **WHEN** a root or nested Git package worktree contains staged, unstaged or untracked changes
 - **THEN** update, rollback and unconfirmed uninstall refuse with `local_changes` for that package
 
-#### Scenario: HEAD moves to a remaining package
+#### Scenario: Removing a package preserves remaining worktree HEADs
 - **WHEN** one package from a shared bare repository is removed or forgotten
 - **THEN** remaining worktrees retain their own HEAD and bytes
 
@@ -37,7 +45,7 @@ A Git package worktree SHALL be clean and its HEAD SHALL equal the package's rec
 - **WHEN** a build retains a previous Git revision for offline rollback
 - **THEN** the bare repository protects that revision with a keep-alive ref and no package worktree is retained; bare HEAD does not participate in the local-work guard
 
-#### Scenario: Several users permit a tagged HEAD
+#### Scenario: Sibling revisions do not exempt a moved worktree HEAD
 - **WHEN** a source has several package worktrees and one worktree HEAD moves to another tagged commit
 - **THEN** operations guarding that package refuse with `local_changes` listing `HeadMoved`, even when another package records that commit
 
