@@ -70,12 +70,12 @@ Root and nested Git packages of one source SHALL share `repos/<name>-<hash of th
 ### Requirement: Shared clone HEAD handling
 With one installed or forgotten user, HEAD SHALL count as moved when it differs from that user's recorded Git revision, even if tagged. With several users, HEAD SHALL count as moved only when it is neither a user's recorded current revision nor a tagged commit. Root and nested packages SHALL follow the same rule. Removal or forgetting SHALL move HEAD to a remaining installed package, preserving working-tree changes or refusing with `local_changes` on conflict.
 
-#### Scenario: HEAD moves to a remaining package
+#### Scenario: Removing a package preserves remaining worktree HEADs
 - **WHEN** the clone's HEAD is at `tilr/store`'s revision and `tilr/store` is uninstalled
 - **THEN** HEAD moves to `tilr/theme`'s installed revision, keeping working-tree changes or refusing with `local_changes` if they conflict
 - **AND** this is covered by `removing_a_package_moves_the_shared_head_to_a_remaining_one`
 
-#### Scenario: Sole user's HEAD is at another tagged commit
+#### Scenario: Moved worktree HEAD refuses even at a tagged commit
 - **WHEN** a root or nested package is the clone's only installed or forgotten user and HEAD differs from its recorded Git revision, even at another tagged commit
 - **THEN** an operation guarding that clone refuses with `local_changes` and reports `HeadMoved`
 
@@ -84,7 +84,7 @@ With one installed or forgotten user, HEAD SHALL count as moved when it differs 
 - **THEN** HEAD at that previous Git revision does not count as moved, even if its tag was removed
 - **AND** HEAD at another commit counts as moved, even if that commit is tagged
 
-#### Scenario: Several users permit a tagged HEAD
+#### Scenario: Sibling revisions do not exempt a moved worktree HEAD
 - **WHEN** a clone has several installed or forgotten users and HEAD is a user's recorded current revision or a tagged commit
 - **THEN** HEAD does not count as moved
 
