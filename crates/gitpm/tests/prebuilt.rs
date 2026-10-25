@@ -139,7 +139,7 @@ impl Fixture {
             },
             source: self.dir.join("unavailable-source").to_string_lossy().into(),
             commit: sha(version.as_bytes())[..40].into(),
-            reference: format!("{ID}@{version}"),
+            reference: format!("v{version}"),
             files: BTreeMap::from([(
                 "index.js".into(),
                 FileDigest {
@@ -368,7 +368,7 @@ fn git(repo: &std::path::Path, args: &[&str]) -> String {
 fn build_can_switch_to_git_and_rollback_in_both_directions() {
     for target in [
         gitpm::Target::Dev,
-        gitpm::Target::Ref(format!("{ID}@1.0.0")),
+        gitpm::Target::Ref("v1.0.0".into()),
         gitpm::Target::Release,
     ] {
         let mut f = Fixture::new(true);
@@ -385,7 +385,7 @@ fn build_can_switch_to_git_and_rollback_in_both_directions() {
         let mut release = catalog::register_build(
             f.catalog.to_str().unwrap(),
             repo.to_str().unwrap(),
-            &format!("{ID}@1.0.0"),
+            "v1.0.0",
             Some(Build {
                 url: format!(
                     "{}/1.0.0.tar.gz",
@@ -441,7 +441,7 @@ fn git_release_without_build_remains_a_git_install() {
     let release = catalog::register(
         f.catalog.to_str().unwrap(),
         repo.to_str().unwrap(),
-        &format!("{ID}@1.0.0"),
+        "v1.0.0",
     )
     .unwrap();
     f.write_release(&release);
@@ -541,7 +541,7 @@ fn publish_repo(f: &Fixture, repo: &std::path::Path, id: &str, version: &str) ->
     let mut release = catalog::register_build(
         f.catalog.to_str().unwrap(),
         repo.to_str().unwrap(),
-        &format!("{id}@{version}"),
+        &format!("v{version}"),
         Some(Build {
             url: format!("{}{name}", f.server.url.replace("http://", "https://")),
             sha256: sha(&bytes),
@@ -603,12 +603,7 @@ fn catalog_updates_can_alternate_git_and_build_revisions() {
     let m = f.manager();
     m.install_from_catalog(ID, None).unwrap();
     gitpm::scaffold::commit(&app, "1.1.0").unwrap();
-    catalog::register(
-        f.catalog.to_str().unwrap(),
-        app.to_str().unwrap(),
-        &format!("{ID}@1.1.0"),
-    )
-    .unwrap();
+    catalog::register(f.catalog.to_str().unwrap(), app.to_str().unwrap(), "v1.1.0").unwrap();
     m.update(ID).unwrap();
     assert!(m.state().unwrap().packages[ID].build.is_none());
     // Protect the Git install before publishing another build, so updates follow this catalog.
@@ -648,12 +643,7 @@ fn catalog_updates_can_alternate_git_and_build_revisions() {
     assert_eq!(fs::read(f.root.join("state.json")).unwrap(), before);
     assert_eq!(git(&clone, &["status", "--porcelain"]), "?? work.txt");
     gitpm::scaffold::commit(&app, "1.3.0").unwrap();
-    catalog::register(
-        f.catalog.to_str().unwrap(),
-        app.to_str().unwrap(),
-        &format!("{ID}@1.3.0"),
-    )
-    .unwrap();
+    catalog::register(f.catalog.to_str().unwrap(), app.to_str().unwrap(), "v1.3.0").unwrap();
     assert_eq!(m.update(ID).unwrap_err().kind(), "local_changes");
     assert_eq!(fs::read(clone.join("work.txt")).unwrap(), b"keep");
     assert!(!m.uninstall_plan(ID).unwrap().lost_work.is_empty());
@@ -841,7 +831,6 @@ fn check_sibling_local_work(forgotten: bool) {
     fs::write(repo.join("apps/lib/dist/index.js"), "sibling").unwrap();
     fs::write(repo.join("gitpm.json"), r#"{"packages":["apps/*"]}"#).unwrap();
     gitpm::scaffold::commit_package(&repo, "2.0.0", Some(ID)).unwrap();
-    git(&repo, &["tag", "acme/lib@1.0.0"]);
     m.install_package(
         repo.to_str().unwrap(),
         Some("acme/lib"),
@@ -862,8 +851,8 @@ fn check_sibling_local_work(forgotten: bool) {
     assert_eq!(
         m.update_with(
             ID,
-            gitpm::Target::Ref(format!("{ID}@1.0.0")),
-            gitpm::UpdateOptions { detach: true }
+            gitpm::Target::Ref("v1.0.0".into()),
+            gitpm::UpdateOptions { detach: true },
         )
         .unwrap_err()
         .kind(),
@@ -877,7 +866,7 @@ fn check_sibling_local_work(forgotten: bool) {
     git(&clone, &["tag", "-d", "local-work"]);
     m.update_with(
         ID,
-        gitpm::Target::Ref(format!("{ID}@1.0.0")),
+        gitpm::Target::Ref("v1.0.0".into()),
         gitpm::UpdateOptions { detach: true },
     )
     .unwrap();
@@ -911,7 +900,7 @@ fn retained_clone_can_leave_a_build_whose_commit_is_gone_upstream() {
     catalog::register(
         f.catalog.to_str().unwrap(),
         repo.to_str().unwrap(),
-        &format!("{ID}@1.0.0"),
+        "v1.0.0",
     )
     .unwrap();
     let root_file = f.catalog.join("catalog.json");
@@ -931,18 +920,18 @@ fn retained_clone_can_leave_a_build_whose_commit_is_gone_upstream() {
         first
     );
     // A retained Git revision remains safe even when no tag names its commit.
-    git(&clone, &["tag", "-d", "acme/widget@1.0.0"]);
+    git(&clone, &["tag", "-d", "v1.0.0"]);
     let plan = m.uninstall_plan(ID).unwrap();
     assert!(plan.lost_work.is_empty(), "{:?}", plan.lost_work);
     // Replace the origin history after A with C, removing build commit B entirely.
     git(&repo, &["reset", "--hard", &first]);
     gitpm::scaffold::commit(&repo, "3.0.0").unwrap();
-    git(&repo, &["tag", "-d", "acme/widget@2.0.0"]);
+    git(&repo, &["tag", "-d", "v2.0.0"]);
     git(&repo, &["reflog", "expire", "--expire=now", "--all"]);
     git(&repo, &["gc", "--prune=now"]);
     m.update_with(
         ID,
-        gitpm::Target::Ref("acme/widget@3.0.0".into()),
+        gitpm::Target::Ref("v3.0.0".into()),
         gitpm::UpdateOptions::default(),
     )
     .unwrap();
@@ -974,7 +963,7 @@ fn releasing_last_retained_clone_refuses_unpublished_work() {
     catalog::register(
         f.catalog.to_str().unwrap(),
         repo.to_str().unwrap(),
-        &format!("{ID}@1.0.0"),
+        "v1.0.0",
     )
     .unwrap();
     let root_file = f.catalog.join("catalog.json");
@@ -1024,7 +1013,7 @@ fn retained_build_transition_refuses_unpublished_tags() {
         catalog::register(
             f.catalog.to_str().unwrap(),
             repo.to_str().unwrap(),
-            &format!("{ID}@1.0.0"),
+            "v1.0.0",
         )
         .unwrap();
         let root_file = f.catalog.join("catalog.json");
@@ -1056,7 +1045,7 @@ fn retained_build_transition_refuses_unpublished_tags() {
         catalog::register(
             f.catalog.to_str().unwrap(),
             repo.to_str().unwrap(),
-            &format!("{ID}@3.0.0"),
+            "v3.0.0",
         )
         .unwrap();
         let before = fs::read(f.root.join("state.json")).unwrap();
@@ -1066,7 +1055,7 @@ fn retained_build_transition_refuses_unpublished_tags() {
             } else {
                 m.update_with(
                     ID,
-                    gitpm::Target::Ref(format!("{ID}@3.0.0")),
+                    gitpm::Target::Ref("v3.0.0".to_owned()),
                     gitpm::UpdateOptions { detach: true },
                 )
             }

@@ -45,7 +45,7 @@ def uninstall_clean_removes_only_selected(t: T):
 def namespace_directory_is_refused(t: T):
     """2. uninstall of the namespace `dan`, without and with --force, is rejected as an
     invalid ID; siblings, author repositories and the catalog survive."""
-    t.gitpm_ok("register", t.repo(A), "--ref", "dan/a@0.1.1")
+    t.gitpm_ok("register", t.repo(A), "--ref", "v0.1.1")
     before = t.snap(t.ws, t.root / "repos", t.catalog, git=True)
     for extra in [[], ["--force"]]:
         t.gitpm_err("uninstall", "dan", *extra, kind="invalid_id", contains="namespace/name")

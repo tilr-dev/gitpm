@@ -601,7 +601,8 @@ Workspace (installed packages):",
     },
     Help {
         commands: &["check"],
-        text: "  check                            compare installed versions with the catalog or each origin",
+        text: "  check [--no-catalog]             compare with catalog data, or shallow origin snapshots
+                                   --no-catalog forces origin checks for Git packages",
     },
     Help {
         commands: &["update"],
@@ -684,18 +685,20 @@ Authoring:",
     },
     Help {
         commands: &["init"],
-        text: "  init NAMESPACE/NAME --into DIR   create the package with release 0.1.0:
+        text: "  init NAMESPACE/NAME --into DIR   create a package (0.1.0 in a new repository):
                                    a new DIR becomes a single-package repository; a
                                    repository DIR with gitpm.json (or without one and no
-                                   root package) gets the folder PREFIX/NAME
+                                   root package) gets PREFIX/NAME at the repository
+                                   version, without creating a release tag
     [--multi] [--no-release]       --multi: a new (or empty) DIR becomes a multi-package
                                    repository (gitpm.json, packages/NAME); --no-release:
                                    commit only, no tag (release later with commit)",
     },
     Help {
         commands: &["commit"],
-        text: "  commit REPO VERSION              stage ALL changes, commit, create a release tag;
-    [--package ID]                 --package picks the package of a multi-package repo",
+        text: "  commit REPO VERSION              set ALL package versions, stage ALL changes,
+                                   commit and create one vVERSION release tag;
+    [--package ID]                 --package picks only the package ID in the result",
     },
     Help {
         commands: &["remote"],
@@ -825,6 +828,7 @@ fn run(invocation: &mut Invocation) -> Result<()> {
     let provides = option(&mut args, "--provides")?;
     let multi = flag(&mut args, "--multi")?;
     let no_release = flag(&mut args, "--no-release")?;
+    let no_catalog = flag(&mut args, "--no-catalog")?;
     let force = flag(&mut args, "--force")?;
     let dry_run = flag(&mut args, "--dry-run")?;
     let dev = flag(&mut args, "--dev")?;
@@ -836,6 +840,11 @@ fn run(invocation: &mut Invocation) -> Result<()> {
         bail!("unknown option: {unknown}; use --help");
     }
     let command = args[0].as_str();
+    ensure!(
+        !no_catalog || command == "check",
+        "--no-catalog requires check"
+    );
+    let catalog_location = if no_catalog { None } else { catalog_location };
     ensure!(
         COMMANDS.contains(&command),
         "unknown command: {command}; use --help"
@@ -1080,6 +1089,17 @@ fn run(invocation: &mut Invocation) -> Result<()> {
                 None => String::new(),
                 Some(_) => format!(" --package {id}"),
             };
+            let package_version = &created.version;
+            let next_version = if created.new_repository {
+                "0.1.1"
+            } else {
+                "NEW_VERSION"
+            };
+            let first_version = if created.new_repository {
+                "0.1.0"
+            } else {
+                "NEW_VERSION"
+            };
             let version = match &created.tag {
                 Some(tag) => format!("Git commit and tag {tag}"),
                 None => "Git commit, no release tag yet".to_owned(),
@@ -1087,19 +1107,21 @@ fn run(invocation: &mut Invocation) -> Result<()> {
             let install = match &created.tag {
                 Some(_) => String::new(),
                 None => {
-                    format!("  gitpm commit {source} 0.1.0{package}   release the first version\n")
+                    format!(
+                        "  gitpm commit {source} {first_version}{package}   release all repository packages\n"
+                    )
                 }
             };
             match &created.folder {
                 None => println!(
-                    "\nCreated: {}\nID: {id}\nVersion 0.1.0: {version}.\nEdit: {}/dist/index.js\n\nInstall:\n{install}  gitpm --root {root} install {source}\n\nNew release after editing:\n  gitpm commit {source} 0.1.1\n\nGit uses your configured identity; if there is none, the repository gets a local\nPackage Demo <demo@example.invalid>.",
+                    "\nCreated: {}\nID: {id}\nVersion {package_version}: {version}.\nEdit: {}/dist/index.js\n\nInstall:\n{install}  gitpm --root {root} install {source}\n\nNew release after editing:\n  gitpm commit {source} {next_version}\n\nGit uses your configured identity; if there is none, the repository gets a local\nPackage Demo <demo@example.invalid>.",
                     created.repo.display(),
                     created.repo.display()
                 ),
                 Some(folder) => {
                     let path = created.repo.join(folder);
                     println!(
-                        "\nCreated: {}\nID: {id}\nVersion 0.1.0: {version} (only gitpm.json and this folder are committed).\nEdit: {}/dist/index.js\n\nInstall:\n{install}  gitpm --root {root} install {source} {id}\n\nNew release after editing (stages ALL changes of the repository):\n  gitpm commit {source} 0.1.1{package}",
+                        "\nCreated: {}\nID: {id}\nVersion {package_version}: {version} (only gitpm.json and this folder are committed).\nEdit: {}/dist/index.js\n\nInstall:\n{install}  gitpm --root {root} install {source} {id}\n\nNew release after editing (stages ALL changes of the repository):\n  gitpm commit {source} {next_version}{package}",
                         path.display(),
                         path.display()
                     );
@@ -1114,11 +1136,15 @@ fn run(invocation: &mut Invocation) -> Result<()> {
             return Ok(());
         }
         "check" => {
-            let report = check::check_with_options(
-                Path::new(&root),
-                catalog_location.as_deref(),
-                &ssh_options,
-            )?;
+            let report = if no_catalog {
+                check::check_without_catalog(Path::new(&root), &ssh_options)?
+            } else {
+                check::check_with_options(
+                    Path::new(&root),
+                    catalog_location.as_deref(),
+                    &ssh_options,
+                )?
+            };
             if report.rows.is_empty() {
                 println!("No packages installed in workspace {root}.");
                 return Ok(());
@@ -1214,12 +1240,9 @@ fn run(invocation: &mut Invocation) -> Result<()> {
             println!(
                 "forkOf records each origin; replaces says the fork can stand in for it (used only\nafter an explicit replace). The original installations are unchanged.\n\nNext steps (choose the packages to install and replace):"
             );
-            for package in &fork.packages {
-                println!(
-                    "  gitpm commit {quoted} NEW_VERSION --package {}   commit local edits, tag {}@NEW_VERSION",
-                    package.id, package.id
-                );
-            }
+            println!(
+                "  gitpm commit {quoted} NEW_VERSION   commit local edits, release all packages with tag vNEW_VERSION"
+            );
             for package in &fork.packages {
                 println!("  gitpm install {quoted} {}", package.id);
             }

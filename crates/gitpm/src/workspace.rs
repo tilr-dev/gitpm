@@ -289,7 +289,7 @@ pub struct RevisionChange {
     /// a new MINOR; see [`crate::deps::is_major`]): a breaking update.
     pub major: bool,
     /// Metadata keys of the new manifest with the wrong type, ignored; for a package
-    /// that stays in release mode, a moved (`release tag ID@V now points to COMMIT; the
+    /// that stays in release mode, a moved (`release tag vV now points to COMMIT; the
     /// installed commit is kept`) or deleted (`installed release ID@V no longer exists
     /// on the origin`) installed release tag. The caller should show them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -325,7 +325,7 @@ fn release_tag_warning(
     found: &releases::Discovery,
     custom_ssh: bool,
 ) -> Option<String> {
-    let tag = identity::release_tag(id, &current.version);
+    let tag = identity::release_tag(&current.version);
     let short = |commit: &str| commit[..commit.len().min(12)].to_owned();
     if let Some(release) = found
         .tags
@@ -349,7 +349,8 @@ fn release_tag_warning(
         ));
     }
     Some(format!(
-        "installed release {tag} no longer exists on the origin"
+        "installed release {id}@{} no longer exists on the origin",
+        current.version
     ))
 }
 /// The original `id` replaces now when `manifest` (a newer revision of `id`) no longer
@@ -988,8 +989,8 @@ impl Manager {
     /// Install `target` of a Git source and record its mode: the newest release, a ref
     /// resolved against the origin (a tag or commit pins, an origin branch is
     /// followed) or the origin's default branch (its name is recorded). A repository
-    /// with a `gitpm.json` listing several packages needs `package` (unless the ref is
-    /// an `ID@VERSION` tag); for a single-package repository a given `package` must
+    /// with a `gitpm.json` listing several packages needs `package`;
+    /// for a single-package repository a given `package` must
     /// match. An install is a [`Manager::download`] plus enabling the package and the
     /// dependencies it downloaded, in one transaction: a dependency that only a disabled
     /// package provides refuses with [`Error::DependencyConflict`] ("DEP is disabled;
@@ -2330,7 +2331,7 @@ impl Manager {
                 // at another commit; when it is the moved release tag of that version, say so.
                 if let Target::Ref(reference) = &target
                     && m.version == p.current.version
-                    && *reference == identity::release_tag(id, &m.version)
+                    && *reference == identity::release_tag(&m.version)
                 {
                     warnings.push(format!(
                         "release tag {reference} now points to {}",
@@ -3264,7 +3265,7 @@ fn clone_revision(txn: &Txn, fetch: &Fetch, name: &str, custom_ssh: bool) -> Res
                 if found.skipped.is_empty() {
                     fail!(
                         NoReleases,
-                        "{id} has only pre-release tags; install one by ref ({id}@VERSION)"
+                        "{id} has only pre-release tags; install one by ref (vVERSION)"
                     );
                 }
                 fail!(
@@ -3283,11 +3284,7 @@ fn clone_revision(txn: &Txn, fetch: &Fetch, name: &str, custom_ssh: bool) -> Res
             (latest.commit, Mode::Release)
         }
     };
-    // An `ID@VERSION` tag names its package.
-    let package = fetch.package.or(match fetch.target {
-        FetchTarget::Ref(reference) => packages::tag_id(reference),
-        _ => None,
-    });
+    let package = fetch.package;
     let found = packages::find_at_with_ssh(&repo, &commit, package, custom_ssh)?;
     if fetch.expected.is_some() {
         ensure!(
@@ -4728,7 +4725,7 @@ mod tests {
             .install_package(
                 ws.author.source(),
                 None,
-                InstallTarget::Ref("dan/demo1@0.1.0".into()),
+                InstallTarget::Ref("v0.1.0".into()),
             )
             .unwrap();
         assert_eq!(
@@ -4813,7 +4810,7 @@ mod tests {
             manifest: make_manifest("dan/other", "9.9.9"),
             source: other.source().into(),
             commit: other.head(),
-            reference: "dan/other@9.9.9".into(),
+            reference: "v9.9.9".into(),
             files: catalog::hash_files(&other.path.join("dist")).unwrap(),
             build: None,
             path: None,
@@ -4835,7 +4832,7 @@ mod tests {
             manifest: make_manifest("dan/other", "0.1.0"),
             source: other.source().into(),
             commit: other.head(),
-            reference: "dan/other@0.1.0".into(),
+            reference: "v0.1.0".into(),
             files,
             build: None,
             path: None,
@@ -4909,9 +4906,9 @@ mod tests {
         let ws = Ws::new(id);
         let catalog_dir = ws.dir.join("catalog");
         let location = catalog_dir.to_str().unwrap().to_owned();
-        catalog::register(&location, ws.author.source(), "dan/demo1@0.1.0").unwrap();
+        catalog::register(&location, ws.author.source(), "v0.1.0").unwrap();
         ws.author.release("0.2.0");
-        catalog::register(&location, ws.author.source(), "dan/demo1@0.2.0").unwrap();
+        catalog::register(&location, ws.author.source(), "v0.2.0").unwrap();
         // A verified catalog records `catalog`, which restore keeps.
         crate::test_support::verify_catalog(&catalog_dir);
         let m = Manager::open_with(
@@ -4945,29 +4942,23 @@ mod tests {
         // A protected package follows a ref only once detached.
         m.update_with(
             id,
-            Target::Ref("dan/demo1@0.1.0".into()),
+            Target::Ref("v0.1.0".into()),
             UpdateOptions { detach: true },
         )
         .unwrap();
         m.forget(id).unwrap();
-        fixture_git(
-            &ws.repo(),
-            &["checkout", "-q", "--detach", "dan/demo1@0.2.0"],
-        );
+        fixture_git(&ws.repo(), &["checkout", "-q", "--detach", "v0.2.0"]);
         let error = ws.refuses("local_changes", || m.restore(id));
         assert!(
             matches!(&error, Error::LocalChanges { items, .. }
                 if matches!(items.as_slice(), [LostWork::HeadMoved { .. }])),
             "{error:?}"
         );
-        fixture_git(
-            &ws.repo(),
-            &["checkout", "-q", "--detach", "dan/demo1@0.1.0"],
-        );
+        fixture_git(&ws.repo(), &["checkout", "-q", "--detach", "v0.1.0"]);
         let restored = m.restore(id).unwrap();
         assert_eq!(restored.dist.deployed, [id]);
         let p = &m.state().unwrap().packages[id];
-        assert_eq!(p.mode, Mode::Pinned("dan/demo1@0.1.0".into()));
+        assert_eq!(p.mode, Mode::Pinned("v0.1.0".into()));
         assert_eq!(p.current.version, "0.1.0");
         assert!(p.enabled && p.catalog.is_none());
         assert!(ws.dist().join("index.js").is_file());
@@ -5138,7 +5129,7 @@ mod tests {
             "0.1.0"
         );
         // Named explicitly, it is installed (a tag ref pins).
-        let tag = identity::release_tag(id, "1.3.0-beta.1");
+        let tag = identity::release_tag("1.3.0-beta.1");
         let change = m.update_to(id, Target::Ref(tag.clone())).unwrap();
         assert_eq!(change.to.version, "1.3.0-beta.1");
         assert!(
@@ -5162,7 +5153,7 @@ mod tests {
         // The track ends at the newest release, which may be past its own version.
         let (ws, m) = Ws::installed(id);
         ws.author.release("1.3.0-beta.1");
-        m.update_to(id, Target::Ref(identity::release_tag(id, "1.3.0-beta.1")))
+        m.update_to(id, Target::Ref(identity::release_tag("1.3.0-beta.1")))
             .unwrap();
         ws.author.release("1.3.0-beta.2");
         m.update_to(id, Target::Release).unwrap();
@@ -5179,7 +5170,7 @@ mod tests {
         // update all follows the track of an installed pre-release as well.
         let (ws, m) = Ws::installed(id);
         ws.author.release("2.0.0-rc.1");
-        m.update_to(id, Target::Ref(identity::release_tag(id, "2.0.0-rc.1")))
+        m.update_to(id, Target::Ref(identity::release_tag("2.0.0-rc.1")))
             .unwrap();
         m.update_to(id, Target::Release).unwrap();
         ws.author.release("2.0.0-rc.2");
@@ -5188,7 +5179,7 @@ mod tests {
         assert_eq!(plan.updates[0].to.version, "2.0.0-rc.2", "{plan:?}");
         // A repository with pre-release tags only has nothing to install implicitly.
         let beta = ws.other_author("beta", "dan/beta");
-        fixture_git(&beta.path, &["tag", "-d", "dan/beta@0.1.0"]);
+        fixture_git(&beta.path, &["tag", "-d", "v0.1.0"]);
         beta.release("1.0.0-beta.1");
         let error = ws.refuses("no_releases", || m.install(beta.source()));
         assert!(error.to_string().contains("only pre-release"), "{error}");
@@ -5196,7 +5187,7 @@ mod tests {
             .install_package(
                 beta.source(),
                 None,
-                InstallTarget::Ref(identity::release_tag("dan/beta", "1.0.0-beta.1")),
+                InstallTarget::Ref(identity::release_tag("1.0.0-beta.1")),
             )
             .unwrap();
         assert_eq!(installed.current.version, "1.0.0-beta.1");
@@ -5327,7 +5318,7 @@ mod tests {
         assert_eq!(change.to.commit, pinned);
         assert_eq!(change.warnings.len(), 1, "{:?}", change.warnings);
         assert!(
-            change.warnings[0].starts_with("release tag dan/demo1@0.1.0 now points to "),
+            change.warnings[0].starts_with("release tag v0.1.0 now points to "),
             "{:?}",
             change.warnings
         );
@@ -5338,19 +5329,16 @@ mod tests {
     fn explicit_ref_to_the_moved_installed_tag_is_accepted() {
         let (ws, m) = Ws::installed("dan/demo1");
         let moved = same_version_commit(&ws.author);
-        fixture_git(&ws.author.path, &["tag", "-f", "dan/demo1@0.1.0"]);
+        fixture_git(&ws.author.path, &["tag", "-f", "v0.1.0"]);
         let change = m
-            .update_to("dan/demo1", Target::Ref("dan/demo1@0.1.0".into()))
+            .update_to("dan/demo1", Target::Ref("v0.1.0".into()))
             .unwrap();
         assert!(change.changed);
         assert_eq!(change.to.commit, moved);
-        assert_eq!(change.mode, Mode::Pinned("dan/demo1@0.1.0".into()));
+        assert_eq!(change.mode, Mode::Pinned("v0.1.0".into()));
         assert_eq!(
             change.warnings,
-            [format!(
-                "release tag dan/demo1@0.1.0 now points to {}",
-                &moved[..12]
-            )]
+            [format!("release tag v0.1.0 now points to {}", &moved[..12])]
         );
     }
 
@@ -5359,37 +5347,34 @@ mod tests {
         let (ws, m) = Ws::installed("dan/demo1");
         ws.author.release("0.1.1");
         let original = ws.author.release("0.1.2");
-        m.update_to("dan/demo1", Target::Ref("dan/demo1@0.1.1".into()))
+        m.update_to("dan/demo1", Target::Ref("v0.1.1".into()))
             .unwrap();
-        assert_eq!(
-            resolve_ref(&ws.repo(), "dan/demo1@0.1.2", false).unwrap(),
-            original
-        );
+        assert_eq!(resolve_ref(&ws.repo(), "v0.1.2", false).unwrap(), original);
         let moved = same_version_commit(&ws.author);
-        fixture_git(&ws.author.path, &["tag", "-f", "dan/demo1@0.1.2"]);
+        fixture_git(&ws.author.path, &["tag", "-f", "v0.1.2"]);
         // The explicit ref pinned it: back to releases, or to the moved tag, both take
         // the tag where it is now.
-        for target in [Target::Release, Target::Ref("dan/demo1@0.1.2".into())] {
+        for target in [Target::Release, Target::Ref("v0.1.2".into())] {
             let change = m.update_to("dan/demo1", target.clone()).unwrap();
             assert_eq!(change.to.commit, moved);
-            assert_eq!(
-                resolve_ref(&ws.repo(), "dan/demo1@0.1.2", false).unwrap(),
-                moved
-            );
+            assert_eq!(resolve_ref(&ws.repo(), "v0.1.2", false).unwrap(), moved);
             m.rollback("dan/demo1").unwrap();
         }
     }
 
     #[test]
-    fn stable_update_refuses_scoped_tag_with_another_manifest_id() {
+    fn stable_update_ignores_repository_tag_with_another_manifest_id() {
         let (ws, m) = Ws::installed("dan/demo1");
         ws.author.commit("0.1.1");
         write_manifest(&ws.author.path, &make_manifest("dan/renamed", "0.1.1"));
         fixture_git(&ws.author.path, &["add", "."]);
         fixture_git(&ws.author.path, &["commit", "-qm", "rename"]);
         ws.author.tag("0.1.1");
-        let error = ws.refuses("version_conflict", || m.update("dan/demo1"));
-        assert!(error.to_string().contains("manifest ID dan/renamed"));
+        let change = m.update("dan/demo1").unwrap();
+        assert!(!change.changed);
+        assert_eq!(change.to.version, "0.1.0");
+        assert!(change.skipped.is_empty());
+        assert!(change.warnings.is_empty());
     }
 
     #[test]
@@ -5400,31 +5385,28 @@ mod tests {
         let state = read(&ws.root.join("state.json"));
         // Moved release tag: same version, other commit; the clone mirrors it.
         let moved = same_version_commit(&ws.author);
-        fixture_git(&ws.author.path, &["tag", "-f", "dan/demo1@0.2.0"]);
+        fixture_git(&ws.author.path, &["tag", "-f", "v0.2.0"]);
         let change = m.update("dan/demo1").unwrap();
         assert!(!change.changed);
         assert_eq!(change.to.commit, installed);
         assert_eq!(
             change.warnings,
             [format!(
-                "release tag dan/demo1@0.2.0 now points to {}; the installed commit is kept",
+                "release tag v0.2.0 now points to {}; the installed commit is kept",
                 &moved[..12]
             )]
         );
-        assert_eq!(
-            resolve_ref(&ws.repo(), "dan/demo1@0.2.0", false).unwrap(),
-            moved
-        );
+        assert_eq!(resolve_ref(&ws.repo(), "v0.2.0", false).unwrap(), moved);
         assert_eq!(read(&ws.root.join("state.json")), state);
         // Deleted release tag: the installed release was retracted, the package stays.
-        fixture_git(&ws.author.path, &["tag", "-d", "dan/demo1@0.2.0"]);
+        fixture_git(&ws.author.path, &["tag", "-d", "v0.2.0"]);
         let change = m.update("dan/demo1").unwrap();
         assert!(!change.changed);
         assert_eq!(
             change.warnings,
             ["installed release dan/demo1@0.2.0 no longer exists on the origin"]
         );
-        assert!(resolve_ref(&ws.repo(), "refs/tags/dan/demo1@0.2.0", false).is_err());
+        assert!(resolve_ref(&ws.repo(), "refs/tags/v0.2.0", false).is_err());
         assert_eq!(read(&ws.root.join("state.json")), state);
     }
 
@@ -5435,12 +5417,12 @@ mod tests {
         m.update("dan/demo1").unwrap();
         // The 0.2.0 tag now points at a commit whose manifest says 0.3.0.
         let broken = ws.author.commit("0.3.0");
-        fixture_git(&ws.author.path, &["tag", "-f", "dan/demo1@0.2.0"]);
+        fixture_git(&ws.author.path, &["tag", "-f", "v0.2.0"]);
         let plan = m.update_all().unwrap();
         assert_eq!(
             plan.unchanged[0].warnings,
             [format!(
-                "release tag dan/demo1@0.2.0 now points to {} (skipped: tag dan/demo1@0.2.0 disagrees with manifest version 0.3.0); the installed commit is kept",
+                "release tag v0.2.0 now points to {} (skipped: tag v0.2.0 disagrees with manifest version 0.3.0); the installed commit is kept",
                 &broken[..12]
             )]
         );
@@ -5464,7 +5446,7 @@ mod tests {
         let installed = ws.author.release("0.2.0");
         m.update("dan/demo1").unwrap();
         let moved = same_version_commit(&ws.author);
-        fixture_git(&ws.author.path, &["tag", "-f", "dan/demo1@0.2.0"]);
+        fixture_git(&ws.author.path, &["tag", "-f", "v0.2.0"]);
         for plan in [m.update_all_plan().unwrap(), m.update_all().unwrap()] {
             assert!(plan.updates.is_empty());
             assert_eq!(
@@ -5474,15 +5456,15 @@ mod tests {
                     version: "0.2.0".into(),
                     reason: None,
                     warnings: vec![format!(
-                        "release tag dan/demo1@0.2.0 now points to {}; the installed commit is kept",
+                        "release tag v0.2.0 now points to {}; the installed commit is kept",
                         &moved[..12]
                     )],
                 }]
             );
         }
         // Every release tag deleted on the origin: still up to date, with the warning.
-        fixture_git(&ws.author.path, &["tag", "-d", "dan/demo1@0.2.0"]);
-        fixture_git(&ws.author.path, &["tag", "-d", "dan/demo1@0.1.0"]);
+        fixture_git(&ws.author.path, &["tag", "-d", "v0.2.0"]);
+        fixture_git(&ws.author.path, &["tag", "-d", "v0.1.0"]);
         let retracted = ["installed release dan/demo1@0.2.0 no longer exists on the origin"];
         let plan = m.update_all().unwrap();
         assert_eq!(plan.unchanged[0].warnings, retracted);
@@ -5501,12 +5483,12 @@ mod tests {
     fn direct_install_reports_skipped_broken_release_tags() {
         let ws = Ws::new("dan/demo1");
         // An old tag whose manifest disagrees with the tag version.
-        fixture_git(&ws.author.path, &["tag", "dan/demo1@0.0.9"]);
+        fixture_git(&ws.author.path, &["tag", "v0.0.9"]);
         ws.author.release("0.2.0");
         let result = ws.open().install(ws.author.source()).unwrap();
         assert_eq!(result.current.version, "0.2.0");
         let names: Vec<_> = result.skipped.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, ["dan/demo1@0.0.9"]);
+        assert_eq!(names, ["v0.0.9"]);
     }
 
     #[test]
@@ -5516,7 +5498,7 @@ mod tests {
         let m = ws.open();
         m.install(ws.author.source()).unwrap();
         // The installed release disappears upstream: following releases never goes down.
-        fixture_git(&ws.author.path, &["tag", "-d", "dan/demo1@0.5.0"]);
+        fixture_git(&ws.author.path, &["tag", "-d", "v0.5.0"]);
         let change = m.update("dan/demo1").unwrap();
         assert!(!change.changed);
         assert_eq!(change.to.version, "0.5.0");
@@ -5536,7 +5518,7 @@ mod tests {
         m.rollback("dan/demo1").unwrap();
         // An explicit ref may downgrade.
         let change = m
-            .update_to("dan/demo1", Target::Ref("dan/demo1@0.1.0".into()))
+            .update_to("dan/demo1", Target::Ref("v0.1.0".into()))
             .unwrap();
         assert_eq!(change.to.version, "0.1.0");
     }
@@ -5752,7 +5734,7 @@ mod tests {
         let ws = Ws::new("dan/app");
         let lib = ws.other_author("lib", "dan/lib");
         let location = ws.dir.join("catalog").to_str().unwrap().to_owned();
-        catalog::register(&location, lib.source(), "dan/lib@0.1.0").unwrap();
+        catalog::register(&location, lib.source(), "v0.1.0").unwrap();
         let mut app = make_manifest("dan/app", "0.2.0");
         app.dependencies.insert("dan/lib".into(), "^0.1".into());
         write_manifest(&ws.author.path, &app);
@@ -5952,9 +5934,9 @@ mod tests {
     fn protected_install(ws: &Ws) -> PathBuf {
         let catalog_dir = ws.dir.join("catalog");
         let location = catalog_dir.to_str().unwrap().to_owned();
-        catalog::register(&location, ws.author.source(), "dan/demo1@0.1.0").unwrap();
+        catalog::register(&location, ws.author.source(), "v0.1.0").unwrap();
         ws.author.release("0.2.0");
-        catalog::register(&location, ws.author.source(), "dan/demo1@0.2.0").unwrap();
+        catalog::register(&location, ws.author.source(), "v0.2.0").unwrap();
         crate::test_support::verify_catalog(&catalog_dir);
         let m = Manager::open_with(
             &ws.root,
@@ -6023,19 +6005,14 @@ mod tests {
         );
         // A ref or branch target needs a detach.
         let error = ws.refuses("invalid_argument", || {
-            m.update_to(id, Target::Ref("dan/demo1@0.3.0".into()))
+            m.update_to(id, Target::Ref("v0.3.0".into()))
         });
         assert!(error.to_string().contains("detach it"), "{error}");
         ws.refuses("invalid_argument", || m.update_to(id, Target::Dev));
 
         // A catalog release whose files do not match the tagged dist: refused, unchanged.
         let tampered = ws.author.release("0.4.0");
-        catalog::register(
-            catalog_dir.to_str().unwrap(),
-            ws.author.source(),
-            "dan/demo1@0.4.0",
-        )
-        .unwrap();
+        catalog::register(catalog_dir.to_str().unwrap(), ws.author.source(), "v0.4.0").unwrap();
         let release_json = catalog_dir.join("namespaces/dan/demo1/versions/0.4.0/release.json");
         let mut value = crate::test_support::read_json(&release_json);
         value["files"]["index.js"]["sha256"] = serde_json::Value::String("0".repeat(64));
@@ -6150,8 +6127,8 @@ mod tests {
         let catalog_dir = ws.dir.join("catalog");
         let location = catalog_dir.to_str().unwrap().to_owned();
         let lib = ws.other_author("lib", "dan/lib");
-        catalog::register(&location, lib.source(), "dan/lib@0.1.0").unwrap();
-        catalog::register(&location, ws.author.source(), "dan/demo1@0.1.0").unwrap();
+        catalog::register(&location, lib.source(), "v0.1.0").unwrap();
+        catalog::register(&location, ws.author.source(), "v0.1.0").unwrap();
         crate::test_support::verify_catalog(&catalog_dir);
         Manager::open_with(
             &ws.root,
@@ -6168,7 +6145,7 @@ mod tests {
         write_manifest(&ws.author.path, &app);
         fixture_git(&ws.author.path, &["commit", "-q", "-am", "0.2.0"]);
         ws.author.tag("0.2.0");
-        catalog::register(&location, ws.author.source(), "dan/demo1@0.2.0").unwrap();
+        catalog::register(&location, ws.author.source(), "v0.2.0").unwrap();
         catalog_dir
     }
 
@@ -6192,12 +6169,7 @@ mod tests {
         let catalog_dir = protected_with_new_dependency(&ws);
         let other = ws.dir.join("other-catalog");
         let stranger = ws.other_author("stranger", "dan/stranger");
-        catalog::register(
-            other.to_str().unwrap(),
-            stranger.source(),
-            "dan/stranger@0.1.0",
-        )
-        .unwrap();
+        catalog::register(other.to_str().unwrap(), stranger.source(), "v0.1.0").unwrap();
         let m = Manager::open_with(
             &ws.root,
             Options {
@@ -6239,7 +6211,7 @@ mod tests {
         let ws = Ws::new(id);
         let catalog_dir = ws.dir.join("catalog");
         let location = catalog_dir.to_str().unwrap().to_owned();
-        catalog::register(&location, ws.author.source(), "dan/demo1@0.1.0").unwrap();
+        catalog::register(&location, ws.author.source(), "v0.1.0").unwrap();
         crate::test_support::verify_catalog(&catalog_dir);
         let m = Manager::open_with(
             &ws.root,
@@ -6272,13 +6244,13 @@ mod tests {
         let ws = Ws::new(id);
         let catalog_dir = ws.dir.join("catalog");
         let location = catalog_dir.to_str().unwrap().to_owned();
-        catalog::register(&location, ws.author.source(), "dan/demo1@0.1.0").unwrap();
+        catalog::register(&location, ws.author.source(), "v0.1.0").unwrap();
         crate::test_support::verify_catalog(&catalog_dir);
         // The tag moves to another commit of the same version (the old one stays reachable).
         fixture_git(&ws.author.path, &["branch", "keep"]);
         fs::write(ws.author.path.join("dist/index.js"), "moved\n").unwrap();
         fixture_git(&ws.author.path, &["commit", "-q", "-am", "moved"]);
-        fixture_git(&ws.author.path, &["tag", "-f", "dan/demo1@0.1.0"]);
+        fixture_git(&ws.author.path, &["tag", "-f", "v0.1.0"]);
         let m = Manager::open_with(
             &ws.root,
             Options {
@@ -6304,7 +6276,7 @@ mod tests {
         let id = "dan/demo1";
         let ws = Ws::new(id);
         let location = ws.dir.join("catalog").to_str().unwrap().to_owned();
-        catalog::register(&location, ws.author.source(), "dan/demo1@0.1.0").unwrap();
+        catalog::register(&location, ws.author.source(), "v0.1.0").unwrap();
         let m = Manager::open_with(
             &ws.root,
             Options {
@@ -6340,25 +6312,20 @@ mod tests {
                     row.update_available
                 ),
                 (
-                    check::CheckStatus::UpstreamNotInCatalog,
+                    check::CheckStatus::UpToDate,
                     check::CheckSource::Catalog,
                     Some("0.2.0"),
-                    Some("0.3.0"),
+                    None,
                     false
                 ),
                 "{given:?}"
             );
-            assert_eq!(row.message(), "upstream 0.3.0 not in catalog");
+            assert_eq!(row.message(), "up to date");
             assert_eq!(report.catalog_verified, given.is_some());
         }
         // An unverified catalog given: reported as such.
         let other = ws.dir.join("other-catalog");
-        catalog::register(
-            other.to_str().unwrap(),
-            ws.author.source(),
-            "dan/demo1@0.3.0",
-        )
-        .unwrap();
+        catalog::register(other.to_str().unwrap(), ws.author.source(), "v0.3.0").unwrap();
         let report = check::check(&ws.root, Some(other.to_str().unwrap())).unwrap();
         assert!(!report.catalog_verified);
         assert_eq!(report.rows[0].status, check::CheckStatus::OtherCatalog);
@@ -6389,9 +6356,9 @@ mod tests {
         let ws = Ws::new("dan/demo1");
         let catalog_dir = ws.dir.join("catalog");
         let location = catalog_dir.to_str().unwrap().to_owned();
-        catalog::register(&location, ws.author.source(), "dan/demo1@0.1.0").unwrap();
+        catalog::register(&location, ws.author.source(), "v0.1.0").unwrap();
         ws.author.release("0.2.0");
-        catalog::register(&location, ws.author.source(), "dan/demo1@0.2.0").unwrap();
+        catalog::register(&location, ws.author.source(), "v0.2.0").unwrap();
         let m = Manager::open_with(
             &ws.root,
             Options {
@@ -6433,7 +6400,7 @@ mod tests {
             manifest: make_manifest("dan/demo1", "0.1.0"),
             source: ws.author.source().into(),
             commit: ws.author.head(),
-            reference: "dan/demo1@0.1.0".into(),
+            reference: "v0.1.0".into(),
             files: BTreeMap::new(), // claims an empty dist; the commit has dist/index.js
             build: None,
             path: None,
@@ -6604,7 +6571,7 @@ mod tests {
             &linked.path,
             &["commit", "-q", "-m", "symlink outside dist"],
         );
-        fixture_git(&linked.path, &["tag", "-f", "dan/linked@0.1.0"]);
+        fixture_git(&linked.path, &["tag", "-f", "v0.1.0"]);
         m.install(linked.source()).expect("dist/ has no symlink");
         m.disable("dan/demo1")
             .expect("other packages stay manageable");
@@ -6622,7 +6589,7 @@ mod tests {
         std::os::unix::fs::symlink("index.js", bad.path.join("dist/link.js")).unwrap();
         fixture_git(&bad.path, &["add", "--all"]);
         fixture_git(&bad.path, &["commit", "-q", "-m", "symlink in dist"]);
-        fixture_git(&bad.path, &["tag", "-f", "dan/bad@0.1.0"]);
+        fixture_git(&bad.path, &["tag", "-f", "v0.1.0"]);
         ws.refuses("unsupported", || m.install(bad.source()));
     }
 
@@ -6641,7 +6608,7 @@ mod tests {
             ],
         );
         fixture_git(&bad.path, &["commit", "-q", "-m", "submodule in dist"]);
-        fixture_git(&bad.path, &["tag", "-f", "dan/bad@0.1.0"]);
+        fixture_git(&bad.path, &["tag", "-f", "v0.1.0"]);
         let result = m.install(bad.source()).unwrap();
         let vendor = ws.root.join("dist/dan/bad/vendor");
         assert!(vendor.is_dir());
@@ -6771,9 +6738,9 @@ mod tests {
         // fork contains (the upstream released after the fork point).
         let author = &ws.author.path;
         fixture_git(author, &["switch", "-q", "--detach"]);
-        write_manifest(author, &make_manifest("acme/hello", "1.1.0"));
-        fixture_git(author, &["commit", "-qam", "upstream 1.1.0"]);
-        fixture_git(author, &["tag", "acme/hello@1.1.0"]);
+        write_manifest(author, &make_manifest("acme/hello", "0.0.1"));
+        fixture_git(author, &["commit", "-qam", "upstream 0.0.1"]);
+        fixture_git(author, &["tag", "v0.0.1"]);
         fixture_git(author, &["switch", "-q", "main"]);
         let m = ws.open();
         m.install(ws.author.source()).unwrap();
@@ -6819,7 +6786,7 @@ mod tests {
         fs::create_dir_all(author.join("dist")).unwrap();
         ws.author.release("0.2.0");
         fixture_git(author, &["branch", "-q", "-M", "main"]);
-        fixture_git(author, &["tag", "-d", "dan/demo1@0.1.0"]);
+        fixture_git(author, &["tag", "-d", "v0.1.0"]);
         m.update("dan/demo1").unwrap();
         let repo = ws.repo();
         for branch in fixture_git(
@@ -6865,7 +6832,7 @@ mod tests {
         root: PathBuf,
     }
     impl Mono {
-        /// `tilr/store` and `tilr/theme` at 1.0.0, each tagged on the same commit.
+        /// `tilr/store` and `tilr/theme` at 1.0.0, sharing one repository release tag.
         fn new() -> Self {
             let dir = TempDir::new("mono");
             let repo = dir.join("mono");
@@ -6884,8 +6851,7 @@ mod tests {
             mono.write("store", "1.0.0", &[]);
             mono.write("theme", "1.0.0", &[]);
             mono.commit("first");
-            mono.tag("store", "1.0.0");
-            mono.tag("theme", "1.0.0");
+            mono.tag("1.0.0");
             mono
         }
         fn write(&self, name: &str, version: &str, deps: &[(&str, &str)]) {
@@ -6903,13 +6869,22 @@ mod tests {
             fixture_git(&self.repo, &["commit", "-q", "-m", message]);
             fixture_git(&self.repo, &["rev-parse", "HEAD"])
         }
-        fn tag(&self, name: &str, version: &str) {
-            fixture_git(&self.repo, &["tag", &format!("tilr/{name}@{version}")]);
+        fn tag(&self, version: &str) {
+            fixture_git(&self.repo, &["tag", &format!("v{version}")]);
         }
         fn release(&self, name: &str, version: &str) -> String {
             self.write(name, version, &[]);
-            let commit = self.commit(&format!("{name} {version}"));
-            self.tag(name, version);
+            for entry in fs::read_dir(self.repo.join("packages")).unwrap() {
+                let path = entry.unwrap().path().join("plugin.json");
+                if path.is_file() {
+                    let mut manifest: serde_json::Value =
+                        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                    manifest["version"] = version.into();
+                    fs::write(path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+                }
+            }
+            let commit = self.commit(&format!("Release {version}"));
+            self.tag(version);
             commit
         }
         fn source(&self) -> &str {
@@ -6980,11 +6955,11 @@ mod tests {
         mono.refuses("invalid_argument", || {
             m.install_package(mono.source(), Some("tilr/missing"), InstallTarget::Release)
         });
-        // An ID@VERSION ref names the package.
+        // A repository release tag requires a separate package selector.
         m.install_package(
             mono.source(),
-            None,
-            InstallTarget::Ref("tilr/theme@1.0.0".into()),
+            Some("tilr/theme"),
+            InstallTarget::Ref("v1.0.0".into()),
         )
         .unwrap();
         assert_eq!(mono.dist("theme"), "theme 1.0.0");
@@ -7008,7 +6983,7 @@ mod tests {
     }
 
     #[test]
-    fn packages_release_and_update_independently() {
+    fn packages_release_together_and_update_independently() {
         let mono = Mono::new();
         let m = mono.open();
         for id in ["tilr/store", "tilr/theme"] {
@@ -7023,10 +6998,16 @@ mod tests {
         );
         assert_eq!(mono.dist("store"), "store 1.1.0");
         assert_eq!(mono.dist("theme"), "theme 1.0.0");
-        // The other package has no new release: nothing changes.
-        assert!(!m.update("tilr/theme").unwrap().changed);
-        let state = m.state().unwrap();
-        assert_eq!(state.packages["tilr/theme"].current.version, "1.0.0");
+        // Its sibling stays at its installed revision until explicitly updated.
+        assert_eq!(
+            m.state().unwrap().packages["tilr/theme"].current.version,
+            "1.0.0"
+        );
+        assert!(m.update("tilr/theme").unwrap().changed);
+        assert_eq!(
+            m.state().unwrap().packages["tilr/theme"].current.version,
+            "1.1.0"
+        );
         m.rollback("tilr/store").unwrap();
         assert_eq!(mono.dist("store"), "store 1.0.0");
         m.update("tilr/store").unwrap();
@@ -7050,9 +7031,9 @@ mod tests {
         assert_eq!(mono.dist("theme"), "theme 2.1.0");
         assert_eq!(mono.dist("store"), "store 1.2.0");
         // HEAD of the shared clone is now theme's untagged revision: store still updates.
-        mono.release("store", "1.3.0");
+        mono.release("store", "2.2.0");
         m.update("tilr/store").unwrap();
-        assert_eq!(mono.dist("store"), "store 1.3.0");
+        assert_eq!(mono.dist("store"), "store 2.2.0");
     }
 
     #[test]
@@ -7100,37 +7081,36 @@ mod tests {
     }
 
     #[test]
-    fn a_tag_without_its_package_is_refused_clearly() {
+    fn a_tag_without_its_package_is_ignored() {
         let mono = Mono::new();
         let m = mono.open();
-        // tilr/store@2.0.0 points at a commit where only theme exists.
+        // v2.0.0 points at a commit where only theme exists.
         fs::remove_dir_all(mono.repo.join("packages/store")).unwrap();
+        mono.write("theme", "2.0.0", &[]);
         mono.commit("drop store");
-        mono.tag("store", "2.0.0");
-        let error = mono.refuses("version_conflict", || {
-            m.install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
-        });
-        assert!(
-            error.to_string().contains("without package tilr/store"),
-            "{error}"
-        );
+        mono.tag("2.0.0");
+        let installed = m
+            .install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
+            .unwrap();
+        assert_eq!(installed.current.version, "1.0.0");
+        assert!(installed.skipped.is_empty());
         let error = mono.refuses("invalid_argument", || {
             m.install_package(
                 mono.source(),
-                None,
-                InstallTarget::Ref("tilr/store@2.0.0".into()),
+                Some("tilr/store"),
+                InstallTarget::Ref("v2.0.0".into()),
             )
         });
         assert!(
             error.to_string().contains("not in this repository"),
             "{error}"
         );
-        // A `vVERSION` tag is no release of any package: ignored without a warning.
-        fixture_git(&mono.repo, &["tag", "v3.0.0"]);
+        // Legacy package tags are ignored without a warning.
+        fixture_git(&mono.repo, &["tag", "tilr/theme@3.0.0"]);
         let installed = m
             .install_package(mono.source(), Some("tilr/theme"), InstallTarget::Release)
             .unwrap();
-        assert_eq!(installed.current.version, "1.0.0");
+        assert_eq!(installed.current.version, "2.0.0");
     }
 
     #[test]
@@ -7222,12 +7202,19 @@ mod tests {
         m.install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
             .unwrap();
         let old = fixture_git(&mono.repo, &["rev-parse", "HEAD"]);
+        let mut store_manifest = package_manifest(&mono.repo, Some("packages/store")).unwrap();
+        store_manifest.version = "1.1.0".into();
+        write_manifest(&mono.repo.join("packages/store"), &store_manifest);
         mono.write("theme", "1.1.0", &[("tilr/store", "^1.0")]);
         mono.commit("theme 1.1.0");
-        mono.tag("theme", "1.1.0");
+        mono.tag("1.1.0");
         mono.release("store", "1.2.0");
-        m.install_package(mono.source(), Some("tilr/theme"), InstallTarget::Release)
-            .unwrap();
+        m.install_package(
+            mono.source(),
+            Some("tilr/theme"),
+            InstallTarget::Ref("v1.1.0".into()),
+        )
+        .unwrap();
         let destination = mono.dir.join("forks/me/mono");
         let fork = m
             .fork_packages(&["tilr/theme", "tilr/store"], &destination, "me")
@@ -7315,10 +7302,10 @@ mod tests {
         let cases = [
             (InstallTarget::Release, &release, Mode::Release, None),
             (
-                InstallTarget::Ref("dan/demo1@0.1.0".into()),
+                InstallTarget::Ref("v0.1.0".into()),
                 &first,
-                Mode::Pinned("dan/demo1@0.1.0".into()),
-                Some(serde_json::json!({"pinned": "dan/demo1@0.1.0"})),
+                Mode::Pinned("v0.1.0".into()),
+                Some(serde_json::json!({"pinned": "v0.1.0"})),
             ),
             (
                 InstallTarget::Ref(first[..12].into()),
@@ -7371,9 +7358,9 @@ mod tests {
             "refs/heads/main",
             "HEAD~1",
             "main~1",
-            "dan/demo1@0.2.0~1",
-            "dan/demo1@0.2.0^",
-            "refs/tags/dan/demo1@0.2.0~1",
+            "v0.2.0~1",
+            "v0.2.0^",
+            "refs/tags/v0.2.0~1",
             "refs/remotes/origin/main~1",
             &first[..6],
             &first.to_uppercase(),
@@ -7393,7 +7380,7 @@ mod tests {
         m.install_package(
             ws.author.source(),
             None,
-            InstallTarget::Ref("dan/demo1@0.1.0".into()),
+            InstallTarget::Ref("v0.1.0".into()),
         )
         .unwrap();
         ws.author.release("0.2.0");
@@ -7403,7 +7390,7 @@ mod tests {
         assert_eq!(
             change.unchanged_reason,
             Some(UnchangedReason::Pinned {
-                reference: "dan/demo1@0.1.0".into()
+                reference: "v0.1.0".into()
             })
         );
         // Back to releases: the record has no mode.
@@ -7426,13 +7413,11 @@ mod tests {
         let change = m.update(id).unwrap();
         assert!(!change.changed && change.unchanged_reason.is_none());
         // A tag pins again (an explicit ref may go back to an older version).
-        let change = m
-            .update_to(id, Target::Ref("dan/demo1@0.2.0".into()))
-            .unwrap();
+        let change = m.update_to(id, Target::Ref("v0.2.0".into())).unwrap();
         assert_eq!(change.to.version, "0.2.0");
         assert_eq!(
             m.state().unwrap().packages[id].mode,
-            Mode::Pinned("dan/demo1@0.2.0".into())
+            Mode::Pinned("v0.2.0".into())
         );
         // At the newest release already: --release records the mode without moving,
         // and a change of mode alone is a change.
@@ -7478,11 +7463,9 @@ mod tests {
         );
         // A tag at the installed commit pins: a change of mode alone.
         m.update_to(id, Target::Release).unwrap();
-        let change = m
-            .update_to(id, Target::Ref("dan/demo1@0.2.0".into()))
-            .unwrap();
+        let change = m.update_to(id, Target::Ref("v0.2.0".into())).unwrap();
         assert!(change.changed && change.from.commit == change.to.commit);
-        assert_eq!(change.mode, Mode::Pinned("dan/demo1@0.2.0".into()));
+        assert_eq!(change.mode, Mode::Pinned("v0.2.0".into()));
     }
 
     #[test]
@@ -7587,7 +7570,7 @@ mod tests {
         let c = ws.other_author("c", "dan/c");
         let m = ws.open();
         m.install(ws.author.source()).unwrap();
-        m.install_package(b.source(), None, InstallTarget::Ref("dan/b@0.1.0".into()))
+        m.install_package(b.source(), None, InstallTarget::Ref("v0.1.0".into()))
             .unwrap();
         m.install_package(c.source(), None, InstallTarget::Dev)
             .unwrap();
@@ -7607,7 +7590,7 @@ mod tests {
                 id: "dan/b".into(),
                 version: "0.1.0".into(),
                 reason: Some(UnchangedReason::Pinned {
-                    reference: "dan/b@0.1.0".into()
+                    reference: "v0.1.0".into()
                 }),
                 warnings: Vec::new(),
             }]
@@ -7636,7 +7619,7 @@ mod tests {
                 (
                     "dan/b",
                     Some(UnchangedReason::Pinned {
-                        reference: "dan/b@0.1.0".into()
+                        reference: "v0.1.0".into()
                     })
                 ),
                 (
@@ -7904,9 +7887,16 @@ mod tests {
         let layout = packages::layout_at(&mono.repo, &head).unwrap().unwrap();
         assert_eq!(layout.packages.len(), 1);
         assert_eq!(layout.problems[0].id.as_deref(), Some("tilr/theme"));
-        // theme's own releases: the old tag stays valid, the new commit is not.
-        m.install_package(mono.source(), Some("tilr/theme"), InstallTarget::Release)
-            .unwrap();
+        // The shared newest release is broken for theme; an explicit older ref remains usable.
+        mono.refuses("version_conflict", || {
+            m.install_package(mono.source(), Some("tilr/theme"), InstallTarget::Release)
+        });
+        m.install_package(
+            mono.source(),
+            Some("tilr/theme"),
+            InstallTarget::Ref("v1.0.0".into()),
+        )
+        .unwrap();
         assert_eq!(mono.dist("theme"), "theme 1.0.0");
     }
 
@@ -7932,7 +7922,7 @@ mod tests {
         write_manifest(&mono.repo.join("apps/store"), &moved);
         fs::write(mono.repo.join("apps/store/dist/index.js"), "store moved").unwrap();
         mono.commit("move store");
-        mono.tag("store", "1.1.0");
+        mono.tag("1.1.0");
         m.update("tilr/store").unwrap();
         assert_eq!(mono.dist("store"), "store moved");
         assert_eq!(
@@ -7956,7 +7946,7 @@ mod tests {
         let m = mono.open();
         m.install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
             .unwrap();
-        mono.release("store", "1.1.0");
+        mono.write("store", "1.1.0", &[]);
         mono.release("theme", "1.1.0");
         m.install_package(mono.source(), Some("tilr/theme"), InstallTarget::Release)
             .unwrap();
@@ -8019,7 +8009,7 @@ mod tests {
             ],
         );
         mono.commit("source submodule");
-        mono.tag("theme", "1.0.1");
+        mono.tag("1.0.1");
         // Use this revision as theme's installed revision.
         let m = mono.open();
         m.install_package(
@@ -8081,12 +8071,13 @@ mod tests {
             .unwrap();
         mono.write("theme", "1.1.0", &[("tilr/store", "^1.0")]);
         mono.commit("theme needs store");
-        mono.tag("theme", "1.1.0");
+        mono.tag("1.1.0");
         m.install_package(mono.source(), Some("tilr/theme"), InstallTarget::Release)
             .unwrap();
-        mono.write("store", "1.1.0", &[("tilr/theme", "^1.0")]);
+        mono.write("store", "1.2.0", &[("tilr/theme", "^1.0")]);
+        mono.write("theme", "1.2.0", &[("tilr/store", "^1.0")]);
         mono.commit("store needs theme");
-        mono.tag("store", "1.1.0");
+        mono.tag("1.2.0");
         m.update("tilr/store").unwrap();
         let destination = mono.dir.join("forks/cycle");
         m.fork_packages(&["tilr/store", "tilr/theme"], &destination, "me")
@@ -8169,7 +8160,7 @@ mod tests {
         );
         // Upstream drops theme's history and its tag; store releases on the rewrite.
         fixture_git(&mono.repo, &["reset", "-q", "--hard", &first]);
-        fixture_git(&mono.repo, &["tag", "-d", "tilr/theme@1.1.0"]);
+        fixture_git(&mono.repo, &["tag", "-d", "v1.1.0"]);
         mono.release("store", "1.1.0");
         // Updating store prunes and moves HEAD: only the keep refs hold theme's revisions.
         m.update("tilr/store").unwrap();
@@ -8246,7 +8237,7 @@ mod tests {
         )
         .unwrap();
         let moved = mono.commit("retag theme");
-        fixture_git(&mono.repo, &["tag", "-f", "tilr/theme@1.0.0"]);
+        fixture_git(&mono.repo, &["tag", "-f", "v1.0.0"]);
         let installed = m
             .install_package(mono.source(), Some("tilr/theme"), InstallTarget::Release)
             .unwrap();
@@ -8263,14 +8254,13 @@ mod tests {
             m.install_package(mono.source(), Some(id), InstallTarget::Release)
                 .unwrap();
         }
-        fixture_git(&mono.repo, &["tag", "-d", "tilr/store@1.0.0"]);
-        mono.release("theme", "1.1.0");
+        fixture_git(&mono.repo, &["tag", "-d", "v1.0.0"]);
         let retracted = ["installed release tilr/store@1.0.0 no longer exists on the origin"];
         let change = m.update("tilr/store").unwrap();
         assert!(!change.changed);
         assert_eq!(change.warnings, retracted);
         let plan = m.update_all().unwrap();
-        assert_eq!(plan.updates[0].id, "tilr/theme");
+        assert!(plan.updates.is_empty());
         let store = plan
             .unchanged
             .iter()
@@ -8289,7 +8279,7 @@ mod tests {
         let checkout = mono.root.join("worktrees/tilr/store");
         fixture_git(&checkout, &["commit", "--allow-empty", "-m", "local only"]);
         let local = fixture_git(&checkout, &["rev-parse", "HEAD"]);
-        fixture_git(&checkout, &["tag", "-f", "tilr/theme@1.0.0"]);
+        fixture_git(&checkout, &["tag", "-f", "v1.0.0"]);
         let recorded = m.state().unwrap().packages["tilr/store"]
             .current
             .commit
@@ -8303,10 +8293,7 @@ mod tests {
             "local_changes"
         );
         assert_eq!(
-            fixture_git(
-                &mono.clone_dir(),
-                &["rev-parse", "refs/tags/tilr/theme@1.0.0"]
-            ),
+            fixture_git(&mono.clone_dir(), &["rev-parse", "refs/tags/v1.0.0"]),
             local
         );
         assert_eq!(fs::read(mono.root.join("state.json")).unwrap(), state);
@@ -8372,21 +8359,19 @@ mod tests {
             .clone();
         mono.write("dock", "1.0.0", &[]);
         mono.commit("dock");
-        mono.tag("dock", "1.0.0");
-        mono.release("theme", "1.1.0");
         fs::write(
             mono.repo.join("packages/store/dist/index.js"),
             "store moved",
         )
         .unwrap();
         let moved = mono.commit("move store");
-        fixture_git(&mono.repo, &["tag", "-f", "tilr/store@1.0.0"]);
+        fixture_git(&mono.repo, &["tag", "-f", "v1.0.0"]);
         m.install_package(mono.source(), Some("tilr/dock"), InstallTarget::Release)
             .unwrap();
-        assert_eq!(m.update("tilr/theme").unwrap().to.version, "1.1.0");
+        assert_eq!(m.update("tilr/theme").unwrap().to.version, "1.0.0");
         // The shared clone took the moved tag; tilr/store keeps its installed commit.
         assert_eq!(
-            resolve_ref(&mono.clone_dir(), "tilr/store@1.0.0", false).unwrap(),
+            resolve_ref(&mono.clone_dir(), "v1.0.0", false).unwrap(),
             moved
         );
         assert_eq!(
@@ -8395,7 +8380,7 @@ mod tests {
         );
         assert_eq!(mono.dist("store"), "store 1.0.0");
         let warning = format!(
-            "release tag tilr/store@1.0.0 now points to {}; the installed commit is kept",
+            "release tag v1.0.0 now points to {}; the installed commit is kept",
             &moved[..12]
         );
         assert_eq!(m.update("tilr/store").unwrap().warnings, [warning.as_str()]);

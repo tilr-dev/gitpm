@@ -261,7 +261,7 @@ class T:
 
     def release(self, id: str, version: str, deps: dict | None = None, extra: dict | None = None,
                 files: dict | None = None, tag: bool = True, repo: Path | str | None = None) -> str:
-        """Write plugin.json and dist/index.js ("ID VERSION"), commit, tag ID@VERSION; returns the commit."""
+        """Write plugin.json and dist/index.js ("ID VERSION"), commit, tag vVERSION; returns the commit."""
         repo = self.path(repo or id)
         self.write(repo, {"plugin.json": json.dumps(self.manifest(id, version, deps, extra), indent=2) + "\n",
                           "dist/index.js": f"export const greeting = {json.dumps(f'{id} {version}')};\n",
@@ -269,7 +269,7 @@ class T:
         self.git(repo, "add", "--all")
         self.git(repo, "commit", "-q", "-m", f"{id} {version}")
         if tag:
-            self.git(repo, "tag", f"{id}@{version}")
+            self.git(repo, "tag", f"v{version}")
         return self.rev(repo)
 
     def commit(self, repo: Path | str, message: str, files: dict | None = None) -> str:

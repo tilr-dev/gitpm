@@ -18,7 +18,7 @@ def new_release(t: T) -> str:
     return t.release(ID, "0.3.0")
 
 
-def register(t: T, *extra, ref=f"{ID}@0.3.0"):
+def register(t: T, *extra, ref=f"v0.3.0"):
     return ("register", t.repo(ID), "--ref", ref, *extra)
 
 
@@ -102,7 +102,7 @@ def changing_existing_build_is_rejected(t: T):
 def adding_build_to_existing_release_is_rejected(t: T):
     """dan/hello 0.2.0 was registered without build; adding build metadata later is refused."""
     before = t.snap(t.catalog)
-    t.gitpm_err(*register(t, "--build-url", URL, "--build-sha256", SHA, ref=f"{ID}@0.2.0"),
+    t.gitpm_err(*register(t, "--build-url", URL, "--build-sha256", SHA, ref=f"v0.2.0"),
              kind="version_conflict", contains="immutable")
     t.same(before, "catalog")
     t.ok("build" not in stored(t, "0.2.0"), "0.2.0 still without build")
@@ -147,7 +147,7 @@ def builds_install_update_and_rollback_without_clones(t: T):
     try:
         for version in ["0.3.0", "0.4.0"]:
             t.release(ID, version)
-            contents = (t.git(ID, "show", f"{ID}@{version}:dist/index.js") + "\n").encode()
+            contents = (t.git(ID, "show", f"v{version}:dist/index.js") + "\n").encode()
             artifact = served / f"{version}.tar.gz"
             with tarfile.open(artifact, "w:gz") as archive:
                 entry = tarfile.TarInfo("index.js")
@@ -155,7 +155,7 @@ def builds_install_update_and_rollback_without_clones(t: T):
                 entry.mode = 0o755
                 archive.addfile(entry, io.BytesIO(contents))
             t.gitpm_ok(*register(t, "--build-url", f"{url.replace('http://', 'https://')}/{artifact.name}",
-                "--build-sha256", hashlib.sha256(artifact.read_bytes()).hexdigest(), ref=f"{ID}@{version}"))
+                "--build-sha256", hashlib.sha256(artifact.read_bytes()).hexdigest(), ref=f"v{version}"))
             record = stored(t, version)
             record["build"]["url"] = f"{url}/{artifact.name}"
             t.catalog_release(ID, version).write_text(json.dumps(record))

@@ -24,7 +24,7 @@ def mine_payload(t: T):
 @case(fixture="g3_fork_catalog", spec=["fork-replacement/fork-metadata", "cli/json-output-for-state-and-catalog#list"])
 def list_shows_fork_relation(t: T):
     """1. list: mine/p has forkOf {id, version, commit, source} and replaces vendor/p 1.0.0; vendor/p none."""
-    base = t.rev(V, "vendor/p@1.0.0")
+    base = t.rev(V, "v1.0.0")
     before = mine_payload(t)
     out = t.gitpm_ok("list").json()
     mine, vendor = out["packages"][M], out["packages"][V]
@@ -69,7 +69,7 @@ def newer_original_release_is_visible(t: T):
     1.0.0 and vendor/p "update available"; mine/p state/payload unchanged; list unchanged."""
     list_before = t.gitpm_ok("list").json()["packages"][M]
     t.release(V, "1.1.0")
-    t.gitpm_ok("register", t.repo(V), "--ref", "vendor/p@1.1.0")
+    t.gitpm_ok("register", t.repo(V), "--ref", "v1.1.0")
     before = mine_payload(t)
     out = t.gitpm_ok("check").out
     t.has(row(out, V), "update available", "1.1.0")
@@ -83,7 +83,7 @@ def newer_original_release_is_visible(t: T):
                                        "catalog/a-catalog-is-optional#check-without-a-catalog"])
 def upstream_from_fork_of_source_without_a_catalog(t: T):
     """5. No catalog: every row comes from its origin and the fork's upstream from
-    forkOf.source; a new tag vendor/p@1.1.0 (not registered anywhere) shows as newer."""
+    forkOf.source; a new tag v1.1.0 (not registered anywhere) shows as newer."""
     def check() -> str:
         r = t.run("env", "-u", "GITPM_CATALOG", "gitpm", "check")
         t.eq(r.code, 0, "check exit")

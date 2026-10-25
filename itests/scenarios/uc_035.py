@@ -83,9 +83,9 @@ def origin_statuses(t: T):
     t.new_package("dan/ahead", "0.1.0")
     t.release("dan/ahead", "0.2.0")
     t.gitpm_ok("install", t.repo("dan/ahead"))
-    t.git("dan/ahead", "tag", "-d", "dan/ahead@0.2.0")
+    t.git("dan/ahead", "tag", "-d", "v0.2.0")
     check(t, srv.url, "dan/ahead", "newer than origin")
-    t.git("dan/ahead", "tag", "-d", "dan/ahead@0.1.0")
+    t.git("dan/ahead", "tag", "-d", "v0.1.0")
     check(t, srv.url, "dan/ahead", "no releases on origin")
     t.gitpm_ok("--catalog", srv.url, "install-catalog", HELLO)
     shutil.move(t.repo("dan/ahead"), t.root / "moved")
@@ -108,10 +108,10 @@ def same_version_different_commit(t: T):
     """A direct install (release mode) of another commit that still says 0.1.1: the Git
     tag 0.1.1 moved after the catalog registered it, and 0.2.0 is gone from Git."""
     srv = t.serve(t.catalog)
-    t.git(HELLO, "checkout", "-q", "-b", "side", f"{HELLO}@0.1.1")
+    t.git(HELLO, "checkout", "-q", "-b", "side", f"v0.1.1")
     t.commit(HELLO, "same version, other code", {"dist/index.js": "side\n"})
-    t.tag(HELLO, f"{HELLO}@0.1.1", force=True)
-    t.git(HELLO, "tag", "-d", f"{HELLO}@0.2.0")
+    t.tag(HELLO, f"v0.1.1", force=True)
+    t.git(HELLO, "tag", "-d", f"v0.2.0")
     t.gitpm_ok("install", t.repo(HELLO))
     check(t, srv.url, HELLO, "same version, different commit")
 

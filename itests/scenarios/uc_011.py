@@ -8,11 +8,11 @@ from gitpmtest import T, case
 
 
 def check_numeric_max(t: T, id: str):
-    tagged = t.rev(id, f"{id}@1.10.0")
+    tagged = t.rev(id, f"v1.10.0")
     p = t.package(id)
     t.eq(p["current"], {"version": "1.10.0", "commit": tagged}, "current (numeric maximum)")
     t.ok(p["current"]["commit"] != t.rev(id), "untagged HEAD (1.11.0) not chosen")
-    t.ok(p["current"]["commit"] != t.rev(id, f"{id}@1.9.0"), "newest tagged commit (1.9.0) not chosen")
+    t.ok(p["current"]["commit"] != t.rev(id, f"v1.9.0"), "newest tagged commit (1.9.0) not chosen")
     t.eq(t.rev(t.worktree(id)), tagged, "clone HEAD")
     t.eq((t.dist(id) / "index.js").read_text(), f'export const greeting = "{id} 1.10.0";\n', "dist")
 
@@ -51,6 +51,6 @@ def repository_without_release_tags_fails(t: T):
     t.new_package(id, "0.1.0", tag=False)
     t.release(id, "0.2.0", tag=False)
     t.tag(id, "wip")
-    t.tag(id, "other/package@1.0.0")
+    t.tag(id, "v1.0.0")
     t.gitpm_err("install", t.repo(id), kind="no_releases", contains=("no release tags", id))
     t.not_installed(id)

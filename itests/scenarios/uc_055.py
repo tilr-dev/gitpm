@@ -36,7 +36,7 @@ def resolution(t: T) -> dict:
 
 def fork_release(t: T, version: str, payload: str | None = None, declares: str | None = "1.0.0",
                  manifest_text: str | None = None, drop_dist: bool = False) -> str:
-    """Commit a new release of the fork (keeping forkOf) and tag it mine/base@VERSION."""
+    """Commit a new release of the fork (keeping forkOf) and tag it vVERSION."""
     repo = t.repo(FORK)
     m = json.loads((repo / "plugin.json").read_text())
     m["version"] = version
@@ -51,7 +51,7 @@ def fork_release(t: T, version: str, payload: str | None = None, declares: str |
     if drop_dist:
         shutil.rmtree(repo / "dist")
     sha = t.commit(repo, f"{FORK} {version}")
-    t.tag(repo, f"{FORK}@{version}")
+    t.tag(repo, f"v{version}")
     return sha
 
 
@@ -145,7 +145,7 @@ def corrupt_fork_release_preserves_binding(t: T):
     t.same(before, "workspace")
     bound(t)
     fork_release(t, "1.0.3", payload="x\n", manifest_text='{"id": "mine/base", "version": "1.0.3",')
-    t.gitpm_err("update", FORK, "--ref", f"{FORK}@1.0.3", kind="invalid_manifest")
+    t.gitpm_err("update", FORK, "--ref", f"v1.0.3", kind="invalid_manifest")
     t.same(before, "workspace")
     bound(t)
     t.eq((t.dist(FORK) / "index.js").read_text(), FORK_PAYLOAD, "provider payload")

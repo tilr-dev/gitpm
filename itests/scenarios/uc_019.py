@@ -14,7 +14,7 @@ ID = "dan/hello"
 
 
 def tagged(t: T, version: str) -> str:
-    return t.rev(ID, f"{ID}@{version}")
+    return t.rev(ID, f"v{version}")
 
 
 def failed_update(t: T, *extra, kind: str | None = None, contains=()):
@@ -51,9 +51,9 @@ def valid_update_succeeds(t: T, version: str):
 def release_without_dist(t: T):
     """Release 0.1.3 without dist/: stable and --ref updates fail; rollback and a later update work."""
     t.release(ID, "0.1.3", files={"dist/index.js": None})
-    t.eq(t.git(ID, "ls-tree", "--name-only", f"{ID}@0.1.3"), "plugin.json", "0.1.3 has no dist")
+    t.eq(t.git(ID, "ls-tree", "--name-only", f"v0.1.3"), "plugin.json", "0.1.3 has no dist")
     failed_update(t, kind="invalid_manifest", contains="dist/")
-    failed_update(t, "--ref", f"{ID}@0.1.3", kind="invalid_manifest", contains="dist/")
+    failed_update(t, "--ref", f"v0.1.3", kind="invalid_manifest", contains="dist/")
     rollback_still_works(t)
     t.write(ID, {"dist/index.js": "x\n"})
     valid_update_succeeds(t, "0.1.4")
@@ -63,9 +63,9 @@ def release_without_dist(t: T):
 def release_with_malformed_manifest(t: T):
     """Release 0.1.3 with broken plugin.json: update fails; rollback and a later update work."""
     t.commit(ID, "broken manifest", {"plugin.json": "{ broken"})
-    t.tag(ID, f"{ID}@0.1.3")
+    t.tag(ID, f"v0.1.3")
     failed_update(t, contains="0.1.3")  # stable: the newest tag is broken (kind not specified)
-    failed_update(t, "--ref", f"{ID}@0.1.3", kind="invalid_manifest")
+    failed_update(t, "--ref", f"v0.1.3", kind="invalid_manifest")
     rollback_still_works(t)
     valid_update_succeeds(t, "0.1.4")
 
@@ -74,7 +74,7 @@ def release_with_malformed_manifest(t: T):
 def release_with_mismatched_id(t: T):
     """Revision 0.1.3 whose manifest says dan/renamed: update --ref (tag and SHA) fails."""
     sha = t.release(ID, "0.1.3", extra={"id": "dan/renamed"})
-    failed_update(t, "--ref", f"{ID}@0.1.3", kind="invalid_manifest", contains="id changed")
+    failed_update(t, "--ref", f"v0.1.3", kind="invalid_manifest", contains="id changed")
     failed_update(t, "--ref", sha, kind="invalid_manifest", contains="id changed")
     rollback_still_works(t)
     valid_update_succeeds(t, "0.1.4")
@@ -83,7 +83,7 @@ def release_with_mismatched_id(t: T):
 @case(fixture="g2_hello_history", spec=["errors/failing-operations-leave-the-workspace-unchanged"])
 def nonexistent_ref(t: T):
     """update --ref to a tag / SHA that does not exist fails."""
-    failed_update(t, "--ref", f"{ID}@9.9.9", kind="invalid_argument", contains=f"{ID}@9.9.9")
+    failed_update(t, "--ref", f"v9.9.9", kind="invalid_argument", contains=f"v9.9.9")
     failed_update(t, "--ref", "0123456789abcdef0123456789abcdef01234567")
     rollback_still_works(t)
     valid_update_succeeds(t, "0.1.3")

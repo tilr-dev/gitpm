@@ -32,7 +32,7 @@ def history_and_branch(t: T):
     t.eq(t.git(dest, "log", "-1", "--format=%s"), f"Fork {ID} as {NEW}", "identity commit message")
     t.eq(t.git(dest, "log", "--format=%H", "--reverse").splitlines()[0],
          t.git("vendor/demo", "log", "--format=%H", "--reverse").splitlines()[0], "root commit")
-    t.has(t.git(dest, "tag", "--list"), "vendor/demo@0.1.0")
+    t.has(t.git(dest, "tag", "--list"), "v0.1.0")
 
 
 @case(fixture="g3_vendor_installed", spec=["fork-replacement/fork-isolates-source-and-destination-state#installed-clone-has-local-work"])
@@ -69,7 +69,7 @@ def identity_version_and_provenance(t: T):
     # forkOf is the only provenance: no pm.forkBase/pm.forkVersion Git config.
     r = t.run("git", "-C", dest, "config", "--local", "--get-regexp", r"^pm\.")
     t.eq((r.code, r.out), (1, ""), "no pm.* Git config")
-    t.ok(not t.git(dest, "tag", "--list", f"{NEW}@*"), "no release tag created by fork")
+    t.eq(t.git(dest, "tag", "--list"), t.git(ID, "tag", "--list"), "fork preserves upstream tags and creates none")
 
 
 @case(fixture="g3_vendor_installed", spec=["fork-replacement/fork-copies-an-installed-package"])

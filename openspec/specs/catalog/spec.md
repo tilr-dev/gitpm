@@ -51,25 +51,24 @@ Single source for the release record: a release SHALL record the whole `manifest
 - **THEN** catalog generation and verification hash exactly the same committed files as deployment
 
 ### Requirement: Catalog generated from Git release tags
-`catalog update [--sources FILE]` SHALL read the repositories listed in the sources file (one per line, relative to the file; blank and `#` lines skipped), discover every release tag, pin each tag's commit, hash its package dist and write the tree. For a multi-package repository it SHALL publish only the packages listed in `gitpm.json` at HEAD. Broken historical tags are skipped as in package-ids. It SHALL validate every source before writing anything and retain releases of removed sources.
+`catalog update [--sources FILE]` SHALL read listed repositories (paths relative to FILE; blank and comment lines ignored), validate all sources before writing, discover every `vVERSION` release, pin commits, hash dist and write the catalog. Only packages listed at repository HEAD SHALL be published; broken historical tags SHALL be skipped as in package-ids, and releases of removed sources retained.
 
 #### Scenario: Empty sources file
 - **WHEN** the sources file has only comments and blank lines
 - **THEN** `catalog update` fails with `invalid_argument` ("sources file has no repositories")
 
 #### Scenario: Two releases
-- **WHEN** `sources.txt` lists `./greeter` with tags 0.1.0 and 0.2.0
+- **WHEN** `sources.txt` lists `./greeter` with tags `v0.1.0` and `v0.2.0`
 - **THEN** `catalog update` prints `Catalog ready: 2 release(s) checked from sources.`
 - **AND** this is covered by `catalog_update_keeps_published_records_when_tags_move` and `catalog_update_validates_every_source_before_writing_and_retains_removed_sources`
 
 #### Scenario: Package removed from gitpm.json at HEAD
-- **WHEN** a multi-package repository tagged `tilr/old@0.1.0` but no longer lists `packages/old` in `gitpm.json` at HEAD, and the catalog has no `tilr/old` yet
+- **WHEN** a multi-package repository tagged `v0.1.0` with package `tilr/old` but no longer lists `packages/old` in `gitpm.json` at HEAD, and the catalog has no `tilr/old` yet
 - **THEN** `catalog update` publishes the releases of the packages listed at HEAD and no release of `tilr/old`
 
 #### Scenario: Duplicate source lines
 - **WHEN** the sources file lists the same repository twice, also in another spelling of its path
 - **THEN** `catalog update` reads it once and indexes each release once
-
 
 #### Scenario: Submodule inside dist
 - **WHEN** the release contains a Git submodule at `dist/vendor`
@@ -77,7 +76,7 @@ Single source for the release record: a release SHALL record the whole `manifest
 - **AND** the author is warned that `dist/vendor` is a Git submodule whose files will not be installed, probably a mistake; commit built files to dist instead of a submodule
 
 ### Requirement: Published versions are immutable
-A published version SHALL NOT change; a rejected `catalog register` or `catalog update` writes nothing. `catalog register` SHALL fail with `version_conflict` when the release JSON (except `reference`) differs. `catalog update` SHALL keep a differing published record and warn. A package ID SHALL stay bound to the source that first registered it. Verified by `catalog::published_versions_are_immutable` and `catalog_update_keeps_published_records_when_tags_move`.
+Published versions SHALL be immutable, with tag `vVERSION` and display `ID@VERSION`. Rejected writes SHALL change nothing. `catalog register` SHALL fail with `version_conflict` if release JSON except `reference` differs; `catalog update` SHALL keep differing records and warn. An ID SHALL remain bound to its first source.
 
 #### Scenario: Register with another build
 - **WHEN** a published version is registered again with different `--build-url`
@@ -175,11 +174,11 @@ Single source for working without a catalog: a direct install SHALL record its s
 - **AND** `browse_catalog`, `catalog_release` and `install_from_catalog` fail with `invalid_argument` ("no catalog configured")
 
 ### Requirement: check compares installed packages with their catalog or origin
-`check(root, catalog)` (CLI, FFI) SHALL be read-only (no open, lock or creation), reporting one row per package with status, message, `source` and `problem`, plus replacements and unsatisfied dependencies. Git selection SHALL be by mode, verified protection (`other_catalog` under another catalog), selected catalog listing it, then origin. Builds SHALL read recorded catalogs without Git. Verified by `check::check_without_catalog_reads_each_origin`.
+`check(root, catalog)` (CLI, FFI) SHALL be read-only (no open, lock or creation), reporting one row per package with status, message, `source` and `problem`, plus replacements and unsatisfied dependencies. Git selection SHALL be by mode, verified protection (`other_catalog` under another catalog), selected catalog listing its source, then origin. Builds SHALL read recorded catalogs without Git. Verified by `check::check_without_catalog_reads_each_origin`.
 
 #### Scenario: Statuses
 - **WHEN** `check` reports a package
-- **THEN** a catalog row is one of `up_to_date` ("up to date"), `update_available` ("update available"), `newer_than_catalog` ("newer than catalog"), `different_source` ("different source in catalog"), `invalid_catalog_data` ("invalid catalog data"), `no_versions` ("no versions in catalog"), `uncomparable_version` ("version cannot be compared"), `same_version_different_commit` ("same version, different commit"), `other_catalog` ("installed from another catalog") or `upstream_not_in_catalog` ("upstream V not in catalog")
+- **THEN** a catalog row is one of `up_to_date` ("up to date"), `update_available` ("update available"), `newer_than_catalog` ("newer than catalog"), `different_source` ("different source in catalog"), `invalid_catalog_data` ("invalid catalog data"), `no_versions` ("no versions in catalog"), `uncomparable_version` ("version cannot be compared"), `same_version_different_commit` ("same version, different commit"), `other_catalog` ("installed from another catalog")
 - **AND** an origin row is one of `up_to_date`, `update_available`, `newer_than_origin` ("newer than origin"), `no_releases` ("no releases on origin"), `origin_unreachable` ("origin unreachable", with a `problem` hint, never git's stderr), `uncomparable_version` (malformed installed version) or `pinned` ("pinned")
 
 #### Scenario: Identity mismatch
@@ -199,10 +198,14 @@ Single source for working without a catalog: a direct install SHALL record its s
 - **THEN** its row says `installed from another catalog` and offers no update, unless this catalog has a different source for it or exactly its installed release
 - **AND** this is covered by `check_shows_fork_upstream_and_other_catalogs`; the read-only and partial-failure rules by `check::read_state_never_creates_or_locks_a_workspace` and `check::check_reports_invalid_release_without_hiding_healthy_plugins`
 
+#### Scenario: Same ID in an unrelated source
+- **WHEN** an unprotected Git-installed package has the same ID as an entry from another source in the selected catalog
+- **THEN** `check` checks the installed source through the origin fallback, without suggesting the unrelated catalog release
+
 #### Scenario: Origin row
-- **WHEN** `acme/greeter` 0.1.0 was installed from `./greeter`, which now also has the tag `acme/greeter@0.2.0`, and no catalog is given (or the catalog does not list it)
+- **WHEN** `acme/greeter` 0.1.0 was installed from `./greeter`, which now also has the tag `v0.2.0`, and no catalog is given (or the catalog does not list it)
 - **THEN** its row is `update_available` with latest `0.2.0` and source `origin`
-- **AND** the origin's release tags are read with `git ls-remote` without fetching or changing the clone; the newest `ID@VERSION` tag counts by name, and its manifest is verified only when updating
+- **AND** the origin's tag and branch names are read with `git ls-remote`; candidate tags are shallow-fetched with `--depth=1 --filter=blob:none` newest first until a manifest with the requested ID is found, without checking out dist or changing the installed clone or workspace
 - **AND** tags are compared by name: an origin tag of the installed version that points to another commit is `up_to_date` (stated limitation; the commit is not compared)
 
 #### Scenario: Recorded modes in check
@@ -210,8 +213,8 @@ Single source for working without a catalog: a direct install SHALL record its s
 - **THEN** the pinned row is `pinned` with its ref and needs no origin query, and the branch row compares the installed commit with the HEAD of `main` on the origin (`up_to_date`, or `update_available` when it moved); release-mode packages are compared by release as above
 
 #### Scenario: Protected package with a newer upstream
-- **WHEN** Git-installed `acme/greeter` 0.2.0 is protected by a verified catalog whose latest is 0.2.0 and its origin has the tag `acme/greeter@0.3.0`
-- **THEN** its row is `upstream_not_in_catalog` ("upstream 0.3.0 not in catalog", the origin's version in `origin_latest`), `latest` is the catalog's 0.2.0 and no update is offered, with or without the catalog given
+- **WHEN** Git-installed `acme/greeter` 0.2.0 is protected by a verified catalog whose latest is 0.2.0 and its origin has the tag `v0.3.0`
+- **THEN** its row is `up_to_date`, `latest` is the catalog's 0.2.0 and origin is not queried, with or without the catalog explicitly given
 - **AND** this is covered by `workspace::check_compares_protected_packages_with_their_catalog`
 
 #### Scenario: Catalog no longer verified
@@ -258,7 +261,7 @@ A local catalog location given in `Options.catalog` that does not exist SHALL ma
 A catalog whose top-level `catalog.json` has `"verified": true` SHALL be verified; any other is unverified and serves discovery only. Writers SHALL keep the flag. A verified catalog SHALL take new versions only through `catalog register`; `catalog update` into it SHALL fail with `invalid_argument`. Verified by `catalog::verified_catalog_takes_only_registered_versions` and `verified_catalog_protects_updates_and_detach_drops_it`.
 
 #### Scenario: Register into a verified catalog
-- **WHEN** the owner set `"verified": true` and runs `catalog register ./greeter --ref acme/greeter@0.2.0`
+- **WHEN** the owner set `"verified": true` and runs `catalog register ./greeter --ref v0.2.0`
 - **THEN** the version is published and `catalog.json` still has `"verified": true`
 
 #### Scenario: Bulk generation refused
@@ -289,7 +292,7 @@ Catalog versions SHALL be ordered by SemVer precedence (package-ids, "Version fo
 - **THEN** `catalog show` shows `latest: pre-releases only`, `install-catalog acme/beta` fails with `catalog` and `install-catalog acme/beta --version 1.0.0-beta.1` installs it
 
 #### Scenario: Origin rows
-- **WHEN** a package without a catalog is at 1.1.0 and its origin has the tags `ID@2.0.0-beta.1` and later `ID@2.0.0`
+- **WHEN** a package without a catalog is at 1.1.0 and its origin has the tags `v2.0.0-beta.1` and later `v2.0.0`
 - **THEN** `check` first shows `up to date; pre-release 2.0.0-beta.1`, then LATEST `2.0.0 (major)` with `update available`
 
 ### Requirement: Local release history remains bounded in execution time
@@ -313,3 +316,10 @@ Builds SHALL be tar.gz with output at the root, verified against archive SHA-256
 #### Scenario: Unsafe archive entry
 - **WHEN** an archive contains a link, special file or unsafe path
 - **THEN** it is refused before commit and cannot write outside staging
+
+### Requirement: Check can bypass catalog release data
+`gitpm check --no-catalog` SHALL bypass selected and recorded catalogs for Git-installed packages and check their origins through the partial-fetch fallback. Build installations SHALL keep using their recorded catalog because they have no Git release origin. This option SHALL affect reporting only, without changing installed protection or update policy.
+
+#### Scenario: Force origin despite configured catalog
+- **WHEN** the configured catalog lists 1.0.0, the origin has 2.0.0 and a Git-installed package is checked with `--no-catalog`
+- **THEN** the row comes from origin with latest 2.0.0, and the selected catalog is not read

@@ -24,7 +24,7 @@ def every_read_is_refused(t: T):
     for argv in (["info"], ["install-catalog", HELLO], ["install-catalog", OLD]):
         t.gitpm_err("--catalog", v1(t), *argv, kind="catalog", contains="v1 catalogs")
     t.ok(not t.state().get("packages"), "nothing installed")
-    t.gitpm_ok("install", t.repo(HELLO), "--ref", f"{HELLO}@0.1.0")
+    t.gitpm_ok("install", t.repo(HELLO), "--ref", f"v0.1.0")
     t.gitpm_err("--catalog", v1(t), "check", kind="catalog", contains="v1 catalogs")
     t.same(before, "v1 catalog")
 
@@ -34,7 +34,7 @@ def writes_into_a_v1_catalog_are_refused(t: T):
     """register and catalog-update into the v1 folder fail with `catalog` and write nothing
     (no backup, no catalog tree)."""
     before = t.snap(v1(t))
-    t.gitpm_err("--catalog", v1(t), "register", t.repo(HELLO), "--ref", f"{HELLO}@0.2.0",
+    t.gitpm_err("--catalog", v1(t), "register", t.repo(HELLO), "--ref", f"v0.2.0",
                 kind="catalog", contains="v1 catalogs")
     sources = t.root / "sources.txt"
     sources.write_text(f"{t.repo(HELLO)}\n")

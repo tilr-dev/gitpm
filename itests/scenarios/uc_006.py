@@ -35,17 +35,17 @@ def no_side_effects(t: T, bare):
 
 @case(spec=["authoring/commit-releases-a-version"])
 def release_commits_all_changes(t: T):
-    """Edits, a new file, a deleted file and an ignored file: one release commit with tag dan/rel@0.1.1."""
+    """Edits, a new file, a deleted file and an ignored file: one release commit with tag v0.1.1."""
     repo, bare = author(t)
     parent = t.rev(repo)
     t.write(repo, {"dist/index.js": "export const greeting = 'edited';\n", "README.md": "readme v2\n",
                    "new.txt": "new\n", "old.txt": None, "debug.log": "ignored\n"})
     r = t.gitpm_ok("commit", repo, "0.1.1")
-    t.has(r.out, f"{ID}@0.1.1")
+    t.has(r.out, f"v0.1.1")
     head = t.rev(repo)
-    t.eq(t.rev(repo, f"{ID}@0.1.1"), head, "tag points at HEAD")
+    t.eq(t.rev(repo, f"v0.1.1"), head, "tag points at HEAD")
     t.eq(t.git(repo, "rev-parse", "HEAD~1"), parent, "exactly one new commit")
-    t.eq(t.git(repo, "log", "-1", "--format=%s"), f"Release {ID} 0.1.1", "message")
+    t.eq(t.git(repo, "log", "-1", "--format=%s"), "Release 0.1.1", "message")
     t.eq(json.loads(t.git(repo, "show", "HEAD:plugin.json"))["version"], "0.1.1", "committed version")
     t.eq(json.loads((repo / "plugin.json").read_text())["version"], "0.1.1", "worktree version")
     changed = sorted(t.git(repo, "diff", "--name-status", "HEAD~1", "HEAD").splitlines())
@@ -55,7 +55,7 @@ def release_commits_all_changes(t: T):
     t.eq(t.git(repo, "ls-files", "debug.log"), "", "ignored file not committed")
     t.ok((repo / "debug.log").is_file(), "ignored file kept on disk")
     t.eq(t.git(repo, "status", "--porcelain"), "", "clean tree")
-    t.eq(t.git(repo, "tag", "--list").split(), [f"{ID}@0.1.0", f"{ID}@0.1.1"], "tags")
+    t.eq(t.git(repo, "tag", "--list").split(), [f"v0.1.0", f"v0.1.1"], "tags")
     no_side_effects(t, bare)
 
 
@@ -67,8 +67,8 @@ def release_after_separately_committed_payload(t: T):
     t.gitpm_ok("commit", repo, "0.1.2")
     t.eq(t.git(repo, "rev-parse", "HEAD~1"), payload, "release commit on top of the payload commit")
     t.eq(t.git(repo, "diff", "--name-only", "HEAD~1", "HEAD"), "plugin.json", "only the version changes")
-    t.eq(t.rev(repo, f"{ID}@0.1.2"), t.rev(repo), "tag at HEAD")
-    t.eq(json.loads(t.git(repo, "show", f"{ID}@0.1.2:plugin.json"))["version"], "0.1.2", "tag manifest")
+    t.eq(t.rev(repo, f"v0.1.2"), t.rev(repo), "tag at HEAD")
+    t.eq(json.loads(t.git(repo, "show", f"v0.1.2:plugin.json"))["version"], "0.1.2", "tag manifest")
     no_side_effects(t, bare)
 
 
@@ -90,7 +90,7 @@ def refused_case(name: str, version: str, kind: str, doc: str, prepare=None):
 
 
 def _future_tag(t: T, repo):
-    t.tag(repo, f"{ID}@0.3.0")
+    t.tag(repo, f"v0.3.0")
 
 
 refused_case("existing_version_refused", "0.1.0", "version_conflict",
@@ -106,12 +106,12 @@ for _name, _version in [("two_parts", "0.2"), ("prerelease", "1.0.0-01"), ("buil
 
 @case(spec=["authoring/commit-releases-a-version#release-a-pre-release"])
 def prerelease_is_released_but_not_installed_by_default(t: T):
-    """A pre-release version gets its ID@VERSION tag; a plain install still takes the release."""
+    """A pre-release version gets its vVERSION tag; a plain install still takes the release."""
     repo, bare = author(t)
     t.write(repo, {"dist/index.js": "export const greeting = 'beta';\n"})
     r = t.gitpm_ok("commit", repo, "0.2.0-beta.1")
-    t.has(r.out, f"{ID} committed 0.2.0-beta.1 (local commit and tag {ID}@0.2.0-beta.1)")
-    t.eq(t.rev(repo, f"{ID}@0.2.0-beta.1"), t.rev(repo), "tag at HEAD")
+    t.has(r.out, f"{ID} committed 0.2.0-beta.1 (local commit and tag v0.2.0-beta.1)")
+    t.eq(t.rev(repo, f"v0.2.0-beta.1"), t.rev(repo), "tag at HEAD")
     no_side_effects(t, bare)
     t.gitpm_ok("install", repo)
     t.ok(t.package(ID)["current"]["version"] != "0.2.0-beta.1", "the pre-release is not picked")

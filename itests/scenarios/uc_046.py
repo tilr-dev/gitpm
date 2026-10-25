@@ -75,7 +75,7 @@ def updated(t: T):
     t.eq(p["current"]["version"], "0.1.1", "current after recovery")
     t.eq(p["previous"]["version"], "0.1.0", "previous after recovery")
     t.has((t.dist(ID) / "index.js").read_text(), "dan/hello 0.1.1")
-    t.eq(t.rev(t.worktree(ID)), t.rev(ID, f"{ID}@0.1.1"), "clone HEAD after recovery")
+    t.eq(t.rev(t.worktree(ID)), t.rev(ID, f"v0.1.1"), "clone HEAD after recovery")
     t.ok(not (t.ws / ".pm-txn").exists(), "no transaction left")
 
 
@@ -233,13 +233,13 @@ def catalog_write_failure(t: T, *command):
     index = json.loads(t.catalog_index("dan/num").read_text())
     t.eq(sorted(index["versions"]), ["1.10.0", "1.11.0", "1.9.0"], "index after retry")
     release = json.loads(t.catalog_release("dan/num", "1.11.0").read_text())
-    t.eq(release["commit"], t.rev("dan/num", "dan/num@1.11.0"), "new release recorded")
+    t.eq(release["commit"], t.rev("dan/num", "v1.11.0"), "new release recorded")
     t.eq(list(t.catalog.rglob("*.tmp")), [], "no temporary files")
 
 
 @case(fixture="catalog", spec=["catalog/writers-are-serialized-and-crash-safe"])
 def register_write_failure_then_retry(t: T):
-    catalog_write_failure(t, "register", t.repo("dan/num"), "--ref", "dan/num@1.11.0")
+    catalog_write_failure(t, "register", t.repo("dan/num"), "--ref", "v1.11.0")
 
 
 @case(fixture="catalog", spec=["catalog/writers-are-serialized-and-crash-safe"])

@@ -51,7 +51,7 @@ def apply_updates_and_keeps_back(t: T):
 def new_dependency_is_installed_from_the_catalog(t: T):
     """app/c 1.1.0 needs dep/new ^1 (only in the catalog): update all installs it as a new dependency."""
     t.new_package("dep/new", "1.0.0")
-    t.gitpm_ok("register", t.repo("dep/new"), "--ref", "dep/new@1.0.0")
+    t.gitpm_ok("register", t.repo("dep/new"), "--ref", "v1.0.0")
     t.release("app/c", "1.1.0", deps={CORE: "^1", "dep/new": "^1"})
     r = t.gitpm_ok("update", "all")
     t.eq(lines(r.out), ["app/a up to date (1.0.0)", "app/c updated 1.0.0 → 1.1.0", KEPT,

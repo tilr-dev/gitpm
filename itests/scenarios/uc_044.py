@@ -80,7 +80,7 @@ def catalog_round_trip_keeps_provenance(t: T):
     """Fork release registered in the catalog keeps forkOf; install-catalog restores it."""
     dest, source_commit, _ = prepare(t)
     t.gitpm_ok("commit", dest, "0.2.0")
-    t.gitpm_ok("register", dest, "--ref", f"{MINE}@0.2.0")
+    t.gitpm_ok("register", dest, "--ref", f"v0.2.0")
     release = json.loads(t.catalog_release(MINE, "0.2.0").read_text())
     forkof = {"id": ID, "version": "0.1.0", "commit": source_commit, "source": t.package(ID)["source"]}
     t.eq(release["manifest"]["forkOf"], forkof, "catalog manifest forkOf")

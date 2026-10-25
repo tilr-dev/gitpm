@@ -10,7 +10,7 @@ Defines how packages enter and leave a workspace: installing from a Git source o
 `install SOURCE` (`Manager::install`) SHALL bare-clone the source, select its newest valid stable release tag (package-ids), create a detached package worktree at that commit, verify the manifest and deploy its output, installing missing dependencies (dependencies). Untagged commits are ignored; no stable releases SHALL fail with `no_releases`. Verified by `stable_install_and_update_ignore_untagged_head_and_sort_versions`.
 
 #### Scenario: Newest numeric tag wins
-- **WHEN** a repository has tags `acme/greeter@0.9.0` and `acme/greeter@0.10.0` and a newer untagged commit
+- **WHEN** a repository has tags `v0.9.0` and `v0.10.0` and a newer untagged commit
 - **THEN** install checks out `0.10.0` and prints `installed acme/greeter@0.10.0 from SOURCE`
 
 #### Scenario: Repository without releases
@@ -26,8 +26,8 @@ Defines how packages enter and leave a workspace: installing from a Git source o
 - **THEN** `app` is recorded enabled and deployed although its dependency is not active (dependencies, "enable needs active dependencies"), `lib` stays disabled, missing dependencies are installed as usual, and `list` reports `app`'s dependency on `lib` unsatisfied (`forced_install_and_install_over_a_download`)
 
 #### Scenario: Pre-release tag is not picked
-- **WHEN** a repository has `acme/greeter@1.2.0` and the newer `acme/greeter@1.3.0-beta.1`
-- **THEN** `install` installs 1.2.0; `install SOURCE --ref acme/greeter@1.3.0-beta.1` installs the beta (pinned, as every `--ref` tag)
+- **WHEN** a repository has `v1.2.0` and the newer `v1.3.0-beta.1`
+- **THEN** `install` installs 1.2.0; `install SOURCE --ref v1.3.0-beta.1` installs the beta (pinned, as every `--ref` tag)
 
 #### Scenario: Bare source storage
 - **WHEN** a root or nested Git package is installed

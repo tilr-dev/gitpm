@@ -10,7 +10,7 @@ ID = "dan/hello"
 
 
 def tagged(t: T, version: str) -> str:
-    return t.rev(ID, f"{ID}@{version}")
+    return t.rev(ID, f"v{version}")
 
 
 def at(t: T, current: str, previous: str | None):
@@ -96,11 +96,13 @@ def rollback_of_a_fork_with_upstream_tags(t: T):
     first = t.new_package(fork, "1.0.0")
     repo = t.repo(fork)
     t.git(repo, "checkout", "-q", "--detach")
-    t.release("acme/hello", "1.1.0", repo=repo)
+    t.release("acme/hello", "1.2.0", repo=repo)
     t.git(repo, "checkout", "-q", "main")
-    t.gitpm_ok("install", repo)
+    r = t.gitpm_ok("install", repo)
+    t.lacks(r.err, "Warning:", "v1.2.0")
     t.release(fork, "1.1.0")
-    t.gitpm_ok("update", fork)
+    r = t.gitpm_ok("update", fork)
+    t.lacks(r.err, "Warning:", "v1.2.0")
     r = t.gitpm_ok("rollback", fork)
     t.has(r.out, f"{fork} rolled back 1.1.0 → 1.0.0")
     t.eq(t.package(fork)["current"], {"version": "1.0.0", "commit": first}, "current after rollback")

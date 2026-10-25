@@ -30,7 +30,7 @@ def registered(t: T, id: str, version: str) -> dict:
 @case(fixture="g6_core", spec=["dependencies/requirement-syntax", "dependencies/state-keeps-dependency-edges"])
 def valid_requirements_accepted(t: T):
     """1a. npm-style ranges lib/core 1.1.0 satisfies are accepted (direct install with lib/core installed)."""
-    t.gitpm_ok("install", t.repo(CORE), "--ref", f"{CORE}@1.1.0")
+    t.gitpm_ok("install", t.repo(CORE), "--ref", f"v1.1.0")
     for i, req in enumerate(["^1.0", "1.1.0", "~1.1", ">=1.0.0 <2.0.0", "=1.1.0", ">= 1.1", "*", "^1.1.0-beta"]):
         id = f"ok/r{i}"
         t.new_package(id, "1.0.0", deps={CORE: req})
@@ -41,7 +41,7 @@ def valid_requirements_accepted(t: T):
 @case(fixture="g6_core", spec=["dependencies/requirement-syntax#bare-version-is-exact"])
 def bare_version_is_exact(t: T):
     """1f. A bare version is exact: lib/core 1.1.0 installed does not satisfy "1.0.0"."""
-    t.gitpm_ok("install", t.repo(CORE), "--ref", f"{CORE}@1.1.0")
+    t.gitpm_ok("install", t.repo(CORE), "--ref", f"v1.1.0")
     t.new_package("ok/exact", "1.0.0", deps={CORE: "1.0.0"})
     t.gitpm_err("install", t.repo("ok/exact"), kind="dependency_conflict", contains=CORE)
     t.not_installed("ok/exact")
@@ -51,12 +51,12 @@ def refused(t: T, id: str, deps: dict, kind: str, *needles: str):
     t.new_package(id, "1.0.0", deps=deps)
     # An existing workspace (lib/core installed) so "nothing changed" is byte-exact; an empty
     # workspace skeleton on a refused install into a missing one is accepted by the owner.
-    t.gitpm_ok("install", t.repo(CORE), "--ref", f"{CORE}@1.1.0")
+    t.gitpm_ok("install", t.repo(CORE), "--ref", f"v1.1.0")
     before = t.snap(t.ws)
     t.gitpm_err("install", t.repo(id), kind=kind, contains=needles)
     t.same(before, "workspace")
     t.not_installed(id)
-    t.gitpm_err("--catalog", t.root / "check-catalog", "register", t.repo(id), "--ref", f"{id}@1.0.0",
+    t.gitpm_err("--catalog", t.root / "check-catalog", "register", t.repo(id), "--ref", f"v1.0.0",
              kind=kind, contains=needles)
 
 
@@ -201,7 +201,7 @@ def missing_catalog_location_is_refused(t: T):
 def direct_install_with_dependency_installed(t: T):
     """8b. lib/core already installed (from Git), no catalog: app/a installs and resolves to it."""
     before = t.snap(t.catalog)
-    t.gitpm_ok("install", t.repo(CORE), "--ref", f"{CORE}@1.1.0", env=NO_CATALOG)
+    t.gitpm_ok("install", t.repo(CORE), "--ref", f"v1.1.0", env=NO_CATALOG)
     t.gitpm_ok("install", t.repo("app/a"), env=NO_CATALOG)
     row = resolved(t)["app/a"]["dependencies"][0]
     t.eq((row["provider"], row["satisfied"]), (CORE, True), "resolved")

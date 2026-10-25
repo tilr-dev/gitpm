@@ -15,7 +15,7 @@ def catalog_group_runs_every_subcommand(t: T):
     sources.write_text(f"{source}\n")
     update = t.run("gitpm", "catalog", "update", "--sources", sources, check=True)
     t.has(update.out, "Catalog ready: 2 release(s) checked from sources.")
-    release = t.run("gitpm", "catalog", "register", source, "--ref", "dan/hello@0.2.0", check=True)
+    release = t.run("gitpm", "catalog", "register", source, "--ref", "v0.2.0", check=True)
     t.eq(json.loads(release.out)["manifest"]["id"], "dan/hello", "registered package")
     show = t.run("gitpm", "catalog", "show", check=True)
     t.has(show.out, "dan/hello", "latest: 0.2.0")

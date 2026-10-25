@@ -59,7 +59,7 @@ def broken_case(brk: str, name: str):
     breaker, kind = BREAKS[brk]
 
     def fn(t: T):
-        t.gitpm_ok("register", t.repo(A), "--ref", "dan/a@0.1.1")
+        t.gitpm_ok("register", t.repo(A), "--ref", "v0.1.1")
         argv = command(t, name)
         breaker(t)
         raw = (t.ws / "state.json").read_bytes()
@@ -93,7 +93,7 @@ def missing_clone_case(name: str, argv: list):
         t.eq(t.state(), state, "state unchanged")
         t.same(b_before, "B untouched")
         t.gitpm_ok("update", B)
-        t.eq(t.package(B)["current"], {"version": "0.1.1", "commit": t.rev(B, "dan/b@0.1.1")}, "B updated")
+        t.eq(t.package(B)["current"], {"version": "0.1.1", "commit": t.rev(B, "v0.1.1")}, "B updated")
         t.has((t.dist(B) / "index.js").read_text(), "dan/b 0.1.1")
         t.eq(t.package(A), state["packages"][A], "A state entry kept")
 
@@ -147,7 +147,7 @@ def missing_dist_restore_redeploys(t: T):
 # ---------------------------------------------------------------- 5. HEAD moved
 
 def move_head(t: T) -> str:
-    old = t.rev(A, "dan/a@0.1.0")
+    old = t.rev(A, "v0.1.0")
     t.git(t.worktree(A), "checkout", "-q", "--detach", old)
     return old
 

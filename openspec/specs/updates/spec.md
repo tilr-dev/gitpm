@@ -45,7 +45,7 @@ An update that follows releases SHALL compare versions only and SHALL never down
 
 #### Scenario: Release commit of the installed version moved
 - **WHEN** the tag of the installed version is moved to another commit on the origin and the user runs `update ID`
-- **THEN** it prints `ID up to date (V)` and `Warning: release tag ID@V now points to COMMIT; the installed commit is kept`, and the workspace is unchanged
+- **THEN** it prints `ID up to date (V)` and `Warning: release tag vV now points to COMMIT; the installed commit is kept`, and the workspace is unchanged
 
 #### Scenario: Retracted release in update all
 - **WHEN** the origin deleted the tag of the installed release and the user runs `update all`
@@ -53,7 +53,7 @@ An update that follows releases SHALL compare versions only and SHALL never down
 
 #### Scenario: Warnings
 - **WHEN** the installed release was retracted (its tag deleted, only older releases or none left), its tag moved, or its tag now points at a commit it is no release of (a broken tag, package-ids)
-- **THEN** the warning is `installed release ID@V no longer exists on the origin`, `release tag ID@V now points to COMMIT; the installed commit is kept` or `release tag ID@V now points to COMMIT (skipped: REASON); the installed commit is kept`
+- **THEN** the warning is `installed release ID@V no longer exists on the origin`, `release tag vV now points to COMMIT; the installed commit is kept` or `release tag vV now points to COMMIT (skipped: REASON); the installed commit is kept`
 - **AND** this is covered by `a_deleted_tag_in_a_shared_clone_is_reported_not_fatal` and `a_broken_installed_release_tag_is_named_as_skipped`
 
 ### Requirement: Update mirrors the origin's tags
@@ -79,8 +79,8 @@ An update of a Git package SHALL mirror the origin's tags (pruned and force-fetc
 - **THEN** the package moves to the fetched `origin/feature` commit, not the clone's stale local branch, and is recorded in branch mode `feature`
 
 #### Scenario: Moved release tag by ref
-- **WHEN** the release tag of the installed version moved and the user runs `update ID --ref ID@V`
-- **THEN** the package is pinned to the tag's new commit and the CLI warns `release tag ID@V now points to COMMIT`
+- **WHEN** the release tag of the installed version moved and the user runs `update ID --ref vV`
+- **THEN** the package is pinned to the tag's new commit and the CLI warns `release tag vV now points to COMMIT`
 
 ### Requirement: Branch mode follows the branch HEAD by commit
 `update ID` in branch mode SHALL move to the HEAD of the recorded origin branch, by commit (no version bump needed), and refuse with `version_conflict` when its history diverged ("ID: history of BRANCH diverged; automatic update refused") or the branch is gone. An explicit `--ref BRANCH` SHALL skip the ancestor check (the way back after a force-push). Verified by `branch_mode_follows_origin_head_and_refuses_diverged_history` and `a_branch_gone_from_the_origin_is_reported_not_fatal`.
@@ -98,11 +98,11 @@ Update and rollback SHALL refuse lost work in the affected worktree, including s
 - Verified by `local_work_blocks_update_and_rollback`, `update_and_rollback_refuse_hidden_local_work` and `rollback_of_a_fork_treats_fetched_upstream_tags_as_published`.
 
 #### Scenario: Fork, update, rollback
-- **WHEN** `me/hello`, a fork whose repository also holds its upstream's tags (for example `acme/hello@1.0.0`), is installed at 1.0.0, updated to 1.1.0, and the user runs `rollback me/hello`
+- **WHEN** `me/hello`, a fork whose repository also holds its upstream's tags (for example `v1.0.0` on a commit naming `acme/hello`), is installed at 1.0.0, updated to 1.1.0, and the user runs `rollback me/hello`
 - **THEN** the upstream tags fetched from the fork's origin count as published, as they did for the update, and rollback prints `me/hello rolled back 1.1.0 → 1.0.0` without a network access
 
 #### Scenario: Retained upstream tag on rollback
-- **WHEN** the clone of a fork keeps a tag of its upstream that no remote branch contains, and the fork's origin had that tag with the same object at the last fetch, and the user runs `rollback`
+- **WHEN** the clone of a fork keeps a `vVERSION` tag of its upstream that no remote branch contains, and the fork's origin had that tag with the same object at the last fetch, and the user runs `rollback`
 - **THEN** rollback works offline and counts the tag as published, as `update` does, so it does not fail with `local_changes` because of it
 
 #### Scenario: Tag created locally
@@ -206,8 +206,8 @@ Update and rollback SHALL refuse lost work in the affected worktree, including s
 Managed `update ID` SHALL follow recorded mode: release moves to the newest release, branch to HEAD, pinned stays with reason `pinned` (CLI: `ID pinned at V (REF)`). Explicit targets SHALL switch managed mode as at install. Links follow "Linked packages report releases without automatic replacement", including explicit targets. Verified by `workspace::update_follows_and_switches_the_recorded_mode`.
 
 #### Scenario: Pinned package
-- **WHEN** `acme/greeter` was installed with `--ref acme/greeter@0.1.0`, 0.2.0 is released and the user runs `update acme/greeter`
-- **THEN** it prints `acme/greeter pinned at 0.1.0 (acme/greeter@0.1.0)` and nothing changes
+- **WHEN** `acme/greeter` was installed with `--ref v0.1.0`, 0.2.0 is released and the user runs `update acme/greeter`
+- **THEN** it prints `acme/greeter pinned at 0.1.0 (v0.1.0)` and nothing changes
 
 #### Scenario: Back to releases
 - **WHEN** the user then runs `update acme/greeter --release`
@@ -226,14 +226,14 @@ Managed `update ID` SHALL follow recorded mode: release moves to the newest rele
 
 #### Scenario: Back to releases at the installed version
 - **WHEN** a package is pinned to a commit with version 0.1.0, the release tag of 0.1.0 is another commit, and the user runs `update ID --release`
-- **THEN** the installed commit is kept, the mode becomes release (a change), and the CLI warns `release tag ID@0.1.0 now points to COMMIT; the installed commit is kept`; this is covered by `return_to_releases_at_the_installed_version_keeps_the_commit`
+- **THEN** the installed commit is kept, the mode becomes release (a change), and the CLI warns `release tag v0.1.0 now points to COMMIT; the installed commit is kept`; this is covered by `return_to_releases_at_the_installed_version_keeps_the_commit`
 
 ### Requirement: A change of mode alone is a change
 An update whose target resolves to the installed commit but records another mode SHALL write the new mode and report a change (`RevisionChange.changed`, `from` and `to` at the same commit; CLI `ID pinned at V (REF)`, `ID follows branch B at V`, `ID follows releases at V`). Verified by `workspace::update_follows_and_switches_the_recorded_mode`.
 
 #### Scenario: Pin at the installed commit
-- **WHEN** `acme/greeter` follows releases at 0.2.0 and the user runs `update acme/greeter --ref acme/greeter@0.2.0`
-- **THEN** it prints `acme/greeter pinned at 0.2.0 (acme/greeter@0.2.0)` and the record says `{"pinned": "acme/greeter@0.2.0"}`
+- **WHEN** `acme/greeter` follows releases at 0.2.0 and the user runs `update acme/greeter --ref v0.2.0`
+- **THEN** it prints `acme/greeter pinned at 0.2.0 (v0.2.0)` and the record says `{"pinned": "v0.2.0"}`
 
 ### Requirement: Rollback restores revision and mode together
 `rollback ID` SHALL swap `current` with `previous` and the recorded mode with the mode `previous` carries (`previous.mode`, written by every update), so a rollback after `update ID --release` of a branch-mode package follows the branch again. This adds to "Rollback swaps current and previous". Verified by `workspace::update_follows_and_switches_the_recorded_mode`.
@@ -246,9 +246,9 @@ An update whose target resolves to the installed commit but records another mode
 Protected packages SHALL update only to versions in their recorded verified catalog, whatever `Options.catalog` is. Git targets SHALL match recorded source, commit, path, manifest and hashes before any change (`catalog` otherwise); builds SHALL verify archive and files without Git. `update ID --detach` (`Manager::update_with`) SHALL drop protection and update from origin in one transaction. Verified by `workspace::protected_packages_update_only_to_catalog_versions`.
 
 #### Scenario: Newer tag not in the catalog
-- **WHEN** protected `acme/greeter` 0.2.0 has the tag `acme/greeter@0.3.0` on its origin but the verified catalog lists only 0.1.0 and 0.2.0
+- **WHEN** protected `acme/greeter` 0.2.0 has the tag `v0.3.0` on its origin but the verified catalog lists only 0.1.0 and 0.2.0
 - **THEN** `update acme/greeter` prints `acme/greeter kept at 0.2.0 (upstream 0.3.0 not in catalog)` and `update all` lists it in `unchanged` with that reason
-- **AND** a ref or branch target needs a detach: `update acme/greeter --ref acme/greeter@0.3.0` fails with `invalid_argument` ("… detach it to follow a ref or branch of its origin")
+- **AND** a ref or branch target needs a detach: `update acme/greeter --ref v0.3.0` fails with `invalid_argument` ("… detach it to follow a ref or branch of its origin")
 
 #### Scenario: Hash mismatch on update
 - **WHEN** the verified catalog lists 0.3.0 but the files at the recorded commit do not match its hashes
@@ -294,19 +294,19 @@ An update to a newer version outside the caret range of the installed one (a new
 - **THEN** it fails with `dependency_conflict` and the workspace is unchanged (`cycles_resolve_and_updates_keep_dependents_working`)
 
 ### Requirement: Pre-releases are opt-in
-Install, update and `update all` SHALL never pick a pre-release implicitly. A pre-release SHALL be installed only when named (`--ref ID@1.3.0-beta.1`, `install-catalog ID --version 1.3.0-beta.1`, a dependency range naming it). Once one is installed in release mode, `update` and `update all` SHALL also consider newer pre-releases of the same MAJOR.MINOR.PATCH besides every newer release. A pre-release tag not considered never blocks an update. Verified by `workspace::pre_releases_are_opt_in`.
+Install, update and `update all` SHALL never pick a pre-release implicitly. A pre-release SHALL be installed only when named (`--ref v1.3.0-beta.1`, `install-catalog ID --version 1.3.0-beta.1`, a dependency range naming it). Once one is installed in release mode, `update` and `update all` SHALL also consider newer pre-releases of the same MAJOR.MINOR.PATCH besides every newer release. A pre-release tag not considered never blocks an update. Verified by `workspace::pre_releases_are_opt_in`.
 
 #### Scenario: Newest tag is a pre-release
 - **WHEN** a package is at 1.2.0 and the origin also has `1.3.0-beta.1`
 - **THEN** `update` reports `up to date (1.2.0)`
 
 #### Scenario: A ref install is pinned
-- **WHEN** the user installs with `--ref ID@1.3.0-beta.1` and later runs `update ID --release`
+- **WHEN** the user installs with `--ref v1.3.0-beta.1` and later runs `update ID --release`
 - **THEN** the package stays pinned until then; in release mode it follows the 1.3.0 track
 
 #### Scenario: Only pre-release tags
-- **WHEN** a repository has only the tag `ID@1.0.0-beta.1`
-- **THEN** `install` fails with `no_releases` and `install SOURCE --ref ID@1.0.0-beta.1` installs it
+- **WHEN** a repository has only the tag `v1.0.0-beta.1`
+- **THEN** `install` fails with `no_releases` and `install SOURCE --ref v1.0.0-beta.1` installs it
 
 #### Scenario: A consumer's range names a pre-release
 - **WHEN** a consumer requires `lib ^1.3.0-beta.1`

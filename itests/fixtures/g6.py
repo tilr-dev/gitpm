@@ -42,7 +42,7 @@ def g6_core(t: T):
 def _(t: T):
     for id, releases in CORE.items():
         for version, deps in releases:
-            m = json.loads(t.git(id, "show", f"{id}@{version}:plugin.json"))
+            m = json.loads(t.git(id, "show", f"v{version}:plugin.json"))
             t.eq(m.get("dependencies", {}), deps, f"{id}@{version} dependencies")
 
 
@@ -51,7 +51,7 @@ def g6_core_catalog(t: T):
     """Every g6_core release registered in /fx/catalog; empty workspace."""
     for id, releases in CORE.items():
         for version, _ in releases:
-            t.gitpm_ok("register", t.repo(id), "--ref", f"{id}@{version}")
+            t.gitpm_ok("register", t.repo(id), "--ref", f"v{version}")
 
 
 @g6_core_catalog.check
@@ -100,7 +100,7 @@ def g6_base(t: T):
 @g6_base.check
 def _(t: T):
     for id, deps in BASE.items():
-        m = json.loads(t.git(id, "show", f"{id}@1.0.0:plugin.json"))
+        m = json.loads(t.git(id, "show", f"v1.0.0:plugin.json"))
         t.eq(m.get("dependencies", {}), deps, f"{id} dependencies")
 
 
@@ -108,7 +108,7 @@ def _(t: T):
 def g6_base_catalog(t: T):
     """All g6_base packages registered at 1.0.0 in /fx/catalog; empty workspace."""
     for id in BASE:
-        t.gitpm_ok("register", t.repo(id), "--ref", f"{id}@1.0.0")
+        t.gitpm_ok("register", t.repo(id), "--ref", f"v1.0.0")
 
 
 @g6_base_catalog.check
@@ -196,7 +196,7 @@ def g6_compat(t: T):
 @g6_compat.check
 def _(t: T):
     for id, declares in COMPAT_FORKS.items():
-        m = json.loads(t.git(id, "show", f"{id}@0.1.0:plugin.json"))
+        m = json.loads(t.git(id, "show", f"v0.1.0:plugin.json"))
         t.eq(m["replaces"], {"id": "vendor/base", "version": declares}, f"{id} replaces")
     t.eq(json.loads(t.git("app/c", "show", "HEAD:plugin.json"))["dependencies"], {"lib/mid": "^1"}, "app/c deps")
 
@@ -205,9 +205,9 @@ def _(t: T):
 def g6_compat_installed(t: T):
     """vendor/base 1.4.0, app/a, app/b, lib/mid, app/c registered and app/a, app/b, app/c installed from
     the catalog (vendor/base and lib/mid pulled in); forks mine/base and old/base installed from Git."""
-    t.gitpm_ok("register", t.repo("vendor/base"), "--ref", "vendor/base@1.4.0")
+    t.gitpm_ok("register", t.repo("vendor/base"), "--ref", "v1.4.0")
     for id in ["app/a", "app/b", "lib/mid", "app/c"]:
-        t.gitpm_ok("register", t.repo(id), "--ref", f"{id}@1.0.0")
+        t.gitpm_ok("register", t.repo(id), "--ref", f"v1.0.0")
     for id in ["app/a", "app/b", "app/c"]:
         t.gitpm_ok("install-catalog", id)
     for id in COMPAT_FORKS:
@@ -229,7 +229,7 @@ def _(t: T):
 @fixture(requires=["hello"], gitpm=True)
 def g6_journey(t: T):
     """dan/hello 0.1.0 registered in /fx/catalog (verified) and installed from it with install-catalog."""
-    t.gitpm_ok("register", t.repo("dan/hello"), "--ref", "dan/hello@0.1.0")
+    t.gitpm_ok("register", t.repo("dan/hello"), "--ref", "v0.1.0")
     # A verified catalog: the installed package records it (protected).
     t.edit_json(t.catalog / "catalog.json", lambda c: c.update(verified=True))
     t.gitpm_ok("install-catalog", "dan/hello")
@@ -238,7 +238,7 @@ def g6_journey(t: T):
 @g6_journey.check
 def _(t: T):
     p = t.package("dan/hello")
-    t.eq(p["current"], {"version": "0.1.0", "commit": t.rev("dan/hello", "dan/hello@0.1.0")}, "current")
+    t.eq(p["current"], {"version": "0.1.0", "commit": t.rev("dan/hello", "v0.1.0")}, "current")
     t.eq(p["previous"], None, "previous")
     t.ok(p.get("catalog"), "catalog recorded")
     t.eq(t.rev(t.worktree("dan/hello")), p["current"]["commit"], "clone HEAD")

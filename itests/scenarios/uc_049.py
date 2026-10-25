@@ -165,7 +165,7 @@ def credentials_allow_check_install_update_register(t: T):
     outputs.append(t.gitpm_ok("update", ID, env=helper()).text)
     t.eq(t.package(ID)["current"], {"version": "0.1.1", "commit": commit}, "updated with credentials")
     t.eq(t.rev(t.worktree(ID)), commit, "clone HEAD")
-    outputs.append(t.gitpm_ok("register", server.url, "--ref", "dan/hello@0.1.1", env=helper()).text)
+    outputs.append(t.gitpm_ok("register", server.url, "--ref", "v0.1.1", env=helper()).text)
     t.eq(json.loads(t.catalog_index(ID).read_text())["source"], server.url, "catalog stores the clean URL")
     outputs.append(t.gitpm_ok("list").text)
     no_secret(t, *outputs)

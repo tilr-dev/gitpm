@@ -65,7 +65,7 @@ def valid_characters_accepted(t: T):
     for i, value in enumerate(["my_ns-2", "0_9", "_x", "n" * 80]):
         t.gitpm_ok("init", f"{value}/ok", "--into", f"a/ok{i}")
         t.eq(created_id(t, f"a/ok{i}"), f"{value}/ok", "ID")
-        t.has(t.git(t.root / f"a/ok{i}", "tag", "--list"), f"{value}/ok@0.1.0")
+        t.has(t.git(t.root / f"a/ok{i}", "tag", "--list"), f"v0.1.0")
 
 
 @case(spec=["package-ids/no-default-namespace"])

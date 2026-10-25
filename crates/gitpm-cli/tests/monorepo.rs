@@ -15,7 +15,7 @@ struct Fixture {
     mono: PathBuf,
 }
 impl Fixture {
-    /// Repository `mono` with `tilr/store` and `tilr/theme` at 1.0.0 (one commit, two tags).
+    /// Repository `mono` with `tilr/store` and `tilr/theme` at 1.0.0 (one commit, one repository tag).
     fn new() -> Self {
         let dir = std::env::temp_dir().join(format!(
             "gitpm-cli-mono-{}-{}",
@@ -44,8 +44,7 @@ impl Fixture {
         f.write("theme", "1.0.0", "");
         f.git(&f.mono, &["add", "--all"]);
         f.git(&f.mono, &["commit", "-q", "-m", "first"]);
-        f.git(&f.mono, &["tag", "tilr/store@1.0.0"]);
-        f.git(&f.mono, &["tag", "tilr/theme@1.0.0"]);
+        f.git(&f.mono, &["tag", "v1.0.0"]);
         f
     }
     fn command(&self, program: impl AsRef<std::ffi::OsStr>) -> Command {
@@ -83,15 +82,24 @@ impl Fixture {
         .unwrap();
         fs::write(folder.join("dist/index.js"), format!("{name} {version}")).unwrap();
     }
-    /// Commit a new version of one package and tag only that package.
+    /// Commit one payload change, bump every package and tag the repository.
     fn release(&self, name: &str, version: &str) {
         self.write(name, version, "");
+        for entry in fs::read_dir(self.mono.join("packages")).unwrap() {
+            let path = entry.unwrap().path().join("plugin.json");
+            if path.is_file() {
+                let mut manifest: serde_json::Value =
+                    serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                manifest["version"] = version.into();
+                fs::write(path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+            }
+        }
         self.git(&self.mono, &["add", "--all"]);
         self.git(
             &self.mono,
             &["commit", "-q", "-m", &format!("{name} {version}")],
         );
-        self.git(&self.mono, &["tag", &format!("tilr/{name}@{version}")]);
+        self.git(&self.mono, &["tag", &format!("v{version}")]);
     }
     fn run(&self, args: &[&str]) -> Output {
         self.command(env!("CARGO_BIN_EXE_gitpm"))
@@ -145,7 +153,7 @@ impl Drop for Fixture {
 }
 
 #[test]
-fn two_packages_of_one_repository_share_one_clone_and_update_independently() {
+fn two_packages_share_one_clone_and_follow_repository_releases() {
     let f = Fixture::new();
     // Positional ID and --package are equivalent.
     f.ok(&["install", f.source(), "tilr/store"]);
@@ -164,7 +172,7 @@ fn two_packages_of_one_repository_share_one_clone_and_update_independently() {
         state["packages"]["tilr/theme"]["repo"]
     );
 
-    // Releasing A moves only A.
+    // Publishing a shared version still lets the caller update one installation.
     f.release("store", "1.1.0");
     f.ok(&["update", "tilr/store"]);
     assert_eq!(f.dist("tilr/store"), "store 1.1.0");
@@ -179,15 +187,20 @@ fn two_packages_of_one_repository_share_one_clone_and_update_independently() {
     let out = f.ok(&["update", "all"]);
     assert!(out.contains("2 updates"), "{out}");
     assert_eq!(f.dist("tilr/store"), "store 1.1.0");
+    assert_eq!(
+        f.state()["packages"]["tilr/store"]["current"]["version"],
+        "1.2.0"
+    );
     assert_eq!(f.dist("tilr/theme"), "theme 1.2.0");
 
     // --dev works per package (HEAD of the default branch, then followed).
     f.write("theme", "1.3.0", "");
+    f.write("store", "1.3.0", "");
     f.git(&f.mono, &["commit", "-q", "-am", "theme work"]);
     f.ok(&["update", "tilr/theme", "--dev"]);
     assert_eq!(f.dist("tilr/theme"), "theme 1.3.0");
     // An explicit ref names a release tag of the package.
-    f.ok(&["update", "tilr/store", "--ref", "tilr/store@1.0.0"]);
+    f.ok(&["update", "tilr/store", "--ref", "v1.0.0"]);
     assert_eq!(f.dist("tilr/store"), "store 1.0.0");
 }
 
@@ -211,8 +224,9 @@ fn installing_a_monorepo_without_a_package_id_lists_the_packages() {
         "--package",
         "tilr/store",
     ]);
-    // --ref with an ID@VERSION tag names the package; --dev needs an ID.
-    f.ok(&["install", f.source(), "--ref", "tilr/theme@1.0.0"]);
+    // A repository tag selects a revision, so a package ID is still required.
+    f.fails(&["install", f.source(), "--ref", "v1.0.0"]);
+    f.ok(&["install", f.source(), "tilr/theme", "--ref", "v1.0.0"]);
     f.fails(&["install", f.source(), "--dev"]);
     f.ok(&["install", f.source(), "tilr/store", "--dev"]);
     assert_eq!(f.dist("tilr/store"), "store 1.0.0");
@@ -238,20 +252,46 @@ fn uninstalling_one_package_keeps_the_other_working() {
 }
 
 #[test]
-fn a_tag_on_a_commit_without_its_package_is_a_clear_error() {
+fn repository_tags_without_the_package_are_ignored_without_warnings() {
     let f = Fixture::new();
+    f.ok(&["install", f.source(), "tilr/store"]);
     fs::remove_dir_all(f.mono.join("packages/store")).unwrap();
+    f.write("theme", "2.0.0", "");
     f.git(&f.mono, &["add", "--all"]);
     f.git(&f.mono, &["commit", "-q", "-m", "drop store"]);
-    f.git(&f.mono, &["tag", "tilr/store@2.0.0"]);
-    let error = f.fails(&["install", f.source(), "tilr/store"]);
+    f.git(&f.mono, &["tag", "v2.0.0"]);
+    let check = f
+        .command(env!("CARGO_BIN_EXE_gitpm"))
+        .args(["--root", f.dir.join("workspace").to_str().unwrap(), "check"])
+        .output()
+        .unwrap();
     assert!(
-        error.contains("tilr/store@2.0.0 points to commit") && error.contains("without package"),
-        "{error}"
+        check.status.success(),
+        "{}",
+        String::from_utf8_lossy(&check.stderr)
     );
-    let error = f.fails(&["install", f.source(), "--ref", "tilr/store@2.0.0"]);
+    assert!(!String::from_utf8_lossy(&check.stdout).contains("update available"));
+    let update = f.run(&["update", "tilr/store"]);
+    assert!(
+        update.status.success(),
+        "{}",
+        String::from_utf8_lossy(&update.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&update.stderr).contains("Warning:"));
+    f.ok(&["uninstall", "tilr/store"]);
+    let install = f.run(&["install", f.source(), "tilr/store"]);
+    assert!(
+        install.status.success(),
+        "{}",
+        String::from_utf8_lossy(&install.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&install.stderr).contains("Warning:"));
+    assert_eq!(
+        f.state()["packages"]["tilr/store"]["current"]["version"],
+        "1.0.0"
+    );
+    let error = f.fails(&["install", f.source(), "tilr/store", "--ref", "v2.0.0"]);
     assert!(error.contains("not in this repository"), "{error}");
-    assert!(!f.dir.join("workspace/dist/tilr").exists());
 }
 
 #[test]
@@ -269,7 +309,7 @@ fn legacy_root_repository_installs_and_updates_as_before() {
         fs::write(legacy.join("dist/index.js"), format!("hello {version}")).unwrap();
         f.git(&legacy, &["add", "--all"]);
         f.git(&legacy, &["commit", "-q", "-m", version]);
-        f.git(&legacy, &["tag", &format!("acme/hello@{version}")]);
+        f.git(&legacy, &["tag", &format!("v{version}")]);
     };
     release("1.0.0");
     f.ok(&["install", legacy.to_str().unwrap()]);
@@ -290,7 +330,7 @@ fn legacy_root_repository_installs_and_updates_as_before() {
     // commit and catalog-update keep working without gitpm.json.
     fs::write(legacy.join("dist/index.js"), "hello 1.2.0").unwrap();
     let out = f.ok(&["commit", legacy.to_str().unwrap(), "1.2.0"]);
-    assert!(out.contains("acme/hello@1.2.0"), "{out}");
+    assert!(out.contains("v1.2.0"), "{out}");
     fs::write(f.dir.join("sources.txt"), "hello\n").unwrap();
     let out = f.ok(&["catalog", "update"]);
     assert!(out.contains("3 release(s)"), "{out}");
@@ -299,7 +339,7 @@ fn legacy_root_repository_installs_and_updates_as_before() {
         "register",
         legacy.to_str().unwrap(),
         "--ref",
-        "acme/hello@1.2.0",
+        "v1.2.0",
     ]);
     assert!(!release.contains("\"path\""), "{release}");
 }
@@ -310,10 +350,10 @@ fn catalog_update_publishes_every_package_with_its_path() {
     f.release("store", "1.1.0");
     fs::write(f.dir.join("sources.txt"), "mono\n").unwrap();
     let out = f.ok(&["catalog", "update"]);
-    assert!(out.contains("3 release(s)"), "{out}");
+    assert!(out.contains("4 release(s)"), "{out}");
     let info = f.ok(&["catalog", "show"]);
     assert!(
-        info.contains("tilr/store — latest: 1.1.0") && info.contains("tilr/theme — latest: 1.0.0"),
+        info.contains("tilr/store — latest: 1.1.0") && info.contains("tilr/theme — latest: 1.1.0"),
         "{info}"
     );
     let release: serde_json::Value = serde_json::from_slice(
@@ -348,19 +388,24 @@ fn catalog_update_publishes_every_package_with_its_path() {
 }
 
 #[test]
-fn init_into_and_commit_with_a_package() {
+fn init_into_and_commit_releases_all_packages_and_additions_inherit_version() {
     let f = Fixture::new();
     let repo = f.dir.join("apps");
-    // An existing repository without a root package becomes a multi-package one.
     fs::create_dir_all(&repo).unwrap();
     f.git(&repo, &["init", "-q", "-b", "main"]);
-    let out = f.ok(&["init", "acme/one", "--into", repo.to_str().unwrap()]);
-    assert!(out.contains("acme/one@0.1.0"), "{out}");
-    assert!(repo.join("gitpm.json").is_file());
-    assert!(repo.join("packages/one/dist/index.js").is_file());
-    f.ok(&["init", "acme/two", "--into", repo.to_str().unwrap()]);
-    // Folders are named after the package name: other/two cannot join acme/two, and
-    // IDs are unique in any letter case.
+    f.ok(&["init", "acme/one", "--into", repo.to_str().unwrap()]);
+    f.ok(&["commit", repo.to_str().unwrap(), "0.2.0"]);
+    let out = f.ok(&["init", "acme/two", "--into", repo.to_str().unwrap()]);
+    assert!(!out.contains("Git commit and tag"), "{out}");
+    assert_eq!(manifest(&repo.join("packages/two"))["version"], "0.2.0");
+    let tags = f
+        .command("git")
+        .arg("-C")
+        .arg(&repo)
+        .args(["tag", "--list"])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8(tags.stdout).unwrap(), "v0.2.0\n");
     let error = f.fails(&["init", "other/two", "--into", repo.to_str().unwrap()]);
     assert!(
         error.contains("package acme/two already uses that folder"),
@@ -369,33 +414,30 @@ fn init_into_and_commit_with_a_package() {
     let error = f.fails(&["init", "Acme/One", "--into", repo.to_str().unwrap()]);
     assert!(error.contains("acme/one already exists"), "{error}");
     fs::write(repo.join("packages/two/dist/index.js"), "two v2").unwrap();
-    let error = f.fails(&["commit", repo.to_str().unwrap(), "0.2.0"]);
-    assert!(error.contains("acme/one (packages/one)"), "{error}");
-    let out = f.ok(&[
-        "commit",
-        repo.to_str().unwrap(),
-        "0.2.0",
-        "--package",
-        "acme/two",
-    ]);
-    assert!(out.contains("acme/two@0.2.0"), "{out}");
-    f.ok(&["install", repo.to_str().unwrap(), "acme/two"]);
-    assert_eq!(f.dist("acme/two"), "two v2");
+    let out = f.ok(&["commit", repo.to_str().unwrap(), "0.3.0"]);
+    assert!(out.contains("v0.3.0"), "{out}");
+    for name in ["one", "two"] {
+        assert_eq!(
+            manifest(&repo.join("packages").join(name))["version"],
+            "0.3.0"
+        );
+    }
+    let install = f.run(&["install", repo.to_str().unwrap(), "acme/two"]);
+    assert!(
+        install.status.success(),
+        "{}",
+        String::from_utf8_lossy(&install.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&install.stderr).contains("Warning:"));
     f.ok(&["install", repo.to_str().unwrap(), "acme/one"]);
+    assert_eq!(f.dist("acme/two"), "two v2");
     assert_eq!(f.clones(), 1);
-    // A new folder becomes a single-package repository (the root is the package);
-    // nothing is derived from the ID.
     let root = f.dir.join("single");
     let out = f.ok(&["init", "acme/root", "--into", root.to_str().unwrap()]);
-    assert!(out.contains("acme/root@0.1.0"), "{out}");
+    assert!(out.contains("v0.1.0"), "{out}");
     assert!(root.join("plugin.json").is_file() && !root.join("gitpm.json").exists());
-    assert!(!f.dir.join("acme").exists());
-    // A root package is not converted to a multi-package repository implicitly.
     let error = f.fails(&["init", "acme/three", "--into", root.to_str().unwrap()]);
     assert!(error.contains("repository root is a package"), "{error}");
-    assert!(!root.join("gitpm.json").exists());
-    let error = f.fails(&["init", "acme/four", "--in", root.to_str().unwrap()]);
-    assert!(error.contains("unknown option: --in"), "{error}");
 }
 
 // ---- forks of several packages ------------------------------------------------------
@@ -406,7 +448,7 @@ fn three_installed(f: &Fixture) {
     f.write("panel", "1.0.0", r#","dependencies":{"tilr/theme":"^1.0"}"#);
     f.git(&f.mono, &["add", "--all"]);
     f.git(&f.mono, &["commit", "-q", "-m", "panel"]);
-    f.git(&f.mono, &["tag", "tilr/panel@1.0.0"]);
+    f.git(&f.mono, &["tag", "-f", "v1.0.0"]);
     for id in ["tilr/store", "tilr/theme", "tilr/panel"] {
         f.ok(&["install", f.source(), id]);
     }
@@ -432,7 +474,7 @@ fn install_consumer(f: &Fixture, name: &str, dependency: &str) {
     fs::write(repo.join("dist/index.js"), name).unwrap();
     f.git(&repo, &["add", "--all"]);
     f.git(&repo, &["commit", "-q", "-m", name]);
-    f.git(&repo, &["tag", &format!("app/{name}@1.0.0")]);
+    f.git(&repo, &["tag", "v1.0.0"]);
     f.ok(&["install", repo.to_str().unwrap()]);
 }
 fn provider_of(state: &serde_json::Value, consumer: &str) -> String {
@@ -486,7 +528,7 @@ fn fork_ids_select_the_repository_and_rewrite_all_package_dependencies() {
     assert_eq!(panel["replaces"]["id"], "tilr/panel");
     assert_eq!(manifest(&fork.join("packages/theme"))["id"], "me/theme");
     // History is kept, the change is one commit, nothing is left uncommitted.
-    f.git(&fork, &["cat-file", "-e", "tilr/store@1.0.0"]);
+    f.git(&fork, &["cat-file", "-e", "v1.0.0"]);
     let out = f
         .command("git")
         .arg("-C")
@@ -530,7 +572,7 @@ fn fork_one_id_preserves_uninstalled_siblings_layout_and_installed_revisions() {
     let store_commit = f.state()["packages"]["tilr/store"]["current"]["commit"].clone();
     f.write("store", "1.1.0", "");
     f.write("theme", "1.1.0", r#","dependencies":{"tilr/store":"^1.0"}"#);
-    f.write("panel", "1.0.0", r#","dependencies":{"tilr/theme":"^1.0"}"#);
+    f.write("panel", "1.1.0", r#","dependencies":{"tilr/theme":"^1.0"}"#);
     fs::create_dir_all(f.mono.join("tools")).unwrap();
     fs::create_dir_all(f.mono.join("packages/support")).unwrap();
     fs::write(f.mono.join("tools/build.sh"), "echo build\n").unwrap();
@@ -540,7 +582,7 @@ fn fork_one_id_preserves_uninstalled_siblings_layout_and_installed_revisions() {
         &f.mono,
         &["commit", "-q", "-m", "Add siblings and shared tooling"],
     );
-    f.git(&f.mono, &["tag", "tilr/theme@1.1.0"]);
+    f.git(&f.mono, &["tag", "v1.1.0"]);
     f.ok(&["install", f.source(), "tilr/theme"]);
     let before = f.state();
     let theme_commit = before["packages"]["tilr/theme"]["current"]["commit"].clone();
@@ -595,7 +637,7 @@ fn packages_forked_together_must_come_from_one_repository() {
     fs::write(legacy.join("dist/index.js"), "hello").unwrap();
     f.git(&legacy, &["add", "--all"]);
     f.git(&legacy, &["commit", "-q", "-m", "hello"]);
-    f.git(&legacy, &["tag", "acme/hello@1.0.0"]);
+    f.git(&legacy, &["tag", "v1.0.0"]);
     f.ok(&["install", legacy.to_str().unwrap()]);
     let error = f.fails(&[
         "fork",
@@ -670,9 +712,9 @@ fn explicit_forks_replace_two_packages_and_switch_back() {
         "forks/me/mono",
     ]);
     let fork = f.dir.join("forks/me/mono");
+    f.ok(&["commit", fork.to_str().unwrap(), "1.0.1"]);
     for name in ["store", "theme", "panel"] {
         let id = format!("me/{name}");
-        f.ok(&["commit", fork.to_str().unwrap(), "1.0.1", "--package", &id]);
         f.ok(&["install", fork.to_str().unwrap(), &id]);
         f.ok(&["replace", &format!("tilr/{name}"), "--with", &id]);
     }
@@ -752,29 +794,23 @@ fn a_url_rewrite_in_the_git_config_does_not_hide_the_shared_clone() {
 }
 
 #[test]
-fn a_v_version_tag_in_a_multi_package_repository_is_ignored_without_a_warning() {
+fn legacy_id_version_tags_are_ignored_without_a_warning() {
     let f = Fixture::new();
-    // `v0.2.0` on a later commit: no release of any package, and never mentioned.
+    // Legacy per-package tags never participate in release discovery.
     f.release("store", "1.1.0");
-    f.git(&f.mono, &["tag", "v0.2.0"]);
+    f.git(&f.mono, &["tag", "tilr/store@9.0.0"]);
     let quiet = |args: &[&str]| {
         let out = f.run(args);
         let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
         let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
         assert!(out.status.success(), "{args:?}: {stderr}");
         assert!(
-            !stderr.contains("v0.2.0") && !stdout.contains("v0.2.0"),
+            !stderr.contains("tilr/store@9.0.0") && !stdout.contains("tilr/store@9.0.0"),
             "{args:?}: {stdout}{stderr}"
         );
         stdout
     };
-    quiet(&[
-        "install",
-        f.source(),
-        "tilr/store",
-        "--ref",
-        "tilr/store@1.0.0",
-    ]);
+    quiet(&["install", f.source(), "tilr/store", "--ref", "v1.0.0"]);
     quiet(&["install", f.source(), "tilr/theme"]);
     assert_eq!(f.dist("tilr/theme"), "theme 1.0.0");
     let out = quiet(&["update", "tilr/store", "--release"]);
@@ -782,10 +818,10 @@ fn a_v_version_tag_in_a_multi_package_repository_is_ignored_without_a_warning() 
     quiet(&["update", "all"]);
     fs::write(f.dir.join("sources.txt"), "mono\n").unwrap();
     let out = quiet(&["catalog", "update"]);
-    assert!(out.contains("3 release(s)"), "{out}");
+    assert!(out.contains("4 release(s)"), "{out}");
     assert!(
         !f.dir
-            .join("catalog/namespaces/tilr/store/versions/0.2.0")
+            .join("catalog/namespaces/tilr/store/versions/9.0.0")
             .exists()
     );
 }
@@ -944,4 +980,169 @@ fn removed_fork_options_have_no_side_effects() {
         assert!(!fresh.dir.join("workspace").exists());
         assert!(!fresh.dir.join("rejected").exists());
     }
+}
+
+#[test]
+fn explicit_fork_release_preserves_inherited_release_tag() {
+    let f = Fixture::new();
+    f.ok(&["install", f.source(), "tilr/store"]);
+    let source_tag = f
+        .command("git")
+        .arg("-C")
+        .arg(&f.mono)
+        .args(["rev-parse", "refs/tags/v1.0.0"])
+        .output()
+        .unwrap();
+    assert!(source_tag.status.success());
+    f.ok(&[
+        "fork",
+        "tilr/store",
+        "--ns",
+        "me",
+        "--into",
+        "forks/default",
+    ]);
+    let error = f.fails(&[
+        "commit",
+        f.dir.join("forks/default").to_str().unwrap(),
+        "1.0.0",
+    ]);
+    assert!(error.contains("tag already exists: v1.0.0"), "{error}");
+    assert!(error.contains("version_conflict"), "{error}");
+    let inherited = f
+        .command("git")
+        .arg("-C")
+        .arg(f.dir.join("forks/default"))
+        .args(["rev-parse", "refs/tags/v1.0.0"])
+        .output()
+        .unwrap();
+    assert!(inherited.status.success());
+    assert_eq!(inherited.stdout, source_tag.stdout);
+    assert!(f.state()["packages"].get("me/store").is_none());
+    assert!(f.state()["packages"].get("me/theme").is_none());
+    assert!(f.state().get("replacements").is_none());
+}
+
+#[test]
+fn commit_honors_ssh_tag_signing_without_an_editor() {
+    let f = Fixture::new();
+    let key = f.dir.join("signing-key");
+    let generated = f
+        .command("ssh-keygen")
+        .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+        .arg(&key)
+        .output()
+        .unwrap();
+    assert!(
+        generated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&generated.stderr)
+    );
+    let public = fs::read_to_string(key.with_extension("pub")).unwrap();
+    let allowed = f.dir.join("allowed-signers");
+    fs::write(&allowed, format!("test@example.invalid {public}")).unwrap();
+    f.git(&f.mono, &["config", "gpg.format", "ssh"]);
+    f.git(
+        &f.mono,
+        &["config", "user.signingkey", key.to_str().unwrap()],
+    );
+    f.git(
+        &f.mono,
+        &[
+            "config",
+            "gpg.ssh.allowedSignersFile",
+            allowed.to_str().unwrap(),
+        ],
+    );
+    f.git(&f.mono, &["config", "tag.gpgSign", "true"]);
+    let out = f
+        .command(env!("CARGO_BIN_EXE_gitpm"))
+        .env("GIT_EDITOR", "false")
+        .args(["commit", f.source(), "1.1.0"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let kind = f
+        .command("git")
+        .arg("-C")
+        .arg(&f.mono)
+        .args(["cat-file", "-t", "refs/tags/v1.1.0"])
+        .output()
+        .unwrap();
+    assert!(kind.status.success());
+    assert_eq!(String::from_utf8(kind.stdout).unwrap().trim(), "tag");
+    f.git(&f.mono, &["verify-tag", "v1.1.0"]);
+    for name in ["store", "theme"] {
+        assert_eq!(
+            manifest(&f.mono.join("packages").join(name))["version"],
+            "1.1.0"
+        );
+    }
+}
+
+#[test]
+fn commit_package_selects_result_and_still_releases_every_package() {
+    let f = Fixture::new();
+    let out = f.ok(&["commit", f.source(), "1.1.0", "--package", "tilr/store"]);
+    assert!(out.contains("tilr/store committed 1.1.0"), "{out}");
+    for name in ["store", "theme"] {
+        assert_eq!(
+            manifest(&f.mono.join("packages").join(name))["version"],
+            "1.1.0"
+        );
+    }
+    f.git(&f.mono, &["tag", "tilr/store@9.0.0"]);
+    f.ok(&["install", f.source(), "tilr/store"]);
+    assert_eq!(
+        f.state()["packages"]["tilr/store"]["current"]["version"],
+        "1.1.0"
+    );
+}
+
+#[test]
+fn check_uses_catalog_then_forced_partial_origin_fallback() {
+    let f = Fixture::new();
+    f.ok(&["install", f.source(), "tilr/store"]);
+    f.ok(&[
+        "catalog",
+        "register",
+        f.source(),
+        "--ref",
+        "v1.0.0",
+        "--package",
+        "tilr/store",
+    ]);
+    f.release("store", "2.0.0");
+    // The newest repository release no longer contains the installed package.
+    fs::remove_dir_all(f.mono.join("packages/store")).unwrap();
+    f.release("theme", "3.0.0");
+    let catalog = f.ok(&["check"]);
+    assert!(catalog.contains("Updates: 0."), "{catalog}");
+    assert!(catalog.contains("catalog"), "{catalog}");
+    let forced = f.ok(&["check", "--no-catalog"]);
+    assert!(
+        forced.contains("2.0.0") && forced.contains("update available"),
+        "{forced}"
+    );
+    assert!(!forced.contains("3.0.0"), "{forced}");
+    assert!(forced.contains("origin"), "{forced}");
+    // A source missing from the selected catalog takes the same fallback.
+    fs::remove_dir_all(f.dir.join("catalog/namespaces")).unwrap();
+    let fallback = f.ok(&["check"]);
+    assert!(
+        fallback.contains("2.0.0") && fallback.contains("update available"),
+        "{fallback}"
+    );
+    // Explicit bypass also ignores an invalid configured catalog.
+    fs::remove_dir_all(f.dir.join("catalog")).unwrap();
+    let bypass = f.ok(&["check", "--no-catalog"]);
+    assert!(bypass.contains("2.0.0"), "{bypass}");
+    assert_eq!(
+        f.state()["packages"]["tilr/store"]["current"]["version"],
+        "1.0.0"
+    );
 }

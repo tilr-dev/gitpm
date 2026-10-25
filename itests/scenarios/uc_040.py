@@ -107,7 +107,7 @@ def held_catalog_lock_refuses_writers_not_readers(t: T):
     (t.root / "sources.txt").write_text("repos/dan/hello\n")
     holder = hold(CATALOG_LOCK)
     before = t.snap(t.catalog)
-    t.gitpm_err("register", t.repo("dan/hello"), "--ref", "dan/hello@0.3.0", kind="locked", contains="catalog locked")
+    t.gitpm_err("register", t.repo("dan/hello"), "--ref", "v0.3.0", kind="locked", contains="catalog locked")
     t.gitpm_err("catalog-update", kind="locked", contains="catalog locked")
     t.same(before, "catalog while locked")
     # Readers do not take the writer lock.
@@ -115,7 +115,7 @@ def held_catalog_lock_refuses_writers_not_readers(t: T):
     t.gitpm_ok("install-catalog", "dan/num", "--version", "1.9.0")
     t.gitpm_ok("check")
     release(holder)
-    t.gitpm_ok("register", t.repo("dan/hello"), "--ref", "dan/hello@0.3.0")
+    t.gitpm_ok("register", t.repo("dan/hello"), "--ref", "v0.3.0")
     t.ok(t.catalog_release("dan/hello", "0.3.0").is_file(), "retry after release")
     t.gitpm_ok("catalog-update")
 
@@ -124,7 +124,7 @@ def held_catalog_lock_refuses_writers_not_readers(t: T):
 def workspace_and_catalog_locks_are_independent(t: T):
     t.release("dan/hello", "0.3.0")
     ws = hold(WS_LOCK)
-    t.gitpm_ok("register", t.repo("dan/hello"), "--ref", "dan/hello@0.3.0")
+    t.gitpm_ok("register", t.repo("dan/hello"), "--ref", "v0.3.0")
     release(ws)
     cat = hold(CATALOG_LOCK)
     t.gitpm_ok("install-catalog", "dan/hello", "--version", "0.3.0")
@@ -139,7 +139,7 @@ def dead_writers_temporary_file_is_cleaned(t: T):
     stale.write_text("{ half")
     index = t.catalog_index("dan/hello").read_bytes()
     t.release("dan/hello", "0.3.0")
-    t.gitpm_ok("register", t.repo("dan/hello"), "--ref", "dan/hello@0.3.0")
+    t.gitpm_ok("register", t.repo("dan/hello"), "--ref", "v0.3.0")
     t.ok(not stale.exists(), "stale temporary removed under the lock")
     t.ok(json.loads(t.catalog_index("dan/hello").read_text())["versions"].keys() >= {"0.1.0", "0.3.0"}, "index valid")
     t.ok(index != t.catalog_index("dan/hello").read_bytes(), "index rewritten atomically")
@@ -191,7 +191,7 @@ def rolled_forward(t: T, after: Path):
     t.eq(json.loads((t.ws / "state.json").read_text())["packages"][ID]["current"],
          json.loads((after / "state.json").read_text())["packages"][ID]["current"], "state rolled forward")
     t.eq(rel_snap(t.dist(ID)), rel_snap(after / "dist" / ID), "dist rolled forward")
-    t.eq(t.rev(t.worktree(ID)), t.rev(ID, f"{ID}@0.1.1"), "clone HEAD rolled forward")
+    t.eq(t.rev(t.worktree(ID)), t.rev(ID, f"v0.1.1"), "clone HEAD rolled forward")
 
 
 @case(fixture="hello_installed", spec=["transactions-locking/crash-recovery#crash-during-commit"])

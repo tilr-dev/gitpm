@@ -10,22 +10,23 @@ SUITE = ["tilr/store", "tilr/theme", "tilr/panel"]
 @fixture(gitpm=True)
 def fork_suite(t: T):
     """/fx/repos/suite made with `gitpm init --multi`: packages/store, packages/theme,
-    packages/panel (tilr/*), each released at 0.1.0 by init."""
+    packages/panel (tilr/*), released together at 0.1.1."""
     repo = t.repo("suite")
-    t.gitpm_ok("init", SUITE[0], "--into", repo, "--multi")
+    t.gitpm_ok("init", SUITE[0], "--into", repo, "--multi", "--no-release")
     for id in SUITE[1:]:
         t.gitpm_ok("init", id, "--into", repo)
+    t.gitpm_ok("commit", repo, "0.1.1")
 
 
 @fork_suite.check
 def _(t: T):
     repo = t.repo("suite")
     t.eq(json.loads((repo / "gitpm.json").read_text()), {"packages": ["packages/*"]}, "gitpm.json")
-    t.eq(sorted(t.git(repo, "tag", "--list").split()), sorted(f"{id}@0.1.0" for id in SUITE), "tags")
+    t.eq(sorted(t.git(repo, "tag", "--list").split()), ["v0.1.1"], "tags")
     t.eq(t.git(repo, "status", "--porcelain"), "", "clean worktree")
     for id in SUITE:
         m = json.loads((repo / "packages" / id.split("/")[1] / "plugin.json").read_text())
-        t.eq((m["id"], m["version"]), (id, "0.1.0"), f"{id} manifest")
+        t.eq((m["id"], m["version"]), (id, "0.1.1"), f"{id} manifest")
     t.ok(not t.ws.exists(), "no workspace")
 
 

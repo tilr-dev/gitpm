@@ -83,7 +83,6 @@ fn root_to_nested_lifecycle_keeps_one_clone_and_all_owners() {
     fs::write(source.join("apps/sibling/dist/index.js"), "sibling").unwrap();
     fs::write(source.join("gitpm.json"), r#"{"packages":["apps/*"]}"#).unwrap();
     scaffold::commit_package(&source, "0.2.0", Some("acme/root")).unwrap();
-    git(&source, &["tag", "acme/sibling@0.2.0"]);
 
     // Refused mutations leave both state and deployed output unchanged.
     let before = fs::read(root.join("state.json")).unwrap();

@@ -63,12 +63,12 @@ def update_keeps_original_source(t: T):
     install_from_a(t)
     r = t.gitpm_ok("update", XP, env={"GITPM_CATALOG": str(cat(t, "catB"))})
     t.has(r.out, "x/p kept at 1.0.0 (upstream 1.1.0 not in catalog)")
-    t.gitpm_ok("--catalog", cat(t, "catA"), "register", t.repo(XP), "--ref", "x/p@1.1.0")
+    t.gitpm_ok("--catalog", cat(t, "catA"), "register", t.repo(XP), "--ref", "v1.1.0")
     t.gitpm_ok("update", XP, env={"GITPM_CATALOG": str(cat(t, "catB"))})
     p = t.package(XP)
     t.eq(p["source"], str(t.repo(XP)), "source unchanged (A)")
     t.eq(p["catalog"], os.path.realpath(cat(t, "catA") / "catalog.json"), "recorded catalog unchanged")
-    t.eq(p["current"], {"version": "1.1.0", "commit": t.rev(XP, "x/p@1.1.0")}, "updated from its own origin")
+    t.eq(p["current"], {"version": "1.1.0", "commit": t.rev(XP, "v1.1.0")}, "updated from its own origin")
     t.eq(t.git(t.worktree(XP), "remote", "get-url", "origin"), str(t.repo(XP)), "clone origin unchanged")
 
 
@@ -132,7 +132,7 @@ def catalog_update_refused_for_a_verified_catalog(t: T):
     t.gitpm_err("--catalog", a, "catalog-update", kind="invalid_argument",
                 contains="a verified catalog takes versions only one by one through register")
     t.same(before, "catalog A")
-    t.gitpm_ok("--catalog", a, "register", t.repo(XP), "--ref", "x/p@1.1.0")
+    t.gitpm_ok("--catalog", a, "register", t.repo(XP), "--ref", "v1.1.0")
     t.eq(json.loads((a / "catalog.json").read_text()).get("verified"), True, "flag kept by register")
     t.has(t.gitpm_ok("--catalog", a, "info").out, "Verified: yes")
 
@@ -148,12 +148,12 @@ def protected_update_check_and_detach(t: T):
     out = readonly(t, lambda: t.gitpm_ok("check", env={"GITPM_CATALOG": a}).out)
     t.has(out, f"Catalog: {a} (verified)")
     t.has(row(out, XP), "upstream 1.1.0 not in catalog")
-    t.gitpm_err("update", XP, "--ref", "x/p@1.1.0", kind="invalid_argument", contains="detach it")
+    t.gitpm_err("update", XP, "--ref", "v1.1.0", kind="invalid_argument", contains="detach it")
     r = t.gitpm_ok("update", XP, "--detach")
     t.has(r.out, "x/p detached from catalog", "x/p updated 1.0.0 → 1.1.0")
     p = t.package(XP)
     t.ok("catalog" not in p, "catalog dropped")
-    t.eq(p["current"], {"version": "1.1.0", "commit": t.rev(XP, "x/p@1.1.0")}, "origin release")
+    t.eq(p["current"], {"version": "1.1.0", "commit": t.rev(XP, "v1.1.0")}, "origin release")
 
 
 @case(fixture="g4_two_catalogs", spec=["updates/protected-packages-update-through-their-catalog#hash-mismatch-on-update"])
@@ -162,7 +162,7 @@ def tampered_release_refused_on_update(t: T):
     update all fail with `catalog` and the workspace is unchanged."""
     install_from_a(t)
     a = cat(t, "catA")
-    t.gitpm_ok("--catalog", a, "register", t.repo(XP), "--ref", "x/p@1.1.0")
+    t.gitpm_ok("--catalog", a, "register", t.repo(XP), "--ref", "v1.1.0")
     def tamper(release):
         for digest in release["files"].values():
             digest["sha256"] = "0" * 64
