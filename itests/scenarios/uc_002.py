@@ -47,7 +47,7 @@ def root_env_is_used_without_option(t: T):
 def catalog_option_beats_env(t: T):
     """--catalog wins over GITPM_CATALOG."""
     other = t.root / "other-catalog"
-    t.gitpm_ok("--catalog", other, "register", t.repo(ID), "--ref", f"{ID}@0.1.0")
+    t.gitpm_ok("--catalog", other, "register", t.repo(ID), "--ref", f"v0.1.0")
     t.ok(t.catalog_index(ID, other).is_file(), "release in --catalog")
     t.ok(t.catalog_empty(), "GITPM_CATALOG untouched")
 

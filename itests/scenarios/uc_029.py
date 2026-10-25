@@ -27,7 +27,7 @@ def install_latest_is_numeric_and_pinned(t: T):
     source HEAD and the release tag moved."""
     pinned = registered(t, "1.10.0")["commit"]
     moved = t.commit(ID, "after registration", {"dist/index.js": "moved\n"})
-    t.tag(ID, f"{ID}@1.10.0", moved, force=True)
+    t.tag(ID, f"v1.10.0", moved, force=True)
     t.gitpm_ok("install-catalog", ID)
     p = t.package(ID)
     t.eq(p["current"], {"version": "1.10.0", "commit": pinned}, "current")

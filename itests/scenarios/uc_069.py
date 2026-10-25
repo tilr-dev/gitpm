@@ -83,7 +83,7 @@ def export_ignore_deploys_and_hashes_committed_bytes(t: T):
         "dist/subst.txt": literal,
     })
     for version, commit in [("1.0.0", first), ("1.1.0", second)]:
-        t.gitpm_ok("register", t.repo(id), "--ref", f"{id}@{version}")
+        t.gitpm_ok("register", t.repo(id), "--ref", f"v{version}")
         release = json.loads(t.catalog_release(id, version).read_text())
         blobs = {}
         for name in (".gitattributes", "debug.js", "index.js", "subst.txt"):
@@ -122,14 +122,14 @@ def gitlinks_warn_at_publication_and_deploy(t: T):
     sha = t.rev(repo)
     t.git(repo, "update-index", "--add", "--cacheinfo", f"160000,{sha},dist/vendor")
     t.git(repo, "commit", "-q", "-m", "gitlink in dist")
-    t.git(repo, "tag", "-f", f"{id}@1.0.0")
+    t.git(repo, "tag", "-f", f"v1.0.0")
 
     def warned(result):
         t.has(result.err, "Warning:", "dist/vendor is a Git submodule",
               "its files will not be installed", "directory will be empty",
               "probably a mistake", "commit built files to dist instead of a submodule")
 
-    warned(t.gitpm_ok("register", repo, "--ref", f"{id}@1.0.0"))
+    warned(t.gitpm_ok("register", repo, "--ref", f"v1.0.0"))
     registered = json.loads(t.catalog_release(id, "1.0.0").read_text())
     t.eq(sorted(registered["files"]), ["index.js"], "gitlink has no file digest")
     sources = t.root / "gitlink-sources.txt"
@@ -146,8 +146,8 @@ def gitlinks_warn_at_publication_and_deploy(t: T):
     t.edit_json(repo / "plugin.json", lambda m: m.update(version="1.1.0"))
     t.git(repo, "add", "plugin.json")
     t.git(repo, "commit", "-q", "-m", "next release with gitlink")
-    t.git(repo, "tag", f"{id}@1.1.0")
-    warned(t.gitpm_ok("register", repo, "--ref", f"{id}@1.1.0"))
+    t.git(repo, "tag", f"v1.1.0")
+    warned(t.gitpm_ok("register", repo, "--ref", f"v1.1.0"))
     warned(t.gitpm_ok("update", id))
     t.eq(list(vendor.iterdir()), [], "protected update keeps gitlink empty")
     t.gitpm_ok("disable", id)

@@ -81,7 +81,7 @@ def id_components_of_80_accepted(t: T):
     t.gitpm_ok("init", pid, "--into", t.root / "repos/long" / ("p" * 80))
     repo = t.root / "repos/long" / ("p" * 80)
     t.eq(json.loads((repo / "plugin.json").read_text())["id"], pid, "scaffold ID")
-    t.gitpm_ok("register", repo, "--ref", f"{pid}@0.1.0")
+    t.gitpm_ok("register", repo, "--ref", f"v0.1.0")
     t.gitpm_ok("install-catalog", pid)
     t.eq(t.package(pid)["current"]["version"], "0.1.0", "installed from catalog")
     t.ok((t.dist(pid) / "index.js").is_file(), "dist")
@@ -183,42 +183,42 @@ def case_variant_after_forget_refused(t: T):
 # ---------------------------------------------------------------- 4-7. tags
 
 def bad_history(t: T):
-    """dan/bt: tag dan/bt@0.0.1 on a commit without plugin.json, then a valid dan/bt@1.0.0."""
+    """dan/bt: tag v0.0.1 on malformed plugin.json, then a valid v1.0.0."""
     repo = t.repo("dan/bt")
     repo.mkdir(parents=True)
     t.git(repo, "init", "-q", "-b", "main")
-    t.commit(repo, "before the manifest", {"README.md": "early\n"})
-    t.tag(repo, "dan/bt@0.0.1")
+    t.commit(repo, "broken manifest", {"plugin.json": "{broken\n"})
+    t.tag(repo, "v0.0.1")
     sha = t.release("dan/bt", "1.0.0")
     return repo, sha
 
 
 @case(spec=["package-ids/broken-historical-tags-are-skipped#one-bad-old-tag", "install-uninstall/install-the-latest-release-of-a-git-source"])
 def bad_historical_tag_skipped_by_install(t: T):
-    """4. Stable install picks 1.0.0 and warns about dan/bt@0.0.1."""
+    """4. Stable install picks 1.0.0 and warns about v0.0.1."""
     repo, sha = bad_history(t)
     r = t.gitpm_ok("install", repo)
     t.eq(t.package("dan/bt")["current"], {"version": "1.0.0", "commit": sha}, "installed")
-    t.has(r.err, "Warning", "dan/bt@0.0.1")
+    t.has(r.err, "Warning", "v0.0.1")
 
 
 @case(spec=["package-ids/broken-historical-tags-are-skipped#one-bad-old-tag"])
 def bad_historical_tag_skipped_by_catalog_update(t: T):
-    """4. catalog-update registers 1.0.0 and warns about dan/bt@0.0.1."""
+    """4. catalog-update registers 1.0.0 and warns about v0.0.1."""
     repo, sha = bad_history(t)
     sources(t, repo)
     r = t.gitpm_ok("catalog-update")
-    t.has(r.err, "Warning", "dan/bt@0.0.1")
+    t.has(r.err, "Warning", "v0.0.1")
     index = json.loads(t.catalog_index("dan/bt").read_text())
     t.eq(sorted(index["versions"]), ["1.0.0"], "catalog versions")
     t.eq(json.loads(t.catalog_release("dan/bt", "1.0.0").read_text())["commit"], sha, "release commit")
 
 
 def mismatched(t: T):
-    """dan/mm: tag dan/mm@0.5.0 on a manifest that says 0.4.0, then a valid dan/mm@1.0.0."""
+    """dan/mm: tag v0.5.0 on a manifest that says 0.4.0, then a valid dan/mm@1.0.0."""
     t.new_package("dan/mm", "0.1.0")
     t.release("dan/mm", "0.4.0", tag=False)
-    t.tag("dan/mm", "dan/mm@0.5.0")
+    t.tag("dan/mm", "v0.5.0")
     return t.release("dan/mm", "1.0.0")
 
 
@@ -228,7 +228,7 @@ def mismatched_tag_skipped_by_install(t: T):
     sha = mismatched(t)
     r = t.gitpm_ok("install", t.repo("dan/mm"))
     t.eq(t.package("dan/mm")["current"], {"version": "1.0.0", "commit": sha}, "installed")
-    t.has(r.err, "Warning", "dan/mm@0.5.0")
+    t.has(r.err, "Warning", "v0.5.0")
 
 
 @case(spec=["package-ids/release-tag-names#tag-disagrees-with-the-manifest", "package-ids/broken-historical-tags-are-skipped"])
@@ -237,7 +237,7 @@ def mismatched_tag_skipped_by_catalog_update(t: T):
     mismatched(t)
     sources(t, t.repo("dan/mm"))
     r = t.gitpm_ok("catalog-update")
-    t.has(r.err, "Warning", "dan/mm@0.5.0")
+    t.has(r.err, "Warning", "v0.5.0")
     t.eq(sorted(json.loads(t.catalog_index("dan/mm").read_text())["versions"]), ["0.1.0", "1.0.0"], "versions")
 
 
@@ -246,7 +246,7 @@ def unknown_manifest_field_accepted(t: T):
     """5. A release whose manifest has an unknown field installs; the field is kept as is."""
     t.new_package("dan/uf", "0.1.0")
     t.release("dan/uf", "1.0.0", extra={"bogus": True})
-    t.gitpm_ok("install", t.repo("dan/uf"), "--ref", "dan/uf@1.0.0")
+    t.gitpm_ok("install", t.repo("dan/uf"), "--ref", "v1.0.0")
     t.eq(t.package("dan/uf")["current"]["version"], "1.0.0", "installed version")
 
 
@@ -264,7 +264,7 @@ def off_branch(t: T):
 def tag_off_default_branch_install(t: T):
     """6. install --ref of a tag not on main installs that commit."""
     sha = off_branch(t)
-    t.gitpm_ok("install", t.repo("dan/side"), "--ref", "dan/side@2.0.0")
+    t.gitpm_ok("install", t.repo("dan/side"), "--ref", "v2.0.0")
     t.eq(t.package("dan/side")["current"], {"version": "2.0.0", "commit": sha}, "installed")
     t.eq(t.rev(t.clone("dan/side")), sha, "clone HEAD")
     t.has((t.dist("dan/side") / "index.js").read_text(), "dan/side 2.0.0")
@@ -281,7 +281,7 @@ def tag_off_default_branch_catalog_update(t: T):
 
 @case(spec=["package-ids/release-tag-names#vversion-tag-of-a-scoped-single-package-repository"])
 def scoped_id_with_v_tags(t: T):
-    """7. vX.Y.Z tags are not releases: install and catalog-update fail with no_releases."""
+    """7. vX.Y.Z tags are repository releases for both install and catalog-update."""
     repo = t.repo("dan/vt")
     repo.mkdir(parents=True)
     t.git(repo, "init", "-q", "-b", "main")
@@ -289,11 +289,11 @@ def scoped_id_with_v_tags(t: T):
     t.tag(repo, "v1.0.0")
     t.release("dan/vt", "1.1.0", tag=False)
     t.tag(repo, "v1.1.0")
-    t.gitpm_err("install", repo, kind="no_releases", contains="dan/vt@VERSION")
-    t.not_installed("dan/vt")
+    t.gitpm_ok("install", repo)
+    t.eq(t.package("dan/vt")["current"]["version"], "1.1.0", "latest shared version")
     sources(t, repo)
-    t.gitpm_err("catalog-update", kind="no_releases")
-    t.ok(not t.catalog_index("dan/vt").exists(), "nothing published")
+    t.gitpm_ok("catalog-update")
+    t.ok(t.catalog_index("dan/vt").exists(), "repository releases published")
 
 
 # ---------------------------------------------------------------- 8. invalid manifest versions

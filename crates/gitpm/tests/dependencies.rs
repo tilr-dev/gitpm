@@ -72,7 +72,7 @@ impl Fixture {
         fs::write(repo.join("dist/index.js"), format!("{id} {version}")).unwrap();
         git(repo, &["add", "--all"]);
         git(repo, &["commit", "-q", "-m", &version]);
-        let tag = format!("{id}@{version}");
+        let tag = format!("v{version}");
         git(repo, &["tag", &tag]);
         tag
     }
@@ -750,7 +750,7 @@ fn install_over_a_download_reports_the_requested_mode() {
         .install_package(
             repo.to_str().unwrap(),
             None,
-            gitpm::InstallTarget::Ref("app/a@1.1.0".into()),
+            gitpm::InstallTarget::Ref("v1.1.0".into()),
         )
         .unwrap();
     assert!(result.enabled && !result.already_installed);
@@ -758,12 +758,11 @@ fn install_over_a_download_reports_the_requested_mode() {
     assert!(result.mode.is_release());
     assert_eq!(
         result.requested_mode,
-        Some(gitpm::Mode::Pinned("app/a@1.1.0".into()))
+        Some(gitpm::Mode::Pinned("v1.1.0".into()))
     );
     assert_eq!(result.available.as_ref().unwrap().version, "1.1.0");
     assert!(
-        result.warnings[0]
-            .contains("recorded mode release, not the requested pinned at app/a@1.1.0"),
+        result.warnings[0].contains("recorded mode release, not the requested pinned at v1.1.0"),
         "{:?}",
         result.warnings
     );
@@ -791,7 +790,7 @@ fn cycles_resolve_and_updates_keep_dependents_working() {
     assert_eq!(plugin(&m, "lib/core").current.unwrap().version, "1.1.0");
     // A compatible release is fine.
     f.release(&core, "lib/core", "1.2.0", &[]);
-    m.update_to("lib/core", gitpm::Target::Ref("lib/core@1.2.0".into()))
+    m.update_to("lib/core", gitpm::Target::Ref("v1.2.0".into()))
         .unwrap();
     // An update that adds a dependency pulls it from the catalog.
     f.publish(&cat, "lib/extra", "1.0.0", &[]);
@@ -1337,7 +1336,7 @@ fn update_all_preserves_local_work_and_never_partially_deploys() {
     fs::remove_dir_all(repo.join("dist")).unwrap();
     git(&repo, &["add", "--all"]);
     git(&repo, &["commit", "-qm", "remove dist"]);
-    git(&repo, &["tag", "-f", "x/b@2.0.0"]);
+    git(&repo, &["tag", "-f", "v2.0.0"]);
     let error = f.refuses("invalid_manifest", || m.update_all());
     assert!(error.to_string().starts_with("x/b: "), "{error}");
     assert!(matches!(error, gitpm::Error::InvalidManifest { id: Some(id), .. } if id == "x/b"));
@@ -1353,7 +1352,7 @@ fn update_all_does_not_downgrade_and_warns_about_moved_and_retracted_releases() 
     m.install_from_catalog("x/a", None).unwrap();
     let installed = plugin(&m, "x/a").current.unwrap().commit;
     let repo = f.path("authors/x/a");
-    git(&repo, &["tag", "-d", "x/a@2.0.0"]);
+    git(&repo, &["tag", "-d", "v2.0.0"]);
     f.release(&repo, "x/a", "1.0.0", &[]);
     // Retracted: no downgrade, up to date with a warning.
     let plan = m.update_all().unwrap();
@@ -1369,7 +1368,7 @@ fn update_all_does_not_downgrade_and_warns_about_moved_and_retracted_releases() 
     assert!(plan.updates.is_empty());
     assert_eq!(plan.unchanged[0].warnings.len(), 1);
     assert!(
-        plan.unchanged[0].warnings[0].starts_with("release tag x/a@2.0.0 now points to "),
+        plan.unchanged[0].warnings[0].starts_with("release tag v2.0.0 now points to "),
         "{:?}",
         plan.unchanged[0].warnings
     );

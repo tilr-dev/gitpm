@@ -254,22 +254,3 @@ fn assert_selected_commit_preserves_unrelated_changes(scope: CommitScope<'_>) {
         "package/data"
     );
 }
-
-#[test]
-fn typed_authoring_tags_are_atomic_on_conflict() {
-    let root = repository();
-    let repo = root.path();
-    let first = fixture(repo, &["rev-parse", "HEAD"]);
-    git(repo, &["tag", "existing"]);
-    fs::write(root.join("package/data"), "second\n").unwrap();
-    git(repo, &["commit", "-qam", "second"]);
-    let head = fixture(repo, &["rev-parse", "HEAD"]);
-    let tags = vec!["new".to_owned(), "existing".to_owned()];
-    let error = super::create_tags_at_head(repo, &tags, false).unwrap_err();
-    assert_eq!(error.kind(), "git");
-    assert_eq!(fixture(repo, &["tag", "--list"]), "existing");
-    assert_eq!(fixture(repo, &["rev-parse", "existing"]), first);
-    super::create_tags_at_head(repo, &["new".into(), "other".into()], false).unwrap();
-    assert_eq!(fixture(repo, &["rev-parse", "new"]), head);
-    assert_eq!(fixture(repo, &["rev-parse", "other"]), head);
-}

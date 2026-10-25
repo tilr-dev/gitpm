@@ -47,7 +47,7 @@ The fork manifest SHALL get `forkOf` `{id, version, commit, source}` and `replac
 - **AND** metadata keys are carried unchanged; this is covered by `metadata::fork_and_commit_carry_the_metadata_unchanged`
 
 ### Requirement: Fork output names the next steps
-The CLI SHALL print the fork lines and the next steps per package (the strings below are the common forms): `gitpm commit DIR NEW_VERSION --package ID` (commit local edits, tag), `gitpm install DIR ID`, `gitpm replace ORIGINAL --with ID`, and for a new fork `gitpm remote DIR GIT_URL`.
+The CLI SHALL print the fork lines, one `gitpm commit DIR NEW_VERSION` command to release all repository packages with one tag, then the explicit `gitpm install DIR ID` and `gitpm replace ORIGINAL --with ID` commands per package, and for a new fork `gitpm remote DIR GIT_URL`.
 
 #### Scenario: Next steps after fork
 - **WHEN** a fork is created
@@ -165,7 +165,7 @@ For a fork, `check` SHALL add `upstream {id, base, latest, newer, source, proble
 - **THEN** `check` prints `me/hello: fork of acme/hello (base 1.0.0); original in catalog: 1.1.0 — newer than the fork base`
 
 #### Scenario: Upstream without a catalog
-- **WHEN** no catalog is given and `forkOf.source` of `me/hello` has the tag `acme/hello@1.1.0`
+- **WHEN** no catalog is given and `forkOf.source` of `me/hello` has the tag `v1.1.0`
 - **THEN** `check` prints `me/hello: fork of acme/hello (base 1.0.0); original at origin: 1.1.0 — newer than the fork base`
 
 #### Scenario: Unreadable upstream
@@ -277,3 +277,11 @@ Fork SHALL exclude local installation work and use only the recorded source at i
 #### Scenario: Disabled transitive provider
 - **WHEN** the proposed provider depends on an installed package whose dependency is disabled
 - **THEN** resolve and replace refuse without changing files, installing dependencies or enabling packages
+
+### Requirement: Explicit fork release preserves upstream tags
+A fork SHALL retain inherited upstream tags. Releasing the fork with `commit DIR NEW_VERSION` SHALL create one repository release tag only for a new version. An existing `vVERSION` tag SHALL cause `version_conflict` without replacing that tag or installing any fork package.
+
+#### Scenario: Fork retains upstream release tags
+- **WHEN** a fork retains upstream `v1.0.0` and the user runs `gitpm commit FORK 1.0.0`
+- **THEN** the command fails with `version_conflict` naming `v1.0.0`, and that upstream tag remains unchanged
+- **AND** `gitpm commit FORK 1.1.0` can release every fork package at 1.1.0 when `v1.1.0` does not already exist

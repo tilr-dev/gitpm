@@ -47,7 +47,7 @@ def index_lists_a_release_not_yet_uploaded(t: T):
     t.ok(any("versions/0.2.0/release.json" in p for p in srv.take()), "the missing release was requested")
     restore()
     t.gitpm_ok("--catalog", srv.url, "install-catalog", HELLO)
-    t.eq(t.package(HELLO)["current"], {"version": "0.2.0", "commit": t.rev(HELLO, f"{HELLO}@0.2.0")}, "installed")
+    t.eq(t.package(HELLO)["current"], {"version": "0.2.0", "commit": t.rev(HELLO, f"v0.2.0")}, "installed")
 
 
 @case(fixture="catalog", spec=["catalog/catalog-locations-and-transport", "install-uninstall/install-from-the-catalog"])
@@ -94,7 +94,7 @@ def release_uploaded_before_the_index(t: T):
     t.release(HELLO, "0.3.0")
     index = t.catalog_index(HELLO)
     old_index = index.read_bytes()
-    t.gitpm_ok("register", t.repo(HELLO), "--ref", f"{HELLO}@0.3.0")
+    t.gitpm_ok("register", t.repo(HELLO), "--ref", f"v0.3.0")
     root, srv = served(t)
     new_index = t.catalog_index(HELLO, root).read_bytes()
     t.catalog_index(HELLO, root).write_bytes(old_index)

@@ -3,7 +3,6 @@ use gitpm::{InstallTarget, Manager, scaffold};
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::Command,
     sync::atomic::{AtomicU64, Ordering},
 };
 
@@ -27,20 +26,6 @@ impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
-}
-
-fn git(repo: &Path, args: &[&str]) {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(args)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{args:?}: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
 }
 
 #[test]
@@ -79,7 +64,6 @@ fn root_to_nested_lifecycle_keeps_one_clone_and_all_owners() {
     fs::write(source.join("apps/sibling/dist/index.js"), "sibling").unwrap();
     fs::write(source.join("gitpm.json"), r#"{"packages":["apps/*"]}"#).unwrap();
     scaffold::commit_package(&source, "0.2.0", Some("acme/root")).unwrap();
-    git(&source, &["tag", "acme/sibling@0.2.0"]);
 
     // Refused mutations leave both state and deployed output unchanged.
     let before = fs::read(root.join("state.json")).unwrap();

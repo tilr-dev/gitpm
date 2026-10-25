@@ -36,7 +36,7 @@ def provider_payload(t: T) -> str:
 
 def step1_publish(t: T):
     for id in [ORIGINAL, *CONSUMERS]:
-        t.gitpm_ok("register", t.repo(id), "--ref", f"{id}@1.0.0")
+        t.gitpm_ok("register", t.repo(id), "--ref", f"v1.0.0")
     for id, deps in [(ORIGINAL, {}), ("app/a", {ORIGINAL: "^1.0"}), ("app/b", {ORIGINAL: "^1.0"})]:
         t.eq(json.loads(t.catalog_release(id, "1.0.0").read_text())["manifest"].get("dependencies", {}), deps,
              f"{id} catalog dependencies")
@@ -89,7 +89,7 @@ def step6_fork_update(t: T, fork):
     t.gitpm_ok("commit", fork, "1.0.2")
     t.gitpm_ok("update", FORK)
     t.eq(t.package(FORK)["current"]["version"], "1.0.2", "fork version")
-    t.eq(t.rev(t.clone(FORK)), t.rev(fork, f"{FORK}@1.0.2"), "fork clone HEAD")
+    t.eq(t.rev(t.clone(FORK)), t.rev(fork, f"v1.0.2"), "fork clone HEAD")
     t.eq(providers(t), {c: FORK for c in CONSUMERS}, "providers")
     t.eq(provider_payload(t), hashlib.sha256(b"fork payload 1.0.2\n").hexdigest(), "consumers follow the fork")
 
