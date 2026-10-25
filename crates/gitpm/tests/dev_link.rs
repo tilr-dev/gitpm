@@ -366,9 +366,9 @@ fn explicit_fork_link_replace_and_relink_preserve_validated_provenance() {
     write_manifest(&consumer, &consumer_manifest);
     m.link(&consumer).unwrap();
     m.disable("mine/base").unwrap();
-    assert!(m.replace("acme/base", "mine/base", false).is_err());
+    assert!(m.replace("acme/base", "mine/base").is_err());
     m.enable("mine/base").unwrap();
-    m.replace("acme/base", "mine/base", false).unwrap();
+    m.replace("acme/base", "mine/base").unwrap();
     let view = m.list().unwrap();
     let consumer_view = view.iter().find(|p| p.id == "acme/fork_consumer").unwrap();
     assert!(consumer_view.dependencies[0].satisfied);
@@ -398,7 +398,7 @@ fn explicit_fork_link_replace_and_relink_preserve_validated_provenance() {
             .newer
     );
     assert_eq!(m.link(&fork).unwrap_err().kind(), "dependency_conflict");
-    m.switch_back("acme/base", false, false).unwrap();
+    m.replace("acme/base", "acme/base").unwrap();
     m.link(&fork).unwrap();
     assert!(
         m.check()

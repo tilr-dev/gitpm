@@ -1,7 +1,7 @@
 """UC-069: dist holds exactly the active packages (gitpm 0.5).
 
 `dist/<id>/` exists exactly when the package is installed, enabled and not replaced:
-disable, forget and replace remove it; enable, restore and `replace --back` deploy it
+disable, forget and replace remove it; enable, restore and `replace ORIGINAL --with ORIGINAL` deploy it
 again from the clone's committed tree; folders of no known package are left alone with a
 warning; an active package whose clone is gone is skipped with a warning.
 
@@ -235,7 +235,7 @@ def forget_of_a_package_whose_clone_is_gone(t: T):
                                  "dist/switching-back-redeploys-the-original#back-to-the-original"])
 def replace_removes_original_back_redeploys(t: T):
     """replace vendor/base --with mine/base removes dist/vendor/base (fork's dist stays, original
-    stays enabled but inactive); replace --back deploys it again and keeps the fork's dist."""
+    stays enabled but inactive); replace ORIGINAL --with ORIGINAL deploys it again and keeps the fork's dist."""
     fork = t.snap(t.dist(FORK))
     r = t.gitpm_ok("replace", ORIGINAL, "--with", FORK)
     t.has(r.out, f"{ORIGINAL} replaced by {FORK} 1.0.1")
@@ -244,7 +244,7 @@ def replace_removes_original_back_redeploys(t: T):
     t.eq((t.dist(FORK) / "index.js").read_text(), FORK_PAYLOAD, "fork payload")
     view = resolved(t)
     t.eq((view[ORIGINAL]["enabled"], view[ORIGINAL]["active"]), (True, False), "original enabled, inactive")
-    r = t.gitpm_ok("replace", ORIGINAL, "--back")
+    r = t.gitpm_ok("replace", ORIGINAL, "--with", ORIGINAL)
     t.has(r.out, f"{ORIGINAL} switched back from {FORK}")
     deployed(t, ORIGINAL)
     t.same(fork, "dist/mine/base after --back")
@@ -264,13 +264,13 @@ def replace_with_disabled_fork_is_refused(t: T):
 
 @case(fixture="g6_replaced", spec=["dist/inactive-packages-change-state-and-clone-only#update-of-a-replaced-package"])
 def update_of_replaced_package_deploys_nothing_until_back(t: T):
-    """A replaced vendor/base updated to 1.1.0: state and clone move, no dist until replace --back (1.1.0)."""
+    """A replaced vendor/base updated to 1.1.0: state and clone move, no dist until replace ORIGINAL --with ORIGINAL (1.1.0)."""
     commit = t.release(ORIGINAL, "1.1.0")
     t.gitpm_ok("update", ORIGINAL)
     t.eq(t.package(ORIGINAL)["current"], {"version": "1.1.0", "commit": commit}, "state")
     t.eq(t.rev(t.worktree(ORIGINAL)), commit, "clone HEAD")
     t.ok(not t.dist(ORIGINAL).exists(), "no dist/vendor/base while replaced")
-    t.gitpm_ok("replace", ORIGINAL, "--back", "--force")
+    t.gitpm_ok("replace", ORIGINAL, "--with", ORIGINAL)
     t.has((t.dist(ORIGINAL) / "index.js").read_text(), f"{ORIGINAL} 1.1.0")
 
 

@@ -44,8 +44,9 @@ pub use model::{
 pub use workspace::{
     DependencyRewrite, DistSync, ForgetResult, ForkedPackage, HeldBack, HeldBackReason,
     IncompatibleConsumer, InstallResult, InstallTarget, InstalledDependency, LinkResult, Manager,
-    Options, PackageFork, ReplacementPlan, RevisionChange, SkippedDist, Target, Unchanged,
-    UnchangedReason, UninstallPlan, UpdateAllPlan, UpdateOptions,
+    Options, PackageFork, ReplacementCheck, ReplacementIssue, ReplacementPlan,
+    ReplacementResolution, RevisionChange, SkippedDist, Target, Unchanged, UnchangedReason,
+    UninstallPlan, UpdateAllPlan, UpdateOptions,
 };
 
 mod artifact;

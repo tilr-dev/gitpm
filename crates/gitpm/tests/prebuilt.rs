@@ -717,7 +717,7 @@ fn build_update_all_keeps_an_active_replacement_declaration() {
     let m = f.manager();
     m.install_from_catalog("vendor/base", None).unwrap();
     m.install_from_catalog("mine/base", None).unwrap();
-    m.replace("vendor/base", "mine/base", false).unwrap();
+    m.replace("vendor/base", "mine/base").unwrap();
     manifest.as_object_mut().unwrap().remove("replaces");
     fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
     publish_repo(&f, &fork, "mine/base", "2.0.0");

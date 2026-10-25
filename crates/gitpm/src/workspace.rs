@@ -2831,81 +2831,76 @@ impl Manager {
         .map(|((), dist)| dist)
     }
 
-    /// Read-only: what replacing `original` by `replacement` for every consumer in the
-    /// workspace would do. Compatibility is by version only: each consumer's
-    /// requirement on `original` against the version `replacement` declares in
-    /// `replaces`.
+    /// Read-only replacement metadata plan. Use `replace_check` for workspace diagnostics.
     pub fn replace_plan(&self, original: &str, replacement: &str) -> Result<ReplacementPlan> {
         let _busy = self.busy();
-        replacement_plan(&self.state()?, original, Some(replacement))
+        replacement_plan(&self.state()?, original, replacement)
     }
-    /// Make `replacement` (an installed package declaring `replaces: original`) the
-    /// provider of `original` for every consumer. Unsatisfied consumers refuse with
-    /// [`Error::IncompatibleReplacement`] unless `confirm`. Self and cyclic replacement
-    /// are always refused. Replacing again switches the single binding. `dist/<original>`
-    /// is removed; the replacement keeps its own `dist/<replacement>`.
-    pub fn replace(
+
+    /// Check the entire proposed active workspace without changing files or state.
+    /// Installed versions stay fixed; missing releases are selected from the catalog.
+    pub fn replace_check(&self, original: &str, replacement: &str) -> Result<ReplacementCheck> {
+        let _busy = self.busy();
+        replacement_check(
+            &self.state()?,
+            original,
+            replacement,
+            self.options.catalog.as_deref(),
+        )
+    }
+
+    /// Explicitly install missing dependencies for a proposed replacement, without
+    /// applying its binding, enabling installed packages or updating installed versions.
+    pub fn replace_resolve(
         &self,
         original: &str,
         replacement: &str,
-        confirm: bool,
-    ) -> Result<ReplacementPlan> {
-        let (plan, dist) = self.transaction(|_, state| {
-            let plan = replacement_plan(state, original, Some(replacement))?;
-            plan.refuse_unless(confirm)?;
-            state
-                .replacements
-                .insert(original.into(), replacement.into());
-            Ok(plan)
+    ) -> Result<ReplacementResolution> {
+        let (mut resolution, dist) = self.transaction(|txn, state| {
+            let check = replacement_check(
+                state,
+                original,
+                replacement,
+                self.options.catalog.as_deref(),
+            )?;
+            check.refuse_unresolvable(state)?;
+            let missing = check
+                .missing
+                .iter()
+                .map(|(id, v)| Ok((id.clone(), deps::version(v)?)))
+                .collect::<Result<BTreeMap<_, _>>>()?;
+            let installed =
+                self.install_missing(txn, state, &missing, true, self.options.catalog.as_deref())?;
+            let check = replacement_check(
+                state,
+                original,
+                replacement,
+                self.options.catalog.as_deref(),
+            )?;
+            check.refuse(state)?;
+            Ok(ReplacementResolution {
+                installed,
+                check,
+                dist: DistSync::default(),
+            })
         })?;
-        Ok(ReplacementPlan { dist, ..plan })
+        resolution.dist = dist;
+        Ok(resolution)
     }
-    /// Read-only plan for [`Manager::switch_back`].
-    pub fn switch_back_plan(&self, original: &str) -> Result<ReplacementPlan> {
-        let _busy = self.busy();
-        replacement_plan(&self.state()?, original, None)
-    }
-    /// Drop the replacement of `original`: every consumer uses the installed original
-    /// again; consumers whose requirement the original's version does not meet refuse
-    /// unless `confirm`. Consumers that break because the original is not installed (only
-    /// the binding is dropped then) or disabled refuse with [`Error::HasDependents`]
-    /// unless `force`, as for removals. The fork stays installed.
-    /// `dist/<original>` is deployed again from its clone at the installed commit (if
-    /// the original is enabled; its dependencies must then be active).
-    pub fn switch_back(
-        &self,
-        original: &str,
-        confirm: bool,
-        force: bool,
-    ) -> Result<ReplacementPlan> {
+
+    /// Apply a consistent replacement atomically. Passing the original as replacement
+    /// removes its binding. No dependencies are installed and there is no force bypass.
+    pub fn replace(&self, original: &str, replacement: &str) -> Result<ReplacementPlan> {
         let (plan, dist) = self.transaction(|_, state| {
-            let plan = replacement_plan(state, original, None)?;
-            plan.refuse_unless(confirm)?;
-            if !force {
-                // The one rule of removals: consumers the original does not serve once
-                // the binding is dropped (missing or disabled original; a version
-                // mismatch is the confirmation above).
-                let mut next = state.clone();
-                next.replacements.remove(original);
-                let fork = plan.current.as_deref().unwrap_or_default();
-                let broken: Vec<String> = deps::breaking_dependents(state, fork, &next)
-                    .into_iter()
-                    .filter(|id| !plan.incompatible.iter().any(|c| c.id == *id))
-                    .collect();
-                if !broken.is_empty() {
-                    return Err(Error::HasDependents {
-                        message: format!(
-                            "cannot switch {original} back: it would leave {} without a working {original}; doing it anyway requires force",
-                            broken.join(", ")
-                        ),
-                        id: original.into(),
-                        dependents: broken,
-                        lost_work: Vec::new(),
-                    });
-                }
-            }
-            state.replacements.remove(original);
-            Ok(plan)
+            let check = replacement_check(
+                state,
+                original,
+                replacement,
+                self.options.catalog.as_deref(),
+            )?;
+            check.refuse(state)?;
+            apply_replacement(state, original, replacement);
+            Ok(check.plan)
         })?;
         Ok(ReplacementPlan { dist, ..plan })
     }
@@ -3717,68 +3712,219 @@ pub struct ReplacementPlan {
     /// Package that provides `original` afterwards (the original itself when switching back).
     pub provider: String,
     /// Version consumers see: the fork's declared `replaces.version`, or the original's
-    /// (empty when switching back to an original that is not installed).
+    /// when returning to it.
     pub version: String,
     /// Current provider if `original` is replaced now.
     pub current: Option<String>,
     /// Installed packages that depend on `original`.
     pub consumers: Vec<String>,
-    /// Consumers whose requirement `version` does not satisfy (need confirmation).
+    /// Active consumers whose requirement `version` does not satisfy.
     pub incompatible: Vec<IncompatibleConsumer>,
     /// Installed version of `provider` (the fork; the original when switching back),
     /// which can differ from `version`, the one consumers see.
     pub installed_version: Option<String>,
-    /// Reconciliation report of `replace`/`switch_back` (empty for a plan).
+    /// Reconciliation report of `replace` (empty for a plan).
     pub dist: DistSync,
 }
-impl ReplacementPlan {
-    fn refuse_unless(&self, confirm: bool) -> Result<()> {
-        if confirm || self.incompatible.is_empty() {
+/// One unsatisfied dependency in the proposed active workspace.
+#[derive(Clone, Debug, Serialize)]
+pub struct ReplacementIssue {
+    pub consumer: String,
+    pub dependency: deps::DependencyStatus,
+}
+
+/// A read-only workspace report. `issues` includes unrelated existing breakage.
+/// `missing` contains a catalog solution for the proposed provider dependency closure
+/// (including transitives), or is empty when `resolution_error` explains why none exists.
+/// Only replacement constraints, including consumer requirements on the original, block apply.
+#[derive(Clone, Debug, Serialize)]
+pub struct ReplacementCheck {
+    pub plan: ReplacementPlan,
+    pub issues: Vec<ReplacementIssue>,
+    pub missing: BTreeMap<String, String>,
+    pub resolution_error: Option<String>,
+}
+
+/// Explicit dependency installs; the proposed binding has not been applied.
+#[derive(Clone, Debug, Serialize)]
+pub struct ReplacementResolution {
+    pub installed: Vec<InstalledDependency>,
+    pub check: ReplacementCheck,
+    pub dist: DistSync,
+}
+
+impl ReplacementCheck {
+    fn refuse_unresolvable(&self, state: &State) -> Result<()> {
+        self.refuse_incompatible()?;
+        if self.resolution_error.is_some() {
+            return Err(self.conflict(state));
+        }
+        Ok(())
+    }
+    fn refuse(&self, state: &State) -> Result<()> {
+        self.refuse_incompatible()?;
+        if !self.missing.is_empty() || self.resolution_error.is_some() {
+            return Err(self.conflict(state));
+        }
+        Ok(())
+    }
+    fn refuse_incompatible(&self) -> Result<()> {
+        if self.plan.incompatible.is_empty() {
             return Ok(());
         }
-        let list = self
-            .incompatible
-            .iter()
-            .map(|c| format!("{} needs {} {}", c.id, self.original, c.requirement))
-            .collect::<Vec<_>>()
-            .join("; ");
         Err(Error::IncompatibleReplacement {
             message: format!(
-                "{} provides {} {}, which some consumers do not accept: {list}; confirm to apply anyway",
-                self.provider, self.original, self.version
+                "{} provides {} {}, which some consumers do not accept: {}",
+                self.plan.provider,
+                self.plan.original,
+                self.plan.version,
+                self.plan
+                    .incompatible
+                    .iter()
+                    .map(|c| format!("{} needs {} {}", c.id, self.plan.original, c.requirement))
+                    .collect::<Vec<_>>()
+                    .join("; ")
             ),
-            id: self.original.clone(),
-            consumers: self.incompatible.iter().map(|c| c.id.clone()).collect(),
+            id: self.plan.original.clone(),
+            consumers: self
+                .plan
+                .incompatible
+                .iter()
+                .map(|c| c.id.clone())
+                .collect(),
         })
+    }
+    fn conflict(&self, state: &State) -> Error {
+        Error::DependencyConflict(self.resolution_error.clone().unwrap_or_else(|| {
+            let mut next = state.clone();
+            apply_replacement(&mut next, &self.plan.original, &self.plan.provider);
+            let mut pending = vec![self.plan.provider.clone()];
+            let mut visited = BTreeSet::new();
+            let mut needs = Vec::new();
+            while let Some(id) = pending.pop() {
+                if !visited.insert(id.clone()) {
+                    continue;
+                }
+                for dependency in deps::status(&next, &next.packages[&id]) {
+                    if let Some(provider) = dependency.provider {
+                        pending.push(provider);
+                    } else if self.missing.contains_key(&dependency.id) {
+                        needs.push(format!(
+                            "{id} needs {} {} (not installed)",
+                            dependency.id, dependency.requirement
+                        ));
+                    }
+                }
+            }
+            let missing = self
+                .missing
+                .iter()
+                .map(|(id, version)| format!("{id} {version}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "{}; replacement installs nothing; missing: {missing}",
+                needs.join("; ")
+            )
+        }))
     }
 }
 
-fn replacement_plan(
+fn apply_replacement(state: &mut State, original: &str, replacement: &str) {
+    if original == replacement {
+        state.replacements.remove(original);
+    } else {
+        state
+            .replacements
+            .insert(original.into(), replacement.into());
+    }
+}
+
+fn replacement_check(
     state: &State,
     original: &str,
-    replacement: Option<&str>,
-) -> Result<ReplacementPlan> {
+    replacement: &str,
+    catalog: Option<&str>,
+) -> Result<ReplacementCheck> {
+    let plan = replacement_plan(state, original, replacement)?;
+    let mut next = state.clone();
+    apply_replacement(&mut next, original, replacement);
+    let issues = next
+        .packages
+        .iter()
+        .filter(|(id, _)| next.is_active(id))
+        .flat_map(|(id, p)| {
+            deps::status(&next, p)
+                .into_iter()
+                .filter(|s| !s.satisfied)
+                .map(|dependency| ReplacementIssue {
+                    consumer: id.clone(),
+                    dependency,
+                })
+        })
+        .collect();
+    let fixed = deps::fixed_from_state(&next)?;
+    // Only the proposed provider's closure is solved. Consumers of ORIGINAL
+    // contribute version constraints through plan.incompatible, not unrelated deps.
+    let roots = BTreeMap::from([(plan.provider.clone(), fixed[&plan.provider].version.clone())]);
+    // The solver pins versions but does not model enabled state. Check installed
+    // providers in the same closure explicitly, following replacement bindings.
+    let mut pending = vec![plan.provider.clone()];
+    let mut visited = BTreeSet::new();
+    let mut inactive = Vec::new();
+    while let Some(id) = pending.pop() {
+        if !visited.insert(id.clone()) {
+            continue;
+        }
+        for dependency in deps::status(&next, &next.packages[&id]) {
+            if let Some(provider) = dependency.provider {
+                if !next.packages[&provider].enabled {
+                    inactive.push(format!("{id}: {}", dependency.problem.unwrap()));
+                }
+                pending.push(provider);
+            }
+        }
+    }
+    let (missing, resolution_error) = match deps::solve(&fixed, &roots, catalog) {
+        Ok(missing) => (
+            missing
+                .into_iter()
+                .map(|(id, v)| (id, v.to_string()))
+                .collect(),
+            None,
+        ),
+        Err(error) => (BTreeMap::new(), Some(error.to_string())),
+    };
+    let (missing, resolution_error) = if inactive.is_empty() {
+        (missing, resolution_error)
+    } else {
+        (BTreeMap::new(), Some(inactive.join("; ")))
+    };
+    Ok(ReplacementCheck {
+        plan,
+        issues,
+        missing,
+        resolution_error,
+    })
+}
+
+fn replacement_plan(state: &State, original: &str, replacement: &str) -> Result<ReplacementPlan> {
     valid_id(original)?;
     let current = state.replacements.get(original).cloned();
-    let (provider, version) = match replacement {
-        Some(fork) => {
-            valid_id(fork)?;
-            ensure!(
-                fork != original,
-                InvalidArgument,
-                "cannot replace {original} by itself"
-            );
-            let installed = state
-                .packages
-                .get(fork)
-                .ok_or_else(|| Error::NotInstalled { id: fork.into() })?;
-            // A disabled replacement has no dist/: nothing would be loaded for either.
-            ensure!(
-                installed.enabled,
-                InvalidArgument,
-                "{fork} is disabled; enable it first"
-            );
-            let declared = installed
+    let (provider, version) = if replacement != original {
+        let fork = replacement;
+        valid_id(fork)?;
+        let installed = state
+            .packages
+            .get(fork)
+            .ok_or_else(|| Error::NotInstalled { id: fork.into() })?;
+        // A disabled replacement has no dist/: nothing would be loaded for either.
+        ensure!(
+            installed.enabled,
+            InvalidArgument,
+            "{fork} is disabled; enable it first"
+        );
+        let declared = installed
                 .replaces
                 .as_ref()
                 .filter(|r| r.id == original)
@@ -3789,50 +3935,50 @@ fn replacement_plan(
                          (plugin.json \"replaces\": {{\"id\": \"{original}\", \"version\": \"...\"}})"
                     ),
                 )?;
-            if let Some(other) = state.replacements.get(fork) {
-                fail!(
-                    InvalidArgument,
-                    "cyclic replacement: {fork} is itself replaced by {other}"
-                );
-            }
-            if let Some((replaced, _)) = state.replacements.iter().find(|(_, p)| *p == original) {
-                fail!(
-                    InvalidArgument,
-                    "cyclic replacement: {original} provides {replaced}"
-                );
-            }
-            ensure!(
-                !installed.dependencies.contains_key(original),
+        if let Some(other) = state.replacements.get(fork) {
+            fail!(
                 InvalidArgument,
-                "cyclic replacement: {fork} depends on {original}"
+                "cyclic replacement: {fork} is itself replaced by {other}"
             );
-            // A replacement takes over an installed original.
-            if !state.packages.contains_key(original) {
-                return Err(Error::NotInstalled {
-                    id: original.into(),
-                });
-            }
-            (fork.to_owned(), declared.version.clone())
         }
-        None => {
-            current.as_deref().require(
-                Error::InvalidArgument,
-                format!("{original} is not replaced"),
-            )?;
-            // Switching back to an original that is not installed only drops the
-            // binding: no version, its consumers break (`switch_back` guards them).
-            let version = state
-                .packages
-                .get(original)
-                .map(|p| p.current.version.clone())
-                .unwrap_or_default();
-            (original.to_owned(), version)
+        if let Some((replaced, _)) = state.replacements.iter().find(|(_, p)| *p == original) {
+            fail!(
+                InvalidArgument,
+                "cyclic replacement: {original} provides {replaced}"
+            );
         }
+        ensure!(
+            !installed.dependencies.contains_key(original),
+            InvalidArgument,
+            "cyclic replacement: {fork} depends on {original}"
+        );
+        // A replacement takes over an installed original.
+        if !state.packages.contains_key(original) {
+            return Err(Error::NotInstalled {
+                id: original.into(),
+            });
+        }
+        (fork.to_owned(), declared.version.clone())
+    } else {
+        let installed = state
+            .packages
+            .get(original)
+            .ok_or_else(|| Error::NotInstalled {
+                id: original.into(),
+            })?;
+        ensure!(
+            installed.enabled,
+            InvalidArgument,
+            "{original} is disabled; enable it first"
+        );
+        (original.to_owned(), installed.current.version.clone())
     };
     let consumers: Vec<String> = state
         .packages
         .iter()
-        .filter(|(id, p)| **id != provider && p.dependencies.contains_key(original))
+        .filter(|(id, p)| {
+            **id != provider && state.is_active(id) && p.dependencies.contains_key(original)
+        })
         .map(|(id, _)| id.clone())
         .collect();
     let incompatible = consumers
@@ -3846,43 +3992,6 @@ fn replacement_plan(
             })
         })
         .collect();
-    // The new provider's own dependencies must work in the resulting workspace.
-    let mut next = state.clone();
-    match replacement {
-        Some(fork) => {
-            next.replacements.insert(original.into(), fork.into());
-        }
-        None => {
-            next.replacements.remove(original);
-        }
-    }
-    match replacement {
-        Some(_) => {
-            let broken: Vec<String> = deps::status(&next, &next.packages[&provider])
-                .into_iter()
-                .filter(|s| !s.satisfied)
-                .map(|s| {
-                    format!(
-                        "{} {} ({})",
-                        s.id,
-                        s.requirement,
-                        s.problem.unwrap_or_default()
-                    )
-                })
-                .collect();
-            ensure!(
-                broken.is_empty(),
-                DependencyConflict,
-                "{provider} has unsatisfied dependencies: {}",
-                broken.join(", ")
-            );
-        }
-        // The original becomes active again: its dependencies are checked as by enable.
-        None if next.is_active(original) => {
-            deps::refuse_inactive_dependencies(&next, original, "switch back to", false)?;
-        }
-        None => {}
-    }
     let installed_version = state
         .packages
         .get(&provider)
@@ -7085,7 +7194,7 @@ mod tests {
         )
         .unwrap();
         assert!(m.state().unwrap().replacements.is_empty());
-        m.replace("demo/a", "my/a", false).unwrap();
+        m.replace("demo/a", "my/a").unwrap();
         let after = m.state().unwrap();
         assert_eq!(
             serde_json::to_value(&after.packages["demo/b"]).unwrap(),

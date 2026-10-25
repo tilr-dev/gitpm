@@ -76,7 +76,7 @@ pub enum PmError {
         dependents: Vec<String>,
         lost_work: Vec<LostWork>,
     },
-    /// `consumers` do not accept the new provider's version; retry with `confirm`.
+    /// `consumers` do not accept the new provider's version; replacement is refused.
     #[error("{message}")]
     IncompatibleReplacement {
         id: String,
@@ -490,11 +490,11 @@ pub struct ReplacementPlan {
     pub version: String,
     pub current: Option<String>,
     pub consumers: Vec<String>,
-    /// Non-empty: ask the user, then call again with `confirm = true`.
+    /// Non-empty: replacement is refused.
     pub incompatible: Vec<IncompatibleConsumer>,
     /// Installed version of `provider` (the fork; the original when switching back).
     pub installed_version: Option<String>,
-    /// Reconciliation report of `replace`/`switchBack` (empty for a plan).
+    /// Reconciliation report of `replace` (empty for a plan).
     pub dist: DistSync,
 }
 impl From<pm::ReplacementPlan> for ReplacementPlan {
@@ -515,6 +515,51 @@ impl From<pm::ReplacementPlan> for ReplacementPlan {
                 .collect(),
             installed_version: p.installed_version,
             dist: p.dist.into(),
+        }
+    }
+}
+/// One unsatisfied dependency of an active package.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ReplacementIssue {
+    pub consumer: String,
+    pub dependency: DependencyStatus,
+}
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ReplacementCheck {
+    pub plan: ReplacementPlan,
+    pub issues: Vec<ReplacementIssue>,
+    pub missing: std::collections::HashMap<String, String>,
+    pub resolution_error: Option<String>,
+}
+impl From<pm::ReplacementCheck> for ReplacementCheck {
+    fn from(c: pm::ReplacementCheck) -> Self {
+        Self {
+            plan: c.plan.into(),
+            issues: c
+                .issues
+                .into_iter()
+                .map(|i| ReplacementIssue {
+                    consumer: i.consumer,
+                    dependency: i.dependency.into(),
+                })
+                .collect(),
+            missing: c.missing.into_iter().collect(),
+            resolution_error: c.resolution_error,
+        }
+    }
+}
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ReplacementResolution {
+    pub installed: Vec<InstalledDependency>,
+    pub check: ReplacementCheck,
+    pub dist: DistSync,
+}
+impl From<pm::ReplacementResolution> for ReplacementResolution {
+    fn from(r: pm::ReplacementResolution) -> Self {
+        Self {
+            installed: r.installed.into_iter().map(Into::into).collect(),
+            check: r.check.into(),
+            dist: r.dist.into(),
         }
     }
 }
@@ -1546,31 +1591,23 @@ impl PackageManager {
     pub fn replace_plan(&self, original: String, replacement: String) -> Result<ReplacementPlan> {
         Ok(self.inner.replace_plan(&original, &replacement)?.into())
     }
-    /// Make `replacement` the provider of `original` for every consumer. Unsatisfied
-    /// consumers refuse with `IncompatibleReplacement` unless `confirm`. Removes
-    /// `dist/<original>`; the replacement keeps its own `dist/`.
-    pub fn replace(
+    /// Refuse incompatible provider dependencies (transitively) or active consumers'
+    /// requirements on the original; unrelated breakage is diagnostic only.
+    /// No confirmation or automatic installs.
+    pub fn replace(&self, original: String, replacement: String) -> Result<ReplacementPlan> {
+        Ok(self.inner.replace(&original, &replacement)?.into())
+    }
+    /// Read-only check of the complete proposed workspace.
+    pub fn replace_check(&self, original: String, replacement: String) -> Result<ReplacementCheck> {
+        Ok(self.inner.replace_check(&original, &replacement)?.into())
+    }
+    /// Explicitly install missing dependencies, without applying the replacement.
+    pub fn replace_resolve(
         &self,
         original: String,
         replacement: String,
-        confirm: bool,
-    ) -> Result<ReplacementPlan> {
-        Ok(self.inner.replace(&original, &replacement, confirm)?.into())
-    }
-    pub fn switch_back_plan(&self, original: String) -> Result<ReplacementPlan> {
-        Ok(self.inner.switch_back_plan(&original)?.into())
-    }
-    /// Every consumer uses the installed original again (same confirmation rule);
-    /// `dist/<original>` is deployed again. Consumers the original does not serve (not
-    /// installed, disabled) refuse with `HasDependents` unless `force`.
-    #[uniffi::method(default(force = false))]
-    pub fn switch_back(
-        &self,
-        original: String,
-        confirm: bool,
-        force: bool,
-    ) -> Result<ReplacementPlan> {
-        Ok(self.inner.switch_back(&original, confirm, force)?.into())
+    ) -> Result<ReplacementResolution> {
+        Ok(self.inner.replace_resolve(&original, &replacement)?.into())
     }
     /// Fork the entire source repository of an installed package into a new folder
     /// `destination` outside the workspace. Every package receives a new namespace;
@@ -2486,6 +2523,34 @@ mod tests {
             installed_version: Some("0.3.0".into()),
             dist: report(),
         };
+        let replacement_report = pm::ReplacementCheck {
+            plan: replacement.clone(),
+            issues: vec![pm::ReplacementIssue {
+                consumer: "app/x".into(),
+                dependency: pm::deps::DependencyStatus {
+                    id: "lib/new".into(),
+                    requirement: "^1".into(),
+                    provider: None,
+                    version: None,
+                    satisfied: false,
+                    problem: Some("not installed".into()),
+                },
+            }],
+            missing: std::collections::BTreeMap::from([("lib/new".into(), "1.0.0".into())]),
+            resolution_error: None,
+        };
+        let ffi_report = ReplacementCheck::from(replacement_report.clone());
+        assert_eq!(ffi_report.issues[0].consumer, "app/x");
+        assert_eq!(ffi_report.issues[0].dependency.id, "lib/new");
+        assert_eq!(ffi_report.missing["lib/new"], "1.0.0");
+        assert!(ffi_report.resolution_error.is_none());
+        let resolution = ReplacementResolution::from(pm::ReplacementResolution {
+            check: replacement_report,
+            installed: vec![],
+            dist: pm::DistSync::default(),
+        });
+        assert_eq!(resolution.check.plan.provider, replacement.provider);
+        assert!(resolution.installed.is_empty());
         let ffi = ReplacementPlan::from(replacement.clone());
         assert_eq!(ffi.installed_version.as_deref(), Some("0.3.0"));
         assert_eq!(ffi.incompatible[0].requirement, "^2");
@@ -2613,9 +2678,15 @@ mod tests {
             ("replace", {
                 let _ = PackageManager::replace_plan;
                 let _ = PackageManager::replace;
-                let _ = PackageManager::switch_back_plan;
-                let _ = PackageManager::switch_back;
-                vec!["replacePlan", "replace", "switchBackPlan", "switchBack"]
+                vec!["replacePlan", "replace"]
+            }),
+            ("replace-check", {
+                let _ = PackageManager::replace_check;
+                vec!["replaceCheck"]
+            }),
+            ("replace-resolve", {
+                let _ = PackageManager::replace_resolve;
+                vec!["replaceResolve"]
             }),
             ("sync-dist", {
                 let _ = PackageManager::sync_dist_plan;

@@ -95,11 +95,11 @@ def forced_provider_removal_drops_binding(t: T):
 
 @case(fixture="g6_replaced", spec=["fork-replacement/switching-back", "dist/switching-back-redeploys-the-original#back-to-the-original"])
 def switch_back_to_compatible_original(t: T):
-    """replace --back: no prompt, every consumer on vendor/base again; fork keeps history and edits."""
+    """replace ORIGINAL --with ORIGINAL: no prompt, every consumer on vendor/base again; fork keeps history and edits."""
     fork_entry = t.package(FORK)
     fork_files = t.snap(t.worktree(FORK), t.dist(FORK), git=True)
     fork_author = t.snap(t.repo(FORK), git=True)
-    r = t.gitpm_ok("replace", ORIGINAL, "--back")
+    r = t.gitpm_ok("replace", ORIGINAL, "--with", ORIGINAL)
     t.lacks(r.err, "Warning", "[y/N]")
     t.has(r.out, f"{ORIGINAL} switched back from {FORK} ({ORIGINAL} 1.0.0 for: app/a, app/b); "
                  f"{FORK} stays installed and enabled (disable or uninstall it if not wanted)")
@@ -125,16 +125,16 @@ def original_breaks_consumers(t: T):
 
 
 def warned(t: T, r: R):
-    t.has(r.err, "Warning: vendor/base provides vendor/base 2.0.0",
-          "  - app/a needs vendor/base ^1.0", "  - app/b needs vendor/base ^1.0")
+    t.has(r.err, "app/a needs vendor/base ^1.0", "app/b needs vendor/base ^1.0", "Error kind: incompatible_replacement")
+    t.lacks(r.err, "Replace anyway?", "[y/N]")
 
 
 @case(fixture="g6_replaced", spec=["fork-replacement/switching-back", "cli/prompts-only-on-a-tty"])
 def switch_back_incompatible_answer_no(t: T):
-    """Switching back to vendor/base 2.0.0 on a TTY: warning, N → fork binding kept for all consumers."""
+    """Returning to vendor/base 2.0.0 on a TTY refuses without a prompt, preserving the binding."""
     original_breaks_consumers(t)
     before = t.snap(t.ws)
-    r = gitpm_tty(t, "replace", ORIGINAL, "--back", answer=b"n\n")
+    r = gitpm_tty(t, "replace", ORIGINAL, "--with", ORIGINAL, answer=b"n\n")
     warned(t, r)
     t.ok(r.code != 0, "non-zero exit")
     t.same(before, "workspace")
@@ -143,10 +143,10 @@ def switch_back_incompatible_answer_no(t: T):
 
 @case(fixture="g6_replaced", spec=["fork-replacement/switching-back", "cli/prompts-only-on-a-tty"])
 def switch_back_incompatible_eof(t: T):
-    """Same with EOF at the prompt."""
+    """EOF does not override the strict refusal."""
     original_breaks_consumers(t)
     before = t.snap(t.ws)
-    r = gitpm_tty(t, "replace", ORIGINAL, "--back", answer=b"\x04")
+    r = gitpm_tty(t, "replace", ORIGINAL, "--with", ORIGINAL, answer=b"\x04")
     warned(t, r)
     t.ok(r.code != 0, "non-zero exit")
     t.same(before, "workspace")
@@ -155,47 +155,40 @@ def switch_back_incompatible_eof(t: T):
 
 @case(fixture="g6_replaced", spec=["fork-replacement/switching-back", "fork-replacement/compatibility-is-checked-by-versions-only"])
 def switch_back_incompatible_without_tty(t: T):
-    """Same without a TTY: typed refusal, fork binding kept; --force applies it."""
+    """Without a TTY: typed refusal, binding kept, force rejected."""
     original_breaks_consumers(t)
     before = t.snap(t.ws)
-    r = t.gitpm_err("replace", ORIGINAL, "--back", kind="incompatible_replacement",
+    r = t.gitpm_err("replace", ORIGINAL, "--with", ORIGINAL, kind="incompatible_replacement",
                  contains="app/a needs vendor/base ^1.0")
     warned(t, r)
     t.same(before, "workspace")
     on_fork(t)
-    t.gitpm_ok("replace", ORIGINAL, "--back", "--force")
-    t.ok("replacements" not in t.state(), "switched back with --force")
-    t.eq(resolution(t), {c: (ORIGINAL, False) for c in CONSUMERS}, "consumers report the mismatch")
-
+    r = t.gitpm("replace", ORIGINAL, "--with", ORIGINAL, "--force")
+    t.ok(r.code != 0, "force rejected")
+    t.has(r.err, "--force is only valid")
+    t.same(before, "workspace")
 
 @case(fixture="g6_replaced", spec=["fork-replacement/switching-back", "cli/prompts-only-on-a-tty"])
 def switch_back_incompatible_answer_yes(t: T):
-    """y on the TTY switches every consumer back (they then report the unsatisfied range)."""
+    """Affirmative terminal input cannot override version incompatibility."""
     original_breaks_consumers(t)
-    r = gitpm_tty(t, "replace", ORIGINAL, "--back", answer=b"y\n")
+    before = t.snap(t.ws)
+    r = gitpm_tty(t, "replace", ORIGINAL, "--with", ORIGINAL, answer=b"y\n")
     warned(t, r)
-    t.eq(r.code, 0, "exit code")
-    t.ok("replacements" not in t.state(), "switched back")
-    t.eq(resolution(t), {c: (ORIGINAL, False) for c in CONSUMERS}, "consumers on the original, unsatisfied")
-
+    t.ok(r.code != 0, "strict refusal")
+    t.same(before, "workspace")
+    on_fork(t)
 
 @case(fixture="g6_replaced", spec=["fork-replacement/switching-back#back-with-the-original-absent", "fork-replacement/active-fork-rules#reinstalled-original-stays-replaced"])
 def switch_back_to_unavailable_original(t: T):
-    """Original uninstalled (no dependents while replaced) and its origin unreachable: --back
-    refuses with has_dependents (app/a, app/b would break) and keeps the binding; --force drops
-    only the binding, leaving the consumers broken, and installs nothing."""
+    """An absent original must be installed before returning, without force."""
     t.gitpm_ok("uninstall", ORIGINAL)
     t.not_installed(ORIGINAL)
     t.repo(ORIGINAL).rename(t.root / "unreachable")
     before = t.snap(t.ws)
-    t.gitpm_err("replace", ORIGINAL, "--back", kind="has_dependents", contains="app/a, app/b")
+    t.gitpm_err("replace", ORIGINAL, "--with", ORIGINAL, kind="not_installed", contains=ORIGINAL)
     t.same(before, "workspace")
     on_fork(t)
-    r = t.gitpm_ok("replace", ORIGINAL, "--back", "--force")
-    t.has(r.out, f"{ORIGINAL} switched back from {FORK} ({ORIGINAL} is not installed; broken: app/a, app/b)")
-    t.ok(not t.state().get("replacements"), "binding dropped")
-    t.not_installed(ORIGINAL)
-    t.eq(resolution(t), {c: (None, False) for c in CONSUMERS}, "consumers broken")
 
 
 # ------------------------------------------------------------- removing the fork
@@ -205,7 +198,7 @@ def switch_back_to_unavailable_original(t: T):
 def remove_unused_clean_fork(t: T):
     """After switching back the clean fork uninstalls without a guard or a question."""
     author = t.snap(t.repo(FORK), git=True)
-    t.gitpm_ok("replace", ORIGINAL, "--back")
+    t.gitpm_ok("replace", ORIGINAL, "--with", ORIGINAL)
     t.gitpm_ok("uninstall", FORK)
     t.not_installed(FORK)
     t.eq(resolution(t), {c: (ORIGINAL, True) for c in CONSUMERS}, "consumers on the original")
@@ -213,7 +206,7 @@ def remove_unused_clean_fork(t: T):
 
 
 def dirty_unused_fork(t: T):
-    t.gitpm_ok("replace", ORIGINAL, "--back")
+    t.gitpm_ok("replace", ORIGINAL, "--with", ORIGINAL)
     (t.worktree(FORK) / "dist/index.js").write_text("local edit\n")
     (t.worktree(FORK) / "notes.txt").write_text("unpublished\n")
 
