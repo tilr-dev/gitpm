@@ -116,19 +116,19 @@ Workspace and catalog locks SHALL be process-owned POSIX record locks, not inher
 - **THEN** they run one after the other and state is consistent
 
 ### Requirement: Managed paths are never followed through symlinks
-Every directory between the root and a managed path (`repos`, `worktrees`, `dist`) MUST be a real directory; a symlinked or non-directory managed parent SHALL fail with `workspace` and nothing SHALL be written or deleted through it. Verified by `workspace::symlinked_namespace_directory_is_never_followed` and `a_uuid_path_that_is_not_a_folder_blocks_nothing_else`.
+Every directory between the root and a managed path (`repos`, `worktrees`, `worktrees/<ns>`, `dist`, `dist/<ns>`) MUST be a real directory; a symlinked or non-directory managed parent SHALL fail with `workspace` and nothing SHALL be written or deleted through it. Verified by `workspace::symlinked_namespace_directory_is_never_followed` and `a_namespace_path_that_is_not_a_folder_blocks_nothing_else`.
 
 #### Scenario: Symlinked namespace
 - **WHEN** `repos` is a symlink to a folder outside the workspace
-- **THEN** install and `uninstall --force` of `6d082077-2279-5cc6-b47f-b78cd35cec24` refuse and nothing outside the workspace root changes
+- **THEN** install and `uninstall --force` of `dan/x` refuse and nothing outside the workspace root changes
 
 #### Scenario: Blocked dist namespace
-- **WHEN** `dist/d135a7cf-1c63-549a-93cb-8f89656b2ced` is a file or symlink and `d135a7cf-1c63-549a-93cb-8f89656b2ced` is active
-- **THEN** an operation that deploys or removes `d135a7cf-1c63-549a-93cb-8f89656b2ced` fails with `workspace` and does not write or delete through `dist/d135a7cf-1c63-549a-93cb-8f89656b2ced`, while a command on an unrelated package can proceed
+- **WHEN** `dist/acme` is a file or symlink and `acme/greeter` is active
+- **THEN** an operation that deploys or removes `acme/greeter` fails with `workspace` and does not write or delete through `dist/acme`, while a command on an unrelated package can proceed
 
 #### Scenario: Symlinked worktree parent
-- **WHEN** `worktrees` or the affected `worktrees/<uuid>` entry is a symlink or a non-directory
-- **THEN** an operation using that managed checkout path refuses with `workspace` and changes nothing through it
+- **WHEN** `worktrees` or the affected `worktrees/<ns>` parent is a symlink or a non-directory
+- **THEN** an operation using that path refuses with `workspace` and changes nothing through it
 
 ### Requirement: Link transactions own entries and never their targets
 Transactions SHALL stage and journal the deployed symlink entry, then publish state last, under the existing recovery protocol. Cleanup, removal and crash recovery MUST NOT follow a deployed link or recurse into its target, including dangling or externally retargeted links. The leaf symlink exception MUST NOT relax "Managed paths are never followed through symlinks" for managed parent directories. Atomicity SHALL cover workspace entries and state, not externally edited content.
@@ -146,7 +146,7 @@ Transactions SHALL stage and journal the deployed symlink entry, then publish st
 - **THEN** recovery operates on workspace symlink entries only and does not restore, delete or overwrite external content
 
 #### Scenario: Managed parent is a symlink
-- **WHEN** `dist` is a symlink outside the workspace
+- **WHEN** `dist/<namespace>` is a symlink outside the workspace
 - **THEN** link deployment or removal refuses with `workspace` without writing or deleting through that parent
 
 ### Requirement: Worktree removal avoids unnecessary bare copies

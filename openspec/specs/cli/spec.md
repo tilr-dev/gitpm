@@ -37,10 +37,6 @@ The CLI SHALL offer exactly the commands of its full usage (`gitpm --help`), eac
 - **WHEN** a caller uses `replace`, `replace-check` or `replace-resolve`
 - **THEN** each takes `ORIGINAL --with PROVIDER`; `replace-check` prints a JSON report without mutations and `replace-resolve` explicitly installs missing dependencies; `replace --back` and `replace --force` are rejected
 
-#### Scenario: Identity forms
-- **WHEN** a caller reads command usage
-- **THEN** package selectors and replacement arguments are UUIDs, authoring uses `init NAME --into DIR`, and forking uses `fork UUID [UUID...] --into DIR` without `--ns`
-
 ### Requirement: Settings come from flags, environment, defaults
 The CLI SHALL resolve `--root DIR` / `GITPM_ROOT` (default `./gitpm-workspace`), `--catalog LOC` / `GITPM_CATALOG` (no default), `--sources FILE` / `GITPM_SOURCES` (default `./sources.txt`), flag first. There SHALL be no config file; `PM_*` variables SHALL be ignored. Verified by `custom_ssh_is_shared_by_auth_install_catalog_and_check`, `gitpm_variables_set_root_catalog_and_sources`, `legacy_pm_variables_are_ignored`, `defaults_are_relative_to_the_current_directory`.
 
@@ -69,7 +65,7 @@ Catalog commands (`catalog show`, `catalog links`, `catalog update`, `catalog re
 - **THEN** it prints the check table from each package's origin and exits 0
 
 ### Requirement: Option validation
-Before calling the library the CLI SHALL refuse only syntax: unknown or repeated options, misplaced options (for example `--dry-run` outside `update all`/`sync-dist`), exclusive options (`--ref`, `--dev`, `--release`), values outside a fixed set and wrong argument counts, with a message ending `; use --help` where applicable (usage errors without `Error kind`). Domain combinations are checked by the library. Verified by `usage_errors_name_the_problem_and_create_nothing`.
+Before calling the library the CLI SHALL refuse syntax errors: unknown, repeated or misplaced options, conflicting options, values outside a fixed set and wrong argument counts. Usage errors SHALL omit `Error kind` and end with `; use --help` where applicable. The library SHALL check domain combinations. Verified by `usage_errors_name_the_problem_and_create_nothing`.
 
 #### Scenario: Ref, dev and release
 - **WHEN** the user runs `gitpm install SOURCE --ref x --dev`, `gitpm update ID --dev --release`, or passes `--channel`
@@ -85,11 +81,11 @@ Before calling the library the CLI SHALL refuse only syntax: unknown or repeated
 - **THEN** both behave the same: options may come before or after the positional arguments
 
 #### Scenario: Removed fork options have no side effects
-- **WHEN** `fork` receives `--ns NAMESPACE`, `--replace`, `--version V` or `--force`
+- **WHEN** `fork` receives `--replace`, `--version V` or `--force`
 - **THEN** it fails as a usage error before opening the workspace or creating the destination
 
 #### Scenario: Fork from source options
-- **WHEN** `fork ID --from SOURCE --into DIR --ref REF` is run
+- **WHEN** `fork ID --from SOURCE --ns NS --into DIR --ref REF` is run
 - **THEN** the options are accepted without opening a workspace; `--ref` without `--from` is refused before side effects
 - **AND** `--from` outside `fork`, and `--dry-run` outside `update all`/`sync-dist`, are refused as misplaced options
 
@@ -107,10 +103,10 @@ Every workspace-mutating command (`install`, `install-catalog`, `download`, `dow
 - **AND** this is covered by `mutating_commands_print_one_line_per_package_and_no_ok_lines`, `forget_says_whether_the_clone_was_kept` and `update_all_reports_kept_back_packages_and_replace_with_original_without_a_replacement`
 
 #### Scenario: Single-package verbs
-- **WHEN** the user installs, updates, rolls back, enables, disables, forgets, restores and uninstalls `d135a7cf-1c63-549a-93cb-8f89656b2ced`
-- **THEN** the lines are `installed d135a7cf-1c63-549a-93cb-8f89656b2ced@V from SOURCE` (or `d135a7cf-1c63-549a-93cb-8f89656b2ced already installed (V)`, optionally with `; run update`), `d135a7cf-1c63-549a-93cb-8f89656b2ced updated A → B` (or `d135a7cf-1c63-549a-93cb-8f89656b2ced up to date (V)`), `d135a7cf-1c63-549a-93cb-8f89656b2ced rolled back B → A`, `d135a7cf-1c63-549a-93cb-8f89656b2ced enabled`, `d135a7cf-1c63-549a-93cb-8f89656b2ced disabled`, `d135a7cf-1c63-549a-93cb-8f89656b2ced forgotten (clone kept; restore re-registers it)` (or, when `ForgetResult.clone_kept` is false, `d135a7cf-1c63-549a-93cb-8f89656b2ced forgotten (no clone; record and dist removed)`), `d135a7cf-1c63-549a-93cb-8f89656b2ced restored V` and `d135a7cf-1c63-549a-93cb-8f89656b2ced uninstalled`
-- **AND** `download` prints `downloaded d135a7cf-1c63-549a-93cb-8f89656b2ced@V from SOURCE (disabled)`; install and download print one such line per package, including each dependency pulled from the catalog
-- **AND** an `update` or `update all` line of a change marked `major` ends with ` (major)` (`d135a7cf-1c63-549a-93cb-8f89656b2ced updated 1.2.3 → 2.0.0 (major)`; updates, "Major updates are marked"), covered by `update_lines_mark_major_updates`
+- **WHEN** the user installs, updates, rolls back, enables, disables, forgets, restores and uninstalls `acme/greeter`
+- **THEN** the lines are `installed acme/greeter@V from SOURCE` (or `acme/greeter already installed (V)`, optionally with `; run update`), `acme/greeter updated A → B` (or `acme/greeter up to date (V)`), `acme/greeter rolled back B → A`, `acme/greeter enabled`, `acme/greeter disabled`, `acme/greeter forgotten (clone kept; restore re-registers it)` (or, when `ForgetResult.clone_kept` is false, `acme/greeter forgotten (no clone; record and dist removed)`), `acme/greeter restored V` and `acme/greeter uninstalled`
+- **AND** `download` prints `downloaded acme/greeter@V from SOURCE (disabled)`; install and download print one such line per package, including each dependency pulled from the catalog
+- **AND** an `update` or `update all` line of a change marked `major` ends with ` (major)` (`acme/greeter updated 1.2.3 → 2.0.0 (major)`; updates, "Major updates are marked"), covered by `update_lines_mark_major_updates`
 
 #### Scenario: Fork, replace and commit verbs
 - **WHEN** the user replaces a package or returns through replace ORIGINAL --with ORIGINAL
@@ -150,16 +146,16 @@ The CLI SHALL print every warning a library result carries (ignored metadata key
 On failure the CLI SHALL print `Error: MESSAGE` to stderr, for a library error also `Error kind: KIND` (and one `  - item` line per lost item of `local_changes` outside update and rollback, or `has_dependents`) and, where a gitpm command helps, one `Hint: …` line naming it; usage errors print no kind. It SHALL exit with status 1 on failure, 0 on success. Verified by `uninstall_without_tty_refuses_and_lists_lost_work_including_stash`, `update_all_local_work_prints_the_library_message_unchanged`.
 
 #### Scenario: Unknown ID
-- **WHEN** the user runs `gitpm update 918a06b8-4971-5358-8ae7-82d0218459ec`
-- **THEN** stderr has `Error: package 918a06b8-4971-5358-8ae7-82d0218459ec is not installed` and `Error kind: not_installed`, and the exit status is 1
+- **WHEN** the user runs `gitpm update acme/none`
+- **THEN** stderr has `Error: package acme/none is not installed` and `Error kind: not_installed`, and the exit status is 1
 
 #### Scenario: Lost work in the update message
-- **WHEN** `gitpm update all` is refused because the clone of `d135a7cf-1c63-549a-93cb-8f89656b2ced` holds an unpublished tag `local-only`
-- **THEN** stderr has `Error: d135a7cf-1c63-549a-93cb-8f89656b2ced: unpublished local work blocks update all; unpublished tag: local-only` and `Error kind: local_changes`, with no `  - item` line
+- **WHEN** `gitpm update all` is refused because the clone of `acme/greeter` holds an unpublished tag `local-only`
+- **THEN** stderr has `Error: acme/greeter: unpublished local work blocks update all; unpublished tag: local-only` and `Error kind: local_changes`, with no `  - item` line
 
 #### Scenario: Command hint
-- **WHEN** the user installs `d135a7cf-1c63-549a-93cb-8f89656b2ced` again after forgetting it while its clone is retained
-- **THEN** stderr has the neutral library message, `Error kind: already_installed` and a `Hint:` line naming `gitpm restore d135a7cf-1c63-549a-93cb-8f89656b2ced` and `gitpm uninstall d135a7cf-1c63-549a-93cb-8f89656b2ced`
+- **WHEN** the user installs `acme/greeter` again after forgetting it while its clone is retained
+- **THEN** stderr has the neutral library message, `Error kind: already_installed` and a `Hint:` line naming `gitpm restore acme/greeter` and `gitpm uninstall acme/greeter`
 
 #### Scenario: One refusal tells everything
 - **WHEN** `gitpm uninstall lib` is refused because `app` depends on `lib` and the clone also has a modified file

@@ -50,10 +50,6 @@ The FFI crate SHALL generate the Swift module `Gitpm` over the C module `GitpmFF
 - **WHEN** a host calls replaceCheck(original, replacement)
 - **THEN** it receives the same dependency issues and missing installs as the library, without changing the workspace; replaceResolve explicitly installs missing dependencies without applying the binding
 
-#### Scenario: UUID identity crosses the boundary
-- **WHEN** the host selects, forks or replaces a package through FFI
-- **THEN** fork takes no namespace and returns fresh UUIDs, and all package references contain UUIDs without name hints
-
 ### Requirement: Errors keep kind and message
 Library errors SHALL map to the `PmError` enum, one case per kind, each with the full `message` and the library's structured fields (`id` for every error about a package, `LocalChanges.items`, `HasDependents.dependents` and `lostWork`, `IncompatibleReplacement.consumers`, `NotDeployed.sync`); `Other { kind, message }` SHALL carry a kind added to the non-exhaustive library enum later.
 
@@ -67,12 +63,12 @@ Library errors SHALL map to the `PmError` enum, one case per kind, each with the
 - **THEN** Swift receives `PmError.NotDeployed` with the message and the `sync` report (what was deployed and removed, and the skipped packages with their reasons), as the CLI prints it
 
 #### Scenario: Update refusal from Swift
-- **WHEN** a branch-mode `update` of `d135a7cf-1c63-549a-93cb-8f89656b2ced` is refused because the history diverged
-- **THEN** Swift receives `PmError.VersionConflict` whose `id` is `d135a7cf-1c63-549a-93cb-8f89656b2ced` and whose message names it
+- **WHEN** a branch-mode `update` of `acme/greeter` is refused because the history diverged
+- **THEN** Swift receives `PmError.VersionConflict` whose `id` is `acme/greeter` and whose message names it
 
 #### Scenario: Manifest refusal from Swift
-- **WHEN** an update of `d135a7cf-1c63-549a-93cb-8f89656b2ced` finds another package ID or rollback finds a mismatched manifest
-- **THEN** Swift receives `PmError.InvalidManifest` with `id` `d135a7cf-1c63-549a-93cb-8f89656b2ced` and the complete library message
+- **WHEN** an update of `acme/greeter` finds another package ID or rollback finds a mismatched manifest
+- **THEN** Swift receives `PmError.InvalidManifest` with `id` `acme/greeter` and the complete library message
 
 #### Scenario: Unscoped validation error from Swift
 - **WHEN** manifest or version validation fails without a package operation
@@ -135,7 +131,7 @@ FFI records SHALL carry every field the recorded modes add to library results, a
 - **THEN** `InstalledPackage`, `PackageRecord`, `CheckRow`, `RevisionChange` and `InstallResult` have `mode` (`release`, `pinned(reference)`, `branch(name)`), `Revision.mode` is the mode of a `previous` revision, `InstallResult` has `requestedMode`, and `RevisionChange.unchangedReason` and `Unchanged.reason` are `pinned(reference)`, `diverged(branch)`, `branchGone(branch)` or (`updateAll` only) `brokenDependency(dependency, problem)`
 
 #### Scenario: Pinned package from Swift
-- **WHEN** a host lists a workspace where `d135a7cf-1c63-549a-93cb-8f89656b2ced` was installed with `--ref v0.1.0` and then calls `update(id, .recorded)`
+- **WHEN** a host lists a workspace where `acme/greeter` was installed with `--ref v0.1.0` and then calls `update(id, .recorded)`
 - **THEN** the listed `InstalledPackage.mode` is pinned to `v0.1.0`, and the returned `RevisionChange` is unchanged with `unchangedReason` `pinned`
 
 ### Requirement: Kept-back reasons in records
@@ -143,7 +139,7 @@ Each `keptBack` entry of the FFI `UpdateAllPlan` SHALL carry the library's `Held
 
 #### Scenario: Broken consumer from Swift
 - **WHEN** `lib` was force-uninstalled while `app` depends on it and a host calls `updateAllPlan`
-- **THEN** the plan's `unchanged` has `app` with `reason` `brokenDependency(dependency: "cfbc4d17-8707-5571-853d-c9136a7f9f21", problem: "not installed")` and `message` `dependency cfbc4d17-8707-5571-853d-c9136a7f9f21 is not installed`
+- **THEN** the plan's `unchanged` has `app` with `reason` `brokenDependency(dependency: "acme/lib", problem: "not installed")` and `message` `dependency acme/lib is not installed`
 
 #### Scenario: Fork kept back from Swift
 - **WHEN** the newest release of a replacing fork no longer declares `replaces` and a host calls `updateAllPlan`
@@ -171,7 +167,7 @@ FFI records SHALL carry every field protected catalogs add: `CheckReport.catalog
 FFI records SHALL carry the version flags of the library results: `RevisionChange.major`, `major` on each `UpdateAllPlan` update entry, and `major` and `prerelease` on each `CheckReport` row. This adds to "Records mirror library results" and "Check report record". Verified by `records_convert_field_by_field`.
 
 #### Scenario: Major update from Swift
-- **WHEN** a host updates `d135a7cf-1c63-549a-93cb-8f89656b2ced` from 1.2.3 to 2.0.0
+- **WHEN** a host updates `acme/greeter` from 1.2.3 to 2.0.0
 - **THEN** the returned `RevisionChange` has `major` true, as the CLI line ends with ` (major)`
 
 #### Scenario: Pre-release in a check row
