@@ -1641,6 +1641,30 @@ impl PackageManager {
 // ---------------------------------------------------------------------------------------
 // Free functions (no workspace needed)
 
+/// Fork a source repository without opening, creating or locking a workspace.
+/// `reference` accepts any revision; absent means the latest stable release.
+#[uniffi::export]
+pub fn fork_source(
+    source: String,
+    ids: Vec<String>,
+    reference: Option<String>,
+    destination: String,
+    custom_ssh: bool,
+) -> Result<PackageFork> {
+    let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+    Ok(pm::fork::fork_source_with(
+        &source,
+        &ids,
+        reference.as_deref(),
+        std::path::Path::new(&destination),
+        &pm::Options {
+            custom_ssh,
+            ..Default::default()
+        },
+    )?
+    .into())
+}
+
 /// Check read access to a Git repository with the user's credentials; nothing is cloned.
 /// `custom_ssh`: the process environment already sets GIT_SSH_COMMAND/GIT_SSH.
 #[uniffi::export]
@@ -1722,6 +1746,7 @@ pub fn catalog_links(location: String) -> Result<CatalogLinks> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     #[test]
     fn errors_keep_kind_and_message() {
         let error: PmError = pm::Error::NotInstalled {
@@ -1745,6 +1770,46 @@ mod tests {
         .into();
         assert!(matches!(&error, PmError::LocalChanges { items, .. } if items.len() == 1));
     }
+    #[test]
+    fn fork_source_converts_result_and_errors_without_manager() {
+        let dir = std::env::temp_dir().join(format!("pm-ffi-source-fork-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("source");
+        let dest = dir.join("fork");
+        let original = pm::scaffold::init(&source, "theme").unwrap().id;
+        let result = fork_source(
+            source.to_string_lossy().into(),
+            vec![original.clone()],
+            None,
+            dest.to_string_lossy().into(),
+            false,
+        )
+        .unwrap();
+        assert!(result.created);
+        assert_eq!(result.path, dest.canonicalize().unwrap().to_string_lossy());
+        assert_eq!(result.commit.len(), 40);
+        assert_eq!(result.packages.len(), 1);
+        pm::valid_id(&result.packages[0].id).unwrap();
+        assert_ne!(result.packages[0].id, original);
+        assert_eq!(result.packages[0].original, original);
+        let manifest = pm::packages::find_at(&dest, "HEAD", None).unwrap().manifest;
+        assert_eq!(manifest.name, "theme");
+        assert_eq!(result.packages[0].path, "");
+        assert!(result.rewrites.is_empty());
+        assert!(matches!(
+            fork_source(
+                source.to_string_lossy().into(),
+                vec![original.clone()],
+                None,
+                dest.to_string_lossy().into(),
+                false,
+            ),
+            Err(PmError::InvalidArgument { .. })
+        ));
+        assert!(!dir.join("workspace").exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn manager_round_trip_on_empty_workspace() {
         let dir = std::env::temp_dir().join(format!("pm-ffi-{}", std::process::id()));
@@ -2737,7 +2802,8 @@ mod tests {
             }),
             ("fork", {
                 let _ = PackageManager::fork_packages;
-                vec!["forkPackages"]
+                let _ = fork_source;
+                vec!["forkPackages", "forkSource"]
             }),
             ("replace", {
                 let _ = PackageManager::replace_plan;

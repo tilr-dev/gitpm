@@ -228,3 +228,46 @@ def existing_multi_package_fork_is_refused_unchanged(t: T):
     t.gitpm_err("fork", STORE, "--into", dest,
                 kind="invalid_argument", contains="destination already exists; pass a new folder")
     t.same(before, "existing multi-package fork, installation and source")
+
+
+@case(fixture="fork_suite", spec=["fork-replacement/fork-copies-an-installed-package#fork-an-uninstalled-repository",
+                                  "multi-package-repos/forking-packages-of-one-repository#source-repository-fork"])
+def fork_source_retains_repository_without_workspace(t: T):
+    dest = t.root / "forks/source-suite"
+    released = t.git(suite(t), "rev-parse", "v0.1.1")
+    r = t.gitpm_ok("fork", THEME, "--from", suite(t), "--into", dest)
+    for name in ("store", "theme", "panel"):
+        m = json.loads((dest / "packages" / name / "plugin.json").read_text())
+        original = {"store": STORE, "theme": THEME, "panel": PANEL}[name]
+        t.eq(str(UUID(m["id"])), m["id"], f"{name} canonical UUID")
+        t.ok(m["id"] != original, "fresh fork UUID")
+        source_manifest = json.loads((suite(t) / "packages" / name / "plugin.json").read_text())
+        t.eq(m["name"], source_manifest["name"], "preserved alias")
+        t.eq(m["forkOf"]["id"], original, "original UUID")
+        t.eq(m["replaces"]["id"], original, "replacement UUID")
+        t.eq(m["forkOf"]["commit"], released, "resolved release")
+        t.has(r.out, f"{m['id']} forked from {original} (packages/{name})")
+    t.eq(json.loads((dest / "gitpm.json").read_text()), {"packages": ["packages/*"]}, "layout")
+    t.ok(not t.ws.exists(), "source fork creates no workspace")
+
+
+@case(fixture="fork_suite", spec=["fork-replacement/fork-copies-an-installed-package#explicit-revision",
+                                  "cli/option-validation#fork-from-source-options"])
+def fork_source_explicit_revision_and_options(t: T):
+    dest = t.root / "forks/explicit-suite"
+    t.gitpm_err("fork", THEME, "--into", dest, "--ref", "HEAD",
+                contains=("--ref",))
+    t.ok(not dest.exists() and not t.ws.exists(), "usage error has no side effects")
+    t.gitpm_ok("fork", THEME, "--from", suite(t), "--into", dest, "--ref", "HEAD")
+    m = json.loads((dest / "packages/theme/plugin.json").read_text())
+    t.eq(m["forkOf"]["commit"], t.git(suite(t), "rev-parse", "HEAD"), "resolved explicit ref")
+    t.ok(not t.ws.exists(), "explicit source fork creates no workspace")
+
+
+@case(fixture="fork_suite", spec=["fork-replacement/fork-copies-an-installed-package#source-package-selection"])
+def fork_source_requires_valid_package_selection(t: T):
+    dest = t.root / "forks/invalid-suite"
+    for ids in ([], ["00000000-0000-4000-8000-000000000001"]):
+        t.gitpm_err("fork", *ids, "--from", suite(t), "--into", dest,
+                    kind="invalid_argument", contains=(STORE, THEME, PANEL))
+        t.ok(not dest.exists() and not t.ws.exists(), "failed selection creates nothing")

@@ -480,6 +480,26 @@ fn print_change(change: &gitpm::RevisionChange, verb: &str) {
     }
     warn_dist(&change.dist);
 }
+fn print_fork_result(fork: &gitpm::PackageFork) {
+    print_package_fork(fork);
+    let quoted = scaffold::shell_quote(&fork.path.to_string_lossy());
+    println!(
+        "forkOf records each origin; replaces says the fork can stand in for it (used only\nafter an explicit replace). The original installations are unchanged.\n\nNext steps (choose the packages to install and replace):"
+    );
+    println!(
+        "  gitpm commit {quoted} NEW_VERSION   commit local edits, release all packages with tag vNEW_VERSION"
+    );
+    for package in &fork.packages {
+        println!("  gitpm install {quoted} {}", package.id);
+    }
+    for package in &fork.packages {
+        println!("  gitpm replace {} --with {}", package.original, package.id);
+    }
+    if fork.created {
+        println!("Set your own origin with: gitpm remote {quoted} GIT_URL");
+    }
+}
+
 /// The cloned fork and its rewritten dependencies.
 fn print_package_fork(fork: &gitpm::PackageFork) {
     let root = fork.packages.iter().any(|p| p.path.is_empty());
@@ -653,7 +673,14 @@ Workspace (installed packages):",
                                    Existing destinations are refused. Dependencies
                                    between packages forked together are rewritten
                                    No release, installation or replacement is performed;
-                                   use commit, install and replace explicitly",
+                                   use commit, install and replace explicitly
+  fork [ID...] --from SOURCE --into DIR [--ref REF]
+                                   clone a Git path or URL without a workspace.
+                                   Default: latest stable vVERSION release containing
+                                   the first ID; all IDs must exist at that revision.
+                                   --ref accepts any revision, branch or commit.
+                                   Omit IDs only for a single-package source.
+                                   All packages receive fresh UUIDs; names are preserved",
     },
     Help {
         commands: &["replace"],
@@ -810,6 +837,7 @@ fn run(invocation: &mut Invocation) -> Result<()> {
         println!("{text}");
         return Ok(());
     }
+    let from = option(&mut args, "--from")?;
     let reference = option(&mut args, "--ref")?;
     let version = option(&mut args, "--version")?;
     let sources = option(&mut args, "--sources")?;
@@ -871,12 +899,22 @@ fn run(invocation: &mut Invocation) -> Result<()> {
         "build options require catalog register"
     );
     ensure!(
+        from.is_none() || command == "fork",
+        "--from is only valid with fork"
+    );
+    ensure!(
         reference.is_none()
             || matches!(
                 command,
                 "install" | "download" | "update" | "catalog register"
-            ),
-        "--ref is not valid for {command}"
+            )
+            || (command == "fork" && from.is_some()),
+        "--ref is not valid for {command}{}",
+        if command == "fork" {
+            " without --from"
+        } else {
+            ""
+        }
     );
     ensure!(
         version.is_none() || matches!(command, "install-catalog" | "download-catalog"),
@@ -921,6 +959,7 @@ fn run(invocation: &mut Invocation) -> Result<()> {
     let expected = match command {
         "catalog show" | "catalog update" | "list" | "check" | "catalog links" | "sync-dist" => 1,
         // fork ID [ID...]: one or more installed IDs.
+        "fork" if from.is_some() => args.len(),
         "fork" => args.len().max(2),
         "auth" | "commit" | "remote" => 3,
         // install SOURCE [ID]: a positional package ID instead of --package.
@@ -996,6 +1035,7 @@ fn run(invocation: &mut Invocation) -> Result<()> {
             | "replace-resolve"
             | "fork"
     ) && !update_all
+        && !(command == "fork" && from.is_some() && id.is_empty())
     {
         gitpm::valid_id(id)?;
     }
@@ -1029,6 +1069,18 @@ fn run(invocation: &mut Invocation) -> Result<()> {
         custom_ssh,
         ..Options::default()
     };
+    if let Some(source) = from {
+        let ids: Vec<&str> = args[1..].iter().map(String::as_str).collect();
+        let fork = gitpm::fork::fork_source_with(
+            &source,
+            &ids,
+            reference.as_deref(),
+            Path::new(into.as_deref().unwrap_or_default()),
+            &ssh_options,
+        )?;
+        print_fork_result(&fork);
+        return Ok(());
+    }
     match command {
         "auth" => {
             ensure!(id == "check", "use: gitpm auth check GIT_URL");
@@ -1224,23 +1276,7 @@ fn run(invocation: &mut Invocation) -> Result<()> {
             let ids: Vec<&str> = args[1..].iter().map(String::as_str).collect();
             let destination = Path::new(into.as_deref().unwrap_or_default());
             let fork = manager.fork_packages(&ids, destination)?;
-            print_package_fork(&fork);
-            let quoted = scaffold::shell_quote(&fork.path.to_string_lossy());
-            println!(
-                "forkOf records each origin; replaces says the fork can stand in for it (used only\nafter an explicit replace). The original installations are unchanged.\n\nNext steps (choose the packages to install and replace):"
-            );
-            println!(
-                "  gitpm commit {quoted} NEW_VERSION   commit local edits, release all packages with tag vNEW_VERSION"
-            );
-            for package in &fork.packages {
-                println!("  gitpm install {quoted} {}", package.id);
-            }
-            for package in &fork.packages {
-                println!("  gitpm replace {} --with {}", package.original, package.id);
-            }
-            if fork.created {
-                println!("Set your own origin with: gitpm remote {quoted} GIT_URL");
-            }
+            print_fork_result(&fork);
         }
         "link" => {
             let result = manager.link(id)?;

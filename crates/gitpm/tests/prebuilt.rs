@@ -969,6 +969,76 @@ fn check_sibling_local_work(forgotten: bool) {
     assert_eq!(fs::read_dir(f.root.join("repos")).unwrap().count(), 1);
 }
 
+#[cfg(unix)]
+#[test]
+fn build_update_keeps_shared_bare_in_place() {
+    use std::os::unix::fs::MetadataExt;
+
+    let f = Fixture::new(true);
+    let repo = common::author(&f.dir.join("source"), ID, "widget");
+    gitpm::scaffold::commit(&repo, "1.0.0").unwrap();
+    catalog::register(
+        f.catalog.to_str().unwrap(),
+        repo.to_str().unwrap(),
+        "v1.0.0",
+    )
+    .unwrap();
+    let root_file = f.catalog.join("catalog.json");
+    let mut catalog_root: serde_json::Value =
+        serde_json::from_slice(&fs::read(&root_file).unwrap()).unwrap();
+    catalog_root["verified"] = json!(true);
+    fs::write(root_file, catalog_root.to_string()).unwrap();
+    let m = f.manager();
+    m.install_from_catalog(ID, None).unwrap();
+    publish_repo(&f, &repo, ID, "2.0.0");
+    m.update(ID).unwrap();
+    assert!(m.state().unwrap().packages[ID].build.is_some());
+    publish_repo(&f, &repo, ID, "3.0.0");
+
+    // A sibling keeps the source store after the build drops its Git rollback.
+    fs::create_dir_all(repo.join("apps/widget")).unwrap();
+    fs::rename(
+        repo.join("plugin.json"),
+        repo.join("apps/widget/plugin.json"),
+    )
+    .unwrap();
+    fs::rename(repo.join("dist"), repo.join("apps/widget/dist")).unwrap();
+    fs::create_dir_all(repo.join("apps/lib/dist")).unwrap();
+    fs::write(
+        repo.join("apps/lib/plugin.json"),
+        r#"{"id":"cfbc4d17-8707-5571-853d-c9136a7f9f21","name":"lib","version":"3.0.0"}"#,
+    )
+    .unwrap();
+    fs::write(repo.join("apps/lib/dist/index.js"), "sibling").unwrap();
+    fs::write(repo.join("gitpm.json"), r#"{"packages":["apps/*"]}"#).unwrap();
+    gitpm::scaffold::commit_package(&repo, "4.0.0", Some(ID)).unwrap();
+    m.install_package(
+        repo.to_str().unwrap(),
+        Some("cfbc4d17-8707-5571-853d-c9136a7f9f21"),
+        gitpm::InstallTarget::Release,
+    )
+    .unwrap();
+    let state = m.state().unwrap();
+    assert_eq!(
+        state.packages[ID].clone,
+        state.packages["cfbc4d17-8707-5571-853d-c9136a7f9f21"].clone
+    );
+    let bare = clone_path(&f.root, &repo);
+    let before = fs::metadata(&bare).unwrap().ino();
+    let objects_before = fs::metadata(bare.join("objects")).unwrap().ino();
+    let sibling = worktree_path(&f.root, "cfbc4d17-8707-5571-853d-c9136a7f9f21");
+    let sibling_head = git(&sibling, &["rev-parse", "HEAD"]);
+    m.update(ID).unwrap();
+    assert_eq!(m.state().unwrap().packages[ID].current.version, "3.0.0");
+    assert_eq!(fs::metadata(&bare).unwrap().ino(), before);
+    assert_eq!(
+        fs::metadata(bare.join("objects")).unwrap().ino(),
+        objects_before
+    );
+    assert_eq!(git(&sibling, &["rev-parse", "HEAD"]), sibling_head);
+    assert!(!worktree_path(&f.root, ID).exists());
+}
+
 #[test]
 fn retained_clone_can_leave_a_build_whose_commit_is_gone_upstream() {
     let f = Fixture::new(true);

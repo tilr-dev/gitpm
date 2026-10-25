@@ -408,6 +408,23 @@ $ gitpm uninstall 7e6e8392-7be8-55ae-bd03-2b430b1c5d59
 7e6e8392-7be8-55ae-bd03-2b430b1c5d59 uninstalled
 ```
 
+To fork a Git path or URL without installing it or using a workspace:
+
+```sh
+gitpm init hello --into ./hello
+gitpm fork --from ./hello --into ./hello-fork
+```
+
+`--from SOURCE` clones the latest stable repository release (`vVERSION`) containing
+the first ID; every supplied ID must exist at that revision. Tags without that ID
+and legacy `ID@VERSION` tags are ignored. Add `--ref REF` to select any Git revision,
+including a branch or an untagged commit. Omit IDs only for a single-package source.
+All repository packages are retained and assigned fresh UUIDs with their names
+preserved, including siblings not named on the command line. Internal dependencies are rewritten. The destination must be new
+and outside the local source repository. The source's uncommitted edits are excluded.
+No workspace is opened, created or locked, even with `--root` set. `--ref` requires
+`--from` for fork; `--replace`, `--version` and `--force` remain invalid fork options.
+
 `fork ID --into DIR` only prepares an editable Git repository.
 It preserves inherited tags and origin metadata, creates no release tag, installs
 nothing and leaves workspace state, replacement bindings and dist unchanged.

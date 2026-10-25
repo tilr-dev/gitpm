@@ -1523,3 +1523,128 @@ fn check_uses_catalog_then_forced_partial_origin_fallback() {
         "1.0.0"
     );
 }
+
+#[test]
+fn fork_source_without_workspace_matches_installed_fork_output() {
+    let f = Fixture::new();
+    let dest = f.dir.join("source-fork");
+    let dest_text = dest.to_str().unwrap();
+    let source_output = f.ok(&[
+        "fork",
+        "f851f609-bb81-52d6-bfef-33798624782c",
+        "--from",
+        f.source(),
+        "--into",
+        dest_text,
+    ]);
+    assert!(!f.dir.join("workspace").exists());
+    let m: serde_json::Value =
+        serde_json::from_slice(&fs::read(dest.join("packages/store/plugin.json")).unwrap())
+            .unwrap();
+    let source_store = m["id"].as_str().unwrap();
+    gitpm::valid_id(source_store).unwrap();
+    assert_ne!(source_store, "76a9b591-60f3-5c7f-9e1c-31648fc73bfd");
+    assert_eq!(m["name"], "fixture");
+    assert_eq!(m["forkOf"]["id"], "76a9b591-60f3-5c7f-9e1c-31648fc73bfd");
+    f.ok(&[
+        "install",
+        f.source(),
+        "f851f609-bb81-52d6-bfef-33798624782c",
+    ]);
+    let installed_dest = f.dir.join("installed-fork");
+    let installed_output = f.ok(&[
+        "fork",
+        "f851f609-bb81-52d6-bfef-33798624782c",
+        "--into",
+        installed_dest.to_str().unwrap(),
+    ]);
+    let normalize = |mut output: String, repo: &Path| {
+        for name in ["store", "theme"] {
+            let manifest: serde_json::Value = serde_json::from_slice(
+                &fs::read(repo.join(format!("packages/{name}/plugin.json"))).unwrap(),
+            )
+            .unwrap();
+            let id = manifest["id"].as_str().unwrap();
+            gitpm::valid_id(id).unwrap();
+            output = output.replace(id, &format!("FORK_{name}"));
+        }
+        output.replace(repo.to_str().unwrap(), "DEST")
+    };
+    assert_eq!(
+        normalize(source_output, &dest),
+        normalize(installed_output, &installed_dest)
+    );
+}
+
+#[test]
+fn fork_source_ref_and_usage_errors_do_not_open_workspace() {
+    let f = Fixture::new();
+    let dest = f.dir.join("fork");
+    let dest_text = dest.to_str().unwrap();
+    let e = f.fails(&[
+        "fork",
+        "f851f609-bb81-52d6-bfef-33798624782c",
+        "--into",
+        dest_text,
+        "--ref",
+        "main",
+    ]);
+    assert!(e.contains("--ref"), "{e}");
+    let e = f.fails(&[
+        "fork",
+        "f851f609-bb81-52d6-bfef-33798624782c",
+        "--from",
+        f.source(),
+        "--into",
+        dest_text,
+        "--replace",
+    ]);
+    assert!(e.contains("unknown option: --replace"), "{e}");
+    let e = f.fails(&["list", "--from", f.source()]);
+    assert!(e.contains("--from is only valid with fork"), "{e}");
+    let e = f.fails(&["fork", "--from", f.source(), "--into", dest_text]);
+    assert!(e.contains("choose one by ID"), "{e}");
+    assert!(!dest.exists());
+    assert!(!f.dir.join("workspace").exists());
+    // A pre-existing locked workspace must not be opened by source fork.
+    let manager = gitpm::Manager::open(f.dir.join("workspace")).unwrap();
+    let before = fs::read(f.dir.join("workspace/state.json")).ok();
+    f.ok(&[
+        "fork",
+        "f851f609-bb81-52d6-bfef-33798624782c",
+        "--from",
+        f.source(),
+        "--ref",
+        "main",
+        "--into",
+        dest_text,
+    ]);
+    assert_eq!(fs::read(f.dir.join("workspace/state.json")).ok(), before);
+    drop(manager);
+}
+
+#[test]
+fn fork_source_readme_example() {
+    let f = Fixture::new();
+    let e = f.ok(&["init", "hello", "--into", "./hello"]);
+    let original: serde_json::Value =
+        serde_json::from_slice(&fs::read(f.dir.join("hello/plugin.json")).unwrap()).unwrap();
+    let original_id = original["id"].as_str().unwrap();
+    gitpm::valid_id(original_id).unwrap();
+    assert!(e.contains(original_id));
+    f.ok(&[
+        "fork",
+        original_id,
+        "--from",
+        "./hello",
+        "--into",
+        "./hello-fork",
+    ]);
+    assert!(!f.dir.join("workspace").exists());
+    let m: serde_json::Value =
+        serde_json::from_slice(&fs::read(f.dir.join("hello-fork/plugin.json")).unwrap()).unwrap();
+    gitpm::valid_id(m["id"].as_str().unwrap()).unwrap();
+    assert_ne!(m["id"], original["id"]);
+    assert_eq!(m["name"], "hello");
+    assert_eq!(m["forkOf"]["id"], original["id"]);
+}

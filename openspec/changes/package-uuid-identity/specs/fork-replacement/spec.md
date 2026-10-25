@@ -97,7 +97,7 @@ Forking SHALL keep the existing installation model: install the fork's committed
 - **THEN** `e66d8976-2209-50e5-abaf-9360c0a03411` remains unchanged and `e4e7959f-6315-5611-a719-75c5c2a920e3` is not automatically installed
 
 ### Requirement: Fork isolates source and destination state
-Fork SHALL exclude local installation work and use only the recorded source at installed revisions. It SHALL reject unsupported recorded sources and existing destinations without changing the installation or an existing destination.
+With `--from SOURCE`, fork SHALL clone the explicit source without reading or locking a workspace, exclude uncommitted source edits, and reject destinations inside a local source. Without `--from`, fork SHALL exclude local installation work and use only the recorded source at installed revisions. It SHALL reject unsupported recorded sources and existing destinations without changing the installation or an existing destination.
 
 #### Scenario: Unsupported recorded source
 - **WHEN** installation metadata names a remote helper or a relative source
@@ -117,12 +117,25 @@ Fork SHALL exclude local installation work and use only the recorded source at i
 - **AND** one commit `Fork A, B as c03512e7-72ca-5ded-bf03-46cf85e45b85, 78e03c22-1ef1-5de5-a1c5-1c0c3c3d81d3` records all renamed packages without running user hooks
 
 ### Requirement: Fork copies an installed package
-`fork ID [ID...] --into DIR` SHALL Git-clone the recorded installation source with history at installed revisions, into a new repository with a fresh UUID for every package and every package name preserved. It SHALL leave the installation unchanged, set the source as `upstream`, accept only installed IDs, and exclude local installation work.
+`fork ID [ID...] --into DIR` SHALL Git-clone the recorded installation source with history at installed revisions, into a new repository with a fresh UUID for every package and every package name preserved. It SHALL leave the installation unchanged, set the source as `upstream`, accept only installed IDs without `--from`, and exclude local installation work.
 
 #### Scenario: Fork one package
 - **WHEN** the user runs `gitpm fork 7e6e8392-7be8-55ae-bd03-2b430b1c5d59 --into hello-fork`
 - **THEN** `hello-fork` is a Git clone whose `plugin.json` has `id` `ce6c8a3b-b2f8-5391-8ef8-4cbb7873f5d4`, the output contains `ce6c8a3b-b2f8-5391-8ef8-4cbb7873f5d4 forked from 7e6e8392-7be8-55ae-bd03-2b430b1c5d59 (repository root)`, and `7e6e8392-7be8-55ae-bd03-2b430b1c5d59` is still installed
 - **AND** the fork UUID is newly generated and differs from the original while the package name is preserved; repeating the fork into another new destination generates a different UUID
+
+#### Scenario: Fork an uninstalled repository
+- **WHEN** `gitpm fork 11111111-1111-4111-8111-111111111111 --from ./plugins --into ./my-plugins` is run without a workspace
+- **THEN** it clones the newest stable `vVERSION` release whose commit contains `11111111-1111-4111-8111-111111111111`, assigns every package a fresh UUID preserving its name and rewrites internal dependencies, preserving repository files and layout
+- **AND** tags without that ID and legacy `ID@VERSION` tags are ignored; no workspace is opened, created or locked
+
+#### Scenario: Explicit revision
+- **WHEN** `--from SOURCE --ref REF` is supplied
+- **THEN** any Git revision may be selected, even an untagged commit or branch; every supplied ID must exist at that commit
+
+#### Scenario: Source package selection
+- **WHEN** no ID is supplied for a source with multiple packages, or an ID does not exist at the selected revision
+- **THEN** fork fails with `invalid_argument` listing the available packages and leaves no destination
 
 ### Requirement: Fork requires explicit namespace and destination
 `fork` SHALL require explicit `--into DIR` and SHALL NOT accept `--ns`. DIR MUST be new, outside the workspace and the source repository, without `..`. Existing destinations SHALL be refused unchanged. A failed fork SHALL remove directories it created.
@@ -162,7 +175,7 @@ Fork SHALL exclude local installation work and use only the recorded source at i
 - **THEN** the fork succeeds with a generated UUID and the preserved package name
 
 ### Requirement: Fork metadata
-The fork manifest SHALL get `forkOf` `{id, version, commit, source}` and `replaces` `{id, version}` from its revision of the cloned source (the installed revision for installed packages from that source, the starting revision for other packages); `source` SHALL be the recorded source. Metadata and unknown keys SHALL be kept. HEAD SHALL be attached to a new branch `fork` (`fork-2`, … when taken).
+The fork manifest SHALL get `forkOf` `{id, version, commit, source}` and `replaces` `{id, version}` from its revision of the cloned source (the installed revision for installed packages from that source, the starting revision for other packages); with `--from`, all packages SHALL record the resolved commit; `source` SHALL be the recorded source or canonicalized explicit source. Metadata and unknown keys SHALL be kept. HEAD SHALL be attached to a new branch `fork` (`fork-2`, … when taken).
 
 #### Scenario: Fork manifest
 - **WHEN** `7e6e8392-7be8-55ae-bd03-2b430b1c5d59` 1.0.0, installed from `https://git.example/acme/hello.git`, is forked into a new repository

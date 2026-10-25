@@ -55,6 +55,11 @@ Before calling the library the CLI SHALL refuse only syntax: unknown or repeated
 - **WHEN** `fork` receives `--ns NAMESPACE`, `--replace`, `--version V` or `--force`
 - **THEN** it fails as a usage error before opening the workspace or creating the destination
 
+#### Scenario: Fork from source options
+- **WHEN** `fork ID --from SOURCE --into DIR --ref REF` is run
+- **THEN** the options are accepted without opening a workspace; `--ref` without `--from` is refused before side effects
+- **AND** `--from` outside `fork`, and `--dry-run` outside `update all`/`sync-dist`, are refused as misplaced options
+
 ### Requirement: One output line per affected package
 Every workspace-mutating command (`install`, `install-catalog`, `download`, `download-catalog`, `update`, `update all`, `rollback`, `enable`, `disable`, `forget`, `restore`, `uninstall`, `replace`, `replace-resolve`, `sync-dist`) SHALL print one line per affected package in the form `ID <verb> …` (scenario "Single-package verbs"), built from the library result alone without reading state, and SHALL NOT print `OK:` lines. Other commands print what their capability specifies.
 

@@ -285,6 +285,8 @@ impl Txn {
         ensure_managed_parents(&self.root, relative)?;
         let staged = self.staged(relative);
         if !self.is_staged(relative) {
+            #[cfg(test)]
+            record(DurabilityEvent::StageRepo(staged.clone()));
             copy_tree(live, &staged, true)?;
             self.journal.paths.insert(relative.into(), Change::Replace);
         }
@@ -370,7 +372,13 @@ impl Txn {
         if let Some(bare) = self.staged_repo(bare_relative) {
             remove(&bare.join("worktrees").join(worktree_admin(id)))?;
         } else if self.journal.paths.get(bare_relative) != Some(&Change::Delete)
-            && present(&self.root.join(bare_relative))
+            && present(
+                &self
+                    .root
+                    .join(bare_relative)
+                    .join("worktrees")
+                    .join(worktree_admin(id)),
+            )
         {
             let bare = self.repo(bare_relative, &self.root.join(bare_relative))?;
             remove(&bare.join("worktrees").join(worktree_admin(id)))?;
@@ -612,6 +620,7 @@ fn crash_point() -> Result<()> {
 #[cfg(test)]
 #[derive(Debug, PartialEq, Eq)]
 enum DurabilityEvent {
+    StageRepo(PathBuf),
     Sync(PathBuf),
     Rename(PathBuf, PathBuf),
 }
@@ -627,6 +636,55 @@ fn record(event: DurabilityEvent) {
             events.push(event);
         }
     });
+}
+
+#[cfg(test)]
+#[test]
+fn last_user_removal_does_not_stage_bare() {
+    for forget in [false, true] {
+        let temp = crate::test_support::TempDir::new("remove-no-bare-copy");
+        let created = crate::scaffold::init(&temp.join("source"), "root").unwrap();
+        let source = created.repo;
+        let id = created.id;
+        let root = temp.join("workspace");
+        let manager = crate::Manager::open(&root).unwrap();
+        manager.install(source.to_str().unwrap()).unwrap();
+        let key = manager.state().unwrap().packages[&id]
+            .clone
+            .clone()
+            .unwrap();
+        if forget {
+            fs::remove_dir_all(root.join("worktrees").join(&id)).unwrap();
+        }
+        let _capture = Capture::new();
+        if forget {
+            manager.forget(&id).unwrap();
+        } else {
+            manager.uninstall(&id, &[], false).unwrap();
+        }
+        let events = DURABILITY_EVENTS.with(|events| events.borrow_mut().take().unwrap());
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, DurabilityEvent::StageRepo(path)
+                if path.starts_with(root.join(DIR).join("new/repos")))),
+            "removal copied a bare repository"
+        );
+        assert!(!root.join("repos").join(key).exists());
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn absent_worktree_registration_does_not_stage_bare() {
+    let temp = crate::test_support::TempDir::new("remove-absent-registration");
+    let relative = "repos/source-0123456789abcdef";
+    fs::create_dir_all(temp.join(relative)).unwrap();
+    let mut txn = Txn::begin(temp.path()).unwrap();
+    txn.remove_worktree("7e6e8392-7be8-55ae-bd03-2b430b1c5d59", relative)
+        .unwrap();
+    assert!(!txn.staged(relative).exists());
+    assert!(!txn.journal.paths.contains_key(relative));
 }
 
 #[cfg(test)]
