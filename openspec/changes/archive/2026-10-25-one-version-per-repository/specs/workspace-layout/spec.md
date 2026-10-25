@@ -30,4 +30,3 @@ Each `state.json` `packages.<id>` managed record SHALL hold `source`, `current`,
 #### Scenario: Managed field semantics
 - **WHEN** a managed package record includes optional fields
 - **THEN** mode is `{"pinned": REF}` or `{"branch": NAME}` (omitted for releases), catalog protects a verified catalog installation, and clone is the source-derived Git-clone key
-
