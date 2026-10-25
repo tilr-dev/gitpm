@@ -7,7 +7,7 @@ Defines how workspace changes stay atomic and serialized: journaled transactions
 ## Requirements
 
 ### Requirement: Transactions stage only touched paths
-Mutations SHALL stage bare repositories, package worktrees, output and next state inside `.pm-txn`, leaving live paths untouched before commit. Commit SHALL journal changes, move replaced live paths to `.pm-txn/old`, publish staged paths and repair Git links, then atomically rename state last (errors, "Failing operations leave the workspace unchanged"). Untouched repositories SHALL NOT be rewritten except for keep-alive refs as described below.
+Every mutating operation SHALL prepare new clones, deployed folders and the next `state.json` inside `<workspace root>/.pm-txn`, leaving the live workspace untouched until commit (mechanism of errors, "Failing operations leave the workspace unchanged"). Commit SHALL write a journal, then move each staged path into place (replaced ones go to `.pm-txn/old`), with `state.json` last via an atomic rename. A clone that an operation does not replace SHALL NOT be rewritten, except as in the scenarios.
 
 #### Scenario: Keep-alive refs after commit
 - **WHEN** a transaction changes a package of a shared clone
@@ -18,8 +18,8 @@ Mutations SHALL stage bare repositories, package worktrees, output and next stat
 - **THEN** the deployed folders it adds or removes are those of dist ("Every mutating command reconciles all of dist")
 
 #### Scenario: Forget in a shared clone
-- **WHEN** forgetting a Git package that shares a bare repository
-- **THEN** its worktree is retained and other worktrees stay unchanged
+- **WHEN** forgetting a package whose shared clone's HEAD is at its revision
+- **THEN** the clone's HEAD also moves to a remaining package's revision (see multi-package-repos, "Shared clone HEAD handling")
 
 #### Scenario: Readers during commit
 - **WHEN** another process reads `state.json` while a commit runs
@@ -28,10 +28,6 @@ Mutations SHALL stage bare repositories, package worktrees, output and next stat
 #### Scenario: Failure before commit
 - **WHEN** an install fails while staging
 - **THEN** nothing staged has been moved into the live workspace and `.pm-txn` is gone
-
-#### Scenario: Relocated worktrees
-- **WHEN** a staged bare repository or worktree is committed or recovered after interruption
-- **THEN** worktree Git links resolve to live managed paths, all retained worktrees remain usable, and no link depends on a removed transaction directory
 
 ### Requirement: Crash recovery
 A crash means process death or power loss, including interruption before a call returns. Commit SHALL durably persist staged contents, journal, state and changed directory entries before success. On open and at transaction start, a committed journal SHALL be rolled forward and an uncommitted transaction discarded. Sync failures SHALL return errors without losing the recovery decision.
@@ -116,7 +112,7 @@ Workspace and catalog locks SHALL be process-owned POSIX record locks, not inher
 - **THEN** they run one after the other and state is consistent
 
 ### Requirement: Managed paths are never followed through symlinks
-Every directory between the root and a managed path (`repos`, `worktrees`, `worktrees/<ns>`, `dist`, `dist/<ns>`) MUST be a real directory; a symlinked or non-directory managed parent SHALL fail with `workspace` and nothing SHALL be written or deleted through it. Verified by `workspace::symlinked_namespace_directory_is_never_followed` and `a_namespace_path_that_is_not_a_folder_blocks_nothing_else`.
+Every directory between the root and a managed path (`repos`, `dist`, `dist/<ns>`) MUST be a real directory; a symlinked or non-directory managed parent SHALL fail with `workspace` and nothing SHALL be written or deleted through it. Verified by `workspace::symlinked_namespace_directory_is_never_followed` and `a_namespace_path_that_is_not_a_folder_blocks_nothing_else`.
 
 #### Scenario: Symlinked namespace
 - **WHEN** `repos` is a symlink to a folder outside the workspace
@@ -125,10 +121,6 @@ Every directory between the root and a managed path (`repos`, `worktrees`, `work
 #### Scenario: Blocked dist namespace
 - **WHEN** `dist/acme` is a file or symlink and `acme/greeter` is active
 - **THEN** an operation that deploys or removes `acme/greeter` fails with `workspace` and does not write or delete through `dist/acme`, while a command on an unrelated package can proceed
-
-#### Scenario: Symlinked worktree parent
-- **WHEN** `worktrees` or the affected `worktrees/<ns>` parent is a symlink or a non-directory
-- **THEN** an operation using that path refuses with `workspace` and changes nothing through it
 
 ### Requirement: Link transactions own entries and never their targets
 Transactions SHALL stage and journal the deployed symlink entry, then publish state last, under the existing recovery protocol. Cleanup, removal and crash recovery MUST NOT follow a deployed link or recurse into its target, including dangling or externally retargeted links. The leaf symlink exception MUST NOT relax "Managed paths are never followed through symlinks" for managed parent directories. Atomicity SHALL cover workspace entries and state, not externally edited content.

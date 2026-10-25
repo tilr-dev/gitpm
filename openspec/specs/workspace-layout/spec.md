@@ -7,7 +7,7 @@ Defines the on-disk workspace a `Manager` owns: its folders, `state.json` and it
 ## Requirements
 
 ### Requirement: Workspace folders
-A workspace SHALL contain `state.json` (packages, replacements, forgotten records), `dist/<ns>/<name>` (active deployed output), `repos/<source-key>` (bare source stores), `worktrees/<ns>/<name>` (detached Git package worktrees), and `.pm-txn` only during transactions or recovery. `repos/` and `worktrees/` SHALL exist only while needed. Verified by `workspace::open_creates_the_workspace_layout_and_lock`.
+A workspace root SHALL contain `state.json` (installed packages, replacement bindings, forgotten records), `dist/<ns>/<name>/` (deployed folder of an active package), `repos/<name>-<hash>/` (source-keyed clone for root and nested Git packages; `repos/` only while a clone exists) and `.pm-txn/` only while a transaction runs or after one was interrupted. Verified by `workspace::open_creates_the_workspace_layout_and_lock`.
 
 #### Scenario: A command on a missing workspace root
 - **WHEN** a command that opens a workspace (transactions-locking, "Workspace lock") names a workspace root that does not exist
@@ -26,7 +26,7 @@ A workspace SHALL contain `state.json` (packages, replacements, forgotten record
 
 #### Scenario: Clone-free build storage
 - **WHEN** a catalog build is installed for the first time
-- **THEN** verified output is retained under builds/ID and there is no bare clone or worktree unless another Git revision needs the source
+- **THEN** verified output is retained under builds/ID and there is no package clone
 
 #### Scenario: Build cache transactions
 - **WHEN** a build install or update changes its retained output
@@ -81,7 +81,7 @@ Verified by `workspace::open_ds_store_with_other_content_is_refused`.
 - **THEN** opening the state fails with `unsupported`
 
 ### Requirement: Installed package record
-Each `state.json` `packages.<id>` managed record SHALL hold `source`, `current`, at most one `previous`, `enabled`, and optional `mode`, `forkOf`, `dependencies`, `replaces`, `catalog`, `clone`, `path`, `metadata`. Revisions contain `version` and `commit`; `previous` also retains mode. Links follow "Link record format". Verified by `model::state_round_trips_byte_for_byte`. Git worktree paths SHALL derive from the ID; `path` selects the package folder inside that tree. Builds SHALL own no worktree.
+Each `state.json` `packages.<id>` managed record SHALL hold `source`, `current`, at most one `previous`, `enabled`, and optional `mode`, `forkOf`, `dependencies`, `replaces`, `catalog`, `clone`, `path`, `metadata`. Revisions contain `version` and `commit`; `previous` also retains mode. Links follow "Link record format". Verified by `model::state_round_trips_byte_for_byte`.
 
 #### Scenario: Fresh install has no previous revision
 - **WHEN** a package was just installed
@@ -112,7 +112,7 @@ Each `state.json` `packages.<id>` managed record SHALL hold `source`, `current`,
 - **THEN** `build` or `previous_build` retains its full release record and catalog location separately from catalog protection; previous retains its mode and source kind for offline rollback, and only current/previous build output is retained
 
 ### Requirement: Replacements and forgotten records
-`state.json` SHALL keep `replacements` (the replacement bindings ORIGINAL → FORK, global for the workspace; rules in fork-replacement) and `forgotten` (records of every forgotten package, same format as `packages.<id>`, with a source-keyed bare repository and package worktree, or retained build output; lifecycle in install-uninstall and multi-package-repos).
+`state.json` SHALL keep `replacements` (the replacement bindings ORIGINAL → FORK, global for the workspace; rules in fork-replacement) and `forgotten` (records of every forgotten package, same format as `packages.<id>`, with a source-keyed Git clone or retained build output; lifecycle in install-uninstall and multi-package-repos).
 
 #### Scenario: Forgetting a package of a shared clone
 - **WHEN** `tilr/store` (installed from a multi-package repository) is forgotten
@@ -120,7 +120,7 @@ Each `state.json` `packages.<id>` managed record SHALL hold `source`, `current`,
 
 #### Scenario: Forgetting a package with its own clone
 - **WHEN** `acme/greeter` (root package in `repos/<key>`) is forgotten
-- **THEN** `forgotten.acme/greeter` keeps its record, including `catalog`, `enabled` and mode, and its bare repository and worktree stay
+- **THEN** `forgotten.acme/greeter` keeps its record, including `catalog`, `enabled` and mode, and the clone stays
 
 ### Requirement: Downgrade is not protected
 A workspace SHALL be usable only by a gitpm that writes its state format, in either direction. README SHALL list the state format of each release and say that a workspace of another format is re-created (its packages installed again), never migrated.
@@ -137,7 +137,7 @@ A workspace SHALL be usable only by a gitpm that writes its state format, in eit
 - **THEN** opening fails, and neither `new-ws` nor `.new-ws.lock` exists afterwards
 
 ### Requirement: Unified Git clone identity
-Every Git package record SHALL include a source-derived `clone` key for a bare repository under `repos/`; `path` SHALL identify its folder within its package worktree and be absent for a root package. Clone-free build records SHALL remain valid without a clone key. A retained clone SHALL be reusable when switching a build back to Git without requiring the build commit to remain on the origin.
+Every Git package record SHALL include a source-derived `clone` key under `repos/`; `path` SHALL identify its folder within that clone and be absent for a root package. Clone-free build records SHALL remain valid without a clone key. A retained clone SHALL be reusable when switching a build back to Git without requiring the build commit to remain on the origin.
 
 #### Scenario: Git clone identity
 - **WHEN** a root or nested Git package is installed
@@ -148,21 +148,6 @@ Every Git package record SHALL include a source-derived `clone` key for a bare r
 - **WHEN** a Git install switches to a build, retains its clone, and the build commit is later removed from the origin
 - **THEN** an explicit update to an available Git ref reuses the retained clone and succeeds without resolving the removed build commit first
 - **AND** build provenance is retained for offline rollback
-
-#### Scenario: Git to build and back
-- **WHEN** a Git package switches to a build and later returns to Git, including by offline rollback
-- **THEN** the build has no worktree, necessary Git objects remain reachable in the bare repository, and returning to Git creates a worktree at the target revision
-
-### Requirement: Package worktrees are created on demand
-Only a current Git installation SHALL own a package worktree, retained while forgotten. A build-only install SHALL create neither a worktree nor an unnecessary bare repository. Switching a Git installation to a build SHALL remove its worktree while retaining objects required for offline Git rollback. Legacy checked-out source clones SHALL NOT be migrated or automatically removed when opening a workspace.
-
-#### Scenario: Fresh prebuilt install
-- **WHEN** a package is installed from a verified catalog build with no retained Git revision
-- **THEN** no package worktree or source bare repository is created
-
-#### Scenario: Forgotten Git package
-- **WHEN** a Git package is forgotten and restored
-- **THEN** its own worktree is retained and reused at the recorded commit
 
 ### Requirement: State distinguishes external links from managed revisions
 State SHALL support explicit link records with canonical absolute package and installation-folder paths, enabled status, a validated manifest snapshot and release-discovery source when available. Link records MUST NOT claim their contents equal an installed commit or the external repository is a managed clone.

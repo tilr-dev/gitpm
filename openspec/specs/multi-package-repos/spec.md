@@ -55,7 +55,7 @@ Releases SHALL be per package with tags `ID@VERSION` (package-ids, "Release tag 
 - **THEN** it fails with `invalid_argument` (`repository has 2 packages at commit …; choose one by ID: tilr/store (packages/store), tilr/theme (packages/theme)`)
 
 ### Requirement: One shared clone per source
-Root and nested Git packages of one source SHALL share a bare repository at `repos/<name>-<hash of the source>`. State SHALL record `clone` and, for nested packages, `path`; only the committed manifest output relative to that path SHALL be deployed. Each Git package SHALL have its own detached worktree at its recorded current commit. The bare repository SHALL be removed only with its last installed or forgotten user, guarding lost work then. Fetching mirrors origin tags (package-ids).
+Root and nested Git packages of one source SHALL share `repos/<name>-<hash of the source>`. State SHALL record `clone` and, for nested packages, `path`; only the committed manifest output relative to that path SHALL be deployed. The clone SHALL be removed only with its last installed or forgotten user, guarding lost work then. Fetching mirrors origin tags (package-ids).
 
 #### Scenario: Uninstall one of two
 - **WHEN** `tilr/store` and `tilr/theme` share a clone and `tilr/store` is uninstalled
@@ -64,45 +64,39 @@ Root and nested Git packages of one source SHALL share a bare repository at `rep
 
 #### Scenario: Clone-free build switches to Git beside a sibling
 - **WHEN** a clone-free build switches to a Git ref and an installed or forgotten sibling already uses the same source-keyed clone
-- **THEN** the transition reuses that clone without checking out or moving a sibling worktree; only the affected package worktree is guarded
+- **THEN** the transition reuses that clone with the usual local-work guards and refuses without changes if it holds local work
 - **AND** a successful transition records the shared clone key and preserves the sibling and its deployed output
 
-#### Scenario: Independent package revisions
-- **WHEN** two packages from one source are installed at different commits and one is updated or rolled back
-- **THEN** each worktree HEAD matches its own recorded commit, and the other worktree and its files remain unchanged
-
 ### Requirement: Shared clone HEAD handling
-A Git package worktree SHALL be clean and its HEAD SHALL equal the package's recorded current commit before update, rollback, uninstall or restore, regardless of root or nested layout and regardless of other packages or tags. Lost work SHALL produce `local_changes` under the existing confirmation rules for uninstall. The bare repository SHALL never be checked out; its HEAD SHALL NOT govern a package's local-work check. Removing or forgetting one package SHALL NOT move another worktree's HEAD.
-
-#### Scenario: Sole user's HEAD is at another tagged commit
-- **WHEN** the affected worktree HEAD differs from its recorded commit, even at another package revision or a tagged commit
-- **THEN** update, rollback and unconfirmed uninstall refuse with `local_changes` listing `HeadMoved`
-
-#### Scenario: Dirty package worktree
-- **WHEN** a root or nested Git package worktree contains staged, unstaged or untracked changes
-- **THEN** update, rollback and unconfirmed uninstall refuse with `local_changes` for that package
+With one installed or forgotten user, HEAD SHALL count as moved when it differs from that user's recorded Git revision, even if tagged. With several users, HEAD SHALL count as moved only when it is neither a user's recorded current revision nor a tagged commit. Root and nested packages SHALL follow the same rule. Removal or forgetting SHALL move HEAD to a remaining installed package, preserving working-tree changes or refusing with `local_changes` on conflict.
 
 #### Scenario: HEAD moves to a remaining package
-- **WHEN** one package from a shared bare repository is removed or forgotten
-- **THEN** remaining worktrees retain their own HEAD and bytes
+- **WHEN** the clone's HEAD is at `tilr/store`'s revision and `tilr/store` is uninstalled
+- **THEN** HEAD moves to `tilr/theme`'s installed revision, keeping working-tree changes or refusing with `local_changes` if they conflict
+- **AND** this is covered by `removing_a_package_moves_the_shared_head_to_a_remaining_one`
+
+#### Scenario: Sole user's HEAD is at another tagged commit
+- **WHEN** a root or nested package is the clone's only installed or forgotten user and HEAD differs from its recorded Git revision, even at another tagged commit
+- **THEN** an operation guarding that clone refuses with `local_changes` and reports `HeadMoved`
 
 #### Scenario: Retained clone uses the previous Git revision
-- **WHEN** a build retains a previous Git revision for offline rollback
-- **THEN** the bare repository protects that revision with a keep-alive ref and no package worktree is retained; bare HEAD does not participate in the local-work guard
+- **WHEN** the clone's only user is a build retaining a previous Git installation
+- **THEN** HEAD at that previous Git revision does not count as moved, even if its tag was removed
+- **AND** HEAD at another commit counts as moved, even if that commit is tagged
 
 #### Scenario: Several users permit a tagged HEAD
-- **WHEN** a source has several package worktrees and one worktree HEAD moves to another tagged commit
-- **THEN** operations guarding that package refuse with `local_changes` listing `HeadMoved`, even when another package records that commit
+- **WHEN** a clone has several installed or forgotten users and HEAD is a user's recorded current revision or a tagged commit
+- **THEN** HEAD does not count as moved
 
 ### Requirement: Keep-alive refs
-Bare source repositories SHALL keep `refs/gitpm/<namespace>/<name>/current` and `.../previous` for every package that uses them (registered or forgotten, including retained Git current/previous revisions across build transitions), updated with each change and deleted with the package, so history rewrites on the origin, pruned tags or `git gc` never lose an installed or rollback revision. Verified by `installed_revisions_of_a_shared_clone_survive_upstream_rewrites_and_gc`.
+Shared clones SHALL keep `refs/gitpm/<namespace>/<name>/current` and `.../previous` for every package that uses them (registered or forgotten), updated with each change and deleted with the package, so history rewrites on the origin, pruned tags or `git gc` never lose an installed or rollback revision. Verified by `installed_revisions_of_a_shared_clone_survive_upstream_rewrites_and_gc`.
 
 #### Scenario: Upstream force-push and gc
 - **WHEN** upstream rewrites history and the clone is garbage-collected
 - **THEN** `rollback` of each package still finds its previous revision
 
 ### Requirement: Forgotten packages of shared clones
-Forgetting a package of a shared clone SHALL keep a `forgotten` record (format in workspace-layout) that still holds its bare repository and Git worktree; `restore` SHALL record it again under the rules of install-uninstall ("Restore preconditions") and deploy it when active; `uninstall` of the forgotten package SHALL remove the record its worktree and, if last, the bare repository. Verified by `a_forgotten_shared_package_keeps_its_clone_until_uninstalled`.
+Forgetting a package of a shared clone SHALL keep a `forgotten` record (format in workspace-layout) that still holds the clone; `restore` SHALL record it again under the rules of install-uninstall ("Restore preconditions") and deploy it when active; `uninstall` of the forgotten package SHALL remove the record and, if last, the clone. Verified by `a_forgotten_shared_package_keeps_its_clone_until_uninstalled`.
 
 #### Scenario: Shared clone gone
 - **WHEN** the shared clone of a forgotten package was deleted
@@ -114,11 +108,11 @@ Forgetting a package of a shared clone SHALL keep a `forgotten` record (format i
 - **THEN** it is recorded in state at its recorded revision with its recorded `enabled` flag, and `dist/tilr/store/` is deployed when it is enabled
 
 ### Requirement: Root package that moved into a folder
-A root package SHALL keep its source-keyed `repos/<key>` bare repository and its own worktree when a later release moves it into a package folder (`path` set, `clone` unchanged) and SHALL keep updating and forking. Verified by `a_root_package_moved_into_a_folder_keeps_updating_and_forks`.
+A root package SHALL keep its source-keyed `repos/<key>` clone when a later release moves it into a package folder (`path` set, `clone` unchanged) and SHALL keep updating and forking. Verified by `a_root_package_moved_into_a_folder_keeps_updating_and_forks`.
 
 #### Scenario: Move into packages/
 - **WHEN** an installed root package's next release lives in `packages/store` under a new `gitpm.json`
-- **THEN** `update` succeeds and state records `path` `packages/store` and preserves its `clone` key and worktree identity, so other packages from the same source reuse the clone
+- **THEN** `update` succeeds and state records `path` `packages/store` and preserves its `clone` key, so other packages from the same source reuse the clone
 
 ### Requirement: Forking packages of one repository
 `fork ID [ID...]` SHALL accept only installed IDs from one recorded source, else `invalid_argument` listing IDs and sources. It SHALL clone the whole repository, retain all files and the package layout, and rename every package into the new namespace with `forkOf` and `replaces`. Dependencies between repository packages SHALL be rewritten. A root package SHALL stay at the root; no package subset SHALL be selected.
