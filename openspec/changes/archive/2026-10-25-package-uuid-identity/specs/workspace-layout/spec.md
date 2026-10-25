@@ -75,4 +75,3 @@ Each `packages.<id>` record SHALL hold `source`, `current`, at most one `previou
 #### Scenario: Forgetting a package with its own clone
 - **WHEN** `d135a7cf-1c63-549a-93cb-8f89656b2ced` (root package in `repos/<key>`) is forgotten
 - **THEN** `forgotten.d135a7cf-1c63-549a-93cb-8f89656b2ced` keeps its record, including `catalog`, `enabled` and mode, and its bare repository and worktree stay
-
