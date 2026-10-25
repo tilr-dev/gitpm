@@ -41,6 +41,11 @@ fn worktree_admin(id: &str) -> String {
 /// Bind both sides explicitly: staging and journal renames change both locations.
 /// The writes are repeatable so recovery can finish after either side was persisted.
 fn bind_worktree(root: &Path, checkout: &Path, admin: &Path) -> Result<()> {
+    validate_worktree_links(checkout, admin)?;
+    write_worktree_links(root, checkout, admin)
+}
+
+fn validate_worktree_links(checkout: &Path, admin: &Path) -> Result<()> {
     for directory in [checkout, admin] {
         if !fs::symlink_metadata(directory)?.is_dir() {
             return Err(Error::Workspace(format!(
@@ -61,6 +66,10 @@ fn bind_worktree(root: &Path, checkout: &Path, admin: &Path) -> Result<()> {
             )));
         }
     }
+    Ok(())
+}
+
+fn write_worktree_links(root: &Path, checkout: &Path, admin: &Path) -> Result<()> {
     fs::write(
         checkout.join(".git"),
         format!("gitdir: {}\n", admin.display()),
@@ -79,6 +88,61 @@ fn bind_worktree(root: &Path, checkout: &Path, admin: &Path) -> Result<()> {
     }
     sync_parents(root, checkout)?;
     sync_parents(root, admin)
+}
+
+fn worktree_link_matches(path: &Path, expected: &[u8]) -> Result<bool> {
+    match fs::read(path) {
+        Ok(content) => Ok(content == expected),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Opening a relocated workspace repairs links independently of transactions.
+/// Use state-derived paths only: a copied gitfile can still name another workspace.
+pub(crate) fn repair_worktree_links(root: &Path, state: &State) -> Result<()> {
+    let mut repairs = Vec::new();
+    for (id, package) in state.packages.iter().chain(&state.forgotten) {
+        if package.build.is_some() {
+            continue;
+        }
+        let Some(key) = &package.clone else { continue };
+        let checkout_relative = format!("worktrees/{id}");
+        let admin_relative = format!("repos/{key}/worktrees/{}", worktree_admin(id));
+        ensure_managed_parents(root, &checkout_relative)?;
+        ensure_managed_parents(root, &admin_relative)?;
+        let checkout = root.join(checkout_relative);
+        let admin = root.join(admin_relative);
+        // Missing repositories and worktrees keep their existing operation-specific
+        // handling. Opening must not fabricate a registration or a checkout.
+        if !present(&checkout) || !present(&admin) {
+            continue;
+        }
+        validate_worktree_links(&checkout, &admin)?;
+        let links = [
+            (
+                checkout.join(".git"),
+                format!("gitdir: {}\n", admin.display()),
+            ),
+            (
+                admin.join("gitdir"),
+                format!("{}\n", checkout.join(".git").display()),
+            ),
+            (admin.join("commondir"), "../..\n".to_owned()),
+        ];
+        let mut stale = false;
+        for (path, expected) in links {
+            stale |= !worktree_link_matches(&path, expected.as_bytes())?;
+        }
+        if stale {
+            repairs.push((checkout, admin));
+        }
+    }
+    // Validate all pairs before writing any, so an unsafe sibling refuses repair.
+    for (checkout, admin) in repairs {
+        write_worktree_links(root, &checkout, &admin)?;
+    }
+    Ok(())
 }
 
 pub(crate) struct Txn {
