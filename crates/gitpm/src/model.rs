@@ -223,7 +223,7 @@ impl Revision {
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
-    /// The newest release (`ID@VERSION` tag); the default.
+    /// The newest release (`vVERSION` tag); the default.
     #[default]
     Release,
     /// Fixed at a tag or commit: the ref as the user gave it (a commit in full).
@@ -1338,7 +1338,7 @@ mod tests {
       "previous": null,
       "enabled": true,
       "mode": {
-        "pinned": "vendor/demo1@1.0.0"
+        "pinned": "v1.0.0"
       },
       "forkOf": {
         "id": "vendor/demo1",
@@ -1393,7 +1393,7 @@ mod tests {
         assert_eq!(p.mode, Mode::Release);
         assert_eq!(
             state.packages["me/demo1"].mode,
-            Mode::Pinned("vendor/demo1@1.0.0".into())
+            Mode::Pinned("v1.0.0".into())
         );
         assert_eq!(state.packages["me/demo2"].mode, Mode::Branch("main".into()));
         for bad in [r#"{"pinned": ""}"#, r#"{"branch": "-x"}"#] {
@@ -1576,12 +1576,9 @@ mod tests {
         let author = Author::new(dir.join("author"), "dan/demo1");
         let first = author.head();
         let second = author.commit("0.2.0");
+        assert_eq!(resolve_ref(&author.path, "v0.1.0", false).unwrap(), first);
         assert_eq!(
-            resolve_ref(&author.path, "dan/demo1@0.1.0", false).unwrap(),
-            first
-        );
-        assert_eq!(
-            resolve_ref(&author.path, "refs/tags/dan/demo1@0.1.0", false).unwrap(),
+            resolve_ref(&author.path, "refs/tags/v0.1.0", false).unwrap(),
             first
         );
         assert_eq!(resolve_ref(&author.path, "main", false).unwrap(), second);

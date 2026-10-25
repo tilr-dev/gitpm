@@ -29,9 +29,9 @@ def canonical(t: T, text: str, id: str, version: str) -> dict:
 
 
 def released(t: T, repo: Path, id: str, version: str, before: str | None, dist: bytes | None = None):
-    """Exactly one new commit on top of `before`, tagged ID@VERSION, clean tree."""
+    """Exactly one new commit on top of `before`, tagged vVERSION, clean tree."""
     head = t.rev(repo)
-    tag = f"{id}@{version}"
+    tag = f"v{version}"
     t.eq(t.rev(repo, tag), head, f"tag {tag} on HEAD")
     if before is None:
         t.eq(t.git(repo, "rev-list", "--count", "HEAD"), "1", "init made one commit")
@@ -55,7 +55,7 @@ def release_json(t: T, id: str, version: str) -> dict:
 
 def check_release(t: T, repo: Path, id: str, version: str):
     r = release_json(t, id, version)
-    tag = f"{id}@{version}"
+    tag = f"v{version}"
     t.eq(r["commit"], t.rev(repo, tag), f"{tag} commit")
     t.eq(r["reference"], tag, f"{tag} reference")
     t.eq(r["manifest"], json.loads(blob(repo, tag, "plugin.json")), f"{tag} manifest")
@@ -65,16 +65,16 @@ def check_release(t: T, repo: Path, id: str, version: str):
 @case(spec=["authoring/init-creates-a-package-with-its-first-release", "authoring/commit-releases-a-version"])
 def each_commit_creates_one_commit_and_tag(t: T):
     """init NS/NAME --into DIR → 0.1.0; edit dist + commit 0.1.1; edit + commit 0.1.2."""
-    t.has(t.gitpm_ok("init", ID, "--into", REPO).out, f"ID: {ID}", f"{ID}@0.1.0")
+    t.has(t.gitpm_ok("init", ID, "--into", REPO).out, f"ID: {ID}", f"v0.1.0")
     released(t, REPO, ID, "0.1.0", None)
     t.eq(t.git(REPO, "branch", "--show-current"), "main", "branch main")
     for version, before in [("0.1.1", t.rev(REPO)), ("0.1.2", None)]:
         before = before or t.rev(REPO)
         dist = f"export const greeting = 'journey {version}';\n".encode()
         t.write(REPO, {"dist/index.js": dist})
-        t.has(t.gitpm_ok("commit", REPO, version).out, f"{ID} committed {version} (local commit and tag {ID}@{version})")
+        t.has(t.gitpm_ok("commit", REPO, version).out, f"{ID} committed {version} (local commit and tag v{version})")
         released(t, REPO, ID, version, before, dist)
-    t.eq(sorted(t.git(REPO, "tag", "--list").split()), [f"{ID}@0.1.0", f"{ID}@0.1.1", f"{ID}@0.1.2"], "all tags")
+    t.eq(sorted(t.git(REPO, "tag", "--list").split()), [f"v0.1.0", f"v0.1.1", f"v0.1.2"], "all tags")
 
 
 @case(fixture="g5_journey", spec=["catalog/published-versions-are-immutable#regenerate",
@@ -104,7 +104,7 @@ def catalog_update_is_idempotent_and_keeps_old_releases(t: T):
 def fork_release_gets_its_own_catalog_entry(t: T):
     scratch = t.root / "scratch"
     t.gitpm_ok("--root", scratch, "install", REPO)
-    base = t.rev(REPO, f"{ID}@0.1.1")
+    base = t.rev(REPO, f"v0.1.1")
     fork = t.root / "authors/fork-journey"
     t.gitpm_ok("--root", scratch, "fork", ID, "--ns", "mine", "--into", fork)
     m = json.loads((fork / "plugin.json").read_text())

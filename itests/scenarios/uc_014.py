@@ -43,7 +43,7 @@ def refused(t: T, repo, *extra, kind=None, contains=()):
 def malformed_manifest(t: T):
     """Broken JSON in plugin.json: rejected by --ref and by latest-release discovery."""
     repo, sha = bad_repo(t, "malformed", {"plugin.json": "{ not json", **DIST})
-    t.tag(repo, "bad/malformed@0.1.0")
+    t.tag(repo, "v0.1.0")
     refused(t, repo, "--ref", sha, kind="invalid_manifest", contains="invalid plugin.json")
     refused(t, repo, kind="invalid_manifest", contains="plugin.json")
 
@@ -97,7 +97,7 @@ def missing_dist(t: T):
     """No dist/ in the commit: rejected before anything is installed."""
     repo, sha = bad_repo(t, "nodist", {"plugin.json": manifest(id="bad/nodist", version="0.1.0"),
                                        "README.md": "no payload\n"})
-    t.tag(repo, "bad/nodist@0.1.0")
+    t.tag(repo, "v0.1.0")
     refused(t, repo, "--ref", sha, kind="invalid_manifest", contains="dist/")
     refused(t, repo, kind="invalid_manifest", contains="dist/")
     t.not_installed("bad/nodist")

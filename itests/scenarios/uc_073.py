@@ -116,7 +116,7 @@ def wrong_typed_tags_refused_by_commit(t: T):
     head = t.rev(repo)
     t.gitpm_err("commit", repo, "1.1.0", kind="invalid_manifest")
     t.eq(t.rev(repo), head, "no commit")
-    t.eq(t.git(repo, "tag", "--list"), "dan/bad@1.0.0", "no new tag")
+    t.eq(t.git(repo, "tag", "--list"), "v1.0.0", "no new tag")
 
 
 @case(spec=["plugin-metadata/metadata-survives-rewrites#fork-keeps-the-title"])
@@ -140,9 +140,9 @@ def info_shows_latest_release_metadata(t: T):
     t.new_package(THEME, "1.0.0", extra={"title": "Old"})
     t.release(THEME, "1.1.0", extra=THEME_META)
     t.new_package(STORE, "1.0.0")
-    for ref in (f"{THEME}@1.0.0", f"{THEME}@1.1.0"):
+    for ref in (f"v1.0.0", f"v1.1.0"):
         t.gitpm_ok("register", t.repo(THEME), "--ref", ref)
-    t.gitpm_ok("register", t.repo(STORE), "--ref", f"{STORE}@1.0.0")
+    t.gitpm_ok("register", t.repo(STORE), "--ref", f"v1.0.0")
     out = t.gitpm_ok("info").out
     lines = out.splitlines()
     i = next(n for n, l in enumerate(lines) if l.strip().startswith(f"{THEME} — latest: 1.1.0"))
@@ -160,7 +160,7 @@ def info_shows_latest_release_metadata(t: T):
 def broken_latest_release_keeps_index_metadata(t: T):
     """A broken release record does not affect display metadata from the index."""
     t.new_package(THEME, "1.0.0", extra=THEME_META)
-    t.gitpm_ok("register", t.repo(THEME), "--ref", f"{THEME}@1.0.0")
+    t.gitpm_ok("register", t.repo(THEME), "--ref", f"v1.0.0")
     t.catalog_release(THEME, "1.0.0").write_text("{broken")
     out = t.gitpm_ok("info").out
     t.has(out, f"{THEME} — latest: 1.0.0")

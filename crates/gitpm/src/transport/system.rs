@@ -215,32 +215,6 @@ pub(super) fn git_raw(repo: &Path, args: &[&str], custom_ssh: bool) -> Result<Ve
     Ok(output.stdout)
 }
 
-/// Run Git with library-owned input, never inherited user stdin. Input closes at EOF.
-pub(super) fn git_with_input(
-    repo: &Path,
-    args: &[&str],
-    input: Vec<u8>,
-    custom_ssh: bool,
-) -> Result<()> {
-    let what = format!("git {}", args.join(" "));
-    let output = output_with_input_within(
-        git_command(repo, args, custom_ssh)?,
-        Some(input),
-        GIT_TIMEOUT,
-        &what,
-        Error::Git,
-        "cannot start git",
-        Stdio::piped(),
-    )?;
-    ensure!(
-        output.status.success(),
-        Git,
-        "{what}: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    Ok(())
-}
-
 /// Tags and branches of a remote, as `git ls-remote` lists them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RemoteRefs {
@@ -646,10 +620,7 @@ mod tests {
         let author = Author::new(dir.join("repo"), "dan/demo1");
         let first = author.head();
         let second = author.commit("0.2.0");
-        crate::test_support::git(
-            &author.path,
-            &["tag", "-a", "-m", "release", "dan/demo1@0.2.0"],
-        );
+        crate::test_support::git(&author.path, &["tag", "-a", "-m", "release", "v0.2.0"]);
         let refs = ls_remote_refs(author.source(), false).unwrap();
         assert_eq!(
             refs.heads,
@@ -657,10 +628,7 @@ mod tests {
         );
         assert_eq!(
             refs.tags,
-            BTreeMap::from([
-                ("dan/demo1@0.1.0".to_owned(), first),
-                ("dan/demo1@0.2.0".to_owned(), second),
-            ])
+            BTreeMap::from([("v0.1.0".to_owned(), first), ("v0.2.0".to_owned(), second),])
         );
         // Remote helpers are refused by git itself, even if a caller forgot to validate.
         let marker = dir.join("pwned");

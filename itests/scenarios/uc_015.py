@@ -14,7 +14,7 @@ def update_to_new_release(t: T):
     t.eq(p["current"], {"version": "0.1.1", "commit": commit}, "current")
     t.eq(p["previous"]["version"], "0.1.0", "previous version")
     t.eq(t.rev(t.clone(ID)), commit, "clone HEAD")
-    t.eq((t.dist(ID) / "index.js").read_text(), t.git(ID, "show", f"{ID}@0.1.1:dist/index.js") + "\n", "dist")
+    t.eq((t.dist(ID) / "index.js").read_text(), t.git(ID, "show", f"v0.1.1:dist/index.js") + "\n", "dist")
     t.ok(t.catalog_empty(), "catalog never created or read")
 
 
@@ -47,7 +47,7 @@ def latest_release_older_than_installed(t: T):
     t.gitpm_ok("install", t.repo(ID))
     t.eq(t.package(ID)["current"]["version"], "0.2.0", "installed the newest release")
     for v in ["0.1.1", "0.2.0"]:
-        t.git(ID, "tag", "-d", f"{ID}@{v}")
+        t.git(ID, "tag", "-d", f"v{v}")
     before = t.snap(t.ws)
     r = t.gitpm_ok("update", ID)
     t.has(r.out, f"{ID} up to date (0.2.0)")
@@ -68,15 +68,15 @@ def installed_release_retagged(t: T):
     stay up to date with a warning; the installed commit is kept."""
     installed = t.package(ID)["current"]
     moved = t.commit(ID, "rewritten release", {"dist/index.js": "other\n"})
-    t.tag(ID, f"{ID}@0.1.0", force=True)
+    t.tag(ID, f"v0.1.0", force=True)
     before = t.snap(t.ws)
     for args in [("update", ID), ("update", "all")]:
         r = t.gitpm_ok(*args)
         t.has(r.out, f"{ID} up to date (0.1.0)")
-        t.has(r.err, f"Warning: release tag {ID}@0.1.0 now points to {moved[:12]}; the installed commit is kept")
+        t.has(r.err, f"Warning: release tag v0.1.0 now points to {moved[:12]}; the installed commit is kept")
         t.same(before, "workspace")
     t.eq(t.package(ID)["current"], installed, "installed revision kept by commit")
-    t.eq(t.rev(t.clone(ID), f"{ID}@0.1.0"), moved, "the clone took the moved tag")
+    t.eq(t.rev(t.clone(ID), f"v0.1.0"), moved, "the clone took the moved tag")
 
 
 @case(fixture="hello_installed", spec=["updates/major-updates-are-marked#major-line"])
@@ -101,7 +101,7 @@ def pre_releases_are_opt_in(t: T):
     t.has(t.gitpm_ok("update", "all").out, f"{ID} up to date (0.1.0)")
     t.same(before, "workspace")
     t.has(t.gitpm_ok("check", env={"GITPM_CATALOG": ""}).out, "pre-release 0.2.0-beta.1")
-    t.gitpm_ok("update", ID, "--ref", f"{ID}@0.2.0-beta.1")
+    t.gitpm_ok("update", ID, "--ref", f"v0.2.0-beta.1")
     t.eq(t.package(ID)["current"]["version"], "0.2.0-beta.1", "installed by name")
     t.release(ID, "0.2.0-beta.2")
     t.release(ID, "0.3.0-beta.1")

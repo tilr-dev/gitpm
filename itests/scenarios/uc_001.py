@@ -117,7 +117,7 @@ for _args in [
      ["install", "@REPO", "--build-url", "https://example.invalid/b.tar", "--build-sha256", "a" * 64],
      "build options require catalog register", f"{OPT}#misplaced-flag"),
     ("build_url_alone", "10. --build-url without --build-sha256 (register)",
-     ["register", "@REPO", "--ref", f"{ID}@0.1.0", "--build-url", "https://example.invalid/b.tar"],
+     ["register", "@REPO", "--ref", f"v0.1.0", "--build-url", "https://example.invalid/b.tar"],
      "--build-url and --build-sha256 must be provided together", "catalog/register-one-version"),
 ]:
     usage_case(*_args)

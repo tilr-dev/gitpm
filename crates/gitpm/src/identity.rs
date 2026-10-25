@@ -32,9 +32,9 @@ pub fn split(id: &str) -> Result<(&str, &str)> {
     qualified(namespace, name)?;
     Ok((namespace, name))
 }
-/// The release tag `ID@VERSION`, the only tag spelling gitpm creates and reads.
-pub fn release_tag(id: &str, version: &str) -> String {
-    format!("{id}@{version}")
+/// The repository release tag `vVERSION`, the only tag spelling gitpm creates and reads.
+pub fn release_tag(version: &str) -> String {
+    format!("v{version}")
 }
 
 #[cfg(test)]
@@ -99,17 +99,8 @@ mod tests {
     }
 
     #[test]
-    fn release_tag_is_id_at_version() {
-        assert_eq!(release_tag("dan/demo1", "1.2.3"), "dan/demo1@1.2.3");
-        assert_eq!(
-            release_tag("dan/demo1", "2.0.0-beta.1"),
-            "dan/demo1@2.0.0-beta.1"
-        );
-        assert_eq!(
-            crate::packages::tag_id("dan/demo1@2.0.0-beta.1"),
-            Some("dan/demo1")
-        );
-        assert_eq!(crate::packages::tag_id("dan/demo1@2.0.0+b1"), None);
-        assert_eq!(crate::packages::tag_id("dan/demo1@latest"), None);
+    fn release_tag_is_repository_version() {
+        assert_eq!(release_tag("1.2.3"), "v1.2.3");
+        assert_eq!(release_tag("2.0.0-beta.1"), "v2.0.0-beta.1");
     }
 }

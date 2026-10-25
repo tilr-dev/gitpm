@@ -334,8 +334,7 @@ fn mono(f: &Fixture) -> PathBuf {
     }
     f.git(&mono, &["add", "--all"]);
     f.git(&mono, &["commit", "-q", "-m", "first"]);
-    f.git(&mono, &["tag", "tilr/store@1.0.0"]);
-    f.git(&mono, &["tag", "tilr/theme@1.0.0"]);
+    f.git(&mono, &["tag", "v1.0.0"]);
     mono
 }
 fn write_package(mono: &Path, name: &str, version: &str, contents: &str) {
@@ -350,9 +349,16 @@ fn write_package(mono: &Path, name: &str, version: &str, contents: &str) {
 }
 fn release_package(f: &Fixture, mono: &Path, name: &str, version: &str) {
     write_package(mono, name, version, &format!("{name} {version}"));
+    for entry in fs::read_dir(mono.join("packages")).unwrap() {
+        let path = entry.unwrap().path().join("plugin.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        manifest["version"] = version.into();
+        fs::write(path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+    }
     f.git(mono, &["add", "--all"]);
     f.git(mono, &["commit", "-q", "-m", &format!("{name} {version}")]);
-    f.git(mono, &["tag", &format!("tilr/{name}@{version}")]);
+    f.git(mono, &["tag", &format!("v{version}")]);
 }
 
 #[test]
@@ -388,9 +394,9 @@ fn a_package_of_a_shared_clone_is_deployed_from_its_own_commit() {
         "theme unreleased",
     )
     .unwrap();
-    release_package(&f, &mono, "store", "1.1.0");
+    release_package(&f, &mono, "store", "1.2.0");
     f.ok(&["update", "tilr/store"]);
-    assert_eq!(f.dist("tilr/store").as_deref(), Some("store 1.1.0"));
+    assert_eq!(f.dist("tilr/store").as_deref(), Some("store 1.2.0"));
     f.ok(&["replace", "tilr/theme", "--with", "tilr/theme"]);
     assert_eq!(f.dist("tilr/theme").as_deref(), Some("theme 1.1.0"));
     assert_eq!(f.dist("me/theme").as_deref(), Some("theme 1.0.0"));
@@ -826,7 +832,7 @@ fn output_release(f: &Fixture, folder: Option<&str>, mono: bool) -> PathBuf {
     f.git(&repo, &["init"]);
     f.git(&repo, &["add", "."]);
     f.git(&repo, &["commit", "-m", "release"]);
-    f.git(&repo, &["tag", "test/output@0.1.0"]);
+    f.git(&repo, &["tag", "v0.1.0"]);
     repo
 }
 
@@ -908,7 +914,7 @@ fn declared_output_missing_required_build_is_actionable_and_atomic() {
         fs::remove_dir_all(package.join("output")).unwrap();
         f.git(&repo, &["add", "."]);
         f.git(&repo, &["commit", "-m", "remove build output"]);
-        f.git(&repo, &["tag", "-f", "test/output@0.1.0"]);
+        f.git(&repo, &["tag", "-f", "v0.1.0"]);
         let error = f.fails(&["install", repo.to_str().unwrap()]);
         assert!(error.contains("invalid_manifest"), "{error}");
         assert!(error.contains("output/vtf"), "{error}");
@@ -957,7 +963,7 @@ fn declared_output_rejects_invalid_fields() {
         fs::write(path, manifest.to_string()).unwrap();
         f.git(&repo, &["add", "."]);
         f.git(&repo, &["commit", "-m", "invalid manifest"]);
-        f.git(&repo, &["tag", "-f", "test/output@0.1.0"]);
+        f.git(&repo, &["tag", "-f", "v0.1.0"]);
         let error = f.fails(&["install", repo.to_str().unwrap()]);
         assert!(error.contains("invalid_manifest"), "{error}");
     }
@@ -982,7 +988,7 @@ fn declared_output_update_error_names_package() {
         fs::write(path, manifest.to_string()).unwrap();
         f.git(&repo, &["add", "."]);
         f.git(&repo, &["commit", "-m", "invalid output path"]);
-        f.git(&repo, &["tag", "test/output@0.2.0"]);
+        f.git(&repo, &["tag", "v0.2.0"]);
         let error = f.fails(&["update", "test/output"]);
         assert!(
             error.contains("test/output: invalid manifest dist path"),

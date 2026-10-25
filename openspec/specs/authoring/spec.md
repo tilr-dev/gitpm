@@ -7,15 +7,15 @@ Defines the author-side commands that create package repositories and releases: 
 ## Requirements
 
 ### Requirement: init creates a package with its first release
-`init NAMESPACE/NAME --into DIR` SHALL scaffold a package with a manifest (`id`, `version` 0.1.0, `"title": "NAME"`), a demo `dist/index.js`, one commit and the tag `NAMESPACE/NAME@0.1.0`. A `DIR` that does not exist SHALL become a single-package repository. `--into` is required and nothing SHALL ever be overwritten. Verified by `scaffold::init_into_a_new_folder_makes_a_tagged_single_package_repository` and `scaffold::init_never_overwrites_and_validates_ids`.
+When creating a repository, `init NAMESPACE/NAME --into DIR` SHALL scaffold a package with a manifest (`id`, `version` 0.1.0, `"title": "NAME"`), a demo `dist/index.js`, one commit and the tag `v0.1.0`. A `DIR` that does not exist SHALL become a single-package repository. `--into` is required and nothing SHALL ever be overwritten. Verified by `scaffold::init_into_a_new_folder_makes_a_tagged_single_package_repository` and `scaffold::init_never_overwrites_and_validates_ids`.
 
 #### Scenario: Scaffold files and commit
 - **WHEN** `init acme/hello --into hello` creates a new single-package repository
-- **THEN** it also writes `.gitignore` and `README.md`, and the one commit is `Create hello 0.1.0` (a package added to a multi-package repository gets `Create acme/hello 0.1.0`)
+- **THEN** it also writes `.gitignore` and `README.md`, and the one commit is `Create hello 0.1.0` (a package added to a multi-package repository gets `Create acme/hello VERSION` using the current repository version)
 
 #### Scenario: New package repository
 - **WHEN** the user runs `gitpm init acme/hello --into hello`
-- **THEN** `hello` is a Git repository at tag `acme/hello@0.1.0` and the output contains `Created:`, `ID: acme/hello` and `Version 0.1.0: Git commit and tag acme/hello@0.1.0.`
+- **THEN** `hello` is a Git repository at tag `v0.1.0` and the output contains `Created:`, `ID: acme/hello` and `Version 0.1.0: Git commit and tag v0.1.0.`
 
 #### Scenario: init without --into
 - **WHEN** the user runs `gitpm init acme/hello`
@@ -26,7 +26,7 @@ Defines the author-side commands that create package repositories and releases: 
 - **THEN** it fails with `unknown command: create; use --help` and creates nothing
 
 ### Requirement: init into a multi-package repository
-For a `DIR` with `gitpm.json`, init SHALL add the package at `PREFIX/NAME` for the first `PREFIX/*` pattern (else `packages/NAME`, appended to `gitpm.json` as a literal folder), committing only `gitpm.json` and the new folder; `gitpm.json` MUST have no uncommitted changes. A repository without `gitpm.json` and without a root package SHALL get `{"packages": ["packages/*"]}`. Every refusal below SHALL be `invalid_argument` and change nothing.
+`init` into an existing repository SHALL add a package at its shared version (0.1.0 if empty), commit only the new folder and config, and create no tag. It SHALL use the first `PREFIX/*` pattern, else add `packages/NAME` to the config. A repository without config or root package SHALL get `packages/*`. Dirty config, invalid roots and duplicate folders/IDs SHALL be refused with `invalid_argument`, changing nothing.
 
 #### Scenario: Root is a package
 - **WHEN** the repository root has a manifest and no `gitpm.json`
@@ -46,8 +46,13 @@ For a `DIR` with `gitpm.json`, init SHALL add the package at `PREFIX/NAME` for t
 - **AND** this is covered by `scaffold::packages_are_added_to_a_multi_package_repository_and_released_by_id` and `scaffold::new_packages_follow_the_first_folder_pattern`
 - **AND** an ID differing only in letter case from an existing package is refused as in package-ids ("Case-colliding IDs are refused")
 
+#### Scenario: Add a package after a release
+- **WHEN** an existing repository has packages at 1.2.0 and the tag `v1.2.0`, and the author adds another package with `init`
+- **THEN** the new package has version 1.2.0, no tag is created or moved, and it is absent from the existing release
+- **AND** `gitpm commit REPO 1.3.0` sets every package to 1.3.0 and creates `v1.3.0`, releasing the new package too
+
 ### Requirement: init options
-`init --multi` SHALL make a new or empty folder a multi-package repository (`gitpm.json` and `packages/NAME`); `init --no-release` SHALL commit without the release tag and print the `gitpm commit … 0.1.0` command to release later. When gitpm adds a package to an existing repository and only the tag fails, the commit SHALL stay and the `git` error SHALL name the tag. A repository gitpm created itself SHALL be removed again on any failure, including the tag.
+`init --multi` SHALL create a multi-package repository in a new or empty folder. `--no-release` SHALL omit the initial tag and print a later release command using 0.1.0. Adding to an existing repository SHALL omit the tag regardless of this option and print a command requiring a new version. Failure SHALL remove a repository gitpm created, leaving an adopted empty folder empty.
 
 #### Scenario: Failure in a repository gitpm created
 - **WHEN** the tag fails during a single-package `init` or `init --multi` into a new or empty folder
@@ -55,16 +60,14 @@ For a `DIR` with `gitpm.json`, init SHALL add the package at `PREFIX/NAME` for t
 
 #### Scenario: Start a multi-package repository from nothing
 - **WHEN** the user runs `gitpm init tilr/runtime --into repos/p --multi --no-release`
-- **THEN** `repos/p` has `gitpm.json` and `packages/runtime`, one commit and no tag
-- **AND** this is covered by `init_multi_creates_a_multi_package_repository_that_takes_more_packages` and `init_no_release_commits_without_a_tag`
+- **THEN** `repos/p` has `gitpm.json` and `packages/runtime`, one commit and no tag, and the suggested release command uses 0.1.0
 
 #### Scenario: Tag fails when adding to an existing repository
-- **WHEN** a package is added to an existing multi-package repository and creating its tag fails
-- **THEN** the commit stays, the error kind is `git` and the message says `git tag ID@0.1.0`
-- **AND** this is covered by `scaffold::create_package_keeps_the_commit_when_only_the_tag_fails`
+- **WHEN** a package is added to an existing multi-package repository at version 1.2.0, with or without `--no-release`, and a tag command would fail
+- **THEN** only the package addition is committed; no tag command runs or fails, and the suggested release command requires a new version
 
 ### Requirement: commit releases a version
-`commit REPO VERSION [--package ID]` SHALL set `version` in the package's manifest, stage ALL changes of the repository, commit `Release ID VERSION` and create the release tag (package-ids, "Release tag names"), printing `ID committed VERSION (local commit and tag TAG)`. It SHALL never push. REPO MUST be the repository root and a given `--package` MUST match a package (both `invalid_argument`). Verified by `scaffold::commit_bumps_version_commits_everything_and_tags`.
+`commit REPO VERSION [--package ID]` SHALL set every manifest version, stage all changes, commit `Release VERSION` and create one tag using `git tag -m MESSAGE`, honoring `tag.gpgSign` without an editor. It SHALL never push. REPO must be the root; a selector must match a package (`invalid_argument`). The selector only chooses the returned/printed ID; without it all packages are still released. Output SHALL be `ID committed VERSION (local commit and tag TAG)`.
 
 #### Scenario: Invalid version
 - **WHEN** the author runs `gitpm commit REPO 1.0` or `gitpm commit REPO 1.0.0+build`
@@ -76,22 +79,38 @@ For a `DIR` with `gitpm.json`, init SHALL add the package at `PREFIX/NAME` for t
 
 #### Scenario: Release one package of a multi-package repository
 - **WHEN** the author runs `gitpm commit ./tilr-packages 0.2.0 --package tilr/store`
-- **THEN** it prints `tilr/store committed 0.2.0 (local commit and tag tilr/store@0.2.0)`
+- **THEN** every package is set to 0.2.0, one commit and one tag `v0.2.0` are created, and it prints `tilr/store committed 0.2.0 (local commit and tag v0.2.0)`
 
 #### Scenario: Release a pre-release
 - **WHEN** the author runs `gitpm commit ./hello 1.3.0-beta.1`
-- **THEN** it creates the tag `acme/hello@1.3.0-beta.1`; consumers get it only when they ask for it (updates, "Pre-releases are opt-in")
+- **THEN** it creates the tag `v1.3.0-beta.1`; consumers get it only when they ask for it (updates, "Pre-releases are opt-in")
+
+#### Scenario: Signing configured without an editor
+- **WHEN** `tag.gpgSign=true` and a usable signing key and Git identity are configured, and `commit` releases a repository with multiple packages
+- **THEN** the single `vVERSION` tag is signed, its message is supplied with `-m`, and no editor is needed
+
+#### Scenario: Release a multi-package repository without a selector
+- **WHEN** the author runs `gitpm commit REPO 0.3.0` in a repository with several packages
+- **THEN** all packages become 0.3.0 and share one release commit and one tag `v0.3.0`
 
 ### Requirement: Existing tags are never moved
-`commit` SHALL refuse with `version_conflict` ("tag already exists: TAG") when the tag exists, and SHALL refuse reusing the current version (`version_conflict`, "choose a new version") unless it is a retry: the working tree is clean, the manifest at HEAD already has VERSION and HEAD is the commit that set it; then only the tag is created. Verified by `scaffold::commit_can_be_retried_after_a_failed_tag` and `scaffold::commit_refusals_leave_the_repository_untouched`.
+`commit` SHALL refuse with `version_conflict` ("tag already exists: TAG") when the tag exists, and SHALL refuse reusing the current version (`version_conflict`, "choose a new version") unless it is a retry: the working tree is clean, every manifest at HEAD already has VERSION, and HEAD is either the release commit that set it or the initial repository creation commit made with `--no-release`; then only the tag is created.
 
 #### Scenario: Release after init --no-release
 - **WHEN** `init --no-release` made the commit `Create NAME 0.1.0` and the author runs `gitpm commit REPO 0.1.0`
-- **THEN** only the tag `ID@0.1.0` is created
+- **THEN** only the tag `v0.1.0` is created
 
 #### Scenario: Retry after a failed tag
 - **WHEN** a previous `commit 0.2.0` created the release commit but the tag failed
 - **THEN** running it again creates only the tag
+
+#### Scenario: A package addition cannot reuse a release
+- **WHEN** a package was added to a repository at 1.2.0, and the author runs `gitpm commit REPO 1.2.0`
+- **THEN** it fails with `version_conflict`; the existing `v1.2.0` is never moved and a package addition commit is not a tag-only retry
+
+#### Scenario: Retained upstream tag collides with a fork release
+- **WHEN** a fork retained upstream tag `v1.2.0` and a release requests version 1.2.0
+- **THEN** it fails with `version_conflict` naming `v1.2.0`, and the tag and repository are unchanged
 
 ### Requirement: Failed commits restore the repository
 When `git commit` fails (hook, signing), gitpm SHALL restore `plugin.json` and the Git index as they were and fail with `git`. Verified by `scaffold::failed_commit_restores_manifest_and_index`.
@@ -105,7 +124,7 @@ gitpm SHALL NOT write a Git identity into an existing repository; without a conf
 
 #### Scenario: Tag-only retry without identity
 - **WHEN** an existing repository has no identity and `commit` is retried after a failed tag
-- **THEN** the identity is not checked and the lightweight tag is created
+- **THEN** the command fails with `invalid_argument` ("no Git identity configured; set user.name and user.email"), no tag is created and the repository is unchanged; annotated and signed tags require identity too
 
 #### Scenario: No identity
 - **WHEN** git cannot determine a user identity for an existing repository and the author runs `gitpm commit REPO 0.2.0`
@@ -128,8 +147,8 @@ gitpm SHALL NOT write a Git identity into an existing repository; without a conf
 - **THEN** the fetch and push URLs of `origin` are both `URL`, `backup` is unchanged and nothing is pushed to any remote
 
 ### Requirement: commit returns what it released
-`commit_package` SHALL return `{package, version, tag}` of the release it made (the tag as in package-ids, "Release tag names"), and the CLI SHALL print its line from that result without computing the tag itself. Verified by `scaffold::commit_package_returns_package_version_and_tag`.
+`commit_package` SHALL return `{package, version, tag}` of the repository release it made; `package` is the selected package ID and does not restrict which packages are released (the tag as in package-ids, "Release tag names"), and the CLI SHALL print its line from that result without computing the tag itself. Verified by `scaffold::commit_package_returns_package_version_and_tag`.
 
 #### Scenario: Result of a release
 - **WHEN** the author runs `gitpm commit ./tilr-plugins 0.2.0 --package tilr/store`
-- **THEN** the library returns package `tilr/store`, version `0.2.0` and tag `tilr/store@0.2.0`, and the CLI prints `tilr/store committed 0.2.0 (local commit and tag tilr/store@0.2.0)`
+- **THEN** the library returns package `tilr/store`, version `0.2.0` and tag `v0.2.0`, and the CLI prints `tilr/store committed 0.2.0 (local commit and tag v0.2.0)`

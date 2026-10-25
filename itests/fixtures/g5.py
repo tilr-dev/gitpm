@@ -52,7 +52,7 @@ def g5_journey(t: T):
 @g5_journey.check
 def _(t: T):
     repo = t.root / "authors/journey"
-    t.eq(sorted(t.git(repo, "tag", "--list").split()), ["dan/journey@0.1.0", "dan/journey@0.1.1"], "tags")
+    t.eq(sorted(t.git(repo, "tag", "--list").split()), ["v0.1.0", "v0.1.1"], "tags")
     t.eq(t.git(repo, "status", "--porcelain"), "", "clean worktree")
     index = json.loads(t.catalog_index("dan/journey").read_text())
     t.eq(sorted(index["versions"]), ["0.1.0", "0.1.1"], "catalog versions")

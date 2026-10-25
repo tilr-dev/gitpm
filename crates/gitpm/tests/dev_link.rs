@@ -80,10 +80,7 @@ fn release(path: &Path, version: &str) {
     fs::write(path.join("dist/index.js"), version).unwrap();
     git(path, &["add", "."]);
     git(path, &["commit", "-m", version]);
-    git(
-        path,
-        &["tag", &format!("{}@{version}", m["id"].as_str().unwrap())],
-    );
+    git(path, &["tag", &format!("v{version}")]);
 }
 fn linked(reason: &Option<UnchangedReason>) -> &check::CheckRow {
     match reason {

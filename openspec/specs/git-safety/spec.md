@@ -56,18 +56,6 @@ Repository git commands SHALL use closed stdin, `GIT_TERMINAL_PROMPT=0`, empty `
 - **WHEN** a build request stalls or streams an oversized body
 - **THEN** the five-second connect timeout, twenty-second total timeout and 16 MiB streaming bound terminate it with `http`; builds alone follow at most five HTTPS-only redirects
 
-### Requirement: Library-owned Git input
-Exception to "Git never waits for input": a Git ref transaction (`update-ref --stdin`) SHALL get only library-generated input instead of closed stdin, and the input pipe SHALL be closed after writing; user stdin SHALL NOT be inherited, and the other bounds of that requirement (no prompts, lowSpeed limits, batch SSH, 600s kill) SHALL apply unchanged.
-
-#### Scenario: Library-owned ref transaction input
-- **WHEN** release tags are created by `update-ref --stdin`
-- **THEN** only library-generated commands are supplied, followed by EOF, with the same execution timeout
-
-#### Scenario: Git exits before reading the input
-- **WHEN** the Git process closes its input before the library has written it
-- **THEN** the command fails with `git` ("cannot write git input") and no SIGPIPE reaches the host process, which may keep the default SIGPIPE action (FFI)
-- **AND** verified by `transport::system::tests::input_to_a_child_that_closed_stdin_fails_without_sigpipe`
-
 ### Requirement: No option injection
 Single source for option-like input: ID components starting with `-` SHALL be refused with `invalid_id` before any git call, and user refs starting with `-` with `invalid_argument` ("invalid git ref") before they reach git; user refs (install, update, register) SHALL be resolved with `rev-parse --verify --end-of-options`, and positional names (sources, tags, paths) SHALL be passed after `--`. Verified by `identity::valid_part_accepts_1_to_80_safe_ascii_characters`.
 
@@ -145,7 +133,7 @@ The Rust tests run by `cargo test` SHALL NOT inherit the developer's `GITPM_*`/`
 - **THEN** `cargo test` in this repository is unaffected
 
 ### Requirement: Origin tag lookup is bounded and restricted
-The repository-less `git ls-remote --tags --heads -- SOURCE` of `check` SHALL run in the internal transport module with the bounds of every repository command plus `LC_ALL=C`, the OS temp dir as working directory and a transport allowlist (file, git, http, https, ssh), and only on a source that passes `auth::validate_recorded`; nothing is fetched or written. Verified by `transport::system::tests::ls_remote_refs_lists_tags_with_peeled_commits_and_branches_and_fails_as_git`.
+`check` SHALL use catalog release data when the package source is listed, without querying origin. Otherwise it SHALL validate the source, read tag names with bounded, allowlisted `ls-remote`, then fetch candidates newest first with `--depth=1 --filter=blob:none`, reading only package metadata in a disposable repository. It SHALL stop when the requested release is found, leave installed clones and workspace unchanged, and retain all transport input, timeout and SSH bounds.
 
 #### Scenario: Bounds
 - **WHEN** `check` reads an origin's tags and branches
@@ -163,6 +151,14 @@ The repository-less `git ls-remote --tags --heads -- SOURCE` of `check` SHALL ru
 #### Scenario: Local paths stay allowed
 - **WHEN** the recorded source is an absolute local path (Git 2.38.1 and later default `protocol.file.allow` to `user`)
 - **THEN** the lookup still reads its tags and branches, because the allowlist sets `protocol.file.allow=always` instead of `GIT_PROTOCOL_FROM_USER=0`
+
+#### Scenario: Catalog avoids origin lookup
+- **WHEN** a selected catalog lists the installed package source and origin is unavailable
+- **THEN** `check` reports the catalog versions and never queries origin
+
+#### Scenario: Partial fallback skips absent packages
+- **WHEN** origin tags are v3.0.0 without the installed ID, v2.0.0 with that ID and v1.0.0 older
+- **THEN** fallback shallow-fetches v3.0.0 then v2.0.0 with blob filtering, reads manifests without checking out dist, and stops before v1.0.0
 
 ### Requirement: Local source clones use Git transport
 Registration, catalog source discovery and package installation SHALL clone local sources through Git transport rather than copying their object directories. Transient server-info files disappearing while the source is read SHALL NOT prevent reading committed releases. Clones SHALL have their own objects and retain the original source as origin.
