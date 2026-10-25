@@ -74,6 +74,35 @@ fn state(m: &Manager) -> serde_json::Value {
 }
 
 #[test]
+fn explicit_targets_install_without_a_default_branch() {
+    use gitpm::InstallTarget;
+    for target in ["release", "tag", "branch", "commit"] {
+        let f = Fixture::new();
+        let commit = git(&f.author, &["rev-parse", "HEAD"]);
+        let branch = git(&f.author, &["symbolic-ref", "--short", "HEAD"]);
+        git(&f.author, &["symbolic-ref", "HEAD", "refs/heads/absent"]);
+        let target = match target {
+            "release" => InstallTarget::Release,
+            "tag" => InstallTarget::Ref("v0.1.0".into()),
+            "branch" => InstallTarget::Ref(branch),
+            _ => InstallTarget::Ref(commit.clone()),
+        };
+        let m = Manager::open(&f.root).unwrap();
+        let installed = m
+            .install_package(f.author.to_str().unwrap(), Some("vendor/module"), target)
+            .unwrap();
+        assert_eq!(installed.current.commit, commit);
+        assert_eq!(
+            git(
+                &worktree_path(&f.root, "vendor/module"),
+                &["rev-parse", "HEAD"]
+            ),
+            commit
+        );
+    }
+}
+
+#[test]
 fn ignored_work_survives_rejected_operations_and_fork() {
     let f = Fixture::new();
     let m = f.installed();

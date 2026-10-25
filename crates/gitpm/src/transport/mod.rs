@@ -676,13 +676,29 @@ impl Transport for SystemTransport {
             },
             custom_ssh,
         )?;
-        self.set_remote_head(&repo, "origin", custom_ssh)?;
+        // Keep the default selected by clone without requiring the origin to
+        // advertise a usable HEAD. Explicit tags/commits still work when it does not.
+        let head = std::fs::read_to_string(repo.join("HEAD"))?;
+        if let Some(branch) = head.trim().strip_prefix("ref: refs/heads/") {
+            let remote_ref = format!("refs/remotes/origin/{branch}");
+            if self
+                .refs(&repo, &remote_ref, custom_ssh)?
+                .lines()
+                .any(|r| r == remote_ref)
+            {
+                system::git(
+                    &repo,
+                    &["symbolic-ref", "refs/remotes/origin/HEAD", &remote_ref],
+                    custom_ssh,
+                )?;
+            }
+            system::git(
+                &repo,
+                &["symbolic-ref", "HEAD", "refs/remotes/origin/HEAD"],
+                custom_ssh,
+            )?;
+        }
         // Source branches are remote-tracking refs, never manager-created local work.
-        system::git(
-            &repo,
-            &["symbolic-ref", "HEAD", "refs/remotes/origin/HEAD"],
-            custom_ssh,
-        )?;
         for reference in self.refs(&repo, "refs/heads/", custom_ssh)?.lines() {
             self.delete_ref(&repo, reference, custom_ssh)?;
         }
