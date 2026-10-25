@@ -231,7 +231,7 @@ fn every_command_uses_explicit_paths_without_touching_another_workspace() {
     assert!(!selected.join("dist/dan/hello").exists());
     run(&["uninstall", "dan/hello"]);
 
-    run(&["catalog", "register", repo, "--ref", "dan/hello@2.0.0"]);
+    run(&["catalog", "register", repo, "--ref", "v2.0.0"]);
     let sources = f.dir.join("sources.txt");
     fs::write(&sources, format!("{repo}\n")).unwrap();
     run(&["catalog", "update", "--sources", sources.to_str().unwrap()]);
@@ -256,7 +256,7 @@ fn every_command_uses_explicit_paths_without_touching_another_workspace() {
         vec!["catalog", "show"],
         vec!["catalog", "links"],
         vec!["catalog", "update", "--sources", sources.to_str().unwrap()],
-        vec!["catalog", "register", repo, "--ref", "dan/hello@2.0.0"],
+        vec!["catalog", "register", repo, "--ref", "v2.0.0"],
     ] {
         let out = f
             .pm()
