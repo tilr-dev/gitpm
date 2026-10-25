@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Option validation
-Before calling the library the CLI SHALL refuse only syntax: unknown or repeated options, misplaced options (for example `--dry-run` outside `update all`/`sync-dist`, `--from` outside `fork`, `--ref` with `fork` without `--from`), exclusive options (`--ref`, `--dev`, `--release`), values outside a fixed set and wrong argument counts, with a message ending `; use --help` where applicable (usage errors without `Error kind`). Domain combinations are checked by the library. Verified by `usage_errors_name_the_problem_and_create_nothing`.
+Before calling the library the CLI SHALL refuse syntax errors: unknown, repeated or misplaced options, conflicting options, values outside a fixed set and wrong argument counts. Usage errors SHALL omit `Error kind` and end with `; use --help` where applicable. The library SHALL check domain combinations. Verified by `usage_errors_name_the_problem_and_create_nothing`.
 
 #### Scenario: Ref, dev and release
 - **WHEN** the user runs `gitpm install SOURCE --ref x --dev`, `gitpm update ID --dev --release`, or passes `--channel`
@@ -23,3 +23,4 @@ Before calling the library the CLI SHALL refuse only syntax: unknown or repeated
 #### Scenario: Fork from source options
 - **WHEN** `fork ID --from SOURCE --ns NS --into DIR --ref REF` is run
 - **THEN** the options are accepted without opening a workspace; `--ref` without `--from` is refused before side effects
+- **AND** `--from` outside `fork`, and `--dry-run` outside `update all`/`sync-dist`, are refused as misplaced options
