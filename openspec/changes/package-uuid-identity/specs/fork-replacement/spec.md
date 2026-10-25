@@ -122,10 +122,7 @@ Fork SHALL exclude local installation work and use only the recorded source at i
 #### Scenario: Fork one package
 - **WHEN** the user runs `gitpm fork 7e6e8392-7be8-55ae-bd03-2b430b1c5d59 --into hello-fork`
 - **THEN** `hello-fork` is a Git clone whose `plugin.json` has `id` `ce6c8a3b-b2f8-5391-8ef8-4cbb7873f5d4`, the output contains `ce6c8a3b-b2f8-5391-8ef8-4cbb7873f5d4 forked from 7e6e8392-7be8-55ae-bd03-2b430b1c5d59 (repository root)`, and `7e6e8392-7be8-55ae-bd03-2b430b1c5d59` is still installed
-
-#### Scenario: Fresh fork identity
-- **WHEN** the same source is forked twice into separate destinations
-- **THEN** each fork has a newly generated UUID distinct from the original and from the other fork, while the package name is preserved
+- **AND** the fork UUID is newly generated and differs from the original while the package name is preserved; repeating the fork into another new destination generates a different UUID
 
 ### Requirement: Fork requires explicit namespace and destination
 `fork` SHALL require explicit `--into DIR` and SHALL NOT accept `--ns`. DIR MUST be new, outside the workspace and the source repository, without `..`. Existing destinations SHALL be refused unchanged. A failed fork SHALL remove directories it created.
