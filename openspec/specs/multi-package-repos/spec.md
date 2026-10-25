@@ -153,3 +153,22 @@ Every dependency between packages of the source repository SHALL be rewritten to
 - **WHEN** packages forked together depend on each other in a cycle
 - **THEN** fork rewrites the dependencies to their fork IDs without trying to order a release or installation
 - **AND** the cycle alone does not trigger an implicit release, installation or replacement
+
+### Requirement: Package structure and repository uniqueness
+Every package SHALL need a `namespace/name` ID unique in the repository in any letter case (package-ids, "Case-colliding IDs are refused"), a manifest and a committed package output folder selected by its manifest dist (default dist/) (neither a symlink; the missing package dist message is in dist), and packages MUST NOT nest.
+
+Verified by `packages::invalid_package_sets_are_refused` and `packages::ids_differing_only_in_case_make_both_folders_defective`.
+
+#### Scenario: Case variants
+- **WHEN** two packages of the repository have IDs differing only in letter case
+- **THEN** both folders are defective
+- **AND** this is covered by `packages::ids_differing_only_in_case_make_both_folders_defective`
+
+### Requirement: Independent package worktrees
+Each Git package SHALL have its own detached worktree at its recorded current commit.
+
+Verified by `root_to_nested_lifecycle_keeps_one_clone_and_all_owners`.
+
+#### Scenario: Independent package revisions
+- **WHEN** two packages from one source are installed at different commits and one is updated or rolled back
+- **THEN** each worktree HEAD matches its own recorded commit, and the other worktree and its files remain unchanged
