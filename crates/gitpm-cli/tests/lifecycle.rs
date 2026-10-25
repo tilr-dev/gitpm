@@ -223,7 +223,7 @@ fn every_command_uses_explicit_paths_without_touching_another_workspace() {
     run(&["install", fork]);
     run(&["replace", "dan/hello", "--with", "other/hello"]);
     assert!(!selected.join("dist/dan/hello").exists());
-    run(&["replace", "dan/hello", "--back"]);
+    run(&["replace", "dan/hello", "--with", "dan/hello"]);
     assert!(selected.join("dist/dan/hello").exists());
     run(&["uninstall", "other/hello", "--force"]);
     run(&["uninstall", "dan/hello"]);
@@ -1785,7 +1785,7 @@ fn usage_errors_name_the_problem_and_create_nothing() {
         (&["download-catalog", "Bad"][..], "invalid"),
         (
             &["list", "--force"][..],
-            "--force is only valid with uninstall/disable/enable/install/install-catalog/forget/replace",
+            "--force is only valid with uninstall/disable/enable/install/install-catalog/forget",
         ),
     ] {
         let out = f

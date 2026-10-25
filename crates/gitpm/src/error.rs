@@ -77,8 +77,8 @@ pub enum Error {
         dependents: Vec<String>,
         lost_work: Vec<LostWork>,
     },
-    /// Some consumers do not accept the version the new provider declares; confirm
-    /// to replace anyway. `consumers` are the unsatisfied ones.
+    /// Some consumers do not accept the version the new provider declares.
+    /// Replacement is refused; `consumers` are the unsatisfied ones.
     #[error("{message}")]
     IncompatibleReplacement {
         id: String,

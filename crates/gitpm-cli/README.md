@@ -41,7 +41,10 @@ gitpm install ./hello
 gitpm fork acme/hello --ns me --into ./me-hello   # clone the recorded source as me/hello
 gitpm commit ./me-hello 0.2.0            # explicitly release a new version
 gitpm install ./me-hello me/hello        # explicitly install the desired fork
-gitpm replace acme/hello --with me/hello # explicitly replace its original
+gitpm replace-check acme/hello --with me/hello # report issues and missing installs as JSON
+gitpm replace-resolve acme/hello --with me/hello # explicitly install missing dependencies
+gitpm replace acme/hello --with me/hello # requires compatible provider dependencies and consumers
+gitpm replace acme/hello --with acme/hello # return to the installed, enabled original
 gitpm fork tilr/store tilr/theme --ns me --into ./me-packages   # several packages, one repo
 
 git init -q tilr-packages
@@ -71,3 +74,18 @@ Settings come from flags (`--root`, `--catalog`, `--sources`), then `GITPM_ROOT`
 [repository README](https://github.com/tilr-dev/gitpm#cli-quickstart) for a walkthrough.
 
 License: MIT OR Apache-2.0.
+
+Replacement checks cover every active package. `replace` never installs dependencies,
+never prompts, and accepts neither `--force` nor `--back`. `replace-resolve` installs
+only missing catalog releases for the proposed provider and its transitive dependencies;
+it does not update or enable installed packages or apply the proposed binding. Only
+that dependency closure and active consumers' version requirements on the original
+block replacement. Unrelated existing breakage remains diagnostic and does not cause
+resolve to reinstall force-removed dependencies. Fix incompatible versions explicitly
+before replacing.
+
+On a replacement dependency conflict, the CLI suggests `replace-check ORIGINAL --with
+PROVIDER` to inspect dependency issues and `replace-resolve ORIGINAL --with PROVIDER`
+to install missing dependencies when resolvable. Fix incompatible or disabled installed
+dependencies first. Replacement refusal uses the configured catalog to list available
+missing versions; it does not install them.
