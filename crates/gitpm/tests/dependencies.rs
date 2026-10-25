@@ -281,7 +281,8 @@ fn catalog_install_resolves_dependencies_and_records_edges() {
     assert_eq!(installed.dist.deployed, ["app/a", "lib/core"]);
     let core = plugin(&m, "lib/core");
     assert_eq!(
-        core.current.version, "1.1.0",
+        core.current.as_ref().unwrap().version,
+        "1.1.0",
         "highest version matching ^1.0"
     );
     assert_eq!(core.dependents, ["app/a"]);
@@ -505,7 +506,7 @@ fn rollback_and_restore_refuse_disabled_dependencies() {
     m.enable("lib/core").unwrap();
     m.restore("app/a").unwrap();
     m.rollback("app/a").unwrap();
-    assert_eq!(plugin(&m, "app/a").current.version, "1.0.0");
+    assert_eq!(plugin(&m, "app/a").current.unwrap().version, "1.0.0");
 }
 
 /// Only direct dependencies must be active: app → lib (enabled) → base (disabled by
@@ -787,7 +788,7 @@ fn cycles_resolve_and_updates_keep_dependents_working() {
     f.release(&core, "lib/core", "2.0.0", &[]);
     let error = f.refuses("dependency_conflict", || m.update("lib/core"));
     assert!(error.to_string().contains("app/a"), "{error}");
-    assert_eq!(plugin(&m, "lib/core").current.version, "1.1.0");
+    assert_eq!(plugin(&m, "lib/core").current.unwrap().version, "1.1.0");
     // A compatible release is fine.
     f.release(&core, "lib/core", "1.2.0", &[]);
     m.update_to("lib/core", gitpm::Target::Ref("lib/core@1.2.0".into()))
@@ -805,7 +806,7 @@ fn cycles_resolve_and_updates_keep_dependents_working() {
     assert!(ids(&m).contains(&"lib/extra".to_string()));
     // Rollback is offline and checked the same way.
     m.rollback("app/a").unwrap();
-    assert_eq!(plugin(&m, "app/a").current.version, "1.0.0");
+    assert_eq!(plugin(&m, "app/a").current.unwrap().version, "1.0.0");
 }
 
 #[test]
@@ -1255,7 +1256,7 @@ fn update_all_coordinates_versions_and_adds_dependencies_atomically() {
         .unwrap()
     );
     for id in ["app/a", "lib/core"] {
-        assert_eq!(plugin(&m, id).current.version, "2.0.0");
+        assert_eq!(plugin(&m, id).current.unwrap().version, "2.0.0");
         assert_eq!(
             m.state().unwrap().packages[id]
                 .previous
@@ -1288,9 +1289,9 @@ fn update_all_backtracks_to_compatible_versions_and_keeps_current_fallback() {
     f.publish(&cat, "app/a", "1.5.0", &[("lib/core", "^1")]);
     f.publish(&cat, "app/a", "2.0.0", &[("lib/core", "^2")]);
     let plan = m.update_all().unwrap();
-    assert_eq!(plugin(&m, "app/a").current.version, "1.5.0");
-    assert_eq!(plugin(&m, "lib/core").current.version, "1.5.0");
-    assert_eq!(plugin(&m, "app/b").current.version, "1.0.0");
+    assert_eq!(plugin(&m, "app/a").current.unwrap().version, "1.5.0");
+    assert_eq!(plugin(&m, "lib/core").current.unwrap().version, "1.5.0");
+    assert_eq!(plugin(&m, "app/b").current.unwrap().version, "1.0.0");
     assert_eq!(
         plan.kept_back
             .iter()
@@ -1354,7 +1355,7 @@ fn update_all_preserves_local_work_and_never_partially_deploys() {
     let error = f.refuses("invalid_manifest", || m.update_all());
     assert!(error.to_string().starts_with("x/b: "), "{error}");
     assert!(matches!(error, gitpm::Error::InvalidManifest { id: Some(id), .. } if id == "x/b"));
-    assert_eq!(plugin(&m, "x/a").current.version, "1.0.0");
+    assert_eq!(plugin(&m, "x/a").current.unwrap().version, "1.0.0");
 }
 
 #[test]
@@ -1364,7 +1365,7 @@ fn update_all_does_not_downgrade_and_warns_about_moved_and_retracted_releases() 
     f.publish(&cat, "x/a", "2.0.0", &[]);
     let m = f.open(&cat);
     m.install_from_catalog("x/a", None).unwrap();
-    let installed = plugin(&m, "x/a").current.commit;
+    let installed = plugin(&m, "x/a").current.unwrap().commit;
     let repo = f.path("authors/x/a");
     git(&repo, &["tag", "-d", "x/a@2.0.0"]);
     f.release(&repo, "x/a", "1.0.0", &[]);
@@ -1375,7 +1376,7 @@ fn update_all_does_not_downgrade_and_warns_about_moved_and_retracted_releases() 
         plan.unchanged[0].warnings,
         ["installed release x/a@2.0.0 no longer exists on the origin"]
     );
-    assert_eq!(plugin(&m, "x/a").current.version, "2.0.0");
+    assert_eq!(plugin(&m, "x/a").current.unwrap().version, "2.0.0");
     // Retagged at another commit: taken as it is, the installed commit is kept.
     f.release(&repo, "x/a", "2.0.0", &[]);
     let plan = m.update_all().unwrap();
@@ -1386,7 +1387,7 @@ fn update_all_does_not_downgrade_and_warns_about_moved_and_retracted_releases() 
         "{:?}",
         plan.unchanged[0].warnings
     );
-    assert_eq!(plugin(&m, "x/a").current.commit, installed);
+    assert_eq!(plugin(&m, "x/a").current.unwrap().commit, installed);
 }
 
 #[test]
@@ -1453,9 +1454,9 @@ fn update_all_resolves_replacement_versions_together_with_consumers() {
         )
     );
     assert_eq!(held.reason.to_string(), "no longer replaces vendor/base");
-    assert_eq!(plugin(&m, "mine/base").current.version, "2.0.0");
-    assert_eq!(plugin(&m, "app/a").current.version, "2.0.0");
-    assert_eq!(plugin(&m, "vendor/base").current.version, "1.0.0");
+    assert_eq!(plugin(&m, "mine/base").current.unwrap().version, "2.0.0");
+    assert_eq!(plugin(&m, "app/a").current.unwrap().version, "2.0.0");
+    assert_eq!(plugin(&m, "vendor/base").current.unwrap().version, "1.0.0");
     assert_eq!(
         provider(&m, "app/a", "vendor/base"),
         (Some("mine/base".into()), true)
@@ -1740,9 +1741,9 @@ fn update_all_enables_dependencies_of_active_consumers_only() {
     f.publish(&cat, "app/b", "1.1.0", &[("lib/mid", "^1")]);
     let plan = m.update_all().unwrap();
     assert!(plugin(&m, "lib/new").enabled);
-    assert_eq!(plugin(&m, "app/a").current.version, "1.1.0");
+    assert_eq!(plugin(&m, "app/a").current.unwrap().version, "1.1.0");
     // app/b is active: lib/mid would be active next to the disabled lib/core.
-    assert_eq!(plugin(&m, "app/b").current.version, "1.0.0");
+    assert_eq!(plugin(&m, "app/b").current.unwrap().version, "1.0.0");
     assert!(plan.kept_back.iter().any(|h| h.id == "app/b"));
     assert!(!ids(&m).contains(&"lib/mid".to_string()));
 }
@@ -1988,7 +1989,7 @@ fn dependency_ranges_pick_pre_releases_only_when_named() {
     let m = f.open(&cat);
     // A plain range never takes the newer pre-release.
     m.install_from_catalog("app/a", None).unwrap();
-    assert_eq!(plugin(&m, "lib/core").current.version, "1.2.0");
+    assert_eq!(plugin(&m, "lib/core").current.unwrap().version, "1.2.0");
     // The bare version is exact and satisfied.
     m.install_from_catalog("app/c", None).unwrap();
     // A range naming the pre-release needs it; 1.2.0 is installed and fixed.

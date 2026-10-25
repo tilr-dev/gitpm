@@ -185,7 +185,7 @@ impl From<pm::Revision> for Revision {
     }
 }
 
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct ForkOf {
     pub id: String,
     pub version: String,
@@ -247,7 +247,8 @@ impl From<pm::deps::DependencyStatus> for DependencyStatus {
 pub struct InstalledPackage {
     pub id: String,
     pub source: String,
-    pub current: Revision,
+    pub current: Option<Revision>,
+    pub version: Option<String>,
     pub previous: Option<Revision>,
     pub enabled: bool,
     /// What `update(id, .recorded)` follows: releases, a pinned ref or a branch.
@@ -280,7 +281,8 @@ impl From<pm::InstalledPackage> for InstalledPackage {
         Self {
             id: p.id,
             source: p.source,
-            current: p.current.into(),
+            current: p.current.map(Into::into),
+            version: p.version,
             previous: p.previous.map(Into::into),
             enabled: p.enabled,
             mode: p.mode.into(),
@@ -307,9 +309,16 @@ pub enum Mode {
     /// Follows the newest release.
     Release,
     /// Fixed at a tag or commit, as the user gave it.
-    Pinned { reference: String },
+    Pinned {
+        reference: String,
+    },
     /// Follows the HEAD of this branch of the origin.
-    Branch { name: String },
+    Branch {
+        name: String,
+    },
+    Link {
+        descriptor: LinkDescriptor,
+    },
 }
 impl From<pm::Mode> for Mode {
     fn from(mode: pm::Mode) -> Self {
@@ -317,6 +326,66 @@ impl From<pm::Mode> for Mode {
             pm::Mode::Release => Mode::Release,
             pm::Mode::Pinned(reference) => Mode::Pinned { reference },
             pm::Mode::Branch(name) => Mode::Branch { name },
+            pm::Mode::Link(link) => Mode::Link {
+                descriptor: link.into(),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct LinkDescriptor {
+    pub package_root: String,
+    pub target: String,
+    pub discovery: Option<LinkDiscovery>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct LinkDiscovery {
+    pub fork_of: ForkOf,
+}
+impl From<pm::LinkDescriptor> for LinkDescriptor {
+    fn from(l: pm::LinkDescriptor) -> Self {
+        Self {
+            package_root: l.package_root,
+            target: l.target,
+            discovery: l.discovery.map(|d| LinkDiscovery {
+                fork_of: d.fork_of.into(),
+            }),
+        }
+    }
+}
+impl From<LinkDescriptor> for pm::LinkDescriptor {
+    fn from(l: LinkDescriptor) -> Self {
+        Self {
+            package_root: l.package_root,
+            target: l.target,
+            discovery: l.discovery.map(|d| pm::LinkDiscovery {
+                fork_of: pm::ForkOf {
+                    id: d.fork_of.id,
+                    version: d.fork_of.version,
+                    commit: d.fork_of.commit,
+                    source: d.fork_of.source,
+                },
+            }),
+        }
+    }
+}
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct LinkResult {
+    pub id: String,
+    pub version: String,
+    pub mode: Mode,
+    pub refreshed: bool,
+    pub dist: DistSync,
+}
+impl From<pm::LinkResult> for LinkResult {
+    fn from(r: pm::LinkResult) -> Self {
+        Self {
+            id: r.id,
+            version: r.version,
+            mode: r.mode.into(),
+            refreshed: r.refreshed,
+            dist: r.dist.into(),
         }
     }
 }
@@ -324,6 +393,10 @@ impl From<pm::Mode> for Mode {
 /// Why an update left a package where it was.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
 pub enum UnchangedReason {
+    DevLinked {
+        availability: Box<CheckRow>,
+        dependency_problems: Vec<String>,
+    },
     /// Pinned to `reference`: only an explicit target moves it.
     Pinned { reference: String },
     /// Branch mode (`updateAll`): the branch history no longer contains the installed
@@ -344,6 +417,13 @@ pub enum UnchangedReason {
 impl From<pm::UnchangedReason> for UnchangedReason {
     fn from(reason: pm::UnchangedReason) -> Self {
         match reason {
+            pm::UnchangedReason::DevLinked {
+                availability,
+                dependency_problems,
+            } => UnchangedReason::DevLinked {
+                availability: Box::new((*availability).into()),
+                dependency_problems,
+            },
             pm::UnchangedReason::Pinned { reference } => UnchangedReason::Pinned { reference },
             pm::UnchangedReason::Diverged { branch } => UnchangedReason::Diverged { branch },
             pm::UnchangedReason::BranchGone { branch } => UnchangedReason::BranchGone { branch },
@@ -731,6 +811,7 @@ pub struct SkippedDist {
     pub reason: String,
     /// The clone is gone: uninstall or forget drops the record.
     pub clone_missing: bool,
+    pub link: Option<LinkDescriptor>,
 }
 impl From<pm::DistSync> for DistSync {
     fn from(s: pm::DistSync) -> Self {
@@ -746,6 +827,7 @@ impl From<pm::DistSync> for DistSync {
                     id: s.id,
                     reason: s.reason,
                     clone_missing: s.clone_missing,
+                    link: s.link.map(Into::into),
                 })
                 .collect(),
         }
@@ -765,6 +847,7 @@ impl From<DistSync> for pm::DistSync {
                     id: s.id,
                     reason: s.reason,
                     clone_missing: s.clone_missing,
+                    link: s.link.map(Into::into),
                 })
                 .collect(),
         }
@@ -823,7 +906,7 @@ impl From<pm::UninstallPlan> for UninstallPlan {
     }
 }
 
-#[derive(Debug, Clone, Copy, uniffi::Enum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum CheckStatus {
     DifferentSource,
     InvalidCatalogData,
@@ -877,7 +960,7 @@ impl From<pm::check::CheckSource> for CheckSource {
     }
 }
 
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct CheckRow {
     pub id: String,
     pub installed: String,
@@ -903,7 +986,7 @@ pub struct CheckRow {
     /// A newer pre-release that is not offered (pre-releases are opt-in).
     pub prerelease: Option<String>,
 }
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct Upstream {
     pub id: String,
     /// Original version the fork started from.
@@ -985,7 +1068,8 @@ impl From<pm::check::CheckReport> for CheckReport {
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct PackageRecord {
     pub source: String,
-    pub current: Revision,
+    pub current: Option<Revision>,
+    pub version: Option<String>,
     pub previous: Option<Revision>,
     pub enabled: bool,
     pub mode: Mode,
@@ -1003,9 +1087,11 @@ pub struct PackageRecord {
 }
 impl From<pm::Installed> for PackageRecord {
     fn from(p: pm::Installed) -> Self {
+        let linked = p.link().is_some();
         Self {
             source: p.source,
-            current: p.current.into(),
+            version: linked.then(|| p.current.version.clone()),
+            current: (!linked).then(|| p.current.into()),
             previous: p.previous.map(Into::into),
             enabled: p.enabled,
             mode: p.mode.into(),
@@ -1315,6 +1401,9 @@ impl PackageManager {
     }
     pub fn root(&self) -> String {
         self.inner.root().to_string_lossy().into_owned()
+    }
+    pub fn link(&self, package: String) -> Result<LinkResult> {
+        Ok(self.inner.link(package)?.into())
     }
     pub fn list(&self) -> Result<Vec<InstalledPackage>> {
         Ok(self.inner.list()?.into_iter().map(Into::into).collect())
@@ -1705,6 +1794,7 @@ mod tests {
                         id: "x/one".into(),
                         reason: "clone missing".into(),
                         clone_missing: true,
+                        link: None,
                     }],
                     ..Default::default()
                 }),
@@ -1991,7 +2081,8 @@ mod tests {
         let package = InstalledPackage::from(pm::InstalledPackage {
             id: "me/x".into(),
             source: "src".into(),
-            current: revision("1.0.0"),
+            current: Some(revision("1.0.0")),
+            version: None,
             previous: Some(revision("0.9.0")),
             enabled: false,
             mode: pm::Mode::Branch("main".into()),
@@ -2033,8 +2124,8 @@ mod tests {
         assert_eq!(package.tags, ["ui", "dark"]);
         assert_eq!(
             (
-                package.current.version.as_str(),
-                package.current.commit.as_str()
+                package.current.as_ref().unwrap().version.as_str(),
+                package.current.as_ref().unwrap().commit.as_str()
             ),
             ("1.0.0", "1.0.0-commit")
         );
@@ -2153,6 +2244,7 @@ mod tests {
                 id: "me/y".into(),
                 reason: "clone missing".into(),
                 clone_missing: true,
+                link: None,
             }],
         };
         let check_report = |dist: &DistSync| {
@@ -2455,6 +2547,10 @@ mod tests {
                 let _ = PackageManager::install_from_catalog;
                 let _ = catalog_release;
                 vec!["installFromCatalog", "catalogRelease"]
+            }),
+            ("link", {
+                let _ = PackageManager::link;
+                vec!["link"]
             }),
             ("install", {
                 let _ = PackageManager::install;
@@ -2904,12 +3000,18 @@ mod tests {
         assert_eq!((list[0].id.as_str(), list[0].enabled), ("me/x", false));
         assert_eq!(list[0].fork_of.as_ref().unwrap().id, "vendor/x");
         assert_eq!(view.format, 1);
-        assert_eq!(view.packages["me/x"].current.version, "1.0.0");
+        assert_eq!(
+            view.packages["me/x"].current.as_ref().unwrap().version,
+            "1.0.0"
+        );
 
         let manager =
             PackageManager::open(root.to_string_lossy().into(), ManagerOptions::default()).unwrap();
         assert_eq!(manager.root(), root.to_string_lossy());
-        assert_eq!(manager.list().unwrap()[0].current.version, "1.0.0");
+        assert_eq!(
+            manager.list().unwrap()[0].current.as_ref().unwrap().version,
+            "1.0.0"
+        );
         // Without a catalog check asks the origin; "s" is unreachable: a row, no error.
         let report = check(root.to_string_lossy().into(), None, true).unwrap();
         assert!(matches!(

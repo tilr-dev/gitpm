@@ -137,6 +137,87 @@ lib/core enabled
 acme/app enabled
 ```
 
+### Live author folders
+
+```sh
+gitpm link ./hello                   # link this package's ready dist/ output
+gitpm link ./repo/packages/theme     # select one package, leaving siblings alone
+gitpm check
+gitpm update all --dry-run
+gitpm uninstall acme/hello           # remove the workspace entry; keep the author tree
+```
+
+`link LOCAL_PACKAGE_PATH` (library `Manager::link`, FFI `PackageManager.link`)
+validates the local manifest and publishes `dist/<namespace>/<name>` as a symlink
+to its canonical absolute installation folder. As for managed installs,
+`plugin.json.dist` defaults to `"dist"`; `"."` selects the package root and any other
+valid package-relative folder selects that output. Prepare missing output yourself:
+gitpm never builds or watches it. Author edits become visible through the deployed
+path immediately, including uncommitted files. The host may still need to reload.
+
+Linking snapshots identity, declared version, dependencies, metadata and the
+replacement offer. Editing the external manifest does not change that snapshot;
+run `link` again to validate and refresh it, including an explicitly changed output
+folder. New dependencies must already be satisfied by installed providers. A
+managed installation of the same ID must be explicitly uninstalled first; linking
+never silently converts it. Workspace-owned folders, cycles and non-UTF-8 canonical paths are refused with `workspace`.
+
+A live record has no installed revision or owned clone:
+
+```json
+{
+  "mode": {"link": {"packageRoot": "/work/hello", "target": "/work/hello/dist"}},
+  "enabled": true,
+  "version": "0.1.0",
+  "dependencies": {},
+  "metadata": {"title": null, "description": null, "provides": [], "tags": []}
+}
+```
+
+`source` is recorded when a usable origin is available. Link records omit
+`current`, `previous`, `clone`, `path`, `catalog` and top-level `forkOf`. The library's
+resolved `InstalledPackage.current` and FFI `InstalledPackage.current` /
+`PackageRecord.current` are optional: links instead carry `version`. A version on
+a link is a declared snapshot, not a guarantee of reproducible bytes. State format
+stays 1 before the first public release; recreate an incompatible workspace by
+installing its packages again in a new root. There is no migration reader; foreign
+formats are refused unchanged with `unsupported`.
+
+Check and updates query releases without fetching into the author's repository.
+Update results carry `dev_linked` disposition with a structured availability row
+and separate dependency problems. A newer release, no releases or an unreachable
+source is reported explicitly alongside link mode. Even an explicit `--ref`,
+`--dev`, `--release` or `--detach` keeps a link unchanged. Joint updates hold its
+recorded version and dependencies fixed while healthy managed packages can update.
+Dry-run reports the same disposition without writing anything.
+
+Disable, enable, forget, restore, replacement and reconciliation manage only the
+workspace symlink and state. A forgotten link retains its descriptor; missing
+output is reported with its link descriptor in `DistSync.skipped`. Uninstall plans
+list the owned workspace entry and never list the author folder for deletion.
+Dirty files, staged work, ignored output, stashes and unpublished refs in that
+folder remain untouched, including forced removal. Rollback fails with
+`no_previous_version`. Transactions stage and recover symlink entries with state
+published last; external files are never snapshotted or rolled back. Atomicity
+covers workspace entries and state, not a concurrent external build's whole output.
+
+Fork preparation and live installation are separate:
+
+```sh
+gitpm fork acme/hello --ns me --into hello-fork
+# Build the manifest-selected output yourself if needed.
+gitpm link ./hello-fork
+gitpm replace acme/hello --with me/hello
+```
+
+Fork alone changes no workspace installation, deployment or release tags. Link
+installs only the selected fork package, without a release or replacement binding.
+The last explicit step uses the validated top-level `replaces` offer and existing
+compatibility/dependency checks. Consumers then load the live fork deployment.
+Its original-upstream discovery uses the validated
+`mode.link.discovery.forkOf` snapshot until relink refreshes it; changing the
+external provenance or offer alone has no effect.
+
 ### Releases, pinned refs and branches
 
 Every installed package has a mode, recorded in `state.json` as `mode` (omitted in
@@ -425,6 +506,12 @@ Changed in 0.5:
   upgrading) run `gitpm sync-dist` (FFI `syncDist`) once.
 
 Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING**):
+
+- **BREAKING:** Explicit `link` installs live author output with `Mode::Link` and a
+  discriminated state record. Resolved library and FFI package views make `current`
+  optional and expose a declared `version` for links. `dev_linked` update reasons
+  carry release availability and dependency problems; skipped deployment reports
+  retain link descriptors. See [live author folders](#live-author-folders).
 
 - **BREAKING:** Catalog releases with `build {url, sha256}` now install from that archive,
   rather than ignoring it. Artifacts are `.tar.gz`, with output files at the archive root;

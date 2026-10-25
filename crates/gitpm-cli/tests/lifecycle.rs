@@ -2974,3 +2974,41 @@ fn file_formats_use_version_one_and_refuse_other_versions() {
         fs::write(&path, original).unwrap();
     }
 }
+
+#[test]
+fn link_exposes_live_files_and_renders_library_release_disposition() {
+    let f = Fixture::new();
+    f.git(&["config", "remote.origin.url", f.repo.to_str().unwrap()]);
+    let linked = f.cli_without_catalog(&["link", f.repo.to_str().unwrap()], true);
+    assert!(linked.contains("dan/hello dev-linked 1.0.0"), "{linked}");
+    fs::write(f.repo.join("dist/live.txt"), "uncommitted bytes").unwrap();
+    assert_eq!(
+        fs::read_to_string(f.root.join("dist/dan/hello/live.txt")).unwrap(),
+        "uncommitted bytes"
+    );
+    let check = f.cli_without_catalog(&["check"], true);
+    assert!(check.contains("dev-linked and unchanged"), "{check}");
+    f.release("1.1.0", "next release");
+    for args in [
+        vec!["update", "dan/hello"],
+        vec!["update", "dan/hello", "--dev"],
+        vec!["update", "all", "--dry-run"],
+        vec!["update", "all"],
+    ] {
+        let output = f.cli_without_catalog(&args, true);
+        assert!(
+            output
+                .contains("version 1.1.0 is available; package is dev-linked and was not updated"),
+            "{output}"
+        );
+    }
+    let listed: serde_json::Value =
+        serde_json::from_str(&f.cli_without_catalog(&["list"], true)).unwrap();
+    assert_eq!(listed["packages"]["dan/hello"]["version"], "1.0.0");
+    assert!(listed["packages"]["dan/hello"].get("current").is_none());
+    f.cli_without_catalog(&["uninstall", "dan/hello"], true);
+    assert_eq!(
+        fs::read_to_string(f.repo.join("dist/live.txt")).unwrap(),
+        "uncommitted bytes"
+    );
+}
