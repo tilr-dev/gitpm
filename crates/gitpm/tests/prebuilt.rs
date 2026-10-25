@@ -20,7 +20,7 @@ use std::{
     thread,
 };
 static NEXT: AtomicU64 = AtomicU64::new(0);
-const ID: &str = "acme/widget";
+const ID: &str = "41b88ba0-f9f1-5e65-acb6-3dc95231e0bc";
 fn sha(data: &[u8]) -> String {
     Sha256::digest(data)
         .iter()
@@ -134,6 +134,7 @@ impl Fixture {
         let release = Release {
             manifest: Manifest {
                 id: ID.into(),
+                name: "widget".into(),
                 version: version.into(),
                 ..Default::default()
             },
@@ -160,12 +161,19 @@ impl Fixture {
         let version = &release.manifest.version;
         self.versions
             .insert(version.clone(), format!("versions/{version}/release.json"));
-        let folder = self.catalog.join("namespaces/acme/widget");
+        let folder = self
+            .catalog
+            .join("packages/41b88ba0-f9f1-5e65-acb6-3dc95231e0bc");
         fs::create_dir_all(folder.join(format!("versions/{version}"))).unwrap();
-        fs::write(self.catalog.join("catalog.json"), json!({"schema":1,"verified":self.verified,"directories":{"acme":"namespaces/acme/catalog.json"}}).to_string()).unwrap();
         fs::write(
-            self.catalog.join("namespaces/acme/catalog.json"),
-            json!({"schema":1,"directories":{"widget":"widget/plugin.json"}}).to_string(),
+            self.catalog.join("catalog.json"),
+            json!({"schema":1,"verified":self.verified,"directories":{"packages":"packages/"}})
+                .to_string(),
+        )
+        .unwrap();
+        fs::write(
+            self.catalog.join("packages/catalog.json"),
+            json!({"schema":1,"directories":{ID:format!("{ID}/plugin.json")}}).to_string(),
         )
         .unwrap();
         fs::write(
@@ -191,7 +199,8 @@ impl Fixture {
         .unwrap()
     }
     fn dist(&self) -> PathBuf {
-        self.root.join("dist/acme/widget/index.js")
+        self.root
+            .join("dist/41b88ba0-f9f1-5e65-acb6-3dc95231e0bc/index.js")
     }
     fn snapshot(&self) -> BTreeMap<String, FileDigest> {
         catalog::hash_files(&self.root).unwrap()
@@ -266,7 +275,7 @@ fn update_all_and_removal_keep_only_two_cached_revisions() {
     f.publish("1.2.0", b"three");
     assert_eq!(m.update_all().unwrap().updates.len(), 1);
     assert_eq!(
-        fs::read_dir(f.root.join("builds/acme/widget"))
+        fs::read_dir(f.root.join("builds/41b88ba0-f9f1-5e65-acb6-3dc95231e0bc"))
             .unwrap()
             .count(),
         2
@@ -371,9 +380,11 @@ fn build_can_switch_to_git_and_rollback_in_both_directions() {
         gitpm::Target::Release,
     ] {
         let mut f = Fixture::new(true);
-        let repo = gitpm::scaffold::init(&f.dir.join("source"), "acme", "widget")
-            .unwrap()
-            .repo;
+        let repo = common::author(
+            &f.dir.join("source"),
+            "41b88ba0-f9f1-5e65-acb6-3dc95231e0bc",
+            "widget",
+        );
         gitpm::scaffold::commit(&repo, "1.0.0").unwrap();
         let bytes = archive(&[("index.js", b"built", 0o644)]);
         f.server
@@ -407,8 +418,7 @@ fn build_can_switch_to_git_and_rollback_in_both_directions() {
         let m = f.manager();
         m.install_from_catalog(ID, None).unwrap();
         f.no_clone();
-        m.fork_in_namespace(ID, &f.dir.join("fork"), "mine")
-            .unwrap();
+        m.fork_into(ID, &f.dir.join("fork")).unwrap();
         let detached = target == gitpm::Target::Release;
         m.update_with(ID, target, gitpm::UpdateOptions { detach: detached })
             .unwrap();
@@ -433,9 +443,11 @@ fn build_can_switch_to_git_and_rollback_in_both_directions() {
 #[test]
 fn git_release_without_build_remains_a_git_install() {
     let mut f = Fixture::new(false);
-    let repo = gitpm::scaffold::init(&f.dir.join("source"), "acme", "widget")
-        .unwrap()
-        .repo;
+    let repo = common::author(
+        &f.dir.join("source"),
+        "41b88ba0-f9f1-5e65-acb6-3dc95231e0bc",
+        "widget",
+    );
     gitpm::scaffold::commit(&repo, "1.0.0").unwrap();
     let release = catalog::register(
         f.catalog.to_str().unwrap(),
@@ -550,7 +562,7 @@ fn publish_repo(f: &Fixture, repo: &std::path::Path, id: &str, version: &str) ->
     release.build.as_mut().unwrap().url = format!("{}{name}", f.server.url);
     let path = f
         .catalog
-        .join(format!("namespaces/{id}/versions/{version}/release.json"));
+        .join(format!("packages/{id}/versions/{version}/release.json"));
     fs::write(path, serde_json::to_vec(&release).unwrap()).unwrap();
     release
 }
@@ -558,24 +570,28 @@ fn publish_repo(f: &Fixture, repo: &std::path::Path, id: &str, version: &str) ->
 fn build_dependencies_install_and_update_together_without_clones() {
     for all in [false, true] {
         let f = Fixture::new(false);
-        let app = gitpm::scaffold::init(&f.dir.join("source"), "acme", "widget")
-            .unwrap()
-            .repo;
-        let lib = gitpm::scaffold::init(&f.dir.join("lib"), "acme", "lib")
-            .unwrap()
-            .repo;
+        let app = common::author(
+            &f.dir.join("source"),
+            "41b88ba0-f9f1-5e65-acb6-3dc95231e0bc",
+            "widget",
+        );
+        let lib = common::author(
+            &f.dir.join("lib"),
+            "cfbc4d17-8707-5571-853d-c9136a7f9f21",
+            "lib",
+        );
         publish_repo(&f, &app, ID, "1.0.0");
         let m = f.manager();
         m.install_from_catalog(ID, None).unwrap();
         let mut manifest: serde_json::Value =
             serde_json::from_slice(&fs::read(app.join("plugin.json")).unwrap()).unwrap();
-        manifest["dependencies"] = json!({"acme/lib":"^1.0.0"});
+        manifest["dependencies"] = json!({"cfbc4d17-8707-5571-853d-c9136a7f9f21":"^1.0.0"});
         fs::write(
             app.join("plugin.json"),
             serde_json::to_vec(&manifest).unwrap(),
         )
         .unwrap();
-        publish_repo(&f, &lib, "acme/lib", "1.0.0");
+        publish_repo(&f, &lib, "cfbc4d17-8707-5571-853d-c9136a7f9f21", "1.0.0");
         publish_repo(&f, &app, ID, "1.1.0");
         fs::remove_dir_all(&app).unwrap();
         fs::remove_dir_all(&lib).unwrap();
@@ -586,8 +602,12 @@ fn build_dependencies_install_and_update_together_without_clones() {
         }
         let state = m.state().unwrap();
         assert_eq!(state.packages[ID].current.version, "1.1.0");
-        assert!(state.packages["acme/lib"].build.is_some());
-        assert!(state.packages["acme/lib"].enabled);
+        assert!(
+            state.packages["cfbc4d17-8707-5571-853d-c9136a7f9f21"]
+                .build
+                .is_some()
+        );
+        assert!(state.packages["cfbc4d17-8707-5571-853d-c9136a7f9f21"].enabled);
         assert!(!f.root.join("packages").exists());
         f.no_clone();
     }
@@ -595,9 +615,11 @@ fn build_dependencies_install_and_update_together_without_clones() {
 #[test]
 fn catalog_updates_can_alternate_git_and_build_revisions() {
     let f = Fixture::new(false);
-    let app = gitpm::scaffold::init(&f.dir.join("source"), "acme", "widget")
-        .unwrap()
-        .repo;
+    let app = common::author(
+        &f.dir.join("source"),
+        "41b88ba0-f9f1-5e65-acb6-3dc95231e0bc",
+        "widget",
+    );
     publish_repo(&f, &app, ID, "1.0.0");
     let m = f.manager();
     m.install_from_catalog(ID, None).unwrap();
@@ -652,22 +674,27 @@ fn catalog_updates_can_alternate_git_and_build_revisions() {
 #[test]
 fn joint_build_upgrade_uses_the_joint_dependency_solution() {
     let f = Fixture::new(false);
-    let app = gitpm::scaffold::init(&f.dir.join("source"), "acme", "widget")
-        .unwrap()
-        .repo;
-    let lib = gitpm::scaffold::init(&f.dir.join("lib"), "acme", "zlib")
-        .unwrap()
-        .repo;
+    let app = common::author(
+        &f.dir.join("source"),
+        "41b88ba0-f9f1-5e65-acb6-3dc95231e0bc",
+        "widget",
+    );
+    let lib = common::author(
+        &f.dir.join("lib"),
+        "e4fcd067-4e1e-5766-9cda-34e49dc376a1",
+        "zlib",
+    );
     for version in ["1.0.0", "2.0.0"] {
         let mut manifest: serde_json::Value =
             serde_json::from_slice(&fs::read(app.join("plugin.json")).unwrap()).unwrap();
-        manifest["dependencies"] = json!({"acme/zlib": format!("^{version}")});
+        manifest["dependencies"] =
+            json!({"e4fcd067-4e1e-5766-9cda-34e49dc376a1": format!("^{version}")});
         fs::write(
             app.join("plugin.json"),
             serde_json::to_vec(&manifest).unwrap(),
         )
         .unwrap();
-        publish_repo(&f, &lib, "acme/zlib", version);
+        publish_repo(&f, &lib, "e4fcd067-4e1e-5766-9cda-34e49dc376a1", version);
         publish_repo(&f, &app, ID, version);
         if version == "1.0.0" {
             let m = f.manager();
@@ -686,58 +713,88 @@ fn joint_build_upgrade_uses_the_joint_dependency_solution() {
 #[test]
 fn build_update_all_keeps_an_active_replacement_declaration() {
     let f = Fixture::new(false);
-    let original = gitpm::scaffold::init(&f.dir.join("original"), "vendor", "base")
-        .unwrap()
-        .repo;
-    let fork = gitpm::scaffold::init(&f.dir.join("fork"), "mine", "base")
-        .unwrap()
-        .repo;
-    publish_repo(&f, &original, "vendor/base", "1.0.0");
+    let original = common::author(
+        &f.dir.join("original"),
+        "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9",
+        "base",
+    );
+    let fork = common::author(
+        &f.dir.join("fork"),
+        "db33e43e-e652-5767-8e21-27fb3cef9723",
+        "base",
+    );
+    publish_repo(
+        &f,
+        &original,
+        "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9",
+        "1.0.0",
+    );
     let path = fork.join("plugin.json");
     let mut manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    manifest["replaces"] = json!({"id":"vendor/base", "version":"1.0.0"});
+    manifest["replaces"] = json!({"id":"c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9", "version":"1.0.0"});
     fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
-    publish_repo(&f, &fork, "mine/base", "1.0.0");
+    publish_repo(&f, &fork, "db33e43e-e652-5767-8e21-27fb3cef9723", "1.0.0");
     let m = f.manager();
-    m.install_from_catalog("vendor/base", None).unwrap();
-    m.install_from_catalog("mine/base", None).unwrap();
-    m.replace("vendor/base", "mine/base").unwrap();
+    m.install_from_catalog("c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9", None)
+        .unwrap();
+    m.install_from_catalog("db33e43e-e652-5767-8e21-27fb3cef9723", None)
+        .unwrap();
+    m.replace(
+        "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9",
+        "db33e43e-e652-5767-8e21-27fb3cef9723",
+    )
+    .unwrap();
     manifest.as_object_mut().unwrap().remove("replaces");
     fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
-    publish_repo(&f, &fork, "mine/base", "2.0.0");
+    publish_repo(&f, &fork, "db33e43e-e652-5767-8e21-27fb3cef9723", "2.0.0");
     fs::remove_dir_all(&fork).unwrap();
     fs::remove_dir_all(&original).unwrap();
     let plan = m.update_all().unwrap();
     assert!(plan.updates.is_empty());
-    let held = plan.kept_back.iter().find(|h| h.id == "mine/base").unwrap();
+    let held = plan
+        .kept_back
+        .iter()
+        .find(|h| h.id == "db33e43e-e652-5767-8e21-27fb3cef9723")
+        .unwrap();
     assert_eq!(held.selected, "1.0.0");
     assert_eq!(held.latest, "2.0.0");
     assert_eq!(
         held.reason,
         gitpm::HeldBackReason::NoLongerReplaces {
-            original: "vendor/base".into()
+            original: "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9".into()
         }
     );
     let state = m.state().unwrap();
-    assert!(state.packages["mine/base"].replaces.is_some());
-    assert_eq!(state.replacements["vendor/base"], "mine/base");
+    assert!(
+        state.packages["db33e43e-e652-5767-8e21-27fb3cef9723"]
+            .replaces
+            .is_some()
+    );
+    assert_eq!(
+        state.replacements["c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9"],
+        "db33e43e-e652-5767-8e21-27fb3cef9723"
+    );
 }
 
 fn inactive_build_dependency(operation: &str) {
     let f = Fixture::new(false);
-    let app = gitpm::scaffold::init(&f.dir.join("source"), "acme", "widget")
-        .unwrap()
-        .repo;
-    let lib = gitpm::scaffold::init(&f.dir.join("lib"), "acme", "lib")
-        .unwrap()
-        .repo;
+    let app = common::author(
+        &f.dir.join("source"),
+        "41b88ba0-f9f1-5e65-acb6-3dc95231e0bc",
+        "widget",
+    );
+    let lib = common::author(
+        &f.dir.join("lib"),
+        "cfbc4d17-8707-5571-853d-c9136a7f9f21",
+        "lib",
+    );
     let path = app.join("plugin.json");
     let mut manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    manifest["dependencies"] = json!({"acme/lib":"^1"});
+    manifest["dependencies"] = json!({"cfbc4d17-8707-5571-853d-c9136a7f9f21":"^1"});
     fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
-    publish_repo(&f, &lib, "acme/lib", "1.0.0");
+    publish_repo(&f, &lib, "cfbc4d17-8707-5571-853d-c9136a7f9f21", "1.0.0");
     publish_repo(&f, &app, ID, "1.0.0");
     let m = f.manager();
     m.install_from_catalog(ID, None).unwrap();
@@ -750,12 +807,17 @@ fn inactive_build_dependency(operation: &str) {
         m.forget(ID).unwrap();
     }
     if operation == "restore-missing" {
-        m.uninstall("acme/lib", &[], false).unwrap();
+        m.uninstall("cfbc4d17-8707-5571-853d-c9136a7f9f21", &[], false)
+            .unwrap();
     } else {
-        m.disable("acme/lib").unwrap();
+        m.disable("cfbc4d17-8707-5571-853d-c9136a7f9f21").unwrap();
     }
     let before = fs::read(f.root.join("state.json")).unwrap();
-    let deployed = fs::read(f.root.join("dist/acme/widget/index.js")).ok();
+    let deployed = fs::read(
+        f.root
+            .join("dist/41b88ba0-f9f1-5e65-acb6-3dc95231e0bc/index.js"),
+    )
+    .ok();
     let error = if operation == "rollback" {
         m.rollback(ID).unwrap_err()
     } else {
@@ -764,13 +826,18 @@ fn inactive_build_dependency(operation: &str) {
     assert_eq!(error.kind(), "dependency_conflict", "{operation}");
     assert_eq!(fs::read(f.root.join("state.json")).unwrap(), before);
     assert_eq!(
-        fs::read(f.root.join("dist/acme/widget/index.js")).ok(),
+        fs::read(
+            f.root
+                .join("dist/41b88ba0-f9f1-5e65-acb6-3dc95231e0bc/index.js")
+        )
+        .ok(),
         deployed
     );
     if operation == "restore-missing" {
-        m.install_from_catalog("acme/lib", None).unwrap();
+        m.install_from_catalog("cfbc4d17-8707-5571-853d-c9136a7f9f21", None)
+            .unwrap();
     } else {
-        m.enable("acme/lib").unwrap();
+        m.enable("cfbc4d17-8707-5571-853d-c9136a7f9f21").unwrap();
     }
     if operation == "rollback" {
         m.rollback(ID).unwrap();
@@ -778,7 +845,11 @@ fn inactive_build_dependency(operation: &str) {
         m.restore(ID).unwrap();
     }
     assert_eq!(m.state().unwrap().packages[ID].current.version, "1.0.0");
-    assert!(f.root.join("dist/acme/widget/index.js").is_file());
+    assert!(
+        f.root
+            .join("dist/41b88ba0-f9f1-5e65-acb6-3dc95231e0bc/index.js")
+            .is_file()
+    );
 }
 
 #[test]
@@ -803,9 +874,11 @@ fn clone_free_build_transition_preserves_a_forgotten_siblings_local_work() {
 
 fn check_sibling_local_work(forgotten: bool) {
     let f = Fixture::new(false);
-    let repo = gitpm::scaffold::init(&f.dir.join("source"), "acme", "widget")
-        .unwrap()
-        .repo;
+    let repo = common::author(
+        &f.dir.join("source"),
+        "41b88ba0-f9f1-5e65-acb6-3dc95231e0bc",
+        "widget",
+    );
     publish_repo(&f, &repo, ID, "1.0.0");
     let m = f.manager();
     m.install_from_catalog(ID, None).unwrap();
@@ -820,7 +893,7 @@ fn check_sibling_local_work(forgotten: bool) {
     fs::create_dir_all(repo.join("apps/lib/dist")).unwrap();
     fs::write(
         repo.join("apps/lib/plugin.json"),
-        r#"{"id":"acme/lib","version":"1.0.0"}"#,
+        r#"{"id":"cfbc4d17-8707-5571-853d-c9136a7f9f21","name": "fixture", "version":"1.0.0"}"#,
     )
     .unwrap();
     fs::write(repo.join("apps/lib/dist/index.js"), "sibling").unwrap();
@@ -828,12 +901,12 @@ fn check_sibling_local_work(forgotten: bool) {
     gitpm::scaffold::commit_package(&repo, "2.0.0", Some(ID)).unwrap();
     m.install_package(
         repo.to_str().unwrap(),
-        Some("acme/lib"),
+        Some("cfbc4d17-8707-5571-853d-c9136a7f9f21"),
         gitpm::InstallTarget::Release,
     )
     .unwrap();
     if forgotten {
-        m.forget("acme/lib").unwrap();
+        m.forget("cfbc4d17-8707-5571-853d-c9136a7f9f21").unwrap();
     }
     let clone = clone_path(&f.root, &repo);
     let installed_head = git(&clone, &["rev-parse", "HEAD"]);
@@ -861,12 +934,19 @@ fn check_sibling_local_work(forgotten: bool) {
     )
     .unwrap();
     if forgotten {
-        m.restore("acme/lib").unwrap();
+        m.restore("cfbc4d17-8707-5571-853d-c9136a7f9f21").unwrap();
     }
     let state = m.state().unwrap();
-    assert_eq!(state.packages[ID].clone, state.packages["acme/lib"].clone);
     assert_eq!(
-        fs::read(f.root.join("dist/acme/lib/index.js")).unwrap(),
+        state.packages[ID].clone,
+        state.packages["cfbc4d17-8707-5571-853d-c9136a7f9f21"].clone
+    );
+    assert_eq!(
+        fs::read(
+            f.root
+                .join("dist/cfbc4d17-8707-5571-853d-c9136a7f9f21/index.js")
+        )
+        .unwrap(),
         b"sibling"
     );
     assert_eq!(fs::read_dir(f.root.join("repos")).unwrap().count(), 1);
@@ -875,9 +955,11 @@ fn check_sibling_local_work(forgotten: bool) {
 #[test]
 fn retained_clone_can_leave_a_build_whose_commit_is_gone_upstream() {
     let f = Fixture::new(true);
-    let repo = gitpm::scaffold::init(&f.dir.join("source"), "acme", "widget")
-        .unwrap()
-        .repo;
+    let repo = common::author(
+        &f.dir.join("source"),
+        "41b88ba0-f9f1-5e65-acb6-3dc95231e0bc",
+        "widget",
+    );
     gitpm::scaffold::commit(&repo, "1.0.0").unwrap();
     let first = git(&repo, &["rev-parse", "HEAD"]);
     catalog::register(

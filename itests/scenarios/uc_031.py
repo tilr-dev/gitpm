@@ -1,8 +1,8 @@
 """UC-031: Catalog generation from sources (P0).
 
-Fixture g4_sources: /fx/lists/sources.txt lists dan/hello three times (relative, trailing
-slash, absolute) with comments and blank lines, and "../spaced repos/dan/spaced" (a path
-with a space; lightweight 1.0.0, annotated 1.1.0, untagged HEAD). dan/hello has 0.1.0,
+Fixture g4_sources: /fx/lists/sources.txt lists 3dce1568-569c-5b53-9321-37185e751947 three times (relative, trailing
+slash, absolute) with comments and blank lines, and "../spaced repos/2bf18134-a7da-5c98-841c-4ee91fa6e90e" (a path
+with a space; lightweight 1.0.0, annotated 1.1.0, untagged HEAD). 3dce1568-569c-5b53-9321-37185e751947 has 0.1.0,
 0.1.1, 0.2.0 and an untagged HEAD. catalog-update runs from an unrelated cwd.
 """
 
@@ -12,12 +12,12 @@ import subprocess
 
 from gitpmtest import T, case
 
-SPACED = "spaced repos/dan/spaced"
-EXPECTED = {"dan/hello": ["0.1.0", "0.1.1", "0.2.0"], "dan/spaced": ["1.0.0", "1.1.0"]}
+SPACED = "spaced repos/2bf18134-a7da-5c98-841c-4ee91fa6e90e"
+EXPECTED = {"3dce1568-569c-5b53-9321-37185e751947": ["0.1.0", "0.1.1", "0.2.0"], "2bf18134-a7da-5c98-841c-4ee91fa6e90e": ["1.0.0", "1.1.0"]}
 
 
 def repo_of(t: T, id: str):
-    return t.repo(id) if id == "dan/hello" else t.root / SPACED
+    return t.repo(id) if id == "3dce1568-569c-5b53-9321-37185e751947" else t.root / SPACED
 
 
 def committed_files(repo, rev: str) -> dict:
@@ -43,10 +43,10 @@ def all_releases_indexed_once(t: T):
     """Every valid release tag of both sources is indexed exactly once at its tag commit
     (annotated tags peeled), with committed hashes; untagged HEADs are not releases; paths
     resolve relative to sources.txt (not the cwd); author repos are not pushed to/changed."""
-    authors = t.snap(t.repo("dan/hello"), t.root / SPACED, git=True)
+    authors = t.snap(t.repo("3dce1568-569c-5b53-9321-37185e751947"), t.root / SPACED, git=True)
     out = generate(t)
     t.has(out.out, "Catalog ready: 5 release(s)")
-    t.has(out.err, f"Reading releases: {t.repo('dan/hello')}", f"Reading releases: {t.root / SPACED}")
+    t.has(out.err, f"Reading releases: {t.repo('3dce1568-569c-5b53-9321-37185e751947')}", f"Reading releases: {t.root / SPACED}")
     t.eq(out.err.count("Reading releases:"), 2, "each source read once (duplicates merged)")
     for id, versions in EXPECTED.items():
         repo = repo_of(t, id)
@@ -81,7 +81,7 @@ def repeat_is_safe(t: T):
 def relative_paths_use_sources_location_not_cwd(t: T):
     """Run from a cwd where the relative entries would resolve elsewhere: still the same
     repositories (relative to the sources file); the file is given by GITPM_SOURCES."""
-    decoy = t.root / "decoy/x"
+    decoy = t.root / "66e90411-37e5-5ec1-85d1-972659d7bcd3"
     decoy.mkdir(parents=True)
     out = t.gitpm_ok("--catalog", t.catalog, "catalog-update", cwd=decoy,
                   env={"GITPM_SOURCES": str(t.root / "lists/sources.txt")})

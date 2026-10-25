@@ -162,7 +162,7 @@ mod tests {
     fn link_entries_recover_at_every_commit_rename_without_restoring_author_bytes() {
         for renames in 0..3 {
             let dir = TempDir::new("link-recovery");
-            let author = Author::new(dir.join("author"), "acme/recovery");
+            let author = Author::new(dir.join("author"), "d23a35dc-fbc9-5f63-89f2-6a133fde3cd1");
             let root = dir.join("workspace");
             let manager = Manager::open(&root).unwrap();
             manager.link(author.source()).unwrap();
@@ -179,12 +179,13 @@ mod tests {
             drop(manager);
             let manager = Manager::open(&root).unwrap();
             assert!(
-                manager.state().unwrap().packages["acme/recovery"]
+                manager.state().unwrap().packages["d23a35dc-fbc9-5f63-89f2-6a133fde3cd1"]
                     .link()
                     .is_some()
             );
             assert_eq!(
-                fs::read_to_string(root.join("dist/acme/recovery/live.txt")).unwrap(),
+                fs::read_to_string(root.join("dist/d23a35dc-fbc9-5f63-89f2-6a133fde3cd1/live.txt"))
+                    .unwrap(),
                 "external edit after journal"
             );
             assert!(!root.join(txn::DIR).exists());
@@ -198,7 +199,8 @@ mod tests {
         for removing in [false, true] {
             for renames in 0..2 {
                 let dir = TempDir::new("link-dangling-recovery");
-                let author = Author::new(dir.join("author"), "acme/recovery");
+                let author =
+                    Author::new(dir.join("author"), "d23a35dc-fbc9-5f63-89f2-6a133fde3cd1");
                 let root = dir.join("workspace");
                 let manager = Manager::open(&root).unwrap();
                 if removing {
@@ -206,7 +208,9 @@ mod tests {
                 }
                 txn::CRASH_AFTER.with(|c| c.set(Some(renames)));
                 let failed = if removing {
-                    manager.uninstall("acme/recovery", &[], true).map(|_| ())
+                    manager
+                        .uninstall("d23a35dc-fbc9-5f63-89f2-6a133fde3cd1", &[], true)
+                        .map(|_| ())
                 } else {
                     manager.link(author.source()).map(|_| ())
                 };
@@ -222,11 +226,12 @@ mod tests {
                         .state()
                         .unwrap()
                         .packages
-                        .contains_key("acme/recovery"),
+                        .contains_key("d23a35dc-fbc9-5f63-89f2-6a133fde3cd1"),
                     !removing
                 );
                 assert_eq!(
-                    fs::symlink_metadata(root.join("dist/acme/recovery")).is_ok(),
+                    fs::symlink_metadata(root.join("dist/d23a35dc-fbc9-5f63-89f2-6a133fde3cd1"))
+                        .is_ok(),
                     !removing
                 );
                 assert_eq!(
@@ -241,19 +246,26 @@ mod tests {
     #[test]
     fn uncommitted_staged_links_are_discarded_without_following_them() {
         let dir = TempDir::new("link-uncommitted");
-        let author = Author::new(dir.join("author"), "acme/recovery");
+        let author = Author::new(dir.join("author"), "d23a35dc-fbc9-5f63-89f2-6a133fde3cd1");
         let root = dir.join("workspace");
         let manager = Manager::open(&root).unwrap();
         let state = fs::read(root.join("state.json")).unwrap();
         {
             let mut transaction = Txn::begin(&root).unwrap();
             transaction
-                .deploy_link("acme/recovery", &Path::new(author.source()).join("dist"))
+                .deploy_link(
+                    "d23a35dc-fbc9-5f63-89f2-6a133fde3cd1",
+                    &Path::new(author.source()).join("dist"),
+                )
                 .unwrap();
             // Failure before the journal: dropping it cleans only staged entries.
         }
         assert_eq!(fs::read(root.join("state.json")).unwrap(), state);
-        assert!(!root.join("dist/acme/recovery").exists());
+        assert!(
+            !root
+                .join("dist/d23a35dc-fbc9-5f63-89f2-6a133fde3cd1")
+                .exists()
+        );
         assert!(Path::new(author.source()).join("dist").is_dir());
         drop(manager);
         let _again = Manager::open(&root).unwrap();

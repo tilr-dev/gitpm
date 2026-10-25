@@ -11,8 +11,8 @@ import json
 
 from gitpmtest import T, case
 
-ID = "dan/hello"
-REPO = "/fx/repos/dan/hello"
+ID = "3dce1568-569c-5b53-9321-37185e751947"
+REPO = "/fx/repos/3dce1568-569c-5b53-9321-37185e751947"
 OPT = "cli/option-validation"
 # Every command of `gitpm --help` (main.rs COMMANDS).
 COMMANDS = ["install", "install-catalog", "list", "check", "update", "rollback", "enable", "disable", "forget",
@@ -44,7 +44,7 @@ def usage_case(name: str, doc: str, argv, needle: str, spec: str):
 
 for _name, _doc, _argv, _needle, _spec in [
     # 1. flags on the wrong command
-    ("ref_with_fork", "1. --ref with fork", ["fork", ID, "--ns", "mine", "--into", "/fx/forked", "--ref", f"v0.1.0"],
+    ("ref_with_fork", "1. --ref with fork", ["fork", ID, "--into", "/fx/forked", "--ref", f"v0.1.0"],
      "--ref is not valid for fork", f"{OPT}#misplaced-flag"),
     ("version_with_install", "1. --version with install", ["install", REPO, "--version", "0.1.0"],
      "--version is not valid for install", f"{OPT}#misplaced-flag"),
@@ -56,11 +56,11 @@ for _name, _doc, _argv, _needle, _spec in [
      "--force is only valid with uninstall/disable/enable/install/install-catalog/forget", f"{OPT}#misplaced-flag"),
     ("force_with_list", "1. --force with list", ["list", "--force"],
      "--force is only valid with uninstall/disable/enable/install/install-catalog/forget", f"{OPT}#misplaced-flag"),
-    ("with_without_replace", "1. --with outside replace", ["update", ID, "--with", "dan/other"],
+    ("with_without_replace", "1. --with outside replace", ["update", ID, "--with", "95d14dc8-6dfc-5022-9fd1-7146ee6aee58"],
      "--with requires replace/replace-check/replace-resolve", f"{OPT}#misplaced-flag"),
     ("multi_with_install", "1. --multi outside init", ["install", REPO, "--multi"],
      "--multi/--no-release require init", f"{OPT}#misplaced-flag"),
-    ("package_with_init", "1. --package with init", ["init", "dan/x", "--into", "/fx/x", "--package", "dan/x"],
+    ("package_with_init", "1. --package with init", ["init", "6d082077-2279-5cc6-b47f-b78cd35cec24", "--into", "/fx/x", "--package", "6d082077-2279-5cc6-b47f-b78cd35cec24"],
      "--package requires install/download/commit/catalog register", f"{OPT}#misplaced-flag"),
     # 2. repeated / missing / unknown
     ("repeated_ref", "2. --ref a --ref b", ["update", ID, "--ref", "a", "--ref", "b"], "--ref given more than once", OPT),
@@ -91,7 +91,7 @@ def wrong_argument_count(t: T):
     failures = []
     for command in COMMANDS:
         arity = ARITY.get(command, 1)
-        mode = ["--with", "dan/provider"] if command in ("replace", "replace-check", "replace-resolve") else []
+        mode = ["--with", "661cc659-e3a3-507d-a04b-14fc4ecd8037"] if command in ("replace", "replace-check", "replace-resolve") else []
         attempts = [] if command == "fork" else [3 if command == "install" else arity + 1]
         if arity > 0:
             attempts.append(0)
@@ -130,12 +130,12 @@ def uninstall_flag_order_is_irrelevant(t: T):
 
 
 def v2_catalog(t: T, name: str, n: int):
-    """A catalog tree namespaces/dan/pNN with n package folders: n + 2 overview entries."""
+    """A catalog tree packages/dan/pNN with n package folders: n + 2 overview entries."""
     root = t.root / name
-    ns = root / "namespaces/dan"
+    ns = root / "packages/dan"
     ns.mkdir(parents=True)
-    (root / "catalog.json").write_text(json.dumps({"schema": 1, "directories": {"namespaces": "namespaces/"}}))
-    (root / "namespaces/catalog.json").write_text(json.dumps({"schema": 1, "directories": {"dan": "dan/"}}))
+    (root / "catalog.json").write_text(json.dumps({"schema": 1, "directories": {"packages": "packages/"}}))
+    (root / "packages/catalog.json").write_text(json.dumps({"schema": 1, "directories": {"dan": "dan/"}}))
     dirs = {}
     for i in range(n):
         name = f"p{i:02}"
@@ -151,7 +151,7 @@ def v2_catalog(t: T, name: str, n: int):
 def info_below_the_limit_has_no_hint(t: T):
     """6. A catalog with 39 entries (2 directories, 37 packages) lists all, without the hint."""
     out = t.gitpm_ok("--catalog", v2_catalog(t, "v2-39", 37), "info").out
-    t.has(out, "dan/p00", "dan/p36")
+    t.has(out, "92724468-66db-5077-be88-56afa6f224c0", "ddbfa64b-e7cd-50b9-b0c8-f1125478d883")
     t.lacks(out, "Overview limit")
 
 
@@ -159,15 +159,15 @@ def info_below_the_limit_has_no_hint(t: T):
 def info_at_the_limit_shows_hint(t: T):
     """6. 40 entries (38 packages) reach the limit: all 40 shown plus the truncation hint."""
     out = t.gitpm_ok("--catalog", v2_catalog(t, "v2-40", 38), "info").out
-    t.has(out, "dan/p00", "dan/p37", "Overview limit: 40 entries", "gitpm --catalog <branch location> catalog show")
+    t.has(out, "92724468-66db-5077-be88-56afa6f224c0", "2c5f11ee-66ae-5077-8396-2a6f7d6e4d03", "Overview limit: 40 entries", "gitpm --catalog <branch location> catalog show")
 
 
 @case(spec=["catalog/bounded-overview"])
 def info_v2_more_than_40_entries(t: T):
     """6. A catalog tree with 45 package folders is truncated with the hint."""
     out = t.gitpm_ok("--catalog", v2_catalog(t, "v2", 45), "info").out
-    t.has(out, "dan/p00", "Overview limit: 40 entries")
-    t.lacks(out, "dan/p44")
+    t.has(out, "92724468-66db-5077-be88-56afa6f224c0", "Overview limit: 40 entries")
+    t.lacks(out, "0a29f3d7-6007-54a1-a0c8-8e5b35643627")
 
 
 def tty(t: T, cmd: str, env: dict):

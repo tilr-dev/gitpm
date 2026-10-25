@@ -5,13 +5,13 @@ Installing an installed package again from the same source prints `ID already in
 ref or --dev) is appended when the source resolves to another revision. Another source for
 the same ID is still refused with `already_installed`.
 
-Fixtures: hello_installed (dan/hello 0.1.0 from /fx/repos/dan/hello), g1_ws_catalog
-(dan/hello 0.1.1 installed from the catalog, 0.2.0 available there).
+Fixtures: hello_installed (3dce1568-569c-5b53-9321-37185e751947 0.1.0 from /fx/repos/3dce1568-569c-5b53-9321-37185e751947), g1_ws_catalog
+(3dce1568-569c-5b53-9321-37185e751947 0.1.1 installed from the catalog, 0.2.0 available there).
 """
 
 from gitpmtest import T, case
 
-ID = "dan/hello"
+ID = "3dce1568-569c-5b53-9321-37185e751947"
 
 
 def noop(t: T, *args, out: str):
@@ -24,7 +24,7 @@ def noop(t: T, *args, out: str):
 
 @case(fixture="hello_installed", spec=["install-uninstall/install-is-idempotent-for-the-same-source#repeat-install"])
 def repeat_install_is_a_noop(t: T):
-    """Same source, no newer release: `dan/hello already installed (0.1.0)`, exit 0, nothing changes."""
+    """Same source, no newer release: `3dce1568-569c-5b53-9321-37185e751947 already installed (0.1.0)`, exit 0, nothing changes."""
     noop(t, "install", t.repo(ID), out=f"{ID} already installed (0.1.0)\n")
     # The same revision by tag asks for another mode (pinned): the hint names it.
     noop(t, "install", t.repo(ID), "--ref", f"v0.1.0",
@@ -53,7 +53,7 @@ def requested_ref_or_dev_is_named(t: T):
 @case(fixture="hello_installed", spec=["install-uninstall/same-id-from-another-source-is-refused#other-source"])
 def other_source_is_refused(t: T):
     """A clone of the repository elsewhere is another source: already_installed, nothing changes."""
-    mirror = t.root / "mirror/hello"
+    mirror = t.root / "790a24b3-6ad7-5a64-8632-0c229695164c"
     t.run("git", "clone", "-q", t.repo(ID), mirror, check=True)
     before = t.snap(t.ws, git=True)
     t.gitpm_err("install", mirror, kind="already_installed", contains=ID)

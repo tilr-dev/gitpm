@@ -6,15 +6,15 @@ from gitpmtest import T, fixture
 
 @fixture(requires=["catalog"], gitpm=True)
 def g1_ws_catalog(t: T):
-    """`catalog` plus dan/hello 0.1.1 installed from it into /fx/ws (an update to 0.2.0 is available)."""
-    t.gitpm_ok("install-catalog", "dan/hello", "--version", "0.1.1")
+    """`catalog` plus 3dce1568-569c-5b53-9321-37185e751947 0.1.1 installed from it into /fx/ws (an update to 0.2.0 is available)."""
+    t.gitpm_ok("install-catalog", "3dce1568-569c-5b53-9321-37185e751947", "--version", "0.1.1")
 
 
 @g1_ws_catalog.check
 def _(t: T):
-    p = t.package("dan/hello")
+    p = t.package("3dce1568-569c-5b53-9321-37185e751947")
     t.eq(p["current"]["version"], "0.1.1", "installed version")
-    t.eq(t.rev(t.clone("dan/hello")), p["current"]["commit"], "clone HEAD")
-    t.has((t.dist("dan/hello") / "index.js").read_text(), "dan/hello 0.1.1")
-    t.ok(t.catalog_index("dan/hello").is_file(), "catalog index of dan/hello")
+    t.eq(t.rev(t.clone("3dce1568-569c-5b53-9321-37185e751947")), p["current"]["commit"], "clone HEAD")
+    t.has((t.dist("3dce1568-569c-5b53-9321-37185e751947") / "index.js").read_text(), "3dce1568-569c-5b53-9321-37185e751947 0.1.1")
+    t.ok(t.catalog_index("3dce1568-569c-5b53-9321-37185e751947").is_file(), "catalog index of 3dce1568-569c-5b53-9321-37185e751947")
     t.has(t.gitpm_ok("check").out, "update available")

@@ -117,33 +117,23 @@ fn rewrite_dependencies(
 }
 
 impl Manager {
-    /// Fork one installed package as `NAMESPACE/<same name>`: [`Manager::fork_packages`]
+    /// Fork one installed package with a fresh UUID: [`Manager::fork_packages`]
     /// with one ID. Returns the fork repository.
-    pub fn fork_in_namespace(
-        &self,
-        id: &str,
-        destination: &Path,
-        namespace: &str,
-    ) -> Result<PathBuf> {
-        Ok(self.fork_packages(&[id], destination, namespace)?.path)
+    pub fn fork_into(&self, id: &str, destination: &Path) -> Result<PathBuf> {
+        Ok(self.fork_packages(&[id], destination)?.path)
     }
-    /// Fork installed packages of one repository into `namespace` (new IDs
-    /// `NAMESPACE/<same name>`) as the fork repository `destination`:
+    /// Fork installed packages of one repository with fresh UUIDs into `destination`.
     ///
     /// The destination must be a new folder outside the workspace. Clone the recorded
     /// source with history on a new `fork` branch, retaining submodule Git links.
     /// Installed packages start at their recorded revisions; local installation work
-    /// is ignored. Other packages start at the newest installed revision. All packages in the repository are renamed, including siblings
-    /// that are not installed; repository files and the package layout are preserved.
+    /// is ignored. Other packages start at the newest installed revision. All packages
+    /// in the repository receive fresh identities, including uninstalled siblings;
+    /// names, repository files and the package layout are preserved.
     /// Each manifest gets its new ID, `forkOf` and `replaces`; dependencies among
     /// packages forked together are rewritten. Nothing is tagged.
-    pub fn fork_packages(
-        &self,
-        ids: &[&str],
-        destination: &Path,
-        namespace: &str,
-    ) -> Result<PackageFork> {
-        self.fork_packages_with(ids, destination, namespace)
+    pub fn fork_packages(&self, ids: &[&str], destination: &Path) -> Result<PackageFork> {
+        self.fork_packages_with(ids, destination)
     }
 
     /// Absolute fork repository `destination`: refused with `..`, inside the workspace
@@ -195,17 +185,11 @@ impl Manager {
         Ok(destination)
     }
 
-    fn fork_packages_with(
-        &self,
-        ids: &[&str],
-        destination: &Path,
-        namespace: &str,
-    ) -> Result<PackageFork> {
+    fn fork_packages_with(&self, ids: &[&str], destination: &Path) -> Result<PackageFork> {
         ensure!(!ids.is_empty(), InvalidArgument, "no package to fork");
         for id in ids {
             valid_id(id)?;
         }
-        identity::valid_part(namespace)?;
         let unique: BTreeSet<&str> = ids.iter().copied().collect();
         ensure!(
             unique.len() == ids.len(),
@@ -282,33 +266,20 @@ impl Manager {
             let clone = &destination;
             let mut sources = Vec::new();
             let mut new_ids: BTreeSet<String> = BTreeSet::new();
-            let mut qualify = |id: &str| -> Result<String> {
-                let new_id = identity::qualified(namespace, id.rsplit('/').next().unwrap())?;
+            let mut fresh_id = |original: &str| -> Result<String> {
+                let id = identity::new_id()?;
                 ensure!(
-                    new_id != id,
-                    InvalidArgument,
-                    "fork needs a different namespace; pass another namespace"
+                    id != original
+                        && !state.packages.contains_key(&id)
+                        && !state.forgotten.contains_key(&id)
+                        && new_ids.insert(id.clone()),
+                    Workspace,
+                    "generated fork UUID collides with an existing package"
                 );
-                ensure!(
-                    !new_ids.iter().any(|other| ids_collide(other, &new_id))
-                        && new_ids.insert(new_id.clone()),
-                    InvalidArgument,
-                    "two packages would get the same fork ID {new_id}"
-                );
-                ensure!(
-                    !ids_collide(&new_id, id)
-                        && !state
-                            .packages
-                            .keys()
-                            .chain(state.forgotten.keys())
-                            .any(|other| ids_collide(other, &new_id)),
-                    InvalidArgument,
-                    "fork ID {new_id} differs only in letter case from an installed package"
-                );
-                Ok(new_id)
+                Ok(id)
             };
             for (id, p) in &installed {
-                let new_id = qualify(id)?;
+                let new_id = fresh_id(id)?;
                 let commit = p.current.commit.clone();
                 if transport::require_object(
                     clone,
@@ -345,7 +316,7 @@ impl Manager {
                 if sources.iter().any(|s| &s.original == id) {
                     continue;
                 }
-                let new_id = qualify(id)?;
+                let new_id = fresh_id(id)?;
                 sources.push(Source {
                     original: id.clone(),
                     original_source: first_installed.source.clone(),
@@ -626,49 +597,85 @@ mod tests {
     #[test]
     fn a_dependency_on_an_original_and_its_fork_is_refused_in_any_key_order() {
         // B9: the fork ID sorts after (zz) and before (aa) the original.
-        for namespace in ["zz", "aa"] {
-            let fork = format!("{namespace}/theme");
-            let forks =
-                BTreeMap::from([("tilr/theme".to_owned(), (fork.clone(), "1.0.0".to_owned()))]);
-            let mut m =
-                with_dependencies("me/panel", &[("tilr/theme", "^1"), (fork.as_str(), "^2")]);
+        for fork in [
+            "ffffffff-ffff-4fff-bfff-ffffffffffff",
+            "00000000-0000-4000-8000-000000000000",
+        ] {
+            let fork = fork.to_owned();
+            let forks = BTreeMap::from([(
+                "f851f609-bb81-52d6-bfef-33798624782c".to_owned(),
+                (fork.clone(), "1.0.0".to_owned()),
+            )]);
+            let mut m = with_dependencies(
+                "09e5894a-6e33-5a1e-91e0-730a2f8cb569",
+                &[
+                    ("f851f609-bb81-52d6-bfef-33798624782c", "^1"),
+                    (fork.as_str(), "^2"),
+                ],
+            );
             let mut rewrites = Vec::new();
             let error = rewrite_dependencies(&mut m, &forks, &mut rewrites).unwrap_err();
-            assert_eq!(error.kind(), "invalid_manifest", "{namespace}");
+            assert_eq!(error.kind(), "invalid_manifest", "{fork}");
             assert!(
-                error
-                    .to_string()
-                    .contains(&format!("depends on both tilr/theme and its fork {fork}")),
+                error.to_string().contains(&format!(
+                    "depends on both f851f609-bb81-52d6-bfef-33798624782c and its fork {fork}"
+                )),
                 "{error}"
             );
         }
         // Two originals of one fork (forkOf and replaces of an existing package).
         let forks = BTreeMap::from([
             (
-                "a/theme".to_owned(),
-                ("me/theme".to_owned(), "1.0.0".to_owned()),
+                "a4f3d15d-34c4-5a54-ac52-07e6c2cbd6bd".to_owned(),
+                (
+                    "d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50".to_owned(),
+                    "1.0.0".to_owned(),
+                ),
             ),
             (
-                "b/theme".to_owned(),
-                ("me/theme".to_owned(), "1.0.0".to_owned()),
+                "1ee84ec0-48e6-51c7-93bd-7f4d43f8275c".to_owned(),
+                (
+                    "d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50".to_owned(),
+                    "1.0.0".to_owned(),
+                ),
             ),
         ]);
-        let mut m = with_dependencies("me/panel", &[("a/theme", "^1"), ("b/theme", "^1")]);
+        let mut m = with_dependencies(
+            "09e5894a-6e33-5a1e-91e0-730a2f8cb569",
+            &[
+                ("a4f3d15d-34c4-5a54-ac52-07e6c2cbd6bd", "^1"),
+                ("1ee84ec0-48e6-51c7-93bd-7f4d43f8275c", "^1"),
+            ],
+        );
         let error = rewrite_dependencies(&mut m, &forks, &mut Vec::new()).unwrap_err();
         assert!(
-            error.to_string().contains("both forked as me/theme"),
+            error
+                .to_string()
+                .contains("both forked as d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50"),
             "{error}"
         );
         // The plain case: rewritten, with a new requirement when needed.
         let forks = BTreeMap::from([(
-            "tilr/theme".to_owned(),
-            ("me/theme".to_owned(), "2.0.0".to_owned()),
+            "f851f609-bb81-52d6-bfef-33798624782c".to_owned(),
+            (
+                "d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50".to_owned(),
+                "2.0.0".to_owned(),
+            ),
         )]);
-        let mut m = with_dependencies("me/panel", &[("tilr/theme", "^1"), ("x/y", "*")]);
+        let mut m = with_dependencies(
+            "09e5894a-6e33-5a1e-91e0-730a2f8cb569",
+            &[
+                ("f851f609-bb81-52d6-bfef-33798624782c", "^1"),
+                ("7d3c44ac-286f-5db5-8c90-ecfa368e5b4d", "*"),
+            ],
+        );
         let mut rewrites = Vec::new();
         rewrite_dependencies(&mut m, &forks, &mut rewrites).unwrap();
-        assert_eq!(m.dependencies["me/theme"], "^2.0.0");
-        assert_eq!(m.dependencies["x/y"], "*");
+        assert_eq!(
+            m.dependencies["d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50"],
+            "^2.0.0"
+        );
+        assert_eq!(m.dependencies["7d3c44ac-286f-5db5-8c90-ecfa368e5b4d"], "*");
         assert_eq!(rewrites[0].new_requirement.as_deref(), Some("^2.0.0"));
     }
 }

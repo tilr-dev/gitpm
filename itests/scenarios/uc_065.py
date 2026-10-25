@@ -21,7 +21,7 @@ from pathlib import Path
 
 from gitpmtest import R, T, case
 
-ID = "dan/hello"
+ID = "3dce1568-569c-5b53-9321-37185e751947"
 
 
 def symlinked_plugin(t: T, id: str, links: dict[str, str], version: str = "0.1.0") -> str:
@@ -29,7 +29,7 @@ def symlinked_plugin(t: T, id: str, links: dict[str, str], version: str = "0.1.0
     if not repo.exists():
         (repo / "dist").mkdir(parents=True)
         t.git(repo, "init", "-q", "-b", "main")
-    t.write(repo, {"plugin.json": json.dumps({"id": id, "version": version}) + "\n",
+    t.write(repo, {"plugin.json": json.dumps({"id": id, "name": "fixture", "version": version}) + "\n",
                    "dist/index.js": f"export const v = '{id} {version}';\n", "README.md": "readme\n"})
     for path, target in links.items():
         if os.path.lexists(repo / path):
@@ -57,30 +57,30 @@ def timed(t: T, *args, limit: float, env=None) -> R:
 def outside_dist_symlink_does_not_break_any_operation(t: T):
     """1. `link -> README.md` at the repo root: install keeps it; disable, enable,
     update and uninstall --force work for this package and for an unrelated one."""
-    symlinked_plugin(t, "dan/linky", {"link": "README.md"})
-    t.gitpm_ok("install", t.repo("dan/linky"))
-    link = t.clone("dan/linky") / "link"
+    symlinked_plugin(t, "fc8bc03a-1524-54e6-9111-f57fd8ce96c2", {"link": "README.md"})
+    t.gitpm_ok("install", t.repo("fc8bc03a-1524-54e6-9111-f57fd8ce96c2"))
+    link = t.clone("fc8bc03a-1524-54e6-9111-f57fd8ce96c2") / "link"
     t.ok(link.is_symlink() and os.readlink(link) == "README.md", "symlink kept in the clone")
-    t.eq(sorted(p.name for p in t.dist("dan/linky").iterdir()), ["index.js"], "dist without the link")
-    symlinked_plugin(t, "dan/linky", {"link": "README.md"}, version="0.2.0")
+    t.eq(sorted(p.name for p in t.dist("fc8bc03a-1524-54e6-9111-f57fd8ce96c2").iterdir()), sorted(["index.js"]), "dist without the link")
+    symlinked_plugin(t, "fc8bc03a-1524-54e6-9111-f57fd8ce96c2", {"link": "README.md"}, version="0.2.0")
     t.release(ID, "0.1.1")
-    for id in ["dan/linky", ID]:
+    for id in ["fc8bc03a-1524-54e6-9111-f57fd8ce96c2", ID]:
         t.gitpm_ok("disable", id)
         t.gitpm_ok("enable", id)
         t.gitpm_ok("update", id)
-    t.eq((t.package("dan/linky")["current"]["version"], t.package(ID)["current"]["version"]), ("0.2.0", "0.1.1"), "both updated")
+    t.eq((t.package("fc8bc03a-1524-54e6-9111-f57fd8ce96c2")["current"]["version"], t.package(ID)["current"]["version"]), ("0.2.0", "0.1.1"), "both updated")
     t.ok(link.is_symlink() and os.readlink(link) == "README.md", "symlink kept through update")
-    for id in ["dan/linky", ID]:
+    for id in ["fc8bc03a-1524-54e6-9111-f57fd8ce96c2", ID]:
         t.gitpm_ok("uninstall", id, "--force")
         t.not_installed(id)
 
 
 @case(fixture="hello_installed", spec=["package-manifest/package-folder-contents"])
 def symlink_inside_dist_is_refused_at_install(t: T):
-    symlinked_plugin(t, "dan/alias", {"dist/alias.js": "index.js"})
+    symlinked_plugin(t, "5f85b937-f3a5-549c-82d3-736e8d3eff88", {"dist/alias.js": "index.js"})
     before = t.snap(t.ws)
-    t.gitpm_err("install", t.repo("dan/alias"), kind="unsupported", contains="symlinks are not supported")
-    t.not_installed("dan/alias")
+    t.gitpm_err("install", t.repo("5f85b937-f3a5-549c-82d3-736e8d3eff88"), kind="unsupported", contains="symlinks are not supported")
+    t.not_installed("5f85b937-f3a5-549c-82d3-736e8d3eff88")
     t.same(before, "workspace")
 
 
@@ -198,7 +198,7 @@ class Huge:
 
 @case(fixture="catalog", spec=["catalog/catalog-locations-and-transport#plain-http-to-a-remote-host"])
 def non_loopback_http_catalog_is_refused(t: T):
-    t.gitpm_ok("install", t.repo("dan/num"))  # makes check read the catalog
+    t.gitpm_ok("install", t.repo("2190eee8-4be5-5a91-81d2-6ca95c1e61d0"))  # makes check read the catalog
     before = t.snap(t.ws)
     for url in ["http://192.0.2.10", "http://pkg.example.invalid/catalog.json", "http://127.0.0.1.example.invalid"]:
         for args in [("install-catalog", ID), ("check",), ("info",), ("catalog",)]:
@@ -240,7 +240,7 @@ def redirect_is_not_followed(t: T):
 @case(fixture="catalog", spec=["catalog/catalog-locations-and-transport"])
 def oversized_catalog_response_is_refused(t: T):
     """50 MB announced by Content-Length for the package index: refused before download."""
-    huge = Huge(t.catalog, "/namespaces/dan/hello/plugin.json", announce=True)
+    huge = Huge(t.catalog, "/packages/3dce1568-569c-5b53-9321-37185e751947/plugin.json", announce=True)
     r = timed(t, "--catalog", huge.url, "install-catalog", ID, limit=30)
     t.ok(r.code != 0, "refused")
     t.has(r.err, "Error kind: http", "Maximum file size exceeded")
@@ -251,7 +251,7 @@ def oversized_catalog_response_is_refused(t: T):
 def oversized_streamed_catalog_response_is_refused(t: T):
     """50 MB without Content-Length (streamed until close): the 16 MiB limit must still
     refuse it."""
-    huge = Huge(t.catalog, "/namespaces/dan/hello/plugin.json", announce=False)
+    huge = Huge(t.catalog, "/packages/3dce1568-569c-5b53-9321-37185e751947/plugin.json", announce=False)
     r = timed(t, "--catalog", huge.url, "install-catalog", ID, limit=30)
     print(f"  server sent {huge.sent} bytes")
     t.ok(r.code != 0, f"a {Huge.SIZE // 2**20} MiB response is refused (16 MiB limit)")
@@ -268,12 +268,12 @@ def no_hashes(t: T, change):
     t.not_installed(ID)
 
 
-@case(fixture="catalog", spec=["catalog/release-record#namespaced-release-without-hashes"])
+@case(fixture="catalog", spec=["catalog/release-record#uuid-release-without-hashes"])
 def namespaced_release_with_empty_files_is_refused(t: T):
     no_hashes(t, lambda r: r.update(files={}))
 
 
-@case(fixture="catalog", spec=["catalog/release-record#namespaced-release-without-hashes"])
+@case(fixture="catalog", spec=["catalog/release-record#uuid-release-without-hashes"])
 def namespaced_release_without_files_is_refused(t: T):
     no_hashes(t, lambda r: r.pop("files"))
 
@@ -366,9 +366,9 @@ def stage_and_backup_neighbours_are_never_touched(t: T):
     stage, backup = neighbours(t)
     before = t.snap(stage, backup, git=True)
     t.release(ID, "0.1.1")
-    t.new_package("dan/other", "0.1.0")
-    for args in [("install", t.repo("dan/other")), ("update", ID), ("rollback", ID), ("disable", ID), ("enable", ID),
-                 ("forget", ID), ("restore", ID), ("uninstall", "dan/other", "--force"), ("list",)]:
+    t.new_package("95d14dc8-6dfc-5022-9fd1-7146ee6aee58", "0.1.0")
+    for args in [("install", t.repo("95d14dc8-6dfc-5022-9fd1-7146ee6aee58")), ("update", ID), ("rollback", ID), ("disable", ID), ("enable", ID),
+                 ("forget", ID), ("restore", ID), ("uninstall", "95d14dc8-6dfc-5022-9fd1-7146ee6aee58", "--force"), ("list",)]:
         t.gitpm_ok(*args)
     t.same(before, ".ws.stage and .ws.backup")
 
@@ -377,12 +377,15 @@ def stage_and_backup_neighbours_are_never_touched(t: T):
 def fork_into_stage_or_backup_folder_works(t: T):
     stage, backup = neighbours(t)
     kept = t.snap(backup, git=True)
-    t.gitpm_ok("fork", ID, "--ns", "mine", "--into", backup / "myfork")
+    t.gitpm_ok("fork", ID, "--into", backup / "myfork")
     import shutil
     shutil.rmtree(stage)
-    t.gitpm_ok("fork", ID, "--ns", "other", "--into", stage)
-    for path, id in [(backup / "myfork", "mine/hello"), (stage, "other/hello")]:
-        t.eq(json.loads((path / "plugin.json").read_text())["id"], id, f"fork at {path.name}")
+    t.gitpm_ok("fork", ID, "--into", stage)
+    fork_ids = []
+    for path in [backup / "myfork", stage]:
+        id = t.manifest_id(path)
+        t.ok(id != ID and id not in fork_ids, f"fresh fork UUID at {path.name}")
+        fork_ids.append(id)
         t.gitpm_ok("install", path, "--dev")
         t.eq(t.package(id)["source"], str(path), f"{id} installed from {path}")
     after = t.snap(backup, git=True)
@@ -407,8 +410,8 @@ def slow_env(t: T) -> dict:
 
 
 def through_two_spellings(t: T, first: Path, second: Path):
-    t.new_package("dan/slow", "0.1.0")
-    a = subprocess.Popen(["gitpm", "--root", str(first), "install", str(t.repo("dan/slow"))], cwd=t.root,
+    t.new_package("e831df69-dae1-5d20-a2d4-b5a63a849bdb", "0.1.0")
+    a = subprocess.Popen(["gitpm", "--root", str(first), "install", str(t.repo("e831df69-dae1-5d20-a2d4-b5a63a849bdb"))], cwd=t.root,
                          env=slow_env(t), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     deadline = time.monotonic() + 10
     while not (t.ws / ".pm-txn").exists() and time.monotonic() < deadline:
@@ -420,7 +423,7 @@ def through_two_spellings(t: T, first: Path, second: Path):
     t.eq(a.returncode, 0, "first process finished")
     t.gitpm_ok("--root", second, "disable", ID)
     s = t.state()["packages"]
-    t.ok("dan/slow" in s and s[ID]["enabled"] is False, "both mutations kept (no lost update)")
+    t.ok("e831df69-dae1-5d20-a2d4-b5a63a849bdb" in s and s[ID]["enabled"] is False, "both mutations kept (no lost update)")
 
 
 @case(fixture="hello_installed", spec=["transactions-locking/workspace-lock"])

@@ -1,6 +1,6 @@
 """UC-010: Direct install by tag and commit (P0).
 
-Fixture hello_releases: dan/hello releases 0.1.0, 0.1.1, 0.2.0 (distinct dist payloads)
+Fixture hello_releases: 3dce1568-569c-5b53-9321-37185e751947 releases 0.1.0, 0.1.1, 0.2.0 (distinct dist payloads)
 and an untagged commit on top of main.
 """
 
@@ -8,7 +8,7 @@ import json
 
 from gitpmtest import T, case
 
-ID = "dan/hello"
+ID = "3dce1568-569c-5b53-9321-37185e751947"
 
 
 def blob(t: T, repo, ref: str, path: str = "dist/index.js") -> str:
@@ -46,7 +46,7 @@ def install_by_scoped_tag(t: T):
     source = t.snap(t.repo(ID), git=True)
     t.gitpm_ok("install", t.repo(ID), "--ref", f"v0.1.1")
     check_installed(t, t.ws, f"v0.1.1")
-    t.has((t.dist(ID) / "index.js").read_text(), "dan/hello 0.1.1")
+    t.has((t.dist(ID) / "index.js").read_text(), "3dce1568-569c-5b53-9321-37185e751947 0.1.1")
     t.same(source, "author repository")
 
 
@@ -103,7 +103,7 @@ def same_id_from_another_source_is_rejected(t: T):
     """The same ID from another source (a mirror clone) fails with already_installed; state untouched."""
     t.gitpm_ok("install", t.repo(ID), "--ref", f"v0.1.0")
     before = t.snap(t.ws, git=True)
-    mirror = t.root / "mirror/hello"
+    mirror = t.root / "790a24b3-6ad7-5a64-8632-0c229695164c"
     t.run("git", "clone", "-q", t.repo(ID), mirror, check=True)
     t.gitpm_err("install", mirror, "--ref", f"v0.1.1", kind="already_installed", contains=ID)
     t.same(before, "workspace")

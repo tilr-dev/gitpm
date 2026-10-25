@@ -234,7 +234,7 @@ def real_custom_ssh_install(t: T, variable: str):
     log = t.root / "ssh.log"
     helper.write_text('#!/bin/sh\ncase "$1" in -G) exit 1;; esac\nprintf "%s\\n" "$*" >> "$GITPMT_SSH_LOG"\nexec git-upload-pack "$GITPMT_SSH_REPO"\n')
     helper.chmod(0o755)
-    env = {variable: str(helper), "GITPMT_SSH_LOG": str(log), "GITPMT_SSH_REPO": str(t.repo("dan/hello"))}
+    env = {variable: str(helper), "GITPMT_SSH_LOG": str(log), "GITPMT_SSH_REPO": str(t.repo("3dce1568-569c-5b53-9321-37185e751947"))}
     if variable == "GIT_SSH_COMMAND":
         env["GIT_SSH"] = "/nonexistent-must-not-be-used"
     source = "git@example.invalid:repo.git"
@@ -243,8 +243,8 @@ def real_custom_ssh_install(t: T, variable: str):
     t.ok(before > 0, "auth uses SSH helper")
     t.gitpm_ok("install", source, env=env)
     t.ok(len(log.read_text().splitlines()) > before, "install uses SSH helper")
-    t.eq(t.package("dan/hello")["source"], source, "recorded source")
-    t.ok(t.dist("dan/hello").is_dir(), "package deployed")
+    t.eq(t.package("3dce1568-569c-5b53-9321-37185e751947")["source"], source, "recorded source")
+    t.ok(t.dist("3dce1568-569c-5b53-9321-37185e751947").is_dir(), "package deployed")
 
 
 @case(fixture="catalog", spec=["git-safety/one-subprocess-boundary#ssh-setting-from-the-environment"])

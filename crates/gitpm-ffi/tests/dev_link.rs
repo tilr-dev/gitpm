@@ -17,7 +17,7 @@ fn link_records_discovery_results_and_removal_cross_ffi() {
     fs::create_dir_all(package.join("output")).unwrap();
     fs::write(
         package.join("plugin.json"),
-        r#"{"id":"acme/ffi","version":"1.0.0","dist":"output","title":"Live title"}"#,
+        r#"{"id":"4839e6dd-69db-53e5-bfb8-fccf30739e34","name": "fixture", "version":"1.0.0","dist":"output","title":"Live title"}"#,
     )
     .unwrap();
     fs::write(package.join("output/live.txt"), "first").unwrap();
@@ -34,7 +34,7 @@ fn link_records_discovery_results_and_removal_cross_ffi() {
             .to_string_lossy()
     );
     let state = read_state(root.clone()).unwrap();
-    let record = &state.packages["acme/ffi"];
+    let record = &state.packages["4839e6dd-69db-53e5-bfb8-fccf30739e34"];
     assert!(record.current.is_none() && record.previous.is_none() && record.clone.is_none());
     assert_eq!(record.version.as_deref(), Some("1.0.0"));
     assert!(matches!(state.resolved[0].mode, Mode::Link { .. }));
@@ -43,7 +43,11 @@ fn link_records_discovery_results_and_removal_cross_ffi() {
     assert!(matches!(row.mode, Mode::Link { .. }));
     assert!(row.problem.is_some());
     let result = manager
-        .update("acme/ffi".into(), Target::Release, false)
+        .update(
+            "4839e6dd-69db-53e5-bfb8-fccf30739e34".into(),
+            Target::Release,
+            false,
+        )
         .unwrap();
     assert!(!result.changed);
     let Some(UnchangedReason::DevLinked { availability, .. }) = result.unchanged_reason else {
@@ -59,22 +63,34 @@ fn link_records_discovery_results_and_removal_cross_ffi() {
         Some(UnchangedReason::DevLinked { .. })
     ));
     assert!(matches!(
-        manager.rollback("acme/ffi".into()),
+        manager.rollback("4839e6dd-69db-53e5-bfb8-fccf30739e34".into()),
         Err(PmError::NoPreviousVersion { .. })
     ));
-    manager.disable("acme/ffi".into(), false).unwrap();
-    manager.enable("acme/ffi".into(), false).unwrap();
-    manager.forget("acme/ffi".into(), false).unwrap();
-    let restored = manager.restore("acme/ffi".into()).unwrap();
+    manager
+        .disable("4839e6dd-69db-53e5-bfb8-fccf30739e34".into(), false)
+        .unwrap();
+    manager
+        .enable("4839e6dd-69db-53e5-bfb8-fccf30739e34".into(), false)
+        .unwrap();
+    manager
+        .forget("4839e6dd-69db-53e5-bfb8-fccf30739e34".into(), false)
+        .unwrap();
+    let restored = manager
+        .restore("4839e6dd-69db-53e5-bfb8-fccf30739e34".into())
+        .unwrap();
     assert!(matches!(restored.mode, Mode::Link { .. }));
-    let plan = manager.uninstall_plan("acme/ffi".into()).unwrap();
+    let plan = manager
+        .uninstall_plan("4839e6dd-69db-53e5-bfb8-fccf30739e34".into())
+        .unwrap();
     assert!(plan.lost_work.is_empty());
     assert!(
         plan.deletes
             .iter()
             .all(|p| !p.starts_with(package.to_str().unwrap()))
     );
-    manager.uninstall("acme/ffi".into(), vec![], true).unwrap();
+    manager
+        .uninstall("4839e6dd-69db-53e5-bfb8-fccf30739e34".into(), vec![], true)
+        .unwrap();
     assert_eq!(
         fs::read_to_string(package.join("output/live.txt")).unwrap(),
         "first"

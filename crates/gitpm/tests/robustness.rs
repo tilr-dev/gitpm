@@ -1,6 +1,6 @@
 mod common;
 use common::clone_path;
-use gitpm::{Manager, scaffold};
+use gitpm::Manager;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -36,9 +36,11 @@ impl Fixture {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir_all(&dir).unwrap();
-        let author = scaffold::init(&dir.join("module"), "vendor", "module")
-            .unwrap()
-            .repo;
+        let author = common::author(
+            &dir.join("module"),
+            "cc6c3e20-6fe0-58c4-944e-991c2a154a47",
+            "module",
+        );
         let root = dir.join("workspace");
         Self { dir, author, root }
     }
@@ -78,24 +80,35 @@ fn ignored_work_survives_rejected_operations_and_fork() {
     let f = Fixture::new();
     let m = f.installed();
     f.release("0.1.1");
-    m.update("vendor/module").unwrap();
+    m.update("cc6c3e20-6fe0-58c4-944e-991c2a154a47").unwrap();
     let repo = clone_path(&f.root, &f.author);
     fs::create_dir_all(repo.join("node_modules")).unwrap();
     fs::write(repo.join("node_modules/private.txt"), "irreplaceable").unwrap();
     let before = state(&m);
     let head = git(&repo, &["rev-parse", "HEAD"]);
-    let payload = fs::read(f.root.join("dist/vendor/module/index.js")).unwrap();
-    assert!(m.update("vendor/module").is_err());
-    assert!(m.rollback("vendor/module").is_err());
-    assert!(m.uninstall("vendor/module", &[], false).is_err());
+    let payload = fs::read(
+        f.root
+            .join("dist/cc6c3e20-6fe0-58c4-944e-991c2a154a47/index.js"),
+    )
+    .unwrap();
+    assert!(m.update("cc6c3e20-6fe0-58c4-944e-991c2a154a47").is_err());
+    assert!(m.rollback("cc6c3e20-6fe0-58c4-944e-991c2a154a47").is_err());
+    assert!(
+        m.uninstall("cc6c3e20-6fe0-58c4-944e-991c2a154a47", &[], false)
+            .is_err()
+    );
     assert_eq!(state(&m), before);
     assert_eq!(git(&repo, &["rev-parse", "HEAD"]), head);
     assert_eq!(
-        fs::read(f.root.join("dist/vendor/module/index.js")).unwrap(),
+        fs::read(
+            f.root
+                .join("dist/cc6c3e20-6fe0-58c4-944e-991c2a154a47/index.js")
+        )
+        .unwrap(),
         payload
     );
     let fork = m
-        .fork_in_namespace("vendor/module", &f.dir.join("fork"), "mine")
+        .fork_into("cc6c3e20-6fe0-58c4-944e-991c2a154a47", &f.dir.join("fork"))
         .unwrap();
     assert!(!fork.join("node_modules/private.txt").exists());
     assert_eq!(
@@ -120,8 +133,14 @@ fn fork_records_source_revision_and_immediate_parent() {
     git(&repo, &["add", "staged.txt"]);
     let status = git(&repo, &["status", "--porcelain"]);
     let fork = m
-        .fork_in_namespace("vendor/module", &f.dir.join("fork"), "mine")
+        .fork_into("cc6c3e20-6fe0-58c4-944e-991c2a154a47", &f.dir.join("fork"))
         .unwrap();
+    let generated_0: String =
+        serde_json::from_slice::<serde_json::Value>(&fs::read(fork.join("plugin.json")).unwrap())
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
     let manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(fork.join("plugin.json")).unwrap()).unwrap();
     assert_eq!(manifest["forkOf"]["commit"], installed);
@@ -145,11 +164,11 @@ fn fork_records_source_revision_and_immediate_parent() {
     )
     .unwrap();
     let second = m
-        .fork_in_namespace("mine/module", &f.dir.join("second"), "third")
+        .fork_into(generated_0.as_str(), &f.dir.join("second"))
         .unwrap();
     let manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(second.join("plugin.json")).unwrap()).unwrap();
-    assert_eq!(manifest["forkOf"]["id"], "mine/module");
+    assert_eq!(manifest["forkOf"]["id"], generated_0.as_str());
     assert_eq!(
         manifest["forkOf"]["commit"],
         git(&fork, &["rev-parse", "HEAD"])
@@ -184,13 +203,23 @@ fn fork_clones_source_submodules_and_installs_only_committed_dist() {
     git(&f.author, &["commit", "-qm", "source and submodule"]);
     git(&f.author, &["tag", "-f", "v0.1.0"]);
     let m = f.installed();
-    let original_dist = fs::read(f.root.join("dist/vendor/module/index.js")).unwrap();
+    let original_dist = fs::read(
+        f.root
+            .join("dist/cc6c3e20-6fe0-58c4-944e-991c2a154a47/index.js"),
+    )
+    .unwrap();
     let before = state(&m);
     // Fork needs only recorded metadata and the source, even without an installed clone.
     fs::remove_dir_all(clone_path(&f.root, &f.author)).unwrap();
     let fork = m
-        .fork_in_namespace("vendor/module", &f.dir.join("fork"), "mine")
+        .fork_into("cc6c3e20-6fe0-58c4-944e-991c2a154a47", &f.dir.join("fork"))
         .unwrap();
+    let generated_0: String =
+        serde_json::from_slice::<serde_json::Value>(&fs::read(fork.join("plugin.json")).unwrap())
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
     assert!(fork.join("src/main.js").is_file());
     assert!(
         git(&fork, &["ls-tree", "HEAD", "src/vendor"])
@@ -218,42 +247,54 @@ fn fork_clones_source_submodules_and_installs_only_committed_dist() {
     )
     .unwrap();
     assert_eq!(
-        fs::read(f.root.join("dist/mine/module/index.js")).unwrap(),
+        fs::read(f.root.join(format!("dist/{generated_0}/index.js").as_str())).unwrap(),
         original_dist
     );
-    assert!(!f.root.join("dist/mine/module/src").exists());
+    assert!(
+        !f.root
+            .join(format!("dist/{generated_0}/src").as_str())
+            .exists()
+    );
 }
 
 #[test]
 fn disabled_update_rollback_and_offline_restore() {
     let f = Fixture::new();
     let m = f.installed();
-    m.set_enabled("vendor/module", false).unwrap();
+    m.set_enabled("cc6c3e20-6fe0-58c4-944e-991c2a154a47", false)
+        .unwrap();
     f.release("0.1.1");
-    m.update("vendor/module").unwrap();
-    assert!(!m.state().unwrap().packages["vendor/module"].enabled);
+    m.update("cc6c3e20-6fe0-58c4-944e-991c2a154a47").unwrap();
+    assert!(!m.state().unwrap().packages["cc6c3e20-6fe0-58c4-944e-991c2a154a47"].enabled);
     fs::rename(&f.author, f.dir.join("unavailable-origin")).unwrap();
-    m.rollback("vendor/module").unwrap();
-    assert!(!m.state().unwrap().packages["vendor/module"].enabled);
+    m.rollback("cc6c3e20-6fe0-58c4-944e-991c2a154a47").unwrap();
+    assert!(!m.state().unwrap().packages["cc6c3e20-6fe0-58c4-944e-991c2a154a47"].enabled);
     assert_eq!(
-        m.state().unwrap().packages["vendor/module"].current.version,
+        m.state().unwrap().packages["cc6c3e20-6fe0-58c4-944e-991c2a154a47"]
+            .current
+            .version,
         "0.1.0"
     );
-    m.forget("vendor/module").unwrap();
-    m.restore("vendor/module").unwrap();
+    m.forget("cc6c3e20-6fe0-58c4-944e-991c2a154a47").unwrap();
+    m.restore("cc6c3e20-6fe0-58c4-944e-991c2a154a47").unwrap();
     // Restored as recorded (offline): still disabled, with its previous revision.
     let s = m.state().unwrap();
-    assert!(!s.packages["vendor/module"].enabled);
+    assert!(!s.packages["cc6c3e20-6fe0-58c4-944e-991c2a154a47"].enabled);
     assert_eq!(
-        s.packages["vendor/module"]
+        s.packages["cc6c3e20-6fe0-58c4-944e-991c2a154a47"]
             .previous
             .as_ref()
             .unwrap()
             .version,
         "0.1.1"
     );
-    assert!(!f.root.join("dist/vendor/module").exists());
-    m.uninstall("vendor/module", &[], false).unwrap();
+    assert!(
+        !f.root
+            .join("dist/cc6c3e20-6fe0-58c4-944e-991c2a154a47")
+            .exists()
+    );
+    m.uninstall("cc6c3e20-6fe0-58c4-944e-991c2a154a47", &[], false)
+        .unwrap();
     assert!(m.state().unwrap().packages.is_empty());
 }
 
@@ -261,12 +302,20 @@ fn disabled_update_rollback_and_offline_restore() {
 fn corrupt_state_is_not_overwritten() {
     let f = Fixture::new();
     drop(f.installed());
-    let payload = fs::read(f.root.join("dist/vendor/module/index.js")).unwrap();
+    let payload = fs::read(
+        f.root
+            .join("dist/cc6c3e20-6fe0-58c4-944e-991c2a154a47/index.js"),
+    )
+    .unwrap();
     fs::write(f.root.join("state.json"), b"{truncated").unwrap();
     assert!(Manager::open(&f.root).is_err());
     assert_eq!(fs::read(f.root.join("state.json")).unwrap(), b"{truncated");
     assert_eq!(
-        fs::read(f.root.join("dist/vendor/module/index.js")).unwrap(),
+        fs::read(
+            f.root
+                .join("dist/cc6c3e20-6fe0-58c4-944e-991c2a154a47/index.js")
+        )
+        .unwrap(),
         payload
     );
 }
@@ -277,9 +326,9 @@ fn forgotten_dirty_clone_cannot_be_overwritten_by_install_or_restore() {
     let m = f.installed();
     let local = clone_path(&f.root, &f.author).join("local.txt");
     fs::write(&local, "keep").unwrap();
-    m.forget("vendor/module").unwrap();
+    m.forget("cc6c3e20-6fe0-58c4-944e-991c2a154a47").unwrap();
     assert!(m.install(f.author.to_str().unwrap()).is_err());
-    assert!(m.restore("vendor/module").is_err());
+    assert!(m.restore("cc6c3e20-6fe0-58c4-944e-991c2a154a47").is_err());
     assert_eq!(fs::read_to_string(local).unwrap(), "keep");
     assert!(m.state().unwrap().packages.is_empty());
 }
@@ -288,17 +337,24 @@ fn forgotten_dirty_clone_cannot_be_overwritten_by_install_or_restore() {
 fn explicit_fork_toggle_update_rollback_does_not_replace_original_identity() {
     let f = Fixture::new();
     let m = f.installed();
-    let original = state(&m)["packages"]["vendor/module"].clone();
+    let original = state(&m)["packages"]["cc6c3e20-6fe0-58c4-944e-991c2a154a47"].clone();
     let fork = m
-        .fork_in_namespace("vendor/module", &f.dir.join("fork"), "mine")
+        .fork_into("cc6c3e20-6fe0-58c4-944e-991c2a154a47", &f.dir.join("fork"))
         .unwrap();
+    let generated_0: String =
+        serde_json::from_slice::<serde_json::Value>(&fs::read(fork.join("plugin.json")).unwrap())
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
     m.install_package(
         fork.to_str().unwrap(),
         None,
         gitpm::InstallTarget::Ref("HEAD".into()),
     )
     .unwrap();
-    m.set_enabled("vendor/module", false).unwrap();
+    m.set_enabled("cc6c3e20-6fe0-58c4-944e-991c2a154a47", false)
+        .unwrap();
     let mut manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(fork.join("plugin.json")).unwrap()).unwrap();
     manifest["version"] = "0.1.1".into();
@@ -311,22 +367,26 @@ fn explicit_fork_toggle_update_rollback_does_not_replace_original_identity() {
     git(&fork, &["add", "."]);
     git(&fork, &["commit", "-m", "release"]);
     git(&fork, &["tag", "v0.1.1"]);
-    m.update("mine/module").unwrap();
+    m.update(generated_0.as_str()).unwrap();
     assert_eq!(
-        fs::read_to_string(f.root.join("dist/mine/module/index.js")).unwrap(),
+        fs::read_to_string(f.root.join(format!("dist/{generated_0}/index.js").as_str())).unwrap(),
         "fork release"
     );
-    m.rollback("mine/module").unwrap();
-    m.set_enabled("mine/module", false).unwrap();
-    m.set_enabled("vendor/module", true).unwrap();
-    assert_eq!(state(&m)["packages"]["vendor/module"], original);
+    m.rollback(generated_0.as_str()).unwrap();
+    m.set_enabled(generated_0.as_str(), false).unwrap();
+    m.set_enabled("cc6c3e20-6fe0-58c4-944e-991c2a154a47", true)
+        .unwrap();
     assert_eq!(
-        m.state().unwrap().packages["mine/module"]
+        state(&m)["packages"]["cc6c3e20-6fe0-58c4-944e-991c2a154a47"],
+        original
+    );
+    assert_eq!(
+        m.state().unwrap().packages[generated_0.as_str()]
             .fork_of
             .as_ref()
             .unwrap()
             .id,
-        "vendor/module"
+        "cc6c3e20-6fe0-58c4-944e-991c2a154a47"
     );
     // Enabled flags are not dependency replacement: that is a separate acceptance requirement.
 }
@@ -350,9 +410,16 @@ fn commit_under_an_unreadable_ancestor() {
     let root = parent.join("workspace");
     let m = Manager::open(&root).unwrap();
     m.install(f.author.to_str().unwrap()).unwrap();
-    assert!(root.join("dist/vendor/module/index.js").is_file());
+    assert!(
+        root.join("dist/cc6c3e20-6fe0-58c4-944e-991c2a154a47/index.js")
+            .is_file()
+    );
     drop(m);
     let m = Manager::open(&root).unwrap();
-    m.disable("vendor/module").unwrap();
-    assert!(!root.join("dist/vendor/module").exists());
+    m.disable("cc6c3e20-6fe0-58c4-944e-991c2a154a47").unwrap();
+    assert!(
+        !root
+            .join("dist/cc6c3e20-6fe0-58c4-944e-991c2a154a47")
+            .exists()
+    );
 }

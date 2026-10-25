@@ -90,7 +90,7 @@ impl Fixture {
         fs::create_dir_all(self.repo.join("dist")).unwrap();
         fs::write(
             self.repo.join("plugin.json"),
-            format!(r#"{{"id":"dan/hello","version":"{version}"}}"#),
+            format!(r#"{{"id":"3dce1568-569c-5b53-9321-37185e751947","name": "fixture", "version":"{version}"}}"#),
         )
         .unwrap();
         fs::write(self.repo.join("dist/index.js"), contents).unwrap();
@@ -141,7 +141,11 @@ impl Fixture {
         serde_json::from_str(&self.cli(&["list"], true)).unwrap()
     }
     fn content(&self) -> String {
-        fs::read_to_string(self.root.join("dist/dan/hello/index.js")).unwrap()
+        fs::read_to_string(
+            self.root
+                .join("dist/3dce1568-569c-5b53-9321-37185e751947/index.js"),
+        )
+        .unwrap()
     }
 }
 impl Drop for Fixture {
@@ -189,47 +193,83 @@ fn every_command_uses_explicit_paths_without_touching_another_workspace() {
     let repo = f.repo.to_str().unwrap();
     run(&["install", repo]);
     assert_eq!(
-        fs::read_to_string(selected.join("dist/dan/hello/index.js")).unwrap(),
+        fs::read_to_string(selected.join("dist/3dce1568-569c-5b53-9321-37185e751947/index.js"))
+            .unwrap(),
         "hello v1"
     );
     let list: serde_json::Value = serde_json::from_str(&run(&["list"])).unwrap();
-    assert!(list["packages"]["dan/hello"].is_object());
+    assert!(list["packages"]["3dce1568-569c-5b53-9321-37185e751947"].is_object());
     run(&["check"]);
     f.release("2.0.0", "hello v2");
-    run(&["update", "dan/hello"]);
+    run(&["update", "3dce1568-569c-5b53-9321-37185e751947"]);
     assert_eq!(
-        fs::read_to_string(selected.join("dist/dan/hello/index.js")).unwrap(),
+        fs::read_to_string(selected.join("dist/3dce1568-569c-5b53-9321-37185e751947/index.js"))
+            .unwrap(),
         "hello v2"
     );
-    run(&["rollback", "dan/hello"]);
+    run(&["rollback", "3dce1568-569c-5b53-9321-37185e751947"]);
     assert_eq!(
-        fs::read_to_string(selected.join("dist/dan/hello/index.js")).unwrap(),
+        fs::read_to_string(selected.join("dist/3dce1568-569c-5b53-9321-37185e751947/index.js"))
+            .unwrap(),
         "hello v1"
     );
     run(&["update", "all", "--dry-run"]);
     run(&["update", "all"]);
-    run(&["disable", "dan/hello"]);
-    assert!(!selected.join("dist/dan/hello").exists());
-    run(&["enable", "dan/hello"]);
+    run(&["disable", "3dce1568-569c-5b53-9321-37185e751947"]);
+    assert!(
+        !selected
+            .join("dist/3dce1568-569c-5b53-9321-37185e751947")
+            .exists()
+    );
+    run(&["enable", "3dce1568-569c-5b53-9321-37185e751947"]);
     run(&["sync-dist", "--dry-run"]);
     run(&["sync-dist"]);
-    run(&["forget", "dan/hello"]);
-    run(&["restore", "dan/hello"]);
+    run(&["forget", "3dce1568-569c-5b53-9321-37185e751947"]);
+    run(&["restore", "3dce1568-569c-5b53-9321-37185e751947"]);
 
     let fork = f.dir.join("fork");
     let fork = fork.to_str().unwrap();
-    run(&["fork", "dan/hello", "--ns", "other", "--into", fork]);
+    run(&[
+        "fork",
+        "3dce1568-569c-5b53-9321-37185e751947",
+        "--into",
+        fork,
+    ]);
     run(&["commit", fork, "2.0.1"]);
     run(&["install", fork]);
-    run(&["replace", "dan/hello", "--with", "other/hello"]);
-    assert!(!selected.join("dist/dan/hello").exists());
-    run(&["replace", "dan/hello", "--with", "dan/hello"]);
-    assert!(selected.join("dist/dan/hello").exists());
-    run(&["uninstall", "other/hello", "--force"]);
-    run(&["uninstall", "dan/hello"]);
+    let fork_id = common::manifest_id(Path::new(fork));
+
+    run(&[
+        "replace",
+        "3dce1568-569c-5b53-9321-37185e751947",
+        "--with",
+        fork_id.as_str(),
+    ]);
+    assert!(
+        !selected
+            .join("dist/3dce1568-569c-5b53-9321-37185e751947")
+            .exists()
+    );
+    run(&[
+        "replace",
+        "3dce1568-569c-5b53-9321-37185e751947",
+        "--with",
+        "3dce1568-569c-5b53-9321-37185e751947",
+    ]);
+    assert!(
+        selected
+            .join("dist/3dce1568-569c-5b53-9321-37185e751947")
+            .exists()
+    );
+    run(&["uninstall", fork_id.as_str(), "--force"]);
+    run(&["uninstall", "3dce1568-569c-5b53-9321-37185e751947"]);
     run(&["download", repo]);
-    assert!(!selected.join("dist/dan/hello").exists());
-    run(&["uninstall", "dan/hello"]);
+    assert!(
+        !selected
+            .join("dist/3dce1568-569c-5b53-9321-37185e751947")
+            .exists()
+    );
+    run(&["uninstall", "3dce1568-569c-5b53-9321-37185e751947"]);
 
     run(&["catalog", "register", repo, "--ref", "v2.0.0"]);
     let sources = f.dir.join("sources.txt");
@@ -237,19 +277,27 @@ fn every_command_uses_explicit_paths_without_touching_another_workspace() {
     run(&["catalog", "update", "--sources", sources.to_str().unwrap()]);
     run(&["catalog", "show"]);
     run(&["catalog", "links"]);
-    run(&["install-catalog", "dan/hello"]);
-    assert!(selected.join("dist/dan/hello").exists());
-    run(&["uninstall", "dan/hello"]);
-    run(&["download-catalog", "dan/hello"]);
-    assert!(!selected.join("dist/dan/hello").exists());
-    run(&["uninstall", "dan/hello"]);
+    run(&["install-catalog", "3dce1568-569c-5b53-9321-37185e751947"]);
+    assert!(
+        selected
+            .join("dist/3dce1568-569c-5b53-9321-37185e751947")
+            .exists()
+    );
+    run(&["uninstall", "3dce1568-569c-5b53-9321-37185e751947"]);
+    run(&["download-catalog", "3dce1568-569c-5b53-9321-37185e751947"]);
+    assert!(
+        !selected
+            .join("dist/3dce1568-569c-5b53-9321-37185e751947")
+            .exists()
+    );
+    run(&["uninstall", "3dce1568-569c-5b53-9321-37185e751947"]);
 
     // Repository-only commands must not even open the explicitly selected workspace.
     let absent = f.dir.join("must-not-open");
     let author = f.dir.join("author");
     let author = author.to_str().unwrap();
     for args in [
-        vec!["init", "new/demo", "--into", author],
+        vec!["init", "demo", "--into", author],
         vec!["commit", author, "0.2.0"],
         vec!["remote", author, repo],
         vec!["auth", "check", repo],
@@ -307,39 +355,57 @@ fn lifecycle_and_three_removal_levels() {
     f.install();
     assert_eq!(f.content(), "hello v1");
     f.release("2.0.0", "hello v2");
-    f.cli(&["update", "dan/hello"], true);
+    f.cli(&["update", "3dce1568-569c-5b53-9321-37185e751947"], true);
     assert_eq!(f.content(), "hello v2");
     assert_eq!(
-        f.state()["packages"]["dan/hello"]["current"]["version"],
+        f.state()["packages"]["3dce1568-569c-5b53-9321-37185e751947"]["current"]["version"],
         "2.0.0"
     );
-    f.cli(&["rollback", "dan/hello"], true);
+    f.cli(&["rollback", "3dce1568-569c-5b53-9321-37185e751947"], true);
     assert_eq!(f.content(), "hello v1");
-    f.cli(&["update", "dan/hello"], true);
+    f.cli(&["update", "3dce1568-569c-5b53-9321-37185e751947"], true);
     assert_eq!(f.content(), "hello v2");
-    f.cli(&["disable", "dan/hello"], true);
-    assert_eq!(f.state()["packages"]["dan/hello"]["enabled"], false);
+    f.cli(&["disable", "3dce1568-569c-5b53-9321-37185e751947"], true);
+    assert_eq!(
+        f.state()["packages"]["3dce1568-569c-5b53-9321-37185e751947"]["enabled"],
+        false
+    );
     // dist/ holds only active packages.
-    assert!(!f.root.join("dist/dan/hello").exists());
-    f.cli(&["enable", "dan/hello"], true);
+    assert!(
+        !f.root
+            .join("dist/3dce1568-569c-5b53-9321-37185e751947")
+            .exists()
+    );
+    f.cli(&["enable", "3dce1568-569c-5b53-9321-37185e751947"], true);
     assert_eq!(f.content(), "hello v2");
-    f.cli(&["forget", "dan/hello"], true);
+    f.cli(&["forget", "3dce1568-569c-5b53-9321-37185e751947"], true);
     assert!(f.state()["packages"].as_object().unwrap().is_empty());
     assert!(clone_path(&f.root, &f.repo).join(".git").exists());
-    assert!(!f.root.join("dist/dan/hello").exists());
-    f.cli(&["restore", "dan/hello"], true);
-    assert_eq!(f.state()["packages"]["dan/hello"]["enabled"], true);
+    assert!(
+        !f.root
+            .join("dist/3dce1568-569c-5b53-9321-37185e751947")
+            .exists()
+    );
+    f.cli(&["restore", "3dce1568-569c-5b53-9321-37185e751947"], true);
+    assert_eq!(
+        f.state()["packages"]["3dce1568-569c-5b53-9321-37185e751947"]["enabled"],
+        true
+    );
     assert_eq!(f.content(), "hello v2");
-    f.cli(&["uninstall", "dan/hello"], true);
+    f.cli(&["uninstall", "3dce1568-569c-5b53-9321-37185e751947"], true);
     assert!(!clone_path(&f.root, &f.repo).exists());
-    assert!(!f.root.join("dist/dan/hello").exists());
+    assert!(
+        !f.root
+            .join("dist/3dce1568-569c-5b53-9321-37185e751947")
+            .exists()
+    );
 }
 #[test]
 fn lifecycle_and_check_without_a_catalog() {
     let f = Fixture::new();
     let row = |out: &str| {
         out.lines()
-            .find(|l| l.starts_with("dan/hello "))
+            .find(|l| l.starts_with("3dce1568-569c-5b53-9321-37185e751947 "))
             .unwrap_or_else(|| panic!("no row: {out}"))
             .split_whitespace()
             .collect::<Vec<_>>()
@@ -348,35 +414,44 @@ fn lifecycle_and_check_without_a_catalog() {
     f.cli_without_catalog(&["install", f.repo.to_str().unwrap()], true);
     let out = f.cli_without_catalog(&["check"], true);
     assert!(out.contains("Catalog: none"), "{out}");
-    assert_eq!(row(&out), "dan/hello 1.0.0 1.0.0 yes origin up to date");
+    assert_eq!(
+        row(&out),
+        "3dce1568-569c-5b53-9321-37185e751947 1.0.0 1.0.0 yes origin up to date"
+    );
     f.release("2.0.0", "hello v2");
     let state = fs::read(f.root.join("state.json")).unwrap();
     let out = f.cli_without_catalog(&["check"], true);
     assert_eq!(
         row(&out),
-        "dan/hello 1.0.0 2.0.0 (major) yes origin update available"
+        "3dce1568-569c-5b53-9321-37185e751947 1.0.0 2.0.0 (major) yes origin update available"
     );
-    assert!(out.contains("dan/hello: 1.0.0 → 2.0.0"), "{out}");
+    assert!(
+        out.contains("3dce1568-569c-5b53-9321-37185e751947: 1.0.0 → 2.0.0"),
+        "{out}"
+    );
     assert_eq!(fs::read(f.root.join("state.json")).unwrap(), state);
     assert_eq!(f.content(), "hello v1", "check never updates");
-    f.cli_without_catalog(&["update", "dan/hello"], true);
+    f.cli_without_catalog(&["update", "3dce1568-569c-5b53-9321-37185e751947"], true);
     assert_eq!(f.content(), "hello v2");
     let out = f.cli_without_catalog(&["check"], true);
-    assert_eq!(row(&out), "dan/hello 2.0.0 2.0.0 yes origin up to date");
-    f.cli_without_catalog(&["rollback", "dan/hello"], true);
+    assert_eq!(
+        row(&out),
+        "3dce1568-569c-5b53-9321-37185e751947 2.0.0 2.0.0 yes origin up to date"
+    );
+    f.cli_without_catalog(&["rollback", "3dce1568-569c-5b53-9321-37185e751947"], true);
     assert_eq!(f.content(), "hello v1");
-    f.cli_without_catalog(&["forget", "dan/hello"], true);
-    f.cli_without_catalog(&["restore", "dan/hello"], true);
+    f.cli_without_catalog(&["forget", "3dce1568-569c-5b53-9321-37185e751947"], true);
+    f.cli_without_catalog(&["restore", "3dce1568-569c-5b53-9321-37185e751947"], true);
     assert_eq!(f.content(), "hello v1");
     // An origin that disappeared is a row, not a failed check.
     fs::rename(&f.repo, f.dir.join("moved")).unwrap();
     let out = f.cli_without_catalog(&["check"], true);
     assert!(
         row(&out)
-            .starts_with("dan/hello 1.0.0 — yes origin origin unreachable: Repository not found"),
+            .starts_with("3dce1568-569c-5b53-9321-37185e751947 1.0.0 — yes origin origin unreachable: Repository not found"),
         "{out}"
     );
-    f.cli_without_catalog(&["uninstall", "dan/hello"], true);
+    f.cli_without_catalog(&["uninstall", "3dce1568-569c-5b53-9321-37185e751947"], true);
     assert!(!clone_path(&f.root, &f.repo).exists());
 }
 #[test]
@@ -388,13 +463,13 @@ fn failed_update_keeps_files_and_state() {
     fs::write(f.repo.join("dist/index.js"), "v2").unwrap();
     fs::write(
         f.repo.join("plugin.json"),
-        r#"{"id":"dan/hello","version":"2.0.0","dependencies":{"dan/missing":"1"}}"#,
+        r#"{"id":"3dce1568-569c-5b53-9321-37185e751947","name": "fixture", "version":"2.0.0","dependencies":{"a68376c0-a262-545a-a4f8-afe9998880a6":"1"}}"#,
     )
     .unwrap();
     f.git(&["add", "."]);
     f.git(&["commit", "-m", "dependency"]);
     f.git(&["tag", "v2.0.0"]);
-    f.cli(&["update", "dan/hello"], false);
+    f.cli(&["update", "3dce1568-569c-5b53-9321-37185e751947"], false);
     assert_eq!(f.state(), before);
     assert_eq!(f.content(), "hello v1");
 }
@@ -403,10 +478,20 @@ fn protects_local_edits_and_force_is_explicit() {
     let f = Fixture::new();
     f.install();
     fs::write(clone_path(&f.root, &f.repo).join("my-work.txt"), "keep me").unwrap();
-    f.cli(&["update", "dan/hello"], false);
-    f.cli(&["uninstall", "dan/hello"], false);
+    f.cli(&["update", "3dce1568-569c-5b53-9321-37185e751947"], false);
+    f.cli(
+        &["uninstall", "3dce1568-569c-5b53-9321-37185e751947"],
+        false,
+    );
     assert!(clone_path(&f.root, &f.repo).join("my-work.txt").exists());
-    f.cli(&["uninstall", "dan/hello", "--force"], true);
+    f.cli(
+        &[
+            "uninstall",
+            "3dce1568-569c-5b53-9321-37185e751947",
+            "--force",
+        ],
+        true,
+    );
     assert!(!clone_path(&f.root, &f.repo).exists());
 }
 #[test]
@@ -415,11 +500,14 @@ fn rejects_duplicate_path_escape_and_missing_payload() {
     f.install();
     let before = f.state();
     let again = f.cli(&["install", f.repo.to_str().unwrap()], true);
-    assert_eq!(again, "dan/hello already installed (1.0.0)\n");
+    assert_eq!(
+        again,
+        "3dce1568-569c-5b53-9321-37185e751947 already installed (1.0.0)\n"
+    );
     f.cli(&["uninstall", "../upstream", "--force"], false);
     assert!(f.repo.exists());
     assert_eq!(f.state(), before);
-    f.cli(&["uninstall", "dan/hello"], true);
+    f.cli(&["uninstall", "3dce1568-569c-5b53-9321-37185e751947"], true);
     fs::remove_dir_all(f.repo.join("dist")).unwrap();
     f.git(&["add", "."]);
     f.git(&["commit", "-m", "missing dist"]);
@@ -435,8 +523,17 @@ fn recovery_and_lock() {
     drop(manager);
     // An interrupted, uncommitted transaction is discarded by the next command that
     // opens the workspace; the read-only `list` leaves it alone.
-    fs::create_dir_all(f.root.join(".pm-txn/new/dist/dan/hello")).unwrap();
-    fs::write(f.root.join(".pm-txn/new/dist/dan/hello/index.js"), "half").unwrap();
+    fs::create_dir_all(
+        f.root
+            .join(".pm-txn/new/dist/3dce1568-569c-5b53-9321-37185e751947"),
+    )
+    .unwrap();
+    fs::write(
+        f.root
+            .join(".pm-txn/new/dist/3dce1568-569c-5b53-9321-37185e751947/index.js"),
+        "half",
+    )
+    .unwrap();
     f.cli(&["list"], true);
     assert!(f.root.join(".pm-txn").exists(), "list must not recover");
     assert_eq!(f.content_after_recovery(), "hello v1");
@@ -444,7 +541,7 @@ fn recovery_and_lock() {
 }
 impl Fixture {
     fn content_after_recovery(&self) -> String {
-        self.cli(&["enable", "dan/hello"], true);
+        self.cli(&["enable", "3dce1568-569c-5b53-9321-37185e751947"], true);
         self.content()
     }
 }
@@ -456,7 +553,7 @@ fn direct_git_refs_and_local_author_commit() {
     let repo = f.repo.to_str().unwrap();
     f.cli(&["install", repo, "--ref", "v1.0.0"], true);
     assert_eq!(
-        f.state()["packages"]["dan/hello"]["mode"],
+        f.state()["packages"]["3dce1568-569c-5b53-9321-37185e751947"]["mode"],
         serde_json::json!({"pinned": "v1.0.0"})
     );
     fs::write(f.repo.join("dist/index.js"), "author release").unwrap();
@@ -464,25 +561,44 @@ fn direct_git_refs_and_local_author_commit() {
     f.cli(&["commit", repo, "1.0.1"], false);
     // Pinned: update says so and changes nothing; --release returns to releases.
     assert_eq!(
-        f.cli(&["update", "dan/hello"], true),
-        "dan/hello pinned at 1.0.0 (v1.0.0)\n"
+        f.cli(&["update", "3dce1568-569c-5b53-9321-37185e751947"], true),
+        "3dce1568-569c-5b53-9321-37185e751947 pinned at 1.0.0 (v1.0.0)\n"
     );
     assert_eq!(f.content(), "hello v1");
     assert_eq!(
-        f.cli(&["update", "dan/hello", "--release"], true),
-        "dan/hello updated 1.0.0 → 1.0.1\n"
+        f.cli(
+            &[
+                "update",
+                "3dce1568-569c-5b53-9321-37185e751947",
+                "--release"
+            ],
+            true
+        ),
+        "3dce1568-569c-5b53-9321-37185e751947 updated 1.0.0 → 1.0.1\n"
     );
-    assert!(f.state()["packages"]["dan/hello"].get("mode").is_none());
+    assert!(
+        f.state()["packages"]["3dce1568-569c-5b53-9321-37185e751947"]
+            .get("mode")
+            .is_none()
+    );
     assert_eq!(f.content(), "author release");
-    f.cli(&["update", "dan/hello", "--ref", "v1.0.1"], true);
+    f.cli(
+        &[
+            "update",
+            "3dce1568-569c-5b53-9321-37185e751947",
+            "--ref",
+            "v1.0.1",
+        ],
+        true,
+    );
     assert_eq!(f.content(), "author release");
-    let sha = f.state()["packages"]["dan/hello"]["current"]["commit"]
+    let sha = f.state()["packages"]["3dce1568-569c-5b53-9321-37185e751947"]["current"]["commit"]
         .as_str()
         .unwrap()
         .to_owned();
-    f.cli(&["rollback", "dan/hello"], true);
+    f.cli(&["rollback", "3dce1568-569c-5b53-9321-37185e751947"], true);
     assert_eq!(f.content(), "hello v1");
-    f.cli(&["uninstall", "dan/hello"], true);
+    f.cli(&["uninstall", "3dce1568-569c-5b53-9321-37185e751947"], true);
     f.cli(&["install", repo, "--ref", &sha], true);
     assert_eq!(f.content(), "author release");
 }
@@ -575,7 +691,7 @@ fn catalog_manifest_is_verified_before_install() {
     let manager = gitpm::Manager::open(&f.root).unwrap();
     let wrong = gitpm::catalog::Release {
         manifest: gitpm::Manifest {
-            id: "dan/hello".into(),
+            id: "3dce1568-569c-5b53-9321-37185e751947".into(),
             version: "99.0.0".into(),
             ..Default::default()
         },
@@ -599,7 +715,11 @@ fn catalog_manifest_is_verified_before_install() {
     };
     assert!(manager.install_release(&wrong).is_err());
     assert!(manager.state().unwrap().packages.is_empty());
-    assert!(!f.root.join("dist/dan/hello").exists());
+    assert!(
+        !f.root
+            .join("dist/3dce1568-569c-5b53-9321-37185e751947")
+            .exists()
+    );
 }
 
 #[test]
@@ -607,8 +727,20 @@ fn explicit_same_commit_and_numeric_versions_sort_correctly() {
     let f = Fixture::new();
     f.install();
     f.git(&["tag", "-f", "v1.0.0"]);
-    f.cli(&["update", "dan/hello", "--ref", "v1.0.0"], true);
-    assert!(f.state()["packages"]["dan/hello"].get("pinned").is_none());
+    f.cli(
+        &[
+            "update",
+            "3dce1568-569c-5b53-9321-37185e751947",
+            "--ref",
+            "v1.0.0",
+        ],
+        true,
+    );
+    assert!(
+        f.state()["packages"]["3dce1568-569c-5b53-9321-37185e751947"]
+            .get("pinned")
+            .is_none()
+    );
     use gitpm::catalog::version_key;
     assert!(version_key("1.10.0").unwrap() > version_key("1.9.0").unwrap());
     for invalid in ["01.0.0", "v1.0.0", "1.0", "1.0.0+dev", "-1.0.0"] {
@@ -634,112 +766,54 @@ fn config_files(dir: &std::path::Path) -> Vec<PathBuf> {
 }
 
 #[test]
-fn init_takes_an_explicit_id_and_repository_folder() {
-    use std::process::Stdio;
+fn init_generates_ids_for_equal_names_in_separate_repositories() {
     let f = Fixture::new();
-    for (command, id) in [("init", "acme/hello"), ("init", "vendor/demo1")] {
-        let output = f
-            .pm()
-            .current_dir(&f.dir)
-            .args([command, id, "--into", id])
-            .stdin(Stdio::null())
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(stdout.contains(&format!("ID: {id}\n")), "{stdout}");
-        let repo = f.dir.join(id);
-        let m: serde_json::Value =
+    let mut ids = Vec::new();
+    for folder in ["first", "second"] {
+        let output = f.cli(&["init", "hello", "--into", folder], true);
+        let repo = f.dir.join(folder);
+        let id = common::manifest_id(&repo);
+        assert!(output.contains(&format!("ID: {id}\n")), "{output}");
+        let manifest: serde_json::Value =
             serde_json::from_slice(&fs::read(repo.join("plugin.json")).unwrap()).unwrap();
-        assert_eq!(m["id"], id);
-        assert!(repo.join(".git").is_dir());
-        f.cli(
-            &["install", repo.to_str().unwrap(), "--ref", "v0.1.0"],
-            true,
-        );
-        assert_eq!(f.state()["packages"][id]["current"]["version"], "0.1.0");
-        // Never overwrites: the same folder again fails and keeps the repository.
-        let retry = f
-            .pm()
-            .current_dir(&f.dir)
-            .args([command, id, "--into", id])
-            .output()
-            .unwrap();
-        assert!(!retry.status.success());
-        assert!(repo.join(".git").is_dir());
+        assert_eq!(manifest["name"], "hello");
+        f.cli(&["install", repo.to_str().unwrap()], true);
+        assert_eq!(f.state()["packages"][&id]["current"]["version"], "0.1.0");
+        assert!(f.root.join("dist").join(&id).join("index.js").is_file());
+        f.cli(&["commit", repo.to_str().unwrap(), "0.1.1"], true);
+        assert_eq!(common::manifest_id(&repo), id);
+        f.cli(&["init", "hello", "--into", folder], false);
+        ids.push(id);
     }
-    assert!(
-        config_files(&f.dir).is_empty(),
-        "{:?}",
-        config_files(&f.dir)
-    );
+    assert_ne!(ids[0], ids[1]);
+    assert_eq!(f.state()["packages"].as_object().unwrap().len(), 2);
+    f.cli(&["uninstall", "hello", "--force"], false);
+    assert!(config_files(&f.dir).is_empty());
 }
 
 #[test]
-fn init_requires_a_namespace_and_never_prompts_or_reads_the_environment() {
+fn init_validates_names_and_never_prompts_or_reads_namespace_settings() {
     use std::process::Stdio;
     let f = Fixture::new();
-    fs::create_dir_all(f.dir.join("dan/existing")).unwrap();
-    fs::write(f.dir.join("dan/existing/keep.txt"), "untouched").unwrap();
-    for (args, message) in [
-        (
-            &["init", "hello", "--into", "hello"][..],
-            // The library refuses it (invalid_id); the CLI only prints the error.
-            "package ID needs a namespace: use NAMESPACE/NAME, for example acme/hello\nError kind: invalid_id",
-        ),
-        (&["init"][..], "init: expected 1 argument(s), got 0"),
-        (&["init", "dan/a/b", "--into", "x"][..], "namespace/name"),
-        (&["init", "../escape", "--into", "x"][..], "namespace/name"),
-        (&["init", "/hello", "--into", "x"][..], "namespace/name"),
-        (&["init", "dan/", "--into", "x"][..], "namespace/name"),
-        (
-            &["init", "dan/hello", "--namespace", "me"][..],
-            "unknown option: --namespace",
-        ),
-        // No default folder: the repository is always given.
-        (&["init", "dan/hello"][..], "init needs --into DIR"),
-        (
-            &["init", "dan/existing", "--into", "dan/existing"][..],
-            "is not a Git repository",
-        ),
-        // The former alias is an unknown command.
-        (
-            &["create", "dan/hello", "--into", "dan/hello"][..],
-            "unknown command: create; use --help",
-        ),
+    for args in [
+        vec!["init"],
+        vec!["init", "dan/hello", "--into", "x"],
+        vec!["init", "../escape", "--into", "x"],
+        vec!["init", "hello", "--namespace", "me"],
+        vec!["init", "hello"],
     ] {
-        // Legacy and removed namespace variables must not supply a default.
-        let mut child = f
+        let output = f
             .pm()
+            .current_dir(&f.dir)
             .env("GITPM_NAMESPACE", "me")
             .env("PM_NAMESPACE", "me")
-            .current_dir(&f.dir)
-            .args(args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
+            .args(&args)
+            .stdin(Stdio::null())
+            .output()
             .unwrap();
-        // Input is never read: no interactive name prompt.
-        use std::io::Write;
-        let _ = child.stdin.take().unwrap().write_all(b"me/typed\n");
-        let out = child.wait_with_output().unwrap();
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(!out.status.success(), "{args:?} succeeded");
-        assert!(stderr.contains(message), "{args:?}: {stderr}");
+        assert!(!output.status.success(), "{args:?}");
     }
-    assert!(!f.dir.join("hello").exists() && !f.dir.join("x").exists());
-    assert!(!f.dir.join("dan/hello").exists());
-    assert!(!f.dir.join("me").exists());
-    assert_eq!(
-        fs::read_to_string(f.dir.join("dan/existing/keep.txt")).unwrap(),
-        "untouched"
-    );
-    assert!(!f.dir.join("dan/existing/.git").exists());
+    assert!(!f.dir.join("x").exists());
     assert!(!f.root.exists());
     assert!(config_files(&f.dir).is_empty());
 }
@@ -752,13 +826,23 @@ fn fork_clones_recorded_source_and_preserves_original_installation() {
     fs::write(installed.join("dist/index.js"), "local edit").unwrap();
     fs::write(installed.join("notes.txt"), "untracked work").unwrap();
     let state = fs::read(f.root.join("state.json")).unwrap();
-    let destination = f.dir.join("me/hello");
+    let destination = f.dir.join("ce6c8a3b-b2f8-5391-8ef8-4cbb7873f5d4");
     let out = f.cli(
-        &["fork", "dan/hello", "--ns", "me", "--into", "me/hello"],
+        &[
+            "fork",
+            "3dce1568-569c-5b53-9321-37185e751947",
+            "--into",
+            "ce6c8a3b-b2f8-5391-8ef8-4cbb7873f5d4",
+        ],
         true,
     );
+    let fork_id = common::manifest_id(&destination);
+
     assert!(
-        out.contains("me/hello forked from dan/hello (repository root)"),
+        out.contains(
+            format!("{fork_id} forked from 3dce1568-569c-5b53-9321-37185e751947 (repository root)")
+                .as_str()
+        ),
         "{out}"
     );
     let git_at = |path: &std::path::Path, args: &[&str]| {
@@ -800,7 +884,12 @@ fn fork_clones_recorded_source_and_preserves_original_installation() {
     );
     // An existing folder that is not a multi-package repository is refused.
     f.cli(
-        &["fork", "dan/hello", "--ns", "me", "--into", "me/hello"],
+        &[
+            "fork",
+            "3dce1568-569c-5b53-9321-37185e751947",
+            "--into",
+            destination.to_str().unwrap(),
+        ],
         false,
     );
     assert_eq!(
@@ -818,124 +907,135 @@ fn fork_rejects_managed_destinations_and_unknown_plugins() {
     let out = f
         .pm()
         .current_dir(&installed)
-        .args(["fork", "dan/hello", "--ns", "me", "--into", "me-hello"])
+        .args([
+            "fork",
+            "3dce1568-569c-5b53-9321-37185e751947",
+            "--into",
+            "me-hello",
+        ])
         .output()
         .unwrap();
     assert!(!out.status.success());
     assert!(!installed.join("me-hello").exists());
     f.cli(
-        &["fork", "unknown", "--ns", "me", "--into", "me/unknown"],
-        false,
-    );
-    assert!(!f.dir.join("me/unknown").exists());
-    for (args, message) in [
-        // The old form `fork ID NAMESPACE/NAME` is gone: a second argument is an ID.
-        (
-            &["fork", "dan/hello", "me/hello", "--ns", "me", "--into", "x"][..],
-            "package me/hello is not installed",
-        ),
-        (
-            &["fork", "dan/hello", "--into", "x"][..],
-            "fork needs --ns NAMESPACE",
-        ),
-        (
-            &["fork", "dan/hello", "--ns", "me"][..],
-            "fork needs --into DIR",
-        ),
-        (
-            &["fork", "dan/hello", "--ns", "me/a", "--into", "x"][..],
-            "namespace/name",
-        ),
-        (
-            &["fork", "--ns", "me", "--into", "x"][..],
-            "fork: expected 1 argument(s), got 0",
-        ),
-        (
-            &["fork", "dan/hello", "--namespace", "x"][..],
-            "unknown option: --namespace",
-        ),
-        (
-            &["fork", "dan/hello", "--ns", "me", "--into", "../x"][..],
-            "without '..'",
-        ),
-    ] {
-        let out = f
-            .pm()
-            .env("GITPM_NAMESPACE", "me")
-            .current_dir(&f.dir)
-            .args(args)
-            .output()
-            .unwrap();
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(!out.status.success(), "{args:?} succeeded");
-        assert!(stderr.contains(message), "{args:?}: {stderr}");
-    }
-    assert!(!f.dir.join("me").exists());
-}
-
-#[test]
-fn namespaced_fork_and_original_coexist_and_release_independently() {
-    let f = Fixture::new();
-    let source = f.dir.join("vendor/demo");
-    f.cli(&["init", "vendor/demo", "--into", "vendor/demo"], true);
-    f.cli(&["install", source.to_str().unwrap()], true);
-    assert!(f.root.join("dist/vendor/demo/index.js").exists());
-    let fork = f.dir.join("dan/demo");
-    // Same namespace.
-    f.cli(
         &[
             "fork",
-            "vendor/demo",
-            "--ns",
-            "vendor",
+            "unknown",
             "--into",
-            "dan/demo",
+            "16e197a7-ee41-5f9b-8375-55ad2de7ccd4",
         ],
         false,
     );
-    assert!(!fork.exists());
-    assert!(source.join("plugin.json").exists());
+    assert!(!f.dir.join("16e197a7-ee41-5f9b-8375-55ad2de7ccd4").exists());
+    for args in [
+        vec![
+            "fork",
+            "3dce1568-569c-5b53-9321-37185e751947",
+            "--ns",
+            "me",
+            "--into",
+            "x",
+        ],
+        vec!["fork", "3dce1568-569c-5b53-9321-37185e751947"],
+        vec!["fork", "--into", "x"],
+        vec![
+            "fork",
+            "3dce1568-569c-5b53-9321-37185e751947",
+            "--namespace",
+            "x",
+        ],
+        vec![
+            "fork",
+            "3dce1568-569c-5b53-9321-37185e751947",
+            "--into",
+            "../x",
+        ],
+    ] {
+        let output = f.pm().current_dir(&f.dir).args(&args).output().unwrap();
+        assert!(!output.status.success(), "{args:?}");
+    }
+    assert!(!f.dir.join("x").exists());
+}
+
+#[test]
+fn uuid_fork_and_original_coexist_and_release_independently() {
+    let f = Fixture::new();
+    let source = f.dir.join("dd3387ed-a5a3-5059-81ad-b1f6987a28f2");
+    f.cli(
+        &[
+            "init",
+            "demo",
+            "--into",
+            "dd3387ed-a5a3-5059-81ad-b1f6987a28f2",
+        ],
+        true,
+    );
+    let original_id = common::manifest_id(&source);
+
+    f.cli(&["install", source.to_str().unwrap()], true);
+    assert!(
+        f.root
+            .join(format!("dist/{original_id}/index.js").as_str())
+            .exists()
+    );
+    let fork = f.dir.join("826a054b-0fad-5e5a-8890-f87c6452943b");
     // The source repository itself is never the fork repository.
     let before = fs::read(source.join("plugin.json")).unwrap();
     f.cli(
         &[
             "fork",
-            "vendor/demo",
-            "--ns",
-            "dan",
+            original_id.as_str(),
             "--into",
-            "vendor/demo",
+            source.to_str().unwrap(),
         ],
         false,
     );
     assert_eq!(fs::read(source.join("plugin.json")).unwrap(), before);
     f.cli(
-        &["fork", "vendor/demo", "--ns", "dan", "--into", "dan/demo"],
+        &[
+            "fork",
+            original_id.as_str(),
+            "--into",
+            "826a054b-0fad-5e5a-8890-f87c6452943b",
+        ],
         true,
     );
+    let fork_id = common::manifest_id(&fork);
+
     let m: serde_json::Value =
         serde_json::from_slice(&fs::read(fork.join("plugin.json")).unwrap()).unwrap();
-    assert_eq!(m["id"], "dan/demo");
-    assert_eq!(m["forkOf"]["id"], "vendor/demo");
+    assert_eq!(m["id"], fork_id.as_str());
+    assert_eq!(m["forkOf"]["id"], original_id.as_str());
     assert_eq!(
         m["forkOf"]["commit"],
-        f.state()["packages"]["vendor/demo"]["current"]["commit"]
+        f.state()["packages"][original_id.as_str()]["current"]["commit"]
     );
     f.cli(&["install", fork.to_str().unwrap(), "--dev"], true);
-    assert!(f.root.join("dist/dan/demo/index.js").exists());
-    assert_eq!(f.state()["packages"]["dan/demo"]["forkOf"], m["forkOf"]);
+    assert!(
+        f.root
+            .join(format!("dist/{fork_id}/index.js").as_str())
+            .exists()
+    );
+    assert_eq!(
+        f.state()["packages"][fork_id.as_str()]["forkOf"],
+        m["forkOf"]
+    );
     fs::write(fork.join("dist/index.js"), "fork release").unwrap();
     f.cli(&["commit", fork.to_str().unwrap(), "0.1.1"], true);
-    f.cli(&["update", "dan/demo", "--ref", "v0.1.1"], true);
+    f.cli(&["update", fork_id.as_str(), "--ref", "v0.1.1"], true);
     assert_eq!(
-        fs::read_to_string(f.root.join("dist/dan/demo/index.js")).unwrap(),
+        fs::read_to_string(f.root.join(format!("dist/{fork_id}/index.js").as_str())).unwrap(),
         "fork release"
     );
-    f.cli(&["rollback", "dan/demo"], true);
-    f.cli(&["uninstall", "dan", "--force"], false); // namespace is not a package
+    f.cli(&["rollback", fork_id.as_str()], true);
+    f.cli(&["uninstall", "dan", "--force"], false); // a name is not a package ID
     assert!(clone_path(&f.root, &fork).join(".git").exists());
-    f.cli(&["uninstall", "dan/demo"], true);
-    assert!(f.root.join("dist/vendor/demo/index.js").exists());
+    f.cli(&["uninstall", fork_id.as_str()], true);
+    assert!(
+        f.root
+            .join(format!("dist/{original_id}/index.js").as_str())
+            .exists()
+    );
     assert!(
         config_files(&f.dir).is_empty(),
         "{:?}",
@@ -944,16 +1044,23 @@ fn namespaced_fork_and_original_coexist_and_release_independently() {
 }
 
 #[test]
-fn namespaces_reject_path_traversal_and_unscoped_ids() {
+fn uuids_reject_scoped_names_and_path_traversal() {
     let f = Fixture::new();
     f.install();
     f.cli(&["init", "../bad", "--into", "bad"], false);
-    for id in ["../hello", "a/../hello", "/hello", "a/b/c", "a//b", "hello"] {
+    for id in [
+        "../hello",
+        "a/../hello",
+        "/hello",
+        "75494f24-1c7e-5480-9e39-738ff3d038c4/c",
+        "a//b",
+        "hello",
+    ] {
         f.cli(&["uninstall", id, "--force"], false);
     }
-    // A namespace equal to an installed package's name is just another namespace.
+    // Another package with the same alias has an independent UUID.
     let source = f.dir.join("hello/demo");
-    f.cli(&["init", "hello/demo", "--into", "hello/demo"], true);
+    f.cli(&["init", "hello", "--into", "hello/demo"], true);
     assert!(source.join("plugin.json").exists());
     f.cli(&["install", source.to_str().unwrap()], true);
     assert!(clone_path(&f.root, &f.repo).join(".git").exists());
@@ -982,7 +1089,7 @@ fn local_catalog_register_read_install_and_immutable_versions() {
     let original = fs::read(&file).unwrap();
     assert!(
         f.cli(&["--catalog", location, "catalog", "links"], true)
-            .contains("namespaces")
+            .contains("packages")
     );
     f.cli(
         &[
@@ -1002,13 +1109,13 @@ fn local_catalog_register_read_install_and_immutable_versions() {
             "--catalog",
             file.to_str().unwrap(),
             "install-catalog",
-            "dan/hello",
+            "3dce1568-569c-5b53-9321-37185e751947",
         ],
         true,
     );
     assert!(
         f.cli(&["--catalog", location, "check"], true)
-            .contains("dan/hello")
+            .contains("3dce1568-569c-5b53-9321-37185e751947")
     );
     fs::write(
         f.repo.join("dist/index.js"),
@@ -1064,7 +1171,7 @@ fn split_catalog_hashes_and_direct_lookup_are_independent_of_directory_indexes()
     let f = Fixture::new();
     fs::write(
         f.repo.join("plugin.json"),
-        r#"{"id":"dan/hello","version":"1.0.0"}"#,
+        r#"{"id":"3dce1568-569c-5b53-9321-37185e751947","name": "fixture", "version":"1.0.0"}"#,
     )
     .unwrap();
     fs::write(f.repo.join("dist/index.js"), "abc").unwrap();
@@ -1089,10 +1196,10 @@ fn split_catalog_hashes_and_direct_lookup_are_independent_of_directory_indexes()
     assert_eq!(release.files["index.js"].size, 3);
     let root = fs::read(dir.join("catalog.json")).unwrap();
     let value: serde_json::Value = serde_json::from_slice(&root).unwrap();
-    assert_eq!(value["directories"]["namespaces"], "namespaces/");
+    assert_eq!(value["directories"]["packages"], "packages/");
     assert!(value.get("plugins").is_none());
     assert!(
-        dir.join("namespaces/dan/hello/versions/1.0.0/release.json")
+        dir.join("packages/3dce1568-569c-5b53-9321-37185e751947/versions/1.0.0/release.json")
             .exists()
     );
     catalog::register_build(
@@ -1104,8 +1211,8 @@ fn split_catalog_hashes_and_direct_lookup_are_independent_of_directory_indexes()
     .unwrap();
     assert_eq!(fs::read(dir.join("catalog.json")).unwrap(), root);
     fs::remove_file(dir.join("catalog.json")).unwrap();
-    fs::remove_file(dir.join("namespaces/dan/catalog.json")).unwrap();
-    let found = catalog::lookup(location, "dan/hello", None).unwrap();
+    fs::remove_file(dir.join("packages/catalog.json")).unwrap();
+    let found = catalog::lookup(location, "3dce1568-569c-5b53-9321-37185e751947", None).unwrap();
     assert_eq!(found.build.as_ref().unwrap().sha256, "a".repeat(64));
     // Exercise Git hash verification separately from the placeholder build metadata.
     let found = catalog::Release {
@@ -1125,17 +1232,21 @@ fn split_catalog_hashes_and_direct_lookup_are_independent_of_directory_indexes()
     assert!(manager.state().unwrap().packages.is_empty());
     manager.install_release(&found).unwrap();
     assert_eq!(
-        fs::read_to_string(f.root.join("dist/dan/hello/index.js")).unwrap(),
+        fs::read_to_string(
+            f.root
+                .join("dist/3dce1568-569c-5b53-9321-37185e751947/index.js")
+        )
+        .unwrap(),
         "abc"
     );
     let selected = catalog::selected(location, &manager.state().unwrap()).unwrap();
     assert_eq!(selected.packages.len(), 1);
-    let index_path = dir.join("namespaces/dan/hello/plugin.json");
+    let index_path = dir.join("packages/3dce1568-569c-5b53-9321-37185e751947/plugin.json");
     let mut index: serde_json::Value =
         serde_json::from_slice(&fs::read(&index_path).unwrap()).unwrap();
     index["versions"]["1.0.0"] = "../../escape.json".into();
     fs::write(index_path, serde_json::to_vec(&index).unwrap()).unwrap();
-    assert!(catalog::lookup(location, "dan/hello", None).is_err());
+    assert!(catalog::lookup(location, "3dce1568-569c-5b53-9321-37185e751947", None).is_err());
     assert!(catalog::lookup(location, "../escape", None).is_err());
 }
 
@@ -1146,21 +1257,26 @@ fn v1_catalog_is_refused_and_left_unchanged() {
     let first = f.dir.join("first");
     let release =
         catalog::register(first.to_str().unwrap(), f.repo.to_str().unwrap(), "HEAD").unwrap();
-    let old = serde_json::json!({"plugins": {"dan/hello": {"source": release.source, "versions": {"1.0.0": release}}}});
+    let old = serde_json::json!({"plugins": {"3dce1568-569c-5b53-9321-37185e751947": {"source": release.source, "versions": {"1.0.0": release}}}});
     let dir = f.dir.join("old");
     fs::create_dir(&dir).unwrap();
     let original = serde_json::to_vec(&old).unwrap();
     fs::write(dir.join("catalog.json"), &original).unwrap();
     let location = dir.to_str().unwrap();
     assert_eq!(
-        catalog::lookup(location, "dan/hello", None)
+        catalog::lookup(location, "3dce1568-569c-5b53-9321-37185e751947", None)
             .unwrap_err()
             .kind(),
         "catalog"
     );
     for args in [
         &["--catalog", location, "catalog", "show"][..],
-        &["--catalog", location, "install-catalog", "dan/hello"][..],
+        &[
+            "--catalog",
+            location,
+            "install-catalog",
+            "3dce1568-569c-5b53-9321-37185e751947",
+        ][..],
         &[
             "--catalog",
             location,
@@ -1208,7 +1324,7 @@ fn invalid_build_metadata_does_not_publish_release() {
     );
     assert!(result.is_err());
     assert!(
-        !dir.join("namespaces/dan/hello/versions/1.0.0/release.json")
+        !dir.join("packages/3dce1568-569c-5b53-9321-37185e751947/versions/1.0.0/release.json")
             .exists()
     );
 }
@@ -1223,7 +1339,7 @@ fn stable_install_and_update_ignore_untagged_head_and_sort_versions() {
     // A newer-looking version on the branch is not a release.
     fs::write(
         f.repo.join("plugin.json"),
-        r#"{"id":"dan/hello","version":"9.0.0"}"#,
+        r#"{"id":"3dce1568-569c-5b53-9321-37185e751947","name": "fixture", "version":"9.0.0"}"#,
     )
     .unwrap();
     fs::write(f.repo.join("dist/index.js"), "unreleased").unwrap();
@@ -1231,30 +1347,51 @@ fn stable_install_and_update_ignore_untagged_head_and_sort_versions() {
     f.git(&["commit", "-m", "development"]);
     f.install();
     assert_eq!(f.content(), "ten");
-    f.cli(&["update", "dan/hello"], true);
+    f.cli(&["update", "3dce1568-569c-5b53-9321-37185e751947"], true);
     assert_eq!(f.content(), "ten");
-    f.cli(&["update", "dan/hello", "--dev"], true);
+    f.cli(
+        &["update", "3dce1568-569c-5b53-9321-37185e751947", "--dev"],
+        true,
+    );
     assert_eq!(f.content(), "unreleased");
     let before = f.state();
     // The default branch is followed now.
-    f.cli(&["update", "dan/hello"], true);
+    f.cli(&["update", "3dce1568-569c-5b53-9321-37185e751947"], true);
     assert_eq!(before, f.state());
     // An explicit return to releases may go down to the newest one.
-    f.cli(&["update", "dan/hello", "--release"], true);
+    f.cli(
+        &[
+            "update",
+            "3dce1568-569c-5b53-9321-37185e751947",
+            "--release",
+        ],
+        true,
+    );
     assert_eq!(f.content(), "ten");
-    f.cli(&["update", "dan/hello", "--dev", "--ref", "HEAD"], false);
+    f.cli(
+        &[
+            "update",
+            "3dce1568-569c-5b53-9321-37185e751947",
+            "--dev",
+            "--ref",
+            "HEAD",
+        ],
+        false,
+    );
 }
 
 #[test]
 fn catalog_index_summary_is_published_and_used_by_the_cli() {
     let f = Fixture::new();
-    fs::write(f.repo.join("plugin.json"), r#"{"id":"dan/hello","version":"1.10.0","title":"Newest","description":"Details","provides":"theme","tags":["ui"]}"#).unwrap();
+    fs::write(f.repo.join("plugin.json"), r#"{"id":"3dce1568-569c-5b53-9321-37185e751947","name": "fixture", "version":"1.10.0","title":"Newest","description":"Details","provides":"theme","tags":["ui"]}"#).unwrap();
     f.git(&["add", "."]);
     f.git(&["commit", "-m", "release metadata"]);
     f.git(&["tag", "v1.10.0"]);
     fs::write(f.dir.join("sources.txt"), "./upstream\n").unwrap();
     f.cli(&["catalog", "update"], true);
-    let path = f.dir.join("catalog/namespaces/dan/hello/plugin.json");
+    let path = f
+        .dir
+        .join("catalog/packages/3dce1568-569c-5b53-9321-37185e751947/plugin.json");
     let bytes = fs::read(&path).unwrap();
     let index: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(index["schema"], 1);
@@ -1285,8 +1422,9 @@ fn catalog_index_summary_is_published_and_used_by_the_cli() {
         "failed generation leaves index intact"
     );
     fs::write(
-        f.dir
-            .join("catalog/namespaces/dan/hello/versions/1.10.0/release.json"),
+        f.dir.join(
+            "catalog/packages/3dce1568-569c-5b53-9321-37185e751947/versions/1.10.0/release.json",
+        ),
         "{broken",
     )
     .unwrap();
@@ -1300,7 +1438,9 @@ fn catalog_update_restores_summary_when_a_moved_tag_is_kept() {
     let f = Fixture::new();
     fs::write(f.dir.join("sources.txt"), "./upstream\n").unwrap();
     f.cli(&["catalog", "update"], true);
-    let package = f.dir.join("catalog/namespaces/dan/hello");
+    let package = f
+        .dir
+        .join("catalog/packages/3dce1568-569c-5b53-9321-37185e751947");
     let release_path = package.join("versions/1.0.0/release.json");
     let original_release = fs::read(&release_path).unwrap();
     let index_path = package.join("plugin.json");
@@ -1326,7 +1466,7 @@ fn catalog_update_keeps_published_records_when_tags_move() {
     let sources = f.dir.join("sources.txt");
     fs::write(&sources, "# Git sources\n\n./upstream\n./upstream\n").unwrap();
     f.cli(&["--catalog", location, "catalog", "update"], true);
-    let first = catalog::lookup(location, "dan/hello", None).unwrap();
+    let first = catalog::lookup(location, "3dce1568-569c-5b53-9321-37185e751947", None).unwrap();
     assert_eq!(first.manifest.version, "1.0.0");
     assert!(!first.files.is_empty());
     let original_root = fs::read(catalog_dir.join("catalog.json")).unwrap();
@@ -1343,7 +1483,7 @@ fn catalog_update_keeps_published_records_when_tags_move() {
         true,
     );
     assert_eq!(
-        catalog::lookup(location, "dan/hello", None)
+        catalog::lookup(location, "3dce1568-569c-5b53-9321-37185e751947", None)
             .unwrap()
             .manifest
             .version,
@@ -1353,7 +1493,7 @@ fn catalog_update_keeps_published_records_when_tags_move() {
         fs::read(catalog_dir.join("catalog.json")).unwrap(),
         original_root
     );
-    let index = catalog_dir.join("namespaces/dan/hello/plugin.json");
+    let index = catalog_dir.join("packages/3dce1568-569c-5b53-9321-37185e751947/plugin.json");
     let original_index = fs::read(&index).unwrap();
     f.cli(&["--catalog", location, "catalog", "update"], true);
     assert_eq!(fs::read(&index).unwrap(), original_index);
@@ -1368,19 +1508,24 @@ fn catalog_update_keeps_published_records_when_tags_move() {
         "{out}"
     );
     assert!(
-        err.contains("Warning: release dan/hello@1.0.0: tag now points to ")
-            && err.contains("; the published record is kept"),
+        err.contains(
+            "Warning: release 3dce1568-569c-5b53-9321-37185e751947@1.0.0: tag now points to "
+        ) && err.contains("; the published record is kept"),
         "{err}"
     );
     assert!(
         catalog_dir
-            .join("namespaces/dan/hello/versions/2.0.0/release.json")
+            .join("packages/3dce1568-569c-5b53-9321-37185e751947/versions/2.0.0/release.json")
             .exists()
     );
     assert_eq!(
-        catalog::lookup(location, "dan/hello", Some("1.0.0"))
-            .unwrap()
-            .commit,
+        catalog::lookup(
+            location,
+            "3dce1568-569c-5b53-9321-37185e751947",
+            Some("1.0.0")
+        )
+        .unwrap()
+        .commit,
         first.commit
     );
 }
@@ -1391,8 +1536,16 @@ fn catalog_update_validates_every_source_before_writing_and_retains_removed_sour
     let directory = f.dir.join("generated");
     let location = directory.to_str().unwrap();
     let sources = f.dir.join("sources.txt");
-    let no_tags = f.dir.join("dan/no-tags");
-    f.cli(&["init", "dan/no-tags", "--into", "dan/no-tags"], true);
+    let no_tags = f.dir.join("c21efd12-26ee-55fc-b4f7-3a0f72947a6b");
+    f.cli(
+        &[
+            "init",
+            "no-tags",
+            "--into",
+            "c21efd12-26ee-55fc-b4f7-3a0f72947a6b",
+        ],
+        true,
+    );
     assert!(
         f.command("git")
             .arg("-C")
@@ -1403,7 +1556,11 @@ fn catalog_update_validates_every_source_before_writing_and_retains_removed_sour
             .status
             .success()
     );
-    fs::write(&sources, "./upstream\n./dan/no-tags\n").unwrap();
+    fs::write(
+        &sources,
+        "./upstream\n./c21efd12-26ee-55fc-b4f7-3a0f72947a6b\n",
+    )
+    .unwrap();
     f.cli(&["--catalog", location, "catalog", "update"], false);
     assert!(!directory.exists());
     // Stable installs have no implicit fallback to the development branch.
@@ -1411,11 +1568,30 @@ fn catalog_update_validates_every_source_before_writing_and_retains_removed_sour
     f.cli(&["install", no_tags.to_str().unwrap(), "--dev"], true);
     fs::write(&sources, "./upstream\n").unwrap();
     f.cli(&["--catalog", location, "catalog", "update"], true);
-    f.cli(&["init", "dan/second", "--into", "dan/second"], true);
-    fs::write(&sources, "./dan/second\n").unwrap();
+    f.cli(
+        &[
+            "init",
+            "second",
+            "--into",
+            "a8d6dcf6-38d1-5b3f-9159-67cd0f185077",
+        ],
+        true,
+    );
+    fs::write(&sources, "./a8d6dcf6-38d1-5b3f-9159-67cd0f185077\n").unwrap();
     f.cli(&["--catalog", location, "catalog", "update"], true);
-    assert!(directory.join("namespaces/dan/hello/plugin.json").exists());
-    assert!(directory.join("namespaces/dan/second/plugin.json").exists());
+    assert!(
+        directory
+            .join("packages/3dce1568-569c-5b53-9321-37185e751947/plugin.json")
+            .exists()
+    );
+    let second_id = common::manifest_id(&f.dir.join("a8d6dcf6-38d1-5b3f-9159-67cd0f185077"));
+    assert!(
+        directory
+            .join("packages")
+            .join(second_id)
+            .join("plugin.json")
+            .exists()
+    );
 }
 
 #[test]
@@ -1425,9 +1601,12 @@ fn release_manifest_must_match_tag_and_update_warns_on_retagging() {
     let before = f.state();
     // A moved release tag of the installed version: up to date with a warning.
     f.release("1.0.0", "replacement");
-    let (ok, out, err) = f.output(&["update", "dan/hello"]);
+    let (ok, out, err) = f.output(&["update", "3dce1568-569c-5b53-9321-37185e751947"]);
     assert!(ok, "{err}");
-    assert_eq!(out.trim(), "dan/hello up to date (1.0.0)");
+    assert_eq!(
+        out.trim(),
+        "3dce1568-569c-5b53-9321-37185e751947 up to date (1.0.0)"
+    );
     assert!(
         err.contains("Warning: release tag v1.0.0 now points to ")
             && err.contains("; the installed commit is kept"),
@@ -1451,18 +1630,24 @@ fn update_after_a_deleted_release_tag_is_up_to_date_with_a_warning() {
     f.install();
     let before = f.state();
     f.git(&["tag", "-d", "v1.0.0"]);
-    let (ok, out, err) = f.output(&["update", "dan/hello"]);
+    let (ok, out, err) = f.output(&["update", "3dce1568-569c-5b53-9321-37185e751947"]);
     assert!(ok, "{err}");
-    assert_eq!(out.trim(), "dan/hello up to date (1.0.0)");
+    assert_eq!(
+        out.trim(),
+        "3dce1568-569c-5b53-9321-37185e751947 up to date (1.0.0)"
+    );
     assert_eq!(
         err.trim(),
-        "Warning: installed release dan/hello@1.0.0 no longer exists on the origin"
+        "Warning: installed release 3dce1568-569c-5b53-9321-37185e751947@1.0.0 no longer exists on the origin"
     );
     let (ok, out, err) = f.output(&["update", "all"]);
     assert!(ok, "{err}");
-    assert!(out.contains("dan/hello up to date (1.0.0)"), "{out}");
     assert!(
-        err.contains("Warning: installed release dan/hello@1.0.0 no longer exists on the origin"),
+        out.contains("3dce1568-569c-5b53-9321-37185e751947 up to date (1.0.0)"),
+        "{out}"
+    );
+    assert!(
+        err.contains("Warning: installed release 3dce1568-569c-5b53-9321-37185e751947@1.0.0 no longer exists on the origin"),
         "{err}"
     );
     assert_eq!(f.state(), before);
@@ -1478,9 +1663,9 @@ fn info_shows_directory_tree_without_installing() {
     let release = catalog::register(location, f.repo.to_str().unwrap(), "HEAD").unwrap();
     let result = f.cli(&["--catalog", location, "catalog", "show"], true);
     assert!(result.contains("Directories and packages:"));
-    assert!(result.contains("namespaces/"));
-    assert!(result.contains("hello/"));
-    assert!(result.contains("dan/hello — latest: 1.0.0, versions: 1"));
+    assert!(result.contains("packages/"));
+    assert!(result.contains("3dce1568-569c-5b53-9321-37185e751947/"));
+    assert!(result.contains("3dce1568-569c-5b53-9321-37185e751947 — latest: 1.0.0, versions: 1"));
     assert!(result.contains(&release.source));
     assert!(!f.root.exists());
     fs::write(
@@ -1551,7 +1736,7 @@ fn uninstall_without_tty_refuses_and_lists_lost_work_including_stash() {
         .pm()
         .arg("--root")
         .arg(&f.root)
-        .args(["uninstall", "dan/hello"])
+        .args(["uninstall", "3dce1568-569c-5b53-9321-37185e751947"])
         .stdin(std::process::Stdio::null())
         .output()
         .unwrap();
@@ -1564,11 +1749,12 @@ fn uninstall_without_tty_refuses_and_lists_lost_work_including_stash() {
 
     // One refusal tells everything: a consumer and the lost work, from the plan.
     let app = f.dir.join("app");
-    f.cli(&["init", "app/a", "--into", app.to_str().unwrap()], true);
+    f.cli(&["init", "a", "--into", app.to_str().unwrap()], true);
+    let app_id = common::manifest_id(&app);
     let manifest = app.join("plugin.json");
     let mut json: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&manifest).unwrap()).unwrap();
-    json["dependencies"] = serde_json::json!({"dan/hello": "^1"});
+    json["dependencies"] = serde_json::json!({"3dce1568-569c-5b53-9321-37185e751947": "^1"});
     fs::write(&manifest, serde_json::to_string_pretty(&json).unwrap()).unwrap();
     f.cli(&["commit", app.to_str().unwrap(), "0.1.1"], true);
     f.cli(&["install", app.to_str().unwrap()], true);
@@ -1576,20 +1762,28 @@ fn uninstall_without_tty_refuses_and_lists_lost_work_including_stash() {
         .pm()
         .arg("--root")
         .arg(&f.root)
-        .args(["uninstall", "dan/hello"])
+        .args(["uninstall", "3dce1568-569c-5b53-9321-37185e751947"])
         .stdin(std::process::Stdio::null())
         .output()
         .unwrap();
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("Error: cannot uninstall dan/hello: required by app/a")
-            && stderr.contains("  - stash: stash@{0}")
+        stderr.contains(&format!(
+            "Error: cannot uninstall 3dce1568-569c-5b53-9321-37185e751947: required by {app_id}"
+        )) && stderr.contains("  - stash: stash@{0}")
             && stderr.contains("Error kind: has_dependents"),
         "{stderr}"
     );
     assert!(repo.join(".git").is_dir());
-    f.cli(&["uninstall", "dan/hello", "--force"], true);
+    f.cli(
+        &[
+            "uninstall",
+            "3dce1568-569c-5b53-9321-37185e751947",
+            "--force",
+        ],
+        true,
+    );
     assert!(!repo.exists());
 }
 
@@ -1610,9 +1804,9 @@ fn uninstall_on_tty_asks_before_losing_work() {
         .is_ok_and(|o| o.status.success());
     // stdin is the terminal; stderr goes to a file, so the prompt's stream is visible.
     let script = if util_linux {
-        "script -qec \"'$0' --root '$1' uninstall dan/hello 2>'$2'\" /dev/null"
+        "script -qec \"'$0' --root '$1' uninstall 3dce1568-569c-5b53-9321-37185e751947 2>'$2'\" /dev/null"
     } else {
-        "script -q /dev/null sh -c \"exec '$0' --root '$1' uninstall dan/hello 2>'$2'\""
+        "script -q /dev/null sh -c \"exec '$0' --root '$1' uninstall 3dce1568-569c-5b53-9321-37185e751947 2>'$2'\""
     };
     let stderr_file = f.dir.join("uninstall.stderr");
     // `before` runs while the prompt waits, before the answer is typed.
@@ -1644,7 +1838,10 @@ fn uninstall_on_tty_asks_before_losing_work() {
     // stdout carries only result lines.
     assert!(!output.contains("Delete anyway"), "{output}");
     assert!(repo.join("notes.txt").exists());
-    assert_eq!(f.state()["packages"]["dan/hello"]["enabled"], true);
+    assert_eq!(
+        f.state()["packages"]["3dce1568-569c-5b53-9321-37185e751947"]["enabled"],
+        true
+    );
     // Work that appears while the prompt waits is not covered by the answer.
     let later = repo.join("later.txt");
     let (output, stderr) = ask_after(&format!("touch '{}'; ", later.display()), "y");
@@ -1660,7 +1857,10 @@ fn uninstall_on_tty_asks_before_losing_work() {
     fs::remove_file(&later).unwrap();
     let (output, stderr) = ask("y");
     assert!(stderr.contains("Delete anyway? [y/N]"), "{stderr}");
-    assert!(output.contains("dan/hello uninstalled"), "{output}");
+    assert!(
+        output.contains("3dce1568-569c-5b53-9321-37185e751947 uninstalled"),
+        "{output}"
+    );
     assert!(!repo.exists());
     assert!(f.state()["packages"].as_object().unwrap().is_empty());
 }
@@ -1669,7 +1869,10 @@ fn uninstall_on_tty_asks_before_losing_work() {
 fn usage_errors_name_the_problem_and_create_nothing() {
     let f = Fixture::new();
     for (args, message) in [
-        (&["bogus", "qa/demo"][..], "unknown command: bogus"),
+        (
+            &["bogus", "b04244a9-1cd8-5cbe-b988-0fd30b27d359"][..],
+            "unknown command: bogus",
+        ),
         (
             &["catalog", "show", "extra"][..],
             "catalog show: expected 0 argument(s), got 1",
@@ -1695,7 +1898,12 @@ fn usage_errors_name_the_problem_and_create_nothing() {
             "--ref is not valid for catalog links",
         ),
         (
-            &["catalog", "update", "--package", "qa/demo"][..],
+            &[
+                "catalog",
+                "update",
+                "--package",
+                "b04244a9-1cd8-5cbe-b988-0fd30b27d359",
+            ][..],
             "--package requires install/download/commit/catalog register",
         ),
         (
@@ -1715,29 +1923,51 @@ fn usage_errors_name_the_problem_and_create_nothing() {
         ),
         (&["list", "--bogus"][..], "unknown option: --bogus"),
         (
-            &["update", "qa/demo", "--ref", "a", "--ref", "b"][..],
+            &[
+                "update",
+                "b04244a9-1cd8-5cbe-b988-0fd30b27d359",
+                "--ref",
+                "a",
+                "--ref",
+                "b",
+            ][..],
             "--ref given more than once",
         ),
         (
-            &["uninstall", "qa/demo", "--force", "--force"][..],
+            &[
+                "uninstall",
+                "b04244a9-1cd8-5cbe-b988-0fd30b27d359",
+                "--force",
+                "--force",
+            ][..],
             "--force given more than once",
         ),
         (&["update"][..], "update: expected 1 argument(s), got 0"),
         (
-            &["rollback", "a/b", "c"][..],
+            &["rollback", "75494f24-1c7e-5480-9e39-738ff3d038c4", "c"][..],
             "rollback: expected 1 argument(s), got 2",
         ),
-        (&["uninstall", "bad id"][..], "namespace/name"),
+        (&["uninstall", "bad id"][..], "UUID"),
         (
-            &["install-catalog", "qa/demo", "--version", "1.x"][..],
+            &[
+                "install-catalog",
+                "b04244a9-1cd8-5cbe-b988-0fd30b27d359",
+                "--version",
+                "1.x",
+            ][..],
             "1.x",
         ),
         (&["namespace"][..], "unknown command: namespace"),
         (&["namespace", "me"][..], "unknown command: namespace"),
-        (&["init", "hello"][..], "package ID needs a namespace"),
+        (&["init", "hello"][..], "init needs --into DIR"),
         // Library refusals before anything is created (Options are validated first).
         (
-            &["--catalog", "./missing", "update", "qa/demo"][..],
+            &[
+                "--catalog",
+                "./missing",
+                "update",
+                "b04244a9-1cd8-5cbe-b988-0fd30b27d359",
+            ][..],
             "catalog location ./missing does not exist",
         ),
         (
@@ -1754,11 +1984,16 @@ fn usage_errors_name_the_problem_and_create_nothing() {
             "--dev conflicts with --ref",
         ),
         (
-            &["update", "qa/demo", "--dev", "--release"][..],
+            &[
+                "update",
+                "b04244a9-1cd8-5cbe-b988-0fd30b27d359",
+                "--dev",
+                "--release",
+            ][..],
             "--release conflicts with --dev",
         ),
         (
-            &["rollback", "qa/demo", "--dev"][..],
+            &["rollback", "b04244a9-1cd8-5cbe-b988-0fd30b27d359", "--dev"][..],
             "--dev requires install/download/update",
         ),
         (
@@ -1774,7 +2009,12 @@ fn usage_errors_name_the_problem_and_create_nothing() {
             "--version is not valid for download",
         ),
         (
-            &["download-catalog", "qa/demo", "--ref", "a"][..],
+            &[
+                "download-catalog",
+                "b04244a9-1cd8-5cbe-b988-0fd30b27d359",
+                "--ref",
+                "a",
+            ][..],
             "--ref is not valid for download-catalog",
         ),
         (&["download-catalog", "Bad"][..], "invalid"),
@@ -1807,8 +2047,8 @@ fn catalog_commands_name_the_missing_catalog_and_create_nothing() {
         &["catalog", "links"][..],
         &["catalog", "update"][..],
         &["catalog", "register", "x", "--ref", "HEAD"][..],
-        &["install-catalog", "qa/demo"][..],
-        &["download-catalog", "qa/demo"][..],
+        &["install-catalog", "b04244a9-1cd8-5cbe-b988-0fd30b27d359"][..],
+        &["download-catalog", "b04244a9-1cd8-5cbe-b988-0fd30b27d359"][..],
     ] {
         let out = f
             .pm()
@@ -1870,13 +2110,18 @@ fn defaults_are_relative_to_the_current_directory() {
     );
     assert!(
         f.dir
-            .join("gitpm-workspace/dist/dan/hello/index.js")
+            .join("gitpm-workspace/dist/3dce1568-569c-5b53-9321-37185e751947/index.js")
             .exists()
     );
     let out = f
         .command(env!("CARGO_BIN_EXE_gitpm"))
         .current_dir(&f.dir)
-        .args(["init", "me/hello", "--into", "me/hello"])
+        .args([
+            "init",
+            "hello",
+            "--into",
+            "ce6c8a3b-b2f8-5391-8ef8-4cbb7873f5d4",
+        ])
         .output()
         .unwrap();
     assert!(
@@ -1884,7 +2129,11 @@ fn defaults_are_relative_to_the_current_directory() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(f.dir.join("me/hello/plugin.json").exists());
+    assert!(
+        f.dir
+            .join("ce6c8a3b-b2f8-5391-8ef8-4cbb7873f5d4/plugin.json")
+            .exists()
+    );
     assert!(config_files(&f.dir).is_empty());
 }
 
@@ -1913,7 +2162,7 @@ fn legacy_pm_variables_are_ignored() {
     );
     assert!(
         f.dir
-            .join("gitpm-workspace/dist/dan/hello/index.js")
+            .join("gitpm-workspace/dist/3dce1568-569c-5b53-9321-37185e751947/index.js")
             .exists()
     );
     let out = cli(&["catalog", "show"]);
@@ -1923,25 +2172,49 @@ fn legacy_pm_variables_are_ignored() {
             .contains("needs a catalog: pass --catalog DIR_OR_JSON_OR_URL or set GITPM_CATALOG")
     );
     let out = cli(&["init", "hello", "--into", "hello"]);
-    assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("package ID needs a namespace"));
-    let out = cli(&["init", "dan/hello", "--into", "dan/hello"]);
     assert!(
         out.status.success(),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let m: serde_json::Value =
-        serde_json::from_slice(&fs::read(f.dir.join("dan/hello/plugin.json")).unwrap()).unwrap();
-    assert_eq!(m["id"], "dan/hello");
+    let out = cli(&[
+        "init",
+        "hello",
+        "--into",
+        "3dce1568-569c-5b53-9321-37185e751947",
+    ]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let m: serde_json::Value = serde_json::from_slice(
+        &fs::read(
+            f.dir
+                .join("3dce1568-569c-5b53-9321-37185e751947/plugin.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(gitpm::valid_id(m["id"].as_str().unwrap()).is_ok());
+    assert_eq!(m["name"], "hello");
     // The workspace is ./gitpm-workspace (PM_ROOT ignored), so hello is found there.
-    let out = cli(&["fork", "dan/hello", "--ns", "me", "--into", "me/hello"]);
+    let out = cli(&[
+        "fork",
+        "3dce1568-569c-5b53-9321-37185e751947",
+        "--into",
+        "ce6c8a3b-b2f8-5391-8ef8-4cbb7873f5d4",
+    ]);
     assert!(
         out.status.success(),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(f.dir.join("me/hello/plugin.json").exists());
+    assert!(
+        f.dir
+            .join("ce6c8a3b-b2f8-5391-8ef8-4cbb7873f5d4/plugin.json")
+            .exists()
+    );
     assert!(!legacy.exists());
     assert!(config_files(&f.dir).is_empty());
 }
@@ -1949,32 +2222,34 @@ fn legacy_pm_variables_are_ignored() {
 #[test]
 fn init_install_and_fork_into_explicit_folders() {
     let f = Fixture::new();
-    f.cli(&["init", "dan/hello", "--into", "dan/hello"], true);
-    f.cli(&["install", "./dan/hello"], true);
-    let out = f.cli(
-        &["fork", "dan/hello", "--ns", "me", "--into", "me/hello"],
-        true,
-    );
+    f.cli(&["init", "hello", "--into", "author"], true);
+    let original = common::manifest_id(&f.dir.join("author"));
+    f.cli(&["install", "./author"], true);
+    let out = f.cli(&["fork", &original, "--into", "fork"], true);
+    let fork = common::manifest_id(&f.dir.join("fork"));
+    assert_ne!(original, fork);
     assert!(
-        out.contains("me/hello forked from dan/hello (repository root)"),
+        out.contains(&format!("{fork} forked from {original} (repository root)")),
         "{out}"
     );
     assert!(
-        out.contains("gitpm replace dan/hello --with me/hello"),
+        out.contains(&format!("gitpm replace {original} --with {fork}")),
         "{out}"
     );
-    for (folder, id) in [("dan/hello", "dan/hello"), ("me/hello", "me/hello")] {
-        let m: serde_json::Value =
-            serde_json::from_slice(&fs::read(f.dir.join(folder).join("plugin.json")).unwrap())
-                .unwrap();
-        assert_eq!(m["id"], id);
-    }
-    let m: serde_json::Value =
-        serde_json::from_slice(&fs::read(f.dir.join("me/hello/plugin.json")).unwrap()).unwrap();
-    assert_eq!(m["forkOf"]["id"], "dan/hello");
-    f.cli(&["install", "./me/hello", "--dev"], true);
-    assert!(f.root.join("dist/dan/hello/index.js").exists());
-    assert!(f.root.join("dist/me/hello/index.js").exists());
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(f.dir.join("fork/plugin.json")).unwrap()).unwrap();
+    assert_eq!(manifest["forkOf"]["id"], original);
+    assert_eq!(manifest["replaces"]["id"], original);
+    assert_eq!(manifest["name"], "hello");
+    f.cli(&["install", "./fork", "--dev"], true);
+    assert!(
+        f.root
+            .join("dist")
+            .join(&original)
+            .join("index.js")
+            .exists()
+    );
+    assert!(f.root.join("dist").join(&fork).join("index.js").exists());
     assert!(config_files(&f.dir).is_empty());
 }
 
@@ -2108,13 +2383,13 @@ fn gitpm_variables_set_root_catalog_and_sources() {
     );
     assert!(
         f.dir
-            .join("catalog/namespaces/dan/hello/plugin.json")
+            .join("catalog/packages/3dce1568-569c-5b53-9321-37185e751947/plugin.json")
             .exists()
     );
     let out = f
         .pm()
         .current_dir(&f.dir)
-        .args(["install-catalog", "dan/hello"])
+        .args(["install-catalog", "3dce1568-569c-5b53-9321-37185e751947"])
         .output()
         .unwrap();
     assert!(
@@ -2159,7 +2434,12 @@ fn help_names_the_binary_and_removed_commands_are_unknown() {
     ] {
         let out = f
             .pm()
-            .args([command, "dan/hello", "--into", "x"])
+            .args([
+                command,
+                "3dce1568-569c-5b53-9321-37185e751947",
+                "--into",
+                "x",
+            ])
             .output()
             .unwrap();
         assert!(!out.status.success());
@@ -2180,7 +2460,7 @@ fn update_all_previews_applies_and_rejects_unsupported_options() {
     let before = f.state();
     let preview = f.cli(&["update", "all", "--dry-run"], true);
     assert!(
-        preview.contains("dan/hello would be updated 1.0.0 → 2.0.0"),
+        preview.contains("3dce1568-569c-5b53-9321-37185e751947 would be updated 1.0.0 → 2.0.0"),
         "{preview}"
     );
     assert!(preview.contains("Nothing was changed."));
@@ -2189,18 +2469,28 @@ fn update_all_previews_applies_and_rejects_unsupported_options() {
     for args in [
         vec!["update", "all", "--ref", "main"],
         vec!["update", "all", "--dev"],
-        vec!["update", "dan/hello", "--dry-run"],
+        vec![
+            "update",
+            "3dce1568-569c-5b53-9321-37185e751947",
+            "--dry-run",
+        ],
     ] {
         f.cli(&args, false);
         assert_eq!(f.state(), before);
     }
     let out = f.cli(&["update", "all"], true);
     assert!(out.contains("1 updates, 0 installs"), "{out}");
-    assert!(out.contains("dan/hello updated 1.0.0 → 2.0.0"), "{out}");
+    assert!(
+        out.contains("3dce1568-569c-5b53-9321-37185e751947 updated 1.0.0 → 2.0.0"),
+        "{out}"
+    );
     assert_eq!(f.content(), "hello v2");
     let out = f.cli(&["update", "all"], true);
     assert!(out.contains("0 updates, 0 installs"), "{out}");
-    assert!(out.contains("dan/hello up to date (2.0.0)"), "{out}");
+    assert!(
+        out.contains("3dce1568-569c-5b53-9321-37185e751947 up to date (2.0.0)"),
+        "{out}"
+    );
 }
 
 #[test]
@@ -2209,12 +2499,14 @@ fn install_again_reports_already_installed_and_changes_nothing() {
     f.install();
     let source = f.repo.to_str().unwrap();
     let state = || fs::read(f.root.join("state.json")).unwrap();
-    let dist = f.root.join("dist/dan/hello/index.js");
+    let dist = f
+        .root
+        .join("dist/3dce1568-569c-5b53-9321-37185e751947/index.js");
     let (before, modified) = (state(), fs::metadata(&dist).unwrap().modified().unwrap());
     // Same source, same revision.
     assert_eq!(
         f.cli(&["install", source], true),
-        "dan/hello already installed (1.0.0)\n"
+        "3dce1568-569c-5b53-9321-37185e751947 already installed (1.0.0)\n"
     );
     assert_eq!(state(), before);
     assert_eq!(fs::metadata(&dist).unwrap().modified().unwrap(), modified);
@@ -2222,23 +2514,23 @@ fn install_again_reports_already_installed_and_changes_nothing() {
     f.release("1.1.0", "hello v2");
     assert_eq!(
         f.cli(&["install", source], true),
-        "dan/hello already installed (1.0.0); run update\n"
+        "3dce1568-569c-5b53-9321-37185e751947 already installed (1.0.0); run update\n"
     );
     assert_eq!(state(), before);
-    assert!(f.state()["packages"]["dan/hello"]["previous"].is_null());
+    assert!(f.state()["packages"]["3dce1568-569c-5b53-9321-37185e751947"]["previous"].is_null());
     // An explicit --ref or --dev is named in the hint, never silently ignored.
     assert_eq!(
         f.cli(&["install", source, "--ref", "v1.1.0"], true),
-        "dan/hello already installed (1.0.0); requested --ref v1.1.0 — run update dan/hello --ref v1.1.0\n"
+        "3dce1568-569c-5b53-9321-37185e751947 already installed (1.0.0); requested --ref v1.1.0 — run update 3dce1568-569c-5b53-9321-37185e751947 --ref v1.1.0\n"
     );
     // Same revision, another mode (the tag would pin it): named too.
     assert_eq!(
         f.cli(&["install", source, "--ref", "v1.0.0"], true),
-        "dan/hello already installed (1.0.0); requested --ref v1.0.0 — run update dan/hello --ref v1.0.0\n"
+        "3dce1568-569c-5b53-9321-37185e751947 already installed (1.0.0); requested --ref v1.0.0 — run update 3dce1568-569c-5b53-9321-37185e751947 --ref v1.0.0\n"
     );
     assert_eq!(
         f.cli(&["install", source, "--dev"], true),
-        "dan/hello already installed (1.0.0); requested --dev — run update dan/hello --dev\n"
+        "3dce1568-569c-5b53-9321-37185e751947 already installed (1.0.0); requested --dev — run update 3dce1568-569c-5b53-9321-37185e751947 --dev\n"
     );
     assert_eq!(state(), before);
     assert_eq!(f.content(), "hello v1");
@@ -2260,14 +2552,14 @@ fn install_again_reports_already_installed_and_changes_nothing() {
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("already installed: dan/hello")
+        stderr.contains("already installed: 3dce1568-569c-5b53-9321-37185e751947")
             && stderr.contains("Error kind: already_installed"),
         "{stderr}"
     );
     assert_eq!(state(), before);
     assert_eq!(
-        f.cli(&["update", "dan/hello"], true),
-        "dan/hello updated 1.0.0 → 1.1.0\n"
+        f.cli(&["update", "3dce1568-569c-5b53-9321-37185e751947"], true),
+        "3dce1568-569c-5b53-9321-37185e751947 updated 1.0.0 → 1.1.0\n"
     );
 }
 
@@ -2276,36 +2568,57 @@ fn mutating_commands_print_one_line_per_package_and_no_ok_lines() {
     let f = Fixture::new();
     f.install();
     f.release("1.1.0", "hello v2");
-    f.cli(&["update", "dan/hello"], true);
+    f.cli(&["update", "3dce1568-569c-5b53-9321-37185e751947"], true);
     for (args, expected) in [
         (
-            &["rollback", "dan/hello"][..],
-            "dan/hello rolled back 1.1.0 → 1.0.0\n",
+            &["rollback", "3dce1568-569c-5b53-9321-37185e751947"][..],
+            "3dce1568-569c-5b53-9321-37185e751947 rolled back 1.1.0 → 1.0.0\n",
         ),
         (
-            &["update", "dan/hello", "--ref", "v1.0.0"][..],
-            "dan/hello pinned at 1.0.0 (v1.0.0)\n",
+            &[
+                "update",
+                "3dce1568-569c-5b53-9321-37185e751947",
+                "--ref",
+                "v1.0.0",
+            ][..],
+            "3dce1568-569c-5b53-9321-37185e751947 pinned at 1.0.0 (v1.0.0)\n",
         ),
         (
-            &["update", "dan/hello"][..],
-            "dan/hello pinned at 1.0.0 (v1.0.0)\n",
+            &["update", "3dce1568-569c-5b53-9321-37185e751947"][..],
+            "3dce1568-569c-5b53-9321-37185e751947 pinned at 1.0.0 (v1.0.0)\n",
         ),
         (
-            &["update", "dan/hello", "--release"][..],
-            "dan/hello updated 1.0.0 → 1.1.0\n",
+            &[
+                "update",
+                "3dce1568-569c-5b53-9321-37185e751947",
+                "--release",
+            ][..],
+            "3dce1568-569c-5b53-9321-37185e751947 updated 1.0.0 → 1.1.0\n",
         ),
         (
-            &["rollback", "dan/hello"][..],
-            "dan/hello rolled back 1.1.0 → 1.0.0\n",
+            &["rollback", "3dce1568-569c-5b53-9321-37185e751947"][..],
+            "3dce1568-569c-5b53-9321-37185e751947 rolled back 1.1.0 → 1.0.0\n",
         ),
-        (&["disable", "dan/hello"][..], "dan/hello disabled\n"),
-        (&["enable", "dan/hello"][..], "dan/hello enabled\n"),
         (
-            &["forget", "dan/hello"][..],
-            "dan/hello forgotten (clone kept; restore re-registers it)\n",
+            &["disable", "3dce1568-569c-5b53-9321-37185e751947"][..],
+            "3dce1568-569c-5b53-9321-37185e751947 disabled\n",
         ),
-        (&["restore", "dan/hello"][..], "dan/hello restored 1.0.0\n"),
-        (&["uninstall", "dan/hello"][..], "dan/hello uninstalled\n"),
+        (
+            &["enable", "3dce1568-569c-5b53-9321-37185e751947"][..],
+            "3dce1568-569c-5b53-9321-37185e751947 enabled\n",
+        ),
+        (
+            &["forget", "3dce1568-569c-5b53-9321-37185e751947"][..],
+            "3dce1568-569c-5b53-9321-37185e751947 forgotten (clone kept; restore re-registers it)\n",
+        ),
+        (
+            &["restore", "3dce1568-569c-5b53-9321-37185e751947"][..],
+            "3dce1568-569c-5b53-9321-37185e751947 restored 1.0.0\n",
+        ),
+        (
+            &["uninstall", "3dce1568-569c-5b53-9321-37185e751947"][..],
+            "3dce1568-569c-5b53-9321-37185e751947 uninstalled\n",
+        ),
     ] {
         assert_eq!(f.cli(args, true), expected, "{args:?}");
     }
@@ -2313,10 +2626,17 @@ fn mutating_commands_print_one_line_per_package_and_no_ok_lines() {
     let source = source.to_str().unwrap();
     assert_eq!(
         f.cli(&["download", source], true),
-        format!("downloaded dan/hello@1.1.0 from {source} (disabled)\n")
+        format!("downloaded 3dce1568-569c-5b53-9321-37185e751947@1.1.0 from {source} (disabled)\n")
     );
-    assert!(!f.root.join("dist/dan/hello").exists());
-    assert_eq!(f.cli(&["enable", "dan/hello"], true), "dan/hello enabled\n");
+    assert!(
+        !f.root
+            .join("dist/3dce1568-569c-5b53-9321-37185e751947")
+            .exists()
+    );
+    assert_eq!(
+        f.cli(&["enable", "3dce1568-569c-5b53-9321-37185e751947"], true),
+        "3dce1568-569c-5b53-9321-37185e751947 enabled\n"
+    );
     assert_eq!(f.content(), "hello v2");
 }
 
@@ -2420,11 +2740,22 @@ fn a_missing_catalog_is_a_library_error_and_targets_are_exclusive() {
             "Error: --dev conflicts with --ref",
         ),
         (
-            vec!["update", "dan/hello", "--dev", "--release"],
+            vec![
+                "update",
+                "3dce1568-569c-5b53-9321-37185e751947",
+                "--dev",
+                "--release",
+            ],
             "Error: --release conflicts with --dev",
         ),
         (
-            vec!["update", "dan/hello", "--ref", "x", "--release"],
+            vec![
+                "update",
+                "3dce1568-569c-5b53-9321-37185e751947",
+                "--ref",
+                "x",
+                "--release",
+            ],
             "Error: --release conflicts with --ref",
         ),
         (
@@ -2450,7 +2781,7 @@ fn a_missing_catalog_is_a_library_error_and_targets_are_exclusive() {
     let (ok, stdout, stderr) = f.output(&["install", source, "--ref", "v1.0.0"]);
     assert!(ok, "{stderr}");
     assert!(
-        stdout.starts_with("installed dan/hello@1.0.0 from "),
+        stdout.starts_with("installed 3dce1568-569c-5b53-9321-37185e751947@1.0.0 from "),
         "{stdout}"
     );
 }
@@ -2462,8 +2793,11 @@ fn list_works_while_the_workspace_is_locked() {
     f.install();
     let manager = gitpm::Manager::open(&f.root).unwrap();
     let state = f.state();
-    assert_eq!(state["resolved"][0]["id"], "dan/hello");
-    let (ok, _, stderr) = f.output(&["enable", "dan/hello"]);
+    assert_eq!(
+        state["resolved"][0]["id"],
+        "3dce1568-569c-5b53-9321-37185e751947"
+    );
+    let (ok, _, stderr) = f.output(&["enable", "3dce1568-569c-5b53-9321-37185e751947"]);
     assert!(!ok);
     assert!(stderr.contains("Error kind: locked"), "{stderr}");
     drop(manager);
@@ -2474,18 +2808,20 @@ fn list_works_while_the_workspace_is_locked() {
 fn errors_print_a_command_hint_by_kind() {
     let f = Fixture::new();
     f.install();
-    f.cli(&["forget", "dan/hello"], true);
+    f.cli(&["forget", "3dce1568-569c-5b53-9321-37185e751947"], true);
     let (ok, _, stderr) = f.output(&["install", f.repo.to_str().unwrap()]);
     assert!(!ok);
     assert!(
-        stderr.contains("Error: dan/hello was forgotten and its clone is kept\n"),
+        stderr.contains(
+            "Error: 3dce1568-569c-5b53-9321-37185e751947 was forgotten and its clone is kept\n"
+        ),
         "{stderr}"
     );
     assert!(stderr.contains("Error kind: already_installed"), "{stderr}");
     assert!(
         stderr.contains("Hint: ")
-            && stderr.contains("`gitpm restore dan/hello`")
-            && stderr.contains("`gitpm uninstall dan/hello`"),
+            && stderr.contains("`gitpm restore 3dce1568-569c-5b53-9321-37185e751947`")
+            && stderr.contains("`gitpm uninstall 3dce1568-569c-5b53-9321-37185e751947`"),
         "{stderr}"
     );
     // A usage error has no kind and no hint.
@@ -2508,19 +2844,22 @@ fn update_past_a_broken_historical_tag_warns_about_it() {
     f.git(&["commit", "-m", "broken"]);
     f.git(&["tag", "v1.5.0"]);
     f.release("2.0.0", "hello v2");
-    let (ok, stdout, stderr) = f.output(&["update", "dan/hello"]);
+    let (ok, stdout, stderr) = f.output(&["update", "3dce1568-569c-5b53-9321-37185e751947"]);
     assert!(ok, "{stderr}");
-    assert_eq!(stdout, "dan/hello updated 1.0.0 → 2.0.0 (major)\n");
+    assert_eq!(
+        stdout,
+        "3dce1568-569c-5b53-9321-37185e751947 updated 1.0.0 → 2.0.0 (major)\n"
+    );
     assert!(
         stderr.contains("Warning: skipped release tag v1.5.0: invalid manifest"),
         "{stderr}"
     );
-    f.cli(&["rollback", "dan/hello"], true);
+    f.cli(&["rollback", "3dce1568-569c-5b53-9321-37185e751947"], true);
     f.release("2.1.0", "hello v2.1");
     let (ok, stdout, stderr) = f.output(&["update", "all"]);
     assert!(ok, "{stderr}");
     assert!(
-        stdout.contains("dan/hello updated 1.0.0 → 2.1.0"),
+        stdout.contains("3dce1568-569c-5b53-9321-37185e751947 updated 1.0.0 → 2.1.0"),
         "{stdout}"
     );
     assert!(
@@ -2545,15 +2884,23 @@ fn refs_are_exact_and_the_mode_is_named() {
     f.cli(&["install", source, "--ref", "v1.0.0"], true);
     assert_eq!(
         f.cli(&["install", source, "--ref", "v1.0.0"], true),
-        "dan/hello already installed (1.0.0, pinned at v1.0.0)\n"
+        "3dce1568-569c-5b53-9321-37185e751947 already installed (1.0.0, pinned at v1.0.0)\n"
     );
     assert_eq!(
         f.cli(&["install", source, "--ref", "HEAD"], true),
-        "dan/hello already installed (1.0.0, pinned at v1.0.0); requested --ref HEAD — run update dan/hello --ref HEAD\n"
+        "3dce1568-569c-5b53-9321-37185e751947 already installed (1.0.0, pinned at v1.0.0); requested --ref HEAD — run update 3dce1568-569c-5b53-9321-37185e751947 --ref HEAD\n"
     );
     assert_eq!(
-        f.cli(&["update", "dan/hello", "--ref", "HEAD"], true),
-        "dan/hello follows branch main at 1.0.0\n"
+        f.cli(
+            &[
+                "update",
+                "3dce1568-569c-5b53-9321-37185e751947",
+                "--ref",
+                "HEAD"
+            ],
+            true
+        ),
+        "3dce1568-569c-5b53-9321-37185e751947 follows branch main at 1.0.0\n"
     );
 }
 
@@ -2577,7 +2924,12 @@ fn verified_catalog_protects_updates_and_detach_drops_it() {
     );
     // Unverified: discovery only.
     f.cli(
-        &["--catalog", location, "install-catalog", "dan/hello"],
+        &[
+            "--catalog",
+            location,
+            "install-catalog",
+            "3dce1568-569c-5b53-9321-37185e751947",
+        ],
         true,
     );
     let out = f.cli(&["--catalog", location, "check"], true);
@@ -2586,7 +2938,7 @@ fn verified_catalog_protects_updates_and_detach_drops_it() {
         "{out}"
     );
     assert!(f.state()["resolved"][0].get("catalog").is_none());
-    f.cli(&["uninstall", "dan/hello"], true);
+    f.cli(&["uninstall", "3dce1568-569c-5b53-9321-37185e751947"], true);
 
     // The owner marks the catalog verified by hand.
     let file = catalog_dir.join("catalog.json");
@@ -2601,15 +2953,22 @@ fn verified_catalog_protects_updates_and_detach_drops_it() {
     assert!(info.contains("Verified: yes"), "{info}");
 
     f.cli(
-        &["--catalog", location, "install-catalog", "dan/hello"],
+        &[
+            "--catalog",
+            location,
+            "install-catalog",
+            "3dce1568-569c-5b53-9321-37185e751947",
+        ],
         true,
     );
     assert!(f.state()["resolved"][0]["catalog"].is_string());
     f.release("1.1.0", "hello v2");
     // No catalog given: the recorded verified catalog is read.
-    let out = f.cli_without_catalog(&["update", "dan/hello"], true);
+    let out = f.cli_without_catalog(&["update", "3dce1568-569c-5b53-9321-37185e751947"], true);
     assert!(
-        out.contains("dan/hello kept at 1.0.0 (upstream 1.1.0 not in catalog)"),
+        out.contains(
+            "3dce1568-569c-5b53-9321-37185e751947 kept at 1.0.0 (upstream 1.1.0 not in catalog)"
+        ),
         "{out}"
     );
     let out = f.cli(&["--catalog", location, "check"], true);
@@ -2622,14 +2981,21 @@ fn verified_catalog_protects_updates_and_detach_drops_it() {
     f.cli(&["update", "all", "--detach"], false);
     f.cli(&["install", repo, "--detach"], false);
 
-    let out = f.cli_without_catalog(&["update", "dan/hello", "--detach"], true);
+    let out = f.cli_without_catalog(
+        &["update", "3dce1568-569c-5b53-9321-37185e751947", "--detach"],
+        true,
+    );
     assert!(
-        out.contains("dan/hello detached from catalog") && out.contains("updated 1.0.0 → 1.1.0"),
+        out.contains("3dce1568-569c-5b53-9321-37185e751947 detached from catalog")
+            && out.contains("updated 1.0.0 → 1.1.0"),
         "{out}"
     );
     assert!(f.state()["resolved"][0].get("catalog").is_none());
     assert_eq!(f.content(), "hello v2");
-    f.cli(&["update", "dan/hello", "--detach"], false);
+    f.cli(
+        &["update", "3dce1568-569c-5b53-9321-37185e751947", "--detach"],
+        false,
+    );
 }
 
 /// `update` marks a major update, passes over pre-releases (`check` names them) and
@@ -2639,7 +3005,7 @@ fn update_lines_mark_major_updates() {
     let f = Fixture::new();
     let row = |out: &str| {
         out.lines()
-            .find(|l| l.starts_with("dan/hello "))
+            .find(|l| l.starts_with("3dce1568-569c-5b53-9321-37185e751947 "))
             .unwrap_or_else(|| panic!("no row: {out}"))
             .split_whitespace()
             .collect::<Vec<_>>()
@@ -2648,28 +3014,28 @@ fn update_lines_mark_major_updates() {
     f.cli_without_catalog(&["install", f.repo.to_str().unwrap()], true);
     f.release("1.1.0", "hello v1.1");
     assert_eq!(
-        f.cli_without_catalog(&["update", "dan/hello"], true),
-        "dan/hello updated 1.0.0 → 1.1.0\n"
+        f.cli_without_catalog(&["update", "3dce1568-569c-5b53-9321-37185e751947"], true),
+        "3dce1568-569c-5b53-9321-37185e751947 updated 1.0.0 → 1.1.0\n"
     );
     f.release("2.0.0-beta.1", "hello v2 beta");
     assert_eq!(
-        f.cli_without_catalog(&["update", "dan/hello"], true),
-        "dan/hello up to date (1.1.0)\n"
+        f.cli_without_catalog(&["update", "3dce1568-569c-5b53-9321-37185e751947"], true),
+        "3dce1568-569c-5b53-9321-37185e751947 up to date (1.1.0)\n"
     );
     let out = f.cli_without_catalog(&["check"], true);
     assert_eq!(
         row(&out),
-        "dan/hello 1.1.0 1.1.0 yes origin up to date; pre-release 2.0.0-beta.1"
+        "3dce1568-569c-5b53-9321-37185e751947 1.1.0 1.1.0 yes origin up to date; pre-release 2.0.0-beta.1"
     );
     f.release("2.0.0", "hello v2");
     let out = f.cli_without_catalog(&["check"], true);
     assert_eq!(
         row(&out),
-        "dan/hello 1.1.0 2.0.0 (major) yes origin update available"
+        "3dce1568-569c-5b53-9321-37185e751947 1.1.0 2.0.0 (major) yes origin update available"
     );
     assert_eq!(
         f.cli_without_catalog(&["update", "all"], true),
-        "dan/hello updated 1.1.0 → 2.0.0 (major)\n1 updates, 0 installs, 0 kept back.\n"
+        "3dce1568-569c-5b53-9321-37185e751947 updated 1.1.0 → 2.0.0 (major)\n1 updates, 0 installs, 0 kept back.\n"
     );
 
     // A catalog pre-release is installed by name and then followed to its release.
@@ -2694,33 +3060,60 @@ fn update_lines_mark_major_updates() {
         );
     }
     let out = other.cli(
-        &["--catalog", location, "install-catalog", "dan/hello"],
+        &[
+            "--catalog",
+            location,
+            "install-catalog",
+            "3dce1568-569c-5b53-9321-37185e751947",
+        ],
         true,
     );
-    assert!(out.contains("installed dan/hello@1.0.0 from"), "{out}");
-    other.cli(&["--catalog", location, "uninstall", "dan/hello"], true);
+    assert!(
+        out.contains("installed 3dce1568-569c-5b53-9321-37185e751947@1.0.0 from"),
+        "{out}"
+    );
+    other.cli(
+        &[
+            "--catalog",
+            location,
+            "uninstall",
+            "3dce1568-569c-5b53-9321-37185e751947",
+        ],
+        true,
+    );
     let out = other.cli(
         &[
             "--catalog",
             location,
             "install-catalog",
-            "dan/hello",
+            "3dce1568-569c-5b53-9321-37185e751947",
             "--version",
             "1.1.0-rc.1",
         ],
         true,
     );
-    assert!(out.contains("installed dan/hello@1.1.0-rc.1 from"), "{out}");
+    assert!(
+        out.contains("installed 3dce1568-569c-5b53-9321-37185e751947@1.1.0-rc.1 from"),
+        "{out}"
+    );
     assert_eq!(
-        other.cli(&["--catalog", location, "update", "dan/hello"], true),
-        "dan/hello updated 1.1.0-rc.1 → 1.1.0-rc.2\n"
+        other.cli(
+            &[
+                "--catalog",
+                location,
+                "update",
+                "3dce1568-569c-5b53-9321-37185e751947"
+            ],
+            true
+        ),
+        "3dce1568-569c-5b53-9321-37185e751947 updated 1.1.0-rc.1 → 1.1.0-rc.2\n"
     );
     other.cli(
         &[
             "--catalog",
             location,
             "install-catalog",
-            "dan/hello",
+            "3dce1568-569c-5b53-9321-37185e751947",
             "--version",
             "1.1.0+build",
         ],
@@ -2756,7 +3149,7 @@ fn catalog_package_with_pre_releases_only() {
         .pm()
         .current_dir(&f.dir)
         .args(["--root", f.root.to_str().unwrap(), "--catalog", location])
-        .args(["install-catalog", "dan/hello"])
+        .args(["install-catalog", "3dce1568-569c-5b53-9321-37185e751947"])
         .output()
         .unwrap();
     assert!(!out.status.success());
@@ -2767,14 +3160,14 @@ fn catalog_package_with_pre_releases_only() {
             "--catalog",
             location,
             "install-catalog",
-            "dan/hello",
+            "3dce1568-569c-5b53-9321-37185e751947",
             "--version",
             "2.0.0-beta.1",
         ],
         true,
     );
     assert!(
-        out.contains("installed dan/hello@2.0.0-beta.1 from"),
+        out.contains("installed 3dce1568-569c-5b53-9321-37185e751947@2.0.0-beta.1 from"),
         "{out}"
     );
 }
@@ -2800,7 +3193,7 @@ fn update_all_local_work_prints_the_library_message_unchanged() {
     assert_eq!(err, format!("Error: {error}\nError kind: local_changes\n"));
     assert!(
         err.contains(
-            "dan/hello: unpublished local work blocks update all; unpublished tag: local-only"
+            "3dce1568-569c-5b53-9321-37185e751947: unpublished local work blocks update all; unpublished tag: local-only"
         ),
         "{err}"
     );
@@ -2837,7 +3230,7 @@ fn catalog_group_runs_every_subcommand() {
             "--ref",
             "v1.2.0",
             "--package",
-            "dan/hello",
+            "3dce1568-569c-5b53-9321-37185e751947",
             "--build-url",
             "https://example.invalid/build.tar.gz",
             "--build-sha256",
@@ -2846,10 +3239,13 @@ fn catalog_group_runs_every_subcommand() {
         true,
     );
     let release: serde_json::Value = serde_json::from_str(&out).unwrap();
-    assert_eq!(release["manifest"]["id"], "dan/hello");
+    assert_eq!(
+        release["manifest"]["id"],
+        "3dce1568-569c-5b53-9321-37185e751947"
+    );
     let show = f.cli(&["--catalog", location, "catalog", "show"], true);
     assert!(
-        show.contains("dan/hello — latest: 1.2.0, versions: 3"),
+        show.contains("3dce1568-569c-5b53-9321-37185e751947 — latest: 1.2.0, versions: 3"),
         "{show}"
     );
     let links = f.cli(&["--catalog", location, "catalog", "links"], true);
@@ -2939,7 +3335,8 @@ fn file_formats_use_version_one_and_refuse_other_versions() {
             "catalog",
         ),
         (
-            f.dir.join("catalog/namespaces/dan/hello/plugin.json"),
+            f.dir
+                .join("catalog/packages/3dce1568-569c-5b53-9321-37185e751947/plugin.json"),
             "schema",
             vec!["catalog", "show"],
             "catalog",
@@ -2972,18 +3369,25 @@ fn link_exposes_live_files_and_renders_library_release_disposition() {
     let f = Fixture::new();
     f.git(&["config", "remote.origin.url", f.repo.to_str().unwrap()]);
     let linked = f.cli_without_catalog(&["link", f.repo.to_str().unwrap()], true);
-    assert!(linked.contains("dan/hello dev-linked 1.0.0"), "{linked}");
+    assert!(
+        linked.contains("3dce1568-569c-5b53-9321-37185e751947 dev-linked 1.0.0"),
+        "{linked}"
+    );
     fs::write(f.repo.join("dist/live.txt"), "uncommitted bytes").unwrap();
     assert_eq!(
-        fs::read_to_string(f.root.join("dist/dan/hello/live.txt")).unwrap(),
+        fs::read_to_string(
+            f.root
+                .join("dist/3dce1568-569c-5b53-9321-37185e751947/live.txt")
+        )
+        .unwrap(),
         "uncommitted bytes"
     );
     let check = f.cli_without_catalog(&["check"], true);
     assert!(check.contains("dev-linked and unchanged"), "{check}");
     f.release("1.1.0", "next release");
     for args in [
-        vec!["update", "dan/hello"],
-        vec!["update", "dan/hello", "--dev"],
+        vec!["update", "3dce1568-569c-5b53-9321-37185e751947"],
+        vec!["update", "3dce1568-569c-5b53-9321-37185e751947", "--dev"],
         vec!["update", "all", "--dry-run"],
         vec!["update", "all"],
     ] {
@@ -2996,9 +3400,16 @@ fn link_exposes_live_files_and_renders_library_release_disposition() {
     }
     let listed: serde_json::Value =
         serde_json::from_str(&f.cli_without_catalog(&["list"], true)).unwrap();
-    assert_eq!(listed["packages"]["dan/hello"]["version"], "1.0.0");
-    assert!(listed["packages"]["dan/hello"].get("current").is_none());
-    f.cli_without_catalog(&["uninstall", "dan/hello"], true);
+    assert_eq!(
+        listed["packages"]["3dce1568-569c-5b53-9321-37185e751947"]["version"],
+        "1.0.0"
+    );
+    assert!(
+        listed["packages"]["3dce1568-569c-5b53-9321-37185e751947"]
+            .get("current")
+            .is_none()
+    );
+    f.cli_without_catalog(&["uninstall", "3dce1568-569c-5b53-9321-37185e751947"], true);
     assert_eq!(
         fs::read_to_string(f.repo.join("dist/live.txt")).unwrap(),
         "uncommitted bytes"

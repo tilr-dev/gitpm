@@ -1,8 +1,8 @@
 """UC-056: Required switch back and dependent deletion guards (P0, mandatory).
 
-Fixture g6_replaced: vendor/base 1.0.0, consumers app/a and app/b (^1.0), other/x;
-mine/base (a `gitpm fork` with an edited payload, 1.0.1, replaces vendor/base 1.0.0) is the
-active provider of vendor/base for every consumer.
+Fixture g6_replaced: c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 1.0.0, consumers 9692fc07-23c7-5f20-8779-f09374f1a571 and f5984d44-92bd-51ac-8e8f-d911dd824ef3 (^1.0), a768d335-0cf7-597a-b1ba-0eb542495aec;
+db33e43e-e652-5767-8e21-27fb3cef9723 (a `gitpm fork` with an edited payload, 1.0.1, replaces c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 1.0.0) is the
+active provider of c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 for every consumer.
 
 TTY prompts use a real pseudo-terminal on stdin (local helper `gitpm_tty`).
 """
@@ -14,8 +14,8 @@ import time
 
 from gitpmtest import R, T, case
 
-ORIGINAL, FORK = "vendor/base", "mine/base"
-CONSUMERS = ["app/a", "app/b"]
+ORIGINAL, FORK = "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9", "db33e43e-e652-5767-8e21-27fb3cef9723"
+CONSUMERS = ["9692fc07-23c7-5f20-8779-f09374f1a571", "f5984d44-92bd-51ac-8e8f-d911dd824ef3"]
 FORK_PAYLOAD = "export const greeting = 'fork payload';\n"
 
 
@@ -64,13 +64,13 @@ def gitpm_tty(t: T, *args: str, answer: bytes, timeout: int = 60) -> R:
 
 @case(fixture="g6_replaced", spec=["dependencies/dependents-guard-removal", "fork-replacement/active-fork-rules"])
 def active_provider_guarded(t: T):
-    """With vendor/base disabled (it cannot take the consumers over), disable / forget /
+    """With c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 disabled (it cannot take the consumers over), disable / forget /
     uninstall of the active fork refuse naming both consumers; nothing changes."""
     t.gitpm_ok("disable", ORIGINAL)
     before = t.snap(t.ws)
     for action in ["disable", "forget", "uninstall"]:
         t.gitpm_err(action, FORK, kind="has_dependents",
-                 contains=f"cannot {action} {FORK}: required by app/a, app/b")
+                 contains=f"cannot {action} {FORK}: required by 9692fc07-23c7-5f20-8779-f09374f1a571, f5984d44-92bd-51ac-8e8f-d911dd824ef3")
     t.same(before, "workspace")
     on_fork(t)
 
@@ -95,20 +95,20 @@ def forced_provider_removal_drops_binding(t: T):
 
 @case(fixture="g6_replaced", spec=["fork-replacement/switching-back", "dist/switching-back-redeploys-the-original#back-to-the-original"])
 def switch_back_to_compatible_original(t: T):
-    """replace ORIGINAL --with ORIGINAL: no prompt, every consumer on vendor/base again; fork keeps history and edits."""
+    """replace ORIGINAL --with ORIGINAL: no prompt, every consumer on c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 again; fork keeps history and edits."""
     fork_entry = t.package(FORK)
     fork_files = t.snap(t.clone(FORK), t.dist(FORK), git=True)
     fork_author = t.snap(t.repo(FORK), git=True)
     r = t.gitpm_ok("replace", ORIGINAL, "--with", ORIGINAL)
     t.lacks(r.err, "Warning", "[y/N]")
-    t.has(r.out, f"{ORIGINAL} switched back from {FORK} ({ORIGINAL} 1.0.0 for: app/a, app/b); "
+    t.has(r.out, f"{ORIGINAL} switched back from {FORK} ({ORIGINAL} 1.0.0 for: 9692fc07-23c7-5f20-8779-f09374f1a571, f5984d44-92bd-51ac-8e8f-d911dd824ef3); "
                  f"{FORK} stays installed and enabled (disable or uninstall it if not wanted)")
     t.ok("replacements" not in t.state(), "no binding in state.json")
     t.eq(resolution(t), {c: (ORIGINAL, True) for c in CONSUMERS}, "consumers on the original")
     view = resolved(t)
     t.eq(view[ORIGINAL].get("dependents"), CONSUMERS, "original dependents")
     t.ok(not view[FORK].get("dependents") and not view[FORK].get("replacing"), "fork is unused")
-    t.has((t.dist(ORIGINAL) / "index.js").read_text(), "vendor/base 1.0.0")
+    t.has((t.dist(ORIGINAL) / "index.js").read_text(), "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 1.0.0")
     t.eq(t.package(FORK), fork_entry, "fork state entry")
     t.same(fork_files, "fork clone (with history) and dist")
     t.same(fork_author, "fork author repository")
@@ -117,7 +117,7 @@ def switch_back_to_compatible_original(t: T):
 
 
 def original_breaks_consumers(t: T):
-    """While replaced, vendor/base moves to 2.0.0, which app/a and app/b (^1.0) do not accept."""
+    """While replaced, c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 moves to 2.0.0, which 9692fc07-23c7-5f20-8779-f09374f1a571 and f5984d44-92bd-51ac-8e8f-d911dd824ef3 (^1.0) do not accept."""
     t.release(ORIGINAL, "2.0.0")
     t.gitpm_ok("update", ORIGINAL)
     t.eq(t.package(ORIGINAL)["current"]["version"], "2.0.0", "original version")
@@ -125,13 +125,13 @@ def original_breaks_consumers(t: T):
 
 
 def warned(t: T, r: R):
-    t.has(r.err, "app/a needs vendor/base ^1.0", "app/b needs vendor/base ^1.0", "Error kind: incompatible_replacement")
+    t.has(r.err, "9692fc07-23c7-5f20-8779-f09374f1a571 needs c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 ^1.0", "f5984d44-92bd-51ac-8e8f-d911dd824ef3 needs c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 ^1.0", "Error kind: incompatible_replacement")
     t.lacks(r.err, "Replace anyway?", "[y/N]")
 
 
 @case(fixture="g6_replaced", spec=["fork-replacement/switching-back", "cli/prompts-only-on-a-tty"])
 def switch_back_incompatible_answer_no(t: T):
-    """Returning to vendor/base 2.0.0 on a TTY refuses without a prompt, preserving the binding."""
+    """Returning to c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 2.0.0 on a TTY refuses without a prompt, preserving the binding."""
     original_breaks_consumers(t)
     before = t.snap(t.ws)
     r = gitpm_tty(t, "replace", ORIGINAL, "--with", ORIGINAL, answer=b"n\n")
@@ -159,7 +159,7 @@ def switch_back_incompatible_without_tty(t: T):
     original_breaks_consumers(t)
     before = t.snap(t.ws)
     r = t.gitpm_err("replace", ORIGINAL, "--with", ORIGINAL, kind="incompatible_replacement",
-                 contains="app/a needs vendor/base ^1.0")
+                 contains="9692fc07-23c7-5f20-8779-f09374f1a571 needs c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 ^1.0")
     warned(t, r)
     t.same(before, "workspace")
     on_fork(t)

@@ -46,7 +46,7 @@ pub enum Error {
     #[error("{0}")]
     NoReleases(String),
     /// The path for the ID is not a package repository (also for case variants of an ID).
-    #[error("package repository {id} not found (a namespace directory is not a package)")]
+    #[error("package repository {id} not found")]
     RepositoryNotFound { id: String },
     /// Workspace layout or path conflicts.
     #[error("{0}")]
@@ -253,17 +253,22 @@ mod tests {
     fn all() -> Vec<(Error, &'static str)> {
         let s = || "message".to_owned();
         vec![
-            (Error::NotInstalled { id: "a/b".into() }, "not_installed"),
+            (
+                Error::NotInstalled {
+                    id: "75494f24-1c7e-5480-9e39-738ff3d038c4".into(),
+                },
+                "not_installed",
+            ),
             (
                 Error::AlreadyInstalled {
-                    id: "a/b".into(),
+                    id: "75494f24-1c7e-5480-9e39-738ff3d038c4".into(),
                     message: s(),
                 },
                 "already_installed",
             ),
             (
                 Error::LocalChanges {
-                    id: "a/b".into(),
+                    id: "75494f24-1c7e-5480-9e39-738ff3d038c4".into(),
                     message: s(),
                     items: vec![],
                 },
@@ -277,14 +282,16 @@ mod tests {
             (Error::version_conflict(s()), "version_conflict"),
             (
                 Error::NoPreviousVersion {
-                    id: "a/b".into(),
+                    id: "75494f24-1c7e-5480-9e39-738ff3d038c4".into(),
                     commit: None,
                 },
                 "no_previous_version",
             ),
             (Error::NoReleases(s()), "no_releases"),
             (
-                Error::RepositoryNotFound { id: "a/b".into() },
+                Error::RepositoryNotFound {
+                    id: "75494f24-1c7e-5480-9e39-738ff3d038c4".into(),
+                },
                 "repository_not_found",
             ),
             (Error::Workspace(s()), "workspace"),
@@ -296,7 +303,7 @@ mod tests {
             (Error::DependencyConflict(s()), "dependency_conflict"),
             (
                 Error::HasDependents {
-                    id: "a/b".into(),
+                    id: "75494f24-1c7e-5480-9e39-738ff3d038c4".into(),
                     message: s(),
                     dependents: vec![],
                     lost_work: vec![],
@@ -305,7 +312,7 @@ mod tests {
             ),
             (
                 Error::IncompatibleReplacement {
-                    id: "a/b".into(),
+                    id: "75494f24-1c7e-5480-9e39-738ff3d038c4".into(),
                     message: s(),
                     consumers: vec![],
                 },
@@ -364,25 +371,28 @@ mod tests {
                 &error,
                 Error::InvalidManifest { id: None, .. } | Error::VersionConflict { id: None, .. }
             ));
-            let scoped = error.with_package("dan/demo");
+            let scoped = error.with_package("826a054b-0fad-5e5a-8890-f87c6452943b");
             assert_eq!(scoped.kind(), kind);
-            assert_eq!(scoped.to_string(), format!("dan/demo: {message}"));
+            assert_eq!(
+                scoped.to_string(),
+                format!("826a054b-0fad-5e5a-8890-f87c6452943b: {message}")
+            );
             assert!(matches!(&scoped,
                 Error::InvalidManifest { id: Some(id), .. } | Error::VersionConflict { id: Some(id), .. }
-                if id == "dan/demo"));
+                if id == "826a054b-0fad-5e5a-8890-f87c6452943b"));
         }
         let error = Error::LocalChanges {
-            id: "dan/demo".into(),
+            id: "826a054b-0fad-5e5a-8890-f87c6452943b".into(),
             message: "local work blocks update".into(),
             items: vec![LostWork::Untracked {
                 path: "extra.js".into(),
             }],
         }
-        .with_package("dan/demo")
+        .with_package("826a054b-0fad-5e5a-8890-f87c6452943b")
         .listing_lost_work();
         assert_eq!(
             error.to_string(),
-            "dan/demo: local work blocks update; untracked: extra.js"
+            "826a054b-0fad-5e5a-8890-f87c6452943b: local work blocks update; untracked: extra.js"
         );
     }
 
@@ -425,20 +435,26 @@ mod tests {
     #[test]
     fn display_is_the_complete_message() {
         assert_eq!(
-            Error::NotInstalled { id: "a/b".into() }.to_string(),
-            "package a/b is not installed"
+            Error::NotInstalled {
+                id: "75494f24-1c7e-5480-9e39-738ff3d038c4".into()
+            }
+            .to_string(),
+            "package 75494f24-1c7e-5480-9e39-738ff3d038c4 is not installed"
         );
         assert_eq!(
             Error::NoPreviousVersion {
-                id: "a/b".into(),
+                id: "75494f24-1c7e-5480-9e39-738ff3d038c4".into(),
                 commit: None,
             }
             .to_string(),
-            "no previous version of a/b"
+            "no previous version of 75494f24-1c7e-5480-9e39-738ff3d038c4"
         );
         assert_eq!(
-            Error::RepositoryNotFound { id: "a/b".into() }.to_string(),
-            "package repository a/b not found (a namespace directory is not a package)"
+            Error::RepositoryNotFound {
+                id: "75494f24-1c7e-5480-9e39-738ff3d038c4".into()
+            }
+            .to_string(),
+            "package repository 75494f24-1c7e-5480-9e39-738ff3d038c4 not found"
         );
         // Every other variant renders exactly its message.
         for (error, _) in all() {

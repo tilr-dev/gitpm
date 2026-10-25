@@ -9,6 +9,8 @@ use std::{collections::BTreeMap, fs, path::Path};
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Manifest {
     pub id: String,
+    /// Nonunique human alias; never used to resolve references.
+    pub name: String,
     pub version: String,
     /// Package-relative committed output folder; absent means `dist`, `.` means root.
     #[serde(
@@ -520,7 +522,7 @@ impl State {
                     fork_of: p.discovery_fork().cloned(),
                     ..Default::default()
                 };
-                validate_manifest(&m)?;
+                validate_manifest_references(&m)?;
             }
             for (build, revision) in p
                 .build
@@ -680,17 +682,20 @@ impl State {
     }
 }
 
-/// `namespace/name`; both components are safe path parts.
+/// Canonical lowercase, hyphenated UUID. Legacy names and namespace IDs are refused.
 pub fn valid_id(id: &str) -> Result<()> {
-    let parts: Vec<_> = id.split('/').collect();
     ensure!(
-        parts.len() == 2,
+        id.len() == 36
+            && id.bytes().enumerate().all(|(i, b)| {
+                if [8, 13, 18, 23].contains(&i) {
+                    b == b'-'
+                } else {
+                    b.is_ascii_digit() || (b'a'..=b'f').contains(&b)
+                }
+            }),
         InvalidId,
-        "invalid package ID {id:?}: expected namespace/name"
+        "invalid package ID {id:?}: expected a canonical lowercase UUID"
     );
-    for part in parts {
-        identity::valid_part(part)?;
-    }
     Ok(())
 }
 
@@ -725,6 +730,14 @@ pub(crate) fn manifest(repo: &Path) -> Result<Manifest> {
 }
 
 pub(crate) fn validate_manifest(m: &Manifest) -> Result<()> {
+    identity::valid_part(&m.name)
+        .map_err(|_| Error::invalid_manifest("invalid package name".into()))?;
+    validate_manifest_references(m)
+}
+
+// State stores UUID references without human aliases. Validate the same reference
+// contract for its synthetic manifest without requiring an alias field in state.
+fn validate_manifest_references(m: &Manifest) -> Result<()> {
     valid_id(&m.id)?;
     if let Some(base) = &m.fork_of {
         valid_id(&base.id)?;
@@ -915,33 +928,24 @@ mod tests {
     const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
 
     #[test]
-    fn valid_id_accepts_scoped_ids_only() {
+    fn valid_id_accepts_only_canonical_uuids() {
         for ok in [
-            "dan/demo1",
-            "a-b/c_d",
-            &format!("{}/{}", "x".repeat(80), "y".repeat(80)),
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+            "00000000-0000-0000-0000-000000000000",
         ] {
-            assert!(valid_id(ok).is_ok(), "{ok}");
+            assert!(valid_id(ok).is_ok());
         }
         for bad in [
             "",
             "demo1",
             "all",
-            "/",
-            "dan/",
-            "/demo1",
-            "a/b/c",
-            "../demo1",
-            "dan/..",
-            "dan/.",
-            "dan\\demo1",
-            "dan/demo 1",
-            "Dan/démo",
-            "-x/demo1",
-            "dan/-demo1",
-            &"x".repeat(81),
+            "dan/demo1",
+            "AB93B236-D66D-5FC1-9CBC-3EAA4CF4DDCC",
+            "ab93b236d66d5fc19cbc3eaa4cf4ddcc",
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcg",
+            "../ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
         ] {
-            assert_eq!(valid_id(bad).unwrap_err().kind(), "invalid_id", "{bad:?}");
+            assert_eq!(valid_id(bad).unwrap_err().kind(), "invalid_id");
         }
     }
 
@@ -960,16 +964,16 @@ mod tests {
         let dir = TempDir::new("model");
         let repo = repo_with(
             &dir,
-            r#"{"id":"dan/demo1","version":"0.1.0","name":"Demo","host":{"entry":"index.js","flags":[1,true,null]}}"#,
+            r#"{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","name":"Demo", "version":"0.1.0","host":{"entry":"index.js","flags":[1,true,null]}}"#,
             true,
         );
         let m = manifest(&repo).unwrap();
-        assert_eq!(m.extra["name"], "Demo");
+        assert_eq!(m.name, "Demo");
         assert_eq!(m.extra["host"]["entry"], "index.js");
         let text = manifest_json(&m).unwrap();
         let written: serde_json::Value = serde_json::from_str(&text).unwrap();
         let original: serde_json::Value = serde_json::from_str(
-            r#"{"id":"dan/demo1","version":"0.1.0","dependencies":{},"name":"Demo","host":{"entry":"index.js","flags":[1,true,null]}}"#,
+            r#"{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","name": "fixture", "version":"0.1.0","dependencies":{},"name":"Demo","host":{"entry":"index.js","flags":[1,true,null]}}"#,
         )
         .unwrap();
         assert_eq!(written, original);
@@ -987,7 +991,7 @@ mod tests {
         let dir = TempDir::new("model");
         let repo = repo_with(
             &dir,
-            r#"{"zeta":1,"id":"dan/demo1","alpha":{"z":1,"a":2},"version":"0.1.0","mid":true}"#,
+            r#"{"zeta":1,"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","alpha":{"z":1,"a":2},"name":"fixture","version":"0.1.0","mid":true}"#,
             true,
         );
         let text = manifest_json(&manifest(&repo).unwrap()).unwrap();
@@ -998,7 +1002,15 @@ mod tests {
             .collect();
         assert_eq!(
             keys,
-            ["id", "version", "dependencies", "zeta", "alpha", "mid"],
+            [
+                "id",
+                "name",
+                "version",
+                "dependencies",
+                "zeta",
+                "alpha",
+                "mid"
+            ],
             "{text}"
         );
         // Nested unknown objects keep their order too.
@@ -1014,20 +1026,23 @@ mod tests {
         for (json, kind) in [
             // wrong type for a known key
             (
-                r#"{"id":"dan/demo1","version":1,"x":1}"#,
+                r#"{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","name": "fixture", "version":1,"x":1}"#,
                 "invalid_manifest",
             ),
             // invalid known value
             (
-                r#"{"id":"dan/demo1","version":"banana","x":1}"#,
+                r#"{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","name": "fixture", "version":"banana","x":1}"#,
                 "invalid_version",
             ),
-            (r#"{"id":"../x","version":"0.1.0","x":1}"#, "invalid_id"),
+            (
+                r#"{"id":"../x","name": "fixture", "version":"0.1.0","x":1}"#,
+                "invalid_id",
+            ),
             // missing required key
             (r#"{"version":"0.1.0","x":1}"#, "invalid_manifest"),
             // nested known objects stay strict
             (
-                r#"{"id":"dan/demo1","version":"0.1.0","replaces":{"id":"dan/other","version":"1.0.0","x":1}}"#,
+                r#"{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","name": "fixture", "version":"0.1.0","replaces":{"id":"95d14dc8-6dfc-5022-9fd1-7146ee6aee58","version":"1.0.0","x":1}}"#,
                 "invalid_manifest",
             ),
         ] {
@@ -1041,7 +1056,7 @@ mod tests {
     #[test]
     fn manifest_metadata_is_typed_normalized_and_written_back_as_it_was() {
         let dir = TempDir::new("model");
-        let json = r#"{"id":"dan/demo1","version":"0.1.0","x":1,"provides":"theme","title":"Demo","tags":["a","b"],"description":null}"#;
+        let json = r#"{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","name": "fixture", "version":"0.1.0","x":1,"provides":"theme","title":"Demo","tags":["a","b"],"description":null}"#;
         let repo = repo_with(&dir, json, true);
         let m = manifest(&repo).unwrap();
         assert_eq!(
@@ -1085,7 +1100,7 @@ mod tests {
             let repo = repo_with(
                 &dir,
                 &format!(
-                    r#"{{"id":"dan/demo1","version":"0.1.0","title":"T","provides":"p",{bad}}}"#
+                    r#"{{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","name": "fixture", "version":"0.1.0","title":"T","provides":"p",{bad}}}"#
                 ),
                 true,
             );
@@ -1105,20 +1120,27 @@ mod tests {
     #[test]
     fn manifest_parses_minimal_and_fork_manifests() {
         let dir = TempDir::new("model");
-        let repo = repo_with(&dir, r#"{"id":"dan/demo1","version":"0.1.0"}"#, true);
+        let repo = repo_with(
+            &dir,
+            r#"{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","name": "fixture", "version":"0.1.0"}"#,
+            true,
+        );
         let m = manifest(&repo).unwrap();
-        assert_eq!((m.id.as_str(), m.version.as_str()), ("dan/demo1", "0.1.0"));
+        assert_eq!(
+            (m.id.as_str(), m.version.as_str()),
+            ("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.1.0")
+        );
         assert!(m.dependencies.is_empty() && m.fork_of.is_none());
 
         let json = format!(
-            r#"{{"id":"me/demo1","version":"0.2.0","dependencies":{{}},"forkOf":{{"id":"dan/demo1","version":"0.1.0","commit":"{COMMIT}"}}}}"#
+            r#"{{"id":"fd9b5add-4cae-5e71-b6bf-5e868519eb9c","name": "fixture", "version":"0.2.0","dependencies":{{}},"forkOf":{{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","version":"0.1.0","commit":"{COMMIT}"}}}}"#
         );
         fs::write(repo.join("plugin.json"), json).unwrap();
         let m = manifest(&repo).unwrap();
         assert_eq!(
             m.fork_of,
             Some(ForkOf {
-                id: "dan/demo1".into(),
+                id: "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc".into(),
                 version: "0.1.0".into(),
                 commit: COMMIT.into(),
                 source: None,
@@ -1126,7 +1148,7 @@ mod tests {
         );
         // SHA-256 object IDs are accepted as fork commits too.
         let json = format!(
-            r#"{{"id":"me/demo1","version":"0.2.0","forkOf":{{"id":"dan/demo1","version":"0.1.0","commit":"{}"}}}}"#,
+            r#"{{"id":"fd9b5add-4cae-5e71-b6bf-5e868519eb9c","name": "fixture", "version":"0.2.0","forkOf":{{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","version":"0.1.0","commit":"{}"}}}}"#,
             "a".repeat(64)
         );
         fs::write(repo.join("plugin.json"), json).unwrap();
@@ -1138,111 +1160,111 @@ mod tests {
         let dir = TempDir::new("model");
         let fork = |id: &str, version: &str, commit: &str| {
             format!(
-                r#"{{"id":"me/demo1","version":"0.2.0","forkOf":{{"id":"{id}","version":"{version}","commit":"{commit}"}}}}"#
+                r#"{{"id":"fd9b5add-4cae-5e71-b6bf-5e868519eb9c","name": "fixture", "version":"0.2.0","forkOf":{{"id":"{id}","version":"{version}","commit":"{commit}"}}}}"#
             )
         };
         let cases: Vec<(String, bool, &str)> = vec![
             ("{".into(), true, "invalid_manifest"),
-            (r#"{"id":"dan/demo1"}"#.into(), true, "invalid_manifest"),
+            (r#"{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc"}"#.into(), true, "invalid_manifest"),
             (
-                r#"{"id":"../demo1","version":"0.1.0"}"#.into(),
+                r#"{"id":"../demo1","name": "fixture", "version":"0.1.0"}"#.into(),
                 true,
                 "invalid_id",
             ),
             (
-                r#"{"id":"a/b/c","version":"0.1.0"}"#.into(),
+                r#"{"id":"75494f24-1c7e-5480-9e39-738ff3d038c4/c","name": "fixture", "version":"0.1.0"}"#.into(),
                 true,
                 "invalid_id",
             ),
             (
-                r#"{"id":"demo1","version":"0.1.0"}"#.into(),
+                r#"{"id":"demo1","name": "fixture", "version":"0.1.0"}"#.into(),
                 true,
                 "invalid_id",
             ),
             (
-                r#"{"id":"dan/demo1","version":"  "}"#.into(),
+                r#"{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","name": "fixture", "version":"  "}"#.into(),
                 true,
                 "invalid_manifest",
             ),
             (
-                r#"{"id":"dan/demo1","version":"0.1.0"}"#.into(),
+                r#"{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","name": "fixture", "version":"0.1.0"}"#.into(),
                 false,
                 "invalid_manifest",
             ),
             (
-                r#"{"id":"dan/demo1","version":"0.1.0","dependencies":{"dan/base":"banana"}}"#.into(),
+                r#"{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","name": "fixture", "version":"0.1.0","dependencies":{"38a3dec9-2271-556d-9d10-c62ca9ba8d96":"banana"}}"#.into(),
                 true,
                 "invalid_manifest",
             ),
             (
-                r#"{"id":"dan/demo1","version":"0.1.0","dependencies":{"dan/demo1":"^1"}}"#.into(),
+                r#"{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","name": "fixture", "version":"0.1.0","dependencies":{"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc":"^1"}}"#.into(),
                 true,
                 "invalid_manifest",
             ),
             (
-                r#"{"id":"dan/demo1","version":"0.1.0","dependencies":{"../x":"^1"}}"#.into(),
+                r#"{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","name": "fixture", "version":"0.1.0","dependencies":{"../x":"^1"}}"#.into(),
                 true,
                 "invalid_id",
             ),
             (
-                r#"{"id":"me/demo1","version":"0.1.0","replaces":{"id":"me/demo1","version":"0.1.0"}}"#.into(),
+                r#"{"id":"fd9b5add-4cae-5e71-b6bf-5e868519eb9c","name": "fixture", "version":"0.1.0","replaces":{"id":"fd9b5add-4cae-5e71-b6bf-5e868519eb9c","version":"0.1.0"}}"#.into(),
                 true,
                 "invalid_manifest",
             ),
             (
-                r#"{"id":"me/demo1","version":"0.1.0","replaces":{"id":"dan/demo1","version":"1.0"}}"#.into(),
+                r#"{"id":"fd9b5add-4cae-5e71-b6bf-5e868519eb9c","name": "fixture", "version":"0.1.0","replaces":{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","version":"1.0"}}"#.into(),
                 true,
                 "invalid_version",
             ),
             (
-                r#"{"id":"me/demo1","version":"0.1.0","replaces":{"id":"dan/demo1"}}"#.into(),
+                r#"{"id":"fd9b5add-4cae-5e71-b6bf-5e868519eb9c","name": "fixture", "version":"0.1.0","replaces":{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc"}}"#.into(),
                 true,
                 "invalid_manifest",
             ),
-            (fork("me/demo1", "0.1.0", COMMIT), true, "invalid_manifest"),
-            (fork("dan/demo1", " ", COMMIT), true, "invalid_manifest"),
+            (fork("fd9b5add-4cae-5e71-b6bf-5e868519eb9c", "0.1.0", COMMIT), true, "invalid_manifest"),
+            (fork("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", " ", COMMIT), true, "invalid_manifest"),
             (
-                fork("dan/demo1", "0.1.0", &COMMIT[..39]),
+                fork("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.1.0", &COMMIT[..39]),
                 true,
                 "invalid_manifest",
             ),
             (
-                fork("dan/demo1", "0.1.0", &"g".repeat(40)),
+                fork("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.1.0", &"g".repeat(40)),
                 true,
                 "invalid_manifest",
             ),
             (fork("../x", "0.1.0", COMMIT), true, "invalid_id"),
             (
                 format!(
-                    r#"{{"id":"me/demo1","version":"0.2.0","forkOf":{{"id":"dan/demo1","version":"0.1.0","commit":"{COMMIT}","source":""}}}}"#
+                    r#"{{"id":"fd9b5add-4cae-5e71-b6bf-5e868519eb9c","name": "fixture", "version":"0.2.0","forkOf":{{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","version":"0.1.0","commit":"{COMMIT}","source":""}}}}"#
                 ),
                 true,
                 "invalid_manifest",
             ),
             (
                 format!(
-                    r#"{{"id":"me/demo1","version":"0.2.0","forkOf":{{"id":"dan/demo1","version":"0.1.0","commit":"{COMMIT}","source":"ext::sh -c id"}}}}"#
+                    r#"{{"id":"fd9b5add-4cae-5e71-b6bf-5e868519eb9c","name": "fixture", "version":"0.2.0","forkOf":{{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","version":"0.1.0","commit":"{COMMIT}","source":"ext::sh -c id"}}}}"#
                 ),
                 true,
                 "invalid_manifest",
             ),
             (
                 format!(
-                    r#"{{"id":"me/demo1","version":"0.2.0","forkOf":{{"id":"dan/demo1","version":"0.1.0","commit":"{COMMIT}","source":"fd::5"}}}}"#
+                    r#"{{"id":"fd9b5add-4cae-5e71-b6bf-5e868519eb9c","name": "fixture", "version":"0.2.0","forkOf":{{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","version":"0.1.0","commit":"{COMMIT}","source":"fd::5"}}}}"#
                 ),
                 true,
                 "invalid_manifest",
             ),
             (
                 format!(
-                    r#"{{"id":"me/demo1","version":"0.2.0","forkOf":{{"id":"dan/demo1","version":"0.1.0","commit":"{COMMIT}","source":"foo/bar"}}}}"#
+                    r#"{{"id":"fd9b5add-4cae-5e71-b6bf-5e868519eb9c","name": "fixture", "version":"0.2.0","forkOf":{{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","version":"0.1.0","commit":"{COMMIT}","source":"933fda30-c501-532d-9414-ed499eea3141"}}}}"#
                 ),
                 true,
                 "invalid_manifest",
             ),
             (
                 format!(
-                    r#"{{"id":"me/demo1","version":"0.2.0","forkOf":{{"id":"dan/demo1","version":"0.1.0","commit":"{COMMIT}","extra":1}}}}"#
+                    r#"{{"id":"fd9b5add-4cae-5e71-b6bf-5e868519eb9c","name": "fixture", "version":"0.2.0","forkOf":{{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","version":"0.1.0","commit":"{COMMIT}","extra":1}}}}"#
                 ),
                 true,
                 "invalid_manifest",
@@ -1269,36 +1291,46 @@ mod tests {
             let _ = fs::remove_dir_all(dir.join("repo"));
             let repo = repo_with(
                 &dir,
-                &format!(r#"{{"id":"dan/demo1","version":"{version}"}}"#),
+                &format!(
+                    r#"{{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","name": "fixture", "version":"{version}"}}"#
+                ),
                 true,
             );
             assert!(manifest(&repo).is_err(), "{version} must be rejected");
         }
         let _ = fs::remove_dir_all(dir.join("repo"));
-        let repo = repo_with(&dir, r#"{"id":"dan/demo1","version":"1.0.0-beta.1"}"#, true);
+        let repo = repo_with(
+            &dir,
+            r#"{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","name": "fixture", "version":"1.0.0-beta.1"}"#,
+            true,
+        );
         assert_eq!(manifest(&repo).unwrap().version, "1.0.0-beta.1");
     }
 
     #[test]
     fn manifest_json_is_pretty_with_trailing_newline_and_stable_fields() {
         let mut m = Manifest {
-            id: "dan/demo1".into(),
+            id: "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc".into(),
+            name: "fixture".into(),
             version: "0.1.0".into(),
             ..Default::default()
         };
         assert_eq!(
             manifest_json(&m).unwrap(),
-            "{\n  \"id\": \"dan/demo1\",\n  \"version\": \"0.1.0\",\n  \"dependencies\": {}\n}\n"
+            "{\n  \"id\": \"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc\",\n  \"name\": \"fixture\",\n  \"version\": \"0.1.0\",\n  \"dependencies\": {}\n}\n"
         );
         m.fork_of = Some(ForkOf {
-            id: "vendor/demo1".into(),
+            id: "3e91bfd4-69a0-55a1-9f05-93c3e97dab8a".into(),
             version: "0.0.9".into(),
             commit: COMMIT.into(),
-            source: Some("https://git.example/vendor/demo1.git".into()),
+            source: Some("https://git.example/3e91bfd4-69a0-55a1-9f05-93c3e97dab8a.git".into()),
         });
         let text = manifest_json(&m).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(value["forkOf"]["id"], "vendor/demo1");
+        assert_eq!(
+            value["forkOf"]["id"],
+            "3e91bfd4-69a0-55a1-9f05-93c3e97dab8a"
+        );
         assert!(text.contains("\"forkOf\""), "camelCase key: {text}");
         let back: Manifest = serde_json::from_str(&text).unwrap();
         assert_eq!(back.fork_of, m.fork_of);
@@ -1308,8 +1340,27 @@ mod tests {
     const STATE: &str = r#"{
   "format": 1,
   "packages": {
-    "dan/demo1": {
-      "source": "git@github.com:dan/demo1.git",
+    "53d23fe9-4284-5d06-a9af-0dd04a6390d5": {
+      "source": "/tmp/demo2",
+      "current": {
+        "version": "0.3.0",
+        "commit": "b6e1cb27e482634979ffcfb4f9cdd02ff99005db"
+      },
+      "previous": null,
+      "enabled": true,
+      "mode": {
+        "branch": "main"
+      },
+      "clone": "repo-0123456789abcdef",
+      "metadata": {
+        "title": null,
+        "description": null,
+        "provides": [],
+        "tags": []
+      }
+    },
+    "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc": {
+      "source": "git@github.com:ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc.git",
       "current": {
         "version": "0.1.1",
         "commit": "e23af971029e7c8c4d7d069e20e543e3c2ee63ad"
@@ -1329,7 +1380,7 @@ mod tests {
         "tags": []
       }
     },
-    "me/demo1": {
+    "fd9b5add-4cae-5e71-b6bf-5e868519eb9c": {
       "source": "/tmp/demo1",
       "current": {
         "version": "1.0.0",
@@ -1341,28 +1392,9 @@ mod tests {
         "pinned": "v1.0.0"
       },
       "forkOf": {
-        "id": "vendor/demo1",
+        "id": "3e91bfd4-69a0-55a1-9f05-93c3e97dab8a",
         "version": "0.9.0",
         "commit": "0123456789abcdef0123456789abcdef01234567"
-      },
-      "clone": "repo-0123456789abcdef",
-      "metadata": {
-        "title": null,
-        "description": null,
-        "provides": [],
-        "tags": []
-      }
-    },
-    "me/demo2": {
-      "source": "/tmp/demo2",
-      "current": {
-        "version": "0.3.0",
-        "commit": "b6e1cb27e482634979ffcfb4f9cdd02ff99005db"
-      },
-      "previous": null,
-      "enabled": true,
-      "mode": {
-        "branch": "main"
       },
       "clone": "repo-0123456789abcdef",
       "metadata": {
@@ -1382,20 +1414,27 @@ mod tests {
             String::from_utf8(serde_json::to_vec_pretty(&state).unwrap()).unwrap(),
             STATE
         );
-        let p = &state.packages["dan/demo1"];
+        let p = &state.packages["ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc"];
         assert!(!p.enabled && p.fork_of.is_none());
         assert_eq!(p.previous.as_ref().unwrap().version, "0.1.0");
         assert_eq!(
-            state.packages["me/demo1"].fork_of.as_ref().unwrap().id,
-            "vendor/demo1"
+            state.packages["fd9b5add-4cae-5e71-b6bf-5e868519eb9c"]
+                .fork_of
+                .as_ref()
+                .unwrap()
+                .id,
+            "3e91bfd4-69a0-55a1-9f05-93c3e97dab8a"
         );
         // The recorded modes: omitted for release mode, else pinned or branch.
         assert_eq!(p.mode, Mode::Release);
         assert_eq!(
-            state.packages["me/demo1"].mode,
+            state.packages["fd9b5add-4cae-5e71-b6bf-5e868519eb9c"].mode,
             Mode::Pinned("v1.0.0".into())
         );
-        assert_eq!(state.packages["me/demo2"].mode, Mode::Branch("main".into()));
+        assert_eq!(
+            state.packages["53d23fe9-4284-5d06-a9af-0dd04a6390d5"].mode,
+            Mode::Branch("main".into())
+        );
         for bad in [r#"{"pinned": ""}"#, r#"{"branch": "-x"}"#] {
             let text = STATE.replace(
                 r#"{
@@ -1464,7 +1503,7 @@ mod tests {
             "../x-0123456789abcdef",
             "mono-0123456789abcde",
             "-0123456789abcdef",
-            "a/b-0123456789abcdef",
+            "1be2d420-3441-569b-a742-935172235830",
             ".hidden-0123456789abcdef",
         ] {
             let error = valid_clone_key(bad).unwrap_err();
@@ -1472,20 +1511,25 @@ mod tests {
             assert!(error.to_string().contains("invalid clone name"), "{error}");
         }
         let entry = r#"{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true,"clone":"../evil","path":"packages/x","metadata":{}}"#;
-        let text = format!(r#"{{"format":1,"packages":{{"a/b":{entry}}}}}"#);
+        let text = format!(
+            r#"{{"format":1,"packages":{{"75494f24-1c7e-5480-9e39-738ff3d038c4":{entry}}}}}"#
+        );
         assert_eq!(
             State::parse(text.as_bytes()).unwrap_err().kind(),
             "invalid_data"
         );
         // A forgotten record needs a shared clone and must not also be installed.
         let entry = entry.replace("../evil", "x-0123456789abcdef");
-        let both =
-            format!(r#"{{"format":1,"packages":{{"a/b":{entry}}},"forgotten":{{"a/b":{entry}}}}}"#);
+        let both = format!(
+            r#"{{"format":1,"packages":{{"75494f24-1c7e-5480-9e39-738ff3d038c4":{entry}}},"forgotten":{{"75494f24-1c7e-5480-9e39-738ff3d038c4":{entry}}}}}"#
+        );
         assert_eq!(
             State::parse(both.as_bytes()).unwrap_err().kind(),
             "invalid_data"
         );
-        let ok = format!(r#"{{"format":1,"packages":{{}},"forgotten":{{"a/b":{entry}}}}}"#);
+        let ok = format!(
+            r#"{{"format":1,"packages":{{}},"forgotten":{{"75494f24-1c7e-5480-9e39-738ff3d038c4":{entry}}}}}"#
+        );
         assert_eq!(State::parse(ok.as_bytes()).unwrap().forgotten.len(), 1);
     }
 
@@ -1521,7 +1565,8 @@ mod tests {
         // metadata is required in format 1: a record without it is invalid data.
         let no_metadata = ok.replace(r#","metadata":{}"#, "");
         assert!(serde_json::from_str::<State>(&no_metadata).is_err());
-        let no_metadata = no_metadata.replace(r#""a":"#, r#""dan/a":"#);
+        let no_metadata =
+            no_metadata.replace(r#""a":"#, r#""807b9715-06b4-55c2-add2-59b487bfa42e":"#);
         assert_eq!(
             State::parse(no_metadata.as_bytes()).unwrap_err().kind(),
             "invalid_data"
@@ -1534,29 +1579,39 @@ mod tests {
         let list = state.installed();
         assert_eq!(
             list.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
-            ["dan/demo1", "me/demo1", "me/demo2"]
+            [
+                "53d23fe9-4284-5d06-a9af-0dd04a6390d5",
+                "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+                "fd9b5add-4cae-5e71-b6bf-5e868519eb9c"
+            ]
         );
-        assert_eq!(list[2].mode, Mode::Branch("main".into()));
+        assert_eq!(list[0].mode, Mode::Branch("main".into()));
         assert_eq!(
-            serde_json::to_value(&list[2]).unwrap()["mode"]["branch"],
+            serde_json::to_value(&list[0]).unwrap()["mode"]["branch"],
             "main"
         );
         assert!(
-            serde_json::to_value(&list[0])
+            serde_json::to_value(&list[1])
                 .unwrap()
                 .get("mode")
                 .is_none()
         );
-        assert_eq!(list[0].source, "git@github.com:dan/demo1.git");
-        assert_eq!(list[0].current.as_ref().unwrap().version, "0.1.1");
         assert_eq!(
-            list[0].previous.as_ref().unwrap().commit,
+            list[1].source,
+            "git@github.com:ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc.git"
+        );
+        assert_eq!(list[1].current.as_ref().unwrap().version, "0.1.1");
+        assert_eq!(
+            list[1].previous.as_ref().unwrap().commit,
             "a17e286b69daa620096f78fa54153696b8459b6b"
         );
-        assert!(!list[0].enabled);
-        assert_eq!(list[1].fork_of.as_ref().unwrap().version, "0.9.0");
-        let value = serde_json::to_value(&list[1]).unwrap();
-        assert_eq!(value["forkOf"]["id"], "vendor/demo1");
+        assert!(!list[1].enabled);
+        assert_eq!(list[2].fork_of.as_ref().unwrap().version, "0.9.0");
+        let value = serde_json::to_value(&list[2]).unwrap();
+        assert_eq!(
+            value["forkOf"]["id"],
+            "3e91bfd4-69a0-55a1-9f05-93c3e97dab8a"
+        );
         assert!(
             serde_json::to_value(&list[0])
                 .unwrap()
@@ -1573,7 +1628,7 @@ mod tests {
             assert_eq!(error.kind(), "invalid_argument", "{bad:?}");
         }
         let dir = TempDir::new("model");
-        let author = Author::new(dir.join("author"), "dan/demo1");
+        let author = Author::new(dir.join("author"), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let first = author.head();
         let second = author.commit("0.2.0");
         assert_eq!(resolve_ref(&author.path, "v0.1.0", false).unwrap(), first);

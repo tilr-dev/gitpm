@@ -19,7 +19,7 @@ from pathlib import Path
 
 from gitpmtest import R, T, case, gitpm_argv
 
-ID = "dan/hello"
+ID = "3dce1568-569c-5b53-9321-37185e751947"
 NOBODY = "65534"
 
 
@@ -74,7 +74,7 @@ def updated(t: T):
     p = t.package(ID)
     t.eq(p["current"]["version"], "0.1.1", "current after recovery")
     t.eq(p["previous"]["version"], "0.1.0", "previous after recovery")
-    t.has((t.dist(ID) / "index.js").read_text(), "dan/hello 0.1.1")
+    t.has((t.dist(ID) / "index.js").read_text(), "3dce1568-569c-5b53-9321-37185e751947 0.1.1")
     t.eq(t.rev(t.clone(ID)), t.rev(ID, f"v0.1.1"), "clone HEAD after recovery")
     t.ok(not (t.ws / ".pm-txn").exists(), "no transaction left")
 
@@ -179,7 +179,7 @@ def update_killed_after_staging_is_discarded(t: T):
     t.ok(staged.is_dir(), "the staged copy was left by the killed process")
     t.eq(journal(t), None, "no journal: the commit was never decided")
     t.eq(t.package(ID)["current"]["version"], "0.1.0", "previous version still installed")
-    t.has((t.dist(ID) / "index.js").read_text(), "dan/hello 0.1.0")
+    t.has((t.dist(ID) / "index.js").read_text(), "3dce1568-569c-5b53-9321-37185e751947 0.1.0")
     t.gitpm_ok("sync-dist")  # the next open (list only reads)
     t.same(before, "workspace after the next open")
     t.gitpm_ok("update", ID)
@@ -205,9 +205,9 @@ def install_killed_after_clone_is_discarded(t: T):
 
 
 def catalog_write_failure(t: T, *command):
-    t.release("dan/num", "1.11.0")
+    t.release("2190eee8-4be5-5a91-81d2-6ca95c1e61d0", "1.11.0")
     give_to_nobody(t)
-    folder = t.catalog_index("dan/num").parent
+    folder = t.catalog_index("2190eee8-4be5-5a91-81d2-6ca95c1e61d0").parent
     before = t.snap(t.catalog)
     old = {p: p.read_bytes() for p in t.catalog.rglob("*.json")}
     folder.chmod(0o555)
@@ -218,30 +218,30 @@ def catalog_write_failure(t: T, *command):
         t.ok(path.read_bytes() == data, f"existing record {path.relative_to(t.catalog)} unchanged")
     added = sorted(set(t.snap(t.catalog)) - set(before))
     print(f"  files left by the failed write: {added}")
-    t.ok(set(added) <= {str(t.catalog_release("dan/num", "1.11.0"))}, "at most the new release file was written")
+    t.ok(set(added) <= {str(t.catalog_release("2190eee8-4be5-5a91-81d2-6ca95c1e61d0", "1.11.0"))}, "at most the new release file was written")
     # A consumer still sees a consistent catalog: the index does not link 1.11.0.
-    t.gitpm_ok("--root", t.root / "consumer", "install-catalog", "dan/num")
-    t.eq(json.loads((t.root / "consumer/state.json").read_text())["packages"]["dan/num"]["current"]["version"],
+    t.gitpm_ok("--root", t.root / "consumer", "install-catalog", "2190eee8-4be5-5a91-81d2-6ca95c1e61d0")
+    t.eq(json.loads((t.root / "consumer/state.json").read_text())["packages"]["2190eee8-4be5-5a91-81d2-6ca95c1e61d0"]["current"]["version"],
          "1.10.0", "consumer gets the last complete release")
     folder.chmod(0o755)
     r = gitpm_nobody(t, *command)
     t.eq(r.code, 0, "retry succeeds")
     for path, data in old.items():
-        t.ok(path == t.catalog_index("dan/num") or path.read_bytes() == data,
+        t.ok(path == t.catalog_index("2190eee8-4be5-5a91-81d2-6ca95c1e61d0") or path.read_bytes() == data,
              f"immutable record {path.relative_to(t.catalog)} preserved")
-    index = json.loads(t.catalog_index("dan/num").read_text())
-    t.eq(sorted(index["versions"]), ["1.10.0", "1.11.0", "1.9.0"], "index after retry")
-    release = json.loads(t.catalog_release("dan/num", "1.11.0").read_text())
-    t.eq(release["commit"], t.rev("dan/num", "v1.11.0"), "new release recorded")
+    index = json.loads(t.catalog_index("2190eee8-4be5-5a91-81d2-6ca95c1e61d0").read_text())
+    t.eq(sorted(index["versions"]), sorted(["1.10.0", "1.11.0", "1.9.0"]), "index after retry")
+    release = json.loads(t.catalog_release("2190eee8-4be5-5a91-81d2-6ca95c1e61d0", "1.11.0").read_text())
+    t.eq(release["commit"], t.rev("2190eee8-4be5-5a91-81d2-6ca95c1e61d0", "v1.11.0"), "new release recorded")
     t.eq(list(t.catalog.rglob("*.tmp")), [], "no temporary files")
 
 
 @case(fixture="catalog", spec=["catalog/writers-are-serialized-and-crash-safe"])
 def register_write_failure_then_retry(t: T):
-    catalog_write_failure(t, "register", t.repo("dan/num"), "--ref", "v1.11.0")
+    catalog_write_failure(t, "register", t.repo("2190eee8-4be5-5a91-81d2-6ca95c1e61d0"), "--ref", "v1.11.0")
 
 
 @case(fixture="catalog", spec=["catalog/writers-are-serialized-and-crash-safe"])
 def catalog_update_write_failure_then_retry(t: T):
-    (t.root / "sources.txt").write_text("repos/dan/num\nrepos/dan/hello\n")
+    (t.root / "sources.txt").write_text("repos/2190eee8-4be5-5a91-81d2-6ca95c1e61d0\nrepos/3dce1568-569c-5b53-9321-37185e751947\n")
     catalog_write_failure(t, "catalog-update")

@@ -10,7 +10,7 @@ import shutil
 
 from gitpmtest import T, case
 
-ID = "dan/hello"
+ID = "3dce1568-569c-5b53-9321-37185e751947"
 OPT = "cli/option-validation"
 # Every command of `gitpm --help` (main.rs COMMANDS).
 COMMANDS = ["install", "install-catalog", "download", "download-catalog", "list", "check", "update", "rollback", "enable", "disable", "forget",

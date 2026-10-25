@@ -1,6 +1,6 @@
 """UC-034: Info and catalog read-only browsing (P1).
 
-Fixtures: g4_tree_catalog (v2 with namespaces/), g4_v1 (monolithic v1, refused).
+Fixtures: g4_tree_catalog (v2 with packages/), g4_v1 (monolithic v1, refused).
 `info` shows the one catalog given by --catalog or GITPM_CATALOG (there is no remote or
 public fallback); `catalog` prints the directory links of one level as JSON.
 """
@@ -36,9 +36,9 @@ def line_after(out: str, prefix: str) -> str:
 
 
 def assert_packages(t: T, out: str):
-    t.has(out, "dan/hello — latest: 0.1.1, versions: 2", f"Git: {t.repo('dan/hello')}",
-          "acme/widget — latest: 1.1.0, versions: 2", f"Git: {t.repo('acme/widget')}",
-          "old/oldie — latest: 0.2.0, versions: 2", f"Git: {t.repo('old/oldie')}")
+    t.has(out, "3dce1568-569c-5b53-9321-37185e751947 — latest: 0.1.1, versions: 2", f"Git: {t.repo('3dce1568-569c-5b53-9321-37185e751947')}",
+          "41b88ba0-f9f1-5e65-acb6-3dc95231e0bc — latest: 1.1.0, versions: 2", f"Git: {t.repo('41b88ba0-f9f1-5e65-acb6-3dc95231e0bc')}",
+          "3cfe3093-9e5f-5f64-b4d1-0a169cc3bdf6 — latest: 0.2.0, versions: 2", f"Git: {t.repo('3cfe3093-9e5f-5f64-b4d1-0a169cc3bdf6')}")
 
 
 @case(fixture="g4_tree_catalog", spec=["catalog/catalog-is-a-tree-of-static-files",
@@ -49,7 +49,7 @@ def info_local_root(t: T):
     out = readonly(t, lambda: gitpm_env(t, "info").out)
     t.eq(line_after(out, "Catalog:"), str(t.catalog), "catalog address")
     t.eq(line_after(out, "Type:"), "local folder/JSON", "type")
-    t.has(out, "Directories and packages:", "namespaces/", "acme/", "dan/", "old/")
+    t.has(out, "Directories and packages:", "packages/", '3dce1568-569c-5b53-9321-37185e751947/', '41b88ba0-f9f1-5e65-acb6-3dc95231e0bc/', '3cfe3093-9e5f-5f64-b4d1-0a169cc3bdf6/')
     t.lacks(out, "Format:", "legacy/")
     assert_packages(t, out)
     t.lacks(out, "Overview limit")
@@ -58,9 +58,9 @@ def info_local_root(t: T):
 @case(fixture="g4_tree_catalog", spec=["catalog/catalog-is-a-tree-of-static-files#direct-lookup"])
 def info_branch_path(t: T):
     """`info` on <catalog>/namespaces shows only that branch; --catalog wins over GITPM_CATALOG."""
-    out = readonly(t, lambda: gitpm_env(t, "--catalog", t.catalog / "namespaces", "info").out)
-    t.eq(line_after(out, "Catalog:"), str(t.catalog / "namespaces"), "catalog address")
-    t.has(out, "Directories and packages:", "dan/hello — latest: 0.1.1", "acme/widget — latest: 1.1.0")
+    out = readonly(t, lambda: gitpm_env(t, "--catalog", t.catalog / "packages", "info").out)
+    t.eq(line_after(out, "Catalog:"), str(t.catalog / "packages"), "catalog address")
+    t.has(out, "Directories and packages:", "3dce1568-569c-5b53-9321-37185e751947 — latest: 0.1.1", "41b88ba0-f9f1-5e65-acb6-3dc95231e0bc — latest: 1.1.0")
     t.lacks(out, "legacy/")
 
 
@@ -69,11 +69,10 @@ def info_branch_path(t: T):
 def catalog_prints_current_level_only(t: T):
     """`catalog` prints only the directory links of the given level (JSON)."""
     root = readonly(t, lambda: gitpm_env(t, "--catalog", t.catalog, "catalog").json())
-    t.eq(root, {"schema": 1, "directories": {"namespaces": "namespaces/"}}, "root level")
-    branch = readonly(t, lambda: gitpm_env(t, "--catalog", t.catalog / "namespaces", "catalog").json())
-    t.eq(branch, {"schema": 1, "directories": {"acme": "acme/", "dan": "dan/", "old": "old/"}}, "namespaces level")
-    leaf = readonly(t, lambda: gitpm_env(t, "--catalog", t.catalog / "namespaces/dan", "catalog").json())
-    t.eq(leaf, {"schema": 1, "directories": {"hello": "hello/"}}, "dan level")
+    t.eq(root, {"schema": 1, "directories": {"packages": "packages/"}}, "root level")
+    branch = readonly(t, lambda: gitpm_env(t, "--catalog", t.catalog / "packages", "catalog").json())
+    t.eq(branch, {"schema": 1, "directories": {'3dce1568-569c-5b53-9321-37185e751947': '3dce1568-569c-5b53-9321-37185e751947/', '41b88ba0-f9f1-5e65-acb6-3dc95231e0bc': '41b88ba0-f9f1-5e65-acb6-3dc95231e0bc/', '3cfe3093-9e5f-5f64-b4d1-0a169cc3bdf6': '3cfe3093-9e5f-5f64-b4d1-0a169cc3bdf6/'}}, "namespaces level")
+
 
 
 @case(fixture="g4_tree_catalog", spec=["catalog/catalog-locations-and-transport"])
@@ -84,13 +83,13 @@ def info_and_catalog_over_loopback_http(t: T):
     t.eq(line_after(out, "Catalog:"), srv.url, "catalog address")
     t.has(out, "remote (HTTP)", "Directories and packages:")
     assert_packages(t, out)
-    branch = readonly(t, lambda: gitpm_env(t, "--catalog", srv.url + "/namespaces/dan", "info").out)
-    t.has(branch, "dan/hello — latest: 0.1.1")
+    branch = readonly(t, lambda: gitpm_env(t, "--catalog", srv.url + "/packages/3dce1568-569c-5b53-9321-37185e751947/plugin.json", "info").out)
+    t.has(branch, "3dce1568-569c-5b53-9321-37185e751947 — latest: 0.1.1")
     t.lacks(branch, "oldie")
     t.eq(readonly(t, lambda: gitpm_env(t, "--catalog", srv.url, "catalog").json()),
-         {"schema": 1, "directories": {"namespaces": "namespaces/"}}, "catalog over HTTP")
-    t.eq(readonly(t, lambda: gitpm_env(t, "--catalog", srv.url + "/namespaces/", "catalog").json())["directories"],
-         {"acme": "acme/", "dan": "dan/", "old": "old/"}, "branch over HTTP")
+         {"schema": 1, "directories": {"packages": "packages/"}}, "catalog over HTTP")
+    t.eq(readonly(t, lambda: gitpm_env(t, "--catalog", srv.url + "/packages/", "catalog").json())["directories"],
+         {'3dce1568-569c-5b53-9321-37185e751947': '3dce1568-569c-5b53-9321-37185e751947/', '41b88ba0-f9f1-5e65-acb6-3dc95231e0bc': '41b88ba0-f9f1-5e65-acb6-3dc95231e0bc/', '3cfe3093-9e5f-5f64-b4d1-0a169cc3bdf6': '3cfe3093-9e5f-5f64-b4d1-0a169cc3bdf6/'}, "branch over HTTP")
 
 
 @case(fixture="g4_v1", spec=["catalog/catalog-is-a-tree-of-static-files"])
@@ -116,16 +115,16 @@ def info_without_a_catalog_names_it(t: T):
 
 def crafted_v2(root: Path, count: int):
     root.mkdir(parents=True)
-    (root / "catalog.json").write_text(json.dumps({"schema": 1, "directories": {"namespaces": "namespaces/"}}))
+    (root / "catalog.json").write_text(json.dumps({"schema": 1, "directories": {"packages": "packages/"}}))
     dirs = {f"n{i:02}": f"n{i:02}/" for i in range(count)}
-    (root / "namespaces").mkdir()
-    (root / "namespaces/catalog.json").write_text(json.dumps({"schema": 1, "directories": dirs}))
+    (root / "packages").mkdir()
+    (root / "packages/catalog.json").write_text(json.dumps({"schema": 1, "directories": dirs}))
     for name in dirs:
-        (root / "namespaces" / name).mkdir()
-        (root / "namespaces" / name / "catalog.json").write_text(
+        (root / "packages" / name).mkdir()
+        (root / "packages" / name / "catalog.json").write_text(
             json.dumps({"schema": 1, "directories": {"p": "p/"}}))
-        (root / "namespaces" / name / "p").mkdir()
-        (root / "namespaces" / name / "p/plugin.json").write_text(json.dumps(
+        (root / "packages" / name / "p").mkdir()
+        (root / "packages" / name / "p/plugin.json").write_text(json.dumps(
             {"schema": 1, "id": f"{name}/p", "source": f"https://git.example.invalid/{name}/p.git",
              "versions": {"1.0.0": "versions/1.0.0/release.json"}}))
 

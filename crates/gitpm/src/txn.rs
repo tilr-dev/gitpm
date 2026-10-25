@@ -49,7 +49,7 @@ fn remove(path: &Path) -> Result<()> {
     }
     Ok(())
 }
-/// Every directory between the root and a managed path (`dist/<ns>`) must be a real directory: through a symlink a write or delete would
+/// Every directory between the root and a managed path (`dist`) must be a real directory: through a symlink a write or delete would
 /// land outside the workspace.
 fn ensure_managed_parents(root: &Path, relative: &str) -> Result<()> {
     let mut current = root.to_path_buf();
@@ -76,6 +76,39 @@ fn ensure_managed_parents(root: &Path, relative: &str) -> Result<()> {
     }
     Ok(())
 }
+/// A UUID deployment leaf is owned only when it is a real directory or the
+/// recorded dev-link entry. Foreign files and links are never replaced or removed.
+pub(crate) fn ensure_dist_leaf(root: &Path, id: &str) -> Result<()> {
+    let leaf = root.join("dist").join(id);
+    let metadata = match fs::symlink_metadata(&leaf) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if metadata.is_dir() {
+        return Ok(());
+    }
+    if metadata.file_type().is_symlink() {
+        let state = match fs::read(root.join("state.json")) {
+            Ok(bytes) => Some(State::parse(&bytes)?),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        if let Some(record) = state
+            .as_ref()
+            .and_then(|s| s.packages.get(id).or_else(|| s.forgotten.get(id)))
+            && let Some(link) = record.link()
+            && fs::read_link(&leaf)? == Path::new(&link.target)
+        {
+            return Ok(());
+        }
+    }
+    Err(Error::Workspace(format!(
+        "managed path is not a directory: {}",
+        leaf.display()
+    )))
+}
+
 fn present(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok()
 }
@@ -267,10 +300,12 @@ impl Txn {
     }
     /// Remove the package's deployed files on commit (also drops a staged deploy).
     pub(crate) fn delete_dist(&mut self, id: &str) -> Result<()> {
+        ensure_dist_leaf(&self.root, id)?;
         self.delete_repo(&format!("dist/{id}"))
     }
     /// An empty staged `dist/<id>` to fill (replaces the live one on commit).
     pub(crate) fn stage_dist(&mut self, id: &str) -> Result<PathBuf> {
+        ensure_dist_leaf(&self.root, id)?;
         let relative = format!("dist/{id}");
         ensure_managed_parents(&self.root, &relative)?;
         let staged = self.staged(&relative);
@@ -339,7 +374,7 @@ pub(crate) fn recover(root: &Path) -> Result<()> {
     }
 }
 
-/// After a delete, remove the parents it left empty (`dist/<ns>`, `repos`); `dist` itself stays, as `Manager::open` creates them.
+/// After a delete, remove the parents it left empty (`repos`); `dist` itself stays, as `Manager::open` creates them.
 /// Best effort: a folder that is not empty (or cannot be removed) is kept.
 fn remove_empty_parents(root: &Path, relative: &str) {
     let parts: Vec<&str> = relative.split('/').collect();

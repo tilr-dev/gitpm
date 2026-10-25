@@ -5,18 +5,18 @@ import json
 from gitpmtest import T, fixture
 
 GRAPH = {
-    "vendor/base": ({}, {}),
-    "app/a": ({"vendor/base": "^1.0"}, {}),
-    "app/b": ({"vendor/base": ">=0.9.0"}, {}),
-    "mine/base": ({}, {"replaces": {"id": "vendor/base", "version": "1.0.0"}}),
-    "old/base": ({}, {"replaces": {"id": "vendor/base", "version": "0.9.0"}}),
+    "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9": ({}, {}),
+    "9692fc07-23c7-5f20-8779-f09374f1a571": ({"c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9": "^1.0"}, {}),
+    "f5984d44-92bd-51ac-8e8f-d911dd824ef3": ({"c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9": ">=0.9.0"}, {}),
+    "db33e43e-e652-5767-8e21-27fb3cef9723": ({}, {"replaces": {"id": "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9", "version": "1.0.0"}}),
+    "4e02af40-ea75-510c-b524-5f21e6de2d55": ({}, {"replaces": {"id": "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9", "version": "0.9.0"}}),
 }
 
 
 @fixture()
 def deps(t: T):
-    """vendor/base, its consumers app/a (^1.0) and app/b (>=0.9.0), and forks mine/base
-    (replaces vendor/base 1.0.0) and old/base (replaces 0.9.0); each released at 1.0.0."""
+    """c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9, its consumers 9692fc07-23c7-5f20-8779-f09374f1a571 (^1.0) and f5984d44-92bd-51ac-8e8f-d911dd824ef3 (>=0.9.0), and forks db33e43e-e652-5767-8e21-27fb3cef9723
+    (replaces c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 1.0.0) and 4e02af40-ea75-510c-b524-5f21e6de2d55 (replaces 0.9.0); each released at 1.0.0."""
     for id, (dependencies, extra) in GRAPH.items():
         t.new_package(id, "1.0.0", deps=dependencies, extra=extra)
 
@@ -44,8 +44,8 @@ def _(t: T):
 
 @fixture(requires=["deps_catalog"], gitpm=True)
 def deps_installed(t: T):
-    """app/a, app/b, mine/base, old/base installed from the catalog; vendor/base pulled in as a dependency."""
-    for id in ["app/a", "app/b", "mine/base", "old/base"]:
+    """9692fc07-23c7-5f20-8779-f09374f1a571, f5984d44-92bd-51ac-8e8f-d911dd824ef3, db33e43e-e652-5767-8e21-27fb3cef9723, 4e02af40-ea75-510c-b524-5f21e6de2d55 installed from the catalog; c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 pulled in as a dependency."""
+    for id in ["9692fc07-23c7-5f20-8779-f09374f1a571", "f5984d44-92bd-51ac-8e8f-d911dd824ef3", "db33e43e-e652-5767-8e21-27fb3cef9723", "4e02af40-ea75-510c-b524-5f21e6de2d55"]:
         t.gitpm_ok("install-catalog", id)
 
 

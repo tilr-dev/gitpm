@@ -1,13 +1,13 @@
 """UC-033: Catalog tag identity and version rules (P0).
 
-Fixture numeric: dan/num with releases 1.9.0 and 1.10.0 (tags vVERSION).
+Fixture numeric: 2190eee8-4be5-5a91-81d2-6ca95c1e61d0 with releases 1.9.0 and 1.10.0 (tags vVERSION).
 """
 
 import json
 
 from gitpmtest import T, case
 
-ID = "dan/num"
+ID = "2190eee8-4be5-5a91-81d2-6ca95c1e61d0"
 
 
 def sources(t: T, *repos) -> str:
@@ -71,16 +71,17 @@ def broken_tag_newer_than_valid(t: T):
 @case(fixture="numeric", spec=["catalog/catalog-generated-from-git-release-tags", "package-ids/release-tag-names#vversion-tag-of-a-scoped-single-package-repository"])
 def fork_ignores_original_tags(t: T):
     """4. A fork into namespace `me` keeps upstream repository tags; catalog-update of the fork source
-    publishes only me/num releases."""
+    publishes only 0295f5b0-82f5-5067-b4d8-f2726a3c401d releases."""
     t.gitpm_ok("install", t.repo(ID))
-    fork = t.root / "forks/num"
-    t.gitpm_ok("fork", ID, "--ns", "me", "--into", fork)
+    fork = t.root / "71d98915-a8ea-558c-9234-5ff81b3dd5a7"
+    t.gitpm_ok("fork", ID, "--into", fork)
+    fork_id = t.manifest_id(fork)
     t.has(t.git(fork, "tag", "--list"), f"v1.9.0", f"v1.10.0")
     t.gitpm_ok("commit", fork, "2.0.0")
     r = t.gitpm_ok("catalog-update", "--sources", sources(t, fork))
     t.has(r.out, "Catalog ready: 1 release(s)")
-    t.eq(versions(t, "me/num"), ["2.0.0"], "fork releases")
-    t.eq(json.loads(t.catalog_release("me/num", "2.0.0").read_text())["commit"], t.rev(fork, "v2.0.0"),
+    t.eq(versions(t, fork_id), ["2.0.0"], "fork releases")
+    t.eq(json.loads(t.catalog_release(fork_id, "2.0.0").read_text())["commit"], t.rev(fork, "v2.0.0"),
          "fork release commit")
     t.ok(not t.catalog_index(ID).exists(), "original ID not published from the fork source")
     t.lacks(r.err, f"v1.9.0", f"v1.10.0")
@@ -110,6 +111,6 @@ def prerelease_build_and_named_tags_ignored(t: T):
 @case(fixture="numeric", spec=["package-ids/version-format"])
 def two_part_version_refused(t: T):
     """6. A manifest with "version": "1.0" installed via --ref is refused (invalid_version)."""
-    t.new_package("dan/short", "1.0")
-    t.gitpm_err("install", t.repo("dan/short"), "--ref", "v1.0", kind="invalid_version")
-    t.not_installed("dan/short")
+    t.new_package("8553ec2d-a4e8-576e-b0a5-74081dc68ec6", "1.0")
+    t.gitpm_err("install", t.repo("8553ec2d-a4e8-576e-b0a5-74081dc68ec6"), "--ref", "v1.0", kind="invalid_version")
+    t.not_installed("8553ec2d-a4e8-576e-b0a5-74081dc68ec6")

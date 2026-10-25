@@ -1,7 +1,7 @@
 """UC-020: Enable and disable (P1).
 
 Fixture g2_demos_installed: two unrelated packages without dependencies,
-A = vendor/demo and B = author/demo.
+A = dd3387ed-a5a3-5059-81ad-b1f6987a28f2 and B = be517c52-cf84-5615-9a18-9fae7d82c819.
 """
 
 import json
@@ -9,7 +9,7 @@ import shutil
 
 from gitpmtest import T, case
 
-A, B = "vendor/demo", "author/demo"
+A, B = "dd3387ed-a5a3-5059-81ad-b1f6987a28f2", "be517c52-cf84-5615-9a18-9fae7d82c819"
 
 
 def state_text(t: T) -> str:
@@ -91,7 +91,7 @@ def unknown_id_is_not_installed(t: T):
     """disable/enable of an unknown ID: not_installed naming the ID, nothing changes."""
     before = t.snap(t.ws, git=True)
     for command in ["disable", "enable"]:
-        t.gitpm_err(command, "dan/missing", kind="not_installed", contains="package dan/missing is not installed")
+        t.gitpm_err(command, "a68376c0-a262-545a-a4f8-afe9998880a6", kind="not_installed", contains="package a68376c0-a262-545a-a4f8-afe9998880a6 is not installed")
         t.same(before, f"workspace after {command} of an unknown ID")
 
 

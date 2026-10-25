@@ -6,7 +6,7 @@ and the author repository (incl. .git) before the second call.
 
 from gitpmtest import T, case
 
-B = "dan/b"
+B = "03c25ec4-f583-513d-adfb-092fb98d8dba"
 
 
 def everything(t: T):
@@ -75,20 +75,20 @@ def restore_registered(t: T):
 @case(fixture="catalog", spec=["catalog/published-versions-are-immutable"])
 def register_same_release(t: T):
     """README: repeated register of the same release is allowed; catalog byte-identical."""
-    second_ok(t, "register", t.repo("dan/hello"), "--ref", "v0.1.1")
+    second_ok(t, "register", t.repo("3dce1568-569c-5b53-9321-37185e751947"), "--ref", "v0.1.1")
 
 
 @case(fixture="catalog", spec=["catalog/published-versions-are-immutable#regenerate"])
 def catalog_update_unchanged_sources(t: T):
-    (t.root / "sources.txt").write_text(f"{t.repo('dan/hello')}\n{t.repo('dan/num')}\n")
+    (t.root / "sources.txt").write_text(f"{t.repo('3dce1568-569c-5b53-9321-37185e751947')}\n{t.repo('2190eee8-4be5-5a91-81d2-6ca95c1e61d0')}\n")
     second_ok(t, "catalog-update")
-    t.has(t.catalog_index("dan/hello").read_text(), '"0.2.0"')
+    t.has(t.catalog_index("3dce1568-569c-5b53-9321-37185e751947").read_text(), '"0.2.0"')
 
 
 @case(fixture="hello", spec=["authoring/existing-tags-are-never-moved"])
 def commit_existing_version(t: T):
     """Second commit with the same version: tag already exists; HEAD and tags unchanged."""
-    repo = t.repo("dan/hello")
+    repo = t.repo("3dce1568-569c-5b53-9321-37185e751947")
     t.write(repo, {"dist/index.js": "export const greeting = 'next';\n"})
     t.gitpm_ok("commit", repo, "0.1.1")
     t.write(repo, {"dist/index.js": "export const greeting = 'again';\n"})
@@ -102,12 +102,12 @@ def commit_existing_version(t: T):
 
 @case(fixture="hello", spec=["authoring/remote-sets-origin-without-network#set-origin"])
 def remote_same_url(t: T):
-    repo = t.repo("dan/hello")
-    second_ok(t, "remote", repo, "https://example.invalid/dan/hello.git")
-    t.eq(t.git(repo, "remote", "get-url", "origin"), "https://example.invalid/dan/hello.git", "origin")
+    repo = t.repo("3dce1568-569c-5b53-9321-37185e751947")
+    second_ok(t, "remote", repo, "https://example.invalid/3dce1568-569c-5b53-9321-37185e751947.git")
+    t.eq(t.git(repo, "remote", "get-url", "origin"), "https://example.invalid/3dce1568-569c-5b53-9321-37185e751947.git", "origin")
 
 
 @case(fixture="hello_installed", spec=["updates/stable-update-moves-to-the-newest-release#update-and-repeat"])
 def update_nothing_new(t: T):
-    second_ok(t, "update", "dan/hello")
-    t.eq(t.package("dan/hello")["current"]["version"], "0.1.0", "version")
+    second_ok(t, "update", "3dce1568-569c-5b53-9321-37185e751947")
+    t.eq(t.package("3dce1568-569c-5b53-9321-37185e751947")["current"]["version"], "0.1.0", "version")

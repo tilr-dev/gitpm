@@ -617,7 +617,7 @@ mod tests {
     #[test]
     fn ls_remote_refs_lists_tags_with_peeled_commits_and_branches_and_fails_as_git() {
         let dir = TempDir::new("exec");
-        let author = Author::new(dir.join("repo"), "dan/demo1");
+        let author = Author::new(dir.join("repo"), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let first = author.head();
         let second = author.commit("0.2.0");
         crate::test_support::git(&author.path, &["tag", "-a", "-m", "release", "v0.2.0"]);

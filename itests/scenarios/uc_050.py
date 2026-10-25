@@ -15,7 +15,7 @@ from pathlib import Path
 
 from gitpmtest import R, T, case, gitpm_argv
 
-ID = "dan/hello"
+ID = "3dce1568-569c-5b53-9321-37185e751947"
 _gates = iter(range(10_000))
 
 
@@ -62,7 +62,7 @@ def clean_txn(t: T, root: Path):
 
 @case(fixture="hello_installed", spec=["transactions-locking/workspace-lock#two-cli-processes"])
 def same_workspace_concurrent_installs(t: T):
-    ids = [f"dan/p{i}" for i in range(1, 7)]
+    ids = [f"b19dabd5-0619-5414-b4d6-56c38472e88d{i}" for i in range(1, 7)]
     commits = {id: t.new_package(id, "0.1.0") for id in ids}
     hello = t.snap(t.clone(ID), t.dist(ID))
     hello_entry = t.package(ID)
@@ -82,39 +82,39 @@ def same_workspace_concurrent_installs(t: T):
 def same_plugin_installed_concurrently_once(t: T):
     """Four processes install the same ID: at most one installs it, the rest are locked or
     report it already installed (idempotent install, exit 0)."""
-    t.new_package("dan/solo", "0.1.0")
-    jobs = [["install", t.repo("dan/solo")] for _ in range(4)]
+    t.new_package("b21e58fb-a578-5d32-8d48-f420309785c9", "0.1.0")
+    jobs = [["install", t.repo("b21e58fb-a578-5d32-8d48-f420309785c9")] for _ in range(4)]
     results = race(t, jobs)
-    installed = [r for r in results if r.code == 0 and r.out.startswith("installed dan/solo@0.1.0")]
+    installed = [r for r in results if r.code == 0 and r.out.startswith("installed b21e58fb-a578-5d32-8d48-f420309785c9@0.1.0")]
     t.ok(len(installed) <= 1, "at most one process installed it")
     for args, r in zip(jobs, results):
         if r not in installed:
-            t.ok("Error kind: locked" in r.err or (r.code == 0 and r.out == "dan/solo already installed (0.1.0)\n"),
+            t.ok("Error kind: locked" in r.err or (r.code == 0 and r.out == "b21e58fb-a578-5d32-8d48-f420309785c9 already installed (0.1.0)\n"),
                  "loser is locked or sees the package installed")
     if not installed and not any(r.code == 0 for r in results):
-        t.gitpm_ok("install", t.repo("dan/solo"))
+        t.gitpm_ok("install", t.repo("b21e58fb-a578-5d32-8d48-f420309785c9"))
     before = t.snap(t.ws, git=True)
-    t.eq(t.gitpm_ok("install", t.repo("dan/solo")).out, "dan/solo already installed (0.1.0)\n", "repeat install")
+    t.eq(t.gitpm_ok("install", t.repo("b21e58fb-a578-5d32-8d48-f420309785c9")).out, "b21e58fb-a578-5d32-8d48-f420309785c9 already installed (0.1.0)\n", "repeat install")
     t.same(before, "workspace after the repeat install")
-    t.eq(t.package("dan/solo")["current"]["version"], "0.1.0", "installed once")
-    t.eq(len([p for p in t.state()["packages"] if p == "dan/solo"]), 1, "one entry")
+    t.eq(t.package("b21e58fb-a578-5d32-8d48-f420309785c9")["current"]["version"], "0.1.0", "installed once")
+    t.eq(len([p for p in t.state()["packages"] if p == "b21e58fb-a578-5d32-8d48-f420309785c9"]), 1, "one entry")
     clean_txn(t, t.ws)
 
 
 @case(fixture="hello_installed", spec=["transactions-locking/workspace-lock#two-cli-processes"])
 def same_workspace_mixed_mutations_lose_nothing(t: T):
-    for id in ["dan/a", "dan/b", "dan/c"]:
+    for id in ["807b9715-06b4-55c2-add2-59b487bfa42e", "03c25ec4-f583-513d-adfb-092fb98d8dba", "78d36dc2-2c10-5dc8-a889-056564906e06"]:
         t.new_package(id, "0.1.0")
-    for id in ["dan/a", "dan/b"]:
+    for id in ["807b9715-06b4-55c2-add2-59b487bfa42e", "03c25ec4-f583-513d-adfb-092fb98d8dba"]:
         t.gitpm_ok("install", t.repo(id))
     new = t.release(ID, "0.1.1")
-    jobs = [["update", ID], ["disable", "dan/a"], ["install", t.repo("dan/c")], ["uninstall", "dan/b", "--force"]]
+    jobs = [["update", ID], ["disable", "807b9715-06b4-55c2-add2-59b487bfa42e"], ["install", t.repo("78d36dc2-2c10-5dc8-a889-056564906e06")], ["uninstall", "03c25ec4-f583-513d-adfb-092fb98d8dba", "--force"]]
     settle(t, jobs, race(t, jobs), "workspace is already in use")
     s = t.state()["packages"]
     t.eq(s[ID]["current"], {"version": "0.1.1", "commit": new}, "update kept")
-    t.eq(s["dan/a"]["enabled"], False, "disable kept")
-    t.ok("dan/c" in s and t.clone("dan/c").is_dir(), "install kept")
-    t.ok("dan/b" not in s and not t.clone("dan/b").exists(), "uninstall kept")
+    t.eq(s["807b9715-06b4-55c2-add2-59b487bfa42e"]["enabled"], False, "disable kept")
+    t.ok("78d36dc2-2c10-5dc8-a889-056564906e06" in s and t.clone("78d36dc2-2c10-5dc8-a889-056564906e06").is_dir(), "install kept")
+    t.ok("03c25ec4-f583-513d-adfb-092fb98d8dba" not in s and not t.clone("03c25ec4-f583-513d-adfb-092fb98d8dba").exists(), "uninstall kept")
     t.has((t.dist(ID) / "index.js").read_text(), "0.1.1")
     # Rounds of concurrent toggles over every package.
     ids = sorted(s)
@@ -132,10 +132,10 @@ def same_catalog_concurrent_registrations(t: T):
     jobs, expected = [], {}
     for patch in range(5):
         v = f"0.3.{patch}"
-        expected[("dan/hello", v)] = t.release(ID, v)
+        expected[("3dce1568-569c-5b53-9321-37185e751947", v)] = t.release(ID, v)
         jobs.append(["register", t.repo(ID), "--ref", f"v{v}"])
     for n in range(1, 4):
-        id = f"dan/n{n}"
+        id = f"521101f8-c190-541c-83b0-8fb50b51cf2a{n}"
         expected[(id, "0.1.0")] = t.new_package(id, "0.1.0")
         jobs.append(["register", t.repo(id), "--ref", f"v0.1.0"])
     settle(t, jobs, race(t, jobs), "catalog locked")
@@ -144,12 +144,12 @@ def same_catalog_concurrent_registrations(t: T):
          "no lost version in the shared package index")
     for (id, v), commit in expected.items():
         t.eq(json.loads(t.catalog_release(id, v).read_text())["commit"], commit, f"{id}@{v} recorded")
-    t.eq(sorted(json.loads((t.catalog / "namespaces/dan/catalog.json").read_text())["directories"]),
-         ["hello", "n1", "n2", "n3", "num"], "no lost directory link")
+    t.eq(sorted(json.loads((t.catalog / "packages/dan/catalog.json").read_text())["directories"]),
+         sorted(["hello", "n1", "n2", "n3", "num"]), "no lost directory link")
     for path, data in old.items():
         t.ok(path.read_bytes() == data, f"existing {path.relative_to(t.catalog)} unchanged")
     t.eq(list(t.catalog.rglob("*.tmp")), [], "no temporary files")
-    t.has(t.gitpm_ok("--catalog", t.catalog, "info").out, "dan/n1", "dan/n3", "latest: 0.3.4")
+    t.has(t.gitpm_ok("--catalog", t.catalog, "info").out, "1e0e9f63-8c9a-5b31-a7bd-9358a4d189f2", "b538e2fa-c0de-5ac5-8358-e1b14bb3b0d0", "latest: 0.3.4")
 
 
 @case(fixture="catalog", spec=["transactions-locking/workspace-lock", "catalog/writers-are-serialized-and-crash-safe"])
@@ -161,7 +161,7 @@ def independent_workspaces_and_catalogs_run_in_parallel(t: T):
     for root in roots:
         state = json.loads((root / "state.json").read_text())
         t.eq(state["packages"][ID]["current"]["version"], "0.1.1", f"{root.name} state")
-        t.has((root / "dist" / ID / "index.js").read_text(), "dan/hello 0.1.1")
+        t.has((root / "dist" / ID / "index.js").read_text(), "3dce1568-569c-5b53-9321-37185e751947 0.1.1")
         clean_txn(t, root)
     catalogs = [t.root / f"cat{i}" for i in range(1, 5)]
     jobs = [["--catalog", c, "register", t.repo(ID), "--ref", f"v0.2.0"] for c in catalogs]

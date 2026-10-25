@@ -5,9 +5,9 @@ disable, forget and replace remove it; enable, restore and `replace ORIGINAL --w
 again from the clone's committed tree; folders of no known package are left alone with a
 warning; an active package whose clone is gone is skipped with a warning.
 
-Fixtures: g2_demos_installed (A = vendor/demo, B = author/demo, unrelated), g6_forked
-(vendor/base with consumers app/a, app/b and the fork mine/base 1.0.1 installed, no
-replacement), g6_replaced (the same with `replace vendor/base --with mine/base`).
+Fixtures: g2_demos_installed (A = dd3387ed-a5a3-5059-81ad-b1f6987a28f2, B = be517c52-cf84-5615-9a18-9fae7d82c819, unrelated), g6_forked
+(c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 with consumers 9692fc07-23c7-5f20-8779-f09374f1a571, f5984d44-92bd-51ac-8e8f-d911dd824ef3 and the fork db33e43e-e652-5767-8e21-27fb3cef9723 1.0.1 installed, no
+replacement), g6_replaced (the same with `replace c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 --with db33e43e-e652-5767-8e21-27fb3cef9723`).
 """
 
 import hashlib
@@ -17,8 +17,8 @@ import subprocess
 
 from gitpmtest import T, case
 
-A, B = "vendor/demo", "author/demo"
-ORIGINAL, FORK = "vendor/base", "mine/base"
+A, B = "dd3387ed-a5a3-5059-81ad-b1f6987a28f2", "be517c52-cf84-5615-9a18-9fae7d82c819"
+ORIGINAL, FORK = "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9", "db33e43e-e652-5767-8e21-27fb3cef9723"
 FORK_PAYLOAD = "export const greeting = 'fork payload';\n"
 
 
@@ -68,7 +68,7 @@ def enable_deploys_committed_tree_not_working_tree(t: T):
 @case(fixture="catalog", spec=["dist/deploys-copy-the-committed-tree#export-ignore-in-the-package-repository"])
 def export_ignore_deploys_and_hashes_committed_bytes(t: T):
     """Catalog registration, protected install and update use the deployed Git blobs."""
-    id = "attrs/demo"
+    id = "2fe4fa03-ed3c-54ab-ad3b-31ab1470e966"
     attributes = "dist/debug.js export-ignore\ndist/subst.txt export-subst\n"
     dist_attributes = "debug.js export-ignore\nsubst.txt export-subst\n"
     literal = "$Format:%H$\n"
@@ -116,7 +116,7 @@ def export_ignore_deploys_and_hashes_committed_bytes(t: T):
                                "dist/deploys-copy-the-committed-tree#submodule-inside-dist"])
 def gitlinks_warn_at_publication_and_deploy(t: T):
     """Authors and users see warnings; protected deploys keep gitlinks empty."""
-    id = "links/demo"
+    id = "b7222c4f-97a2-57f1-9a18-648afa1243e4"
     t.new_package(id, "1.0.0")
     repo = t.repo(id)
     sha = t.rev(repo)
@@ -131,7 +131,7 @@ def gitlinks_warn_at_publication_and_deploy(t: T):
 
     warned(t.gitpm_ok("register", repo, "--ref", f"v1.0.0"))
     registered = json.loads(t.catalog_release(id, "1.0.0").read_text())
-    t.eq(sorted(registered["files"]), ["index.js"], "gitlink has no file digest")
+    t.eq(sorted(registered["files"]), sorted(["index.js"]), "gitlink has no file digest")
     sources = t.root / "gitlink-sources.txt"
     t.write(sources.parent, {sources.name: str(repo) + "\n"})
     generated = t.root / "gitlink-catalog"
@@ -160,7 +160,7 @@ def gitlinks_warn_at_publication_and_deploy(t: T):
 
 
 @case(fixture="g2_demos_installed", spec=["dist/forget-restore-and-uninstall-settle-dist",
-                                          "dist/empty-parent-folders-are-removed#last-package-of-a-namespace"])
+                                          "dist/empty-parent-folders-are-removed#last-package-removed"])
 def forget_removes_restore_redeploys(t: T):
     """forget A removes dist/A (and the empty dist/vendor) but keeps the clone; restore deploys it."""
     clone = t.snap(t.clone(A), git=True)
@@ -172,7 +172,7 @@ def forget_removes_restore_redeploys(t: T):
     deployed(t, A)
 
 
-@case(fixture="g2_demos_installed", spec=["dist/empty-parent-folders-are-removed#last-package-of-a-namespace"])
+@case(fixture="g2_demos_installed", spec=["dist/empty-parent-folders-are-removed#last-package-removed"])
 def uninstall_removes_empty_namespace_folders(t: T):
     """uninstall A (the only package of namespace vendor) removes dist/vendor and its unused clone."""
     t.eq(t.gitpm_ok("uninstall", A).out, f"{A} uninstalled\n", "output")
@@ -234,26 +234,26 @@ def forget_of_a_package_whose_clone_is_gone(t: T):
 @case(fixture="g6_forked", spec=["dist/dist-holds-exactly-the-active-packages#enabled-but-replaced",
                                  "dist/switching-back-redeploys-the-original#back-to-the-original"])
 def replace_removes_original_back_redeploys(t: T):
-    """replace vendor/base --with mine/base removes dist/vendor/base (fork's dist stays, original
+    """replace c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 --with db33e43e-e652-5767-8e21-27fb3cef9723 removes dist/c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 (fork's dist stays, original
     stays enabled but inactive); replace ORIGINAL --with ORIGINAL deploys it again and keeps the fork's dist."""
     fork = t.snap(t.dist(FORK))
     r = t.gitpm_ok("replace", ORIGINAL, "--with", FORK)
     t.has(r.out, f"{ORIGINAL} replaced by {FORK} 1.0.1")
-    t.ok(not t.dist(ORIGINAL).exists(), "dist/vendor/base removed")
-    t.same(fork, "dist/mine/base")
+    t.ok(not t.dist(ORIGINAL).exists(), "dist/c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 removed")
+    t.same(fork, "dist/db33e43e-e652-5767-8e21-27fb3cef9723")
     t.eq((t.dist(FORK) / "index.js").read_text(), FORK_PAYLOAD, "fork payload")
     view = resolved(t)
     t.eq((view[ORIGINAL]["enabled"], view[ORIGINAL]["active"]), (True, False), "original enabled, inactive")
     r = t.gitpm_ok("replace", ORIGINAL, "--with", ORIGINAL)
     t.has(r.out, f"{ORIGINAL} switched back from {FORK}")
     deployed(t, ORIGINAL)
-    t.same(fork, "dist/mine/base after --back")
+    t.same(fork, "dist/db33e43e-e652-5767-8e21-27fb3cef9723 after --back")
     t.eq(resolved(t)[ORIGINAL]["active"], True, "original active again")
 
 
 @case(fixture="g6_forked", spec=["fork-replacement/replacement-is-explicit-and-global#fork-not-usable-as-the-replacing-package"])
 def replace_with_disabled_fork_is_refused(t: T):
-    """A disabled fork cannot replace: invalid_argument, dist/vendor/base stays."""
+    """A disabled fork cannot replace: invalid_argument, dist/c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 stays."""
     t.gitpm_ok("disable", FORK)
     before = t.snap(t.ws, git=True)
     t.gitpm_err("replace", ORIGINAL, "--with", FORK, kind="invalid_argument",
@@ -264,21 +264,21 @@ def replace_with_disabled_fork_is_refused(t: T):
 
 @case(fixture="g6_replaced", spec=["dist/inactive-packages-change-state-and-clone-only#update-of-a-replaced-package"])
 def update_of_replaced_package_deploys_nothing_until_back(t: T):
-    """A replaced vendor/base updated to 1.1.0: state and clone move, no dist until replace ORIGINAL --with ORIGINAL (1.1.0)."""
+    """A replaced c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 updated to 1.1.0: state and clone move, no dist until replace ORIGINAL --with ORIGINAL (1.1.0)."""
     commit = t.release(ORIGINAL, "1.1.0")
     t.gitpm_ok("update", ORIGINAL)
     t.eq(t.package(ORIGINAL)["current"], {"version": "1.1.0", "commit": commit}, "state")
     t.eq(t.rev(t.clone(ORIGINAL)), commit, "clone HEAD")
-    t.ok(not t.dist(ORIGINAL).exists(), "no dist/vendor/base while replaced")
+    t.ok(not t.dist(ORIGINAL).exists(), "no dist/c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 while replaced")
     t.gitpm_ok("replace", ORIGINAL, "--with", ORIGINAL)
     t.has((t.dist(ORIGINAL) / "index.js").read_text(), f"{ORIGINAL} 1.1.0")
 
 
 @case(fixture="g6_replaced", spec=["fork-replacement/active-fork-rules#uninstall-the-fork"])
 def uninstalling_the_fork_redeploys_the_original(t: T):
-    """uninstall mine/base (the active replacement) needs no --force while the installed
-    vendor/base 1.0.0 satisfies app/a and app/b; it drops the binding and deploys
-    dist/vendor/base again in the same command."""
+    """uninstall db33e43e-e652-5767-8e21-27fb3cef9723 (the active replacement) needs no --force while the installed
+    c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 1.0.0 satisfies 9692fc07-23c7-5f20-8779-f09374f1a571 and f5984d44-92bd-51ac-8e8f-d911dd824ef3; it drops the binding and deploys
+    dist/c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 again in the same command."""
     t.ok(not t.dist(ORIGINAL).exists(), "precondition: original not deployed")
     t.gitpm_ok("uninstall", FORK)
     t.not_installed(FORK)
@@ -288,26 +288,26 @@ def uninstalling_the_fork_redeploys_the_original(t: T):
 
 @case(fixture="g6_replaced", spec=["dist/enable-and-disable-deploy-and-remove#forced-disable-of-an-active-replacement"])
 def forced_disable_of_active_replacement(t: T):
-    """vendor/base uninstalled while replaced: disable mine/base refuses (app/a, app/b would
-    break); --force removes dist/mine/base and drops the binding, nothing is deployed for
-    vendor/base and the consumers are reported broken."""
+    """c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 uninstalled while replaced: disable db33e43e-e652-5767-8e21-27fb3cef9723 refuses (9692fc07-23c7-5f20-8779-f09374f1a571, f5984d44-92bd-51ac-8e8f-d911dd824ef3 would
+    break); --force removes dist/db33e43e-e652-5767-8e21-27fb3cef9723 and drops the binding, nothing is deployed for
+    c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 and the consumers are reported broken."""
     t.gitpm_ok("uninstall", ORIGINAL)
-    t.gitpm_err("disable", FORK, kind="has_dependents", contains="required by app/a, app/b")
+    t.gitpm_err("disable", FORK, kind="has_dependents", contains="required by 9692fc07-23c7-5f20-8779-f09374f1a571, f5984d44-92bd-51ac-8e8f-d911dd824ef3")
     t.gitpm_ok("disable", FORK, "--force")
-    t.ok(not t.dist(FORK).exists(), "dist/mine/base removed")
-    t.ok(not t.dist(ORIGINAL).exists(), "dist/vendor/base not deployed")
+    t.ok(not t.dist(FORK).exists(), "dist/db33e43e-e652-5767-8e21-27fb3cef9723 removed")
+    t.ok(not t.dist(ORIGINAL).exists(), "dist/c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 not deployed")
     t.ok(not t.state().get("replacements"), "binding dropped")
-    for consumer in ["app/a", "app/b"]:
+    for consumer in ["9692fc07-23c7-5f20-8779-f09374f1a571", "f5984d44-92bd-51ac-8e8f-d911dd824ef3"]:
         row = next(r for r in resolved(t)[consumer]["dependencies"] if r["id"] == ORIGINAL)
         t.eq(row["satisfied"], False, f"{consumer} broken")
 
 
 @case(fixture="g6_replaced", spec=["fork-replacement/active-fork-rules#disable-the-fork", "dependencies/dependents-guard-removal#installed-original-satisfies-the-consumers"])
 def disabling_the_fork_drops_the_binding_when_the_original_serves(t: T):
-    """The installed vendor/base satisfies app/a and app/b: disable mine/base needs no --force,
-    drops the binding and deploys dist/vendor/base; enabling the fork again keeps it unbound."""
+    """The installed c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 satisfies 9692fc07-23c7-5f20-8779-f09374f1a571 and f5984d44-92bd-51ac-8e8f-d911dd824ef3: disable db33e43e-e652-5767-8e21-27fb3cef9723 needs no --force,
+    drops the binding and deploys dist/c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9; enabling the fork again keeps it unbound."""
     t.gitpm_ok("disable", FORK)
-    t.ok(not t.dist(FORK).exists(), "dist/mine/base removed")
+    t.ok(not t.dist(FORK).exists(), "dist/db33e43e-e652-5767-8e21-27fb3cef9723 removed")
     deployed(t, ORIGINAL)
     t.ok(not t.state().get("replacements"), "binding dropped")
     t.gitpm_ok("enable", FORK)

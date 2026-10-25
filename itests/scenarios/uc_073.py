@@ -12,7 +12,7 @@ import json
 
 from gitpmtest import T, case
 
-THEME, STORE, DARK = "tilr/theme", "tilr/store", "me/dark"
+THEME, STORE, DARK = "f851f609-bb81-52d6-bfef-33798624782c", "76a9b591-60f3-5c7f-9e1c-31648fc73bfd", "e32d4e2a-17bf-5c88-82f9-1360ebb1258c"
 THEME_META = {"title": "Theme", "description": "Dark and light", "provides": "theme", "tags": ["ui", "colors"]}
 
 
@@ -50,7 +50,7 @@ def list_reports_all_four_keys(t: T):
          {"title": None, "description": None, "provides": [], "tags": []}, "absent metadata shape")
     for id, entry in [(THEME, theme), (STORE, store)]:
         stored = value["packages"][id]["metadata"]
-        t.eq(sorted(stored), ["description", "provides", "tags", "title"], f"{id} state metadata keys")
+        t.eq(sorted(stored), sorted(["description", "provides", "tags", "title"]), f"{id} state metadata keys")
         t.eq({k: stored[k] for k in stored}, {k: entry[k] for k in stored}, f"{id} same shape in state")
     t.eq(json.loads((t.clone(THEME) / "plugin.json").read_text())["provides"], "theme",
          "the manifest keeps the string form")
@@ -59,20 +59,20 @@ def list_reports_all_four_keys(t: T):
 @case(spec=["plugin-metadata/reported-shape#only-a-title"])
 def only_a_title(t: T):
     """A package with only `title`: description null, provides and tags []."""
-    t.new_package("dan/titled", "1.0.0", extra={"title": "Titled"})
-    t.gitpm_ok("install", t.repo("dan/titled"))
-    entry = resolved(t, t.gitpm_ok("list").json(), "dan/titled")
+    t.new_package("1530d62f-9f1d-56d1-af05-80441ac88c46", "1.0.0", extra={"title": "Titled"})
+    t.gitpm_ok("install", t.repo("1530d62f-9f1d-56d1-af05-80441ac88c46"))
+    entry = resolved(t, t.gitpm_ok("list").json(), "1530d62f-9f1d-56d1-af05-80441ac88c46")
     t.eq((entry["title"], entry["description"], entry["provides"], entry["tags"]), ("Titled", None, [], []), "shape")
 
 
 @case(spec=["plugin-metadata/filter-by-provided-service"])
 def list_provides_filters_plugins_and_resolved(t: T):
-    """list --provides theme keeps only tilr/theme in packages and resolved; a service nobody
+    """list --provides theme keeps only f851f609-bb81-52d6-bfef-33798624782c in packages and resolved; a service nobody
     provides gives empty lists; --provides on another command is a usage error."""
     two_plugins(t)
     only = t.gitpm_ok("list", "--provides", "theme").json()
     t.eq(ids(only), [THEME], "resolved filtered")
-    t.eq(sorted(only["packages"]), [THEME], "packages filtered")
+    t.eq(sorted(only["packages"]), sorted([THEME]), "packages filtered")
     none = t.gitpm_ok("list", "--provides", "store").json()
     t.eq((ids(none), sorted(none["packages"])), ([], []), "nothing provides store")
     before = t.snap(t.ws)
@@ -82,7 +82,7 @@ def list_provides_filters_plugins_and_resolved(t: T):
 
 @case(spec=["plugin-metadata/filter-by-provided-service#replaced-original-still-listed"])
 def replaced_original_still_listed(t: T):
-    """me/dark replaces tilr/theme, both provide `theme`: list --provides theme lists both,
+    """e32d4e2a-17bf-5c88-82f9-1360ebb1258c replaces f851f609-bb81-52d6-bfef-33798624782c, both provide `theme`: list --provides theme lists both,
     with the original inactive."""
     t.new_package(THEME, "1.0.0", extra=THEME_META)
     t.gitpm_ok("install", t.repo(THEME))
@@ -99,17 +99,17 @@ def replaced_original_still_listed(t: T):
 @case(spec=["plugin-metadata/lenient-reading-strict-authoring#old-release-with-bad-tags"])
 def wrong_typed_tags_ignored_on_install(t: T):
     """A release with "tags": "ui" installs; tags is [] and stderr warns."""
-    t.new_package("dan/bad", "1.0.0", extra={"tags": "ui"})
-    r = t.gitpm_ok("install", t.repo("dan/bad"))
-    t.has(r.err, "Warning: dan/bad 1.0.0: plugin.json tags must be an array of strings; ignored")
-    t.eq(resolved(t, t.gitpm_ok("list").json(), "dan/bad")["tags"], [], "tags ignored")
+    t.new_package("86ca4dbd-0966-543b-a2cf-a2d5ea1d22f6", "1.0.0", extra={"tags": "ui"})
+    r = t.gitpm_ok("install", t.repo("86ca4dbd-0966-543b-a2cf-a2d5ea1d22f6"))
+    t.has(r.err, "Warning: 86ca4dbd-0966-543b-a2cf-a2d5ea1d22f6 1.0.0: plugin.json tags must be an array of strings; ignored")
+    t.eq(resolved(t, t.gitpm_ok("list").json(), "86ca4dbd-0966-543b-a2cf-a2d5ea1d22f6")["tags"], [], "tags ignored")
 
 
 @case(spec=["plugin-metadata/lenient-reading-strict-authoring#authoring-with-bad-tags"])
 def wrong_typed_tags_refused_by_commit(t: T):
     """commit with "tags": "ui" fails with invalid_manifest; nothing is committed or tagged."""
-    t.new_package("dan/bad", "1.0.0")
-    repo = t.repo("dan/bad")
+    t.new_package("86ca4dbd-0966-543b-a2cf-a2d5ea1d22f6", "1.0.0")
+    repo = t.repo("86ca4dbd-0966-543b-a2cf-a2d5ea1d22f6")
     manifest = json.loads((repo / "plugin.json").read_text())
     manifest["tags"] = "ui"
     t.write(repo, {"plugin.json": json.dumps(manifest, indent=2) + "\n"})
@@ -121,15 +121,17 @@ def wrong_typed_tags_refused_by_commit(t: T):
 
 @case(spec=["plugin-metadata/metadata-survives-rewrites#fork-keeps-the-title"])
 def fork_and_commit_keep_metadata(t: T):
-    """fork tilr/theme as me/theme, then commit 1.0.1: title, description, provides (string
+    """fork f851f609-bb81-52d6-bfef-33798624782c as d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50, then commit 1.0.1: title, description, provides (string
     form) and tags are unchanged while id/version/forkOf are rewritten."""
     t.new_package(THEME, "1.0.0", extra=THEME_META)
     t.gitpm_ok("install", t.repo(THEME))
-    fork = t.root / "forks/theme"
-    t.gitpm_ok("fork", THEME, "--ns", "me", "--into", fork)
+    fork = t.root / "e4def5ff-ede6-5689-be25-eeaf3e6cbb17"
+    t.gitpm_ok("fork", THEME, "--into", fork)
+    fork_id = t.manifest_id(fork)
+    t.ok(fork_id != THEME, "fresh fork UUID")
     t.gitpm_ok("commit", fork, "1.0.1")
     m = json.loads(t.git(fork, "show", "HEAD:plugin.json"))
-    t.eq((m["id"], m["version"], m["forkOf"]["id"]), ("me/theme", "1.0.1", THEME), "rewritten keys")
+    t.eq((m["id"], m["version"], m["forkOf"]["id"]), (fork_id, "1.0.1", THEME), "rewritten keys")
     t.eq({k: m[k] for k in THEME_META}, THEME_META, "metadata kept exactly")
 
 
@@ -151,7 +153,7 @@ def info_shows_latest_release_metadata(t: T):
     t.lacks(out, "Title: Old")
     j = next(n for n, l in enumerate(lines) if l.strip().startswith(f"{STORE} — latest: 1.0.0"))
     t.ok(not any(l.strip().startswith(("Title:", "Provides:", "Tags:", "Description:")) for l in lines[j + 1:j + 3]),
-         "no metadata lines for tilr/store")
+         "no metadata lines for 76a9b591-60f3-5c7f-9e1c-31648fc73bfd")
     release = json.loads(t.catalog_release(THEME, "1.1.0").read_text())
     t.eq({k: release["manifest"][k] for k in THEME_META}, THEME_META, "release.json carries the metadata")
 
@@ -195,5 +197,5 @@ def browse_reads_only_indexes(t: T):
         server.httpd.shutdown()
         server.httpd.server_close()
     t.eq(paths, ["/catalog.json"] + [f"/p{n:02}/plugin.json" for n in range(40)], "bounded index requests only")
-    t.has(out, "tilr/p00", "tilr/p01", "Title: p02", "Title: p39")
-    t.lacks(out, "Title: p00", "Title: p01", "tilr/p40")
+    t.has(out, "63567819-6827-523e-82f3-f32f8c2330f2", "bf40c7dc-5fa4-5cbb-98f9-61b06bf22ab3", "Title: p02", "Title: p39")
+    t.lacks(out, "Title: p00", "Title: p01", "a73daafb-b5ab-5066-ba71-843179929804")

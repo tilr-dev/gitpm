@@ -1,7 +1,7 @@
 """UC-070: sync-dist repairs a workspace written by gitpm 0.4.
 
 gitpm 0.4 deployed every installed package; 0.5 keeps only the active ones. A 0.4-style
-workspace is reproduced from g2_demos_installed (A = vendor/demo, B = author/demo): A is
+workspace is reproduced from g2_demos_installed (A = dd3387ed-a5a3-5059-81ad-b1f6987a28f2, B = be517c52-cf84-5615-9a18-9fae7d82c819): A is
 disabled and its dist/ folder is put back by hand, as 0.4 left it. Read-only commands
 leave such a tree alone; `sync-dist --dry-run` lists the drift, `sync-dist` fixes it, and
 the next mutating command would reconcile it anyway.
@@ -11,7 +11,7 @@ import shutil
 
 from gitpmtest import T, case
 
-A, B = "vendor/demo", "author/demo"
+A, B = "dd3387ed-a5a3-5059-81ad-b1f6987a28f2", "be517c52-cf84-5615-9a18-9fae7d82c819"
 
 
 def stale(t: T):
@@ -70,10 +70,10 @@ def unmanaged_paths_are_only_warned(t: T):
 def next_mutation_reconciles_the_stale_tree(t: T):
     """Installing an unrelated package removes the disabled package's leftover dist in the same command."""
     stale(t)
-    t.new_package("dan/other", "0.1.0")
-    t.gitpm_ok("install", t.repo("dan/other"))
+    t.new_package("95d14dc8-6dfc-5022-9fd1-7146ee6aee58", "0.1.0")
+    t.gitpm_ok("install", t.repo("95d14dc8-6dfc-5022-9fd1-7146ee6aee58"))
     t.ok(not t.dist(A).exists(), "stale dist/A removed")
-    t.has((t.dist("dan/other") / "index.js").read_text(), "dan/other 0.1.0")
+    t.has((t.dist("95d14dc8-6dfc-5022-9fd1-7146ee6aee58") / "index.js").read_text(), "95d14dc8-6dfc-5022-9fd1-7146ee6aee58 0.1.0")
     t.has((t.dist(B) / "index.js").read_text(), f"{B} 0.1.0")
 
 
@@ -98,14 +98,14 @@ def undeployable_package_is_named_and_others_synced(t: T):
 @case(fixture="g2_demos_installed", spec=["dist/unknown-paths-are-left-alone"])
 def blocked_namespace_with_sync_dist(t: T):
     """An active package below a blocked namespace is reported while another is repaired."""
-    blocked = t.dist(A).parent
+    blocked = t.dist(A)
     shutil.rmtree(blocked)
     blocked.write_text("blocked")
-    shutil.rmtree(t.dist(B).parent)
+    shutil.rmtree(t.dist(B))
 
     r = t.gitpm_err("sync-dist", kind="not_deployed", contains=f"Error: 1 package(s) not deployed: {A}")
-    t.has(r.err, f"Warning: {A}: dist not deployed (dist/vendor is not a folder)")
-    t.has(r.err, "Hint: remove or rename `dist/vendor` and run `gitpm sync-dist` again")
+    t.has(r.err, f"Warning: {A}: dist not deployed (dist/{A} is not a folder)")
+    t.has(r.err, f"Hint: remove or rename `dist/{A}` and run `gitpm sync-dist` again")
     t.ok(blocked.read_text() == "blocked", "blocked namespace file preserved")
     t.ok(t.dist(B).exists(), "unrelated active package deployed")
 

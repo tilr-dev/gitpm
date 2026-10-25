@@ -1,6 +1,6 @@
 """UC-022: Uninstall, exact ID and namespace guards (P0).
 
-Workspace (g3_trio_installed): dan/a, dan/b in one namespace and other/c in another.
+Workspace (g3_trio_installed): 807b9715-06b4-55c2-add2-59b487bfa42e, 03c25ec4-f583-513d-adfb-092fb98d8dba in one namespace and 48cd1267-06f0-5741-820c-7d167ecfd3f8 in another.
 The container file system is case-sensitive (ext4/overlayfs), so the `NS/P` subcase runs
 there as an exact-ID check; the macOS case-insensitive variant needs a case-insensitive
 mount, which a non-privileged container cannot create (BLOCKED case below).
@@ -11,7 +11,7 @@ from pathlib import Path
 
 from gitpmtest import T, Failure, Blocked, case
 
-A, B, C = "dan/a", "dan/b", "other/c"
+A, B, C = "807b9715-06b4-55c2-add2-59b487bfa42e", "03c25ec4-f583-513d-adfb-092fb98d8dba", "48cd1267-06f0-5741-820c-7d167ecfd3f8"
 
 
 def tty(t: T, args: list, answer: str = "") -> "object":
@@ -27,7 +27,7 @@ def survivors(t: T, *ids: str):
 
 @case(fixture="g3_trio_installed", spec=["install-uninstall/uninstall-is-planned-and-confirmed", "install-uninstall/only-manager-owned-files-are-deleted"])
 def uninstall_clean_removes_only_selected(t: T):
-    """1. uninstall of a clean dan/b on a TTY: no prompt; only its state, clone and dist go."""
+    """1. uninstall of a clean 03c25ec4-f583-513d-adfb-092fb98d8dba on a TTY: no prompt; only its state, clone and dist go."""
     keep = survivors(t, A, C)
     state = t.state()
     r = tty(t, ["uninstall", B])
@@ -36,7 +36,7 @@ def uninstall_clean_removes_only_selected(t: T):
     t.not_installed(B)
     after = t.state()
     del state["packages"][B]
-    t.eq(after, state, "state minus dan/b")
+    t.eq(after, state, "state minus 03c25ec4-f583-513d-adfb-092fb98d8dba")
     t.same(keep, "siblings and author repositories")
     t.ok((t.ws / "repos").is_dir(), "clone directory of the sibling kept")
 
@@ -48,7 +48,7 @@ def namespace_directory_is_refused(t: T):
     t.gitpm_ok("register", t.repo(A), "--ref", "v0.1.1")
     before = t.snap(t.ws, t.root / "repos", t.catalog, git=True)
     for extra in [[], ["--force"]]:
-        t.gitpm_err("uninstall", "dan", *extra, kind="invalid_id", contains="namespace/name")
+        t.gitpm_err("uninstall", "dan", *extra, kind="invalid_id", contains="UUID")
         t.same(before, f"workspace, author repos, catalog after uninstall dan {' '.join(extra)}")
     for id in [A, B]:
         t.package(id)
@@ -59,26 +59,25 @@ def unknown_id_changes_nothing(t: T):
     """3. unknown ID: non-zero exit naming the ID; nothing changes."""
     before = t.snap(t.ws, t.root / "repos", git=True)
     for extra in [[], ["--force"]]:
-        r = t.gitpm_err("uninstall", "dan/zzz", *extra, contains="dan/zzz")
+        r = t.gitpm_err("uninstall", "dd087442-d60c-5a51-a547-2fd3f384c0f4", *extra, contains="dd087442-d60c-5a51-a547-2fd3f384c0f4")
         t.has(r.err, "Error kind:")
         t.same(before, "workspace and author repos")
     t.ok(t.catalog_empty(), "no catalog created")
 
 
 @case(fixture="g3_trio_installed", spec=["package-ids/ids-are-matched-exactly"])
-def case_variant_is_an_unknown_id(t: T):
-    """4. `DAN/A` when only dan/a is installed: unknown ID with and without --force; dan/a
-    clone, dist and state entry byte-identical (exact state ID only)."""
+def uppercase_uuid_is_refused(t: T):
+    """An uppercase UUID is refused without changing its canonical installation."""
     before = t.snap(t.ws, git=True)
     entry = t.package(A)
     for extra in [[], ["--force"]]:
-        r = t.gitpm_err("uninstall", "DAN/A", *extra, contains="DAN/A")
+        r = t.gitpm_err("uninstall", A.upper(), *extra, kind="invalid_id", contains=A.upper())
         t.has(r.err, "Error kind:")
-        t.same(before, f"workspace after uninstall DAN/A {' '.join(extra)}")
-    t.eq(t.package(A), entry, "dan/a state entry")
+        t.same(before, f"workspace after uppercase uninstall {' '.join(extra)}")
+    t.eq(t.package(A), entry, "807b9715-06b4-55c2-add2-59b487bfa42e state entry")
 
 
-@case(fixture="g3_trio_installed", spec=["package-ids/ids-are-matched-exactly#case-variant-on-apfs"])
+@case(fixture="g3_trio_installed", spec=["package-ids/ids-are-matched-exactly"])
 def case_variant_on_case_insensitive_fs(t: T):
     """4b. The same on a case-insensitive file system (macOS default)."""
     probe = t.root / "CaseProbe"
@@ -87,7 +86,7 @@ def case_variant_on_case_insensitive_fs(t: T):
     probe.rmdir()
     if not insensitive:
         raise Blocked("requires a case-insensitive filesystem; run this case on macOS/APFS")
-    case_variant_is_an_unknown_id(t)
+    uppercase_uuid_is_refused(t)
 
 
 @case(fixture="g3_trio_installed", spec=["install-uninstall/only-manager-owned-files-are-deleted#uninstalling-a-fork"])
@@ -95,16 +94,17 @@ def fork_author_repo_outside_workspace_survives(t: T):
     """5. uninstall touches only the source-keyed clone and dist/<id>: the fork author repository
     (outside the workspace) survives uninstall of the fork and of its original."""
     fork = t.root / "authors/my-a"
-    t.gitpm_ok("fork", A, "--ns", "mine", "--into", fork)
+    t.gitpm_ok("fork", A, "--into", fork)
+    fork_id = t.manifest_id(fork)
     t.gitpm_ok("install", fork, "--dev")
-    t.package("mine/a")
+    t.package(fork_id)
     keep = t.snap(fork, t.root / "repos", t.clone(B), t.dist(B), t.clone(C), t.dist(C), git=True)
-    t.gitpm_ok("uninstall", "mine/a")
-    t.not_installed("mine/a")
-    t.ok(not (t.clone("mine/a")).exists() or not any((t.clone("mine/a")).iterdir()),
-         "nothing left of mine/a in repos/")
+    t.gitpm_ok("uninstall", fork_id)
+    t.not_installed(fork_id)
+    t.ok(not (t.clone(fork_id)).exists() or not any((t.clone(fork_id)).iterdir()),
+         "nothing left of f26a276e-f752-54a5-ba2c-c7861d95616c in repos/")
     t.gitpm_ok("uninstall", A)
     t.not_installed(A)
     t.same(keep, "fork author repo, author repos and unrelated packages")
-    t.eq(sorted(t.state()["packages"]), [B, C], "remaining packages")
+    t.eq(sorted(t.state()["packages"]), sorted([B, C]), "remaining packages")
     t.ok(Path(fork, "plugin.json").is_file(), "fork checkout intact")

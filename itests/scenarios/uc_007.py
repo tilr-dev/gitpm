@@ -7,7 +7,7 @@ does no network operation and never rewrites a catalog or an installed source.
 from gitpmtest import T, case
 
 
-ID = "dan/hello"
+ID = "3dce1568-569c-5b53-9321-37185e751947"
 
 
 def bare(t: T, name: str):
@@ -53,8 +53,8 @@ def secondary_origin_urls_collapse(t: T):
     repo = t.repo(ID)
     t.git(repo, "remote", "add", "origin", "https://example.invalid/a.git")
     t.git(repo, "config", "--add", "remote.origin.url", "https://example.invalid/b.git")
-    t.gitpm_ok("remote", repo, "git@example.invalid:dan/hello.git")
-    t.eq(config(t, repo, "remote.origin.url"), ["git@example.invalid:dan/hello.git"], "origin url")
+    t.gitpm_ok("remote", repo, "git@example.invalid:3dce1568-569c-5b53-9321-37185e751947.git")
+    t.eq(config(t, repo, "remote.origin.url"), ["git@example.invalid:3dce1568-569c-5b53-9321-37185e751947.git"], "origin url")
 
 
 def refused_case(name: str, doc: str, setup, kind: str, contains: str = ""):
@@ -70,7 +70,7 @@ def refused_case(name: str, doc: str, setup, kind: str, contains: str = ""):
 def _plain_dir(t: T):
     d = t.root / "plain"
     d.mkdir()
-    (d / "plugin.json").write_text('{"id": "dan/plain", "version": "0.1.0"}\n')
+    (d / "plugin.json").write_text('{"id": "ebeaabde-98b9-538e-8e4c-388b39a64f00", "name": "fixture", "version": "0.1.0"}\n')
     return d
 
 

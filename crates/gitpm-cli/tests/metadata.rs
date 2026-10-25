@@ -22,7 +22,7 @@ struct Fixture {
     mono: PathBuf,
 }
 impl Fixture {
-    /// Repository `mono` with `tilr/store` (no metadata) and `tilr/theme` (all four
+    /// Repository `mono` with `76a9b591-60f3-5c7f-9e1c-31648fc73bfd` (no metadata) and `f851f609-bb81-52d6-bfef-33798624782c` (all four
     /// fields, `provides` as a string) at 1.0.0.
     fn new() -> Self {
         let dir = std::env::temp_dir().join(format!(
@@ -85,11 +85,17 @@ impl Fixture {
         self.git_output(repo, args);
     }
     fn write(&self, name: &str, version: &str, extra: &str) {
+        let id = match name {
+            "store" => "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+            "theme" => "f851f609-bb81-52d6-bfef-33798624782c",
+            "panel" => "955bf29f-2893-56ef-9439-369c50455ae7",
+            _ => panic!("unknown fixture package"),
+        };
         let folder = self.mono.join("packages").join(name);
         fs::create_dir_all(folder.join("dist")).unwrap();
         fs::write(
             folder.join("plugin.json"),
-            format!(r#"{{"id":"tilr/{name}","version":"{version}"{extra}}}"#),
+            format!(r#"{{"id":"{id}","name": "fixture", "version":"{version}"{extra}}}"#),
         )
         .unwrap();
         fs::write(folder.join("dist/index.js"), format!("{name} {version}")).unwrap();
@@ -179,32 +185,40 @@ fn ids(list: &serde_json::Value) -> Vec<String> {
 #[test]
 fn list_reports_metadata_present_or_absent_and_filters_by_provides() {
     let f = Fixture::new();
-    f.ok(&["install", f.source(), "tilr/store"]);
-    f.ok(&["install", f.source(), "tilr/theme"]);
+    f.ok(&[
+        "install",
+        f.source(),
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+    ]);
+    f.ok(&[
+        "install",
+        f.source(),
+        "f851f609-bb81-52d6-bfef-33798624782c",
+    ]);
     let list = f.list(&[]);
-    let theme = resolved(&list, "tilr/theme");
+    let theme = resolved(&list, "f851f609-bb81-52d6-bfef-33798624782c");
     assert_eq!(theme["title"], "Theme", "{list:#}");
     assert_eq!(theme["description"], "Dark and light");
     // A string `provides` is reported as an array.
     assert_eq!(theme["provides"], serde_json::json!(["theme"]));
     assert_eq!(theme["tags"], serde_json::json!(["ui", "colors"]));
     // Absent metadata: null title/description, empty arrays.
-    let store = resolved(&list, "tilr/store");
+    let store = resolved(&list, "76a9b591-60f3-5c7f-9e1c-31648fc73bfd");
     assert!(store["title"].is_null() && store["description"].is_null());
     assert_eq!(store["provides"], serde_json::json!([]));
     assert_eq!(store["tags"], serde_json::json!([]));
     // The shared clone is reported in resolved[] as in packages{}.
-    let clone = &list["packages"]["tilr/theme"]["clone"];
+    let clone = &list["packages"]["f851f609-bb81-52d6-bfef-33798624782c"]["clone"];
     assert!(clone.is_string(), "{list:#}");
     assert_eq!(&theme["clone"], clone);
     assert_eq!(store["clone"], *clone);
     // State keeps the metadata of the installed revision.
     assert_eq!(
-        list["packages"]["tilr/theme"]["metadata"]["provides"],
+        list["packages"]["f851f609-bb81-52d6-bfef-33798624782c"]["metadata"]["provides"],
         serde_json::json!(["theme"])
     );
     // Same shape in both places: absent strings are null, absent lists [].
-    let stored = &list["packages"]["tilr/store"]["metadata"];
+    let stored = &list["packages"]["76a9b591-60f3-5c7f-9e1c-31648fc73bfd"]["metadata"];
     for key in ["title", "description", "provides", "tags"] {
         assert_eq!(stored[key], store[key], "{key}: {list:#}");
         assert!(stored.get(key).is_some(), "{key} missing: {list:#}");
@@ -212,20 +226,20 @@ fn list_reports_metadata_present_or_absent_and_filters_by_provides() {
     assert!(stored["title"].is_null() && stored["description"].is_null());
     assert_eq!(stored["tags"], serde_json::json!([]));
     assert_eq!(stored["provides"], serde_json::json!([]));
-    let stored = &list["packages"]["tilr/theme"]["metadata"];
+    let stored = &list["packages"]["f851f609-bb81-52d6-bfef-33798624782c"]["metadata"];
     for key in ["title", "description", "provides", "tags"] {
         assert_eq!(stored[key], theme[key], "{key}: {list:#}");
     }
 
     let only = f.list(&["--provides", "theme"]);
-    assert_eq!(ids(&only), ["tilr/theme"]);
+    assert_eq!(ids(&only), ["f851f609-bb81-52d6-bfef-33798624782c"]);
     assert_eq!(
         only["packages"]
             .as_object()
             .unwrap()
             .keys()
             .collect::<Vec<_>>(),
-        ["tilr/theme"]
+        ["f851f609-bb81-52d6-bfef-33798624782c"]
     );
     let none = f.list(&["--provides", "store"]);
     assert!(none["forgotten"].is_null() && none["replacements"].is_null());
@@ -237,10 +251,10 @@ fn list_reports_metadata_present_or_absent_and_filters_by_provides() {
 
     // An update takes the metadata of the new revision.
     f.release("store", "1.1.0", r#","provides":["store","sync"]"#);
-    f.ok(&["update", "tilr/store"]);
+    f.ok(&["update", "76a9b591-60f3-5c7f-9e1c-31648fc73bfd"]);
     assert_eq!(
         ids(&f.list(&["--provides", "sync"])),
-        ["tilr/store"],
+        ["76a9b591-60f3-5c7f-9e1c-31648fc73bfd"],
         "metadata follows the installed revision"
     );
 
@@ -265,37 +279,59 @@ fn wrong_typed_metadata_is_ignored_when_installing_and_refused_when_authoring() 
     // Published before 0.5 checked the types: install/update/rollback/fork accept it.
     let bad = r#","title":"Store","tags":"ui","provides":42"#;
     f.release("store", "1.1.0", bad);
-    let out = f.run(&["install", f.source(), "tilr/store"]);
+    let out = f.run(&[
+        "install",
+        f.source(),
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+    ]);
     assert!(out.status.success());
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert!(
         stderr.contains(
-            "Warning: tilr/store 1.1.0: plugin.json tags must be an array of strings; ignored"
+            "Warning: 76a9b591-60f3-5c7f-9e1c-31648fc73bfd 1.1.0: plugin.json tags must be an array of strings; ignored"
         ) && stderr.contains("provides must be a string or an array of strings"),
         "{stderr}"
     );
     let store = f.list(&[]);
-    let store = resolved(&store, "tilr/store");
+    let store = resolved(&store, "76a9b591-60f3-5c7f-9e1c-31648fc73bfd");
     assert_eq!(store["title"], "Store");
     assert_eq!(
         (&store["provides"], &store["tags"]),
         (&serde_json::json!([]), &serde_json::json!([]))
     );
     f.release("store", "1.2.0", r#","tags":"still bad""#);
-    let out = f.run(&["update", "tilr/store"]);
+    let out = f.run(&["update", "76a9b591-60f3-5c7f-9e1c-31648fc73bfd"]);
     assert!(out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("tilr/store 1.2.0: plugin.json tags"));
-    f.ok(&["rollback", "tilr/store"]);
-    assert_eq!(resolved(&f.list(&[]), "tilr/store")["title"], "Store");
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("76a9b591-60f3-5c7f-9e1c-31648fc73bfd 1.2.0: plugin.json tags")
+    );
+    f.ok(&["rollback", "76a9b591-60f3-5c7f-9e1c-31648fc73bfd"]);
+    assert_eq!(
+        resolved(&f.list(&[]), "76a9b591-60f3-5c7f-9e1c-31648fc73bfd")["title"],
+        "Store"
+    );
     f.write("theme", "1.2.0", r#","tags":"x""#);
     f.release("store", "1.3.0", r#","tags":7"#);
-    f.ok(&["install", f.source(), "tilr/theme"]);
+    f.ok(&[
+        "install",
+        f.source(),
+        "f851f609-bb81-52d6-bfef-33798624782c",
+    ]);
     let out = f.ok(&["update", "all"]);
-    assert!(out.contains("tilr/store updated 1.1.0 → 1.3.0"), "{out}");
+    assert!(
+        out.contains("76a9b591-60f3-5c7f-9e1c-31648fc73bfd updated 1.1.0 → 1.3.0"),
+        "{out}"
+    );
 
     // fork copies the keys as they are; commit (authoring) refuses them.
-    f.ok(&["fork", "tilr/store", "--ns", "me", "--into", "forks/store"]);
-    let fork = f.dir.join("forks/store");
+    f.ok(&[
+        "fork",
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+        "--into",
+        "66747cfe-15d5-50e5-bd73-8281dacc1346",
+    ]);
+    let fork = f.dir.join("66747cfe-15d5-50e5-bd73-8281dacc1346");
     assert_eq!(f.json(&fork.join("packages/store/plugin.json"))["tags"], 7);
     let error = f.fails(&["commit", fork.to_str().unwrap(), "2.0.0"]);
     assert!(
@@ -309,20 +345,24 @@ fn wrong_typed_metadata_is_ignored_when_installing_and_refused_when_authoring() 
 #[test]
 fn fork_and_commit_carry_the_metadata_unchanged() {
     let f = Fixture::new();
-    f.ok(&["install", f.source(), "tilr/theme"]);
+    f.ok(&[
+        "install",
+        f.source(),
+        "f851f609-bb81-52d6-bfef-33798624782c",
+    ]);
     f.ok(&[
         "fork",
-        "tilr/theme",
-        "--ns",
-        "me",
+        "f851f609-bb81-52d6-bfef-33798624782c",
         "--into",
-        "forks/me-theme",
+        "2ee1ec40-461b-54c1-aa7e-00706359e184",
     ]);
-    let fork = f.dir.join("forks/me-theme");
+    let fork = f.dir.join("2ee1ec40-461b-54c1-aa7e-00706359e184");
+    let fork_theme = common::manifest_id(&fork.join("packages/theme"));
+
     let manifest = fork.join("packages/theme/plugin.json");
     let m = f.json(&manifest);
-    assert_eq!(m["id"], "me/theme");
-    assert_eq!(m["forkOf"]["id"], "tilr/theme");
+    assert_eq!(m["id"], fork_theme.as_str());
+    assert_eq!(m["forkOf"]["id"], "f851f609-bb81-52d6-bfef-33798624782c");
     assert_eq!(m["title"], "Theme");
     assert_eq!(m["description"], "Dark and light");
     // Written back as it was: still the string form.
@@ -341,10 +381,13 @@ fn fork_and_commit_carry_the_metadata_unchanged() {
             &serde_json::json!(["ui", "colors"])
         )
     );
-    f.ok(&["install", fork.to_str().unwrap(), "me/theme"]);
+    f.ok(&["install", fork.to_str().unwrap(), fork_theme.as_str()]);
     let list = f.list(&["--provides", "theme"]);
-    assert_eq!(ids(&list), ["me/theme", "tilr/theme"]);
-    assert_eq!(resolved(&list, "me/theme")["title"], "Theme");
+    assert_eq!(
+        ids(&list),
+        [fork_theme.as_str(), "f851f609-bb81-52d6-bfef-33798624782c"]
+    );
+    assert_eq!(resolved(&list, fork_theme.as_str())["title"], "Theme");
 }
 
 #[test]
@@ -352,10 +395,10 @@ fn catalog_releases_carry_and_show_the_metadata() {
     let f = Fixture::new();
     fs::write(f.dir.join("sources.txt"), format!("{}\n", f.source())).unwrap();
     f.ok(&["catalog", "update"]);
-    let release = f.json(
-        &f.dir
-            .join("catalog/namespaces/tilr/theme/versions/1.0.0/release.json"),
-    );
+    let release =
+        f.json(&f.dir.join(
+            "catalog/packages/f851f609-bb81-52d6-bfef-33798624782c/versions/1.0.0/release.json",
+        ));
     assert_eq!(release["manifest"]["title"], "Theme");
     assert_eq!(release["manifest"]["provides"], "theme");
     let info = f.ok(&["catalog", "show"]);
@@ -367,36 +410,47 @@ fn catalog_releases_carry_and_show_the_metadata() {
         "{info}"
     );
     // Only the latest release counts; a package without metadata shows none.
-    let store = info.split("tilr/store").nth(1).unwrap();
-    let store = store.split("tilr/theme").next().unwrap();
+    let store = info
+        .split("76a9b591-60f3-5c7f-9e1c-31648fc73bfd")
+        .nth(1)
+        .unwrap();
+    let store = store
+        .split("f851f609-bb81-52d6-bfef-33798624782c")
+        .next()
+        .unwrap();
     assert!(!store.contains("Title:"), "{info}");
 
     // An installed catalog release has the same metadata.
-    f.ok(&["install-catalog", "tilr/theme"]);
+    f.ok(&["install-catalog", "f851f609-bb81-52d6-bfef-33798624782c"]);
     assert_eq!(
-        resolved(&f.list(&[]), "tilr/theme")["provides"],
+        resolved(&f.list(&[]), "f851f609-bb81-52d6-bfef-33798624782c")["provides"],
         serde_json::json!(["theme"])
     );
 
     // Display metadata comes from the index even if the release record is broken.
     fs::write(
-        f.dir
-            .join("catalog/namespaces/tilr/theme/versions/1.0.0/release.json"),
+        f.dir.join(
+            "catalog/packages/f851f609-bb81-52d6-bfef-33798624782c/versions/1.0.0/release.json",
+        ),
         "{",
     )
     .unwrap();
     let info = f.ok(&["catalog", "show"]);
     assert!(
-        info.contains("tilr/theme — latest: 1.0.0") && info.contains("Title: Theme"),
+        info.contains("f851f609-bb81-52d6-bfef-33798624782c — latest: 1.0.0")
+            && info.contains("Title: Theme"),
         "{info}"
     );
-    let index_path = f.dir.join("catalog/namespaces/tilr/theme/plugin.json");
+    let index_path = f
+        .dir
+        .join("catalog/packages/f851f609-bb81-52d6-bfef-33798624782c/plugin.json");
     let mut index = f.json(&index_path);
     index["latest"]["provides"] = serde_json::json!(false);
     fs::write(&index_path, serde_json::to_vec(&index).unwrap()).unwrap();
     let info = f.ok(&["catalog", "show"]);
     assert!(
-        info.contains("tilr/theme — latest: 1.0.0") && !info.contains("Title:"),
+        info.contains("f851f609-bb81-52d6-bfef-33798624782c — latest: 1.0.0")
+            && !info.contains("Title:"),
         "{info}"
     );
 }
@@ -409,15 +463,20 @@ fn catalog_update_publishes_historical_releases_with_wrong_typed_metadata() {
     fs::write(f.dir.join("sources.txt"), format!("{}\n", f.source())).unwrap();
     let out = f.ok(&["catalog", "update"]);
     assert!(out.contains("Catalog ready: 6 release(s)"), "{out}");
-    let old = f.json(
-        &f.dir
-            .join("catalog/namespaces/tilr/store/versions/1.1.0/release.json"),
-    );
+    let old =
+        f.json(&f.dir.join(
+            "catalog/packages/76a9b591-60f3-5c7f-9e1c-31648fc73bfd/versions/1.1.0/release.json",
+        ));
     // Published as it is; readers ignore the wrong-typed key.
     assert_eq!(old["manifest"]["tags"], "ui");
-    f.ok(&["install-catalog", "tilr/store", "--version", "1.1.0"]);
+    f.ok(&[
+        "install-catalog",
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+        "--version",
+        "1.1.0",
+    ]);
     let list = f.list(&[]);
-    let store = resolved(&list, "tilr/store");
+    let store = resolved(&list, "76a9b591-60f3-5c7f-9e1c-31648fc73bfd");
     assert_eq!(
         (&store["title"], &store["tags"]),
         (&"Old".into(), &serde_json::json!([]))
@@ -428,7 +487,7 @@ fn catalog_update_publishes_historical_releases_with_wrong_typed_metadata() {
 #[test]
 fn init_multi_creates_a_multi_package_repository_that_takes_more_packages() {
     let f = Fixture::new();
-    let out = f.ok(&["init", "acme/one", "--into", "packages", "--multi"]);
+    let out = f.ok(&["init", "one", "--into", "packages", "--multi"]);
     assert!(out.contains("Git commit and tag v0.1.0"), "{out}");
     let repo = f.dir.join("packages");
     assert_eq!(
@@ -436,24 +495,31 @@ fn init_multi_creates_a_multi_package_repository_that_takes_more_packages() {
         serde_json::json!({"packages": ["packages/*"]})
     );
     assert!(!repo.join("plugin.json").exists());
-    let m = f.json(&repo.join("packages/one/plugin.json"));
-    assert_eq!((&m["id"], &m["title"]), (&"acme/one".into(), &"one".into()));
-    f.ok(&["init", "acme/two", "--into", "packages"]);
-    assert!(repo.join("packages/two/dist/index.js").is_file());
+    let one = common::package_by_name(&repo, "one");
+    let one_id = common::manifest_id(&one);
+    let m = f.json(&one.join("plugin.json"));
+    assert_eq!(
+        (&m["id"], &m["title"]),
+        (&one_id.clone().into(), &"one".into())
+    );
+    f.ok(&["init", "two", "--into", "packages"]);
+    let two = common::package_by_name(&repo, "two");
+    let two_id = common::manifest_id(&two);
+    assert!(two.join("dist/index.js").is_file());
     assert_eq!(f.git_output(&repo, &["tag", "--list"]), "v0.1.0");
     f.ok(&["commit", repo.to_str().unwrap(), "0.1.1"]);
-    f.ok(&["install", repo.to_str().unwrap(), "acme/two"]);
+    f.ok(&["install", repo.to_str().unwrap(), two_id.as_str()]);
 
     // An empty folder (not a repository yet) works with --multi only.
     fs::create_dir(f.dir.join("empty")).unwrap();
-    let error = f.fails(&["init", "acme/three", "--into", "empty"]);
+    let error = f.fails(&["init", "three", "--into", "empty"]);
     // The library message states the problem; the CLI names the command as a hint.
     assert!(
         error.contains("an empty folder can become a multi-package repository"),
         "{error}"
     );
     assert!(
-        error.contains("Hint: `gitpm init acme/three --into DIR --multi`"),
+        error.contains("Hint: `gitpm init three --into DIR --multi`"),
         "{error}"
     );
     assert!(
@@ -462,17 +528,21 @@ fn init_multi_creates_a_multi_package_repository_that_takes_more_packages() {
         ),
         "{error}"
     );
-    f.ok(&["init", "acme/three", "--into", "empty", "--multi"]);
-    assert!(f.dir.join("empty/packages/three/plugin.json").is_file());
+    f.ok(&["init", "three", "--into", "empty", "--multi"]);
+    assert!(
+        common::package_by_name(&f.dir.join("empty"), "three")
+            .join("plugin.json")
+            .is_file()
+    );
 
     // A single-package root points to --multi.
-    f.ok(&["init", "acme/single", "--into", "single"]);
+    f.ok(&["init", "single", "--into", "single"]);
     let m = f.json(&f.dir.join("single/plugin.json"));
     assert_eq!(m["title"], "single");
-    let error = f.fails(&["init", "acme/other", "--into", "single"]);
+    let error = f.fails(&["init", "other", "--into", "single"]);
     assert!(
         error.contains("a multi-package repository needs gitpm.json")
-            && error.contains("Hint: `gitpm init acme/other --into DIR --multi`"),
+            && error.contains("Hint: `gitpm init other --into DIR --multi`"),
         "{error}"
     );
     assert!(
@@ -484,7 +554,7 @@ fn init_multi_creates_a_multi_package_repository_that_takes_more_packages() {
 #[test]
 fn init_no_release_commits_without_a_tag() {
     let f = Fixture::new();
-    let out = f.ok(&["init", "acme/draft", "--into", "draft", "--no-release"]);
+    let out = f.ok(&["init", "draft", "--into", "draft", "--no-release"]);
     assert!(out.contains("no release tag yet"), "{out}");
     let repo = f.dir.join("draft");
     assert_eq!(f.git_output(&repo, &["tag", "--list"]), "");
@@ -498,14 +568,7 @@ fn init_no_release_commits_without_a_tag() {
     assert_eq!(f.git_output(&repo, &["rev-list", "--count", "HEAD"]), "1");
     f.ok(&["install", repo.to_str().unwrap()]);
 
-    f.ok(&[
-        "init",
-        "acme/a",
-        "--into",
-        "multi",
-        "--multi",
-        "--no-release",
-    ]);
+    f.ok(&["init", "a", "--into", "multi", "--multi", "--no-release"]);
     assert_eq!(f.git_output(&f.dir.join("multi"), &["tag", "--list"]), "");
     f.ok(&["commit", f.dir.join("multi").to_str().unwrap(), "0.1.0"]);
     assert_eq!(
@@ -517,23 +580,38 @@ fn init_no_release_commits_without_a_tag() {
 #[test]
 fn install_and_update_say_what_they_did() {
     let f = Fixture::new();
-    let out = f.ok(&["install", f.source(), "tilr/store"]);
+    let out = f.ok(&[
+        "install",
+        f.source(),
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+    ]);
     // The source as recorded (canonical path).
     assert!(
-        out.starts_with("installed tilr/store@1.0.0 from /") && out.trim_end().ends_with("/mono"),
+        out.starts_with("installed 76a9b591-60f3-5c7f-9e1c-31648fc73bfd@1.0.0 from /")
+            && out.trim_end().ends_with("/mono"),
         "{out}"
     );
-    f.ok(&["install", f.source(), "tilr/theme"]);
-    let out = f.ok(&["update", "tilr/store"]);
-    assert_eq!(out.trim(), "tilr/store up to date (1.0.0)");
+    f.ok(&[
+        "install",
+        f.source(),
+        "f851f609-bb81-52d6-bfef-33798624782c",
+    ]);
+    let out = f.ok(&["update", "76a9b591-60f3-5c7f-9e1c-31648fc73bfd"]);
+    assert_eq!(
+        out.trim(),
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd up to date (1.0.0)"
+    );
     f.release("store", "1.1.0", "");
-    let out = f.ok(&["update", "tilr/store"]);
-    assert_eq!(out.trim(), "tilr/store updated 1.0.0 → 1.1.0");
+    let out = f.ok(&["update", "76a9b591-60f3-5c7f-9e1c-31648fc73bfd"]);
+    assert_eq!(
+        out.trim(),
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd updated 1.0.0 → 1.1.0"
+    );
     f.release("store", "1.2.0", "");
     let out = f.ok(&["update", "all"]);
     assert!(
-        out.contains("tilr/store updated 1.1.0 → 1.2.0\n")
-            && out.contains("tilr/theme updated 1.0.0 → 1.2.0\n")
+        out.contains("76a9b591-60f3-5c7f-9e1c-31648fc73bfd updated 1.1.0 → 1.2.0\n")
+            && out.contains("f851f609-bb81-52d6-bfef-33798624782c updated 1.0.0 → 1.2.0\n")
             && out.contains("2 updates, 0 installs, 0 kept back."),
         "{out}"
     );
@@ -542,22 +620,36 @@ fn install_and_update_say_what_they_did() {
 #[test]
 fn removal_leaves_no_empty_namespace_or_clone_folders() {
     let f = Fixture::new();
-    f.ok(&["install", f.source(), "tilr/store"]);
-    f.ok(&["install", f.source(), "tilr/theme"]);
+    f.ok(&[
+        "install",
+        f.source(),
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+    ]);
+    f.ok(&[
+        "install",
+        f.source(),
+        "f851f609-bb81-52d6-bfef-33798624782c",
+    ]);
     let workspace = f.dir.join("workspace");
-    f.ok(&["uninstall", "tilr/store"]);
-    assert!(workspace.join("dist/tilr/theme").is_dir());
-    f.ok(&["forget", "tilr/theme"]);
-    f.ok(&["uninstall", "tilr/theme"]);
+    f.ok(&["uninstall", "76a9b591-60f3-5c7f-9e1c-31648fc73bfd"]);
+    assert!(
+        workspace
+            .join("dist/f851f609-bb81-52d6-bfef-33798624782c")
+            .is_dir()
+    );
+    f.ok(&["forget", "f851f609-bb81-52d6-bfef-33798624782c"]);
+    f.ok(&["uninstall", "f851f609-bb81-52d6-bfef-33798624782c"]);
     assert!(!workspace.join("dist/tilr").exists());
     assert!(!workspace.join("repos").exists());
     assert!(workspace.join("dist").is_dir() && !workspace.join("packages").exists());
 
     // A root package uses the same source-keyed clone layout.
-    f.ok(&["init", "acme/solo", "--into", "solo"]);
+    f.ok(&["init", "solo", "--into", "solo"]);
+    let solo_id = common::manifest_id(&f.dir.join("solo"));
+
     f.ok(&["install", f.dir.join("solo").to_str().unwrap()]);
     assert!(clone_path(&workspace, &f.dir.join("solo")).is_dir());
-    f.ok(&["uninstall", "acme/solo"]);
+    f.ok(&["uninstall", solo_id.as_str()]);
     assert!(!workspace.join("repos").exists());
     assert!(!workspace.join("dist/acme").exists());
 }
@@ -565,33 +657,59 @@ fn removal_leaves_no_empty_namespace_or_clone_folders() {
 #[test]
 fn update_all_reports_kept_back_packages_and_replace_with_original_without_a_replacement() {
     let f = Fixture::new();
-    f.release("store", "1.0.1", r#","dependencies":{"tilr/theme":"~1.0"}"#);
-    f.ok(&["install", f.source(), "tilr/theme"]);
-    f.ok(&["install", f.source(), "tilr/store"]);
+    f.release(
+        "store",
+        "1.0.1",
+        r#","dependencies":{"f851f609-bb81-52d6-bfef-33798624782c":"~1.0"}"#,
+    );
+    f.ok(&[
+        "install",
+        f.source(),
+        "f851f609-bb81-52d6-bfef-33798624782c",
+    ]);
+    f.ok(&[
+        "install",
+        f.source(),
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+    ]);
     f.release("theme", "1.1.0", "");
     let out = f.ok(&["update", "all"]);
     assert!(
-        out.contains("tilr/theme kept back at 1.0.1 (latest 1.1.0: dependency constraints)")
-            && out.contains("tilr/store updated 1.0.1 → 1.1.0")
+        out.contains("f851f609-bb81-52d6-bfef-33798624782c kept back at 1.0.1 (latest 1.1.0: dependency constraints)")
+            && out.contains("76a9b591-60f3-5c7f-9e1c-31648fc73bfd updated 1.0.1 → 1.1.0")
             && out.contains("1 updates, 0 installs, 1 kept back."),
         "{out}"
     );
     // Returning without a binding is idempotent and creates no self-binding.
-    f.ok(&["replace", "tilr/theme", "--with", "tilr/theme"]);
+    f.ok(&[
+        "replace",
+        "f851f609-bb81-52d6-bfef-33798624782c",
+        "--with",
+        "f851f609-bb81-52d6-bfef-33798624782c",
+    ]);
     assert!(f.list(&[]).get("replacements").is_none());
     // A consumer whose dependency was removed with force is skipped with the reason from
     // the plan, not a failure, and the dependency is not installed again.
-    f.ok(&["uninstall", "tilr/theme", "--force"]);
-    f.release("store", "1.2.0", r#","dependencies":{"tilr/theme":"~1.0"}"#);
+    f.ok(&[
+        "uninstall",
+        "f851f609-bb81-52d6-bfef-33798624782c",
+        "--force",
+    ]);
+    f.release(
+        "store",
+        "1.2.0",
+        r#","dependencies":{"f851f609-bb81-52d6-bfef-33798624782c":"~1.0"}"#,
+    );
     let out = f.ok(&["update", "all"]);
     assert!(
-        out.contains("tilr/store skipped at 1.1.0 (dependency tilr/theme is not installed)")
+        out.contains("76a9b591-60f3-5c7f-9e1c-31648fc73bfd skipped at 1.1.0 (dependency f851f609-bb81-52d6-bfef-33798624782c is not installed)")
             && out.contains("0 updates, 0 installs, 0 kept back."),
         "{out}"
     );
     let list = f.ok(&["list"]);
     assert!(
-        list.contains("\"tilr/store\": {") && !list.contains("\"tilr/theme\": {"),
+        list.contains("\"76a9b591-60f3-5c7f-9e1c-31648fc73bfd\": {")
+            && !list.contains("\"f851f609-bb81-52d6-bfef-33798624782c\": {"),
         "{list}"
     );
 }

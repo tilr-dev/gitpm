@@ -16,7 +16,7 @@ from pathlib import Path
 
 from gitpmtest import T, case
 
-ID = "dan/hello"
+ID = "3dce1568-569c-5b53-9321-37185e751947"
 WS_LOCK = Path("/fx/.ws.lock")
 CATALOG_LOCK = Path("/fx/.catalog.catalog.lock")
 
@@ -55,17 +55,17 @@ def rel_snap(path: Path) -> dict:
 @case(fixture="hello_installed", spec=["transactions-locking/workspace-lock#two-cli-processes"])
 def held_workspace_lock_refuses_every_mutation(t: T):
     t.release(ID, "0.1.1")
-    t.new_package("dan/other", "0.1.0")
+    t.new_package("95d14dc8-6dfc-5022-9fd1-7146ee6aee58", "0.1.0")
     holder = hold(WS_LOCK)
     before = t.snap(t.ws)
     for args in [("update", ID), ("disable", ID), ("rollback", ID), ("forget", ID), ("uninstall", ID, "--force"),
-                 ("install", t.repo("dan/other")), ("sync-dist",)]:
+                 ("install", t.repo("95d14dc8-6dfc-5022-9fd1-7146ee6aee58")), ("sync-dist",)]:
         t.gitpm_err(*args, kind="locked", contains="workspace is already in use")
     t.same(before, "workspace while locked")
     release(holder)
     t.gitpm_ok("update", ID)
     t.eq(t.package(ID)["current"]["version"], "0.1.1", "retry after release")
-    t.gitpm_ok("install", t.repo("dan/other"))
+    t.gitpm_ok("install", t.repo("95d14dc8-6dfc-5022-9fd1-7146ee6aee58"))
     t.ok(WS_LOCK.exists(), "lock file kept")
 
 
@@ -102,46 +102,46 @@ def killed_lock_owner_releases_the_workspace(t: T):
 
 @case(fixture="catalog", spec=["catalog/writers-are-serialized-and-crash-safe"])
 def held_catalog_lock_refuses_writers_not_readers(t: T):
-    t.release("dan/hello", "0.3.0")
-    (t.root / "sources.txt").write_text("repos/dan/hello\n")
+    t.release("3dce1568-569c-5b53-9321-37185e751947", "0.3.0")
+    (t.root / "sources.txt").write_text("repos/3dce1568-569c-5b53-9321-37185e751947\n")
     holder = hold(CATALOG_LOCK)
     before = t.snap(t.catalog)
-    t.gitpm_err("register", t.repo("dan/hello"), "--ref", "v0.3.0", kind="locked", contains="catalog locked")
+    t.gitpm_err("register", t.repo("3dce1568-569c-5b53-9321-37185e751947"), "--ref", "v0.3.0", kind="locked", contains="catalog locked")
     t.gitpm_err("catalog-update", kind="locked", contains="catalog locked")
     t.same(before, "catalog while locked")
     # Readers do not take the writer lock.
-    t.has(t.gitpm_ok("--catalog", t.catalog, "info").out, "dan/hello")
-    t.gitpm_ok("install-catalog", "dan/num", "--version", "1.9.0")
+    t.has(t.gitpm_ok("--catalog", t.catalog, "info").out, "3dce1568-569c-5b53-9321-37185e751947")
+    t.gitpm_ok("install-catalog", "2190eee8-4be5-5a91-81d2-6ca95c1e61d0", "--version", "1.9.0")
     t.gitpm_ok("check")
     release(holder)
-    t.gitpm_ok("register", t.repo("dan/hello"), "--ref", "v0.3.0")
-    t.ok(t.catalog_release("dan/hello", "0.3.0").is_file(), "retry after release")
+    t.gitpm_ok("register", t.repo("3dce1568-569c-5b53-9321-37185e751947"), "--ref", "v0.3.0")
+    t.ok(t.catalog_release("3dce1568-569c-5b53-9321-37185e751947", "0.3.0").is_file(), "retry after release")
     t.gitpm_ok("catalog-update")
 
 
 @case(fixture="catalog", spec=["transactions-locking/workspace-lock", "catalog/writers-are-serialized-and-crash-safe"])
 def workspace_and_catalog_locks_are_independent(t: T):
-    t.release("dan/hello", "0.3.0")
+    t.release("3dce1568-569c-5b53-9321-37185e751947", "0.3.0")
     ws = hold(WS_LOCK)
-    t.gitpm_ok("register", t.repo("dan/hello"), "--ref", "v0.3.0")
+    t.gitpm_ok("register", t.repo("3dce1568-569c-5b53-9321-37185e751947"), "--ref", "v0.3.0")
     release(ws)
     cat = hold(CATALOG_LOCK)
-    t.gitpm_ok("install-catalog", "dan/hello", "--version", "0.3.0")
-    t.gitpm_ok("install", t.repo("dan/num"))
+    t.gitpm_ok("install-catalog", "3dce1568-569c-5b53-9321-37185e751947", "--version", "0.3.0")
+    t.gitpm_ok("install", t.repo("2190eee8-4be5-5a91-81d2-6ca95c1e61d0"))
     release(cat)
-    t.eq(sorted(t.state()["packages"]), ["dan/hello", "dan/num"], "installed while the catalog was locked")
+    t.eq(sorted(t.state()["packages"]), sorted(["3dce1568-569c-5b53-9321-37185e751947", "2190eee8-4be5-5a91-81d2-6ca95c1e61d0"]), "installed while the catalog was locked")
 
 
 @case(fixture="catalog", spec=["catalog/writers-are-serialized-and-crash-safe"])
 def dead_writers_temporary_file_is_cleaned(t: T):
-    stale = t.catalog / "namespaces/dan/hello/plugin.json.99999-0.tmp"
+    stale = t.catalog / "packages/3dce1568-569c-5b53-9321-37185e751947/plugin.json.99999-0.tmp"
     stale.write_text("{ half")
-    index = t.catalog_index("dan/hello").read_bytes()
-    t.release("dan/hello", "0.3.0")
-    t.gitpm_ok("register", t.repo("dan/hello"), "--ref", "v0.3.0")
+    index = t.catalog_index("3dce1568-569c-5b53-9321-37185e751947").read_bytes()
+    t.release("3dce1568-569c-5b53-9321-37185e751947", "0.3.0")
+    t.gitpm_ok("register", t.repo("3dce1568-569c-5b53-9321-37185e751947"), "--ref", "v0.3.0")
     t.ok(not stale.exists(), "stale temporary removed under the lock")
-    t.ok(json.loads(t.catalog_index("dan/hello").read_text())["versions"].keys() >= {"0.1.0", "0.3.0"}, "index valid")
-    t.ok(index != t.catalog_index("dan/hello").read_bytes(), "index rewritten atomically")
+    t.ok(json.loads(t.catalog_index("3dce1568-569c-5b53-9321-37185e751947").read_text())["versions"].keys() >= {"0.1.0", "0.3.0"}, "index valid")
+    t.ok(index != t.catalog_index("3dce1568-569c-5b53-9321-37185e751947").read_bytes(), "index rewritten atomically")
 
 
 @case(fixture="hello_installed", spec=["transactions-locking/transactions-stage-only-touched-paths#failure-before-commit"])
@@ -151,7 +151,7 @@ def uncommitted_transaction_is_discarded_on_next_open(t: T):
     stays exactly as it was."""
     before = t.snap(t.ws)
     txn = t.ws / ".pm-txn"
-    shutil.copytree(t.clone(ID), txn / "new/packages" / ID, symlinks=True)
+    shutil.copytree(t.clone(ID), txn / "d45d917e-29d1-58e1-b499-e9f264bf891d" / ID, symlinks=True)
     t.write(txn, {f"new/dist/{ID}/index.js": "half-staged\n", "state.json": "{ partial",
                   "scratch/incoming/plugin.json": "{}"})
     out = t.gitpm_ok("list").json()

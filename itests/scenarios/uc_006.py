@@ -11,14 +11,14 @@ import json
 from gitpmtest import T, case
 
 
-ID = "dan/rel"
+ID = "7a5be427-d89d-5ebc-b168-9e78169e8b60"
 # Refused versions: an existing tag is never moved; malformed versions are invalid_version.
 TAGS = {"existing_version_refused": "authoring/existing-tags-are-never-moved",
         "existing_future_tag_refused": "authoring/existing-tags-are-never-moved"}
 
 
 def author(t: T):
-    """dan/rel 0.1.0 with tracked README.md and old.txt, *.log ignored, and an empty bare origin."""
+    """7a5be427-d89d-5ebc-b168-9e78169e8b60 0.1.0 with tracked README.md and old.txt, *.log ignored, and an empty bare origin."""
     t.new_package(ID, "0.1.0", files={"README.md": "readme v1\n", "old.txt": "old\n", ".gitignore": "*.log\n"})
     repo = t.repo(ID)
     bare = t.root / "origin.git"

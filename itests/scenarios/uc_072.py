@@ -1,18 +1,19 @@
 """UC-072: Multi-package repositories (P1, gitpm 0.4+).
 
-/fx/repos/suite is made with `gitpm init tilr/store --into suite --multi` plus `init`
-of tilr/theme and tilr/panel into it (fixture fork_suite: gitpm.json `packages/*`, one
-shared release 0.1.1). fork_suite_installed adds tilr/store and tilr/theme installed
+/fx/repos/suite is made with `gitpm init 76a9b591-60f3-5c7f-9e1c-31648fc73bfd --into suite --multi` plus `init`
+of f851f609-bb81-52d6-bfef-33798624782c and 955bf29f-2893-56ef-9439-369c50455ae7 into it (fixture fork_suite: gitpm.json `packages/*`, one
+shared release 0.1.1). fork_suite_installed adds 76a9b591-60f3-5c7f-9e1c-31648fc73bfd and f851f609-bb81-52d6-bfef-33798624782c installed
 with `install SRC ID`, sharing one clone `ws/repos/suite-<hash>`.
 """
 
 import json
 import re
+from uuid import UUID
 
 from gitpmtest import T, case
 
 SUITE = "suite"
-STORE, THEME, PANEL = "tilr/store", "tilr/theme", "tilr/panel"
+STORE, THEME, PANEL = "76a9b591-60f3-5c7f-9e1c-31648fc73bfd", "f851f609-bb81-52d6-bfef-33798624782c", "955bf29f-2893-56ef-9439-369c50455ae7"
 
 
 def suite(t: T):
@@ -26,18 +27,25 @@ def shared_clone(t: T):
 @case(fixture=None, spec=["authoring/init-options#start-a-multi-package-repository-from-nothing",
                           "authoring/init-into-a-multi-package-repository"])
 def init_multi_then_add_packages(t: T):
-    """An added package inherits the repository version and waits for the next release."""
+    """Generated folders use UUIDs; added packages inherit the repository version."""
     repo = t.root / "authors/suite"
-    r = t.gitpm_ok("init", STORE, "--into", repo, "--multi")
-    t.has(r.out, f"ID: {STORE}", "Git commit and tag v0.1.0")
+    result = t.gitpm_ok("init", "store", "--into", repo, "--multi")
+    store = next((repo / "packages").glob("*/plugin.json"))
+    store_id = json.loads(store.read_text())["id"]
+    t.eq(str(UUID(store_id)), store_id, "generated UUID")
+    t.eq(store.parent.name, store_id, "UUID package folder")
+    t.has(result.out, f"ID: {store_id}", "Git commit and tag v0.1.0")
     t.gitpm_ok("commit", repo, "0.2.0")
-    r = t.gitpm_ok("init", THEME, "--into", repo)
+    t.gitpm_ok("init", "theme", "--into", repo)
+    theme = next(path for path in (repo / "packages").glob("*/plugin.json") if path != store)
+    theme_id = json.loads(theme.read_text())["id"]
+    t.eq(theme.parent.name, theme_id, "second UUID folder")
+    t.eq(json.loads(theme.read_text())["version"], "0.2.0", "inherited version")
     t.eq(t.git(repo, "tag", "--list").split(), ["v0.1.0", "v0.2.0"], "addition creates no tag")
-    t.eq(json.loads((repo / "packages/theme/plugin.json").read_text())["version"], "0.2.0", "inherited version")
     t.eq(t.git(repo, "status", "--porcelain"), "", "clean worktree")
     t.gitpm_ok("commit", repo, "0.2.1")
-    for name in ("store", "theme"):
-        t.eq(json.loads((repo / "packages" / name / "plugin.json").read_text())["version"], "0.2.1", name)
+    for path in (store, theme):
+        t.eq(json.loads(path.read_text())["version"], "0.2.1", "shared version")
 
 
 @case(fixture="fork_suite", spec=["multi-package-repos/choosing-a-package-at-install#missing-package-id"])
@@ -94,7 +102,7 @@ def repository_release_and_individual_updates(t: T):
 @case(fixture="fork_suite_installed", spec=["multi-package-repos/one-shared-clone-per-source#uninstall-one-of-two",
                                             "multi-package-repos/shared-clone-head-handling"])
 def uninstall_one_of_two_keeps_shared_clone(t: T):
-    """Uninstalling tilr/store keeps the shared clone; tilr/theme keeps working; uninstalling the
+    """Uninstalling 76a9b591-60f3-5c7f-9e1c-31648fc73bfd keeps the shared clone; f851f609-bb81-52d6-bfef-33798624782c keeps working; uninstalling the
     last package removes the clone."""
     clone = shared_clone(t)
     t.gitpm_ok("uninstall", STORE)
@@ -139,30 +147,32 @@ def register_package_and_catalog_update(t: T):
 def fork_one_package_of_the_repository(t: T):
     """Fork copies every package at the newest installed repository revision."""
     before = t.snap(t.ws, suite(t), git=True)
-    dest = t.root / "forks/suite"
-    r = t.gitpm_ok("fork", THEME, "--ns", "me", "--into", dest)
-    t.has(r.out, "me/theme forked from tilr/theme (packages/theme)",
-          "Next steps (choose the packages to install and replace):", "NEW_VERSION", "release all packages", "vNEW_VERSION", "gitpm replace tilr/theme --with me/theme")
+    dest = t.root / "2e255f64-6ad3-5e53-bf66-b4e1a94ab291"
+    r = t.gitpm_ok("fork", THEME, "--into", dest)
+    fork_theme = json.loads((dest / "packages/theme/plugin.json").read_text())["id"]
+    t.has(r.out, f"{fork_theme} forked from {THEME} (packages/theme)",
+          "Next steps (choose the packages to install and replace):", "NEW_VERSION", "release all packages", "vNEW_VERSION", f"gitpm replace {THEME} --with {fork_theme}")
     t.eq(json.loads((dest / "gitpm.json").read_text()), {"packages": ["packages/*"]}, "fork gitpm.json")
     t.eq(sorted(p.name for p in (dest / "packages").iterdir()), ["panel", "store", "theme"], "package folders at newest installed revision")
     t.eq(t.rev(dest, "HEAD~1"), t.package(THEME)["current"]["commit"], "newest installed revision")
     for name in ("store", "theme", "panel"):
         sibling = json.loads((dest / "packages" / name / "plugin.json").read_text())
-        t.eq(sibling["id"], f"me/{name}", f"{name} renamed")
+        t.eq(str(UUID(sibling["id"])), sibling["id"], f"{name} canonical UUID")
+        t.ok(sibling["id"] != {"store": STORE, "theme": THEME, "panel": PANEL}[name], "fresh fork UUID")
         current = t.package(THEME)["current"]
-        t.eq(sibling["forkOf"], {"id": f"tilr/{name}", **current,
+        t.eq(sibling["forkOf"], {"id": {"store": STORE, "theme": THEME, "panel": PANEL}[name], **current,
                                "source": t.package(THEME)["source"]}, f"{name} provenance")
     m = json.loads((dest / "packages/theme/plugin.json").read_text())
     theme = t.package(THEME)["current"]
     t.eq((m["id"], m["forkOf"], m["replaces"]),
-         ("me/theme", {"id": THEME, "version": "0.1.1", "commit": theme["commit"],
+         (fork_theme, {"id": THEME, "version": "0.1.1", "commit": theme["commit"],
                        "source": t.package(THEME)["source"]}, {"id": THEME, "version": "0.1.1"}),
          "fork manifest")
     t.same(before, "workspace")
     t.gitpm_ok("commit", dest, "0.1.2")
-    t.gitpm_ok("install", dest, "me/theme")
-    t.eq(t.package("me/theme")["forkOf"]["id"], THEME, "installed fork provenance")
-    t.has((t.dist("me/theme") / "index.js").read_text(), "theme")
+    t.gitpm_ok("install", dest, fork_theme)
+    t.eq(t.package(fork_theme)["forkOf"]["id"], THEME, "installed fork provenance")
+    t.has((t.dist(fork_theme) / "index.js").read_text(), "theme")
 
 
 @case(fixture="fork_suite_installed", spec=["fork-replacement/fork-isolates-source-and-destination-state#repository-starting-revision",
@@ -192,8 +202,8 @@ def fork_uses_all_installed_revisions_and_starting_revision_siblings(t: T):
         "base-marker.txt": "later source head\n",
     })
     before = t.snap(t.ws, source, git=True)
-    dest = t.root / "forks/revision-suite"
-    t.gitpm_ok("fork", STORE, "--ns", "me", "--into", dest)
+    dest = t.root / "8a6a26ac-21b8-5d01-a049-a07deded6006"
+    t.gitpm_ok("fork", STORE, "--into", dest)
     t.eq(t.rev(dest, "HEAD~1"), base, "base includes unrequested installed theme")
     t.eq((dest / "base-marker.txt").read_text(), "installed base\n", "root at starting revision")
     t.eq((dest / "packages/store/dist/index.js").read_text().strip(), store_dist, "older installed store restored")
@@ -201,17 +211,18 @@ def fork_uses_all_installed_revisions_and_starting_revision_siblings(t: T):
     for name, version, commit in (("store", "0.1.1", store["commit"]),
                                   ("theme", "0.1.2", base), ("panel", "0.1.2", base)):
         manifest = json.loads((dest / "packages" / name / "plugin.json").read_text())
-        t.eq(manifest["id"], f"me/{name}", f"{name} renamed")
-        t.eq(manifest["forkOf"], {"id": f"tilr/{name}", "version": version,
+        t.eq(str(UUID(manifest["id"])), manifest["id"], f"{name} canonical UUID")
+        t.ok(manifest["id"] != {"store": STORE, "theme": THEME, "panel": PANEL}[name], "fresh fork UUID")
+        t.eq(manifest["forkOf"], {"id": {"store": STORE, "theme": THEME, "panel": PANEL}[name], "version": version,
                                   "commit": commit, "source": str(source)}, f"{name} provenance")
     t.same(before, "installation and source")
 
 
 @case(fixture="fork_suite_installed", spec=["fork-replacement/fork-isolates-source-and-destination-state#existing-destination"])
 def existing_multi_package_fork_is_refused_unchanged(t: T):
-    dest = t.root / "forks/existing-suite"
-    t.gitpm_ok("fork", THEME, "--ns", "me", "--into", dest)
+    dest = t.root / "a7b307d0-1814-5be7-945d-9e3ca38b344d"
+    t.gitpm_ok("fork", THEME, "--into", dest)
     before = t.snap(t.ws, suite(t), dest, git=True)
-    t.gitpm_err("fork", STORE, "--ns", "other", "--into", dest,
+    t.gitpm_err("fork", STORE, "--into", dest,
                 kind="invalid_argument", contains="destination already exists; pass a new folder")
     t.same(before, "existing multi-package fork, installation and source")

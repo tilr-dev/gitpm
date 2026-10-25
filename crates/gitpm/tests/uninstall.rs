@@ -1,7 +1,7 @@
 //! Confirmation-by-plan uninstall: lost-work detection, refusal, confirmed delete, exact IDs.
 mod common;
 use common::clone_path;
-use gitpm::{Error, LostWork, Manager, scaffold};
+use gitpm::{Error, LostWork, Manager};
 use std::{
     collections::BTreeSet,
     fs,
@@ -37,9 +37,11 @@ impl Fixture {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir_all(&dir).unwrap();
-        let author = scaffold::init(&dir.join("module"), "vendor", "module")
-            .unwrap()
-            .repo;
+        let author = common::author(
+            &dir.join("module"),
+            "cc6c3e20-6fe0-58c4-944e-991c2a154a47",
+            "module",
+        );
         let root = dir.join("workspace");
         let m = Manager::open(&root).unwrap();
         m.install(author.to_str().unwrap()).unwrap();
@@ -64,7 +66,11 @@ impl Fixture {
                     "--ignored",
                 ],
             ),
-            fs::read(self.root.join("dist/vendor/module/index.js")).unwrap(),
+            fs::read(
+                self.root
+                    .join("dist/cc6c3e20-6fe0-58c4-944e-991c2a154a47/index.js"),
+            )
+            .unwrap(),
         )
     }
 }
@@ -113,16 +119,28 @@ fn simultaneously_open_workspaces_keep_install_and_removal_isolated() {
     assert_eq!(staged.list().unwrap().len(), 1);
     assert_eq!(active.list().unwrap().len(), 1);
     let staged_before = workspace_snapshot(&staged_root);
-    active.uninstall("vendor/module", &[], false).unwrap();
+    active
+        .uninstall("cc6c3e20-6fe0-58c4-944e-991c2a154a47", &[], false)
+        .unwrap();
     assert!(active.list().unwrap().is_empty());
-    assert!(!f.root.join("dist/vendor/module").exists());
+    assert!(
+        !f.root
+            .join("dist/cc6c3e20-6fe0-58c4-944e-991c2a154a47")
+            .exists()
+    );
     assert_eq!(workspace_snapshot(&staged_root), staged_before);
     active.install(source.to_str().unwrap()).unwrap();
     assert_eq!(workspace_snapshot(&staged_root), staged_before);
     let active_before = workspace_snapshot(&f.root);
-    staged.uninstall("vendor/module", &[], false).unwrap();
+    staged
+        .uninstall("cc6c3e20-6fe0-58c4-944e-991c2a154a47", &[], false)
+        .unwrap();
     assert!(staged.list().unwrap().is_empty());
-    assert!(!staged_root.join("packages/vendor/module").exists());
+    assert!(
+        !staged_root
+            .join("packages/cc6c3e20-6fe0-58c4-944e-991c2a154a47")
+            .exists()
+    );
     assert_eq!(workspace_snapshot(&f.root), active_before);
     drop((active, staged));
     // Reopening reads independent persisted state, rather than an in-memory cache.
@@ -173,15 +191,22 @@ fn make_all_lost_work(f: &Fixture) {
 #[test]
 fn clean_clone_plan_is_empty_and_uninstall_needs_no_confirmation() {
     let (f, m) = Fixture::installed();
-    let plan = m.uninstall_plan("vendor/module").unwrap();
+    let plan = m
+        .uninstall_plan("cc6c3e20-6fe0-58c4-944e-991c2a154a47")
+        .unwrap();
     assert!(plan.lost_work.is_empty(), "{:?}", plan.lost_work);
     assert!(plan.registered);
     assert_eq!(plan.deletes.len(), 2);
     assert_eq!(Path::new(&plan.deletes[0]), f.repo());
-    assert!(plan.deletes[1].ends_with("dist/vendor/module"));
-    m.uninstall("vendor/module", &[], false).unwrap();
+    assert!(plan.deletes[1].ends_with("dist/cc6c3e20-6fe0-58c4-944e-991c2a154a47"));
+    m.uninstall("cc6c3e20-6fe0-58c4-944e-991c2a154a47", &[], false)
+        .unwrap();
     assert!(!f.repo().exists());
-    assert!(!f.root.join("dist/vendor/module").exists());
+    assert!(
+        !f.root
+            .join("dist/cc6c3e20-6fe0-58c4-944e-991c2a154a47")
+            .exists()
+    );
     assert!(m.state().unwrap().packages.is_empty());
 }
 
@@ -190,7 +215,9 @@ fn plan_lists_each_lost_work_type_including_stash_without_changes() {
     let (f, m) = Fixture::installed();
     make_all_lost_work(&f);
     let before = f.snapshot();
-    let plan = m.uninstall_plan("vendor/module").unwrap();
+    let plan = m
+        .uninstall_plan("cc6c3e20-6fe0-58c4-944e-991c2a154a47")
+        .unwrap();
     assert_eq!(
         kinds(&plan.lost_work),
         BTreeSet::from([
@@ -235,12 +262,14 @@ fn uninstall_without_confirmation_refuses_and_changes_nothing() {
     let (f, m) = Fixture::installed();
     make_all_lost_work(&f);
     let before = f.snapshot();
-    let error = m.uninstall("vendor/module", &[], false).unwrap_err();
+    let error = m
+        .uninstall("cc6c3e20-6fe0-58c4-944e-991c2a154a47", &[], false)
+        .unwrap_err();
     assert_eq!(error.kind(), "local_changes");
     let Error::LocalChanges { id, items, message } = &error else {
         panic!("{error:?}");
     };
-    assert_eq!(id, "vendor/module");
+    assert_eq!(id, "cc6c3e20-6fe0-58c4-944e-991c2a154a47");
     assert_eq!(kinds(items).len(), 8);
     assert!(message.contains("local changes"), "{message}");
     assert_eq!(f.snapshot(), before);
@@ -253,13 +282,22 @@ fn stash_alone_blocks_unconfirmed_uninstall() {
     let (f, m) = Fixture::installed();
     fs::write(f.repo().join("dist/index.js"), "stash me").unwrap();
     git(&f.repo(), &["stash", "push", "-m", "only stash"]);
-    let plan = m.uninstall_plan("vendor/module").unwrap();
+    let plan = m
+        .uninstall_plan("cc6c3e20-6fe0-58c4-944e-991c2a154a47")
+        .unwrap();
     assert_eq!(kinds(&plan.lost_work), BTreeSet::from(["stash"]));
-    let error = m.uninstall("vendor/module", &[], false).unwrap_err();
+    let error = m
+        .uninstall("cc6c3e20-6fe0-58c4-944e-991c2a154a47", &[], false)
+        .unwrap_err();
     assert_eq!(error.kind(), "local_changes");
     assert!(error.to_string().contains("stash"), "{error}");
     assert!(f.repo().exists());
-    assert!(m.state().unwrap().packages.contains_key("vendor/module"));
+    assert!(
+        m.state()
+            .unwrap()
+            .packages
+            .contains_key("cc6c3e20-6fe0-58c4-944e-991c2a154a47")
+    );
 }
 
 #[test]
@@ -268,7 +306,9 @@ fn local_commit_message_is_unchanged() {
     fs::write(f.repo().join("local.txt"), "local").unwrap();
     git(&f.repo(), &["add", "local.txt"]);
     git(&f.repo(), &["commit", "-m", "local"]);
-    let error = m.uninstall("vendor/module", &[], false).unwrap_err();
+    let error = m
+        .uninstall("cc6c3e20-6fe0-58c4-944e-991c2a154a47", &[], false)
+        .unwrap_err();
     assert_eq!(
         error.to_string(),
         "local commits detected; confirm the listed lost work to remove it"
@@ -279,11 +319,21 @@ fn local_commit_message_is_unchanged() {
 fn confirmed_uninstall_deletes_lost_work() {
     let (f, m) = Fixture::installed();
     make_all_lost_work(&f);
-    let plan = m.uninstall_plan("vendor/module").unwrap();
-    m.uninstall("vendor/module", &plan.lost_work, false)
+    let plan = m
+        .uninstall_plan("cc6c3e20-6fe0-58c4-944e-991c2a154a47")
         .unwrap();
+    m.uninstall(
+        "cc6c3e20-6fe0-58c4-944e-991c2a154a47",
+        &plan.lost_work,
+        false,
+    )
+    .unwrap();
     assert!(!f.repo().exists());
-    assert!(!f.root.join("dist/vendor/module").exists());
+    assert!(
+        !f.root
+            .join("dist/cc6c3e20-6fe0-58c4-944e-991c2a154a47")
+            .exists()
+    );
     assert!(m.state().unwrap().packages.is_empty());
 }
 
@@ -293,7 +343,9 @@ fn confirmed_uninstall_deletes_lost_work() {
 fn confirmation_is_bound_to_the_planned_lost_work() {
     let (f, m) = Fixture::installed();
     fs::write(f.repo().join("seen.txt"), "seen").unwrap();
-    let plan = m.uninstall_plan("vendor/module").unwrap();
+    let plan = m
+        .uninstall_plan("cc6c3e20-6fe0-58c4-944e-991c2a154a47")
+        .unwrap();
     assert_eq!(
         plan.lost_work,
         [LostWork::Untracked {
@@ -303,7 +355,11 @@ fn confirmation_is_bound_to_the_planned_lost_work() {
     fs::write(f.repo().join("later.txt"), "later").unwrap();
     let before = f.snapshot();
     let error = m
-        .uninstall("vendor/module", &plan.lost_work, false)
+        .uninstall(
+            "cc6c3e20-6fe0-58c4-944e-991c2a154a47",
+            &plan.lost_work,
+            false,
+        )
         .unwrap_err();
     let Error::LocalChanges { items, .. } = &error else {
         panic!("{error:?}");
@@ -317,14 +373,24 @@ fn confirmation_is_bound_to_the_planned_lost_work() {
     assert_eq!(f.snapshot(), before);
     // Force ignores dependents, not unconfirmed work.
     let error = m
-        .uninstall("vendor/module", &plan.lost_work, true)
+        .uninstall(
+            "cc6c3e20-6fe0-58c4-944e-991c2a154a47",
+            &plan.lost_work,
+            true,
+        )
         .unwrap_err();
     assert_eq!(error.kind(), "local_changes");
     assert_eq!(f.snapshot(), before);
     // Confirming what is there now deletes it.
-    let plan = m.uninstall_plan("vendor/module").unwrap();
-    m.uninstall("vendor/module", &plan.lost_work, false)
+    let plan = m
+        .uninstall_plan("cc6c3e20-6fe0-58c4-944e-991c2a154a47")
         .unwrap();
+    m.uninstall(
+        "cc6c3e20-6fe0-58c4-944e-991c2a154a47",
+        &plan.lost_work,
+        false,
+    )
+    .unwrap();
     assert!(!f.repo().exists());
 }
 
@@ -332,25 +398,37 @@ fn confirmation_is_bound_to_the_planned_lost_work() {
 fn case_variant_id_never_touches_the_installed_plugin() {
     let (f, m) = Fixture::installed();
     let before = f.snapshot();
-    for id in ["Vendor/Module", "vendor/MODULE", "VENDOR/module"] {
+    for id in [
+        "CC6C3E20-6FE0-58C4-944E-991C2A154A47",
+        "vendor/module",
+        "module",
+    ] {
         let plan = m.uninstall_plan(id).unwrap_err();
-        assert_eq!(plan.kind(), "repository_not_found", "{id}");
+        assert_eq!(plan.kind(), "invalid_id", "{id}");
         let error = m.uninstall(id, &[], false).unwrap_err();
-        assert_eq!(error.kind(), "repository_not_found", "{id}");
+        assert_eq!(error.kind(), "invalid_id", "{id}");
         assert_eq!(f.snapshot(), before);
         assert!(f.repo().join(".git").is_dir());
     }
-    assert!(m.state().unwrap().packages.contains_key("vendor/module"));
+    assert!(
+        m.state()
+            .unwrap()
+            .packages
+            .contains_key("cc6c3e20-6fe0-58c4-944e-991c2a154a47")
+    );
 }
 
 #[test]
 fn forgotten_repository_can_be_planned_and_removed() {
     let (f, m) = Fixture::installed();
-    m.forget("vendor/module").unwrap();
-    let plan = m.uninstall_plan("vendor/module").unwrap();
+    m.forget("cc6c3e20-6fe0-58c4-944e-991c2a154a47").unwrap();
+    let plan = m
+        .uninstall_plan("cc6c3e20-6fe0-58c4-944e-991c2a154a47")
+        .unwrap();
     assert!(!plan.registered);
     assert!(plan.lost_work.is_empty(), "{:?}", plan.lost_work);
-    m.uninstall("vendor/module", &[], false).unwrap();
+    m.uninstall("cc6c3e20-6fe0-58c4-944e-991c2a154a47", &[], false)
+        .unwrap();
     assert!(!f.repo().exists());
 }
 
@@ -358,7 +436,9 @@ fn forgotten_repository_can_be_planned_and_removed() {
 fn update_refusal_lists_dirty_files() {
     let (f, m) = Fixture::installed();
     fs::write(f.repo().join("notes.txt"), "keep").unwrap();
-    let error = m.update("vendor/module").unwrap_err();
+    let error = m
+        .update("cc6c3e20-6fe0-58c4-944e-991c2a154a47")
+        .unwrap_err();
     let Error::LocalChanges { items, .. } = &error else {
         panic!("{error:?}");
     };

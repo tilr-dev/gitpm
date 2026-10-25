@@ -20,7 +20,7 @@ from pathlib import Path
 
 from gitpmtest import R, T, case
 
-ID = "dan/hello"
+ID = "3dce1568-569c-5b53-9321-37185e751947"
 USER = "pmt"
 SECRET = "s3cret-Pmt-0451"
 NEW_SECRET = "rotated-Pmt-9917"

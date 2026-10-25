@@ -1,7 +1,7 @@
 """UC-047: Offline local lifecycle (P1).
 
-g5_offline: dan/hello installed from the bare origin /fx/origin/hello.git and updated
-0.1.0 → 0.1.1; the fork mine/hello 0.1.2 installed from its author folder. "Offline":
+g5_offline: 3dce1568-569c-5b53-9321-37185e751947 installed from the bare origin /fx/origin/hello.git and updated
+0.1.0 → 0.1.1; the fork b70acb45-e742-5e38-9b58-984cc80542a4 0.1.2 installed from its author folder. "Offline":
 the origins are renamed away and GITPM_CATALOG points at a loopback endpoint that answers
 503 to everything and logs each request (so any catalog access would be visible).
 """
@@ -15,7 +15,7 @@ from pathlib import Path
 
 from gitpmtest import T, case
 
-ID, FORK = "dan/hello", "mine/hello"
+ID, FORK = "3dce1568-569c-5b53-9321-37185e751947", "b70acb45-e742-5e38-9b58-984cc80542a4"
 ORIGIN = Path("/fx/origin/hello.git")
 FORK_ORIGIN = Path("/fx/authors/mine-hello")
 
@@ -75,7 +75,7 @@ def list_disable_enable_offline(t: T):
     clones = t.snap(t.ws / "repos")
     state = t.state()
     listed = t.gitpm_ok("list").json()
-    t.eq(sorted(listed["packages"]), [ID, FORK], "list works offline")
+    t.eq(sorted(listed["packages"]), sorted([ID, FORK]), "list works offline")
     t.gitpm_ok("disable", ID)
     changed = t.state()
     t.eq(changed["packages"][ID]["enabled"], False, "disabled")

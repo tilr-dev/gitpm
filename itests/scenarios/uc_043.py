@@ -1,13 +1,13 @@
 """UC-043: Ignored files, unpublished refs and uninstall confirmation (P0, mandatory).
 
-Workspace g3_trio_installed: dan/a (0.1.1, previous 0.1.0) gets one kind of local work per
-case; dan/b and other/c are the unrelated packages. A new release dan/a@0.1.2 exists
+Workspace g3_trio_installed: 807b9715-06b4-55c2-add2-59b487bfa42e (0.1.1, previous 0.1.0) gets one kind of local work per
+case; 03c25ec4-f583-513d-adfb-092fb98d8dba and 48cd1267-06f0-5741-820c-7d167ecfd3f8 are the unrelated packages. A new release 807b9715-06b4-55c2-add2-59b487bfa42e@0.1.2 exists
 upstream so a non-refusing update would really change the clone.
 
 Per kind of local work two cases: `<kind>_refused` (update, rollback, uninstall without
 TTY, uninstall on a TTY answered N and EOF — the prompt must list the work —, then fork
 leaves it in the installed clone; every refusal leaves every byte of the workspace and author repos intact)
-and `<kind>_confirmed` (TTY answer y removes only dan/a). `forced_uninstall` covers
+and `<kind>_confirmed` (TTY answer y removes only 807b9715-06b4-55c2-add2-59b487bfa42e). `forced_uninstall` covers
 --force with all kinds at once.
 """
 
@@ -15,8 +15,8 @@ import shlex
 
 from gitpmtest import T, case
 
-A = "dan/a"
-OTHERS = ["dan/b", "other/c"]
+A = "807b9715-06b4-55c2-add2-59b487bfa42e"
+OTHERS = ["03c25ec4-f583-513d-adfb-092fb98d8dba", "48cd1267-06f0-5741-820c-7d167ecfd3f8"]
 
 
 def tty(t: T, args: list, answer: str = ""):
@@ -137,8 +137,8 @@ def refused_case(kind: str):
             t.same(before, f"everything after TTY answer {what}")
         t.eq(t.package(A), entry, "state entry")
 
-        fork = t.root / "forks/a"
-        t.gitpm_ok("fork", A, "--ns", "mine", "--into", fork)
+        fork = t.root / "773d50d9-444b-5bd1-b190-ad4a1d9ff982"
+        t.gitpm_ok("fork", A, "--into", fork)
         verify(t, fork)
         t.eq(t.rev(fork, "HEAD~1"), installed(t), "fork uses recorded installed revision")
         t.eq(t.git(fork, "status", "--porcelain", "--untracked-files=all"), "", "clean fork")
@@ -165,11 +165,11 @@ def confirmed_case(kind: str):
         t.has(r.out, needle, "Delete anyway? [y/N]")
         t.not_installed(A)
         del state["packages"][A]
-        t.eq(t.state(), state, "state minus dan/a")
+        t.eq(t.state(), state, "state minus 807b9715-06b4-55c2-add2-59b487bfa42e")
         t.same(keep, "unrelated packages and author repositories")
 
     fn.__name__ = f"{kind}_confirmed"
-    fn.__doc__ = f"{kind}: uninstall on a TTY answered y removes only dan/a."
+    fn.__doc__ = f"{kind}: uninstall on a TTY answered y removes only 807b9715-06b4-55c2-add2-59b487bfa42e."
     return case(fixture="g3_trio_installed",
                 spec=["install-uninstall/uninstall-is-planned-and-confirmed#confirmed-uninstall"])(fn)
 

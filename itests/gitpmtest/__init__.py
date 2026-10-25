@@ -3,7 +3,7 @@
 Layout of every container (see src/gitpm_itests/main.py):
 
     /fx            the fixture snapshot; the case's working directory
-    /fx/repos/ID   author repositories (git), e.g. /fx/repos/dan/hello
+    /fx/repos/ID   author repositories (git), e.g. /fx/repos/3dce1568-569c-5b53-9321-37185e751947
     /fx/ws         GITPM_ROOT (workspace)
     /fx/catalog    GITPM_CATALOG (local catalog; an empty folder until a case fills it)
     /fx/sources.txt  GITPM_SOURCES
@@ -226,7 +226,7 @@ class T:
     # ---------------------------------------------------------------- authoring
 
     def path(self, repo_or_id: Path | str) -> Path:
-        """An author repository by ID (dan/hello) or any path."""
+        """An author repository by ID (3dce1568-569c-5b53-9321-37185e751947) or any path."""
         s = str(repo_or_id)
         if s.startswith("/") or s.startswith("."):
             return Path(s)
@@ -243,7 +243,7 @@ class T:
         return self.release(id, version, **kw)
 
     def manifest(self, id: str, version: str, deps: dict | None = None, extra: dict | None = None) -> dict:
-        m = {"id": id, "version": version}
+        m = {"id": id, "name": "fixture", "version": version}
         if deps is not None:
             m["dependencies"] = deps
         m.update(extra or {})
@@ -338,9 +338,17 @@ class T:
     # ------------------------------------------------------------------ catalog
 
     def catalog_index(self, id: str, catalog: Path | None = None) -> Path:
-        """namespaces/NS/NAME/plugin.json of a v2 catalog."""
-        ns, name = id.split("/")
-        return (catalog or self.catalog) / "namespaces" / ns / name / "plugin.json"
+        """packages/NS/NAME/plugin.json of a v2 catalog."""
+        return (catalog or self.catalog) / "packages" / id / "plugin.json"
+
+    def manifest_id(self, path: Path, original: str | None = None) -> str:
+        """Read a generated UUID explicitly; never translate caller arguments."""
+        candidates = [path / "plugin.json"] if (path / "plugin.json").is_file() else list(path.glob("packages/*/plugin.json"))
+        manifests = [json.loads(p.read_text()) for p in candidates]
+        if original is not None:
+            manifests = [m for m in manifests if m.get("forkOf", {}).get("id") == original]
+        self.eq(len(manifests), 1, "one matching generated package")
+        return manifests[0]["id"]
 
     def catalog_release(self, id: str, version: str, catalog: Path | None = None) -> Path:
         return self.catalog_index(id, catalog).parent / "versions" / version / "release.json"
