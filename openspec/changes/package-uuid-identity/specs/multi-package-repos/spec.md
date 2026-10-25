@@ -123,7 +123,7 @@ Forgetting a package of a shared clone SHALL keep a `forgotten` record (format i
 - **THEN** it is recorded in state at its recorded revision with its recorded `enabled` flag, and `dist/76a9b591-60f3-5c7f-9e1c-31648fc73bfd/` is deployed when it is enabled
 
 ### Requirement: Forking packages of one repository
-`fork ID [ID...]` SHALL accept only installed IDs from one recorded source without `--from`, or IDs from the explicit `--from SOURCE` repository, else `invalid_argument` listing IDs and sources. It SHALL clone the whole repository, retain all files and the package layout, and assign every package a fresh UUID while preserving its name with `forkOf` and `replaces`. Dependencies between repository packages SHALL be rewritten. A root package SHALL stay at the root; no package subset SHALL be selected.
+`fork ID [ID...]` SHALL accept only installed IDs from one recorded source without `--from`, or IDs from the explicit `--from SOURCE` repository, else `invalid_argument` listing IDs and sources. It SHALL clone the whole repository, retain all files and package layout, and assign every package a fresh UUID preserving its name with `forkOf` and `replaces`. Dependencies between repository packages SHALL be rewritten. A root package SHALL stay at the root; no package subset SHALL be selected.
 
 #### Scenario: Revisions on diverged histories
 - **WHEN** the installed revisions of the forked packages are not ancestors of the newest one
