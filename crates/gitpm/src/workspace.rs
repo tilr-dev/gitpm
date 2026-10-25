@@ -28,7 +28,7 @@ use std::{
 
 mod builds;
 pub(crate) mod clones;
-mod fork;
+pub mod fork;
 mod link;
 use clones::{guard_clone, installed_repo, place_clone, removal, source_repo};
 pub use fork::{DependencyRewrite, ForkedPackage, PackageFork};
