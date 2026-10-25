@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Deploys copy the committed tree
-Managed deploys SHALL copy committed manifest-selected output (default `<path>/dist`; `"."`: `<path>`) from Git objects, never the working tree. A verified build for that commit is a release cache, deployed without Git/network. Preserve nested folders and executable bits; symlinks fail with `unsupported`; gitlinks become empty folders with a path-naming actionable warning, without fetching. Links follow "Linked deployments expose the author installation folder".
+Managed Git deploys SHALL copy committed manifest-selected output (default `<path>/dist`; `"."`: `<path>`) from Git objects, never the working tree. Builds SHALL deploy cached verified output without Git/network. Both SHALL preserve nested folders and executable bits. Symlinks SHALL fail with `unsupported`; gitlinks SHALL become empty folders without fetching, with a path-naming warning to commit built files instead. Links follow "Linked deployments expose the author installation folder".
 
 #### Scenario: Symlink inside dist
 - **WHEN** a release's package dist contains a symlink
@@ -56,3 +56,7 @@ Enable, disable, replacement, forget, restore, uninstall and reconciliation SHAL
 #### Scenario: Author moves the target away
 - **WHEN** a recorded linked folder no longer exists and reconciliation runs for another package
 - **THEN** the report identifies the unavailable linked package and its link mode, and no clone or build output is created for it
+
+#### Scenario: Existing link namespace becomes blocked
+- **WHEN** the namespace directory of an existing link becomes a file or symlink and an independent package is changed
+- **THEN** reconciliation reports the blocked link as not deployed with its descriptor, without traversing the blocked namespace or preventing the independent change

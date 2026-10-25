@@ -409,6 +409,7 @@ fn change_line(change: &gitpm::RevisionChange, verb: &str) -> String {
 fn unchanged_line(id: &str, version: &str, reason: Option<&gitpm::UnchangedReason>) -> String {
     match reason {
         None => format!("{id} up to date ({version})"),
+        Some(reason @ gitpm::UnchangedReason::DevLinked { .. }) => format!("{id}: {reason}"),
         Some(gitpm::UnchangedReason::Pinned { reference }) => {
             format!("{id} pinned at {version} ({reference})")
         }
@@ -436,12 +437,14 @@ fn mode_line(id: &str, version: &str, mode: &gitpm::Mode) -> String {
         gitpm::Mode::Pinned(reference) => format!("{id} pinned at {version} ({reference})"),
         gitpm::Mode::Branch(branch) => format!("{id} follows branch {branch} at {version}"),
         gitpm::Mode::Release => format!("{id} follows releases at {version}"),
+        gitpm::Mode::Link(_) => format!("{id} dev-linked at {version}"),
     }
 }
 /// `, pinned at REF` / `, following branch B` for the already-installed line.
 fn mode_note(mode: &gitpm::Mode) -> String {
     match mode {
         gitpm::Mode::Release => String::new(),
+        gitpm::Mode::Link(_) => ", dev-linked".into(),
         gitpm::Mode::Pinned(reference) => format!(", pinned at {reference}"),
         gitpm::Mode::Branch(branch) => format!(", following branch {branch}"),
     }
@@ -528,6 +531,7 @@ const COMMANDS: &[&str] = &[
     "commit",
     "install-catalog",
     "install",
+    "link",
     "download-catalog",
     "download",
     "list",
@@ -558,6 +562,10 @@ const HELP: &[Help] = &[
         text: "gitpm [--root DIR] [--catalog DIR_OR_JSON_OR_URL] COMMAND
 
 Workspace (installed packages):",
+    },
+    Help {
+        commands: &["link"],
+        text: "  link LOCAL_PACKAGE_PATH         live-link the manifest-selected output; relink refreshes metadata",
     },
     Help {
         commands: &["install"],
@@ -1221,6 +1229,11 @@ fn run(invocation: &mut Invocation) -> Result<()> {
             if fork.created {
                 println!("Set your own origin with: gitpm remote {quoted} GIT_URL");
             }
+        }
+        "link" => {
+            let result = manager.link(id)?;
+            println!("{} dev-linked {}", result.id, result.version);
+            print_dist_sync(&result.dist, false);
         }
         "install" | "download" => {
             let target = match (&reference, dev) {
