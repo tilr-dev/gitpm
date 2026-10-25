@@ -1,11 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Release tag names
-The release tag of a repository SHALL be `vVERSION` with VERSION as in "Version format" (a pre-release included), for tags gitpm creates (`init`, `commit`) and for tags it reads, in single- and multi-package repositories.
-
-#### Scenario: Release tag names contract
-- **WHEN** gitpm reads or writes repository release tags
-- **THEN** All packages in one repository SHALL share one version and one release tag. Every release-tag writer SHALL create the single tag using `git tag -m MESSAGE`, honoring `tag.gpgSign` without opening an editor. Legacy `ID@VERSION` tags, unprefixed version tags, tags with build metadata and all other tag forms SHALL NOT be release tags and SHALL be ignored without a warning. A tag SHALL count as a release of a package only when the package is listed at its commit and its manifest has that ID and version.
+All packages in a repository SHALL share one version and tag `vVERSION` (including pre-releases as in "Version format"). Writers SHALL use `git tag -m MESSAGE`, honoring `tag.gpgSign` without an editor. Other forms, including legacy `ID@VERSION`, SHALL be ignored silently. A tag SHALL release only packages listed at its commit with matching manifest ID and version.
 
 #### Scenario: Tag disagrees with the manifest
 - **WHEN** `acme/hello` at version 1.0.0 gets the newest tag `v8.0.0` on a commit whose manifest still says 1.0.0

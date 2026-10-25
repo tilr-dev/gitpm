@@ -1,11 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Catalog generated from Git release tags
-`catalog update [--sources FILE]` SHALL read the repositories listed in the sources file (one per line, relative to the file; blank and `#` lines skipped), discover every `vVERSION` repository release tag, pin each tag's commit, hash each released package's dist and write the tree.
-
-#### Scenario: Catalog generated from Git release tags contract
-- **WHEN** catalog generation processes repository releases
-- **THEN** For a multi-package repository it SHALL publish only the packages listed in `gitpm.json` at HEAD. Broken historical tags are skipped as in package-ids. It SHALL validate every source before writing anything and retain releases of removed sources.
+`catalog update [--sources FILE]` SHALL read listed repositories (paths relative to FILE; blank and comment lines ignored), validate all sources before writing, discover every `vVERSION` release, pin commits, hash dist and write the catalog. Only packages listed at repository HEAD SHALL be published; broken historical tags SHALL be skipped as in package-ids, and releases of removed sources retained.
 
 #### Scenario: Empty sources file
 - **WHEN** the sources file has only comments and blank lines
@@ -31,11 +27,11 @@
 - **AND** the author is warned that `dist/vendor` is a Git submodule whose files will not be installed, probably a mistake; commit built files to dist instead of a submodule
 
 ### Requirement: check compares installed packages with their catalog or origin
-`check(root, catalog)` (CLI, FFI) SHALL be read-only (no open, lock or creation), reporting one row per package with status, message, `source` and `problem`, plus replacements and unsatisfied dependencies. Git selection SHALL be by mode, verified protection (`other_catalog` under another catalog), selected catalog listing it, then origin. Builds SHALL read recorded catalogs without Git. Verified by `check::check_without_catalog_reads_each_origin`.
+`check(root, catalog)` (CLI, FFI) SHALL be read-only (no open, lock or creation), reporting one row per package with status, message, `source` and `problem`, plus replacements and unsatisfied dependencies. Git selection SHALL be by mode, verified protection (`other_catalog` under another catalog), selected catalog listing its source, then origin. Builds SHALL read recorded catalogs without Git. Verified by `check::check_without_catalog_reads_each_origin`.
 
 #### Scenario: Statuses
 - **WHEN** `check` reports a package
-- **THEN** a catalog row is one of `up_to_date` ("up to date"), `update_available` ("update available"), `newer_than_catalog` ("newer than catalog"), `different_source` ("different source in catalog"), `invalid_catalog_data` ("invalid catalog data"), `no_versions` ("no versions in catalog"), `uncomparable_version` ("version cannot be compared"), `same_version_different_commit` ("same version, different commit"), `other_catalog` ("installed from another catalog") or `upstream_not_in_catalog` ("upstream V not in catalog")
+- **THEN** a catalog row is one of `up_to_date` ("up to date"), `update_available` ("update available"), `newer_than_catalog` ("newer than catalog"), `different_source` ("different source in catalog"), `invalid_catalog_data` ("invalid catalog data"), `no_versions` ("no versions in catalog"), `uncomparable_version` ("version cannot be compared"), `same_version_different_commit` ("same version, different commit"), `other_catalog` ("installed from another catalog")
 - **AND** an origin row is one of `up_to_date`, `update_available`, `newer_than_origin` ("newer than origin"), `no_releases` ("no releases on origin"), `origin_unreachable` ("origin unreachable", with a `problem` hint, never git's stderr), `uncomparable_version` (malformed installed version) or `pinned` ("pinned")
 
 #### Scenario: Identity mismatch
@@ -55,10 +51,15 @@
 - **THEN** its row says `installed from another catalog` and offers no update, unless this catalog has a different source for it or exactly its installed release
 - **AND** this is covered by `check_shows_fork_upstream_and_other_catalogs`; the read-only and partial-failure rules by `check::read_state_never_creates_or_locks_a_workspace` and `check::check_reports_invalid_release_without_hiding_healthy_plugins`
 
+
+#### Scenario: Same ID in an unrelated source
+- **WHEN** an unprotected Git-installed package has the same ID as an entry from another source in the selected catalog
+- **THEN** `check` checks the installed source through the origin fallback, without suggesting the unrelated catalog release
+
 #### Scenario: Origin row
 - **WHEN** `acme/greeter` 0.1.0 was installed from `./greeter`, which now also has the tag `v0.2.0`, and no catalog is given (or the catalog does not list it)
 - **THEN** its row is `update_available` with latest `0.2.0` and source `origin`
-- **AND** the origin's branches are read with `git ls-remote`; release manifests are checked in an isolated temporary clone without changing the installed clone or workspace, and only tags containing the requested package ID with the matching version count as releases
+- **AND** the origin's tag and branch names are read with `git ls-remote`; candidate tags are shallow-fetched with `--depth=1 --filter=blob:none` newest first until a manifest with the requested ID is found, without checking out dist or changing the installed clone or workspace
 - **AND** tags are compared by name: an origin tag of the installed version that points to another commit is `up_to_date` (stated limitation; the commit is not compared)
 
 #### Scenario: Recorded modes in check
@@ -67,7 +68,7 @@
 
 #### Scenario: Protected package with a newer upstream
 - **WHEN** Git-installed `acme/greeter` 0.2.0 is protected by a verified catalog whose latest is 0.2.0 and its origin has the tag `v0.3.0`
-- **THEN** its row is `upstream_not_in_catalog` ("upstream 0.3.0 not in catalog", the origin's version in `origin_latest`), `latest` is the catalog's 0.2.0 and no update is offered, with or without the catalog given
+- **THEN** its row is `up_to_date`, `latest` is the catalog's 0.2.0 and origin is not queried, with or without the catalog explicitly given
 - **AND** this is covered by `workspace::check_compares_protected_packages_with_their_catalog`
 
 #### Scenario: Catalog no longer verified
@@ -131,11 +132,7 @@ Catalog versions SHALL be ordered by SemVer precedence (package-ids, "Version fo
 - **THEN** `check` first shows `up to date; pre-release 2.0.0-beta.1`, then LATEST `2.0.0 (major)` with `update available`
 
 ### Requirement: Published versions are immutable
-A published package version SHALL NOT change; its repository tag is `vVERSION` while package-version display names remain `ID@VERSION`.
-
-#### Scenario: Published versions are immutable contract
-- **WHEN** a catalog command attempts to publish an existing package version
-- **THEN** A rejected `catalog register` or `catalog update` writes nothing. `catalog register` SHALL fail with `version_conflict` when the release JSON (except `reference`) differs. `catalog update` SHALL keep a differing published record and warn. A package ID SHALL stay bound to the source that first registered it. Verified by `catalog::published_versions_are_immutable` and `catalog_update_keeps_published_records_when_tags_move`.
+Published versions SHALL be immutable, with tag `vVERSION` and display `ID@VERSION`. Rejected writes SHALL change nothing. `catalog register` SHALL fail with `version_conflict` if release JSON except `reference` differs; `catalog update` SHALL keep differing records and warn. An ID SHALL remain bound to its first source.
 
 #### Scenario: Register with another build
 - **WHEN** a published version is registered again with different `--build-url`
@@ -153,3 +150,12 @@ A published package version SHALL NOT change; its repository tag is `vVERSION` w
 #### Scenario: Another source for a registered ID
 - **WHEN** a package ID registered from one source is registered or regenerated from another
 - **THEN** it fails with `catalog` ("registered from a different source")
+
+## ADDED Requirements
+
+### Requirement: Check can bypass catalog release data
+`gitpm check --no-catalog` SHALL bypass selected and recorded catalogs for Git-installed packages and check their origins through the partial-fetch fallback. Build installations SHALL keep using their recorded catalog because they have no Git release origin. This option SHALL affect reporting only, without changing installed protection or update policy.
+
+#### Scenario: Force origin despite configured catalog
+- **WHEN** the configured catalog lists 1.0.0, the origin has 2.0.0 and a Git-installed package is checked with `--no-catalog`
+- **THEN** the row comes from origin with latest 2.0.0, and the selected catalog is not read

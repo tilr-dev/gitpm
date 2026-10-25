@@ -52,6 +52,22 @@ pub(crate) fn discover_all_with_ssh(
     expected_id: Option<&str>,
     custom_ssh: bool,
 ) -> Result<Discovery> {
+    let names = transport::tags(repo, custom_ssh)?;
+    discover_names_with_ssh(
+        repo,
+        expected_id,
+        &names.lines().collect::<Vec<_>>(),
+        custom_ssh,
+    )
+}
+
+/// Verify only the requested snapshots; used by bounded origin checks.
+pub(crate) fn discover_names_with_ssh(
+    repo: &Path,
+    expected_id: Option<&str>,
+    names: &[&str],
+    custom_ssh: bool,
+) -> Result<Discovery> {
     let default_id;
     let id = match expected_id {
         Some(id) => id,
@@ -81,7 +97,7 @@ pub(crate) fn discover_all_with_ssh(
     let mut layouts: BTreeMap<String, Result<Option<packages::Layout>>> = BTreeMap::new();
     let mut releases = BTreeMap::new();
     let mut skipped = Vec::new();
-    for name in transport::tags(repo, custom_ssh)?.lines() {
+    for &name in names {
         // One repository tag names a release of each package present at its commit.
         let Some(version) = name.strip_prefix('v') else {
             continue;

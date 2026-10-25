@@ -16,3 +16,8 @@
 - [x] 4.2 Make origin checks verify package membership without changing installed clones or workspace state.
 - [x] 4.3 Reconcile scenarios with repository tags and plain fork, and provide SSH signing in the Linux test image.
 - [x] 4.4 Verify regressions and review the final repository changes.
+
+## 5. Catalog-first checks
+- [x] 5.1 Prefer catalog snapshots and add an explicit catalog bypass for Git checks.
+- [x] 5.2 Replace full origin clones with shallow blobless candidate fetches.
+- [x] 5.3 Reconcile authoring requirements, README and integration coverage.

@@ -631,7 +631,8 @@ Workspace (installed packages):",
     },
     Help {
         commands: &["check"],
-        text: "  check                            compare installed versions with the catalog or each origin",
+        text: "  check [--no-catalog]             compare with catalog data, or shallow origin snapshots
+                                   --no-catalog forces origin checks for Git packages",
     },
     Help {
         commands: &["update"],
@@ -855,6 +856,7 @@ fn run(invocation: &mut Invocation) -> Result<()> {
     let provides = option(&mut args, "--provides")?;
     let multi = flag(&mut args, "--multi")?;
     let no_release = flag(&mut args, "--no-release")?;
+    let no_catalog = flag(&mut args, "--no-catalog")?;
     let back = flag(&mut args, "--back")?;
     let force = flag(&mut args, "--force")?;
     let dry_run = flag(&mut args, "--dry-run")?;
@@ -867,6 +869,11 @@ fn run(invocation: &mut Invocation) -> Result<()> {
         bail!("unknown option: {unknown}; use --help");
     }
     let command = args[0].as_str();
+    ensure!(
+        !no_catalog || command == "check",
+        "--no-catalog requires check"
+    );
+    let catalog_location = if no_catalog { None } else { catalog_location };
     ensure!(
         COMMANDS.contains(&command),
         "unknown command: {command}; use --help"
@@ -1161,11 +1168,15 @@ fn run(invocation: &mut Invocation) -> Result<()> {
             return Ok(());
         }
         "check" => {
-            let report = check::check_with_options(
-                Path::new(&root),
-                catalog_location.as_deref(),
-                &ssh_options,
-            )?;
+            let report = if no_catalog {
+                check::check_without_catalog(Path::new(&root), &ssh_options)?
+            } else {
+                check::check_with_options(
+                    Path::new(&root),
+                    catalog_location.as_deref(),
+                    &ssh_options,
+                )?
+            };
             if report.rows.is_empty() {
                 println!("No packages installed in workspace {root}.");
                 return Ok(());

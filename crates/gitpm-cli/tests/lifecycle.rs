@@ -2468,7 +2468,8 @@ fn verified_catalog_protects_updates_and_detach_drops_it() {
         out.contains(&format!("Catalog: {location} (verified)")),
         "{out}"
     );
-    assert!(out.contains("upstream 1.1.0 not in catalog"), "{out}");
+    assert!(out.contains("up to date"), "{out}");
+    assert!(!out.contains("upstream 1.1.0 not in catalog"), "{out}");
     f.cli(&["update", "all", "--detach"], false);
     f.cli(&["install", repo, "--detach"], false);
 

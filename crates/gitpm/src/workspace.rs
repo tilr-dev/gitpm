@@ -929,8 +929,8 @@ impl Manager {
     /// Install `target` of a Git source and record its mode: the newest release, a ref
     /// resolved against the origin (a tag or commit pins, an origin branch is
     /// followed) or the origin's default branch (its name is recorded). A repository
-    /// with a `gitpm.json` listing several packages needs `package` (unless the ref is
-    /// a `vVERSION` tag with an explicit package ID); for a single-package repository a given `package` must
+    /// with a `gitpm.json` listing several packages needs `package`;
+    /// for a single-package repository a given `package` must
     /// match. An install is a [`Manager::download`] plus enabling the package and the
     /// dependencies it downloaded, in one transaction: a dependency that only a disabled
     /// package provides refuses with [`Error::DependencyConflict`] ("DEP is disabled;
@@ -6041,15 +6041,15 @@ mod tests {
                     row.update_available
                 ),
                 (
-                    check::CheckStatus::UpstreamNotInCatalog,
+                    check::CheckStatus::UpToDate,
                     check::CheckSource::Catalog,
                     Some("0.2.0"),
-                    Some("0.3.0"),
+                    None,
                     false
                 ),
                 "{given:?}"
             );
-            assert_eq!(row.message(), "upstream 0.3.0 not in catalog");
+            assert_eq!(row.message(), "up to date");
             assert_eq!(report.catalog_verified, given.is_some());
         }
         // An unverified catalog given: reported as such.
@@ -6568,7 +6568,7 @@ mod tests {
             mono.write("store", "1.0.0", &[]);
             mono.write("theme", "1.0.0", &[]);
             mono.commit("first");
-            mono.tag("store", "1.0.0");
+            mono.tag("1.0.0");
             mono
         }
         fn write(&self, name: &str, version: &str, deps: &[(&str, &str)]) {
@@ -6586,7 +6586,7 @@ mod tests {
             fixture_git(&self.repo, &["commit", "-q", "-m", message]);
             fixture_git(&self.repo, &["rev-parse", "HEAD"])
         }
-        fn tag(&self, _name: &str, version: &str) {
+        fn tag(&self, version: &str) {
             fixture_git(&self.repo, &["tag", &format!("v{version}")]);
         }
         fn release(&self, name: &str, version: &str) -> String {
@@ -6601,7 +6601,7 @@ mod tests {
                 }
             }
             let commit = self.commit(&format!("Release {version}"));
-            self.tag(name, version);
+            self.tag(version);
             commit
         }
         fn source(&self) -> &str {
@@ -6801,7 +6801,7 @@ mod tests {
         fs::remove_dir_all(mono.repo.join("packages/store")).unwrap();
         mono.write("theme", "2.0.0", &[]);
         mono.commit("drop store");
-        mono.tag("store", "2.0.0");
+        mono.tag("2.0.0");
         let installed = m
             .install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
             .unwrap();
@@ -6920,7 +6920,7 @@ mod tests {
         write_manifest(&mono.repo.join("packages/store"), &store_manifest);
         mono.write("theme", "1.1.0", &[("tilr/store", "^1.0")]);
         mono.commit("theme 1.1.0");
-        mono.tag("theme", "1.1.0");
+        mono.tag("1.1.0");
         mono.release("store", "1.2.0");
         m.install_package(
             mono.source(),
@@ -7663,7 +7663,7 @@ mod tests {
         write_manifest(&mono.repo.join("apps/store"), &moved);
         fs::write(mono.repo.join("apps/store/dist/index.js"), "store moved").unwrap();
         mono.commit("move store");
-        mono.tag("store", "1.1.0");
+        mono.tag("1.1.0");
         m.update("tilr/store").unwrap();
         assert_eq!(mono.dist("store"), "store moved");
         assert_eq!(
@@ -7750,7 +7750,7 @@ mod tests {
             ],
         );
         mono.commit("source submodule");
-        mono.tag("theme", "1.0.1");
+        mono.tag("1.0.1");
         // Use this revision as theme's installed revision.
         let m = mono.open();
         m.install_package(
@@ -7812,13 +7812,13 @@ mod tests {
             .unwrap();
         mono.write("theme", "1.1.0", &[("tilr/store", "^1.0")]);
         mono.commit("theme needs store");
-        mono.tag("theme", "1.1.0");
+        mono.tag("1.1.0");
         m.install_package(mono.source(), Some("tilr/theme"), InstallTarget::Release)
             .unwrap();
         mono.write("store", "1.2.0", &[("tilr/theme", "^1.0")]);
         mono.write("theme", "1.2.0", &[("tilr/store", "^1.0")]);
         mono.commit("store needs theme");
-        mono.tag("store", "1.2.0");
+        mono.tag("1.2.0");
         m.update("tilr/store").unwrap();
         let destination = mono.dir.join("forks/cycle");
         m.fork_packages(&["tilr/store", "tilr/theme"], &destination, "me")

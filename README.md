@@ -278,7 +278,7 @@ updates from its origin like a direct install.
   equal the record (`catalog`: "catalog file hashes do not match git dist of ID@V: the
   release differs from the one added to the catalog"; nothing changes). A newer origin
   release the catalog lacks is not installed: `ID kept at V (upstream W not in catalog)`,
-  and `check` says `upstream W not in catalog`. A ref or branch target (`--ref`, `--dev`)
+  and `check` uses the catalog snapshot without querying origin. A ref or branch target (`--ref`, `--dev`)
   needs a detach. New dependencies of a protected package come from its catalog too (and
   are protected by it). If the owner removes the flag, or the catalog cannot be read,
   `update ID` fails with `catalog` (or `http`) until the package is detached, while
@@ -588,13 +588,13 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   `PmError.NotDeployed { message, sync }` (the whole `DistSync` report) is new.
   Migration: call the free functions, read the new fields.
 - `check` works without a catalog: a package the catalog does not list, or every package
-  when no catalog is given, gets an origin row from `git ls-remote --tags` of its recorded
-  source. `CheckStatus::NotInCatalog` (`not_in_catalog`, "not in catalog") is removed; new
+  when no catalog is given, gets an origin row from `git ls-remote` followed by shallow, blobless
+  release snapshots of its recorded source. `CheckStatus::NotInCatalog` (`not_in_catalog`, "not in catalog") is removed; new
   statuses `newer_than_origin`, `no_releases`, `origin_unreachable`. `CheckRow` gains
   `source` (`CheckSource::Catalog`/`Origin`) and `problem`, `Upstream` gains `source`
   (`Option<CheckSource>`) and `problem`; `check::compare`/`compare_in` are no longer pure:
-  they run `git ls-remote` for packages the given catalog does not list (was `not in
-  catalog`); `check::Row` (alias of `CheckRow`) is removed; `check::check`
+  they query tag names and shallow-fetch candidate manifests for packages the
+  given catalog does not list; `check::Row` (alias of `CheckRow`) is removed; `check::check`
   and `Manager::check` no longer fail with "no catalog configured". The CLI table gains
   the `SOURCE` column, prints `Catalog: none (each package's origin)` without a catalog,
   and the fork line says `original in catalog: V` or `original at origin: V`
@@ -845,8 +845,13 @@ installed (and enabled, unless downloading) and otherwise fails with
 `check` needs no catalog either. Every installed package gets one row: from the catalog
 when one is given and lists the package (column `SOURCE` `catalog`), otherwise from its
 recorded origin (`origin`): `git ls-remote --tags --heads` of `packages.<id>.source`, read once per
-source. Release manifests are verified in an isolated temporary clone, shared per source,
-without changing installed clones or workspace state. Only `vVERSION` tags containing the
+source. Catalog data is accepted as current: a catalog hit does not query origin.
+Fallback fetches candidates newest first with `--depth=1 --filter=blob:none` into a
+disposable repository shared per source, reads package metadata only, and stops at the
+first eligible matching release. It never checks out dist or changes installed clones
+or workspace state. `check --no-catalog` bypasses selected and recorded catalogs for
+Git-installed packages; build installations still use their recorded catalog. This
+option changes the report only and leaves update protection intact. Only `vVERSION` tags containing the
 requested package ID with the matching version count as its releases; tags without that ID
 are ignored silently. Origin rows say `up to date`, `update
 available`, `newer than origin`, `no releases on origin` or `origin unreachable` (with a
@@ -1510,8 +1515,8 @@ the package is then protected) and refuses to install from a second verified cat
 an unverified catalog records nothing. `update_to`/`update_with` and `update_all` move a
 protected package only to the versions its catalog lists (`UnchangedReason::NotInCatalog`
 when the origin is ahead), `UpdateOptions { detach: true }` drops the protection. `check`
-compares a protected package with its own catalog when none is given (status
-`upstream_not_in_catalog` with `CheckRow.origin_latest` when its origin is ahead), reports
+compares a protected package with its own catalog when none is given, without querying
+origin. `check --no-catalog` instead reports origin release data for Git packages. It reports
 packages from another catalog as `other_catalog` instead of comparing them, and says in
 `CheckReport.catalog_verified` whether the given catalog is verified; a package the catalog does
 not list gets an origin row (`CheckRow.source` is `CheckSource::Catalog` or `Origin`,
@@ -1520,7 +1525,8 @@ not list gets an origin row (`CheckRow.source` is `CheckSource::Catalog` or `Ori
 version the fork started from, from the catalog when it lists the original, otherwise from
 the tags of `forkOf.source` (`source` `None` when neither is known; `problem` when
 `forkOf.source` cannot be read). `compare`/`compare_in` and `check` run `git ls-remote` for
-every package (and fork original) the catalog does not list.
+every Git package (and fork original) the catalog does not list, then shallow-fetch
+candidate tags with blob filtering to verify package manifests.
 
 ### Error kinds
 

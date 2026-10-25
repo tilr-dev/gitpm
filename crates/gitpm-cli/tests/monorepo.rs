@@ -1108,3 +1108,47 @@ fn commit_package_selects_result_and_still_releases_every_package() {
         "1.1.0"
     );
 }
+
+#[test]
+fn check_uses_catalog_then_forced_partial_origin_fallback() {
+    let f = Fixture::new();
+    f.ok(&["install", f.source(), "tilr/store"]);
+    f.ok(&[
+        "catalog",
+        "register",
+        f.source(),
+        "--ref",
+        "v1.0.0",
+        "--package",
+        "tilr/store",
+    ]);
+    f.release("store", "2.0.0");
+    // The newest repository release no longer contains the installed package.
+    fs::remove_dir_all(f.mono.join("packages/store")).unwrap();
+    f.release("theme", "3.0.0");
+    let catalog = f.ok(&["check"]);
+    assert!(catalog.contains("Updates: 0."), "{catalog}");
+    assert!(catalog.contains("catalog"), "{catalog}");
+    let forced = f.ok(&["check", "--no-catalog"]);
+    assert!(
+        forced.contains("2.0.0") && forced.contains("update available"),
+        "{forced}"
+    );
+    assert!(!forced.contains("3.0.0"), "{forced}");
+    assert!(forced.contains("origin"), "{forced}");
+    // A source missing from the selected catalog takes the same fallback.
+    fs::remove_dir_all(f.dir.join("catalog/namespaces")).unwrap();
+    let fallback = f.ok(&["check"]);
+    assert!(
+        fallback.contains("2.0.0") && fallback.contains("update available"),
+        "{fallback}"
+    );
+    // Explicit bypass also ignores an invalid configured catalog.
+    fs::remove_dir_all(f.dir.join("catalog")).unwrap();
+    let bypass = f.ok(&["check", "--no-catalog"]);
+    assert!(bypass.contains("2.0.0"), "{bypass}");
+    assert_eq!(
+        f.state()["packages"]["tilr/store"]["current"]["version"],
+        "1.0.0"
+    );
+}

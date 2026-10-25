@@ -70,7 +70,7 @@ impl CheckStatus {
 pub enum CheckSource {
     /// The selected catalog.
     Catalog,
-    /// The release tags of the recorded source (verified in an isolated temporary clone).
+    /// The release tags of the recorded source (verified in a shallow temporary repository).
     Origin,
 }
 impl CheckSource {
@@ -207,7 +207,7 @@ fn latest_version(catalog: &Catalog, id: &str, installed: &str) -> Option<String
 /// [`CheckStatus::OtherCatalog`] and never offered an update, unless this catalog has a
 /// different source ([`CheckStatus::DifferentSource`]) or exactly the installed release
 /// ([`CheckStatus::UpToDate`]). Every other package gets an origin row from the release
-/// tags of its recorded source: remote refs and a temporary clone are shared per source;
+/// tags of its recorded source: remote refs and a shallow temporary repository are shared per source;
 /// installed clones and workspace state are unchanged. A source that is not a URL or
 /// an absolute path, or uses a remote helper, is not queried and its row is [`CheckStatus::OriginUnreachable`].
 pub fn compare_in(state: &State, catalog: &Catalog, location: Option<&str>) -> Vec<CheckRow> {
@@ -236,6 +236,7 @@ pub(crate) fn compare_in_with_ssh(
         &BTreeMap::new(),
         &BTreeSet::new(),
         custom_ssh,
+        false,
     )
 }
 
@@ -250,6 +251,7 @@ fn rows(
     own: &BTreeMap<String, Catalog>,
     unverified: &BTreeSet<String>,
     custom_ssh: bool,
+    bypass_git_catalogs: bool,
 ) -> Vec<CheckRow> {
     let mut origins = Origins::default();
     state
@@ -259,11 +261,9 @@ fn rows(
             let protecting = installed
                 .catalog
                 .as_deref()
+                .filter(|_| !bypass_git_catalogs || installed.build.is_some())
                 .and_then(|location| own.get(location).map(|c| (c, Some(location))));
             // Compared with the verified catalog that protects it (not another one).
-            let own_catalog = installed.catalog.is_some()
-                && (protecting.is_some()
-                    || catalog.and_then(|(_, location)| location) == installed.catalog.as_deref());
             let build_catalog = installed
                 .build
                 .as_ref()
@@ -285,10 +285,6 @@ fn rows(
                         .or(catalog)
                         .and_then(|(catalog, location)| {
                             catalog_row(id, installed, catalog, location)
-                        })
-                        .map(|row| match own_catalog {
-                            true => protected_row(row, id, installed, &mut origins, custom_ssh),
-                            false => row,
                         })
                         .unwrap_or_else(|| origin_row(id, installed, &mut origins, custom_ssh)),
                     Mode::Pinned(_) => {
@@ -334,36 +330,6 @@ fn new_row(id: &str, installed: &Installed, source: CheckSource) -> CheckRow {
         major: false,
         prerelease: None,
     }
-}
-
-/// A protected package that is up to date with its own verified catalog: when the
-/// origin has a newer release than the catalog lists, the row is
-/// [`CheckStatus::UpstreamNotInCatalog`] (an unreadable origin changes nothing).
-fn protected_row(
-    mut row: CheckRow,
-    id: &str,
-    installed: &Installed,
-    origins: &mut Origins,
-    custom_ssh: bool,
-) -> CheckRow {
-    if installed.build.is_some() || row.status != CheckStatus::UpToDate {
-        return row;
-    }
-    let top = row.latest.as_deref().unwrap_or(&row.installed);
-    if let (Ok(Some(newest)), Ok(top)) = (
-        origins.latest(
-            &installed.source,
-            id,
-            &installed.current.version,
-            custom_ssh,
-        ),
-        version_key(top),
-    ) && version_key(&newest).is_ok_and(|newest| newest > top)
-    {
-        row.status = CheckStatus::UpstreamNotInCatalog;
-        row.origin_latest = Some(newest);
-    }
-    row
 }
 
 /// Status of `latest` against the installed version.
@@ -423,7 +389,11 @@ fn upstream(
 #[derive(Default)]
 struct Origins {
     refs: BTreeMap<String, std::result::Result<transport::RemoteRefs, String>>,
-    snapshots: BTreeMap<String, std::result::Result<crate::catalog::Scratch, String>>,
+    snapshots: BTreeMap<String, std::result::Result<OriginSnapshot, String>>,
+}
+struct OriginSnapshot {
+    temp: crate::catalog::Scratch,
+    fetched: BTreeSet<String>,
 }
 impl Origins {
     /// Tags and branches of `source`; `Err` is the classified reason the origin was
@@ -451,34 +421,91 @@ impl Origins {
             .as_ref()
             .map_err(Clone::clone)
     }
-    /// Verify the package ID and version at each tag in a temporary clone. Neither
-    /// the installed clone nor the workspace is opened for mutation.
+    /// Read candidates newest first, fetching only shallow, blobless snapshots.
+    /// Metadata reads lazily retrieve manifests; no working tree is checked out.
     fn versions(
         &mut self,
         source: &str,
         id: &str,
+        installed: &str,
         custom_ssh: bool,
     ) -> std::result::Result<Vec<String>, String> {
-        // Validate the source before handing it to Git, also for upstream checks.
-        self.refs(source, custom_ssh)?;
+        let mut candidates: Vec<_> = self
+            .refs(source, custom_ssh)?
+            .tags
+            .keys()
+            .filter_map(|tag| {
+                let version = tag.strip_prefix('v')?;
+                Some((version_key(version).ok()?, tag.clone()))
+            })
+            .collect();
+        candidates.sort_by(|a, b| b.0.cmp(&a.0));
+        if candidates.is_empty() {
+            return Ok(Vec::new());
+        }
         let snapshot = self
             .snapshots
             .entry(source.to_owned())
             .or_insert_with(|| {
-                let clone = || -> Result<crate::catalog::Scratch> {
+                let init = || -> Result<OriginSnapshot> {
                     let temp = crate::catalog::Scratch::new("pm-check")?;
-                    transport::clone_repo(&temp.0, source, "repo", custom_ssh)?;
-                    Ok(temp)
+                    transport::init_repo(&temp.0, custom_ssh)?;
+                    // Also constrain Git's lazy promisor fetches triggered by git show.
+                    for (key, value) in [
+                        ("remote.origin.url", source),
+                        ("remote.origin.promisor", "true"),
+                        ("remote.origin.partialclonefilter", "blob:none"),
+                        ("protocol.allow", "never"),
+                        ("protocol.file.allow", "always"),
+                        ("protocol.git.allow", "always"),
+                        ("protocol.http.allow", "always"),
+                        ("protocol.https.allow", "always"),
+                        ("protocol.ssh.allow", "always"),
+                    ] {
+                        transport::config_set_local(&temp.0, key, value, custom_ssh)?;
+                    }
+                    Ok(OriginSnapshot {
+                        temp,
+                        fetched: BTreeSet::new(),
+                    })
                 };
-                clone().map_err(|e| crate::auth::failure(&e.to_string()).to_owned())
+                init().map_err(|e| crate::auth::failure(&e.to_string()).to_owned())
             })
-            .as_ref()
-            .map_err(Clone::clone)?;
-        match crate::releases::discover_with_ssh(&snapshot.0.join("repo"), Some(id), custom_ssh) {
-            Ok(tags) => Ok(tags.into_iter().map(|tag| tag.manifest.version).collect()),
-            Err(Error::NoReleases(_)) => Ok(Vec::new()),
-            Err(e) => Err(crate::auth::failure(&e.to_string()).to_owned()),
+            .as_mut()
+            .map_err(|e| e.clone())?;
+        let mut versions = Vec::new();
+        for (_, tag) in candidates {
+            if !snapshot.fetched.contains(&tag) {
+                transport::fetch(
+                    &snapshot.temp.0,
+                    transport::Fetch::ShallowTag {
+                        remote: "origin",
+                        tag: &tag,
+                    },
+                    custom_ssh,
+                )
+                .map_err(|e| crate::auth::failure(&e.to_string()).to_owned())?;
+                snapshot.fetched.insert(tag.clone());
+            }
+            match crate::releases::discover_names_with_ssh(
+                &snapshot.temp.0,
+                Some(id),
+                &[&tag],
+                custom_ssh,
+            ) {
+                Ok(discovery) => {
+                    versions.extend(discovery.tags.into_iter().map(|tag| tag.manifest.version))
+                }
+                Err(Error::NoReleases(_)) => {}
+                Err(e) => return Err(crate::auth::failure(&e.to_string()).to_owned()),
+            }
+            if crate::catalog::newest_eligible(versions.iter().map(String::as_str), Some(installed))
+                .is_some()
+            {
+                break;
+            }
         }
+        Ok(versions)
     }
     /// Newest of [`Origins::versions`] offered to a package at `installed`.
     fn latest(
@@ -488,7 +515,7 @@ impl Origins {
         installed: &str,
         custom_ssh: bool,
     ) -> std::result::Result<Option<String>, String> {
-        let versions = self.versions(source, id, custom_ssh)?;
+        let versions = self.versions(source, id, installed, custom_ssh)?;
         Ok(
             crate::catalog::newest_eligible(versions.iter().map(String::as_str), Some(installed))
                 .map(str::to_owned),
@@ -504,7 +531,7 @@ fn origin_row(
 ) -> CheckRow {
     let mut row = new_row(id, installed, CheckSource::Origin);
     let installed_version = installed.current.version.as_str();
-    match origins.versions(&installed.source, id, custom_ssh) {
+    match origins.versions(&installed.source, id, installed_version, custom_ssh) {
         Err(problem) => {
             row.status = CheckStatus::OriginUnreachable;
             row.problem = Some(problem);
@@ -570,6 +597,17 @@ fn catalog_row(
         (installed.catalog.as_deref(), location),
         (Some(from), Some(selected)) if from != selected
     );
+    // A catalog entry for an unrelated source is not a cached origin snapshot.
+    // Preserve the existing foreign-catalog protection and build-source diagnostics.
+    if !other_catalog
+        && installed.build.is_none()
+        && catalog
+            .packages
+            .get(id)
+            .is_some_and(|p| p.source != installed.source)
+    {
+        return None;
+    }
     let mut row = new_row(id, installed, CheckSource::Catalog);
     match catalog.packages.get(id) {
         Some(plugin) => compare_listed(&mut row, id, installed, plugin),
@@ -675,7 +713,7 @@ pub struct UnsatisfiedDependency {
 
 /// Read the workspace state without opening it and report every installed package:
 /// from `catalog` when given and it lists the package, otherwise from the release tags
-/// of its recorded origin (release manifests verified in a temporary clone). An empty or
+/// of its recorded origin (release manifests verified in a shallow temporary repository). An empty or
 /// missing workspace reads nothing. An unreachable origin only marks its own rows
 /// [`CheckStatus::OriginUnreachable`]; a broken or unreadable catalog fails the check.
 pub fn check(root: &Path, catalog: Option<&str>) -> Result<CheckReport> {
@@ -696,11 +734,47 @@ pub(crate) fn check_with_ssh(
     catalog: Option<&str>,
     custom_ssh: bool,
 ) -> Result<CheckReport> {
+    check_policy(root, catalog, custom_ssh, false)
+}
+
+/// Force origin release checks for Git installations, bypassing catalog snapshots.
+/// Build installations still require their recorded catalog. Protection is unchanged.
+pub fn check_without_catalog(root: &Path, options: &crate::Options) -> Result<CheckReport> {
+    check_policy(root, None, options.custom_ssh, true)
+}
+
+fn check_policy(
+    root: &Path,
+    catalog: Option<&str>,
+    custom_ssh: bool,
+    bypass: bool,
+) -> Result<CheckReport> {
     let state = read_state(root)?;
     if state.packages.is_empty() {
         return Ok(CheckReport::default());
     }
-    let rows = check_state(&state, catalog, custom_ssh)?;
+    let rows = if bypass {
+        let mut own = BTreeMap::new();
+        for installed in state.packages.values().filter(|p| p.build.is_some()) {
+            for location in installed
+                .build
+                .as_ref()
+                .and_then(|b| b.location.as_ref())
+                .into_iter()
+                .chain(installed.catalog.as_ref())
+            {
+                if !own.contains_key(location) {
+                    own.insert(
+                        location.clone(),
+                        crate::catalog::selected_for_check(location, &state)?,
+                    );
+                }
+            }
+        }
+        rows(&state, None, &own, &BTreeSet::new(), custom_ssh, true)
+    } else {
+        check_state(&state, catalog, custom_ssh)?
+    };
     // Display only: an unreadable top-level `catalog.json` (the rows never need it)
     // reports the catalog as unverified instead of failing the check.
     let catalog_verified =
@@ -771,7 +845,7 @@ pub(crate) fn check_state(
                 );
             }
         }
-        return Ok(rows(state, None, &own, &unverified, custom_ssh));
+        return Ok(rows(state, None, &own, &unverified, custom_ssh, false));
     };
     let snapshot = crate::catalog::selected_for_check(location, state)?;
     let canonical = crate::catalog::canonical_location(location).ok();
@@ -781,6 +855,7 @@ pub(crate) fn check_state(
         &own,
         &unverified,
         custom_ssh,
+        false,
     ))
 }
 
@@ -873,7 +948,7 @@ mod tests {
         catalog.packages.get_mut("vendor/demo").unwrap().source = "another".into();
         assert_eq!(
             compare(&state, &catalog)[0].status.message(),
-            "different source in catalog"
+            "origin unreachable"
         );
         let (_, catalog) = fixture();
         state
@@ -1184,6 +1259,70 @@ mod tests {
     }
 
     #[test]
+    fn origin_fallback_fetches_only_newest_matching_metadata() {
+        use crate::test_support::{Author, TempDir, git, manifest, write_manifest};
+        let dir = TempDir::new("partial-check");
+        let author = Author::new(dir.join("author"), "dan/demo");
+        git(&author.path, &["config", "uploadpack.allowFilter", "true"]);
+        git(
+            &author.path,
+            &["config", "uploadpack.allowAnySHA1InWant", "true"],
+        );
+        author.release("2.0.0");
+        let dist = git(&author.path, &["rev-parse", "v2.0.0:dist/index.js"]);
+        write_manifest(&author.path, &manifest("other/demo", "3.0.0"));
+        git(&author.path, &["commit", "-qam", "another package"]);
+        git(&author.path, &["tag", "-am", "release", "v3.0.0"]);
+        let mut origins = Origins::default();
+        assert_eq!(
+            origins
+                .latest(author.source(), "dan/demo", "0.1.0", false)
+                .unwrap()
+                .as_deref(),
+            Some("2.0.0")
+        );
+        let snapshot = origins.snapshots[author.source()].as_ref().unwrap();
+        assert_eq!(
+            snapshot.fetched,
+            BTreeSet::from(["v2.0.0".into(), "v3.0.0".into()])
+        );
+        assert!(snapshot.temp.0.join(".git/shallow").is_file());
+        assert!(!snapshot.temp.0.join("dist").exists());
+        let objects = git(
+            &snapshot.temp.0,
+            &[
+                "cat-file",
+                "--batch-all-objects",
+                "--batch-check=%(objectname)",
+            ],
+        );
+        assert!(
+            !objects.lines().any(|oid| oid == dist.trim()),
+            "dist blob was downloaded"
+        );
+        // Reusing this source for a different package must still consider its newest tag.
+        assert_eq!(
+            origins
+                .latest(author.source(), "other/demo", "0.1.0", false)
+                .unwrap()
+                .as_deref(),
+            Some("3.0.0")
+        );
+    }
+
+    #[test]
+    fn catalog_bypass_ignores_a_snapshot_loaded_for_other_installations() {
+        let (mut state, catalog) = fixture();
+        state.packages.get_mut("vendor/demo").unwrap().catalog = Some("/catalog".into());
+        let own = BTreeMap::from([("/catalog".to_owned(), catalog)]);
+        let normal = rows(&state, None, &own, &BTreeSet::new(), false, false);
+        assert_eq!(normal[0].source, CheckSource::Catalog);
+        let bypass = rows(&state, None, &own, &BTreeSet::new(), false, true);
+        assert_eq!(bypass[0].source, CheckSource::Origin);
+        assert_eq!(bypass[0].status, CheckStatus::OriginUnreachable);
+    }
+
+    #[test]
     fn check_reads_a_local_v2_catalog() {
         use crate::test_support::{TempDir, release};
         let dir = TempDir::new("check");
@@ -1288,7 +1427,15 @@ mod tests {
         // A pinned package is never queried: even an unreachable origin is not read.
         let mut state = read_state(&root).unwrap();
         state.packages.get_mut("acme/pinned").unwrap().source = "ext::sh -c id".into();
-        let row = rows(&state, None, &BTreeMap::new(), &BTreeSet::new(), false).remove(1);
+        let row = rows(
+            &state,
+            None,
+            &BTreeMap::new(),
+            &BTreeSet::new(),
+            false,
+            false,
+        )
+        .remove(1);
         assert_eq!(
             (row.status, row.problem, row.mode),
             (CheckStatus::Pinned, None, pinned_mode)
@@ -1296,7 +1443,15 @@ mod tests {
         // A branch the origin no longer has is reported, not hidden.
         let entry = state.packages.get_mut("acme/branch").unwrap();
         entry.mode = Mode::Branch("gone".into());
-        let row = rows(&state, None, &BTreeMap::new(), &BTreeSet::new(), false).remove(0);
+        let row = rows(
+            &state,
+            None,
+            &BTreeMap::new(),
+            &BTreeSet::new(),
+            false,
+            false,
+        )
+        .remove(0);
         assert_eq!(row.status, CheckStatus::OriginUnreachable);
         assert_eq!(
             row.problem.as_deref(),
@@ -1360,10 +1515,17 @@ mod tests {
             .into(),
             ..Default::default()
         };
-        let statuses: Vec<_> = rows(&state, None, &BTreeMap::new(), &BTreeSet::new(), false)
-            .into_iter()
-            .map(|r| (r.id, r.status, r.latest))
-            .collect();
+        let statuses: Vec<_> = rows(
+            &state,
+            None,
+            &BTreeMap::new(),
+            &BTreeSet::new(),
+            false,
+            false,
+        )
+        .into_iter()
+        .map(|r| (r.id, r.status, r.latest))
+        .collect();
         assert_eq!(
             statuses,
             [
@@ -1479,6 +1641,7 @@ mod tests {
                 catalog.map(|c| (c, None)),
                 &BTreeMap::new(),
                 &BTreeSet::new(),
+                false,
                 false,
             )[0]
             .upstream

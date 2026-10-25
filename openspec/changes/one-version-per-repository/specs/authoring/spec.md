@@ -20,11 +20,7 @@ When creating a repository, `init NAMESPACE/NAME --into DIR` SHALL scaffold a pa
 - **THEN** it fails with `unknown command: create; use --help` and creates nothing
 
 ### Requirement: init into a multi-package repository
-For a `DIR` with `gitpm.json`, init SHALL add the package at `PREFIX/NAME` for the first `PREFIX/*` pattern (else `packages/NAME`, appended to `gitpm.json` as a literal folder), committing only `gitpm.json` and the new folder; `gitpm.json` MUST have no uncommitted changes.
-
-#### Scenario: init into a multi-package repository contract
-- **WHEN** the user adds a package to an existing repository
-- **THEN** A repository without `gitpm.json` and without a root package SHALL get `{"packages": ["packages/*"]}`. The new package SHALL take the current version shared by the repository's existing packages (0.1.0 when it has none). Adding a package SHALL create no release tag; its first release SHALL require an explicit `gitpm commit REPO NEW_VERSION` with a new version, which releases all packages together. Every refusal below SHALL be `invalid_argument` and change nothing.
+`init` into an existing repository SHALL add a package at its shared version (0.1.0 if empty), commit only the new folder and config, and create no tag. It SHALL use the first `PREFIX/*` pattern, else add `packages/NAME` to the config. A repository without config or root package SHALL get `packages/*`. Dirty config, invalid roots and duplicate folders/IDs SHALL be refused with `invalid_argument`, changing nothing.
 
 #### Scenario: Root is a package
 - **WHEN** the repository root has a manifest and no `gitpm.json`
@@ -50,11 +46,7 @@ For a `DIR` with `gitpm.json`, init SHALL add the package at `PREFIX/NAME` for t
 - **AND** `gitpm commit REPO 1.3.0` sets every package to 1.3.0 and creates `v1.3.0`, releasing the new package too
 
 ### Requirement: init options
-`init --multi` SHALL make a new or empty folder a multi-package repository (`gitpm.json` and `packages/NAME`); `init --no-release` SHALL commit without the release tag and, when creating a repository, print the `gitpm commit … 0.1.0` command to release later.
-
-#### Scenario: init options contract
-- **WHEN** the user invokes `init` with its release options
-- **THEN** Adding a package to an existing repository SHALL create no tag, with or without `--no-release`, and SHALL print a next step requiring a new repository version. A repository gitpm created itself SHALL be removed again on any failure, including the tag.
+`init --multi` SHALL create a multi-package repository in a new or empty folder. `--no-release` SHALL omit the initial tag and print a later release command using 0.1.0. Adding to an existing repository SHALL omit the tag regardless of this option and print a command requiring a new version. Failure SHALL remove a repository gitpm created, leaving an adopted empty folder empty.
 
 #### Scenario: Failure in a repository gitpm created
 - **WHEN** the tag fails during a single-package `init` or `init --multi` into a new or empty folder
@@ -69,11 +61,7 @@ For a `DIR` with `gitpm.json`, init SHALL add the package at `PREFIX/NAME` for t
 - **THEN** only the package addition is committed; no tag command runs or fails, and the suggested release command requires a new version
 
 ### Requirement: commit releases a version
-`commit REPO VERSION [--package ID]` SHALL set `version` in every package's manifest, stage ALL changes of the repository, commit `Release VERSION` and create the release tag (package-ids, "Release tag names"), printing `ID committed VERSION (local commit and tag TAG)`.
-
-#### Scenario: commit releases a version contract
-- **WHEN** the user invokes `commit REPO VERSION [--package ID]`
-- **THEN** It SHALL never push. All packages SHALL be released together whether or not `--package` is given; `--package` selects only the package ID returned and printed. Without it a multi-package repository SHALL still be releasable. The tag SHALL always be created through `git tag -m MESSAGE`, honoring `tag.gpgSign` without opening an editor. REPO MUST be the repository root and a given `--package` MUST match a package (both `invalid_argument`). Verified by `scaffold::commit_bumps_version_commits_everything_and_tags`.
+`commit REPO VERSION [--package ID]` SHALL set every manifest version, stage all changes, commit `Release VERSION` and create one tag using `git tag -m MESSAGE`, honoring `tag.gpgSign` without an editor. It SHALL never push. REPO must be the root; a selector must match a package (`invalid_argument`). The selector only chooses the returned/printed ID; without it all packages are still released. Output SHALL be `ID committed VERSION (local commit and tag TAG)`.
 
 #### Scenario: Invalid version
 - **WHEN** the author runs `gitpm commit REPO 1.0` or `gitpm commit REPO 1.0.0+build`
@@ -102,9 +90,6 @@ For a `DIR` with `gitpm.json`, init SHALL add the package at `PREFIX/NAME` for t
 ### Requirement: Existing tags are never moved
 `commit` SHALL refuse with `version_conflict` ("tag already exists: TAG") when the tag exists, and SHALL refuse reusing the current version (`version_conflict`, "choose a new version") unless it is a retry: the working tree is clean, every manifest at HEAD already has VERSION, and HEAD is either the release commit that set it or the initial repository creation commit made with `--no-release`; then only the tag is created.
 
-#### Scenario: Existing tags are never moved contract
-- **WHEN** the user releases or retries a repository version
-- **THEN** Verified by `scaffold::commit_can_be_retried_after_a_failed_tag` and `scaffold::commit_refusals_leave_the_repository_untouched`.
 
 #### Scenario: Release after init --no-release
 - **WHEN** `init --no-release` made the commit `Create NAME 0.1.0` and the author runs `gitpm commit REPO 0.1.0`

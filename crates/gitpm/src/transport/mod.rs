@@ -9,6 +9,8 @@ pub(crate) use system::{LsRemote, RemoteRefs};
 pub(crate) enum Fetch<'a> {
     /// Fetch a specific missing revision from a remote.
     Revision { remote: &'a str, revision: &'a str },
+    /// Fetch one release snapshot without history or file blobs.
+    ShallowTag { remote: &'a str, tag: &'a str },
     /// Force-update tags, optionally pruning deleted origin tags.
     Tags { remote: &'a str, prune: bool },
     /// Mirror remote tags into a private local ref namespace.
@@ -620,6 +622,21 @@ impl Transport for SystemTransport {
     }
     fn fetch(&self, repo: &Path, request: Fetch<'_>, custom_ssh: bool) -> Result<()> {
         match request {
+            Fetch::ShallowTag { remote, tag } => {
+                system::git(
+                    repo,
+                    &[
+                        "fetch",
+                        "--depth=1",
+                        "--filter=blob:none",
+                        "--no-tags",
+                        "--",
+                        remote,
+                        &format!("+refs/tags/{tag}:refs/tags/{tag}"),
+                    ],
+                    custom_ssh,
+                )?;
+            }
             Fetch::Revision { remote, revision } => {
                 system::git(repo, &["fetch", remote, revision], custom_ssh)?;
             }
