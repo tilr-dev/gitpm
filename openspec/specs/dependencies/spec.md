@@ -26,7 +26,7 @@ Defines package-to-package dependencies: the requirement syntax, PubGrub resolut
 - **THEN** only 1.2.3 satisfies it; `1.2.4` does not
 
 #### Scenario: Self-dependency
-- **WHEN** `b879842f-16c2-558f-9d03-a271dc901f57`'s manifest lists `b879842f-16c2-558f-9d03-a271dc901f57` in `dependencies`
+- **WHEN** `acme/app`'s manifest lists `acme/app` in `dependencies`
 - **THEN** the manifest is refused with `invalid_manifest`
 
 #### Scenario: Pre-release requirement
@@ -99,21 +99,21 @@ Update and rollback SHALL refuse with `dependency_conflict` when the new version
 Single source for `has_dependents`: `disable`, `forget` and `uninstall` SHALL refuse with it unless forced exactly when a consumer's dependency would break: one resolving to the package directly, or through a binding ORIGINAL does not take over (installed, enabled, matching version). `dependents` and `UninstallPlan.dependents` SHALL name exactly those consumers. Verified by `dependents_guard_disable_forget_and_uninstall` and `removing_an_active_fork_guards_only_consumers_the_original_breaks`.
 
 #### Scenario: Uninstall a replacing package with consumers
-- **WHEN** `app` depends on `d135a7cf-1c63-549a-93cb-8f89656b2ced`, which `8f0b16d1-526c-56fd-bdae-b6b991bbcb76` replaces, `d135a7cf-1c63-549a-93cb-8f89656b2ced` is not installed, and the user runs `uninstall 8f0b16d1-526c-56fd-bdae-b6b991bbcb76`
+- **WHEN** `app` depends on `acme/greeter`, which `me/greeter` replaces, `acme/greeter` is not installed, and the user runs `uninstall me/greeter`
 - **THEN** it fails with `has_dependents` naming `app`
 
 #### Scenario: Forget a replacing package without consumers
-- **WHEN** `8f0b16d1-526c-56fd-bdae-b6b991bbcb76` replaces `d135a7cf-1c63-549a-93cb-8f89656b2ced`, nothing depends on `d135a7cf-1c63-549a-93cb-8f89656b2ced`, and the user runs `forget 8f0b16d1-526c-56fd-bdae-b6b991bbcb76`
+- **WHEN** `me/greeter` replaces `acme/greeter`, nothing depends on `acme/greeter`, and the user runs `forget me/greeter`
 - **THEN** it succeeds without force and drops the binding (fork-replacement, "Active fork rules")
 
 #### Scenario: Disable an active replacement without force
-- **WHEN** `8f0b16d1-526c-56fd-bdae-b6b991bbcb76` replaces `d135a7cf-1c63-549a-93cb-8f89656b2ced`, `app` needs `d135a7cf-1c63-549a-93cb-8f89656b2ced ^2`, the installed `d135a7cf-1c63-549a-93cb-8f89656b2ced` is 1.4.0, and the user runs `disable 8f0b16d1-526c-56fd-bdae-b6b991bbcb76`
+- **WHEN** `me/greeter` replaces `acme/greeter`, `app` needs `acme/greeter ^2`, the installed `acme/greeter` is 1.4.0, and the user runs `disable me/greeter`
 - **THEN** the command fails with `has_dependents` naming only `app` and both deployed folders are unchanged
-- **AND** without such a consumer the disable succeeds, drops the binding and deploys `d135a7cf-1c63-549a-93cb-8f89656b2ced` again; this is covered by `disable_removes_and_enable_restores_also_around_a_replacement`
+- **AND** without such a consumer the disable succeeds, drops the binding and deploys `acme/greeter` again; this is covered by `disable_removes_and_enable_restores_also_around_a_replacement`
 
 #### Scenario: Installed original satisfies the consumers
-- **WHEN** `8f0b16d1-526c-56fd-bdae-b6b991bbcb76` replaces `d135a7cf-1c63-549a-93cb-8f89656b2ced`, `app` needs `d135a7cf-1c63-549a-93cb-8f89656b2ced ^1` and the installed, enabled `d135a7cf-1c63-549a-93cb-8f89656b2ced` is 1.4.0
-- **THEN** `uninstall 8f0b16d1-526c-56fd-bdae-b6b991bbcb76`, `forget 8f0b16d1-526c-56fd-bdae-b6b991bbcb76` and `disable 8f0b16d1-526c-56fd-bdae-b6b991bbcb76` succeed without force and `app` resolves to `d135a7cf-1c63-549a-93cb-8f89656b2ced` again
+- **WHEN** `me/greeter` replaces `acme/greeter`, `app` needs `acme/greeter ^1` and the installed, enabled `acme/greeter` is 1.4.0
+- **THEN** `uninstall me/greeter`, `forget me/greeter` and `disable me/greeter` succeed without force and `app` resolves to `acme/greeter` again
 
 #### Scenario: Uninstall a dependency
 - **WHEN** `app` depends on `lib` and the user runs `gitpm uninstall lib`
@@ -132,7 +132,7 @@ After a forced removal, already broken consumers SHALL be reported (in `list` de
 
 #### Scenario: update all after forced removal
 - **WHEN** `lib` was force-uninstalled while `app` depends on it, a catalog that has `lib` is configured (or none is), and the user runs `update all`
-- **THEN** the other packages are updated, `app` is in `unchanged` with reason `broken_dependency` (`dependency cfbc4d17-8707-5571-853d-c9136a7f9f21 is not installed`), `lib` is not installed again, and `list` and `check` still report `app`'s dependency unsatisfied
+- **THEN** the other packages are updated, `app` is in `unchanged` with reason `broken_dependency` (`dependency acme/lib is not installed`), `lib` is not installed again, and `list` and `check` still report `app`'s dependency unsatisfied
 
 ### Requirement: State keeps dependency edges
 State SHALL keep each package's dependency edges (the `packages.<id>.dependencies` field of the record in workspace-layout), and `list` SHALL report for each dependency the package that provides it (the replacing package when ORIGINAL is bound), its version and whether it is satisfied, plus each package's `dependents`.
@@ -153,8 +153,8 @@ State SHALL keep each package's dependency edges (the `packages.<id>.dependencie
 - **THEN** `app` is enabled and deployed, and `list` reports its dependency on `lib` as unsatisfied
 
 #### Scenario: Original with an inactive dependency
-- **WHEN** `77f9f0bc-8e1b-5376-992a-c8922c08e31e` replaces `c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9`, `c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9` requires `lib ^1`, `lib` is disabled, and the user runs `disable 77f9f0bc-8e1b-5376-992a-c8922c08e31e` or `replace c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 --with c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9`
-- **THEN** it fails with `dependency_conflict` ("lib is disabled; enable it") and nothing changes; `disable 77f9f0bc-8e1b-5376-992a-c8922c08e31e --force` disables it anyway and `c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9` is reported broken
+- **WHEN** `me/base` replaces `vendor/base`, `vendor/base` requires `lib ^1`, `lib` is disabled, and the user runs `disable me/base` or `replace vendor/base --with vendor/base`
+- **THEN** it fails with `dependency_conflict` ("lib is disabled; enable it") and nothing changes; `disable me/base --force` disables it anyway and `vendor/base` is reported broken
 
 #### Scenario: Reactivated original
 - **WHEN** dropping a binding makes ORIGINAL active again (`disable`, `forget` or `uninstall` of the replacing package, or `replace ORIGINAL --with ORIGINAL`)
