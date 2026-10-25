@@ -65,7 +65,7 @@ Catalog commands (`catalog show`, `catalog links`, `catalog update`, `catalog re
 - **THEN** it prints the check table from each package's origin and exits 0
 
 ### Requirement: Option validation
-Before calling the library the CLI SHALL refuse only syntax: unknown or repeated options, misplaced options (for example `--dry-run` outside `update all`/`sync-dist`), exclusive options (`--ref`, `--dev`, `--release`), values outside a fixed set and wrong argument counts, with a message ending `; use --help` where applicable (usage errors without `Error kind`). Domain combinations are checked by the library. Verified by `usage_errors_name_the_problem_and_create_nothing`.
+Before calling the library the CLI SHALL refuse only syntax: unknown or repeated options, misplaced options (for example `--dry-run` outside `update all`/`sync-dist`, `--from` outside `fork`, `--ref` with `fork` without `--from`), exclusive options (`--ref`, `--dev`, `--release`), values outside a fixed set and wrong argument counts, with a message ending `; use --help` where applicable (usage errors without `Error kind`). Domain combinations are checked by the library. Verified by `usage_errors_name_the_problem_and_create_nothing`.
 
 #### Scenario: Ref, dev and release
 - **WHEN** the user runs `gitpm install SOURCE --ref x --dev`, `gitpm update ID --dev --release`, or passes `--channel`
@@ -83,6 +83,10 @@ Before calling the library the CLI SHALL refuse only syntax: unknown or repeated
 #### Scenario: Removed fork options have no side effects
 - **WHEN** `fork` receives `--replace`, `--version V` or `--force`
 - **THEN** it fails as a usage error before opening the workspace or creating the destination
+
+#### Scenario: Fork from source options
+- **WHEN** `fork ID --from SOURCE --ns NS --into DIR --ref REF` is run
+- **THEN** the options are accepted without opening a workspace; `--ref` without `--from` is refused before side effects
 
 ### Requirement: One output line per affected package
 Every workspace-mutating command (`install`, `install-catalog`, `download`, `download-catalog`, `update`, `update all`, `rollback`, `enable`, `disable`, `forget`, `restore`, `uninstall`, `replace`, `replace-resolve`, `sync-dist`) SHALL print one line per affected package in the form `ID <verb> …` (scenario "Single-package verbs"), built from the library result alone without reading state, and SHALL NOT print `OK:` lines. Other commands print what their capability specifies.
