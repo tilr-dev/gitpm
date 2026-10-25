@@ -169,7 +169,6 @@ def committed_txn(t: T, applied: list[str]) -> Path:
     t.release(ID, "0.1.1")
     after = t.root / "ws-after"
     shutil.copytree(t.ws, after, symlinks=True)
-    t.rebind_worktrees(after)
     t.gitpm_ok("--root", after, "update", ID)
     txn = t.ws / ".pm-txn"
     paths = [f"dist/{ID}", str(t.worktree(ID).relative_to(t.ws)), str(t.clone(ID).relative_to(t.ws))]
@@ -184,6 +183,25 @@ def committed_txn(t: T, applied: list[str]) -> Path:
         (t.ws / rel).rename(txn / "old" / rel)
         (txn / "new" / rel).rename(t.ws / rel)
     return after
+
+
+@case(fixture="hello_installed", spec=["workspace-layout/moved-and-copied-workspaces-keep-usable-worktrees#copied-workspace"])
+def copied_workspace_keeps_git_lifecycle_usable(t: T):
+    t.release(ID, "0.1.1")
+    before = t.snap(t.ws)
+    copied = t.root / "ws-copy"
+    shutil.copytree(t.ws, copied, symlinks=True)
+    checkout = t.worktree(ID, copied)
+    out = t.gitpm_ok("--root", copied, "list").json()
+    t.eq(out["packages"][ID]["current"]["version"], "0.1.0", "copied list")
+    t.gitpm_ok("--root", copied, "update", ID)
+    t.eq(t.git(checkout, "status", "--porcelain").strip(), "", "updated checkout clean")
+    t.gitpm_ok("--root", copied, "rollback", ID)
+    t.eq(t.git(checkout, "status", "--porcelain").strip(), "", "rolled-back checkout clean")
+    t.eq(t.rev(checkout), t.rev(ID, "v0.1.0"), "rolled back to copied revision")
+    t.gitpm_ok("--root", copied, "uninstall", ID)
+    t.ok(not checkout.exists(), "copied checkout uninstalled")
+    t.same(before, "source workspace")
 
 
 def rolled_forward(t: T, after: Path):

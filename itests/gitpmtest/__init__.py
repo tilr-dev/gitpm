@@ -313,17 +313,6 @@ class T:
         """Detached checkout owned by this installed or forgotten package."""
         return (root or self.ws) / "worktrees" / id
 
-    def rebind_worktrees(self, root: Path):
-        """Repair absolute Git links after a test copies a complete workspace."""
-        state = json.loads((root / "state.json").read_text())
-        for id, record in (state.get("packages", {}) | state.get("forgotten", {})).items():
-            checkout = self.worktree(id, root)
-            if not checkout.exists():
-                continue
-            admin = root / "repos" / record["clone"] / "worktrees" / hashlib.sha256(id.encode()).hexdigest()
-            (checkout / ".git").write_text(f"gitdir: {admin}\n")
-            (admin / "gitdir").write_text(f"{checkout / '.git'}\n")
-
     def clone(self, id: str, root: Path | None = None) -> Path:
         self._remember_clones()
         key = self._clone_keys.get(id)
