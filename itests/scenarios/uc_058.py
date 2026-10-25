@@ -98,7 +98,7 @@ def catalog_install_pulls_dependency(t: T):
     t.eq(core["current"], {"version": "1.1.0", "commit": registered(t, CORE, "1.1.0")["commit"]},
          "757fd5ca-2b6a-5b2f-8a5d-60980b028665 current (max matching ^1.0)")
     t.eq(state["packages"]["9692fc07-23c7-5f20-8779-f09374f1a571"]["dependencies"], {CORE: "^1.0"}, "dependency edge in state")
-    t.eq(t.rev(t.clone(CORE)), core["current"]["commit"], "757fd5ca-2b6a-5b2f-8a5d-60980b028665 clone HEAD")
+    t.eq(t.rev(t.worktree(CORE)), core["current"]["commit"], "757fd5ca-2b6a-5b2f-8a5d-60980b028665 clone HEAD")
     t.has((t.dist(CORE) / "index.js").read_text(), "757fd5ca-2b6a-5b2f-8a5d-60980b028665 1.1.0")
     view = resolved(t)
     row = view["9692fc07-23c7-5f20-8779-f09374f1a571"]["dependencies"][0]
@@ -167,7 +167,7 @@ def shared_dependency_single_copy(t: T):
     t.gitpm_ok("install-catalog", "1a620c0a-aa3c-533c-9960-3d49016fa231")
     t.eq(sorted(t.state()["packages"]), sorted(["9692fc07-23c7-5f20-8779-f09374f1a571", "1a620c0a-aa3c-533c-9960-3d49016fa231", CORE]), "one 757fd5ca-2b6a-5b2f-8a5d-60980b028665")
     t.eq(resolved(t)[CORE].get("dependents"), ["9692fc07-23c7-5f20-8779-f09374f1a571", "1a620c0a-aa3c-533c-9960-3d49016fa231"], "dependents")
-    core = t.snap(t.clone(CORE), t.dist(CORE))
+    core = t.snap(t.worktree(CORE), t.dist(CORE))
     t.gitpm_ok("uninstall", "9692fc07-23c7-5f20-8779-f09374f1a571")
     t.not_installed("9692fc07-23c7-5f20-8779-f09374f1a571")
     t.same(core, "757fd5ca-2b6a-5b2f-8a5d-60980b028665 clone and dist")
@@ -235,7 +235,7 @@ def download_then_enable_in_dependency_order(t: T):
     t.ok(lines[1].startswith(f"downloaded {CORE}@1.1.0 from ") and lines[1].endswith(" (disabled)"), lines[1])
     for id in ["9692fc07-23c7-5f20-8779-f09374f1a571", CORE]:
         t.eq(t.package(id)["enabled"], False, f"{id} disabled")
-        t.ok((t.clone(id) / ".git").is_dir(), f"{id} clone")
+        t.ok((t.worktree(id) / ".git").is_file(), f"{id} clone")
         t.ok(not t.dist(id).exists(), f"no dist/{id}")
     before = t.snap(t.ws)
     r = t.gitpm_err("enable", "9692fc07-23c7-5f20-8779-f09374f1a571", kind="dependency_conflict", contains=f"{CORE} is disabled; enable it")
@@ -285,7 +285,7 @@ def direct_download_deploys_nothing(t: T):
     r = t.gitpm_ok("download", t.repo("a768d335-0cf7-597a-b1ba-0eb542495aec"))
     t.ok(r.out.startswith("downloaded a768d335-0cf7-597a-b1ba-0eb542495aec@1.0.0 from ") and r.out.endswith(" (disabled)\n"), r.out)
     t.eq(t.package("a768d335-0cf7-597a-b1ba-0eb542495aec")["enabled"], False, "disabled")
-    t.ok((t.clone("a768d335-0cf7-597a-b1ba-0eb542495aec") / ".git").is_dir(), "clone")
+    t.ok((t.worktree("a768d335-0cf7-597a-b1ba-0eb542495aec") / ".git").is_file(), "clone")
     t.ok(not t.dist("a768d335-0cf7-597a-b1ba-0eb542495aec").exists(), "no dist")
 
 

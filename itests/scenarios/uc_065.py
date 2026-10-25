@@ -59,7 +59,7 @@ def outside_dist_symlink_does_not_break_any_operation(t: T):
     update and uninstall --force work for this package and for an unrelated one."""
     symlinked_plugin(t, "fc8bc03a-1524-54e6-9111-f57fd8ce96c2", {"link": "README.md"})
     t.gitpm_ok("install", t.repo("fc8bc03a-1524-54e6-9111-f57fd8ce96c2"))
-    link = t.clone("fc8bc03a-1524-54e6-9111-f57fd8ce96c2") / "link"
+    link = t.worktree("fc8bc03a-1524-54e6-9111-f57fd8ce96c2") / "link"
     t.ok(link.is_symlink() and os.readlink(link) == "README.md", "symlink kept in the clone")
     t.eq(sorted(p.name for p in t.dist("fc8bc03a-1524-54e6-9111-f57fd8ce96c2").iterdir()), sorted(["index.js"]), "dist without the link")
     symlinked_plugin(t, "fc8bc03a-1524-54e6-9111-f57fd8ce96c2", {"link": "README.md"}, version="0.2.0")
@@ -98,7 +98,7 @@ def update_to_a_branch_follows_the_moved_upstream(t: T):
     second = t.release(ID, "0.1.2", tag=False)
     t.gitpm_ok("update", ID, "--ref", "feature")
     t.eq(t.package(ID)["current"], {"version": "0.1.2", "commit": second}, "followed the moved branch")
-    t.eq(t.rev(t.clone(ID)), second, "clone HEAD")
+    t.eq(t.rev(t.worktree(ID)), second, "clone HEAD")
     t.eq(t.rev(t.clone(ID), "refs/remotes/origin/feature"), second, "HEAD == origin/feature")
     t.has((t.dist(ID) / "index.js").read_text(), "0.1.2")
 
@@ -108,10 +108,10 @@ def update_to_head_is_origin_head(t: T):
     head = t.release(ID, "0.2.0", tag=False)
     t.gitpm_ok("update", ID, "--ref", "HEAD")
     t.eq(t.package(ID)["current"], {"version": "0.2.0", "commit": head}, "origin HEAD")
-    t.eq(t.rev(t.clone(ID)), t.rev(ID), "clone HEAD == origin HEAD")
+    t.eq(t.rev(t.worktree(ID)), t.rev(ID), "clone HEAD == origin HEAD")
     moved = t.release(ID, "0.2.1", tag=False)
     t.gitpm_ok("update", ID, "--ref", "HEAD")
-    t.eq(t.rev(t.clone(ID)), moved, "HEAD follows the moved origin HEAD")
+    t.eq(t.rev(t.worktree(ID)), moved, "HEAD follows the moved origin HEAD")
 
 
 @case(fixture="hello_installed", spec=["git-safety/no-option-injection", "updates/explicit-ref-resolves-against-the-origin"])

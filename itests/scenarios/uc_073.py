@@ -52,7 +52,7 @@ def list_reports_all_four_keys(t: T):
         stored = value["packages"][id]["metadata"]
         t.eq(sorted(stored), sorted(["description", "provides", "tags", "title"]), f"{id} state metadata keys")
         t.eq({k: stored[k] for k in stored}, {k: entry[k] for k in stored}, f"{id} same shape in state")
-    t.eq(json.loads((t.clone(THEME) / "plugin.json").read_text())["provides"], "theme",
+    t.eq(json.loads((t.worktree(THEME) / "plugin.json").read_text())["provides"], "theme",
          "the manifest keeps the string form")
 
 

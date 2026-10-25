@@ -147,7 +147,7 @@ def server_down_is_http_error(t: T):
         failing(t, srv, "--catalog", dead, *args, kinds=("http",))
     # install-catalog in a fresh workspace (the main one is bound to the served catalog).
     failing(t, srv, "--root", t.root / "fresh", "--catalog", dead, "install-catalog", HELLO, kinds=("http",))
-    t.ok(not (t.clone(HELLO, t.root / "fresh")).exists(), "nothing installed in the fresh workspace")
+    t.ok(not (t.worktree(HELLO, t.root / "fresh")).exists(), "nothing installed in the fresh workspace")
 
 
 @case(fixture="catalog", spec=["catalog/catalog-locations-and-transport"])
@@ -204,7 +204,7 @@ def unsafe_release_links_refused(t: T):
             root = ("--root", t.root / "other-ws") if args[0] == "install-catalog" else ()
             failing(t, srv, *root, "--catalog", srv.url, *args, contains="invalid release link")
     t.eq(evil.requests, [], "foreign host never requested")
-    t.ok(not (t.clone(NUM, t.root / "other-ws")).exists(), "no clone in the other workspace")
+    t.ok(not (t.worktree(NUM, t.root / "other-ws")).exists(), "no clone in the other workspace")
     t.ok(not (t.root / "other-ws/dist/2190eee8-4be5-5a91-81d2-6ca95c1e61d0").exists(), "no dist in the other workspace")
     state = t.root / "other-ws/state.json"
     t.ok(not state.exists() or NUM not in json.loads(state.read_text()).get("packages", {}), "no state entry")

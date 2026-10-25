@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Install the latest release of a Git source
-`install SOURCE` (`Manager::install`) SHALL clone the Git source (path or URL), select the newest valid release tag that is not a pre-release (package-ids), check it out detached, verify the manifest and deploy its package dist; missing dependencies are installed as in dependencies. Untagged commits SHALL be ignored; a source without release tags, or with pre-release tags only, SHALL fail with `no_releases`. Verified by `stable_install_and_update_ignore_untagged_head_and_sort_versions`.
+`install SOURCE` (`Manager::install`) SHALL bare-clone the source, select its newest valid stable release tag (package-ids), create a detached package worktree at that commit, verify the manifest and deploy its output, installing missing dependencies (dependencies). Untagged commits are ignored; no stable releases SHALL fail with `no_releases`. Verified by `stable_install_and_update_ignore_untagged_head_and_sort_versions`.
 
 #### Scenario: Newest numeric tag wins
 - **WHEN** a repository has tags `v0.9.0` and `v0.10.0` and a newer untagged commit
@@ -22,6 +22,10 @@
 #### Scenario: Pre-release tag is not picked
 - **WHEN** a repository has `v1.2.0` and the newer `v1.3.0-beta.1`
 - **THEN** `install` installs 1.2.0; `install SOURCE --ref v1.3.0-beta.1` installs the beta (pinned, as every `--ref` tag)
+
+#### Scenario: Bare source storage
+- **WHEN** a root or nested Git package is installed
+- **THEN** `repos/<key>` is a bare repository with no working tree, and `worktrees/<id>` is its detached package worktree
 
 ### Requirement: Install is idempotent for the same source
 Installing an installed and enabled package again from the same source SHALL change nothing and succeed, reporting `ID already installed (VERSION)` (with a mode: `(VERSION, pinned at REF)`), with `; run update` when the source resolves to another revision or mode (`; requested --ref REF — run update ID --ref REF`). `InstallResult` SHALL carry `already_installed`, `available`, the recorded `mode`, `requested_mode` and `enabled`.
@@ -83,7 +87,7 @@ Installing an ID that is installed from a different source (including a `file://
 - **AND** verification is covered by `workspace::install_from_catalog_verifies_and_check_compares`
 
 ### Requirement: Three removal levels
-gitpm SHALL offer three removal levels: `disable` (set `enabled: false`, remove `dist/<id>`), `forget` (drop the package from `packages` in state, keep the clone and a `forgotten` record, remove `dist/<id>`) and `uninstall` (remove the state entry, the clone and `dist/<id>`). `restore ID` SHALL record a forgotten package again; all three are guarded as in dependencies ("Dependents guard removal"). Verified by `lifecycle_and_three_removal_levels` and `forget_says_whether_the_clone_was_kept`.
+gitpm SHALL offer `disable` (disable and undeploy), `forget` (undeploy, move the full record to `forgotten`, retain Git storage or cached build), and `uninstall` (remove record, worktree, output and unused bare storage). `restore` SHALL re-register forgotten packages. All levels use dependent guards (dependencies). Verified by `lifecycle_and_three_removal_levels` and `forget_says_whether_the_clone_was_kept`.
 
 #### Scenario: Uninstall one package of a shared clone
 - **WHEN** another package still uses the shared clone of the package being uninstalled
@@ -102,23 +106,24 @@ gitpm SHALL offer three removal levels: `disable` (set `enabled: false`, remove 
 - **THEN** it returns `ForgetResult { clone_kept, dist }`; `clone_kept` is false when the clone was gone and no `forgotten` record was kept ("Removing a package whose clone is gone")
 
 ### Requirement: Restore preconditions
-`restore ID` SHALL record the package again from its `forgotten` record (Git or build) as it was; branch mode takes HEAD when it moved on along the origin's branch (dependencies checked). It SHALL refuse with `local_changes` on lost work and with `already_installed` when the ID is recorded, and print `ID restored V`. Verified by `workspace::restore_keeps_the_forgotten_record`, `restore_in_a_shared_clone_ignores_another_branch_s_revision` and `branch_mode_restore_checks_dependencies`.
+`restore ID` SHALL record the package again from its forgotten Git or build record as it was, checking dependencies. A Git worktree SHALL be clean and at its recorded commit, also in branch mode; restore SHALL NOT adopt a different HEAD. Restore SHALL refuse with `local_changes` on lost work, `repository_not_found` when required Git storage is missing, and `already_installed` when the ID is recorded, and print `ID restored V`.
 
 #### Scenario: Restored record
-- **WHEN** a clean retained clone of `d135a7cf-1c63-549a-93cb-8f89656b2ced`, forgotten while disabled and bound to a catalog, is restored
-- **THEN** state records the forgotten revisions, `catalog`, `enabled: false` and mode unchanged, and nothing is deployed because it is disabled
+- **WHEN** a clean package worktree at its recorded commit is restored
+- **THEN** the forgotten revisions, catalog binding, enabled flag and mode are preserved, and deployment follows the enabled flag
+- **AND** Verified by `restore_keeps_the_forgotten_record`, `restore_refuses_dirty_clones_and_needs_a_forgotten_record`, `restore_refuses_an_unpublished_commit_in_every_mode`, `branch_mode_restore_refuses_a_published_moved_head`, and `root_and_nested_worktrees_guard_dirty_files_and_every_moved_head`.
 
 #### Scenario: Dirty retained clone
-- **WHEN** `d135a7cf-1c63-549a-93cb-8f89656b2ced` was forgotten, a file in `repos/<key>` was edited and the user runs `restore d135a7cf-1c63-549a-93cb-8f89656b2ced`
-- **THEN** the command fails with `local_changes` and the package stays out of state
+- **WHEN** a forgotten package worktree was edited, including outside its nested package folder
+- **THEN** restore fails with `local_changes` and keeps the forgotten record
 
 #### Scenario: Unpublished commit in a retained clone
-- **WHEN** a commit was made in the retained clone that no remote branch contains, and the user restores it
-- **THEN** restore fails with `local_changes` listing `UnpublishedCommit`, also in branch mode
+- **WHEN** a forgotten package worktree HEAD is an unpublished commit different from its recorded current commit
+- **THEN** restore fails with `local_changes` listing `HeadMoved`, also in branch mode, and preserves the forgotten record
 
 #### Scenario: Branch mode restore
-- **WHEN** a package in branch mode `main` was forgotten and its clone's HEAD is a published commit newer than the recorded one
-- **THEN** `restore` records that HEAD as `current` and keeps branch mode `main`
+- **WHEN** a forgotten branch-mode package worktree HEAD differs from its recorded commit
+- **THEN** restore fails with `local_changes` listing `HeadMoved`, including when the new commit is published
 
 ### Requirement: Only manager-owned files are deleted
 Uninstall SHALL delete only what the workspace owns (the clone inside the workspace, `dist/<id>`, the state entry); a fork repository or author repository outside the workspace MUST NOT be touched.
@@ -128,11 +133,15 @@ Uninstall SHALL delete only what the workspace owns (the clone inside the worksp
 - **THEN** `./hello-fork` still exists unchanged
 
 ### Requirement: Removing a package whose clone is gone
-`uninstall ID` and `forget ID` of a recorded Git package whose clone is gone SHALL succeed without confirmation, drop the record and deployed folder, keep no forgotten record, and retain dependent guards (dependencies, "Dependents guard removal"). Builds intentionally have no clone and SHALL follow the cache lifecycle below. Verified by `workspace::uninstall_and_forget_of_a_package_without_clone_drop_the_record`.
+`uninstall ID` and `forget ID` of a recorded Git package whose bare repository or package worktree is gone SHALL succeed without confirmation, drop the record and deployed folder, keep no forgotten record, and retain dependent guards (dependencies, "Dependents guard removal"). Builds intentionally have no clone and SHALL follow the cache lifecycle below. Verified by `workspace::uninstall_and_forget_of_a_package_without_clone_drop_the_record`.
 
 #### Scenario: Clone deleted by hand
-- **WHEN** `repos/<key>` was deleted by hand while `d135a7cf-1c63-549a-93cb-8f89656b2ced` is recorded and active, and the user runs `uninstall d135a7cf-1c63-549a-93cb-8f89656b2ced`
+- **WHEN** `repos/<key>` or its package worktree was deleted by hand while `d135a7cf-1c63-549a-93cb-8f89656b2ced` is recorded and active, and the user runs `uninstall d135a7cf-1c63-549a-93cb-8f89656b2ced`
 - **THEN** it prints `d135a7cf-1c63-549a-93cb-8f89656b2ced uninstalled`, the record and `dist/d135a7cf-1c63-549a-93cb-8f89656b2ced/` are gone, and later commands warn no more
+
+#### Scenario: Orphan worktree survives missing source storage
+- **WHEN** a package bare repository was deleted by hand while its worktree still contains local files, and the package is uninstalled or forgotten
+- **THEN** the record and deployed folder are removed while the orphan worktree and its files remain untouched
 
 #### Scenario: Forget without a clone
 - **WHEN** the same package is forgotten instead
@@ -145,6 +154,10 @@ Uninstall SHALL delete only what the workspace owns (the clone inside the worksp
 #### Scenario: Managed build output is not lost Git work
 - **WHEN** a build is forgotten or uninstalled
 - **THEN** managed cached output needs no lost-work confirmation; forget retains its record and cached output for restore, while uninstall removes the cache, subject to dependent guards
+
+#### Scenario: Reinstall refuses an orphan worktree
+- **WHEN** an orphan `worktrees/<uuid>` remains after missing source storage and the same package is installed again
+- **THEN** install refuses with `workspace`, preserves the orphan files and leaves package state unchanged
 
 ### Requirement: Explicit local linking is distinct from branch following
 gitpm SHALL provide a library link operation and equivalent FFI and CLI entry points for a local author package. It SHALL validate identity and resolve the installation folder before publishing a symlink or changing state, using the same `plugin.json.dist` selection as managed installation (`"dist"` when omitted, `"."` for the package root). It MUST NOT redefine `--dev`, which continues to follow the origin default branch.

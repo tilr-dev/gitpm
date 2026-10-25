@@ -123,8 +123,8 @@ def unused_dependency_uninstalls_without_guard(t: T):
 @case(fixture="g6_core_deps_installed", spec=["dependencies/dependents-guard-removal", "install-uninstall/uninstall-is-planned-and-confirmed"])
 def dirty_dependency_reports_guard_and_lost_work(t: T):
     """5. Dirty 757fd5ca-2b6a-5b2f-8a5d-60980b028665 clone: one refusal reports the dependents and the local work; nothing changes."""
-    (t.clone(CORE) / "dist/index.js").write_text("local edit\n")
-    (t.clone(CORE) / "scratch.txt").write_text("untracked\n")
+    (t.worktree(CORE) / "dist/index.js").write_text("local edit\n")
+    (t.worktree(CORE) / "scratch.txt").write_text("untracked\n")
     before = t.snap(t.ws)
     r = t.gitpm_err("uninstall", CORE, kind="has_dependents", contains=f"required by {DEPENDENTS}")
     t.has(r.err, "modified: dist/index.js", "untracked: scratch.txt")
@@ -134,7 +134,7 @@ def dirty_dependency_reports_guard_and_lost_work(t: T):
 @case(fixture="g6_core_deps_installed", spec=["dependencies/dependents-guard-removal", "install-uninstall/cli-confirmation-flow-for-uninstall"])
 def dirty_dependency_on_tty_still_guarded(t: T):
     """5'. On a TTY, even answering y, the dependent guard refuses and the local work is listed."""
-    (t.clone(CORE) / "dist/index.js").write_text("local edit\n")
+    (t.worktree(CORE) / "dist/index.js").write_text("local edit\n")
     before = t.snap(t.ws)
     r = gitpm_tty(t, "uninstall", CORE, answer=b"y\n")
     t.ok(r.code != 0, "refused")

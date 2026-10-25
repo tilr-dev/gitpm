@@ -85,7 +85,7 @@ def missing_clone_case(name: str, argv: list):
     def fn(t: T):
         t.release(B, "0.1.1")
         shutil.rmtree(t.clone(A))
-        b_before = t.snap(t.clone(B), t.dist(B), git=True)
+        b_before = t.snap(t.worktree(B), t.dist(B), git=True)
         state = t.state()
         # restore works on forgotten records only: a recorded package is already_installed.
         kind = "already_installed" if name == "restore" else "repository_not_found"
@@ -114,7 +114,7 @@ def missing_clone_uninstall_drops_the_record(t: T):
     """3. packages/807b9715-06b4-55c2-add2-59b487bfa42e removed: `uninstall 807b9715-06b4-55c2-add2-59b487bfa42e` drops its record and dist (what sync-dist's hint
     names); B untouched."""
     shutil.rmtree(t.clone(A))
-    b_before = t.snap(t.clone(B), t.dist(B), git=True)
+    b_before = t.snap(t.worktree(B), t.dist(B), git=True)
     t.gitpm_ok("uninstall", A)
     t.not_installed(A)
     t.same(b_before, "B untouched")
@@ -130,7 +130,7 @@ def missing_dist_update_redeploys(t: T):
     shutil.rmtree(t.dist(A))
     t.gitpm_ok("update", A)
     t.eq(t.package(A)["current"], {"version": "0.1.2", "commit": commit}, "current")
-    t.eq((t.dist(A) / "index.js").read_text(), (t.clone(A) / "dist/index.js").read_text(), "dist from clone")
+    t.eq((t.dist(A) / "index.js").read_text(), (t.worktree(A) / "dist/index.js").read_text(), "dist from clone")
     t.has((t.dist(A) / "index.js").read_text(), "807b9715-06b4-55c2-add2-59b487bfa42e 0.1.2")
 
 
@@ -148,7 +148,7 @@ def missing_dist_restore_redeploys(t: T):
 
 def move_head(t: T) -> str:
     old = t.rev(A, "v0.1.0")
-    t.git(t.clone(A), "checkout", "-q", "--detach", old)
+    t.git(t.worktree(A), "checkout", "-q", "--detach", old)
     return old
 
 

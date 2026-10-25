@@ -65,17 +65,17 @@ def tty_gitpm(t: T, *args, answer: str | None, timeout: float = 60) -> tuple[R, 
 
 
 def make_tracked(t: T) -> list[str]:
-    (t.clone(ID) / "dist/index.js").write_text("export const greeting = 'local edit';\n")
+    (t.worktree(ID) / "dist/index.js").write_text("export const greeting = 'local edit';\n")
     return ["modified: dist/index.js"]
 
 
 def make_untracked(t: T) -> list[str]:
-    (t.clone(ID) / "notes.txt").write_text("my local notes\n")
+    (t.worktree(ID) / "notes.txt").write_text("my local notes\n")
     return ["untracked: notes.txt"]
 
 
 def make_commit(t: T) -> list[str]:
-    clone = t.clone(ID)
+    clone = t.worktree(ID)
     (clone / "dist/index.js").write_text("export const greeting = 'committed locally';\n")
     t.git(clone, "commit", "-q", "-am", "local work")
     sha = t.rev(clone)
@@ -83,7 +83,7 @@ def make_commit(t: T) -> list[str]:
 
 
 def make_stash(t: T) -> list[str]:
-    clone = t.clone(ID)
+    clone = t.worktree(ID)
     (clone / "dist/index.js").write_text("export const greeting = 'stashed';\n")
     t.git(clone, "stash", "push", "-q", "-m", "wip greeting")
     t.eq(t.git(clone, "status", "--porcelain"), "", "worktree clean after stash")
@@ -101,7 +101,7 @@ class Guard:
         self.t = t
         self.ws = t.snap(t.ws, git=True)
         self.author = t.snap(t.repo(ID), git=True)
-        self.other = t.snap(t.clone(OTHER), t.dist(OTHER), git=True)
+        self.other = t.snap(t.worktree(OTHER), t.dist(OTHER), git=True)
         self.other_entry = t.package(OTHER)
 
     def unchanged(self, what: str):
@@ -145,7 +145,7 @@ def prompt_declined(t: T, make):
         r, prompted = tty_gitpm(t, "uninstall", ID, answer=answer)
         t.ok(prompted, "confirmation prompt shown")
         t.has(r.out, *expected)
-        t.has(r.out, str(t.clone(ID).relative_to(t.ws)), f"dist/{ID}", f"state.json entry {ID}", "Delete anyway? [y/N]")
+        t.has(r.out, str(t.worktree(ID).relative_to(t.ws)), f"dist/{ID}", f"state.json entry {ID}", "Delete anyway? [4e9e80e0-57d9-50b8-b3cc-fa1af55f3693]")
         t.ok(r.code != 0, f"answer {answer!r}: non-zero exit")
         g.unchanged(f"answer {answer!r}")
 

@@ -17,7 +17,7 @@ def install_exact_version(t: T):
     t.gitpm_ok("install-catalog", ID, "--version", "1.9.0")
     p = t.package(ID)
     t.eq(p["current"], {"version": "1.9.0", "commit": registered(t, "1.9.0")["commit"]}, "current")
-    t.eq(t.rev(t.clone(ID)), p["current"]["commit"], "clone HEAD")
+    t.eq(t.rev(t.worktree(ID)), p["current"]["commit"], "clone HEAD")
     t.has((t.dist(ID) / "index.js").read_text(), "2190eee8-4be5-5a91-81d2-6ca95c1e61d0 1.9.0")
 
 

@@ -69,7 +69,7 @@ def update_keeps_original_source(t: T):
     t.eq(p["source"], str(t.repo(XP)), "source unchanged (A)")
     t.eq(p["catalog"], os.path.realpath(cat(t, "catA") / "catalog.json"), "recorded catalog unchanged")
     t.eq(p["current"], {"version": "1.1.0", "commit": t.rev(XP, "v1.1.0")}, "updated from its own origin")
-    t.eq(t.git(t.clone(XP), "remote", "get-url", "origin"), str(t.repo(XP)), "clone origin unchanged")
+    t.eq(t.git(t.worktree(XP), "remote", "get-url", "origin"), str(t.repo(XP)), "clone origin unchanged")
 
 
 @case(fixture="g4_two_catalogs", spec=["catalog/one-catalog-per-workspace#second-catalog"])

@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Workspace folders
-A workspace root SHALL contain `state.json` (installed packages, replacement bindings, forgotten records), `dist/<uuid>/` (deployed folder of an active package), `repos/<name>-<hash>/` (source-keyed clone for root and nested Git packages; `repos/` only while a clone exists) and `.pm-txn/` only while a transaction runs or after one was interrupted. Verified by `workspace::open_creates_the_workspace_layout_and_lock`.
+A workspace SHALL contain `state.json` (packages, replacements, forgotten records), `dist/<uuid>` (active deployed output), `repos/<source-key>` (bare source stores), `worktrees/<uuid>` (detached Git package worktrees), and `.pm-txn` only during transactions or recovery. `repos/` and `worktrees/` SHALL exist only while needed. Verified by `workspace::open_creates_the_workspace_layout_and_lock`.
 
 #### Scenario: A command on a missing workspace root
 - **WHEN** a command that opens a workspace (transactions-locking, "Workspace lock") names a workspace root that does not exist
@@ -20,7 +20,7 @@ A workspace root SHALL contain `state.json` (installed packages, replacement bin
 
 #### Scenario: Clone-free build storage
 - **WHEN** a catalog build is installed for the first time
-- **THEN** verified output is retained under builds/ID and there is no package clone
+- **THEN** verified output is retained under builds/ID and there is no bare clone or worktree unless another Git revision needs the source
 
 #### Scenario: Build cache transactions
 - **WHEN** a build install or update changes its retained output
@@ -31,7 +31,7 @@ A workspace root SHALL contain `state.json` (installed packages, replacement bin
 - **THEN** opening does not migrate, consult or automatically remove its clones, and new Git installs use only `repos/`
 
 ### Requirement: Installed package record
-Each `state.json` `packages.<id>` managed record SHALL hold `source`, `current`, at most one `previous`, `enabled`, and optional `mode`, `forkOf`, `dependencies`, `replaces`, `catalog`, `clone`, `path`, `metadata`. Revisions contain `version` and `commit`; `previous` also retains mode. Links follow "Link record format". Verified by `model::state_round_trips_byte_for_byte`.
+Each `packages.<id>` record SHALL hold `source`, `current`, at most one `previous`, `enabled`, and optional `mode`, `forkOf`, `dependencies`, `replaces`, `catalog`, `clone`, `path`, `metadata`. Revisions hold `version` and `commit`; `previous` retains mode. Links follow "Link record format". Git worktree paths SHALL derive from UUID; `path` selects the package folder inside that tree. Builds SHALL own no worktree. Verified by `model::state_round_trips_byte_for_byte`.
 
 #### Scenario: Fresh install has no previous revision
 - **WHEN** a package was just installed
@@ -66,7 +66,7 @@ Each `state.json` `packages.<id>` managed record SHALL hold `source`, `current`,
 - **THEN** its record is keyed only by UUID without an alias hint; format remains 1 and legacy scoped records are refused without migration
 
 ### Requirement: Replacements and forgotten records
-`state.json` SHALL keep `replacements` (the replacement bindings ORIGINAL → FORK, global for the workspace; rules in fork-replacement) and `forgotten` (records of every forgotten package, same format as `packages.<id>`, with a source-keyed Git clone or retained build output; lifecycle in install-uninstall and multi-package-repos).
+`state.json` SHALL keep `replacements` (the replacement bindings ORIGINAL → FORK, global for the workspace; rules in fork-replacement) and `forgotten` (records of every forgotten package, same format as `packages.<id>`, with a source-keyed bare repository and package worktree, or retained build output; lifecycle in install-uninstall and multi-package-repos).
 
 #### Scenario: Forgetting a package of a shared clone
 - **WHEN** `76a9b591-60f3-5c7f-9e1c-31648fc73bfd` (installed from a multi-package repository) is forgotten
@@ -74,4 +74,5 @@ Each `state.json` `packages.<id>` managed record SHALL hold `source`, `current`,
 
 #### Scenario: Forgetting a package with its own clone
 - **WHEN** `d135a7cf-1c63-549a-93cb-8f89656b2ced` (root package in `repos/<key>`) is forgotten
-- **THEN** `forgotten.d135a7cf-1c63-549a-93cb-8f89656b2ced` keeps its record, including `catalog`, `enabled` and mode, and the clone stays
+- **THEN** `forgotten.d135a7cf-1c63-549a-93cb-8f89656b2ced` keeps its record, including `catalog`, `enabled` and mode, and its bare repository and worktree stay
+

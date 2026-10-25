@@ -4,6 +4,7 @@ use gitpm::{InstallTarget, Manager, scaffold};
 use std::{
     fs,
     path::{Path, PathBuf},
+    process::Command,
     sync::atomic::{AtomicU64, Ordering},
 };
 
@@ -29,6 +30,21 @@ impl Drop for TempDir {
     }
 }
 
+fn git(repo: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
 #[test]
 fn root_to_nested_lifecycle_keeps_one_clone_and_all_owners() {
     let dir = TempDir::new();
@@ -49,7 +65,13 @@ fn root_to_nested_lifecycle_keeps_one_clone_and_all_owners() {
     assert!(key.starts_with("source-"));
     assert!(initial.path.is_none());
     let clone = root.join("repos").join(&key);
-    assert!(clone.join(".git").is_dir());
+    assert!(clone.join("objects").is_dir());
+    assert!(!clone.join(".git").exists());
+    assert_eq!(git(&clone, &["rev-parse", "--is-bare-repository"]), "true");
+    assert!(
+        root.join("worktrees/365ade82-57cd-53a7-a61f-c790d46cba87/.git")
+            .is_file()
+    );
 
     fs::create_dir_all(source.join("apps/root")).unwrap();
     fs::rename(
@@ -75,7 +97,11 @@ fn root_to_nested_lifecycle_keeps_one_clone_and_all_owners() {
 
     // Refused mutations leave both state and deployed output unchanged.
     let before = fs::read(root.join("state.json")).unwrap();
-    fs::write(clone.join("local.txt"), "local work").unwrap();
+    fs::write(
+        root.join("worktrees/365ade82-57cd-53a7-a61f-c790d46cba87/local.txt"),
+        "local work",
+    )
+    .unwrap();
     assert_eq!(
         manager
             .update("365ade82-57cd-53a7-a61f-c790d46cba87")
@@ -88,7 +114,7 @@ fn root_to_nested_lifecycle_keeps_one_clone_and_all_owners() {
         root.join("dist/365ade82-57cd-53a7-a61f-c790d46cba87/index.js")
             .is_file()
     );
-    fs::remove_file(clone.join("local.txt")).unwrap();
+    fs::remove_file(root.join("worktrees/365ade82-57cd-53a7-a61f-c790d46cba87/local.txt")).unwrap();
 
     manager
         .update("365ade82-57cd-53a7-a61f-c790d46cba87")
@@ -120,9 +146,38 @@ fn root_to_nested_lifecycle_keeps_one_clone_and_all_owners() {
         Some(&key)
     );
     assert_eq!(fs::read_dir(root.join("repos")).unwrap().count(), 1);
+    let sibling_head = git(
+        &root.join("worktrees/33832cb1-5888-5a42-83e7-843d3b4b7224"),
+        &["rev-parse", "HEAD"],
+    );
+    let sibling_manifest = fs::read(
+        root.join("worktrees/33832cb1-5888-5a42-83e7-843d3b4b7224/apps/sibling/plugin.json"),
+    )
+    .unwrap();
     manager
         .rollback("365ade82-57cd-53a7-a61f-c790d46cba87")
         .unwrap();
+    assert_eq!(
+        git(
+            &root.join("worktrees/365ade82-57cd-53a7-a61f-c790d46cba87"),
+            &["rev-parse", "HEAD"]
+        ),
+        initial.current.commit
+    );
+    assert_eq!(
+        git(
+            &root.join("worktrees/33832cb1-5888-5a42-83e7-843d3b4b7224"),
+            &["rev-parse", "HEAD"]
+        ),
+        sibling_head
+    );
+    assert_eq!(
+        fs::read(
+            root.join("worktrees/33832cb1-5888-5a42-83e7-843d3b4b7224/apps/sibling/plugin.json")
+        )
+        .unwrap(),
+        sibling_manifest
+    );
     assert!(
         manager.state().unwrap().packages["365ade82-57cd-53a7-a61f-c790d46cba87"]
             .path
@@ -143,7 +198,7 @@ fn root_to_nested_lifecycle_keeps_one_clone_and_all_owners() {
         .uninstall("33832cb1-5888-5a42-83e7-843d3b4b7224", &[], false)
         .unwrap();
     assert!(
-        clone.join(".git").is_dir(),
+        clone.join("objects").is_dir(),
         "forgotten owner retains the clone"
     );
     manager
@@ -183,4 +238,211 @@ fn legacy_clones_are_left_untouched_and_never_used() {
         fs::read_to_string(legacy.join("local.txt")).unwrap(),
         "keep"
     );
+}
+
+#[test]
+fn root_and_nested_worktrees_guard_dirty_files_and_every_moved_head() {
+    for nested in [false, true] {
+        let dir = TempDir::new();
+        let source = common::author(
+            &dir.path().join("source"),
+            "365ade82-57cd-53a7-a61f-c790d46cba87",
+            "root",
+        );
+        if nested {
+            fs::create_dir_all(source.join("apps/root")).unwrap();
+            fs::rename(
+                source.join("plugin.json"),
+                source.join("apps/root/plugin.json"),
+            )
+            .unwrap();
+            fs::rename(source.join("dist"), source.join("apps/root/dist")).unwrap();
+            fs::write(source.join("gitpm.json"), r#"{"packages":["apps/*"]}"#).unwrap();
+            scaffold::commit_package(
+                &source,
+                "0.2.0",
+                Some("365ade82-57cd-53a7-a61f-c790d46cba87"),
+            )
+            .unwrap();
+        }
+        let root = dir.path().join("workspace");
+        let manager = Manager::open(&root).unwrap();
+        manager.install(source.to_str().unwrap()).unwrap();
+        scaffold::commit_package(
+            &source,
+            "0.3.0",
+            Some("365ade82-57cd-53a7-a61f-c790d46cba87"),
+        )
+        .unwrap();
+        manager
+            .update("365ade82-57cd-53a7-a61f-c790d46cba87")
+            .unwrap();
+        let record =
+            manager.state().unwrap().packages["365ade82-57cd-53a7-a61f-c790d46cba87"].clone();
+        let checkout = root.join("worktrees/365ade82-57cd-53a7-a61f-c790d46cba87");
+        let payload = checkout.join(if nested {
+            "apps/root/dist/index.js"
+        } else {
+            "dist/index.js"
+        });
+        let original = fs::read(&payload).unwrap();
+        let state = fs::read(root.join("state.json")).unwrap();
+        let deployed =
+            fs::read(root.join("dist/365ade82-57cd-53a7-a61f-c790d46cba87/index.js")).unwrap();
+        for staged in [false, true] {
+            fs::write(&payload, "local edits").unwrap();
+            if staged {
+                git(&checkout, &["add", "--all"]);
+            }
+            for result in [
+                manager
+                    .update("365ade82-57cd-53a7-a61f-c790d46cba87")
+                    .map(|_| ()),
+                manager
+                    .rollback("365ade82-57cd-53a7-a61f-c790d46cba87")
+                    .map(|_| ()),
+                manager
+                    .uninstall("365ade82-57cd-53a7-a61f-c790d46cba87", &[], false)
+                    .map(|_| ()),
+            ] {
+                assert_eq!(result.unwrap_err().kind(), "local_changes");
+            }
+            assert_eq!(fs::read(&payload).unwrap(), b"local edits");
+            assert_eq!(fs::read(root.join("state.json")).unwrap(), state);
+            assert_eq!(
+                fs::read(root.join("dist/365ade82-57cd-53a7-a61f-c790d46cba87/index.js")).unwrap(),
+                deployed
+            );
+            git(&checkout, &["reset", "--hard", &record.current.commit]);
+        }
+        fs::write(checkout.join("untracked.txt"), "keep").unwrap();
+        for result in [
+            manager
+                .update("365ade82-57cd-53a7-a61f-c790d46cba87")
+                .map(|_| ()),
+            manager
+                .rollback("365ade82-57cd-53a7-a61f-c790d46cba87")
+                .map(|_| ()),
+            manager
+                .uninstall("365ade82-57cd-53a7-a61f-c790d46cba87", &[], false)
+                .map(|_| ()),
+        ] {
+            assert_eq!(result.unwrap_err().kind(), "local_changes");
+        }
+        fs::remove_file(checkout.join("untracked.txt")).unwrap();
+        assert_eq!(fs::read(&payload).unwrap(), original);
+        // A published previous revision still differs from this package's current HEAD.
+        git(
+            &checkout,
+            &["checkout", "--detach", &record.previous.unwrap().commit],
+        );
+        for result in [
+            manager
+                .update("365ade82-57cd-53a7-a61f-c790d46cba87")
+                .map(|_| ()),
+            manager
+                .rollback("365ade82-57cd-53a7-a61f-c790d46cba87")
+                .map(|_| ()),
+            manager
+                .uninstall("365ade82-57cd-53a7-a61f-c790d46cba87", &[], false)
+                .map(|_| ()),
+        ] {
+            let error = result.unwrap_err();
+            assert_eq!(error.kind(), "local_changes");
+            assert!(
+                matches!(error, gitpm::Error::LocalChanges { items, .. } if items.iter().any(|item| matches!(item, gitpm::LostWork::HeadMoved { .. })))
+            );
+        }
+        manager
+            .forget("365ade82-57cd-53a7-a61f-c790d46cba87")
+            .unwrap();
+        assert_eq!(
+            manager
+                .restore("365ade82-57cd-53a7-a61f-c790d46cba87")
+                .unwrap_err()
+                .kind(),
+            "local_changes"
+        );
+        git(&checkout, &["checkout", "--detach", &record.current.commit]);
+        manager
+            .restore("365ade82-57cd-53a7-a61f-c790d46cba87")
+            .unwrap();
+        manager
+            .uninstall("365ade82-57cd-53a7-a61f-c790d46cba87", &[], false)
+            .unwrap();
+        assert!(!checkout.exists());
+    }
+}
+
+#[test]
+fn missing_bare_preserves_orphan_worktree_on_removal() {
+    for forget in [false, true] {
+        let dir = TempDir::new();
+        let source = common::author(
+            &dir.path().join("source"),
+            "365ade82-57cd-53a7-a61f-c790d46cba87",
+            "root",
+        );
+        let root = dir.path().join("workspace");
+        let manager = Manager::open(&root).unwrap();
+        manager.install(source.to_str().unwrap()).unwrap();
+        let record =
+            manager.state().unwrap().packages["365ade82-57cd-53a7-a61f-c790d46cba87"].clone();
+        let checkout = root.join("worktrees/365ade82-57cd-53a7-a61f-c790d46cba87");
+        fs::write(checkout.join("scratch.txt"), "keep my work").unwrap();
+        fs::remove_dir_all(root.join("repos").join(record.clone.unwrap())).unwrap();
+        if forget {
+            manager
+                .forget("365ade82-57cd-53a7-a61f-c790d46cba87")
+                .unwrap();
+        } else {
+            manager
+                .uninstall("365ade82-57cd-53a7-a61f-c790d46cba87", &[], false)
+                .unwrap();
+        }
+        assert_eq!(
+            fs::read(checkout.join("scratch.txt")).unwrap(),
+            b"keep my work"
+        );
+        assert!(
+            !manager
+                .state()
+                .unwrap()
+                .packages
+                .contains_key("365ade82-57cd-53a7-a61f-c790d46cba87")
+        );
+    }
+}
+
+#[test]
+fn reinstall_preserves_orphan_worktree_after_missing_bare() {
+    let dir = TempDir::new();
+    let source = common::author(
+        &dir.path().join("source"),
+        "365ade82-57cd-53a7-a61f-c790d46cba87",
+        "root",
+    );
+    let root = dir.path().join("workspace");
+    let manager = Manager::open(&root).unwrap();
+    manager.install(source.to_str().unwrap()).unwrap();
+    let record = manager.state().unwrap().packages["365ade82-57cd-53a7-a61f-c790d46cba87"].clone();
+    let checkout = root.join("worktrees/365ade82-57cd-53a7-a61f-c790d46cba87");
+    fs::write(checkout.join("scratch.txt"), "keep my work").unwrap();
+    fs::remove_dir_all(root.join("repos").join(record.clone.unwrap())).unwrap();
+    manager
+        .uninstall("365ade82-57cd-53a7-a61f-c790d46cba87", &[], false)
+        .unwrap();
+    let state = fs::read(root.join("state.json")).unwrap();
+    let error = manager.install(source.to_str().unwrap()).unwrap_err();
+    assert_eq!(error.kind(), "workspace");
+    assert!(
+        error
+            .to_string()
+            .contains("exists but is not a package worktree")
+    );
+    assert_eq!(
+        fs::read(checkout.join("scratch.txt")).unwrap(),
+        b"keep my work"
+    );
+    assert_eq!(fs::read(root.join("state.json")).unwrap(), state);
 }

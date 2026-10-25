@@ -68,7 +68,7 @@ def unknown_manifest_fields_and_missing_version(t: T):
     repo, sha = bad_repo(t, "extra", {"plugin.json": manifest(id="e2724014-0b06-523e-8b92-3cff8d340ec8", version="0.1.0", pinned=True), **DIST})
     t.gitpm_ok("install", repo, "--ref", sha)
     t.eq(t.package("e2724014-0b06-523e-8b92-3cff8d340ec8")["current"]["version"], "0.1.0", "installed version")
-    t.eq(json.loads((t.clone("e2724014-0b06-523e-8b92-3cff8d340ec8") / "plugin.json").read_text())["pinned"], True, "unknown field kept")
+    t.eq(json.loads((t.worktree("e2724014-0b06-523e-8b92-3cff8d340ec8") / "plugin.json").read_text())["pinned"], True, "unknown field kept")
 
 
 @case(fixture="hello_installed", spec=["package-ids/package-id-syntax#scoped-and-bare-ids-refused", "package-ids/package-id-syntax#scoped-and-bare-ids-refused"])
@@ -118,7 +118,7 @@ def dist_with_only_placeholder_recorded(t: T):
     """Contract unspecified: dist/ holding only an empty .gitkeep. Recorded; only safety is asserted."""
     id = "b9d5ff27-80be-533a-a75c-329509cb4ba6"
     repo, sha = bad_repo(t, "keep", {"plugin.json": manifest(id=id, version="0.1.0"), "dist/.gitkeep": ""})
-    sentinel = t.snap(t.clone(SENTINEL), t.dist(SENTINEL), git=True)
+    sentinel = t.snap(t.worktree(SENTINEL), t.dist(SENTINEL), git=True)
     r = t.gitpm("install", repo, "--ref", sha)
     if r.code == 0:
         print("  RECORDED: a dist/ with only an empty placeholder file installs")

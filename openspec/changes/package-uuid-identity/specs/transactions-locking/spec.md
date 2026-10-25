@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Managed paths are never followed through symlinks
-Every directory between the root and a managed path (`repos`, `dist`) MUST be a real directory; a symlinked or non-directory managed parent SHALL fail with `workspace` and nothing SHALL be written or deleted through it. Verified by `workspace::symlinked_namespace_directory_is_never_followed` and `a_uuid_path_that_is_not_a_folder_blocks_nothing_else`.
+Every directory between the root and a managed path (`repos`, `worktrees`, `dist`) MUST be a real directory; a symlinked or non-directory managed parent SHALL fail with `workspace` and nothing SHALL be written or deleted through it. Verified by `workspace::symlinked_namespace_directory_is_never_followed` and `a_uuid_path_that_is_not_a_folder_blocks_nothing_else`.
 
 #### Scenario: Symlinked namespace
 - **WHEN** `repos` is a symlink to a folder outside the workspace
@@ -10,6 +10,10 @@ Every directory between the root and a managed path (`repos`, `dist`) MUST be a 
 #### Scenario: Blocked dist namespace
 - **WHEN** `dist/d135a7cf-1c63-549a-93cb-8f89656b2ced` is a file or symlink and `d135a7cf-1c63-549a-93cb-8f89656b2ced` is active
 - **THEN** an operation that deploys or removes `d135a7cf-1c63-549a-93cb-8f89656b2ced` fails with `workspace` and does not write or delete through `dist/d135a7cf-1c63-549a-93cb-8f89656b2ced`, while a command on an unrelated package can proceed
+
+#### Scenario: Symlinked worktree parent
+- **WHEN** `worktrees` or the affected `worktrees/<uuid>` entry is a symlink or a non-directory
+- **THEN** an operation using that managed checkout path refuses with `workspace` and changes nothing through it
 
 ### Requirement: Link transactions own entries and never their targets
 Transactions SHALL stage and journal the deployed symlink entry, then publish state last, under the existing recovery protocol. Cleanup, removal and crash recovery MUST NOT follow a deployed link or recurse into its target, including dangling or externally retargeted links. The leaf symlink exception MUST NOT relax "Managed paths are never followed through symlinks" for managed parent directories. Atomicity SHALL cover workspace entries and state, not externally edited content.

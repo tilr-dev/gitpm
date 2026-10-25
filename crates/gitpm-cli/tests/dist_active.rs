@@ -1082,7 +1082,9 @@ fn every_deploy_copies_the_committed_tree_with_nested_files_and_exec_bits() {
     f.ok(&["update", "dd3387ed-a5a3-5059-81ad-b1f6987a28f2"]);
     check("update");
     // Uncommitted edits in the clone are never deployed.
-    let clone = clone_path(&f.root(), &f.path("dd3387ed-a5a3-5059-81ad-b1f6987a28f2"));
+    let clone = f
+        .root()
+        .join("worktrees/dd3387ed-a5a3-5059-81ad-b1f6987a28f2");
     fs::write(clone.join("dist/index.js"), "edited").unwrap();
     f.ok(&[
         "replace",
@@ -1234,7 +1236,9 @@ fn uninstall_refusal_of_a_reactivation_comes_before_the_prompt() {
     ]);
     f.ok(&["disable", "7bb3523b-dc85-5ff2-a33f-55b071c001cb", "--force"]);
     fs::write(
-        clone_path(&f.root(), &f.path("826a054b-0fad-5e5a-8890-f87c6452943b")).join("notes.txt"),
+        f.root()
+            .join("worktrees/826a054b-0fad-5e5a-8890-f87c6452943b")
+            .join("notes.txt"),
         "work",
     )
     .unwrap();
@@ -1267,7 +1271,8 @@ fn uninstall_refusal_of_a_reactivation_comes_before_the_prompt() {
     );
     assert!(!String::from_utf8_lossy(&out.stdout).contains("uninstalled"));
     assert!(
-        clone_path(&f.root(), &f.path("826a054b-0fad-5e5a-8890-f87c6452943b"))
+        f.root()
+            .join("worktrees/826a054b-0fad-5e5a-8890-f87c6452943b")
             .join("notes.txt")
             .exists()
     );
@@ -1337,11 +1342,9 @@ fn declared_output_folders_install_redeploy_and_verify_catalog() {
             assert!(!deployed.join("outside").exists());
             assert!(!deployed.join("sibling").exists());
             assert!(!deployed.join(".git").exists());
-            let state = f.state();
-            let key = state["packages"]["be228981-2f39-55b3-b613-46b8d654dcaa"]["clone"]
-                .as_str()
-                .unwrap();
-            let clone = f.root().join("repos").join(key);
+            let clone = f
+                .root()
+                .join("worktrees/be228981-2f39-55b3-b613-46b8d654dcaa");
             let package = if mono {
                 clone.join("packages/demo")
             } else {

@@ -21,7 +21,7 @@ def tty(t: T, args: list, answer: str = "") -> "object":
 
 def survivors(t: T, *ids: str):
     """Snapshot of the given packages' clones and dist folders plus all author repos."""
-    paths = [t.clone(i) for i in ids] + [t.dist(i) for i in ids] + [t.root / "repos"]
+    paths = [t.worktree(i) for i in ids] + [t.dist(i) for i in ids] + [t.root / "repos"]
     return t.snap(*paths, git=True)
 
 
@@ -98,10 +98,10 @@ def fork_author_repo_outside_workspace_survives(t: T):
     fork_id = t.manifest_id(fork)
     t.gitpm_ok("install", fork, "--dev")
     t.package(fork_id)
-    keep = t.snap(fork, t.root / "repos", t.clone(B), t.dist(B), t.clone(C), t.dist(C), git=True)
+    keep = t.snap(fork, t.root / "repos", t.worktree(B), t.dist(B), t.worktree(C), t.dist(C), git=True)
     t.gitpm_ok("uninstall", fork_id)
     t.not_installed(fork_id)
-    t.ok(not (t.clone(fork_id)).exists() or not any((t.clone(fork_id)).iterdir()),
+    t.ok(not (t.worktree(fork_id)).exists() or not any((t.worktree(fork_id)).iterdir()),
          "nothing left of f26a276e-f752-54a5-ba2c-c7861d95616c in repos/")
     t.gitpm_ok("uninstall", A)
     t.not_installed(A)

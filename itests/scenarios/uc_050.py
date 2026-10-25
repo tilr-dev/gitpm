@@ -64,14 +64,14 @@ def clean_txn(t: T, root: Path):
 def same_workspace_concurrent_installs(t: T):
     ids = [f"b19dabd5-0619-5414-b4d6-56c38472e88d{i}" for i in range(1, 7)]
     commits = {id: t.new_package(id, "0.1.0") for id in ids}
-    hello = t.snap(t.clone(ID), t.dist(ID))
+    hello = t.snap(t.worktree(ID), t.dist(ID))
     hello_entry = t.package(ID)
     jobs = [["install", t.repo(id)] for id in ids]
     settle(t, jobs, race(t, jobs), "workspace is already in use")
     t.eq(sorted(t.state()["packages"]), sorted(ids + [ID]), "every install landed")
     for id in ids:
         t.eq(t.package(id)["current"], {"version": "0.1.0", "commit": commits[id]}, f"{id} state")
-        t.eq(t.rev(t.clone(id)), commits[id], f"{id} clone HEAD")
+        t.eq(t.rev(t.worktree(id)), commits[id], f"{id} clone HEAD")
         t.has((t.dist(id) / "index.js").read_text(), f"{id} 0.1.0")
     t.same(hello, "unrelated package bytes")
     t.eq(t.package(ID), hello_entry, "unrelated package entry")
@@ -113,8 +113,8 @@ def same_workspace_mixed_mutations_lose_nothing(t: T):
     s = t.state()["packages"]
     t.eq(s[ID]["current"], {"version": "0.1.1", "commit": new}, "update kept")
     t.eq(s["807b9715-06b4-55c2-add2-59b487bfa42e"]["enabled"], False, "disable kept")
-    t.ok("78d36dc2-2c10-5dc8-a889-056564906e06" in s and t.clone("78d36dc2-2c10-5dc8-a889-056564906e06").is_dir(), "install kept")
-    t.ok("03c25ec4-f583-513d-adfb-092fb98d8dba" not in s and not t.clone("03c25ec4-f583-513d-adfb-092fb98d8dba").exists(), "uninstall kept")
+    t.ok("78d36dc2-2c10-5dc8-a889-056564906e06" in s and t.worktree("78d36dc2-2c10-5dc8-a889-056564906e06").is_dir(), "install kept")
+    t.ok("03c25ec4-f583-513d-adfb-092fb98d8dba" not in s and not t.worktree("03c25ec4-f583-513d-adfb-092fb98d8dba").exists(), "uninstall kept")
     t.has((t.dist(ID) / "index.js").read_text(), "0.1.1")
     # Rounds of concurrent toggles over every package.
     ids = sorted(s)

@@ -164,13 +164,13 @@ def credentials_allow_check_install_update_register(t: T):
     commit = publish(t, "0.1.1")
     outputs.append(t.gitpm_ok("update", ID, env=helper()).text)
     t.eq(t.package(ID)["current"], {"version": "0.1.1", "commit": commit}, "updated with credentials")
-    t.eq(t.rev(t.clone(ID)), commit, "clone HEAD")
+    t.eq(t.rev(t.worktree(ID)), commit, "clone HEAD")
     outputs.append(t.gitpm_ok("register", server.url, "--ref", "v0.1.1", env=helper()).text)
     t.eq(json.loads(t.catalog_index(ID).read_text())["source"], server.url, "catalog stores the clean URL")
     outputs.append(t.gitpm_ok("list").text)
     no_secret(t, *outputs)
     secrets_nowhere_on_disk(t)
-    t.lacks((t.clone(ID) / ".git/config").read_text(), USER + ":", SECRET)
+    t.lacks((t.clone(ID) / "config").read_text(), USER + ":", SECRET)
     verdicts = {v for _, _, v in server.log}
     t.ok({"none", "ok"} <= verdicts, f"server demanded and received credentials ({sorted(verdicts)})")
 

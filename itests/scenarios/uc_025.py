@@ -97,7 +97,7 @@ def source_repository_as_destination(t: T):
 
 @case(fixture="g3_vendor_installed", spec=["fork-replacement/fork-requires-explicit-namespace-and-destination#destination-inside-the-workspace"])
 def installed_clone_as_destination(t: T):
-    refused(t, [ID, "--into", t.clone(ID)], "invalid_argument",
+    refused(t, [ID, "--into", t.worktree(ID)], "invalid_argument",
             "fork destination must be outside the managed workspace")
 
 

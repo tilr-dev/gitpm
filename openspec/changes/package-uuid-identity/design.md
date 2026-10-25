@@ -6,7 +6,7 @@ The manifest carries a canonical lowercase hyphenated UUID `id` and a required `
 
 ## Storage and interfaces
 
-State keys, dependency keys, provenance and replacement records use UUIDs. Deployments live at `dist/<uuid>`, catalog indexes at `packages/<uuid>/plugin.json`, and keep-alive refs at `refs/gitpm/<uuid>/{current,previous}`. New package folders selected by authoring use the generated UUID beneath the repository package pattern, allowing duplicate names. Existing generic `<id>` placeholders mean UUID. Git clones remain source-keyed because one repository can contain multiple packages. Workspace and catalog format numbers remain unchanged; old scoped IDs are rejected without conversion.
+State keys, dependency keys, provenance and replacement records use UUIDs. Deployments live at `dist/<uuid>`, catalog indexes at `packages/<uuid>/plugin.json`, and keep-alive refs at `refs/gitpm/<uuid>/{current,previous}`. New package folders selected by authoring use the generated UUID beneath the repository package pattern, allowing duplicate names. Existing generic `<id>` placeholders mean UUID. Bare Git repositories remain source-keyed because one repository can contain multiple packages; each current Git package uses its detached `worktrees/<uuid>` checkout. Workspace and catalog format numbers remain unchanged; old scoped IDs are rejected without conversion.
 
 ## Fork and replacement
 

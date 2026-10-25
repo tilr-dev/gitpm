@@ -41,7 +41,7 @@ def apply_updates_and_keeps_back(t: T):
     t.eq(lines(r.out), ["9692fc07-23c7-5f20-8779-f09374f1a571 up to date (1.0.0)", "1a620c0a-aa3c-533c-9960-3d49016fa231 up to date (1.0.0)", KEPT,
                         "a768d335-0cf7-597a-b1ba-0eb542495aec updated 1.0.0 → 1.1.0", "1 updates, 0 installs, 1 kept back."], "output")
     t.eq(t.package("a768d335-0cf7-597a-b1ba-0eb542495aec")["current"], {"version": "1.1.0", "commit": commit}, "a768d335-0cf7-597a-b1ba-0eb542495aec state")
-    t.eq(t.rev(t.clone("a768d335-0cf7-597a-b1ba-0eb542495aec")), commit, "a768d335-0cf7-597a-b1ba-0eb542495aec clone HEAD")
+    t.eq(t.rev(t.worktree("a768d335-0cf7-597a-b1ba-0eb542495aec")), commit, "a768d335-0cf7-597a-b1ba-0eb542495aec clone HEAD")
     t.has((t.dist("a768d335-0cf7-597a-b1ba-0eb542495aec") / "index.js").read_text(), "a768d335-0cf7-597a-b1ba-0eb542495aec 1.1.0")
     t.eq(t.package(CORE)["current"]["version"], "1.1.0", "757fd5ca-2b6a-5b2f-8a5d-60980b028665 not upgraded past its dependents")
     t.eq(sorted(t.state()["packages"]), sorted(["9692fc07-23c7-5f20-8779-f09374f1a571", "1a620c0a-aa3c-533c-9960-3d49016fa231", CORE, "a768d335-0cf7-597a-b1ba-0eb542495aec"]), "nothing removed")
@@ -93,7 +93,7 @@ def local_work_refuses_without_partial_deploy(t: T):
     """A dirty a768d335-0cf7-597a-b1ba-0eb542495aec clone blocks update all (local_changes) even for the other packages."""
     t.release("a768d335-0cf7-597a-b1ba-0eb542495aec", "1.1.0")
     t.release("9692fc07-23c7-5f20-8779-f09374f1a571", "1.0.1", deps={CORE: "^1.0"})
-    (t.clone("a768d335-0cf7-597a-b1ba-0eb542495aec") / "dist/index.js").write_text("local edit\n")
+    (t.worktree("a768d335-0cf7-597a-b1ba-0eb542495aec") / "dist/index.js").write_text("local edit\n")
     before = t.snap(t.ws, git=True)
     t.gitpm_err("update", "all", kind="local_changes")
     t.same(before, "workspace")

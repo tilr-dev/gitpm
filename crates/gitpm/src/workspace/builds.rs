@@ -124,7 +124,7 @@ impl Manager {
                             "cached build differs from catalog"
                         );
                     } else {
-                        let live = installed_repo(txn.root(), id, &p)?;
+                        let live = source_repo(txn.root(), id, &p)?;
                         let repo = txn.scratch("protect-existing");
                         copy_tree(&live, &repo, true)?;
                         verify_installed_release(
@@ -217,11 +217,32 @@ impl Manager {
                 release: release.clone(),
             };
             stage_build(txn, id, &build)?;
+            if p.build.is_none() {
+                txn.remove_worktree(id, &p.clone_folder(id))?;
+            }
             entry.build = Some(build);
         } else {
             let ssh = self.options.custom_ssh;
-            if let Ok(live) = installed_repo(txn.root(), id, &p) {
-                guard_retained(&live, id, ssh)?;
+            if let Ok(live) = source_repo(txn.root(), id, &p) {
+                if p.build.is_none() {
+                    let checkout = installed_repo(txn.root(), id, &p)?;
+                    guard_clone(
+                        &checkout,
+                        state,
+                        id,
+                        "local commits detected",
+                        "unpublished work blocks update",
+                        true,
+                        ssh,
+                    )?;
+                } else {
+                    lost_work::require_no_hidden_for_update(
+                        &live,
+                        id,
+                        "unpublished work blocks update",
+                        ssh,
+                    )?;
+                }
                 let relative = p.clone_folder(id);
                 let repo = txn.repo(&relative, &live)?;
                 clones::fetch_origin(&repo, true, ssh)?;
@@ -242,7 +263,7 @@ impl Manager {
                     ssh,
                 )?;
                 verify_catalog_release(&found.manifest, release, &output)?;
-                transport::checkout_detached(&repo, &release.commit, false, ssh)?;
+                txn.worktree(id, &relative, &release.commit, ssh)?;
             } else {
                 let cloned = clone_revision(txn, &Fetch::release(release), "build-to-git", ssh)?;
                 let (_, _, key) = place_clone(txn, state, &cloned, &release.source, ssh)?;
@@ -296,23 +317,4 @@ pub(super) fn candidates(p: &Installed, id: &str, location: &str) -> Result<Vec<
     }
     releases.sort_by_key(|r| deps::version(&r.manifest.version).expect("validated version"));
     Ok(releases)
-}
-
-/// A build may retain a clone from an older Git revision; never overwrite user work.
-pub(super) fn guard_retained(repo: &Path, id: &str, ssh: bool) -> Result<()> {
-    clean(repo, id, ssh)?;
-    let items = lost_work::unpublished_head_commits(repo, ssh)?;
-    if !items.is_empty() {
-        return Err(Error::LocalChanges {
-            id: id.into(),
-            message: "unpublished commits block transition to Git".into(),
-            items,
-        });
-    }
-    lost_work::require_no_hidden_for_update(
-        repo,
-        id,
-        "unpublished work blocks transition to Git",
-        ssh,
-    )
 }

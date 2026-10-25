@@ -260,11 +260,17 @@ fn local_source_clones_ignore_transient_server_info() {
             .clone_folder("71e491c8-518d-5990-951c-ee30686cebd0"),
     );
     assert_eq!(git(&clone, &["remote", "get-url", "origin"]), source);
-    assert!(!clone.join(".git/objects/info/packs_controlled").exists());
-    assert!(!clone.join(".git/objects/info/alternates").exists());
+    assert!(!clone.join("objects/info/packs_controlled").exists());
+    assert!(!clone.join("objects/info/alternates").exists());
     fs::remove_dir_all(repo).unwrap();
     assert_eq!(
-        git(&clone, &["show", "HEAD:dist/index.js"]),
+        git(
+            &clone,
+            &[
+                "show",
+                "refs/gitpm/71e491c8-518d-5990-951c-ee30686cebd0/current:dist/index.js"
+            ]
+        ),
         "71e491c8-518d-5990-951c-ee30686cebd0 1.0.0"
     );
 }
@@ -1213,10 +1219,7 @@ fn dependents_guard_disable_forget_and_uninstall() {
     // One refusal tells everything: the dependents and the work uninstall would lose.
     fs::write(
         f.path("workspace")
-            .join(
-                m.state().unwrap().packages["757fd5ca-2b6a-5b2f-8a5d-60980b028665"]
-                    .clone_folder("757fd5ca-2b6a-5b2f-8a5d-60980b028665"),
-            )
+            .join("worktrees/757fd5ca-2b6a-5b2f-8a5d-60980b028665")
             .join("notes.txt"),
         "mine",
     )
@@ -2034,10 +2037,7 @@ fn update_all_preserves_local_work_and_never_partially_deploys() {
     }
     let local = f
         .path("workspace")
-        .join(
-            m.state().unwrap().packages["3a53cdea-2cb1-5653-bf22-898b679440ee"]
-                .clone_folder("3a53cdea-2cb1-5653-bf22-898b679440ee"),
-        )
+        .join("worktrees/3a53cdea-2cb1-5653-bf22-898b679440ee")
         .join("dist/local.js");
     fs::write(&local, "local work").unwrap();
     f.refuses("local_changes", || m.update_all());

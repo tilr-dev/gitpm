@@ -50,7 +50,7 @@ def single_existing_fork_branch(t: T):
 @case(fixture="g3_vendor_installed", spec=["fork-replacement/fork-isolates-source-and-destination-state"])
 def installation_only_branch_is_ignored(t: T):
     """A branch absent from the recorded source cannot reserve the fork's branch name."""
-    t.git(t.clone(ID), "branch", "fork")
+    t.git(t.worktree(ID), "branch", "fork")
     before = t.snap(t.ws, t.repo(ID), git=True)
     t.eq(t.git(fork(t), "branch", "--show-current"), "fork", "new branch")
     t.same(before, "installation-only branch")
@@ -104,7 +104,7 @@ def fork_installs_alongside_without_replacement(t: T):
     dest, mine, _ = both_released(t)
     NEW = t.manifest_id(dest)
     base = t.package(ID)["current"]
-    vendor_before = t.snap(t.clone(ID), t.dist(ID), git=True)
+    vendor_before = t.snap(t.worktree(ID), t.dist(ID), git=True)
     t.gitpm_ok("install", dest)
     p = t.package(NEW)
     t.eq(p["current"], {"version": "0.1.2", "commit": mine}, "fork current")
@@ -121,7 +121,7 @@ def updating_original_leaves_fork(t: T):
     dest, _, theirs = both_released(t)
     NEW = t.manifest_id(dest)
     t.gitpm_ok("install", dest)
-    fork_before = t.snap(t.clone(NEW), t.dist(NEW), git=True)
+    fork_before = t.snap(t.worktree(NEW), t.dist(NEW), git=True)
     fork_state = t.package(NEW)
     t.gitpm_ok("update", ID)
     t.eq(t.package(ID)["current"], {"version": "0.1.1", "commit": theirs}, "original updated")
@@ -136,7 +136,7 @@ def updating_fork_leaves_original(t: T):
     dest, mine, _ = both_released(t)
     NEW = t.manifest_id(dest)
     t.gitpm_ok("install", dest)
-    vendor_before = t.snap(t.clone(ID), t.dist(ID), git=True)
+    vendor_before = t.snap(t.worktree(ID), t.dist(ID), git=True)
     vendor_state = t.package(ID)
     forkof = t.package(NEW)["forkOf"]
     newer = fork_release(t, dest, "0.1.3")
@@ -156,7 +156,7 @@ def updating_fork_without_upstream_tags(t: T):
     NEW = t.manifest_id(dest)
     mine = fork_release(t, dest, "0.1.1")
     t.gitpm_ok("install", dest)
-    vendor_before = t.snap(t.clone(ID), t.dist(ID), git=True)
+    vendor_before = t.snap(t.worktree(ID), t.dist(ID), git=True)
     vendor_state = t.package(ID)
     forkof = t.package(NEW)["forkOf"]
     newer = fork_release(t, dest, "0.1.2")

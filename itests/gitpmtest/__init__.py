@@ -309,6 +309,21 @@ class T:
             if record.get("clone"):
                 self._clone_keys[id] = record["clone"]
 
+    def worktree(self, id: str, root: Path | None = None) -> Path:
+        """Detached checkout owned by this installed or forgotten package."""
+        return (root or self.ws) / "worktrees" / id
+
+    def rebind_worktrees(self, root: Path):
+        """Repair absolute Git links after a test copies a complete workspace."""
+        state = json.loads((root / "state.json").read_text())
+        for id, record in (state.get("packages", {}) | state.get("forgotten", {})).items():
+            checkout = self.worktree(id, root)
+            if not checkout.exists():
+                continue
+            admin = root / "repos" / record["clone"] / "worktrees" / hashlib.sha256(id.encode()).hexdigest()
+            (checkout / ".git").write_text(f"gitdir: {admin}\n")
+            (admin / "gitdir").write_text(f"{checkout / '.git'}\n")
+
     def clone(self, id: str, root: Path | None = None) -> Path:
         self._remember_clones()
         key = self._clone_keys.get(id)
@@ -331,6 +346,7 @@ class T:
         """No state entry, clone, dist or leftover transaction for the ID."""
         self.ok(id not in self.state().get("packages", {}), f"{id} not in state")
         self.ok(not self.clone(id).exists(), f"no clone of {id}")
+        self.ok(not self.worktree(id).exists(), f"no worktree of {id}")
         self.ok(not self.dist(id).exists(), f"no dist of {id}")
         leftovers = [str(p) for p in self.ws.rglob("*.pm-txn*")] if self.ws.exists() else []
         self.eq(leftovers, [], "leftover transactions")
@@ -363,8 +379,8 @@ class T:
 
     def snap(self, *paths: Path | str, git: bool = False) -> "Snap":
         """Content hashes of files and symlink targets under the paths (default: the workspace).
-        Inside .git only HEAD is hashed unless git=True: fetch legitimately updates remote
-        refs, FETCH_HEAD and objects without changing what is installed."""
+        Bare source metadata is omitted except package worktree HEADs unless git=True:
+        fetch updates remote refs, FETCH_HEAD and objects without changing installations."""
         paths = tuple(Path(p) for p in paths) or (self.ws,)
         out = Snap(paths=paths, git=git)
         for base in paths:
@@ -373,6 +389,10 @@ class T:
                 continue
             for p in [base] if base.is_file() else sorted(base.rglob("*")):
                 parts = p.relative_to(base).parts
+                if not git and p.is_relative_to(self.ws / "repos"):
+                    relative = p.relative_to(self.ws / "repos")
+                    if len(relative.parts) < 4 or relative.parts[1] != "worktrees" or p.name != "HEAD":
+                        continue
                 if ".git" in parts and not git and parts[parts.index(".git") + 1:] != ("HEAD",):
                     continue
                 if p.is_symlink():

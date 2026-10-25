@@ -58,7 +58,7 @@ def entry(t: T, id: str) -> dict:
 
 
 def paths(t: T, id: str):
-    return t.snap(t.clone(id), t.dist(id))
+    return t.snap(t.worktree(id), t.dist(id))
 
 
 def blob(repo: Path, rev: str, path: str) -> bytes:
@@ -102,7 +102,7 @@ def rollback_offline(t: T):
     t.gitpm_ok("rollback", ID)
     p = entry(t, ID)
     t.eq((p["current"], p["previous"]), (v010, v011), "current/previous swapped")
-    t.eq(t.rev(t.clone(ID)), v010["commit"], "clone HEAD at 0.1.0")
+    t.eq(t.rev(t.worktree(ID)), v010["commit"], "clone HEAD at 0.1.0")
     t.eq((t.dist(ID) / "index.js").read_bytes(), blob(t.repo(ID), "v0.1.0", "dist/index.js"), "dist bytes of 0.1.0")
     t.gitpm_ok("rollback", ID)
     t.eq(entry(t, ID)["current"], v011, "rolled back again to 0.1.1")
@@ -118,7 +118,7 @@ def forget_restore_offline(t: T):
     """Offline forget keeps the clone and the record (dist removed); restore records it again as it was."""
     catalog = offline(t)
     files = paths(t, ID)
-    clone = t.snap(t.clone(ID))
+    clone = t.snap(t.worktree(ID))
     old = entry(t, ID)
     t.gitpm_ok("forget", ID)
     t.ok(ID not in t.state()["packages"], "forgotten")

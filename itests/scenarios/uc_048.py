@@ -10,7 +10,7 @@ A, B = "807b9715-06b4-55c2-add2-59b487bfa42e", "03c25ec4-f583-513d-adfb-092fb98d
 
 
 def payload(t: T, id: str):
-    return t.snap(t.clone(id), t.dist(id), git=True)
+    return t.snap(t.worktree(id), t.dist(id), git=True)
 
 
 @case(fixture="g3_trio_installed", spec=["dist/inactive-packages-change-state-and-clone-only", "updates/rollback-swaps-current-and-previous"])
@@ -31,7 +31,7 @@ def disable_update_rollback(t: T):
     t.eq((p["current"], p["previous"], p["enabled"]), (old, {"version": "0.1.1", "commit": new}, False),
          "after rollback")
     t.ok(not t.dist(B).exists(), "no dist while disabled")
-    t.eq(t.rev(t.clone(B)), old["commit"], "clone HEAD")
+    t.eq(t.rev(t.worktree(B)), old["commit"], "clone HEAD")
     t.gitpm_ok("enable", B)
     t.has((t.dist(B) / "index.js").read_text(), "03c25ec4-f583-513d-adfb-092fb98d8dba 0.1.0")
 
@@ -53,12 +53,12 @@ def forget_then_install_same_id(t: T):
 @case(fixture="g3_trio_installed", spec=["install-uninstall/restore-preconditions#dirty-retained-clone"])
 def dirty_forget_restore(t: T):
     """dirty clone → forget → restore: restore refused, the edit survives, state stays forgotten."""
-    t.write(t.clone(B), {"dist/index.js": "export const greeting = 'dirty';\n"})
+    t.write(t.worktree(B), {"dist/index.js": "export const greeting = 'dirty';\n"})
     t.gitpm_ok("forget", B)
     before = t.snap(t.ws, git=True)
     t.gitpm_err("restore", B, kind="local_changes", contains="modified: dist/index.js")
     t.same(before, "workspace")
-    t.eq((t.clone(B) / "dist/index.js").read_text(), "export const greeting = 'dirty';\n", "edit kept")
+    t.eq((t.worktree(B) / "dist/index.js").read_text(), "export const greeting = 'dirty';\n", "edit kept")
     t.ok(B not in t.state()["packages"], "still forgotten")
 
 
@@ -70,7 +70,7 @@ def forgotten_clean_restore_uninstall(t: T):
     current, previous = t.package(A)["current"], t.package(A)["previous"]
     t.gitpm_ok("forget", A)
     t.ok(not t.dist(A).exists(), "no dist while forgotten")
-    kept = t.snap(t.clone(A), git=True)
+    kept = t.snap(t.worktree(A), git=True)
     t.gitpm_ok("restore", A)
     p = t.package(A)
     t.eq((p["current"], p["previous"], p["enabled"]), (current, previous, False), "after restore")

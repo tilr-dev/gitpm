@@ -121,7 +121,7 @@ def uninstall_flag_order_is_irrelevant(t: T):
     results = []
     for argv in (["uninstall", ID, "--force"], ["uninstall", "--force", ID]):
         t.gitpm_ok("install", t.repo(ID))
-        (t.clone(ID) / "dist/index.js").write_text("local edit\n")
+        (t.worktree(ID) / "dist/index.js").write_text("local edit\n")
         r = t.gitpm(*argv)
         t.eq(r.code, 0, f"exit of gitpm {' '.join(argv)}")
         t.not_installed(ID)

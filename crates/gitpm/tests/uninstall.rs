@@ -1,6 +1,6 @@
 //! Confirmation-by-plan uninstall: lost-work detection, refusal, confirmed delete, exact IDs.
 mod common;
-use common::clone_path;
+use common::{clone_path, worktree_path};
 use gitpm::{Error, LostWork, Manager};
 use std::{
     collections::BTreeSet,
@@ -45,13 +45,13 @@ impl Fixture {
         let root = dir.join("workspace");
         let m = Manager::open(&root).unwrap();
         m.install(author.to_str().unwrap()).unwrap();
-        let repo = clone_path(&root, &author);
+        let repo = worktree_path(&root, "cc6c3e20-6fe0-58c4-944e-991c2a154a47");
         git(&repo, &["config", "user.name", "Test"]);
         git(&repo, &["config", "user.email", "test@example.invalid"]);
         (Self { dir, root }, m)
     }
     fn repo(&self) -> PathBuf {
-        clone_path(&self.root, &self.dir.join("module"))
+        worktree_path(&self.root, "cc6c3e20-6fe0-58c4-944e-991c2a154a47")
     }
     fn snapshot(&self) -> (Vec<u8>, String, String, Vec<u8>) {
         (
@@ -196,9 +196,14 @@ fn clean_clone_plan_is_empty_and_uninstall_needs_no_confirmation() {
         .unwrap();
     assert!(plan.lost_work.is_empty(), "{:?}", plan.lost_work);
     assert!(plan.registered);
-    assert_eq!(plan.deletes.len(), 2);
-    assert_eq!(Path::new(&plan.deletes[0]), f.repo());
-    assert!(plan.deletes[1].ends_with("dist/cc6c3e20-6fe0-58c4-944e-991c2a154a47"));
+    assert_eq!(plan.deletes.len(), 3);
+    for path in [
+        f.repo(),
+        clone_path(&f.root, &f.dir.join("module")),
+        f.root.join("dist/cc6c3e20-6fe0-58c4-944e-991c2a154a47"),
+    ] {
+        assert!(plan.deletes.iter().any(|entry| Path::new(entry) == path));
+    }
     m.uninstall("cc6c3e20-6fe0-58c4-944e-991c2a154a47", &[], false)
         .unwrap();
     assert!(!f.repo().exists());
@@ -408,7 +413,7 @@ fn case_variant_id_never_touches_the_installed_plugin() {
         let error = m.uninstall(id, &[], false).unwrap_err();
         assert_eq!(error.kind(), "invalid_id", "{id}");
         assert_eq!(f.snapshot(), before);
-        assert!(f.repo().join(".git").is_dir());
+        assert!(f.repo().join(".git").is_file());
     }
     assert!(
         m.state()

@@ -2,7 +2,6 @@
 //! Hermetic: each test runs the CLI with a cleared environment, a fixture HOME/TMPDIR
 //! and Git config, and every GITPM_* path inside its own temp directory.
 mod common;
-use common::clone_path;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -380,7 +379,12 @@ fn lifecycle_and_three_removal_levels() {
     assert_eq!(f.content(), "hello v2");
     f.cli(&["forget", "3dce1568-569c-5b53-9321-37185e751947"], true);
     assert!(f.state()["packages"].as_object().unwrap().is_empty());
-    assert!(clone_path(&f.root, &f.repo).join(".git").exists());
+    assert!(
+        f.root
+            .join("worktrees/3dce1568-569c-5b53-9321-37185e751947")
+            .join(".git")
+            .exists()
+    );
     assert!(
         !f.root
             .join("dist/3dce1568-569c-5b53-9321-37185e751947")
@@ -393,7 +397,11 @@ fn lifecycle_and_three_removal_levels() {
     );
     assert_eq!(f.content(), "hello v2");
     f.cli(&["uninstall", "3dce1568-569c-5b53-9321-37185e751947"], true);
-    assert!(!clone_path(&f.root, &f.repo).exists());
+    assert!(
+        !f.root
+            .join("worktrees/3dce1568-569c-5b53-9321-37185e751947")
+            .exists()
+    );
     assert!(
         !f.root
             .join("dist/3dce1568-569c-5b53-9321-37185e751947")
@@ -452,7 +460,11 @@ fn lifecycle_and_check_without_a_catalog() {
         "{out}"
     );
     f.cli_without_catalog(&["uninstall", "3dce1568-569c-5b53-9321-37185e751947"], true);
-    assert!(!clone_path(&f.root, &f.repo).exists());
+    assert!(
+        !f.root
+            .join("worktrees/3dce1568-569c-5b53-9321-37185e751947")
+            .exists()
+    );
 }
 #[test]
 fn failed_update_keeps_files_and_state() {
@@ -477,13 +489,24 @@ fn failed_update_keeps_files_and_state() {
 fn protects_local_edits_and_force_is_explicit() {
     let f = Fixture::new();
     f.install();
-    fs::write(clone_path(&f.root, &f.repo).join("my-work.txt"), "keep me").unwrap();
+    fs::write(
+        f.root
+            .join("worktrees/3dce1568-569c-5b53-9321-37185e751947")
+            .join("my-work.txt"),
+        "keep me",
+    )
+    .unwrap();
     f.cli(&["update", "3dce1568-569c-5b53-9321-37185e751947"], false);
     f.cli(
         &["uninstall", "3dce1568-569c-5b53-9321-37185e751947"],
         false,
     );
-    assert!(clone_path(&f.root, &f.repo).join("my-work.txt").exists());
+    assert!(
+        f.root
+            .join("worktrees/3dce1568-569c-5b53-9321-37185e751947")
+            .join("my-work.txt")
+            .exists()
+    );
     f.cli(
         &[
             "uninstall",
@@ -492,7 +515,11 @@ fn protects_local_edits_and_force_is_explicit() {
         ],
         true,
     );
-    assert!(!clone_path(&f.root, &f.repo).exists());
+    assert!(
+        !f.root
+            .join("worktrees/3dce1568-569c-5b53-9321-37185e751947")
+            .exists()
+    );
 }
 #[test]
 fn rejects_duplicate_path_escape_and_missing_payload() {
@@ -797,7 +824,12 @@ fn init_validates_names_and_never_prompts_or_reads_namespace_settings() {
     let f = Fixture::new();
     for args in [
         vec!["init"],
-        vec!["init", "dan/hello", "--into", "x"],
+        vec![
+            "init",
+            "3dce1568-569c-5b53-9321-37185e751947",
+            "--into",
+            "x",
+        ],
         vec!["init", "../escape", "--into", "x"],
         vec!["init", "hello", "--namespace", "me"],
         vec!["init", "hello"],
@@ -822,7 +854,9 @@ fn init_validates_names_and_never_prompts_or_reads_namespace_settings() {
 fn fork_clones_recorded_source_and_preserves_original_installation() {
     let f = Fixture::new();
     f.install();
-    let installed = clone_path(&f.root, &f.repo);
+    let installed = f
+        .root
+        .join("worktrees/3dce1568-569c-5b53-9321-37185e751947");
     fs::write(installed.join("dist/index.js"), "local edit").unwrap();
     fs::write(installed.join("notes.txt"), "untracked work").unwrap();
     let state = fs::read(f.root.join("state.json")).unwrap();
@@ -903,7 +937,9 @@ fn fork_rejects_managed_destinations_and_unknown_plugins() {
     let f = Fixture::new();
     f.install();
     // A fork repository inside a managed repository is refused.
-    let installed = clone_path(&f.root, &f.repo);
+    let installed = f
+        .root
+        .join("worktrees/3dce1568-569c-5b53-9321-37185e751947");
     let out = f
         .pm()
         .current_dir(&installed)
@@ -1029,7 +1065,13 @@ fn uuid_fork_and_original_coexist_and_release_independently() {
     );
     f.cli(&["rollback", fork_id.as_str()], true);
     f.cli(&["uninstall", "dan", "--force"], false); // a name is not a package ID
-    assert!(clone_path(&f.root, &fork).join(".git").exists());
+    assert!(
+        f.root
+            .join("worktrees")
+            .join(&fork_id)
+            .join(".git")
+            .exists()
+    );
     f.cli(&["uninstall", fork_id.as_str()], true);
     assert!(
         f.root
@@ -1063,8 +1105,19 @@ fn uuids_reject_scoped_names_and_path_traversal() {
     f.cli(&["init", "hello", "--into", "hello/demo"], true);
     assert!(source.join("plugin.json").exists());
     f.cli(&["install", source.to_str().unwrap()], true);
-    assert!(clone_path(&f.root, &f.repo).join(".git").exists());
-    assert!(clone_path(&f.root, &source).join(".git").exists());
+    assert!(
+        f.root
+            .join("worktrees/3dce1568-569c-5b53-9321-37185e751947")
+            .join(".git")
+            .exists()
+    );
+    assert!(
+        f.root
+            .join("worktrees")
+            .join(common::manifest_id(&source))
+            .join(".git")
+            .is_file()
+    );
 }
 
 #[test]
@@ -1725,7 +1778,9 @@ fn auth_check_is_read_only_and_accepts_empty_repositories() {
 fn uninstall_without_tty_refuses_and_lists_lost_work_including_stash() {
     let f = Fixture::new();
     f.install();
-    let repo = clone_path(&f.root, &f.repo);
+    let repo = f
+        .root
+        .join("worktrees/3dce1568-569c-5b53-9321-37185e751947");
     let git = |args: &[&str]| f.git_in(&repo, args);
     git(&["config", "user.name", "Test"]);
     git(&["config", "user.email", "test@example.invalid"]);
@@ -1743,9 +1798,11 @@ fn uninstall_without_tty_refuses_and_lists_lost_work_including_stash() {
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("stash: stash@{0}"), "{stderr}");
-    assert!(!String::from_utf8_lossy(&out.stdout).contains("[y/N]"));
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("[4e9e80e0-57d9-50b8-b3cc-fa1af55f3693]")
+    );
     assert_eq!(f.state(), before);
-    assert!(repo.join(".git").is_dir());
+    assert!(repo.join(".git").is_file());
 
     // One refusal tells everything: a consumer and the lost work, from the plan.
     let app = f.dir.join("app");
@@ -1775,7 +1832,7 @@ fn uninstall_without_tty_refuses_and_lists_lost_work_including_stash() {
             && stderr.contains("Error kind: has_dependents"),
         "{stderr}"
     );
-    assert!(repo.join(".git").is_dir());
+    assert!(repo.join(".git").is_file());
     f.cli(
         &[
             "uninstall",
@@ -1795,7 +1852,9 @@ fn uninstall_on_tty_asks_before_losing_work() {
     }
     let f = Fixture::new();
     f.install();
-    let repo = clone_path(&f.root, &f.repo);
+    let repo = f
+        .root
+        .join("worktrees/3dce1568-569c-5b53-9321-37185e751947");
     fs::write(repo.join("notes.txt"), "untracked work").unwrap();
     // BSD script(1) takes the command as arguments; util-linux needs -c.
     let util_linux = Command::new("script")
@@ -1829,7 +1888,10 @@ fn uninstall_on_tty_asks_before_losing_work() {
     };
     let ask = |answer: &str| ask_after("", answer);
     let (output, stderr) = ask("n");
-    assert!(stderr.contains("Delete anyway? [y/N]"), "{stderr}");
+    assert!(
+        stderr.contains("Delete anyway? [4e9e80e0-57d9-50b8-b3cc-fa1af55f3693]"),
+        "{stderr}"
+    );
     assert!(stderr.contains("untracked: notes.txt"), "{stderr}");
     assert!(
         stderr.contains("uninstall cancelled; nothing was changed"),
@@ -1845,7 +1907,10 @@ fn uninstall_on_tty_asks_before_losing_work() {
     // Work that appears while the prompt waits is not covered by the answer.
     let later = repo.join("later.txt");
     let (output, stderr) = ask_after(&format!("touch '{}'; ", later.display()), "y");
-    assert!(stderr.contains("Delete anyway? [y/N]"), "{stderr}");
+    assert!(
+        stderr.contains("Delete anyway? [4e9e80e0-57d9-50b8-b3cc-fa1af55f3693]"),
+        "{stderr}"
+    );
     assert!(
         stderr.contains("  - untracked: later.txt") && stderr.contains("Error kind: local_changes"),
         "{stderr}"
@@ -1856,7 +1921,10 @@ fn uninstall_on_tty_asks_before_losing_work() {
     assert!(repo.join("notes.txt").exists() && later.exists());
     fs::remove_file(&later).unwrap();
     let (output, stderr) = ask("y");
-    assert!(stderr.contains("Delete anyway? [y/N]"), "{stderr}");
+    assert!(
+        stderr.contains("Delete anyway? [4e9e80e0-57d9-50b8-b3cc-fa1af55f3693]"),
+        "{stderr}"
+    );
     assert!(
         output.contains("3dce1568-569c-5b53-9321-37185e751947 uninstalled"),
         "{output}"
@@ -3176,7 +3244,9 @@ fn catalog_package_with_pre_releases_only() {
 fn update_all_local_work_prints_the_library_message_unchanged() {
     let f = Fixture::new();
     f.install();
-    let repo = clone_path(&f.root, &f.repo);
+    let repo = f
+        .root
+        .join("worktrees/3dce1568-569c-5b53-9321-37185e751947");
     let git = |args: &[&str]| f.git_in(&repo, args);
     fs::write(repo.join("local.txt"), "local work").unwrap();
     git(&["add", "local.txt"]);

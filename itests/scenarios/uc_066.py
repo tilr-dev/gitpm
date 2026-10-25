@@ -95,13 +95,13 @@ def step6_fork_update(t: T, fork):
     t.gitpm_ok("commit", fork, "1.0.2")
     t.gitpm_ok("update", fork_id(t))
     t.eq(t.package(fork_id(t))["current"]["version"], "1.0.2", "fork version")
-    t.eq(t.rev(t.clone(fork_id(t))), t.rev(fork, f"v1.0.2"), "fork clone HEAD")
+    t.eq(t.rev(t.worktree(fork_id(t))), t.rev(fork, f"v1.0.2"), "fork clone HEAD")
     t.eq(providers(t), {c: fork_id(t) for c in CONSUMERS}, "providers")
     t.eq(provider_payload(t), hashlib.sha256(b"fork payload 1.0.2\n").hexdigest(), "consumers follow the fork")
 
 
 def step7_switch_back(t: T, fork):
-    fork_head = t.rev(t.clone(fork_id(t)))
+    fork_head = t.rev(t.worktree(fork_id(t)))
     fork_author = t.snap(fork, git=True)
     t.gitpm_ok("replace", ORIGINAL, "--with", ORIGINAL)
     t.ok("replacements" not in t.state(), "binding removed")
@@ -109,7 +109,7 @@ def step7_switch_back(t: T, fork):
     t.eq(provider_payload(t), sha(t.dist(ORIGINAL) / "index.js"), "original payload")
     t.has((t.dist(ORIGINAL) / "index.js").read_text(), "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 1.0.0")  # redeployed by --back
     t.eq(t.package(fork_id(t))["current"]["version"], "1.0.2", "fork still installed")
-    t.eq(t.rev(t.clone(fork_id(t))), fork_head, "fork history kept")
+    t.eq(t.rev(t.worktree(fork_id(t))), fork_head, "fork history kept")
     t.eq((t.dist(fork_id(t)) / "index.js").read_text(), "fork payload 1.0.2\n", "fork edits kept")
     t.same(fork_author, "fork author repository")
 

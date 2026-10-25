@@ -14,7 +14,7 @@ ID, MINE, THIRD = "dd3387ed-a5a3-5059-81ad-b1f6987a28f2", "fe3ac959-50ab-5e6c-84
 
 def prepare(t: T):
     """Local work in the installed clone, then fork to /fx/repos/fe3ac959-50ab-5e6c-849f-6e69253d8676."""
-    clone = t.clone(ID)
+    clone = t.worktree(ID)
     t.write(clone, {"plugin.json": json.dumps({"id": ID, "name": "fixture", "version": "0.1.5"}, indent=2) + "\n",
                     "dist/index.js": "export const greeting = 'local commit';\n"})
     t.commit(clone, "local commit")
@@ -38,7 +38,7 @@ def fork_of_recorded_revision(t: T):
     t.eq(m["forkOf"], {"id": ID, "version": "0.1.0", "commit": source_commit, "source": t.package(ID)["source"]}, "forkOf")
     t.eq(m["version"], "0.1.0", "fork version")
     t.eq(m["replaces"], {"id": ID, "version": "0.1.0"}, "replaces")
-    t.ok(t.rev(t.clone(ID)) != installed["commit"], "local HEAD differs from installed revision")
+    t.ok(t.rev(t.worktree(ID)) != installed["commit"], "local HEAD differs from installed revision")
     t.eq(t.rev(dest, "HEAD~1"), source_commit, "identity commit parent")
     t.eq(t.git(dest, "show", "--name-only", "--format=", "HEAD"), "plugin.json", "identity commit files")
     # forkOf is the only provenance: no pm.forkBase/pm.forkVersion Git config.
@@ -53,7 +53,7 @@ def local_work_is_excluded_from_fork(t: T):
     dest, commit, before = prepare(t)
     MINE = t.manifest_id(dest)
     t.eq(t.git(dest, "status", "--porcelain", "--untracked-files=all"), "", "clean fork")
-    expected = t.git(t.clone(ID), "show", f"{commit}:dist/index.js")
+    expected = t.git(t.worktree(ID), "show", f"{commit}:dist/index.js")
     t.eq((dest / "dist/index.js").read_text().strip(), expected, "source revision bytes")
     for path in ["staged.txt", "untracked.txt", "node_modules/x.js"]:
         t.ok(not (dest / path).exists(), f"excluded {path}")

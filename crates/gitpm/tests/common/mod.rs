@@ -51,3 +51,9 @@ pub fn author(path: &Path, id: &str, name: &str) -> PathBuf {
     run(&["tag", "v0.1.0"]);
     path.canonicalize().unwrap()
 }
+
+/// Detached checkout owned by one installed or forgotten Git package.
+#[allow(dead_code)]
+pub fn worktree_path(root: &Path, id: &str) -> PathBuf {
+    root.join("worktrees").join(id)
+}

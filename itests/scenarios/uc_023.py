@@ -14,7 +14,7 @@ EDIT = "export const greeting = 'local edit';\n"
 
 
 def dirty_and_fork(t: T):
-    clone = t.clone(ID)
+    clone = t.worktree(ID)
     t.write(clone, {"dist/index.js": EDIT, "notes/untracked.txt": "mine\n"})
     before = t.snap(t.ws, t.root / "repos", git=True)
     dest = t.root / "authors/some-other-name"
@@ -40,7 +40,7 @@ def history_and_branch(t: T):
 @case(fixture="g3_vendor_installed", spec=["fork-replacement/fork-isolates-source-and-destination-state#installed-clone-has-local-work"])
 def local_changes_preserved_uncommitted(t: T):
     """Local commits and staged, unstaged and untracked edits stay only in the installation."""
-    clone = t.clone(ID)
+    clone = t.worktree(ID)
     installed = t.package(ID)["current"]["commit"]
     original = t.git(clone, "show", f"{installed}:dist/index.js")
     t.commit(clone, "Installation-only work", {"local-commit.txt": "local commit\n"})

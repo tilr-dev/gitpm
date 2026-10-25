@@ -191,7 +191,7 @@ fn unpublished_refs(repo: &Path, prefix: &str, custom_ssh: bool) -> Result<Vec<(
 
 /// Local branches and tags with commits no remote-tracking branch contains, and stash
 /// entries: work that survives a checkout but is easy to lose track of.
-fn hidden(repo: &Path, check_remote: bool, custom_ssh: bool) -> Result<Vec<LostWork>> {
+pub(crate) fn hidden(repo: &Path, check_remote: bool, custom_ssh: bool) -> Result<Vec<LostWork>> {
     let mut items = Vec::new();
     for (name, commits) in unpublished_refs(repo, "refs/heads/", custom_ssh)? {
         items.push(LostWork::UnpublishedBranch { name, commits });
@@ -270,6 +270,40 @@ pub(crate) fn detect(
     recorded: Option<&str>,
     custom_ssh: bool,
 ) -> Result<Vec<LostWork>> {
+    detect_with_history(
+        repo,
+        recorded,
+        transport::HeadHistory::Unpublished {
+            exclude_tags: false,
+        },
+        true,
+        custom_ssh,
+    )
+}
+
+/// Only work lost with this checkout; shared refs remain in the source store.
+pub(crate) fn worktree_removal(
+    repo: &Path,
+    id: &str,
+    recorded: &str,
+    custom_ssh: bool,
+) -> Result<Vec<LostWork>> {
+    detect_with_history(
+        repo,
+        Some(recorded),
+        transport::HeadHistory::WorktreeRemoval { id },
+        false,
+        custom_ssh,
+    )
+}
+
+fn detect_with_history(
+    repo: &Path,
+    recorded: Option<&str>,
+    history: transport::HeadHistory<'_>,
+    include_hidden: bool,
+    custom_ssh: bool,
+) -> Result<Vec<LostWork>> {
     let mut items = status(repo, custom_ssh)?;
     let head = transport::object_id(repo, "HEAD", custom_ssh)?;
     if let Some(recorded) = recorded
@@ -280,13 +314,7 @@ pub(crate) fn detect(
             recorded: recorded.into(),
         });
     }
-    let log = transport::head_history(
-        repo,
-        transport::HeadHistory::Unpublished {
-            exclude_tags: false,
-        },
-        custom_ssh,
-    )?;
+    let log = transport::head_history(repo, history, custom_ssh)?;
     for line in log.lines() {
         let (commit, summary) = line.split_once('\t').unwrap_or((line, ""));
         items.push(LostWork::UnpublishedCommit {
@@ -294,50 +322,10 @@ pub(crate) fn detect(
             summary: summary.into(),
         });
     }
-    items.extend(hidden(repo, false, custom_ssh)?);
+    if include_hidden {
+        items.extend(hidden(repo, false, custom_ssh)?);
+    }
     Ok(items)
-}
-
-/// Commits reachable from HEAD that no remote-tracking branch and no tag contains:
-/// work only this clone has (a restore would record it as if it were published).
-pub(crate) fn unpublished_head_commits(repo: &Path, custom_ssh: bool) -> Result<Vec<LostWork>> {
-    Ok(transport::head_history(
-        repo,
-        transport::HeadHistory::Unpublished { exclude_tags: true },
-        custom_ssh,
-    )?
-    .lines()
-    .map(|line| {
-        let (commit, summary) = line.split_once('\t').unwrap_or((line, ""));
-        LostWork::UnpublishedCommit {
-            commit: commit.into(),
-            summary: summary.into(),
-        }
-    })
-    .collect())
-}
-
-/// Commits that moving HEAD away would leave unreachable: reachable from HEAD but from
-/// no branch, tag, remote-tracking ref or `keep` commit.
-pub(crate) fn unreferenced_head_commits(
-    repo: &Path,
-    keep: &[&str],
-    custom_ssh: bool,
-) -> Result<Vec<LostWork>> {
-    Ok(transport::head_history(
-        repo,
-        transport::HeadHistory::Unreferenced { keep },
-        custom_ssh,
-    )?
-    .lines()
-    .map(|line| {
-        let (commit, summary) = line.split_once('\t').unwrap_or((line, ""));
-        LostWork::UnpublishedCommit {
-            commit: commit.into(),
-            summary: summary.into(),
-        }
-    })
-    .collect())
 }
 
 /// `LocalChanges` with the message of the most important category (as before the split).
@@ -549,6 +537,66 @@ mod tests {
         let author = Author::new(dir.join("author"), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         fixture_git(dir.path(), &["clone", "-q", author.source(), "clone"]);
         dir.join("clone")
+    }
+
+    #[test]
+    fn worktree_removal_excludes_only_surviving_refs() {
+        let dir = TempDir::new("worktree-removal");
+        let repo = clone(&dir);
+        let recorded = fixture_git(&repo, &["rev-parse", "HEAD"]);
+        fixture_git(&repo, &["checkout", "--detach"]);
+        fixture_git(&repo, &["commit", "--allow-empty", "-m", "only here"]);
+        let local = fixture_git(&repo, &["rev-parse", "HEAD"]);
+        for slot in ["current", "previous"] {
+            fixture_git(
+                &repo,
+                &[
+                    "update-ref",
+                    &format!("refs/gitpm/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/{slot}"),
+                    &local,
+                ],
+            );
+        }
+        let items = worktree_removal(
+            &repo,
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+            &recorded,
+            false,
+        )
+        .unwrap();
+        assert!(items.iter().any(
+            |item| matches!(item, LostWork::UnpublishedCommit { commit, .. } if commit == &local)
+        ));
+        for reference in [
+            "refs/gitpm/dan/sibling/current",
+            "refs/gitpm/dan/sibling/previous",
+            "refs/heads/topic",
+            "refs/tags/mine",
+            "refs/remotes/origin/retained",
+            "refs/stash",
+        ] {
+            fixture_git(&repo, &["update-ref", reference, &local]);
+            fs::write(repo.join("scratch.txt"), "keep").unwrap();
+            let items = worktree_removal(
+                &repo,
+                "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+                &recorded,
+                false,
+            )
+            .unwrap();
+            assert_eq!(items.len(), 2, "{reference}: {items:?}");
+            assert!(
+                items
+                    .iter()
+                    .any(|item| matches!(item, LostWork::HeadMoved { .. }))
+            );
+            assert!(
+                items
+                    .iter()
+                    .any(|item| matches!(item, LostWork::Untracked { .. }))
+            );
+            fixture_git(&repo, &["update-ref", "-d", reference]);
+        }
     }
 
     #[test]

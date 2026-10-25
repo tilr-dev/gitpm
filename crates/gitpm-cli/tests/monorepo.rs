@@ -2,7 +2,6 @@
 //! Hermetic: the CLI and Git run with a cleared environment, a fixture HOME/TMPDIR and
 //! Git config; every path is inside a per-test temp directory removed on drop.
 mod common;
-use common::clone_path;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -410,9 +409,9 @@ fn legacy_root_repository_installs_and_updates_as_before() {
     release("1.0.0");
     f.ok(&["install", legacy.to_str().unwrap()]);
     assert!(
-        clone_path(&f.dir.join("workspace"), &legacy)
-            .join(".git")
-            .is_dir()
+        f.dir
+            .join("workspace/worktrees/7e6e8392-7be8-55ae-bd03-2b430b1c5d59/.git")
+            .is_file()
     );
     assert_eq!(f.clones(), 1);
     let entry = &f.state()["packages"]["7e6e8392-7be8-55ae-bd03-2b430b1c5d59"];

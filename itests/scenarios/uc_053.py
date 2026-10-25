@@ -51,9 +51,9 @@ def provenance_alone_does_not_redirect(t: T):
 def explicit_replacement_is_global_and_inspectable(t: T):
     """replace c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 --with db33e43e-e652-5767-8e21-27fb3cef9723: persisted binding, both consumers on the fork payload,
     original installed and addressable, unrelated package untouched, binding survives a new process."""
-    other = t.snap(t.clone("a768d335-0cf7-597a-b1ba-0eb542495aec"), t.dist("a768d335-0cf7-597a-b1ba-0eb542495aec"))
+    other = t.snap(t.worktree("a768d335-0cf7-597a-b1ba-0eb542495aec"), t.dist("a768d335-0cf7-597a-b1ba-0eb542495aec"))
     other_entry = t.package("a768d335-0cf7-597a-b1ba-0eb542495aec")
-    original_files = t.snap(t.clone(ORIGINAL))
+    original_files = t.snap(t.worktree(ORIGINAL))
     original_entry = t.package(ORIGINAL)
 
     r = t.gitpm_ok("replace", ORIGINAL, "--with", FORK)
@@ -102,7 +102,7 @@ def new_consumer_after_replacement_resolves_to_fork(t: T):
     """1a620c0a-aa3c-533c-9960-3d49016fa231 (c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 ^1.0) installed after the replacement resolves to db33e43e-e652-5767-8e21-27fb3cef9723; nothing new fetched."""
     t.gitpm_ok("replace", ORIGINAL, "--with", FORK)
     before = sorted(t.state()["packages"])
-    original = t.snap(t.clone(ORIGINAL), t.dist(ORIGINAL))  # dist absent: replaced
+    original = t.snap(t.worktree(ORIGINAL), t.dist(ORIGINAL))  # dist absent: replaced
     t.gitpm_ok("install-catalog", "1a620c0a-aa3c-533c-9960-3d49016fa231")
     t.eq(sorted(t.state()["packages"]), sorted(before + ["1a620c0a-aa3c-533c-9960-3d49016fa231"]), "only 1a620c0a-aa3c-533c-9960-3d49016fa231 added")
     t.same(original, "original clone and dist")

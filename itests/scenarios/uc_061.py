@@ -152,7 +152,7 @@ CANONICAL = "b19dabd5-0619-5414-b4d6-56c38472e88d"
 def case_setup(t: T):
     t.new_package(CANONICAL, "1.0.0")
     t.gitpm_ok("install", t.repo(CANONICAL))
-    return t.snap(t.clone(CANONICAL), t.dist(CANONICAL), git=True)
+    return t.snap(t.worktree(CANONICAL), t.dist(CANONICAL), git=True)
 
 
 @case(spec=["package-ids/ids-are-matched-exactly"])
@@ -170,7 +170,7 @@ def uppercase_uuid_is_refused_without_touching_installation(t: T):
 def uppercase_uuid_after_forget_is_refused(t: T):
     case_setup(t)
     t.gitpm_ok("forget", CANONICAL)
-    before = t.snap(t.clone(CANONICAL), t.dist(CANONICAL), git=True)
+    before = t.snap(t.worktree(CANONICAL), t.dist(CANONICAL), git=True)
     repo, sha = plain_repo(t, "uppercase", CANONICAL.upper())
     t.gitpm_err("install", repo, "--ref", sha, kind="invalid_id")
     t.same(before, "retained canonical UUID clone")
@@ -262,7 +262,7 @@ def tag_off_default_branch_install(t: T):
     sha = off_branch(t)
     t.gitpm_ok("install", t.repo("a7c7069a-6d6d-5bbf-8017-a747101effe5"), "--ref", "v2.0.0")
     t.eq(t.package("a7c7069a-6d6d-5bbf-8017-a747101effe5")["current"], {"version": "2.0.0", "commit": sha}, "installed")
-    t.eq(t.rev(t.clone("a7c7069a-6d6d-5bbf-8017-a747101effe5")), sha, "clone HEAD")
+    t.eq(t.rev(t.worktree("a7c7069a-6d6d-5bbf-8017-a747101effe5")), sha, "clone HEAD")
     t.has((t.dist("a7c7069a-6d6d-5bbf-8017-a747101effe5") / "index.js").read_text(), "a7c7069a-6d6d-5bbf-8017-a747101effe5 2.0.0")
 
 

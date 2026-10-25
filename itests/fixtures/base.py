@@ -59,7 +59,7 @@ def _(t: T):
     t.eq(p["current"]["commit"], t.rev("3dce1568-569c-5b53-9321-37185e751947", "v0.1.0"), "current commit")
     t.eq(p["previous"], None, "previous")
     t.eq(p["enabled"], True, "enabled")
-    t.eq(t.rev(t.clone("3dce1568-569c-5b53-9321-37185e751947")), p["current"]["commit"], "clone HEAD")
+    t.eq(t.rev(t.worktree("3dce1568-569c-5b53-9321-37185e751947")), p["current"]["commit"], "clone HEAD")
     t.has((t.dist("3dce1568-569c-5b53-9321-37185e751947") / "index.js").read_text(), "3dce1568-569c-5b53-9321-37185e751947 0.1.0")
     t.ok(t.catalog_empty(), "no catalog was created")
 

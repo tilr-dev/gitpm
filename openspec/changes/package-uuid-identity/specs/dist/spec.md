@@ -16,15 +16,15 @@ The deployed folder `dist/<uuid>/` SHALL exist exactly when the package is activ
 - **THEN** `dist/d135a7cf-1c63-549a-93cb-8f89656b2ced/` does not exist, `dist/8f0b16d1-526c-56fd-bdae-b6b991bbcb76/` does, and `d135a7cf-1c63-549a-93cb-8f89656b2ced` stays `enabled: true` with `active: false` in `list`
 
 ### Requirement: Empty parent folders are removed
-Removing a package SHALL remove its UUID deployment entry and remove `repos` when no clone remains. `dist` SHALL remain the workspace deployment root; there SHALL be no namespace directories to clean up.
+Removing a package SHALL also remove its empty managed UUID folders and unused `worktrees/` and `repos/` roots. Verified by `removal_leaves_no_empty_namespace_or_clone_folders`.
+
+#### Scenario: Last package of a namespace
+- **WHEN** the last managed Git package is uninstalled
+- **THEN** its `dist/<uuid>/` and `worktrees/<uuid>/` entries and the unused `worktrees/` and `repos/` roots no longer exist; `dist/` remains
 
 #### Scenario: Last package removed
 - **WHEN** the last package is uninstalled
-- **THEN** its `dist/<uuid>/` entry and unused `repos/` are absent and `dist/` remains
-
-#### Scenario: Last package of a namespace
-- **WHEN** the last installed package with a particular alias is uninstalled
-- **THEN** only its UUID deployment entry and unused clone storage are removed; no namespace folder exists and `dist/` remains
+- **THEN** its `dist/<uuid>/` and `worktrees/<uuid>/` entries and unused `worktrees/` and `repos/` are absent and `dist/` remains
 
 ### Requirement: Unknown paths are left alone
 Folders under `dist/` that belong to no known package SHALL be left untouched and reported (the CLI warns on stderr). A foreign symlink or file at `dist/<uuid>` SHALL be reported the same way (in `unmanaged`) and nothing SHALL be written through it; an active package at such a path SHALL be listed in `skipped` with the reason. A recorded linked deployment's managed leaf symlink follows the linked deployment rules. Verified by `a_uuid_path_that_is_not_a_folder_blocks_nothing_else`.

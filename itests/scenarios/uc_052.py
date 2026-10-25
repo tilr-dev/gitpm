@@ -50,7 +50,7 @@ def lifecycle_matches_library_contract(t: T):
     t.gitpm_ok("enable", HELLO)
     t.eq(t.package(HELLO)["enabled"], True, "enable")
     t.gitpm_ok("forget", HELLO)
-    t.ok(HELLO not in t.state()["packages"] and t.clone(HELLO).is_dir(), "forget keeps the clone")
+    t.ok(HELLO not in t.state()["packages"] and t.worktree(HELLO).is_dir(), "forget keeps the clone")
     t.ok(not t.dist(HELLO).exists(), "forget removes dist/ (only active packages are deployed)")
     t.gitpm_ok("restore", HELLO)
     t.eq((normalized(t, HELLO)["current"], normalized(t, HELLO)["previous"]), (rev(t, "0.1.0"), rev(t, "0.1.1")),
@@ -124,7 +124,7 @@ def bad_manifest_kind(t: T):
 def dirty_clone_kind(t: T):
     """A dirty clone: update and uninstall (no TTY) refuse with local_changes listing the work."""
     t.release(HELLO, "0.1.1")
-    (t.clone(HELLO) / "dist/index.js").write_text("edited\n")
+    (t.worktree(HELLO) / "dist/index.js").write_text("edited\n")
     before = t.snap(t.ws)
     t.gitpm_err("update", HELLO, kind="local_changes")
     t.gitpm_err("uninstall", HELLO, kind="local_changes", contains="modified: dist/index.js")

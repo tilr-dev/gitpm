@@ -80,7 +80,7 @@ def repository_symlink_is_kept_not_followed(t: T):
     target = str(OUTSIDE / "sentinel.txt")
     symlinked_plugin(t, "fc8bc03a-1524-54e6-9111-f57fd8ce96c2", {"docs/outside": target})
     t.gitpm_ok("install", t.repo("fc8bc03a-1524-54e6-9111-f57fd8ce96c2"))
-    link = t.clone("fc8bc03a-1524-54e6-9111-f57fd8ce96c2") / "docs/outside"
+    link = t.worktree("fc8bc03a-1524-54e6-9111-f57fd8ce96c2") / "docs/outside"
     t.ok(link.is_symlink() and os.readlink(link) == target, "clone keeps the symlink")
     t.eq(sorted(p.name for p in t.dist("fc8bc03a-1524-54e6-9111-f57fd8ce96c2").iterdir()), sorted(["index.js"]), "dist has plain files only")
     symlinked_plugin(t, "fc8bc03a-1524-54e6-9111-f57fd8ce96c2", {"docs/outside": target}, version="0.2.0")
@@ -98,13 +98,13 @@ def repository_symlink_is_kept_not_followed(t: T):
 def fifo_in_clone_is_refused_without_hanging(t: T):
     """Fork ignores local FIFOs; update still refuses copying unsupported files."""
     outside = sentinels(t)
-    os.mkfifo(t.clone(ID) / "pipe")
+    os.mkfifo(t.worktree(ID) / "pipe")
     before = t.snap(t.ws)
     fork = t.root / "d2e59a73-093a-59d2-912a-78d95856c963"
     t.gitpm_ok("fork", ID, "--into", fork)
     t.ok(not (fork / "pipe").exists(), "local FIFO excluded from fork")
     t.release(ID, "0.1.1")
-    t.gitpm_err("update", ID, kind="unsupported", contains=f"unsupported file: {t.clone(ID)}/pipe", timeout=30)
+    t.gitpm_err("update", ID, kind="unsupported", contains=f"unsupported file: {t.worktree(ID)}/pipe", timeout=30)
     t.same(before, "workspace")
     t.gitpm_ok("uninstall", ID, "--force", timeout=30)
     t.not_installed(ID)
