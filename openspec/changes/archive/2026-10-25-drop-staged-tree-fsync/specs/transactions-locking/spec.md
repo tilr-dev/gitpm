@@ -38,4 +38,3 @@ A crash means process death or power loss, including interruption before a call 
 - **AND** before journal publication the live workspace is unchanged
 - **AND** after journal publication the next open rolls the transaction forward, even when a rename already succeeded
 - **AND** this is covered by `txn::sync_errors_preserve_the_commit_decision_and_recovery`
-
