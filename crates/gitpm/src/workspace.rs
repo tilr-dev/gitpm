@@ -4130,11 +4130,11 @@ mod tests {
         fs::create_dir_all(dir.join("dist/cc6c3e20-6fe0-58c4-944e-991c2a154a47/.git")).unwrap();
         let plugins = dir.join("dist");
         assert!(exact_path(&plugins, "cc6c3e20-6fe0-58c4-944e-991c2a154a47").unwrap());
-        assert!(exact_path(&plugins, "vendor").unwrap());
+        assert!(exact_path(&plugins, "cc6c3e20-6fe0-58c4-944e-991c2a154a47/.git").unwrap());
         for other in [
-            "4b2bea93-b96d-5b3f-beea-809f22e27106",
-            "992b4b12-712d-5fd2-a0e2-6fbad4ddf88e",
-            "602d46b6-bb1a-5ea9-962d-79ffbd0182fb",
+            "CC6C3E20-6FE0-58C4-944E-991C2A154A47",
+            "cc6c3e20-6fe0-58c4-944e-991c2a154a47/.GIT",
+            "cc6c3e20-6fe0-58c4-944e-991c2a154a47/missing",
             "x",
         ] {
             assert!(!exact_path(&plugins, other).unwrap(), "{other}");

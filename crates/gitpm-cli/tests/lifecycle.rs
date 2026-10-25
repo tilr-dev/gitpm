@@ -824,12 +824,7 @@ fn init_validates_names_and_never_prompts_or_reads_namespace_settings() {
     let f = Fixture::new();
     for args in [
         vec!["init"],
-        vec![
-            "init",
-            "3dce1568-569c-5b53-9321-37185e751947",
-            "--into",
-            "x",
-        ],
+        vec!["init", "acme/hello", "--into", "x"],
         vec!["init", "../escape", "--into", "x"],
         vec!["init", "hello", "--namespace", "me"],
         vec!["init", "hello"],
@@ -1798,9 +1793,7 @@ fn uninstall_without_tty_refuses_and_lists_lost_work_including_stash() {
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("stash: stash@{0}"), "{stderr}");
-    assert!(
-        !String::from_utf8_lossy(&out.stdout).contains("[4e9e80e0-57d9-50b8-b3cc-fa1af55f3693]")
-    );
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("[y/N]"));
     assert_eq!(f.state(), before);
     assert!(repo.join(".git").is_file());
 
@@ -1888,10 +1881,7 @@ fn uninstall_on_tty_asks_before_losing_work() {
     };
     let ask = |answer: &str| ask_after("", answer);
     let (output, stderr) = ask("n");
-    assert!(
-        stderr.contains("Delete anyway? [4e9e80e0-57d9-50b8-b3cc-fa1af55f3693]"),
-        "{stderr}"
-    );
+    assert!(stderr.contains("Delete anyway? [y/N]"), "{stderr}");
     assert!(stderr.contains("untracked: notes.txt"), "{stderr}");
     assert!(
         stderr.contains("uninstall cancelled; nothing was changed"),
@@ -1907,10 +1897,7 @@ fn uninstall_on_tty_asks_before_losing_work() {
     // Work that appears while the prompt waits is not covered by the answer.
     let later = repo.join("later.txt");
     let (output, stderr) = ask_after(&format!("touch '{}'; ", later.display()), "y");
-    assert!(
-        stderr.contains("Delete anyway? [4e9e80e0-57d9-50b8-b3cc-fa1af55f3693]"),
-        "{stderr}"
-    );
+    assert!(stderr.contains("Delete anyway? [y/N]"), "{stderr}");
     assert!(
         stderr.contains("  - untracked: later.txt") && stderr.contains("Error kind: local_changes"),
         "{stderr}"
@@ -1921,10 +1908,7 @@ fn uninstall_on_tty_asks_before_losing_work() {
     assert!(repo.join("notes.txt").exists() && later.exists());
     fs::remove_file(&later).unwrap();
     let (output, stderr) = ask("y");
-    assert!(
-        stderr.contains("Delete anyway? [4e9e80e0-57d9-50b8-b3cc-fa1af55f3693]"),
-        "{stderr}"
-    );
+    assert!(stderr.contains("Delete anyway? [y/N]"), "{stderr}");
     assert!(
         output.contains("3dce1568-569c-5b53-9321-37185e751947 uninstalled"),
         "{output}"

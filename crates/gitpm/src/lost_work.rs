@@ -371,11 +371,7 @@ mod tests {
         // A setting of the user's that hides untracked files from a plain status.
         fixture_git(&repo, &["config", "status.showUntrackedFiles", "no"]);
         fs::write(repo.join("gitpm.json"), "{}").unwrap();
-        fs::write(
-            repo.join("packages/b99085d4-9afe-5725-8dc6-21b6d4bdd630.js"),
-            "x",
-        )
-        .unwrap();
+        fs::write(repo.join("packages/a/new.js"), "x").unwrap();
         fs::write(repo.join("packages/a/plugin.json"), "{ }").unwrap();
         assert_eq!(
             fixture_git(&repo, &["status", "--porcelain"]),
@@ -386,11 +382,7 @@ mod tests {
         found.sort();
         assert_eq!(
             found,
-            [
-                "gitpm.json",
-                "packages/b99085d4-9afe-5725-8dc6-21b6d4bdd630.js",
-                "packages/a/plugin.json"
-            ]
+            ["gitpm.json", "packages/a/new.js", "packages/a/plugin.json"]
         );
         assert!(changed_paths(&repo, &["other"], false).unwrap().is_empty());
     }
