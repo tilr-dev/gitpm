@@ -644,11 +644,11 @@ Workspace (installed packages):",
     },
     Help {
         commands: &["fork"],
-        text: "  fork ID [ID...] --into DIR  fork installed packages of one repository as
-                                   NS/<same name> into the fork repository DIR: a new
+        text: "  fork ID [ID...] --into DIR  fork installed packages with fresh UUIDs
+                                   and preserved aliases into repository DIR: a new
                                    folder clones the recorded source with Git history
                                    at installed revisions; local installation edits are
-                                   ignored. All repository packages are renamed;
+                                   ignored. Every repository package gets a new UUID;
                                    all files and the package layout are retained.
                                    Existing destinations are refused. Dependencies
                                    between packages forked together are rewritten

@@ -38,8 +38,8 @@
 - **THEN** it receives the same dependency issues and missing installs as the library, without changing the workspace; replaceResolve explicitly installs missing dependencies without applying the binding
 
 #### Scenario: UUID identity crosses the boundary
-- **WHEN** the host creates, selects, forks or replaces a package through FFI
-- **THEN** init accepts a name and returns a generated UUID, fork takes no namespace and returns fresh UUIDs, and all package references contain UUIDs without name hints
+- **WHEN** the host selects, forks or replaces a package through FFI
+- **THEN** fork takes no namespace and returns fresh UUIDs, and all package references contain UUIDs without name hints
 
 ### Requirement: Errors keep kind and message
 Library errors SHALL map to the `PmError` enum, one case per kind, each with the full `message` and the library's structured fields (`id` for every error about a package, `LocalChanges.items`, `HasDependents.dependents` and `lostWork`, `IncompatibleReplacement.consumers`, `NotDeployed.sync`); `Other { kind, message }` SHALL carry a kind added to the non-exhaustive library enum later.

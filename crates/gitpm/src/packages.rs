@@ -543,17 +543,14 @@ mod tests {
     fn patterns_match_segment_by_segment() {
         assert!(matches("packages/*", "packages/store"));
         assert!(!matches("packages/*", "packages/store/sub"));
-        assert!(!matches(
-            "packages/*",
-            "8cbeed86-4e91-50c4-b1ac-d34a446d4ed8"
-        ));
+        assert!(!matches("packages/*", "other/store"));
         assert!(!matches("packages/*", "packages/.hidden"));
         assert!(matches("apps/theme", "apps/theme"));
         assert!(matches("packages/gitpm-*", "packages/gitpm-store"));
         assert!(!matches("packages/gitpm-*", "packages/store"));
         assert!(matches("a*b*c", "aXbYc"));
         assert!(!matches("a*b*c", "aXc"));
-        assert!(matches("*/*", "7d3c44ac-286f-5db5-8c90-ecfa368e5b4d"));
+        assert!(matches("*/*", "x/y"));
         // No hidden folders: neither literal nor leading-dot segments.
         for bad in [
             "",
@@ -706,14 +703,14 @@ mod tests {
     }
 
     #[test]
-    fn ids_differing_only_in_case_make_both_folders_defective() {
+    fn duplicate_uuids_make_both_folders_defective() {
         let dir = TempDir::new("packages");
         let repo = dir.join("mono");
         fs::create_dir_all(&repo).unwrap();
         fixture_git(&repo, &["init", "-q", "-b", "main"]);
         fs::write(repo.join(CONFIG), r#"{"packages":["packages/*"]}"#).unwrap();
         package(&repo, "packages/a", "a42e9925-947e-561b-967e-2e14b4b94ab2");
-        package(&repo, "packages/b", "6f34fcf0-53ec-5e53-a400-9008722000be");
+        package(&repo, "packages/b", "a42e9925-947e-561b-967e-2e14b4b94ab2");
         package(&repo, "packages/c", "44ae8198-322d-5d87-b3e0-d20d1fa2b6ed");
         let head = commit(&repo);
         let layout = layout_at(&repo, &head).unwrap().unwrap();
@@ -734,7 +731,7 @@ mod tests {
             problems,
             [
                 ("packages/a", Some("a42e9925-947e-561b-967e-2e14b4b94ab2")),
-                ("packages/b", Some("6f34fcf0-53ec-5e53-a400-9008722000be"))
+                ("packages/b", Some("a42e9925-947e-561b-967e-2e14b4b94ab2"))
             ]
         );
         for problem in &layout.problems {
@@ -748,16 +745,13 @@ mod tests {
                 problem.error
             );
         }
-        // Selecting either spelling (or a third one) names the conflict.
-        for id in [
-            "6f34fcf0-53ec-5e53-a400-9008722000be",
-            "a42e9925-947e-561b-967e-2e14b4b94ab2",
-            "TILR/SAME",
-        ] {
-            let error = layout.clone().select(Some(id), "").unwrap_err();
-            assert_eq!(error.kind(), "invalid_manifest", "{id}");
-            assert!(error.to_string().contains("appears in both"), "{error}");
-        }
+        // Selecting the duplicated UUID names the conflict.
+        let error = layout
+            .clone()
+            .select(Some("a42e9925-947e-561b-967e-2e14b4b94ab2"), "")
+            .unwrap_err();
+        assert_eq!(error.kind(), "invalid_manifest");
+        assert!(error.to_string().contains("appears in both"), "{error}");
         // The sibling is unaffected; the strict listing refuses.
         assert_eq!(
             layout
@@ -768,7 +762,7 @@ mod tests {
             "packages/c"
         );
         assert_eq!(
-            find_at(&repo, &head, Some("6f34fcf0-53ec-5e53-a400-9008722000be"))
+            find_at(&repo, &head, Some("a42e9925-947e-561b-967e-2e14b4b94ab2"))
                 .unwrap_err()
                 .kind(),
             "invalid_manifest"

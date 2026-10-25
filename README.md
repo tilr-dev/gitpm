@@ -966,7 +966,7 @@ Catalog commands (`catalog show`, `catalog links`, `catalog update`, `catalog re
 ```text
 state.json              {"format": 1, "packages": …}: installed packages, replacements, forgotten records
 repos/<name>-<hash>/    source-keyed clone of root and nested Git packages
-dist/<ns>/<name>/       deployed files of an active package
+dist/<uuid>/       deployed files of an active package
 .pm-txn/                an interrupted operation (finished or discarded on open)
 ```
 
@@ -1216,7 +1216,7 @@ read-only).
 
 When you upload an updated catalog, go in an order that never shows readers a half-updated
 tree: new `versions/<V>/release.json` files first, then each package's
-`packages/<ns>/<name>/plugin.json` index, then the directory files from the deepest level
+`packages/<uuid>/plugin.json` index, then the directory files from the deepest level
 up, and the root `catalog.json` last. Never overwrite a `release.json` that is already
 published, never drop versions from an index, and do not delete objects as part of an update.
 
