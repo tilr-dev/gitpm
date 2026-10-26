@@ -1212,8 +1212,7 @@ d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50 forked from f851f609-bb81-52d6-bfef-3379862
 09e5894a-6e33-5a1e-91e0-730a2f8cb569 forked from 955bf29f-2893-56ef-9439-369c50455ae7 (packages/panel)
 …
 $ gitpm packages forks/me-packages
-$ gitpm dependency update CLI_FORK CORE_ORIGINAL CORE_FORK '^1.0' --repo forks/me-packages
-Dependency: 09e5894a-6e33-5a1e-91e0-730a2f8cb569 now depends on d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50 ^1.0 (was f851f609-bb81-52d6-bfef-33798624782c)
+$ gitpm dependency update 09e5894a-6e33-5a1e-91e0-730a2f8cb569 f851f609-bb81-52d6-bfef-33798624782c d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50 '^1.0' --repo forks/me-packages
 …
 ```
 
