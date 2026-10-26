@@ -116,13 +116,14 @@ def same_version_different_commit(t: T):
     check(t, srv.url, HELLO, "same version, different commit")
 
 
-@case(fixture="catalog", spec=["catalog/check-compares-installed-packages-with-their-catalog-or-origin#identity-mismatch"])
+@case(fixture="catalog", spec=["catalog/check-compares-installed-packages-with-their-catalog-or-origin#same-id-in-an-unrelated-source"])
 def different_source(t: T):
-    """A direct install from a mirror path: the catalog source differs literally."""
+    """An unrelated catalog source for the same ID falls back to the installed origin."""
     srv = t.serve(t.catalog)
     t.run("git", "clone", "-q", t.repo(HELLO), t.root / "mirror/hello", check=True)
     t.gitpm_ok("install", t.root / "mirror/hello")
-    check(t, srv.url, HELLO, "different source in catalog")
+    out = check(t, srv.url, HELLO, "up to date")
+    t.has(status(t, out, HELLO), "origin")
 
 
 @case(fixture="catalog", spec=["catalog/check-compares-installed-packages-with-their-catalog-or-origin#other-catalog"])

@@ -18,6 +18,35 @@ variables or the old stand binary `pm`.
 This suite is in addition to `cargo test --workspace` (the required CI gate), not a
 replacement; it runs on pb only (no GitHub Actions job).
 
+Workspace layout changes (bare storage, package worktrees and transaction activation)
+require the **full suite before review and merge**, in addition to the default workflow
+checks. In a workflow task folder, commit the final changes, run `bin/check dt`, then
+`bin/check --verify --need dt`. Repeat the gate on the final revision after merging or
+changing code. The shared default check set does not include `dt`.
+
+### Layout assertions
+
+`t.clone(ID)` is the shared **bare repository** under `repos/<key>`; it has `objects`
+and `HEAD`, not a `.git` subdirectory. `t.worktree(ID)` is the detached package checkout
+under `worktrees/<namespace>/<name>` and has a `.git` **file** linking its admin directory
+in the bare repository. Assert both when preparing an installed fixture. To create a
+local test ref in the bare store, use `git update-ref refs/heads/NAME COMMIT`: `git branch`
+can refuse a store whose HEAD points outside `refs/heads`.
+
+Deleting the bare store leaves an orphan checkout. Uninstall and forget drop its
+record and dist but preserve those local files. Such cases use
+`t.not_installed(ID, orphan_worktree=True)` and a byte snapshot of the orphan checkout;
+ordinary removal still requires no checkout. Activation journals replace the bare
+store and package checkout separately and record the worktree admin link for recovery.
+
+Diagnostic assertions follow the current specification: moved forgotten HEADs refuse
+restore with `local_changes`; malformed version strings use `invalid_version`, while
+missing required manifest fields use `invalid_manifest`; replacement incompatibility
+has no confirmation bypass. `check` uses a listed catalog source without querying
+origin and falls back to the installed origin for an unrelated catalog source with
+the same ID. Fork provenance records a commit: peel annotated release tags with
+`^{commit}` before comparing it.
+
 ## Running
 
 Requires the `dagger` CLI **v0.21.10** exactly (the pb engine's version; `./itests/dt`

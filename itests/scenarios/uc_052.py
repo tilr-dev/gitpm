@@ -152,11 +152,11 @@ def dependent_guard_kind(t: T):
 
 @case(fixture="g6_compat_installed", spec=["fork-replacement/compatibility-is-checked-by-versions-only"])
 def incompatible_replacement_kind(t: T):
-    """Unconfirmed replacement leaving app/b unsatisfied: incompatible_replacement with the library message."""
+    """Replacement leaving app/b unsatisfied: incompatible_replacement with no confirmation bypass."""
     before = t.snap(t.ws)
     t.gitpm_err("replace", "vendor/base", "--with", "old/base", kind="incompatible_replacement",
              contains="old/base provides vendor/base 1.2.0, which some consumers do not accept: "
-                      "app/b needs vendor/base >=1.3; confirm to apply anyway")
+                      "app/b needs vendor/base >=1.3")
     t.same(before, "workspace")
 
 

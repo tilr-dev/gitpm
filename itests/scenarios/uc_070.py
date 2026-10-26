@@ -83,13 +83,15 @@ def undeployable_package_is_named_and_others_synced(t: T):
     and a hint."""
     stale(t)
     shutil.rmtree(t.clone(B))
+    orphan = t.snap(t.worktree(B), git=True)
     shutil.rmtree(t.dist(B))
     r = t.gitpm_err("sync-dist", kind="not_deployed", contains=f"Error: 1 package(s) not deployed: {B}")
     t.has(r.out, f"{A} removed from dist/{A}")
     t.has(r.err, f"Hint: `gitpm uninstall {B}`")
     # The hint works: uninstall drops the record whose clone is gone, then dist/ is in sync.
     t.gitpm_ok("uninstall", B)
-    t.not_installed(B)
+    t.not_installed(B, orphan_worktree=True)
+    t.same(orphan, "orphan worktree preserved")
     t.gitpm_ok("sync-dist")
     t.ok(not t.dist(A).exists(), "dist/A removed")
     t.ok(not t.dist(B).exists(), "dist/B not fabricated")
