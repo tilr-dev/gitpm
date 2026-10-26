@@ -146,7 +146,7 @@ def malformed_retained_manifest(t: T):
     no_entry(t)
     t.git(clone, "commit", "-q", "-am", "broken manifest")
     before = t.snap(t.ws, git=True)
-    t.gitpm_err("restore", ID, kind="local_changes", contains="unpublished commit")
+    t.gitpm_err("restore", ID, kind="local_changes", contains="worktree HEAD moved away from the recorded revision")
     t.same(before, "workspace (committed broken manifest)")
     no_entry(t)
 
@@ -159,7 +159,7 @@ def retained_manifest_with_other_id(t: T):
     (clone / "plugin.json").write_text('{"id": "d92f82f0-1472-59b9-b4c5-eb76b0706d47", "name": "fixture", "version": "0.1.2"}\n')
     t.git(clone, "commit", "-q", "-am", "rename")
     before = t.snap(t.ws, git=True)
-    t.gitpm_err("restore", ID, kind="local_changes", contains="unpublished commit")
+    t.gitpm_err("restore", ID, kind="local_changes", contains="worktree HEAD moved away from the recorded revision")
     t.same(before, "workspace")
     no_entry(t)
     t.ok("d92f82f0-1472-59b9-b4c5-eb76b0706d47" not in t.state()["packages"], "no entry for the other ID")

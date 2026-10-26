@@ -3293,6 +3293,7 @@ fn clone_revision(txn: &Txn, fetch: &Fetch, name: &str, custom_ssh: bool) -> Res
     }
     let path = found.subdir().map(str::to_owned);
     let m = found.manifest;
+    crate::model::validate_manifest(&m).map_err(|error| error.with_package(&m.id))?;
     if let Some(expected) = fetch.expected {
         ensure!(
             serde_json::to_value(&m)? == serde_json::to_value(expected)?,
@@ -4764,6 +4765,27 @@ mod tests {
             (r.current.version.as_str(), r.current.commit),
             ("0.3.0", head)
         );
+    }
+
+    #[test]
+    fn install_by_ref_rejects_empty_manifest_versions() {
+        for version in [" ", ""] {
+            let ws = Ws::new("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
+            write_manifest(&ws.author.path, &make_manifest("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", version));
+            fixture_git(&ws.author.path, &["commit", "-q", "-am", "empty version"]);
+            let m = ws.open();
+            let error = ws.refuses("invalid_manifest", || {
+                m.install_package(
+                    ws.author.source(),
+                    None,
+                    InstallTarget::Ref(ws.author.head()),
+                )
+            });
+            assert!(
+                error.to_string().contains("version must not be empty"),
+                "{error}"
+            );
+        }
     }
 
     #[test]

@@ -331,11 +331,11 @@ class T:
     def dist(self, id: str) -> Path:
         return self.ws / "dist" / id
 
-    def not_installed(self, id: str):
-        """No state entry, clone, dist or leftover transaction for the ID."""
+    def not_installed(self, id: str, *, orphan_worktree: bool = False):
+        """No state entry, clone, dist or transaction; an orphan checkout may survive."""
         self.ok(id not in self.state().get("packages", {}), f"{id} not in state")
         self.ok(not self.clone(id).exists(), f"no clone of {id}")
-        self.ok(not self.worktree(id).exists(), f"no worktree of {id}")
+        self.eq(self.worktree(id).exists(), orphan_worktree, f"orphan worktree of {id}")
         self.ok(not self.dist(id).exists(), f"no dist of {id}")
         leftovers = [str(p) for p in self.ws.rglob("*.pm-txn*")] if self.ws.exists() else []
         self.eq(leftovers, [], "leftover transactions")

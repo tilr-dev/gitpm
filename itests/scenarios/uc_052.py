@@ -153,11 +153,11 @@ def dependent_guard_kind(t: T):
 
 @case(fixture="g6_compat_installed", spec=["fork-replacement/compatibility-is-checked-by-versions-only"])
 def incompatible_replacement_kind(t: T):
-    """Unconfirmed replacement leaving f5984d44-92bd-51ac-8e8f-d911dd824ef3 unsatisfied: incompatible_replacement with the library message."""
+    """Replacement leaving f5984d44-92bd-51ac-8e8f-d911dd824ef3 unsatisfied: incompatible_replacement with no confirmation bypass."""
     before = t.snap(t.ws)
     t.gitpm_err("replace", "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9", "--with", "4e02af40-ea75-510c-b524-5f21e6de2d55", kind="incompatible_replacement",
              contains="4e02af40-ea75-510c-b524-5f21e6de2d55 provides c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 1.2.0, which some consumers do not accept: "
-                      "f5984d44-92bd-51ac-8e8f-d911dd824ef3 needs c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 >=1.3; confirm to apply anyway")
+                      "f5984d44-92bd-51ac-8e8f-d911dd824ef3 needs c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 >=1.3")
     t.same(before, "workspace")
 
 

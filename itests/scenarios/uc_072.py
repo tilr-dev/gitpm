@@ -234,7 +234,7 @@ def existing_multi_package_fork_is_refused_unchanged(t: T):
                                   "multi-package-repos/forking-packages-of-one-repository#source-repository-fork"])
 def fork_source_retains_repository_without_workspace(t: T):
     dest = t.root / "forks/source-suite"
-    released = t.git(suite(t), "rev-parse", "v0.1.1")
+    released = t.git(suite(t), "rev-parse", "v0.1.1^{commit}")
     r = t.gitpm_ok("fork", THEME, "--from", suite(t), "--into", dest)
     for name in ("store", "theme", "panel"):
         m = json.loads((dest / "packages" / name / "plugin.json").read_text())

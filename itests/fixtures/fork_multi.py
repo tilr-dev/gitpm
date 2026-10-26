@@ -46,6 +46,7 @@ def _(t: T):
     state = t.state()["packages"]
     t.eq(sorted(state), ["76a9b591-60f3-5c7f-9e1c-31648fc73bfd", "f851f609-bb81-52d6-bfef-33798624782c"], "installed")
     t.eq(len({state[id]["clone"] for id in state}), 1, "one shared clone")
-    t.ok((t.ws / "repos" / state["76a9b591-60f3-5c7f-9e1c-31648fc73bfd"]["clone"] / ".git").exists(), "shared clone exists")
+    t.eq(t.git(t.clone(SUITE[0]), "rev-parse", "--is-bare-repository"), "true", "shared bare repository")
     for id, name in zip(SUITE[:2], ["store", "theme"]):
+        t.ok((t.worktree(id) / ".git").is_file(), f"{id} has a linked worktree")
         t.has((t.dist(id) / "index.js").read_text(), name)

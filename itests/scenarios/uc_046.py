@@ -114,7 +114,15 @@ def activation_failure(t: T, readonly: str):
     r = gitpm_nobody(t, "update", ID)
     t.ok(r.code == 1, "update failed")
     t.has(r.err, "Permission denied", "Error kind: io")
-    t.eq(journal(t), {"paths": {f"dist/{ID}": "replace", str(t.worktree(ID).relative_to(t.ws)): "replace"}}, "committed journal kept")
+    checkout = str(t.worktree(ID).relative_to(t.ws))
+    bare = str(t.clone(ID).relative_to(t.ws))
+    # The journal records both replaced stores and the link repaired on activation.
+    entry = journal(t)
+    t.eq(entry["paths"], {f"dist/{ID}": "replace", bare: "replace", checkout: "replace"}, "committed paths")
+    t.eq(list(entry["worktrees"]), [checkout], "one worktree link")
+    link = entry["worktrees"][checkout]
+    t.eq(str(Path(link).parent), f"{bare}/worktrees", "admin directory belongs to bare store")
+    t.ok((t.ws / ".pm-txn/new" / link).is_dir(), "staged worktree admin exists")
     t.eq(json.loads((t.ws / "state.json").read_text()), json.loads(before["state"]), "state.json still the previous one")
     t.ok((t.ws / "state.json").read_bytes() == before["state"], "state.json complete and unchanged")
     (t.ws / readonly).chmod(0o755)

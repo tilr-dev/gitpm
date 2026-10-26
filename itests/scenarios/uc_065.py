@@ -94,12 +94,14 @@ def update_to_a_branch_follows_the_moved_upstream(t: T):
     first = t.release(ID, "0.1.1", tag=False)
     t.gitpm_ok("update", ID, "--ref", "feature")
     t.eq(t.package(ID)["current"], {"version": "0.1.1", "commit": first}, "on feature")
-    t.git(t.clone(ID), "branch", "feature", first)  # a local branch that will go stale
+    # The bare store's HEAD can point outside refs/heads; create the stale ref directly.
+    t.git(t.clone(ID), "update-ref", "refs/heads/feature", first)
     second = t.release(ID, "0.1.2", tag=False)
     t.gitpm_ok("update", ID, "--ref", "feature")
     t.eq(t.package(ID)["current"], {"version": "0.1.2", "commit": second}, "followed the moved branch")
     t.eq(t.rev(t.worktree(ID)), second, "clone HEAD")
     t.eq(t.rev(t.clone(ID), "refs/remotes/origin/feature"), second, "HEAD == origin/feature")
+    t.eq(t.rev(t.clone(ID), "refs/heads/feature"), first, "local branch stayed stale")
     t.has((t.dist(ID) / "index.js").read_text(), "0.1.2")
 
 

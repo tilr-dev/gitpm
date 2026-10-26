@@ -209,9 +209,11 @@ def uninstall_of_a_package_whose_clone_is_gone(t: T):
     """A's clone deleted by hand: `uninstall A` (no --force, no TTY) drops the record and dist/A,
     and later commands warn no more."""
     shutil.rmtree(t.clone(A))
+    orphan = t.snap(t.worktree(A), git=True)
     r = t.gitpm_ok("uninstall", A)
     t.eq(r.out, f"{A} uninstalled\n", "result line")
-    t.not_installed(A)
+    t.not_installed(A, orphan_worktree=True)
+    t.same(orphan, "orphan worktree preserved")
     t.ok(A not in t.state().get("forgotten", {}), "no forgotten record")
     t.ok(not t.dist(A).exists(), "dist/A removed")
     r = t.gitpm_ok("disable", B)
@@ -223,9 +225,11 @@ def forget_of_a_package_whose_clone_is_gone(t: T):
     """A's clone deleted by hand: `forget A` drops the record and dist/A and keeps no forgotten
     record (nothing to restore)."""
     shutil.rmtree(t.clone(A))
+    orphan = t.snap(t.worktree(A), git=True)
     r = t.gitpm_ok("forget", A)
     t.eq(r.out, f"{A} forgotten (no clone; record and dist removed)\n", "result line")
-    t.not_installed(A)
+    t.not_installed(A, orphan_worktree=True)
+    t.same(orphan, "orphan worktree preserved")
     t.ok(A not in t.state().get("forgotten", {}), "no forgotten record")
     t.ok(not t.dist(A).exists(), "dist/A removed")
     t.gitpm_err("restore", A, kind="repository_not_found")

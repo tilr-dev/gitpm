@@ -60,12 +60,15 @@ def missing_manifest(t: T):
 
 @case(fixture="hello_installed", spec=["package-manifest/unknown-keys-are-preserved", "package-manifest/known-manifest-keys"])
 def unknown_manifest_fields_and_missing_version(t: T):
-    """Missing / empty version are invalid manifests; unknown fields are kept, not refused."""
-    for name, text in [("noversion", manifest(id="735b71a1-b0ab-5a89-98d6-cc8a91fb23dd")),
-                       ("emptyversion", manifest(id="7e7b01ea-ad2b-5dae-91b8-15550e5b2afb", version=" "))]:
+    """Missing or blank versions are invalid_manifest; unknown fields survive."""
+    for name, id, text in [
+        ("noversion", "735b71a1-b0ab-5a89-98d6-cc8a91fb23dd", manifest(id="735b71a1-b0ab-5a89-98d6-cc8a91fb23dd")),
+        ("emptyversion", "7e7b01ea-ad2b-5dae-91b8-15550e5b2afb", manifest(id="7e7b01ea-ad2b-5dae-91b8-15550e5b2afb", version=" ")),
+        ("blankversion", "ddc4bcce-5e1b-49ad-ae98-c1dc3be42556", manifest(id="ddc4bcce-5e1b-49ad-ae98-c1dc3be42556", version="")),
+    ]:
         repo, sha = bad_repo(t, name, {"plugin.json": text, **DIST})
         refused(t, repo, "--ref", sha, kind="invalid_manifest")
-        t.not_installed("d135a7cf-1c63-549a-93cb-8f89656b2ced")
+        t.not_installed(id)
     repo, sha = bad_repo(t, "extra", {"plugin.json": manifest(id="e2724014-0b06-523e-8b92-3cff8d340ec8", version="0.1.0", pinned=True), **DIST})
     t.gitpm_ok("install", repo, "--ref", sha)
     t.eq(t.package("e2724014-0b06-523e-8b92-3cff8d340ec8")["current"]["version"], "0.1.0", "installed version")
