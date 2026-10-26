@@ -143,9 +143,9 @@ def activation_failure_at_first_move_rolls_forward(t: T):
 
 @case(fixture="hello_installed", spec=["transactions-locking/crash-recovery#crash-during-commit"])
 def activation_failure_midway_rolls_forward(t: T):
-    """worktrees is read-only: dist moved, the worktree did not. The next open rolls the
+    """repos is read-only: dist moved, the clone did not. The next open rolls the
     commit forward instead of leaving a mixed installation."""
-    before = activation_failure(t, "worktrees")
+    before = activation_failure(t, "repos")
     t.has((t.dist(ID) / "index.js").read_text(), "0.1.1")
     t.eq(t.rev(t.worktree(ID)), before["head"], "clone not moved yet")
     r = gitpm_nobody(t, "disable", ID)
