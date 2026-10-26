@@ -16,7 +16,7 @@ Defines forking an installed package into an author repository under a new names
 
 #### Scenario: Fork an uninstalled repository
 - **WHEN** `gitpm fork 11111111-1111-4111-8111-111111111111 --from ./plugins --into ./my-plugins` is run without a workspace
-- **THEN** it clones the newest stable `vVERSION` release whose commit contains `11111111-1111-4111-8111-111111111111`, assigns every package a fresh UUID preserving its name and rewrites internal dependencies, preserving repository files and layout
+- **THEN** it clones the newest stable `vVERSION` release whose commit contains `11111111-1111-4111-8111-111111111111`, assigns every package a fresh UUID preserving its name and preserves internal dependency IDs and requirements, preserving repository files and layout
 - **AND** tags without that ID and legacy `ID@VERSION` tags are ignored; no workspace is opened, created or locked
 
 #### Scenario: Explicit revision
@@ -73,11 +73,11 @@ The fork manifest SHALL get `forkOf` `{id, version, commit, source}` and `replac
 - **AND** metadata keys are carried unchanged; this is covered by `metadata::fork_and_commit_carry_the_metadata_unchanged`
 
 ### Requirement: Fork output names the next steps
-The CLI SHALL print the fork lines, one `gitpm commit DIR NEW_VERSION` command to release all repository packages with one tag, then the explicit `gitpm install DIR ID` and `gitpm replace ORIGINAL --with ID` commands per package, and for a new fork `gitpm remote DIR GIT_URL`.
+The CLI SHALL print the fork lines, an optional explicit `gitpm fork-rewrite DIR` command before one `gitpm commit DIR NEW_VERSION` command to release all repository packages with one tag, then the explicit `gitpm install DIR ID` and `gitpm replace ORIGINAL --with ID` commands per package, and for a new fork `gitpm remote DIR GIT_URL`.
 
 #### Scenario: Next steps after fork
 - **WHEN** a fork is created
-- **THEN** the output contains `Next steps (choose the packages to install and replace):` followed by the commit, install and replace commands
+- **THEN** the output contains `Next steps (choose the packages to install and replace):` followed by the optional fork-rewrite command and the commit, install and replace commands
 
 ### Requirement: Replacement is explicit and global
 `replace ORIGINAL --with FORK` (`Manager::replace`) SHALL set `state.replacements[ORIGINAL] = FORK`, so consumers resolve ORIGINAL at FORK's `replaces.version`. Before mutation it SHALL check the resulting active workspace. Only the provider's transitive dependencies and active consumers' requirements on ORIGINAL SHALL block it. Failure SHALL leave state, clones and dist unchanged. Replace SHALL NOT install or enable dependencies or have a confirmation or force bypass.
@@ -243,8 +243,8 @@ Forking SHALL keep the existing installation model: install the fork's committed
 #### Scenario: Single-ID replacement API
 - **WHEN** a host calls library `fork` or FFI `fork` with one installed ID from a multi-package repository
 - **THEN** it receives the path to the editable repository containing all sibling packages, without releasing, installing or replacing any package
-- **AND** library `fork_packages` and FFI `forkPackages` return the package list and dependency rewrites as well as the repository path
-- **AND** the host releases the repository and calls install and replace separately for the desired package
+- **AND** library `fork_packages` and FFI `forkPackages` return the package list and the repository path; dependency rewrites are returned only by the separate library `fork_rewrite` / FFI `forkRewrite` call
+- **AND** the host explicitly rewrites dependencies if desired, releases the repository and calls install and replace separately for the desired package
 
 #### Scenario: Installed sibling remains unchanged
 - **WHEN** `d63a8a6b-85d6-509c-87db-9a6096daa66c` and `e66d8976-2209-50e5-abaf-9360c0a03411` are installed and the caller explicitly releases, installs and replaces only `87fe9d68-adda-5200-92ad-a5c59d2264b9` after forking the repository, through either the CLI or library

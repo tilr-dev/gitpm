@@ -486,6 +486,7 @@ fn print_fork_result(fork: &gitpm::PackageFork) {
     println!(
         "forkOf records each origin; replaces says the fork can stand in for it (used only\nafter an explicit replace). The original installations are unchanged.\n\nNext steps (choose the packages to install and replace):"
     );
+    println!("  gitpm fork-rewrite {quoted}   optionally use sibling fork dependencies");
     println!(
         "  gitpm commit {quoted} NEW_VERSION   commit local edits, release all packages with tag vNEW_VERSION"
     );
@@ -500,7 +501,7 @@ fn print_fork_result(fork: &gitpm::PackageFork) {
     }
 }
 
-/// The cloned fork and its rewritten dependencies.
+/// The cloned fork and its package identities.
 fn print_package_fork(fork: &gitpm::PackageFork) {
     let root = fork.packages.iter().any(|p| p.path.is_empty());
     println!("Fork created: {}", fork.path.display());
@@ -524,7 +525,9 @@ fn print_package_fork(fork: &gitpm::PackageFork) {
             }
         );
     }
-    for rewrite in &fork.rewrites {
+}
+fn print_dependency_rewrites(rewrites: &[gitpm::DependencyRewrite]) {
+    for rewrite in rewrites {
         match &rewrite.new_requirement {
             None => println!(
                 "Dependency: {} now depends on {} {} (was {})",
@@ -540,6 +543,7 @@ fn print_package_fork(fork: &gitpm::PackageFork) {
 const COMMANDS: &[&str] = &[
     "init",
     "fork",
+    "fork-rewrite",
     "remote",
     "auth",
     "catalog show",
@@ -671,9 +675,9 @@ Workspace (installed packages):",
                                    ignored. Every repository package gets a new UUID;
                                    all files and the package layout are retained.
                                    Existing destinations are refused. Dependencies
-                                   between packages forked together are rewritten
+                                   between packages forked together are preserved.
                                    No release, installation or replacement is performed;
-                                   use commit, install and replace explicitly
+                                   use fork-rewrite, commit, install and replace explicitly
   fork [ID...] --from SOURCE --into DIR [--ref REF]
                                    clone a Git path or URL without a workspace.
                                    Default: latest stable vVERSION release containing
@@ -681,6 +685,11 @@ Workspace (installed packages):",
                                    --ref accepts any revision, branch or commit.
                                    Omit IDs only for a single-package source.
                                    All packages receive fresh UUIDs; names are preserved",
+    },
+    Help {
+        commands: &["fork-rewrite"],
+        text: "  fork-rewrite DIR               explicitly rewrite internal dependencies to sibling fork UUIDs;
+                                   edits author manifests without a workspace or commit",
     },
     Help {
         commands: &["replace"],
@@ -1242,6 +1251,10 @@ fn run(invocation: &mut Invocation) -> Result<()> {
             )?;
             warn(&report.warnings);
             println!("{}", serde_json::to_string_pretty(&report.release)?);
+            return Ok(());
+        }
+        "fork-rewrite" => {
+            print_dependency_rewrites(&gitpm::fork::fork_rewrite(Path::new(id))?);
             return Ok(());
         }
         "remote" => {

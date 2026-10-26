@@ -607,7 +607,7 @@ fn provider_of(state: &serde_json::Value, consumer: &str) -> String {
 }
 
 #[test]
-fn fork_ids_select_the_repository_and_rewrite_all_package_dependencies() {
+fn fork_ids_select_the_repository_and_preserve_dependencies_until_explicit_rewrite() {
     let f = Fixture::new();
     three_installed(&f);
     let out = f.ok(&[
@@ -636,10 +636,9 @@ fn fork_ids_select_the_repository_and_rewrite_all_package_dependencies() {
         ),
         "{out}"
     );
-    assert!(
-        out.contains(format!("Dependency: {fork_panel} now depends on {fork_theme} ^1.0 (was f851f609-bb81-52d6-bfef-33798624782c)").as_str()),
-        "{out}"
-    );
+    assert!(!out.contains("Dependency:"), "{out}");
+    assert!(out.contains("gitpm fork-rewrite"), "{out}");
+    assert!(out.find("gitpm fork-rewrite").unwrap() < out.find("gitpm commit").unwrap());
     assert_eq!(config(&fork)["packages"], serde_json::json!(["packages/*"]));
     assert_eq!(
         manifest(&fork.join("packages/store"))["id"],
@@ -649,7 +648,7 @@ fn fork_ids_select_the_repository_and_rewrite_all_package_dependencies() {
     assert_eq!(panel["id"], fork_panel.as_str());
     assert_eq!(
         panel["dependencies"],
-        serde_json::json!({(fork_theme.as_str()): "^1.0"})
+        serde_json::json!({"f851f609-bb81-52d6-bfef-33798624782c": "^1.0"})
     );
     assert_eq!(
         panel["forkOf"]["id"],
@@ -677,6 +676,20 @@ fn fork_ids_select_the_repository_and_rewrite_all_package_dependencies() {
         "{}",
         String::from_utf8_lossy(&out.stdout)
     );
+    let workspace_before = fs::read(f.dir.join("workspace/state.json")).unwrap();
+    let rewrite = f.ok(&["fork-rewrite", fork.to_str().unwrap()]);
+    assert!(rewrite.contains(format!("Dependency: {fork_panel} now depends on {fork_theme} ^1.0 (was f851f609-bb81-52d6-bfef-33798624782c)").as_str()), "{rewrite}");
+    assert_eq!(
+        manifest(&fork.join("packages/panel"))["dependencies"],
+        serde_json::json!({(fork_theme.as_str()): "^1.0"})
+    );
+    assert!(f.ok(&["fork-rewrite", fork.to_str().unwrap()]).is_empty());
+    assert_eq!(
+        fs::read(f.dir.join("workspace/state.json")).unwrap(),
+        workspace_before
+    );
+    f.git(&fork, &["add", "."]);
+    f.git(&fork, &["commit", "-qm", "Rewrite fork dependencies"]);
     // Every package in the source repository is available in the fork.
     let error = f.fails(&["install", fork.to_str().unwrap(), "--dev"]);
     assert!(
@@ -699,7 +712,7 @@ fn fork_ids_select_the_repository_and_rewrite_all_package_dependencies() {
     ]);
     assert_eq!(f.dist(fork_panel.as_str()), "panel 1.0.0");
 
-    // A single ID selects the same repository and rewrites every internal dependency.
+    // A single ID selects the same repository and preserves internal dependencies.
     f.ok(&[
         "fork",
         "955bf29f-2893-56ef-9439-369c50455ae7",
@@ -713,7 +726,7 @@ fn fork_ids_select_the_repository_and_rewrite_all_package_dependencies() {
     assert_eq!(config(&solo)["packages"], serde_json::json!(["packages/*"]));
     assert_eq!(
         manifest(&solo.join("packages/panel"))["dependencies"],
-        serde_json::json!({(solo_theme.as_str()): "^1.0"})
+        serde_json::json!({"f851f609-bb81-52d6-bfef-33798624782c": "^1.0"})
     );
     assert_eq!(
         manifest(&solo.join("packages/theme"))["id"],
@@ -801,7 +814,7 @@ fn fork_one_id_preserves_uninstalled_siblings_layout_and_installed_revisions() {
     assert_eq!(theme["forkOf"]["commit"], theme_commit);
     assert_eq!(
         theme["dependencies"],
-        serde_json::json!({(fork_store.as_str()): "^1.0"})
+        serde_json::json!({"76a9b591-60f3-5c7f-9e1c-31648fc73bfd": "^1.0"})
     );
     assert_eq!(panel["id"], fork_panel.as_str());
     assert_eq!(
@@ -811,6 +824,15 @@ fn fork_one_id_preserves_uninstalled_siblings_layout_and_installed_revisions() {
     assert_eq!(panel["forkOf"]["commit"], theme_commit);
     assert_eq!(
         panel["dependencies"],
+        serde_json::json!({"f851f609-bb81-52d6-bfef-33798624782c": "^1.0"})
+    );
+    f.ok(&["fork-rewrite", fork.to_str().unwrap()]);
+    assert_eq!(
+        manifest(&fork.join("packages/theme"))["dependencies"],
+        serde_json::json!({(fork_store.as_str()): "^1.0"})
+    );
+    assert_eq!(
+        manifest(&fork.join("packages/panel"))["dependencies"],
         serde_json::json!({(fork_theme.as_str()): "^1.0"})
     );
     assert_eq!(f.state(), before);
@@ -1020,7 +1042,7 @@ fn an_existing_fork_is_refused_without_rewriting_dependencies() {
     );
     assert_eq!(
         manifest(&fork.join("packages/panel"))["dependencies"],
-        serde_json::json!({(fork_theme.as_str()): "^1.0"})
+        serde_json::json!({"f851f609-bb81-52d6-bfef-33798624782c": "^1.0"})
     );
 }
 
@@ -1527,6 +1549,15 @@ fn check_uses_catalog_then_forced_partial_origin_fallback() {
 #[test]
 fn fork_source_without_workspace_matches_installed_fork_output() {
     let f = Fixture::new();
+    f.write("store", "1.1.0", "");
+    f.write(
+        "theme",
+        "1.1.0",
+        r#", "dependencies": {"76a9b591-60f3-5c7f-9e1c-31648fc73bfd": "^1.0"}"#,
+    );
+    f.git(&f.mono, &["add", "."]);
+    f.git(&f.mono, &["commit", "-qm", "Add internal dependency"]);
+    f.git(&f.mono, &["tag", "v1.1.0"]);
     let dest = f.dir.join("source-fork");
     let dest_text = dest.to_str().unwrap();
     let source_output = f.ok(&[
@@ -1546,6 +1577,25 @@ fn fork_source_without_workspace_matches_installed_fork_output() {
     assert_ne!(source_store, "76a9b591-60f3-5c7f-9e1c-31648fc73bfd");
     assert_eq!(m["name"], "fixture");
     assert_eq!(m["forkOf"]["id"], "76a9b591-60f3-5c7f-9e1c-31648fc73bfd");
+    let theme_path = dest.join("packages/theme");
+    assert_eq!(
+        manifest(&theme_path)["dependencies"],
+        serde_json::json!({"76a9b591-60f3-5c7f-9e1c-31648fc73bfd": "^1.0"})
+    );
+    let rewrite = f.ok(&["fork-rewrite", dest_text]);
+    assert!(rewrite.contains("Dependency:"), "{rewrite}");
+    assert_eq!(
+        manifest(&theme_path)["dependencies"],
+        serde_json::json!({(source_store): "^1.0"})
+    );
+    assert!(!f.dir.join("workspace").exists());
+    assert!(f.ok(&["fork-rewrite", dest_text]).is_empty());
+    assert!(!f.dir.join("workspace").exists());
+    f.ok(&[
+        "install",
+        f.source(),
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+    ]);
     f.ok(&[
         "install",
         f.source(),

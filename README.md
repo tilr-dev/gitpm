@@ -519,6 +519,13 @@ Changed in 0.5:
 
 Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING**):
 
+- **BREAKING:** Fork preserves dependency IDs and requirements. Call library
+  `gitpm::fork::fork_rewrite(&directory)`, FFI `forkRewrite(directory)`, or CLI
+  `gitpm fork-rewrite DIR` explicitly to redirect internal dependencies to sibling
+  fork UUIDs before releasing. `PackageFork` no longer contains `rewrites`; the
+  explicit call returns them. It edits local manifests without a workspace,
+  commit, installation or replacement; repeated calls return no changes.
+
 - **BREAKING:** Source clones in `repos/<key>` are bare repositories. Each installed
   Git package has a detached worktree in `worktrees/<uuid>` at its own
   recorded commit. Updating or removing one package leaves sibling worktrees intact.
@@ -904,7 +911,7 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   comparators (`>=1.3.0 <2.0.0`, AND) remain; commas (`>=1.3, <2`), bare partial versions
   (`1.2`), wildcards (`1.*`), `||` and hyphen ranges are refused with
   `invalid_manifest`. Migration: write `^1.2.3` where a bare `1.2.3` meant "compatible",
-  `^1.2` for `1.2`, `>=1.3.0 <2.0.0` for `>=1.3, <2`. `fork` keeps writing rewritten
+  `^1.2` for `1.2`, `>=1.3.0 <2.0.0` for `>=1.3, <2`. `fork-rewrite` writes rewritten
   requirements as `^V`; `init` writes no dependencies.
 - Versions may carry a pre-release (`1.3.0-beta.1`, SemVer order: `1.0.0-alpha <
   1.0.0-beta < 1.0.0`) in manifests, `--version`, catalogs and release tags
@@ -1186,10 +1193,16 @@ packages/theme/dist/…
     configuration. Run `git -C DIR submodule update --init` to populate them.
     Installation deploys the committed package output selected by `dist`; fork does not build sources
     or enable dev mode.
-  - Dependencies between all packages in the repository are rewritten to their fork IDs. The
+  - Fork preserves dependency IDs and requirements. Run `gitpm fork-rewrite DIR`
+    explicitly to rewrite dependencies between repository packages to their fork IDs. The
     requirement is kept when satisfied by the fork's version, else
     it becomes `^V`; each rewrite is printed. Dependencies on other packages keep
     their original IDs. Depending on both an original and its fork is refused.
+    The explicit rewrite reads current `forkOf` mappings and returns only changes
+    made by that call; rerunning leaves unchanged manifests byte-for-byte intact.
+    Missing or ambiguous `forkOf` mappings, conflicting dependencies and invalid
+    rewritten manifests fail with `invalid_manifest` before writing any file.
+    It neither stages nor commits author edits and never opens a workspace.
   - Fork preserves inherited tags and creates no release tag. It leaves packages,
     replacement bindings, workspace state and dist unchanged. Run `commit` with a new
     version, then `install DIR ID` and `replace ORIGINAL --with ID` explicitly for
@@ -1202,6 +1215,8 @@ Git history is cloned from the recorded source; the original repository is the u
 All repository packages are forked; the complete tree and gitpm.json are preserved.
 d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50 forked from f851f609-bb81-52d6-bfef-33798624782c (packages/theme)
 09e5894a-6e33-5a1e-91e0-730a2f8cb569 forked from 955bf29f-2893-56ef-9439-369c50455ae7 (packages/panel)
+…
+$ gitpm fork-rewrite forks/me-packages
 Dependency: 09e5894a-6e33-5a1e-91e0-730a2f8cb569 now depends on d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50 ^1.0 (was f851f609-bb81-52d6-bfef-33798624782c)
 …
 ```
@@ -1272,8 +1287,9 @@ working (`install`/`update` warn: `Warning: ID VERSION: plugin.json tags
 must be an array of strings; ignored`; the library reports it in
 `InstallResult.warnings`/`RevisionChange.warnings`, and
 `Manifest::metadata_problems()`/`metadata_strict()` give the check). The keys stay in the file as
-they were: `commit` and `fork` rewrite `version`, `id`, `forkOf`,
-`replaces` and dependencies but keep the metadata (also the string form of `provides`).
+they were: `commit` and `fork` rewrite version and identity fields, while
+`fork-rewrite` explicitly rewrites dependencies. All three preserve metadata
+(also the string form of `provides`).
 `init` writes `"title": "NAME"`.
 
 Shape rule, everywhere gitpm reports metadata (`list` `resolved[]` and
@@ -1392,7 +1408,8 @@ let dist = pm.uninstall(id, &confirmed, /* force: ignore dependents */ false)?;
 // Forks: the fork repository is always explicit (new folder).
 pm.fork_into(id, Path::new("/work/demo1-fork"))?;   // sets forkOf + replaces
 let repo = Path::new("/work/forks/me-packages");               // created as a new folder
-let fork = pm.fork_packages(&["f851f609-bb81-52d6-bfef-33798624782c", "955bf29f-2893-56ef-9439-369c50455ae7"], repo)?; // one repo, deps rewritten
+let fork = pm.fork_packages(&["f851f609-bb81-52d6-bfef-33798624782c", "955bf29f-2893-56ef-9439-369c50455ae7"], repo)?; // one repo, dependencies preserved
+let rewrites = gitpm::fork::fork_rewrite(repo)?; // optional: use sibling fork dependencies
 // Explicitly release all fork packages, then install only the desired package.
 gitpm::scaffold::commit_package(repo, "2.0.0", Some("d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50"))?;
 pm.install_package(repo.to_str().unwrap(), Some("d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50"), InstallTarget::Release)?;

@@ -1310,7 +1310,7 @@ pub struct ForkResult {
     pub path: String,
 }
 
-/// A dependency rewritten by a multi-package fork (`from` became `to`); `newRequirement`
+/// A dependency rewritten explicitly in a fork repository (`from` became `to`); `newRequirement`
 /// is set when the old requirement does not accept the fork's version.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct DependencyRewrite {
@@ -1339,15 +1339,13 @@ pub struct ForkedPackage {
     pub path: String,
     pub version: String,
 }
-/// Result of `PackageManager.forkPackages` (`gitpm::PackageFork`): `created` is false
-/// when the packages were added to an existing multi-package repository.
+/// Result of `PackageManager.forkPackages` (`gitpm::PackageFork`).
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct PackageFork {
     pub path: String,
     pub created: bool,
     pub commit: String,
     pub packages: Vec<ForkedPackage>,
-    pub rewrites: Vec<DependencyRewrite>,
 }
 impl From<pm::PackageFork> for PackageFork {
     fn from(f: pm::PackageFork) -> Self {
@@ -1365,7 +1363,6 @@ impl From<pm::PackageFork> for PackageFork {
                     version: p.version,
                 })
                 .collect(),
-            rewrites: f.rewrites.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -1628,7 +1625,7 @@ impl PackageManager {
             path: result.path.to_string_lossy().into_owned(),
         })
     }
-    /// Copy all repository packages and rewrite their internal dependency edges.
+    /// Copy all repository packages, preserving their dependency edges.
     pub fn fork_packages(&self, ids: Vec<String>, destination: String) -> Result<PackageFork> {
         let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
         Ok(self
@@ -1640,6 +1637,15 @@ impl PackageManager {
 
 // ---------------------------------------------------------------------------------------
 // Free functions (no workspace needed)
+
+/// Explicitly rewrite dependencies between packages in an editable fork repository.
+#[uniffi::export]
+pub fn fork_rewrite(directory: String) -> Result<Vec<DependencyRewrite>> {
+    Ok(pm::fork::fork_rewrite(std::path::Path::new(&directory))?
+        .into_iter()
+        .map(Into::into)
+        .collect())
+}
 
 /// Fork a source repository without opening, creating or locking a workspace.
 /// `reference` accepts any revision; absent means the latest stable release.
@@ -1795,7 +1801,41 @@ mod tests {
         let manifest = pm::packages::find_at(&dest, "HEAD", None).unwrap().manifest;
         assert_eq!(manifest.name, "theme");
         assert_eq!(result.packages[0].path, "");
-        assert!(result.rewrites.is_empty());
+        // Exercise conversion on a consumer dependency targeting a different fork.
+        let provider = dest.join("packages/provider");
+        let consumer = dest.join("packages/consumer");
+        fs::create_dir_all(&provider).unwrap();
+        fs::create_dir_all(consumer.join("dist")).unwrap();
+        fs::rename(dest.join("dist"), provider.join("dist")).unwrap();
+        fs::rename(dest.join("plugin.json"), provider.join("plugin.json")).unwrap();
+        fs::write(dest.join("gitpm.json"), r#"{"packages":["packages/*"]}"#).unwrap();
+        let contents = fs::read_to_string(provider.join("plugin.json")).unwrap();
+        let consumer_id = "22222222-2222-4222-8222-222222222222";
+        let updated = contents
+            .replace(&result.packages[0].id, consumer_id)
+            .replace(&original, "33333333-3333-4333-8333-333333333333")
+            .replace(
+                "\"dependencies\": {}",
+                &format!(r#""dependencies": {{"{original}": "^0.1"}}"#),
+            );
+        fs::write(consumer.join("plugin.json"), updated).unwrap();
+        let changes = fork_rewrite(dest.to_string_lossy().into()).unwrap();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].package, consumer_id);
+        assert_eq!(changes[0].from, original);
+        assert_eq!(changes[0].to, result.packages[0].id);
+        assert_eq!(changes[0].requirement, "^0.1");
+        assert!(changes[0].new_requirement.is_none());
+        assert!(
+            fork_rewrite(dest.to_string_lossy().into())
+                .unwrap()
+                .is_empty()
+        );
+        assert!(matches!(
+            fork_rewrite(source.to_string_lossy().into()),
+            Err(PmError::InvalidManifest { .. })
+        ));
+
         assert!(matches!(
             fork_source(
                 source.to_string_lossy().into(),
@@ -2799,6 +2839,10 @@ mod tests {
                 let _ = describe_lost_work;
                 let _ = uninstall_refusal;
                 vec!["uninstallPlan", "uninstall", "uninstallRefusal"]
+            }),
+            ("fork-rewrite", {
+                let _ = fork_rewrite;
+                vec!["forkRewrite"]
             }),
             ("fork", {
                 let _ = PackageManager::fork_packages;
