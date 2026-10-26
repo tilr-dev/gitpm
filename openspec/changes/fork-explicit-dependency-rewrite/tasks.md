@@ -6,5 +6,5 @@
 
 ## 2. Validation
 - [x] 2.1 Run focused integration tests and formatting/clippy checks.
-- [ ] 2.2 Review the diff with a subagent and resolve findings.
-- [ ] 2.3 Run cargo fmt --all --check, cargo clippy --workspace --all-targets -- -D warnings and cargo test --workspace through the workflow finish gate.
+- [x] 2.2 Review the diff with a subagent and resolve findings.
+- [x] 2.3 Run cargo fmt --all --check, cargo clippy --workspace --all-targets -- -D warnings and cargo test --workspace through the workflow finish gate.
