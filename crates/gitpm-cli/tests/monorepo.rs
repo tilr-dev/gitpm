@@ -814,7 +814,7 @@ fn fork_one_id_preserves_uninstalled_siblings_layout_and_installed_revisions() {
     assert_eq!(theme["forkOf"]["commit"], theme_commit);
     assert_eq!(
         theme["dependencies"],
-        serde_json::json!({(fork_store.as_str()): "^1.0"})
+        serde_json::json!({"76a9b591-60f3-5c7f-9e1c-31648fc73bfd": "^1.0"})
     );
     assert_eq!(panel["id"], fork_panel.as_str());
     assert_eq!(
@@ -824,6 +824,15 @@ fn fork_one_id_preserves_uninstalled_siblings_layout_and_installed_revisions() {
     assert_eq!(panel["forkOf"]["commit"], theme_commit);
     assert_eq!(
         panel["dependencies"],
+        serde_json::json!({"f851f609-bb81-52d6-bfef-33798624782c": "^1.0"})
+    );
+    f.ok(&["fork-rewrite", fork.to_str().unwrap()]);
+    assert_eq!(
+        manifest(&fork.join("packages/theme"))["dependencies"],
+        serde_json::json!({(fork_store.as_str()): "^1.0"})
+    );
+    assert_eq!(
+        manifest(&fork.join("packages/panel"))["dependencies"],
         serde_json::json!({(fork_theme.as_str()): "^1.0"})
     );
     assert_eq!(f.state(), before);
@@ -1033,7 +1042,7 @@ fn an_existing_fork_is_refused_without_rewriting_dependencies() {
     );
     assert_eq!(
         manifest(&fork.join("packages/panel"))["dependencies"],
-        serde_json::json!({(fork_theme.as_str()): "^1.0"})
+        serde_json::json!({"f851f609-bb81-52d6-bfef-33798624782c": "^1.0"})
     );
 }
 
