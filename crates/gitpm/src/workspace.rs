@@ -4771,7 +4771,10 @@ mod tests {
     fn install_by_ref_rejects_empty_manifest_versions() {
         for version in [" ", ""] {
             let ws = Ws::new("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
-            write_manifest(&ws.author.path, &make_manifest("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", version));
+            write_manifest(
+                &ws.author.path,
+                &make_manifest("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", version),
+            );
             fixture_git(&ws.author.path, &["commit", "-q", "-am", "empty version"]);
             let m = ws.open();
             let error = ws.refuses("invalid_manifest", || {
