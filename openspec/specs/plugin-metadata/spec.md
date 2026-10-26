@@ -30,16 +30,16 @@ The manifest MAY carry `title` (string), `description` (string), `provides` (str
 - **THEN** the command fails with `invalid_manifest` and nothing is committed
 
 ### Requirement: Metadata survives rewrites
-`commit` and `fork` rewrite version and identity fields; `fork` SHALL preserve dependency IDs and requirements, and explicit dependency edits SHALL change only the requested dependency. All operations SHALL keep the metadata keys exactly as they were, in the position the unknown-key rule gives them (package-manifest, "Unknown keys are preserved"). (The `"title": "NAME"` that `init` writes is specified in authoring.) Verified by `fork_and_commit_carry_the_metadata_unchanged`.
+`commit` and `fork` rewrite version and identity fields; `fork` SHALL preserve dependency IDs and requirements, and explicit `fork-rewrite` SHALL rewrite only dependencies. All three operations SHALL keep the metadata keys exactly as they were, in the position the unknown-key rule gives them (package-manifest, "Unknown keys are preserved"). (The `"title": "NAME"` that `init` writes is specified in authoring.) Verified by `fork_and_commit_carry_the_metadata_unchanged`.
 
 #### Scenario: Fork keeps the title
 - **WHEN** `f851f609-bb81-52d6-bfef-33798624782c` with `"title": "Theme"` is forked as `d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50`
 - **THEN** the fork's manifest still has `"title": "Theme"`
 
 #### Scenario: Explicit rewrite keeps metadata
-- **WHEN** an explicit dependency edit changes a package manifest containing metadata and unknown keys
+- **WHEN** the explicit dependency rewrite changes a fork manifest containing metadata and unknown keys
 - **THEN** those keys and values are retained unchanged
-- **AND** this is covered by `dependency_edits_validate_and_preserve_metadata`
+- **AND** this is covered by `explicit_rewrite_validates_all_manifests_and_preserves_external_dependencies_and_metadata`
 
 ### Requirement: Reported shape
 Single source for the reported shape: wherever metadata is reported (`list` `resolved[]`, `catalog show`/`browse` `PackageSummary`, `CatalogRelease`, FFI records), all four keys SHALL be present: an absent string SHALL be `null` and an absent list SHALL be `[]`. In the raw state (`packages.<id>.metadata`, printed by `list`) the `metadata` object is always present and has all four keys. Verified by `list_reports_metadata_present_or_absent_and_filters_by_provides`.
