@@ -11,7 +11,7 @@ The CLI SHALL offer exactly the commands of its full usage (`gitpm --help`), eac
 
 #### Scenario: Command list
 - **WHEN** the user reads `gitpm --help`
-- **THEN** the commands are `init`, `commit`, `remote` (authoring); `fork`, `replace`, `replace-check`, `replace-resolve` (fork-replacement); `auth check` (git-safety); `catalog show`, `catalog update`, `catalog register`, `check` (catalog); `catalog links` (below); `install`, `install-catalog`, `download`, `download-catalog`, `forget`, `restore`, `uninstall` (install-uninstall); `enable`, `disable`, `sync-dist` (dist); `update`, `rollback` (updates); `list` (below)
+- **THEN** the commands are `init`, `commit`, `remote` (authoring); `fork`, `fork-rewrite`, `replace`, `replace-check`, `replace-resolve` (fork-replacement); `auth check` (git-safety); `catalog show`, `catalog update`, `catalog register`, `check` (catalog); `catalog links` (below); `install`, `install-catalog`, `download`, `download-catalog`, `forget`, `restore`, `uninstall` (install-uninstall); `enable`, `disable`, `sync-dist` (dist); `update`, `rollback` (updates); `list` (below)
 
 #### Scenario: Catalog links
 - **WHEN** the user runs `gitpm --catalog ./catalog catalog links`

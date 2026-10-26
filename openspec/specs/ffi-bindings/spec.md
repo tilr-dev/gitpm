@@ -14,7 +14,7 @@ The FFI crate SHALL generate the Swift module `Gitpm` over the C module `GitpmFF
 - **THEN** it can `import Gitpm` and call `PackageManager.open(root:options:)`
 
 ### Requirement: Manager surface
-`PackageManager` SHALL be opened with `open(root, ManagerOptions)` and expose every locked workspace operation (catalog reads, install, download, updates, rollback, enable/disable, forget/restore, uninstall, fork, replace, replacement check/resolve, sync-dist, with their plans); free functions: `list`, `check`, `readState`, `catalogLinks`, `authCheck`, `browseCatalog`, `catalogRelease`, `describeLostWork`, `uninstallRefusal` (throws `UninstallPlan::refusal`).
+`PackageManager` SHALL be opened with `open(root, ManagerOptions)` and expose every locked workspace operation (catalog reads, install, download, updates, rollback, enable/disable, forget/restore, uninstall, fork, replace, replacement check/resolve, sync-dist, with their plans); free functions: `forkRewrite(directory)`, `list`, `check`, `readState`, `catalogLinks`, `authCheck`, `browseCatalog`, `catalogRelease`, `describeLostWork`, `uninstallRefusal` (throws `UninstallPlan::refusal`).
 
 #### Scenario: Which calls open the workspace
 - **WHEN** a host calls a `PackageManager` method, or one of the free functions `list`, `check`, `readState`
@@ -53,6 +53,10 @@ The FFI crate SHALL generate the Swift module `Gitpm` over the C module `GitpmFF
 #### Scenario: UUID identity crosses the boundary
 - **WHEN** the host selects, forks or replaces a package through FFI
 - **THEN** fork takes no namespace and returns fresh UUIDs, and all package references contain UUIDs without name hints
+
+#### Scenario: Explicit fork dependency rewrite
+- **WHEN** a host calls `forkRewrite(directory)`
+- **THEN** it receives dependency rewrite records including package, from, to, requirement and optional newRequirement, without opening or locking a workspace
 
 ### Requirement: Errors keep kind and message
 Library errors SHALL map to the `PmError` enum, one case per kind, each with the full `message` and the library's structured fields (`id` for every error about a package, `LocalChanges.items`, `HasDependents.dependents` and `lostWork`, `IncompatibleReplacement.consumers`, `NotDeployed.sync`); `Other { kind, message }` SHALL carry a kind added to the non-exhaustive library enum later.
