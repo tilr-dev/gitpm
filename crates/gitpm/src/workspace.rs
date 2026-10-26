@@ -31,7 +31,7 @@ pub(crate) mod clones;
 pub mod fork;
 mod link;
 use clones::{guard_clone, installed_repo, place_clone, removal, source_repo};
-pub use fork::{DependencyRewrite, ForkedPackage, PackageFork};
+pub use fork::{ForkedPackage, PackageFork};
 pub use link::LinkResult;
 
 /// A mode in messages: `release`, `pinned at REF`, `branch NAME`.
@@ -868,6 +868,34 @@ impl Manager {
     /// Installed packages as a flat list (sorted by ID).
     pub fn list(&self) -> Result<Vec<InstalledPackage>> {
         Ok(self.state()?.installed())
+    }
+    /// Edit the working-tree manifest of an installed Git package. The recorded
+    /// installation and deployed output remain unchanged until an explicit update.
+    pub fn edit_dependency(
+        &self,
+        id: &str,
+        edit: &crate::DependencyEdit,
+    ) -> Result<crate::PackageDetails> {
+        let _busy = self.busy();
+        valid_id(id)?;
+        let state = self.state()?;
+        let record = state
+            .packages
+            .get(id)
+            .ok_or_else(|| Error::NotInstalled { id: id.into() })?;
+        ensure!(
+            record.build.is_none() && record.link().is_none(),
+            Unsupported,
+            "dependency editing requires an installed editable Git package"
+        );
+        let directory = installed_repo(&self.root, id, record)?;
+        crate::dependency_edit::edit_at(
+            &directory,
+            id,
+            record.path.as_deref().unwrap_or(""),
+            edit,
+            true,
+        )
     }
     /// Run `action` on a transaction that stages only the paths it touches; nothing
     /// in the live workspace changes unless the action succeeds.
@@ -4374,15 +4402,15 @@ mod tests {
         for (text, kind) in [
             ("{truncated", "invalid_data"),
             (
-                r#"{"format":1,"packages":{"../evil":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true,"metadata":{}}}}"#,
+                r#"{"format":1,"packages":{"../evil":{"name":"fixture","source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true,"metadata":{}}}}"#,
                 "invalid_id",
             ),
             (
-                r#"{"format":1,"packages":{"75494f24-1c7e-5480-9e39-738ff3d038c4/c":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true,"metadata":{}}}}"#,
+                r#"{"format":1,"packages":{"75494f24-1c7e-5480-9e39-738ff3d038c4/c":{"name":"fixture","source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true,"metadata":{}}}}"#,
                 "invalid_id",
             ),
             (
-                r#"{"format":1,"packages":{"demo1":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true,"metadata":{}}}}"#,
+                r#"{"format":1,"packages":{"demo1":{"name":"fixture","source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true,"metadata":{}}}}"#,
                 "invalid_id",
             ),
         ] {
@@ -7730,16 +7758,16 @@ mod tests {
             "^1.0"
         );
         assert!(fixture_git(&destination, &["status", "--porcelain"]).is_empty());
-        assert_eq!(
-            fork::fork_rewrite(&destination).unwrap(),
-            [DependencyRewrite {
-                package: theme.id.clone(),
-                from: "76a9b591-60f3-5c7f-9e1c-31648fc73bfd".into(),
-                to: store.id.clone(),
+        crate::edit_dependency(
+            &destination,
+            &theme.id,
+            &crate::DependencyEdit::Update {
+                dependency: "76a9b591-60f3-5c7f-9e1c-31648fc73bfd".into(),
+                new_dependency: store.id.clone(),
                 requirement: "^1.0".into(),
-                new_requirement: None,
-            }]
-        );
+            },
+        )
+        .unwrap();
         assert_eq!(
             package_manifest(&destination, Some("packages/theme"))
                 .unwrap()

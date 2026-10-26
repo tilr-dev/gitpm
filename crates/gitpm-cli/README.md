@@ -64,9 +64,10 @@ of `gitpm.json` (`packages/UUID` by default). A fork destination must be new.
 Git clones the recorded source at installed revisions with history and submodule
 links, ignoring local installation edits; repository files and package layout are
 preserved. Initialize submodules with `git -C DIR submodule update --init`;
-dependencies between the forks are preserved. Use `gitpm fork-rewrite DIR` to
-rewrite them explicitly before release; it requires no workspace and repeated calls
-leave the files unchanged. Fork preserves inherited tags, creates
+dependencies between the forks are preserved. Use `gitpm packages DIR` to inspect
+them and `gitpm dependency update PACKAGE OLD NEW REQUIREMENT --repo DIR` to edit
+one explicitly before release. Add and remove use `dependency add` and `dependency remove`.
+Omit `--repo` to edit an installed Git package worktree. Fork preserves inherited tags, creates
 no release tag and leaves workspace state, installed packages, replacement bindings
 and dist unchanged. Use `commit`, `install` and `replace` explicitly; an existing
 release tag still conflicts with `commit`. The removed fork options `--replace`,

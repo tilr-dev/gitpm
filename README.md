@@ -519,12 +519,13 @@ Changed in 0.5:
 
 Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING**):
 
-- **BREAKING:** Fork preserves dependency IDs and requirements. Call library
-  `gitpm::fork::fork_rewrite(&directory)`, FFI `forkRewrite(directory)`, or CLI
-  `gitpm fork-rewrite DIR` explicitly to redirect internal dependencies to sibling
-  fork UUIDs before releasing. `PackageFork` no longer contains `rewrites`; the
-  explicit call returns them. It edits local manifests without a workspace,
-  commit, installation or replacement; repeated calls return no changes.
+- **BREAKING:** Fork preserves dependency IDs and requirements. The unreleased inferred
+  rewrite API is removed. Use library `repository_packages` / `edit_dependency`, FFI
+  `repositoryPackages` / `editDependency`, or CLI `packages` / `dependency` to inspect
+  packages and explicitly choose each dependency ID and requirement before releasing.
+  `PackageFork` contains no dependency edits. Installed `list` entries now include
+  `name` and `installed: true`; state records require the installed manifest name.
+  Recreate earlier unreleased workspaces by installing their packages again.
 
 - **BREAKING:** Source clones in `repos/<key>` are bare repositories. Each installed
   Git package has a detached worktree in `worktrees/<uuid>` at its own
@@ -911,8 +912,8 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   comparators (`>=1.3.0 <2.0.0`, AND) remain; commas (`>=1.3, <2`), bare partial versions
   (`1.2`), wildcards (`1.*`), `||` and hyphen ranges are refused with
   `invalid_manifest`. Migration: write `^1.2.3` where a bare `1.2.3` meant "compatible",
-  `^1.2` for `1.2`, `>=1.3.0 <2.0.0` for `>=1.3, <2`. `fork-rewrite` writes rewritten
-  requirements as `^V`; `init` writes no dependencies.
+  `^1.2` for `1.2`, `>=1.3.0 <2.0.0` for `>=1.3, <2`. Dependency editing preserves supplied
+  requirements exactly; `init` writes no dependencies.
 - Versions may carry a pre-release (`1.3.0-beta.1`, SemVer order: `1.0.0-alpha <
   1.0.0-beta < 1.0.0`) in manifests, `--version`, catalogs and release tags
   (`ID@1.3.0-beta.1`); build metadata (`+build`) stays `invalid_version`. Pre-releases
@@ -1193,16 +1194,10 @@ packages/theme/dist/…
     configuration. Run `git -C DIR submodule update --init` to populate them.
     Installation deploys the committed package output selected by `dist`; fork does not build sources
     or enable dev mode.
-  - Fork preserves dependency IDs and requirements. Run `gitpm fork-rewrite DIR`
-    explicitly to rewrite dependencies between repository packages to their fork IDs. The
-    requirement is kept when satisfied by the fork's version, else
-    it becomes `^V`; each rewrite is printed. Dependencies on other packages keep
-    their original IDs. Depending on both an original and its fork is refused.
-    The explicit rewrite reads current `forkOf` mappings and returns only changes
-    made by that call; rerunning leaves unchanged manifests byte-for-byte intact.
-    Missing or ambiguous `forkOf` mappings, conflicting dependencies and invalid
-    rewritten manifests fail with `invalid_manifest` before writing any file.
-    It neither stages nor commits author edits and never opens a workspace.
+  - Fork preserves dependency IDs and requirements. Inspect with `gitpm packages DIR`,
+    then use `gitpm dependency update PACKAGE OLD NEW REQUIREMENT --repo DIR` to
+    choose a different dependency explicitly. No mapping or version requirement is
+    inferred from `forkOf`. Author edits do not stage, commit, install or replace.
   - Fork preserves inherited tags and creates no release tag. It leaves packages,
     replacement bindings, workspace state and dist unchanged. Run `commit` with a new
     version, then `install DIR ID` and `replace ORIGINAL --with ID` explicitly for
@@ -1216,8 +1211,8 @@ All repository packages are forked; the complete tree and gitpm.json are preserv
 d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50 forked from f851f609-bb81-52d6-bfef-33798624782c (packages/theme)
 09e5894a-6e33-5a1e-91e0-730a2f8cb569 forked from 955bf29f-2893-56ef-9439-369c50455ae7 (packages/panel)
 …
-$ gitpm fork-rewrite forks/me-packages
-Dependency: 09e5894a-6e33-5a1e-91e0-730a2f8cb569 now depends on d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50 ^1.0 (was f851f609-bb81-52d6-bfef-33798624782c)
+$ gitpm packages forks/me-packages
+$ gitpm dependency update 09e5894a-6e33-5a1e-91e0-730a2f8cb569 f851f609-bb81-52d6-bfef-33798624782c d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50 '^1.0' --repo forks/me-packages
 …
 ```
 
@@ -1288,7 +1283,7 @@ must be an array of strings; ignored`; the library reports it in
 `InstallResult.warnings`/`RevisionChange.warnings`, and
 `Manifest::metadata_problems()`/`metadata_strict()` give the check). The keys stay in the file as
 they were: `commit` and `fork` rewrite version and identity fields, while
-`fork-rewrite` explicitly rewrites dependencies. All three preserve metadata
+`dependency` explicitly edits dependencies. All operations preserve metadata
 (also the string form of `provides`).
 `init` writes `"title": "NAME"`.
 
@@ -1409,7 +1404,13 @@ let dist = pm.uninstall(id, &confirmed, /* force: ignore dependents */ false)?;
 pm.fork_into(id, Path::new("/work/demo1-fork"))?;   // sets forkOf + replaces
 let repo = Path::new("/work/forks/me-packages");               // created as a new folder
 let fork = pm.fork_packages(&["f851f609-bb81-52d6-bfef-33798624782c", "955bf29f-2893-56ef-9439-369c50455ae7"], repo)?; // one repo, dependencies preserved
-let rewrites = gitpm::fork::fork_rewrite(repo)?; // optional: use sibling fork dependencies
+let packages = gitpm::repository_packages(repo, Some(pm.root()))?;
+// The caller chooses IDs and requirements; no forkOf mapping is inferred.
+let edited = gitpm::edit_dependency(repo, consumer_id, &gitpm::DependencyEdit::Update {
+    dependency: original_dependency_id.into(),
+    new_dependency: fork_dependency_id.into(),
+    requirement: "^1.0".into(),
+})?;
 // Explicitly release all fork packages, then install only the desired package.
 gitpm::scaffold::commit_package(repo, "2.0.0", Some("d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50"))?;
 pm.install_package(repo.to_str().unwrap(), Some("d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50"), InstallTarget::Release)?;
@@ -1715,7 +1716,7 @@ them; `RevisionChange.unchangedReason` says why an update left a package (`pinne
 `Mode`; `force` defaults to false; `InstalledPackage.path` and `CatalogRelease.path` name
 the package folder; `InstalledPackage.clone` names the shared clone; `InstalledPackage`,
 `PackageSummary` and `CatalogRelease` carry the [metadata](#package-metadata); the fork
-records `PackageFork`, `ForkedPackage` and `DependencyRewrite` mirror the library
+records `PackageFork`, `ForkedPackage` and `PackageDetails` mirror the library
 types of the same names. The FFI-only `ForkResult` wraps the repository path returned
 by library `fork_into`. Free functions, which read without opening, locking or creating the
 workspace: `list(root, provides)` and `readState(root)` (`ListView`: `format`,
@@ -1826,3 +1827,41 @@ installs toolchains. UniFFI version: 0.32.
 ## License
 
 MIT OR Apache-2.0, at your option: [LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE).
+
+### Inspect packages and edit dependencies
+
+`gitpm list` (library `Manager::list` / `list_with`, FFI `list` / `readState`) returns
+installed snapshots, including each package's `id`, `name`, `installed: true`,
+optional `forkOf`, and dependency IDs and requirements with resolution status.
+
+`gitpm packages DIR` inspects current author manifests in a repository, including
+root and nested packages, originals and forks. Its JSON entries have `id`, `name`,
+`version`, `path`, `forkOf` (null when absent), `dependencies` (an ID-to-requirement
+object, empty when absent), and `installed`. The configured `--root` determines
+membership by ID without opening, locking or creating the workspace. Library
+`repository_packages(directory, root)` and FFI `repositoryPackages(directory, root)`
+accept an optional workspace root; omitting it reports all entries uninstalled.
+No built output is required to inspect or edit an author manifest.
+
+```sh
+gitpm dependency add PACKAGE DEPENDENCY '^1.0' --repo DIR
+gitpm dependency update PACKAGE OLD_DEPENDENCY NEW_DEPENDENCY '~2.1' --repo DIR
+gitpm dependency remove PACKAGE DEPENDENCY --repo DIR
+```
+
+Omit `--repo DIR` to edit an installed Git package's editable worktree under the
+workspace lock. Library `edit_dependency(directory, package, &DependencyEdit)` and
+`Manager::edit_dependency(id, &DependencyEdit)` correspond to the FFI free function
+`editDependency(directory, package, edit)` and method `PackageManager.editDependency`.
+`DependencyEdit` has `Add`, `Update` and `Remove` cases. Update accepts the same ID to
+change only its requirement. Add refuses an existing dependency; update/remove refuse
+a missing dependency; update refuses an occupied destination ID (`invalid_argument`).
+Invalid IDs, requirements and self-dependencies fail validation before writing.
+
+Each edit returns the current package description, preserving unrelated manifest
+fields and unknown keys. Author-path edits report `installed: false` because they
+have no workspace input; manager edits report true. Installed build-only packages
+and links do not own editable Git worktrees and return `unsupported`. Edits change
+only the selected manifest, leaving recorded installation snapshots and deployed
+output intact. Release and update/install remain explicit; normal local-changes
+checks continue to protect edited worktrees.

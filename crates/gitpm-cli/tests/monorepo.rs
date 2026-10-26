@@ -607,7 +607,7 @@ fn provider_of(state: &serde_json::Value, consumer: &str) -> String {
 }
 
 #[test]
-fn fork_ids_select_the_repository_and_preserve_dependencies_until_explicit_rewrite() {
+fn fork_ids_select_the_repository_and_preserve_dependencies_until_explicit_edit() {
     let f = Fixture::new();
     three_installed(&f);
     let out = f.ok(&[
@@ -637,8 +637,8 @@ fn fork_ids_select_the_repository_and_preserve_dependencies_until_explicit_rewri
         "{out}"
     );
     assert!(!out.contains("Dependency:"), "{out}");
-    assert!(out.contains("gitpm fork-rewrite"), "{out}");
-    assert!(out.find("gitpm fork-rewrite").unwrap() < out.find("gitpm commit").unwrap());
+    assert!(out.contains("gitpm packages"), "{out}");
+    assert!(out.find("gitpm packages").unwrap() < out.find("gitpm commit").unwrap());
     assert_eq!(config(&fork)["packages"], serde_json::json!(["packages/*"]));
     assert_eq!(
         manifest(&fork.join("packages/store"))["id"],
@@ -677,13 +677,29 @@ fn fork_ids_select_the_repository_and_preserve_dependencies_until_explicit_rewri
         String::from_utf8_lossy(&out.stdout)
     );
     let workspace_before = fs::read(f.dir.join("workspace/state.json")).unwrap();
-    let rewrite = f.ok(&["fork-rewrite", fork.to_str().unwrap()]);
-    assert!(rewrite.contains(format!("Dependency: {fork_panel} now depends on {fork_theme} ^1.0 (was f851f609-bb81-52d6-bfef-33798624782c)").as_str()), "{rewrite}");
+    let inspected: serde_json::Value =
+        serde_json::from_str(&f.ok(&["packages", fork.to_str().unwrap()])).unwrap();
+    assert!(
+        inspected
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["installed"] == false)
+    );
+    f.ok(&[
+        "dependency",
+        "update",
+        &fork_panel,
+        "f851f609-bb81-52d6-bfef-33798624782c",
+        &fork_theme,
+        "^1.0",
+        "--repo",
+        fork.to_str().unwrap(),
+    ]);
     assert_eq!(
         manifest(&fork.join("packages/panel"))["dependencies"],
         serde_json::json!({(fork_theme.as_str()): "^1.0"})
     );
-    assert!(f.ok(&["fork-rewrite", fork.to_str().unwrap()]).is_empty());
     assert_eq!(
         fs::read(f.dir.join("workspace/state.json")).unwrap(),
         workspace_before
@@ -826,7 +842,26 @@ fn fork_one_id_preserves_uninstalled_siblings_layout_and_installed_revisions() {
         panel["dependencies"],
         serde_json::json!({"f851f609-bb81-52d6-bfef-33798624782c": "^1.0"})
     );
-    f.ok(&["fork-rewrite", fork.to_str().unwrap()]);
+    f.ok(&[
+        "dependency",
+        "update",
+        &fork_theme,
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+        &fork_store,
+        "^1.0",
+        "--repo",
+        fork.to_str().unwrap(),
+    ]);
+    f.ok(&[
+        "dependency",
+        "update",
+        &fork_panel,
+        "f851f609-bb81-52d6-bfef-33798624782c",
+        &fork_theme,
+        "^1.0",
+        "--repo",
+        fork.to_str().unwrap(),
+    ]);
     assert_eq!(
         manifest(&fork.join("packages/theme"))["dependencies"],
         serde_json::json!({(fork_store.as_str()): "^1.0"})
@@ -1582,14 +1617,22 @@ fn fork_source_without_workspace_matches_installed_fork_output() {
         manifest(&theme_path)["dependencies"],
         serde_json::json!({"76a9b591-60f3-5c7f-9e1c-31648fc73bfd": "^1.0"})
     );
-    let rewrite = f.ok(&["fork-rewrite", dest_text]);
-    assert!(rewrite.contains("Dependency:"), "{rewrite}");
+    let theme = manifest(&theme_path);
+    f.ok(&[
+        "dependency",
+        "update",
+        theme["id"].as_str().unwrap(),
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+        source_store,
+        "^1.0",
+        "--repo",
+        dest_text,
+    ]);
     assert_eq!(
         manifest(&theme_path)["dependencies"],
         serde_json::json!({(source_store): "^1.0"})
     );
     assert!(!f.dir.join("workspace").exists());
-    assert!(f.ok(&["fork-rewrite", dest_text]).is_empty());
     assert!(!f.dir.join("workspace").exists());
     f.ok(&[
         "install",
@@ -1697,4 +1740,100 @@ fn fork_source_readme_example() {
     assert_ne!(m["id"], original["id"]);
     assert_eq!(m["name"], "hello");
     assert_eq!(m["forkOf"]["id"], original["id"]);
+}
+
+#[test]
+fn dependency_commands_edit_author_and_installed_forks() {
+    let f = Fixture::new();
+    assert!(
+        f.ok(&["dependency", "--help"])
+            .contains("dependency update")
+    );
+    assert!(
+        f.ok(&["dependency", "update", "--help"])
+            .contains("dependency update")
+    );
+    let original = "76a9b591-60f3-5c7f-9e1c-31648fc73bfd";
+    let dep = "22222222-2222-4222-8222-222222222222";
+    let new = "33333333-3333-4333-8333-333333333333";
+    let inspected: serde_json::Value =
+        serde_json::from_str(&f.ok(&["packages", f.source()])).unwrap();
+    assert_eq!(inspected.as_array().unwrap().len(), 2);
+    assert!(
+        inspected
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["name"] == "fixture"
+                && p["installed"] == false
+                && p["forkOf"].is_null()
+                && p["dependencies"] == serde_json::json!({}))
+    );
+    assert!(!f.dir.join("workspace").exists());
+    f.ok(&["install", f.source(), original]);
+    let fork = f.dir.join("editable-fork");
+    f.ok(&["fork", original, "--into", fork.to_str().unwrap()]);
+    let package = manifest(&fork.join("packages/store"));
+    let id = package["id"].as_str().unwrap();
+    f.ok(&["commit", fork.to_str().unwrap(), "1.1.0"]);
+    f.ok(&["install", fork.to_str().unwrap(), id]);
+    let listed: serde_json::Value = serde_json::from_str(&f.ok(&["list"])).unwrap();
+    let installed = listed["resolved"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == id)
+        .unwrap();
+    assert_eq!(installed["name"], "fixture");
+    assert_eq!(installed["installed"], true);
+    assert_eq!(installed["forkOf"]["id"], original);
+    let state = fs::read(f.dir.join("workspace/state.json")).unwrap();
+    for author in [true, false] {
+        let suffix: Vec<&str> = if author {
+            vec!["--repo", fork.to_str().unwrap()]
+        } else {
+            vec![]
+        };
+        let run = |args: Vec<&str>| {
+            let mut owned: Vec<String> = args.into_iter().map(str::to_owned).collect();
+            owned.extend(suffix.iter().map(|s| (*s).to_owned()));
+            f.ok(&owned.iter().map(String::as_str).collect::<Vec<_>>())
+        };
+        let added: serde_json::Value =
+            serde_json::from_str(&run(vec!["dependency", "add", id, dep, "^1"])).unwrap();
+        assert_eq!(added["dependencies"][dep], "^1");
+        assert_eq!(added["installed"], !author);
+        let folder = if author {
+            fork.join("packages/store")
+        } else {
+            f.dir
+                .join("workspace/worktrees")
+                .join(id)
+                .join("packages/store")
+        };
+        let before = fs::read(folder.join("plugin.json")).unwrap();
+        let mut invalid = vec!["dependency", "update", id, dep, id, "*"];
+        invalid.extend_from_slice(&suffix);
+        assert!(f.fails(&invalid).contains("depends on itself"));
+        assert_eq!(fs::read(folder.join("plugin.json")).unwrap(), before);
+        let changed: serde_json::Value =
+            serde_json::from_str(&run(vec!["dependency", "update", id, dep, new, "~2"])).unwrap();
+        assert_eq!(changed["dependencies"][new], "~2");
+        assert!(changed["dependencies"].get(dep).is_none());
+        let removed: serde_json::Value =
+            serde_json::from_str(&run(vec!["dependency", "remove", id, new])).unwrap();
+        assert_eq!(removed["dependencies"], serde_json::json!({}));
+        assert_eq!(fs::read(f.dir.join("workspace/state.json")).unwrap(), state);
+    }
+    let inspected: serde_json::Value =
+        serde_json::from_str(&f.ok(&["packages", fork.to_str().unwrap()])).unwrap();
+    assert_eq!(
+        inspected
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == id)
+            .unwrap()["installed"],
+        true
+    );
 }
