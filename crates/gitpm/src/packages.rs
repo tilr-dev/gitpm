@@ -133,7 +133,9 @@ pub(crate) fn manifest_at(
     };
     let manifest: Manifest = serde_json::from_str(&show(repo, commit, &path, custom_ssh)?)
         .map_err(|e| Error::invalid_manifest(format!("invalid {path}: {e}")))?;
-    crate::model::validate_manifest(&manifest).map_err(|error| error.with_package(&manifest.id))?;
+    manifest
+        .validate_dist()
+        .map_err(|error| error.with_package(&manifest.id))?;
     Ok(manifest)
 }
 
