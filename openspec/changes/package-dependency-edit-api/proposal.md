@@ -24,6 +24,3 @@ The owner chose explicit package inspection and dependency editing instead of in
 
 ## Impact
 Library, UniFFI, CLI, manifests and README. Workspace state and deployed output remain recorded snapshots until an explicit release/install/update operation.
-
-## Implementation
-Implemented in commit `e22aac8`.
