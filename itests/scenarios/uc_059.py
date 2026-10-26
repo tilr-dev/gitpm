@@ -1,8 +1,8 @@
 """UC-059: Required dependent guards on disable, forget and uninstall (P0, mandatory).
 
-Fixture g6_core_deps_installed: app/a (lib/core ^1.0) and app/c (lib/core ^1) installed
-from the catalog with lib/core 1.1.0 pulled in, plus the unrelated other/x. app/c plays
-the role of the spec's second dependent "app/b" (in the shared g6_core catalog app/b is
+Fixture g6_core_deps_installed: 9692fc07-23c7-5f20-8779-f09374f1a571 (757fd5ca-2b6a-5b2f-8a5d-60980b028665 ^1.0) and 1a620c0a-aa3c-533c-9960-3d49016fa231 (757fd5ca-2b6a-5b2f-8a5d-60980b028665 ^1) installed
+from the catalog with 757fd5ca-2b6a-5b2f-8a5d-60980b028665 1.1.0 pulled in, plus the unrelated a768d335-0cf7-597a-b1ba-0eb542495aec. 1a620c0a-aa3c-533c-9960-3d49016fa231 plays
+the role of the spec's second dependent "f5984d44-92bd-51ac-8e8f-d911dd824ef3" (in the shared g6_core catalog f5984d44-92bd-51ac-8e8f-d911dd824ef3 is
 the ^2.0 conflict consumer of UC-058).
 
 Owner decision: `disable --force` of a package with dependents is valid (disables it).
@@ -15,8 +15,8 @@ import time
 
 from gitpmtest import R, T, case
 
-CORE = "lib/core"
-DEPENDENTS = "app/a, app/c"
+CORE = "757fd5ca-2b6a-5b2f-8a5d-60980b028665"
+DEPENDENTS = "1a620c0a-aa3c-533c-9960-3d49016fa231, 9692fc07-23c7-5f20-8779-f09374f1a571"
 
 
 def gitpm_tty(t: T, *args: str, answer: bytes, timeout: int = 60) -> R:
@@ -51,7 +51,7 @@ def core_status(t: T, consumer: str) -> dict:
 
 @case(fixture="g6_core_deps_installed", spec=["dependencies/dependents-guard-removal#uninstall-a-dependency", "errors/display-is-the-complete-message#has-dependents"])
 def uninstall_refused_naming_dependents(t: T):
-    """1. uninstall lib/core is refused naming app/a and app/c; nothing changes."""
+    """1. uninstall 757fd5ca-2b6a-5b2f-8a5d-60980b028665 is refused naming 9692fc07-23c7-5f20-8779-f09374f1a571 and 1a620c0a-aa3c-533c-9960-3d49016fa231; nothing changes."""
     before = t.snap(t.ws)
     t.gitpm_err("uninstall", CORE, kind="has_dependents",
              contains=f"cannot uninstall {CORE}: required by {DEPENDENTS}")
@@ -60,7 +60,7 @@ def uninstall_refused_naming_dependents(t: T):
 
 @case(fixture="g6_core_deps_installed", spec=["dependencies/dependents-guard-removal"])
 def forget_refused_naming_dependents(t: T):
-    """2a. forget lib/core: the same guard."""
+    """2a. forget 757fd5ca-2b6a-5b2f-8a5d-60980b028665: the same guard."""
     before = t.snap(t.ws)
     t.gitpm_err("forget", CORE, kind="has_dependents", contains=f"cannot forget {CORE}: required by {DEPENDENTS}")
     t.same(before, "workspace")
@@ -68,7 +68,7 @@ def forget_refused_naming_dependents(t: T):
 
 @case(fixture="g6_core_deps_installed", spec=["dependencies/dependents-guard-removal"])
 def disable_refused_naming_dependents(t: T):
-    """2b. disable lib/core: the same guard."""
+    """2b. disable 757fd5ca-2b6a-5b2f-8a5d-60980b028665: the same guard."""
     before = t.snap(t.ws)
     t.gitpm_err("disable", CORE, kind="has_dependents", contains=f"cannot disable {CORE}: required by {DEPENDENTS}")
     t.same(before, "workspace")
@@ -76,53 +76,53 @@ def disable_refused_naming_dependents(t: T):
 
 @case(fixture="g6_core_deps_installed", spec=["dependencies/broken-consumers-are-reported-not-enforced", "dist/enable-and-disable-deploy-and-remove"])
 def disable_force_reports_broken_dependents(t: T):
-    """2c. disable --force disables lib/core (dist removed); dependents are reported, never silently broken."""
+    """2c. disable --force disables 757fd5ca-2b6a-5b2f-8a5d-60980b028665 (dist removed); dependents are reported, never silently broken."""
     t.gitpm_ok("disable", CORE, "--force")
-    t.eq(t.package(CORE)["enabled"], False, "lib/core disabled")
-    t.ok(not t.dist(CORE).exists(), "dist/lib/core removed")
-    for consumer in ["app/a", "app/c"]:
+    t.eq(t.package(CORE)["enabled"], False, "757fd5ca-2b6a-5b2f-8a5d-60980b028665 disabled")
+    t.ok(not t.dist(CORE).exists(), "dist/757fd5ca-2b6a-5b2f-8a5d-60980b028665 removed")
+    for consumer in ["9692fc07-23c7-5f20-8779-f09374f1a571", "1a620c0a-aa3c-533c-9960-3d49016fa231"]:
         row = core_status(t, consumer)
         t.eq((row["provider"], row["satisfied"], row.get("problem")), (CORE, False, f"{CORE} is disabled"),
              f"{consumer} dependency")
     check = t.gitpm_ok("--catalog", t.catalog, "check").out
-    t.has(check, f"Unsatisfied dependency: app/a → {CORE} ^1.0: {CORE} is disabled",
-          f"Unsatisfied dependency: app/c → {CORE} ^1: {CORE} is disabled")
+    t.has(check, f"Unsatisfied dependency: 9692fc07-23c7-5f20-8779-f09374f1a571 → {CORE} ^1.0: {CORE} is disabled",
+          f"Unsatisfied dependency: 1a620c0a-aa3c-533c-9960-3d49016fa231 → {CORE} ^1: {CORE} is disabled")
 
 
 @case(fixture="g6_core_deps_installed", spec=["dependencies/broken-consumers-are-reported-not-enforced#unrelated-install-after-forced-removal"])
 def uninstall_force_reports_unsatisfied(t: T):
-    """3. uninstall --force removes lib/core; list and check report app/a and app/c unsatisfied."""
+    """3. uninstall --force removes 757fd5ca-2b6a-5b2f-8a5d-60980b028665; list and check report 9692fc07-23c7-5f20-8779-f09374f1a571 and 1a620c0a-aa3c-533c-9960-3d49016fa231 unsatisfied."""
     t.gitpm_ok("uninstall", CORE, "--force")
     t.not_installed(CORE)
-    for consumer in ["app/a", "app/c"]:
+    for consumer in ["9692fc07-23c7-5f20-8779-f09374f1a571", "1a620c0a-aa3c-533c-9960-3d49016fa231"]:
         row = core_status(t, consumer)
         t.eq((row["provider"], row["satisfied"], row.get("problem")), (None, False, "not installed"),
              f"{consumer} dependency")
     check = t.gitpm_ok("check").out
-    t.has(check, f"Unsatisfied dependency: app/a → {CORE} ^1.0: not installed",
-          f"Unsatisfied dependency: app/c → {CORE} ^1: not installed")
+    t.has(check, f"Unsatisfied dependency: 9692fc07-23c7-5f20-8779-f09374f1a571 → {CORE} ^1.0: not installed",
+          f"Unsatisfied dependency: 1a620c0a-aa3c-533c-9960-3d49016fa231 → {CORE} ^1: not installed")
     # A broken consumer does not block unrelated operations.
-    t.gitpm_ok("disable", "other/x")
-    t.gitpm_ok("enable", "other/x")
+    t.gitpm_ok("disable", "a768d335-0cf7-597a-b1ba-0eb542495aec")
+    t.gitpm_ok("enable", "a768d335-0cf7-597a-b1ba-0eb542495aec")
 
 
 @case(fixture="g6_core_deps_installed", spec=["dependencies/dependents-guard-removal", "dependencies/state-keeps-dependency-edges"])
 def unused_dependency_uninstalls_without_guard(t: T):
-    """4. After uninstalling app/a and app/c, lib/core is unused and uninstalls without a guard."""
-    t.gitpm_ok("uninstall", "app/a")
-    t.eq(resolved(t)[CORE].get("dependents"), ["app/c"], "dependents after app/a")
-    t.gitpm_err("uninstall", CORE, kind="has_dependents", contains="required by app/c")
-    t.gitpm_ok("uninstall", "app/c")
-    t.ok(not resolved(t)[CORE].get("dependents"), "lib/core unused")
+    """4. After uninstalling 9692fc07-23c7-5f20-8779-f09374f1a571 and 1a620c0a-aa3c-533c-9960-3d49016fa231, 757fd5ca-2b6a-5b2f-8a5d-60980b028665 is unused and uninstalls without a guard."""
+    t.gitpm_ok("uninstall", "9692fc07-23c7-5f20-8779-f09374f1a571")
+    t.eq(resolved(t)[CORE].get("dependents"), ["1a620c0a-aa3c-533c-9960-3d49016fa231"], "dependents after 9692fc07-23c7-5f20-8779-f09374f1a571")
+    t.gitpm_err("uninstall", CORE, kind="has_dependents", contains="required by 1a620c0a-aa3c-533c-9960-3d49016fa231")
+    t.gitpm_ok("uninstall", "1a620c0a-aa3c-533c-9960-3d49016fa231")
+    t.ok(not resolved(t)[CORE].get("dependents"), "757fd5ca-2b6a-5b2f-8a5d-60980b028665 unused")
     r = t.gitpm_ok("uninstall", CORE)
     t.lacks(r.err, "required by")
     t.not_installed(CORE)
-    t.eq(sorted(t.state()["packages"]), ["other/x"], "only the unrelated package is left")
+    t.eq(sorted(t.state()["packages"]), sorted(["a768d335-0cf7-597a-b1ba-0eb542495aec"]), "only the unrelated package is left")
 
 
 @case(fixture="g6_core_deps_installed", spec=["dependencies/dependents-guard-removal", "install-uninstall/uninstall-is-planned-and-confirmed"])
 def dirty_dependency_reports_guard_and_lost_work(t: T):
-    """5. Dirty lib/core clone: one refusal reports the dependents and the local work; nothing changes."""
+    """5. Dirty 757fd5ca-2b6a-5b2f-8a5d-60980b028665 clone: one refusal reports the dependents and the local work; nothing changes."""
     (t.worktree(CORE) / "dist/index.js").write_text("local edit\n")
     (t.worktree(CORE) / "scratch.txt").write_text("untracked\n")
     before = t.snap(t.ws)

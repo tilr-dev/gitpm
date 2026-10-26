@@ -1,7 +1,7 @@
 """UC-004: Init and create scaffold (P0).
 
-`gitpm init NS/NAME --into DIR` (`create` = alias). Scaffold layout (plugin.json, dist/index.js, README.md, .gitignore), branch main, one
-commit with the scoped 0.1.0 tag, installability, identity fallback configured only in
+`gitpm init NAME --into DIR`. Scaffold layout (plugin.json, dist/index.js, README.md, .gitignore), branch main, one
+commit with the shared v0.1.0 tag, installability, identity fallback configured only in
 the new repository, and refusal on an existing directory with a sentinel. Init never
 adds an origin, a catalog entry or an installation.
 """
@@ -13,9 +13,10 @@ from pathlib import Path
 from gitpmtest import T, case
 
 def inspect_scaffold(t: T, repo: Path, plugin_id: str):
-    name = plugin_id.split("/")[1]
+    name = plugin_id
+    plugin_id = json.loads((repo / "plugin.json").read_text())["id"]
     manifest = json.loads((repo / "plugin.json").read_text())
-    t.eq(manifest, {"id": plugin_id, "version": "0.1.0", "dependencies": {}, "title": name}, "plugin.json")
+    t.eq(manifest, {"id": plugin_id, "name": name, "version": "0.1.0", "dependencies": {}, "title": name}, "plugin.json")
     t.has((repo / "dist/index.js").read_text(), "export const greeting", f"{name} 0.1.0")
     t.has((repo / "README.md").read_text(), f"# {name}", f"--ref v0.1.0")
     t.ok((repo / ".gitignore").is_file(), ".gitignore exists")
@@ -31,6 +32,7 @@ def inspect_scaffold(t: T, repo: Path, plugin_id: str):
 
 
 def install_scaffold(t: T, repo: Path, plugin_id: str):
+    plugin_id = json.loads((repo / "plugin.json").read_text())["id"]
     t.gitpm_ok("install", repo, "--ref", f"v0.1.0")
     p = t.package(plugin_id)
     t.eq(p["current"], {"version": "0.1.0", "commit": t.rev(repo)}, "installed release")
@@ -42,30 +44,30 @@ SCAFFOLD = "authoring/init-creates-a-package-with-its-first-release"
 
 @case(spec=[f"{SCAFFOLD}#scaffold-files-and-commit", "install-uninstall/install-an-explicit-ref-or-a-branch"])
 def init_nested_relative_path(t: T):
-    """init into a new nested relative path: parents created, ID local/demo1, installable."""
-    t.gitpm_ok("init", "local/demo1", "--into", "deep/nested dir/demo1")
+    """init into a new nested relative path: parents created, generated UUID, installable."""
+    t.gitpm_ok("init", "demo1", "--into", "deep/nested dir/demo1")
     repo = t.root / "deep/nested dir/demo1"
-    inspect_scaffold(t, repo, "local/demo1")
-    install_scaffold(t, repo, "local/demo1")
+    inspect_scaffold(t, repo, "demo1")
+    install_scaffold(t, repo, "demo1")
 
 
 @case(spec=[f"{SCAFFOLD}#new-package-repository"])
 def init_absolute_path_with_spaces(t: T):
     """init into a new absolute path with spaces."""
     repo = t.root / "my packages/sub dir/demo2"
-    r = t.gitpm_ok("init", "dan/demo2", "--into", repo)
-    t.has(r.out, "ID: dan/demo2", "v0.1.0")
-    inspect_scaffold(t, repo, "dan/demo2")
-    install_scaffold(t, repo, "dan/demo2")
+    r = t.gitpm_ok("init", "demo2", "--into", repo)
+    t.has(r.out, f"ID: {json.loads((repo / 'plugin.json').read_text())['id']}", "v0.1.0")
+    inspect_scaffold(t, repo, "demo2")
+    install_scaffold(t, repo, "demo2")
 
 
 @case(spec=[f"{SCAFFOLD}#new-package-repository"])
 def init_into_siblings_gives_separate_repositories(t: T):
     """Two inits into sibling paths give two independent repositories."""
-    t.gitpm_ok("init", "local/one", "--into", "x/one")
-    t.gitpm_ok("init", "local/two", "--into", "x/two")
+    t.gitpm_ok("init", "one", "--into", "x/one")
+    t.gitpm_ok("init", "two", "--into", "x/two")
     for name in ("one", "two"):
-        inspect_scaffold(t, t.root / "x" / name, f"local/{name}")
+        inspect_scaffold(t, t.root / "x" / name, name)
     t.ok(not (t.root / "x/.git").exists(), "parent is not a repository")
 
 
@@ -81,7 +83,7 @@ def missing_identity_is_repository_local(t: T):
     (t.root / "home").mkdir()
     # Sanity: this environment really has no identity.
     t.ok(t.run(*unset, "git", "config", "user.name", env=env).code != 0, "no user.name in the isolated config")
-    r = t.run(*unset, "gitpm", "init", "local/demo3", "--into", "noid/demo3", env=env)
+    r = t.run(*unset, "gitpm", "init", "demo3", "--into", "noid/demo3", env=env)
     t.eq(r.code, 0, "init exit without identity")
     repo = t.root / "noid/demo3"
     t.eq(t.git(repo, "config", "--local", "user.name"), "Package Demo", "local user.name")
@@ -95,7 +97,7 @@ def missing_identity_is_repository_local(t: T):
 @case(spec=[SCAFFOLD])
 def existing_identity_is_not_overridden(t: T):
     """With a configured identity no local user.* is written."""
-    t.gitpm_ok("init", "local/demo4", "--into", "withid/demo4")
+    t.gitpm_ok("init", "demo4", "--into", "withid/demo4")
     repo = t.root / "withid/demo4"
     t.ok(t.git(repo, "config", "--local", "user.name", check=False) == "", "no local user.name")
     t.eq(t.git(repo, "log", "-1", "--format=%an"), "gitpm Test", "author from the global identity")
@@ -107,7 +109,7 @@ def existing_case(command: str):
         target.mkdir(parents=True)
         (target / "keep.txt").write_text("sentinel")
         before = t.snap(t.root, git=True)
-        t.gitpm_err(command, "dan/demo5", "--into", target, kind="invalid_argument",
+        t.gitpm_err(command, "e7e2c224-58d3-5eab-a237-f2f34cede231", "--into", target, kind="invalid_argument",
                     contains="exists but is not a Git repository")
         t.same(before, "fixture (sentinel directory)")
         t.ok(not (target / ".git").exists(), "no repository inside the existing directory")
@@ -125,7 +127,7 @@ existing_case("init")
 def create_is_an_unknown_command(t: T):
     """The former alias `create` fails with `unknown command: create; use --help` and creates nothing."""
     before = t.snap(t.root, git=True)
-    r = t.gitpm("create", "acme/hello", "--into", "hello")
+    r = t.gitpm("create", "7e6e8392-7be8-55ae-bd03-2b430b1c5d59", "--into", "hello")
     t.ok(r.code != 0, "create refused")
     t.has(r.err, "unknown command: create; use --help")
     t.same(before, "fixture")

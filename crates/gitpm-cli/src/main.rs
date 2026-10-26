@@ -3,7 +3,7 @@
 use anyhow::{Result, bail, ensure};
 use gitpm::{
     DistSync, Error as PmError, ListOptions, Manager, Options, ReplacementPlan, auth, catalog,
-    check, identity, scaffold,
+    check, scaffold,
 };
 use gitpm_cli::{catalog as catalog_text, check as check_text};
 use std::io::{self, IsTerminal, Write};
@@ -107,8 +107,7 @@ fn hint(invocation: &Invocation, error: &PmError) -> Option<String> {
                     "`gitpm uninstall {id}` or `gitpm forget {id}` drops a package whose clone is gone; install it again to deploy it"
                 )
             } else {
-                let (ns, _) = skipped.id.split_once('/')?;
-                let path = format!("dist/{ns}");
+                let path = format!("dist/{}", skipped.id);
                 if skipped.reason != format!("{path} is not a folder") {
                     return None;
                 }
@@ -665,23 +664,23 @@ Workspace (installed packages):",
     },
     Help {
         commands: &["fork"],
-        text: "  fork ID [ID...] --ns NS --into DIR  fork installed packages of one repository as
-                                   NS/<same name> into the fork repository DIR: a new
+        text: "  fork ID [ID...] --into DIR  fork installed packages with fresh UUIDs
+                                   and preserved aliases into repository DIR: a new
                                    folder clones the recorded source with Git history
                                    at installed revisions; local installation edits are
-                                   ignored. All repository packages are renamed;
+                                   ignored. Every repository package gets a new UUID;
                                    all files and the package layout are retained.
                                    Existing destinations are refused. Dependencies
                                    between packages forked together are rewritten
                                    No release, installation or replacement is performed;
                                    use commit, install and replace explicitly
-  fork [ID...] --from SOURCE --ns NS --into DIR [--ref REF]
+  fork [ID...] --from SOURCE --into DIR [--ref REF]
                                    clone a Git path or URL without a workspace.
                                    Default: latest stable vVERSION release containing
                                    the first ID; all IDs must exist at that revision.
                                    --ref accepts any revision, branch or commit.
                                    Omit IDs only for a single-package source.
-                                   All packages are retained and renamed",
+                                   All packages receive fresh UUIDs; names are preserved",
     },
     Help {
         commands: &["replace"],
@@ -712,13 +711,13 @@ Authoring:",
     },
     Help {
         commands: &["init"],
-        text: "  init NAMESPACE/NAME --into DIR   create a package (0.1.0 in a new repository):
+        text: "  init NAME --into DIR   create a package (0.1.0 in a new repository):
                                    a new DIR becomes a single-package repository; a
                                    repository DIR with gitpm.json (or without one and no
-                                   root package) gets PREFIX/NAME at the repository
+                                   root package) gets PREFIX/UUID at the repository
                                    version, without creating a release tag
     [--multi] [--no-release]       --multi: a new (or empty) DIR becomes a multi-package
-                                   repository (gitpm.json, packages/NAME); --no-release:
+                                   repository (gitpm.json, packages/UUID); --no-release:
                                    commit only, no tag (release later with commit)",
     },
     Help {
@@ -852,7 +851,6 @@ fn run(invocation: &mut Invocation) -> Result<()> {
     let with = option(&mut args, "--with")?;
     let package = option(&mut args, "--package")?;
     let into = option(&mut args, "--into")?;
-    let ns = option(&mut args, "--ns")?;
     let provides = option(&mut args, "--provides")?;
     let multi = flag(&mut args, "--multi")?;
     let no_release = flag(&mut args, "--no-release")?;
@@ -950,7 +948,6 @@ fn run(invocation: &mut Invocation) -> Result<()> {
         (!multi && !no_release) || command == "init",
         "--multi/--no-release require init"
     );
-    ensure!(ns.is_none() || command == "fork", "--ns requires fork");
     ensure!(
         with.is_none() || matches!(command, "replace" | "replace-check" | "replace-resolve"),
         "--with requires replace/replace-check/replace-resolve"
@@ -1013,7 +1010,7 @@ fn run(invocation: &mut Invocation) -> Result<()> {
     // Parse IDs and versions with the library's parsers before opening the workspace: a
     // rejected command creates nothing.
     if command == "init" {
-        identity::split(id)?;
+        scaffold::validate_name(id)?;
         ensure!(
             into.is_some(),
             "{command} needs --into DIR: the repository (a new folder, or a repository with gitpm.json to add the package to)"
@@ -1043,14 +1040,6 @@ fn run(invocation: &mut Invocation) -> Result<()> {
         gitpm::valid_id(id)?;
     }
     if command == "fork" {
-        // One form only: the namespace of the new IDs and the fork repository are given
-        // explicitly; nothing is derived from an ID or a source.
-        let ns = ns.as_deref().ok_or_else(|| {
-            anyhow::anyhow!(
-                "fork needs --ns NAMESPACE: the namespace of the new packages (NAMESPACE/<same name>)"
-            )
-        })?;
-        identity::valid_part(ns)?;
         ensure!(
             into.is_some(),
             "fork needs --into DIR: the fork repository (a new folder)"
@@ -1086,7 +1075,6 @@ fn run(invocation: &mut Invocation) -> Result<()> {
             &source,
             &ids,
             reference.as_deref(),
-            ns.as_deref().unwrap_or_default(),
             Path::new(into.as_deref().unwrap_or_default()),
             &ssh_options,
         )?;
@@ -1129,13 +1117,14 @@ fn run(invocation: &mut Invocation) -> Result<()> {
             return Ok(());
         }
         "init" => {
-            let (namespace, name) = identity::split(id)?;
+            let name = id;
             let dir = into.as_deref().unwrap_or_default();
             let options = scaffold::InitOptions {
                 multi,
                 release: !no_release,
             };
-            let created = scaffold::init_with(Path::new(dir), namespace, name, options)?;
+            let created = scaffold::init_with(Path::new(dir), name, options)?;
+            let id = created.id.as_str();
             let source = scaffold::shell_quote(&created.repo.to_string_lossy());
             let root = scaffold::shell_quote(&root);
             let package = match &created.folder {
@@ -1284,10 +1273,9 @@ fn run(invocation: &mut Invocation) -> Result<()> {
     )?;
     match command {
         "fork" => {
-            let namespace = ns.as_deref().unwrap_or_default();
             let ids: Vec<&str> = args[1..].iter().map(String::as_str).collect();
             let destination = Path::new(into.as_deref().unwrap_or_default());
-            let fork = manager.fork_packages(&ids, destination, namespace)?;
+            let fork = manager.fork_packages(&ids, destination)?;
             print_fork_result(&fork);
         }
         "link" => {

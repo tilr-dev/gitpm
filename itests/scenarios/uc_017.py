@@ -1,12 +1,12 @@
 """UC-017: Rollback and one-version history (P0).
 
-Fixture g2_hello_history: dan/hello installed at 0.1.0, updated to 0.1.1, then 0.1.2
+Fixture g2_hello_history: 3dce1568-569c-5b53-9321-37185e751947 installed at 0.1.0, updated to 0.1.1, then 0.1.2
 (current 0.1.2, previous 0.1.1). hello_installed for the no-history case.
 """
 
 from gitpmtest import T, case
 
-ID = "dan/hello"
+ID = "3dce1568-569c-5b53-9321-37185e751947"
 
 
 def tagged(t: T, version: str) -> str:
@@ -92,11 +92,11 @@ def missing_previous_snapshot_fails_safely(t: T):
 def rollback_of_a_fork_with_upstream_tags(t: T):
     """A fork whose repository also holds a tag of its upstream on a commit no branch of the
     fork contains: install, update, rollback all succeed (the fetched tag is published)."""
-    fork = "me/hello"
+    fork = "ce6c8a3b-b2f8-5391-8ef8-4cbb7873f5d4"
     first = t.new_package(fork, "1.0.0")
     repo = t.repo(fork)
     t.git(repo, "checkout", "-q", "--detach")
-    t.release("acme/hello", "1.2.0", repo=repo)
+    t.release("7e6e8392-7be8-55ae-bd03-2b430b1c5d59", "1.2.0", repo=repo)
     t.git(repo, "checkout", "-q", "main")
     r = t.gitpm_ok("install", repo)
     t.lacks(r.err, "Warning:", "v1.2.0")

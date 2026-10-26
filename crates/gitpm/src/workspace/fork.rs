@@ -117,33 +117,23 @@ fn rewrite_dependencies(
 }
 
 impl Manager {
-    /// Fork one installed package as `NAMESPACE/<same name>`: [`Manager::fork_packages`]
+    /// Fork one installed package with a fresh UUID: [`Manager::fork_packages`]
     /// with one ID. Returns the fork repository.
-    pub fn fork_in_namespace(
-        &self,
-        id: &str,
-        destination: &Path,
-        namespace: &str,
-    ) -> Result<PathBuf> {
-        Ok(self.fork_packages(&[id], destination, namespace)?.path)
+    pub fn fork_into(&self, id: &str, destination: &Path) -> Result<PathBuf> {
+        Ok(self.fork_packages(&[id], destination)?.path)
     }
-    /// Fork installed packages of one repository into `namespace` (new IDs
-    /// `NAMESPACE/<same name>`) as the fork repository `destination`:
+    /// Fork installed packages of one repository with fresh UUIDs into `destination`.
     ///
     /// The destination must be a new folder outside the workspace. Clone the recorded
     /// source with history on a new `fork` branch, retaining submodule Git links.
     /// Installed packages start at their recorded revisions; local installation work
-    /// is ignored. Other packages start at the newest installed revision. All packages in the repository are renamed, including siblings
-    /// that are not installed; repository files and the package layout are preserved.
+    /// is ignored. Other packages start at the newest installed revision. All packages
+    /// in the repository receive fresh identities, including uninstalled siblings;
+    /// names, repository files and the package layout are preserved.
     /// Each manifest gets its new ID, `forkOf` and `replaces`; dependencies among
     /// packages forked together are rewritten. Nothing is tagged.
-    pub fn fork_packages(
-        &self,
-        ids: &[&str],
-        destination: &Path,
-        namespace: &str,
-    ) -> Result<PackageFork> {
-        self.fork_packages_with(ids, destination, namespace)
+    pub fn fork_packages(&self, ids: &[&str], destination: &Path) -> Result<PackageFork> {
+        self.fork_packages_with(ids, destination)
     }
 
     /// Absolute fork repository `destination`: refused with `..`, inside the workspace
@@ -195,17 +185,12 @@ impl Manager {
         Ok(destination)
     }
 
-    fn fork_packages_with(
-        &self,
-        ids: &[&str],
-        destination: &Path,
-        namespace: &str,
-    ) -> Result<PackageFork> {
+    fn fork_packages_with(&self, ids: &[&str], destination: &Path) -> Result<PackageFork> {
         ensure!(!ids.is_empty(), InvalidArgument, "no package to fork");
         for id in ids {
             valid_id(id)?;
         }
-        identity::valid_part(namespace)?;
+
         let unique: BTreeSet<&str> = ids.iter().copied().collect();
         ensure!(
             unique.len() == ids.len(),
@@ -269,33 +254,20 @@ impl Manager {
                 let clone = destination;
                 let mut sources = Vec::new();
                 let mut new_ids: BTreeSet<String> = BTreeSet::new();
-                let mut qualify = |id: &str| -> Result<String> {
-                    let new_id = identity::qualified(namespace, id.rsplit('/').next().unwrap())?;
+                let mut fresh_id = |original: &str| -> Result<String> {
+                    let id = identity::new_id()?;
                     ensure!(
-                        new_id != id,
-                        InvalidArgument,
-                        "fork needs a different namespace; pass another namespace"
+                        id != original
+                            && !state.packages.contains_key(&id)
+                            && !state.forgotten.contains_key(&id)
+                            && new_ids.insert(id.clone()),
+                        Workspace,
+                        "generated fork UUID collides with an existing package"
                     );
-                    ensure!(
-                        !new_ids.iter().any(|other| ids_collide(other, &new_id))
-                            && new_ids.insert(new_id.clone()),
-                        InvalidArgument,
-                        "two packages would get the same fork ID {new_id}"
-                    );
-                    ensure!(
-                        !ids_collide(&new_id, id)
-                            && !state
-                                .packages
-                                .keys()
-                                .chain(state.forgotten.keys())
-                                .any(|other| ids_collide(other, &new_id)),
-                        InvalidArgument,
-                        "fork ID {new_id} differs only in letter case from an installed package"
-                    );
-                    Ok(new_id)
+                    Ok(id)
                 };
                 for (id, p) in &installed {
-                    let new_id = qualify(id)?;
+                    let new_id = fresh_id(id)?;
                     let commit = p.current.commit.clone();
                     if transport::require_object(
                         clone,
@@ -337,7 +309,7 @@ impl Manager {
                     if sources.iter().any(|s| &s.original == id) {
                         continue;
                     }
-                    let new_id = qualify(id)?;
+                    let new_id = fresh_id(id)?;
                     sources.push(Source {
                         original: id.clone(),
                         original_source: first_installed.source.clone(),
@@ -354,7 +326,7 @@ impl Manager {
 }
 
 /// Fork a Git path or URL without opening, creating or locking a workspace.
-/// Every package is renamed into `namespace`; IDs select and validate the source
+/// Every package receives a fresh UUID; IDs select and validate the source
 /// revision, never a subset. With no IDs, the source must have a single package.
 /// By default select the latest stable repository release containing the first ID;
 /// every supplied ID must exist at that revision.
@@ -363,17 +335,9 @@ pub fn fork_source(
     source: &str,
     ids: &[&str],
     reference: Option<&str>,
-    namespace: &str,
     destination: &Path,
 ) -> Result<PackageFork> {
-    fork_source_with(
-        source,
-        ids,
-        reference,
-        namespace,
-        destination,
-        &Options::default(),
-    )
+    fork_source_with(source, ids, reference, destination, &Options::default())
 }
 
 /// Source fork with explicit transport settings. No workspace settings are read.
@@ -381,11 +345,9 @@ pub fn fork_source_with(
     source: &str,
     ids: &[&str],
     reference: Option<&str>,
-    namespace: &str,
     destination: &Path,
     options: &Options,
 ) -> Result<PackageFork> {
-    identity::valid_part(namespace)?;
     for id in ids {
         valid_id(id)?;
     }
@@ -461,19 +423,12 @@ pub fn fork_source_with(
         let mut sources = Vec::new();
         for package in packages {
             let original = package.manifest.id.clone();
-            let id = identity::qualified(namespace, original.rsplit('/').next().unwrap())?;
+            let id = identity::new_id()?;
             ensure!(
-                id != original,
-                InvalidArgument,
-                "fork needs a different namespace; pass another namespace"
+                id != original && new_ids.insert(id.clone()),
+                Workspace,
+                "generated fork UUID collides with an existing package"
             );
-            ensure!(
-                !ids_collide(&id, &original)
-                    && !new_ids.iter().any(|other: &String| ids_collide(other, &id)),
-                InvalidArgument,
-                "two packages would get the same fork ID {id} or differ only in letter case"
-            );
-            new_ids.insert(id.clone());
             sources.push(Source {
                 original,
                 original_source: source.clone(),
@@ -841,9 +796,17 @@ mod tests {
             let folder = repo.join(format!("packages/{name}"));
             fs::create_dir_all(folder.join("dist")).unwrap();
             fs::write(folder.join("dist/index.js"), name).unwrap();
-            let mut m = manifest(&format!("acme/{name}"), "1.0.0");
+            let mut m = manifest(
+                if name == "theme" {
+                    "11111111-1111-4111-8111-111111111111"
+                } else {
+                    "22222222-2222-4222-8222-222222222222"
+                },
+                "1.0.0",
+            );
             if name == "panel" {
-                m.dependencies.insert("acme/theme".into(), "^1".into());
+                m.dependencies
+                    .insert("11111111-1111-4111-8111-111111111111".into(), "^1".into());
             }
             write_manifest(&folder, &m);
         }
@@ -863,18 +826,22 @@ mod tests {
             let dest = temp.join(name);
             let fork = fork_source(
                 repo.to_str().unwrap(),
-                &["acme/theme"],
+                &["11111111-1111-4111-8111-111111111111"],
                 reference,
-                "me",
                 &dest,
             )
             .unwrap();
             assert_eq!(fork.packages.len(), 2);
             assert_eq!(fork.rewrites.len(), 1);
-            assert_eq!(fork.rewrites[0].to, "me/theme");
+            assert_eq!(fork.rewrites[0].to, fork.packages[0].id);
             for package in &fork.packages {
                 let m = package_manifest(&dest, Some(&package.path)).unwrap();
-                assert!(m.id.starts_with("me/"));
+                valid_id(&m.id).unwrap();
+                assert_ne!(m.id, package.original);
+                assert_eq!(
+                    m.name,
+                    package_manifest(&repo, Some(&package.path)).unwrap().name
+                );
                 assert_eq!(m.fork_of.unwrap().commit, *expected);
             }
             assert_eq!(git(&dest, &["rev-parse", "HEAD^"]), *expected);
@@ -889,11 +856,14 @@ mod tests {
         }
         for ids in [
             vec![],
-            vec!["acme/missing"],
-            vec!["acme/theme", "acme/theme"],
+            vec!["33333333-3333-4333-8333-333333333333"],
+            vec![
+                "11111111-1111-4111-8111-111111111111",
+                "11111111-1111-4111-8111-111111111111",
+            ],
         ] {
             let dest = temp.join("failed/nested/fork");
-            let e = fork_source(repo.to_str().unwrap(), &ids, None, "me", &dest).unwrap_err();
+            let e = fork_source(repo.to_str().unwrap(), &ids, None, &dest).unwrap_err();
             assert_eq!(e.kind(), "invalid_argument");
             assert!(!temp.join("failed").exists());
         }
@@ -905,18 +875,27 @@ mod tests {
     fn fork_source_ignores_newer_tags_without_id_and_legacy_tags() {
         use crate::test_support::{Author, TempDir, git};
         let temp = TempDir::new("fork-source-releases");
-        let author = Author::new(temp.join("source"), "acme/theme");
+        let author = Author::new(temp.join("source"), "11111111-1111-4111-8111-111111111111");
         let released = author.head();
         let untagged = author.commit("2.0.0");
-        git(&author.path, &["tag", "acme/theme@2.0.0"]);
+        git(
+            &author.path,
+            &["tag", "11111111-1111-4111-8111-111111111111@2.0.0"],
+        );
         let mut m = package_manifest(&author.path, None).unwrap();
-        m.id = "other/theme".into();
+        m.id = "44444444-4444-4444-8444-444444444444".into();
         crate::test_support::write_manifest(&author.path, &m);
         git(&author.path, &["add", "."]);
         git(&author.path, &["commit", "-qm", "rename"]);
         git(&author.path, &["tag", "v2.0.0"]);
         let dest = temp.join("fork");
-        fork_source(author.source(), &["acme/theme"], None, "me", &dest).unwrap();
+        fork_source(
+            author.source(),
+            &["11111111-1111-4111-8111-111111111111"],
+            None,
+            &dest,
+        )
+        .unwrap();
         assert_eq!(
             package_manifest(&dest, None)
                 .unwrap()
@@ -928,9 +907,8 @@ mod tests {
         let dest = temp.join("by-commit");
         fork_source(
             author.source(),
-            &["acme/theme"],
+            &["11111111-1111-4111-8111-111111111111"],
             Some(&untagged),
-            "me",
             &dest,
         )
         .unwrap();
@@ -949,9 +927,8 @@ mod tests {
             assert!(
                 fork_source(
                     author.source(),
-                    &["acme/theme"],
+                    &["11111111-1111-4111-8111-111111111111"],
                     None,
-                    "me",
                     &temp.join("in-source/link/fork")
                 )
                 .is_err()
@@ -963,7 +940,7 @@ mod tests {
     fn fork_source_accepts_revision_expressions_and_nondefault_branches() {
         use crate::test_support::{Author, TempDir, git};
         let temp = TempDir::new("fork-source-expressions");
-        let author = Author::new(temp.join("source"), "acme/theme");
+        let author = Author::new(temp.join("source"), "11111111-1111-4111-8111-111111111111");
         let first = author.head();
         author.commit("0.2.0");
         git(&author.path, &["branch", "topic"]);
@@ -974,9 +951,8 @@ mod tests {
             let dest = temp.join(format!("fork-{i}"));
             fork_source(
                 author.source(),
-                &["acme/theme"],
+                &["11111111-1111-4111-8111-111111111111"],
                 Some(reference),
-                "me",
                 &dest,
             )
             .unwrap();
@@ -995,7 +971,7 @@ mod tests {
     fn fork_source_fetches_explicit_refs_outside_heads_and_tags() {
         use crate::test_support::{Author, TempDir, git};
         let temp = TempDir::new("fork-source-custom-ref");
-        let author = Author::new(temp.join("source"), "acme/theme");
+        let author = Author::new(temp.join("source"), "11111111-1111-4111-8111-111111111111");
         git(&author.path, &["checkout", "--orphan", "temporary"]);
         let commit = author.commit("0.2.0");
         git(&author.path, &["update-ref", "refs/custom/review", &commit]);
@@ -1004,9 +980,8 @@ mod tests {
         let dest = temp.join("fork");
         fork_source(
             author.source(),
-            &["acme/theme"],
+            &["11111111-1111-4111-8111-111111111111"],
             Some("refs/custom/review"),
-            "me",
             &dest,
         )
         .unwrap();
@@ -1024,21 +999,30 @@ mod tests {
     fn fork_source_file_url_cannot_create_destination_inside_source() {
         use crate::test_support::{Author, TempDir, git};
         let temp = TempDir::new("fork-source-file-url");
-        let author = Author::new(temp.join("source with spaces"), "acme/theme");
+        let author = Author::new(
+            temp.join("source with spaces"),
+            "11111111-1111-4111-8111-111111111111",
+        );
         let before = git(&author.path, &["status", "--porcelain"]);
         for source in [
             format!("file://{}", author.source()),
             format!("file://localhost{}", author.source().replace(' ', "%20")),
         ] {
             let dest = author.path.join("nested/fork");
-            let error = fork_source(&source, &["acme/theme"], None, "me", &dest).unwrap_err();
+            let error = fork_source(
+                &source,
+                &["11111111-1111-4111-8111-111111111111"],
+                None,
+                &dest,
+            )
+            .unwrap_err();
             assert_eq!(error.kind(), "invalid_argument");
             assert!(!author.path.join("nested").exists());
         }
         assert_eq!(git(&author.path, &["status", "--porcelain"]), before);
         let url = format!("file://localhost{}", author.source().replace(' ', "%20"));
         let dest = temp.join("outside-source");
-        fork_source(&url, &["acme/theme"], None, "me", &dest).unwrap();
+        fork_source(&url, &["11111111-1111-4111-8111-111111111111"], None, &dest).unwrap();
         assert_eq!(
             package_manifest(&dest, None)
                 .unwrap()
@@ -1065,49 +1049,85 @@ mod tests {
     #[test]
     fn a_dependency_on_an_original_and_its_fork_is_refused_in_any_key_order() {
         // B9: the fork ID sorts after (zz) and before (aa) the original.
-        for namespace in ["zz", "aa"] {
-            let fork = format!("{namespace}/theme");
-            let forks =
-                BTreeMap::from([("tilr/theme".to_owned(), (fork.clone(), "1.0.0".to_owned()))]);
-            let mut m =
-                with_dependencies("me/panel", &[("tilr/theme", "^1"), (fork.as_str(), "^2")]);
+        for fork in [
+            "ffffffff-ffff-4fff-bfff-ffffffffffff",
+            "00000000-0000-4000-8000-000000000000",
+        ] {
+            let fork = fork.to_owned();
+            let forks = BTreeMap::from([(
+                "f851f609-bb81-52d6-bfef-33798624782c".to_owned(),
+                (fork.clone(), "1.0.0".to_owned()),
+            )]);
+            let mut m = with_dependencies(
+                "09e5894a-6e33-5a1e-91e0-730a2f8cb569",
+                &[
+                    ("f851f609-bb81-52d6-bfef-33798624782c", "^1"),
+                    (fork.as_str(), "^2"),
+                ],
+            );
             let mut rewrites = Vec::new();
             let error = rewrite_dependencies(&mut m, &forks, &mut rewrites).unwrap_err();
-            assert_eq!(error.kind(), "invalid_manifest", "{namespace}");
+            assert_eq!(error.kind(), "invalid_manifest", "{fork}");
             assert!(
-                error
-                    .to_string()
-                    .contains(&format!("depends on both tilr/theme and its fork {fork}")),
+                error.to_string().contains(&format!(
+                    "depends on both f851f609-bb81-52d6-bfef-33798624782c and its fork {fork}"
+                )),
                 "{error}"
             );
         }
         // Two originals of one fork (forkOf and replaces of an existing package).
         let forks = BTreeMap::from([
             (
-                "a/theme".to_owned(),
-                ("me/theme".to_owned(), "1.0.0".to_owned()),
+                "a4f3d15d-34c4-5a54-ac52-07e6c2cbd6bd".to_owned(),
+                (
+                    "d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50".to_owned(),
+                    "1.0.0".to_owned(),
+                ),
             ),
             (
-                "b/theme".to_owned(),
-                ("me/theme".to_owned(), "1.0.0".to_owned()),
+                "1ee84ec0-48e6-51c7-93bd-7f4d43f8275c".to_owned(),
+                (
+                    "d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50".to_owned(),
+                    "1.0.0".to_owned(),
+                ),
             ),
         ]);
-        let mut m = with_dependencies("me/panel", &[("a/theme", "^1"), ("b/theme", "^1")]);
+        let mut m = with_dependencies(
+            "09e5894a-6e33-5a1e-91e0-730a2f8cb569",
+            &[
+                ("a4f3d15d-34c4-5a54-ac52-07e6c2cbd6bd", "^1"),
+                ("1ee84ec0-48e6-51c7-93bd-7f4d43f8275c", "^1"),
+            ],
+        );
         let error = rewrite_dependencies(&mut m, &forks, &mut Vec::new()).unwrap_err();
         assert!(
-            error.to_string().contains("both forked as me/theme"),
+            error
+                .to_string()
+                .contains("both forked as d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50"),
             "{error}"
         );
         // The plain case: rewritten, with a new requirement when needed.
         let forks = BTreeMap::from([(
-            "tilr/theme".to_owned(),
-            ("me/theme".to_owned(), "2.0.0".to_owned()),
+            "f851f609-bb81-52d6-bfef-33798624782c".to_owned(),
+            (
+                "d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50".to_owned(),
+                "2.0.0".to_owned(),
+            ),
         )]);
-        let mut m = with_dependencies("me/panel", &[("tilr/theme", "^1"), ("x/y", "*")]);
+        let mut m = with_dependencies(
+            "09e5894a-6e33-5a1e-91e0-730a2f8cb569",
+            &[
+                ("f851f609-bb81-52d6-bfef-33798624782c", "^1"),
+                ("7d3c44ac-286f-5db5-8c90-ecfa368e5b4d", "*"),
+            ],
+        );
         let mut rewrites = Vec::new();
         rewrite_dependencies(&mut m, &forks, &mut rewrites).unwrap();
-        assert_eq!(m.dependencies["me/theme"], "^2.0.0");
-        assert_eq!(m.dependencies["x/y"], "*");
+        assert_eq!(
+            m.dependencies["d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50"],
+            "^2.0.0"
+        );
+        assert_eq!(m.dependencies["7d3c44ac-286f-5db5-8c90-ecfa368e5b4d"], "*");
         assert_eq!(rewrites[0].new_requirement.as_deref(), Some("^2.0.0"));
     }
 }

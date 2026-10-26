@@ -289,7 +289,7 @@ fn read_folder(
 
 /// Packages and defective folders listed by `gitpm.json` at `commit`; `None` without
 /// `gitpm.json`. A package needs a `plugin.json` file (not a symlink), a committed `dist/`
-/// folder and a `namespace/name` ID that no other folder uses (in any letter case);
+/// folder and a canonical UUID that no other folder uses;
 /// nested folders are defective. Only an invalid `gitpm.json` itself is an error.
 pub fn layout_at(repo: &Path, commit: &str) -> Result<Option<Layout>> {
     layout_at_with_ssh(repo, commit, false)
@@ -582,7 +582,7 @@ mod tests {
         fs::create_dir_all(repo.join(folder).join("dist")).unwrap();
         fs::write(
             repo.join(folder).join("plugin.json"),
-            format!(r#"{{"id":"{id}","version":"1.0.0"}}"#),
+            format!(r#"{{"id":"{id}","name": "fixture", "version":"1.0.0"}}"#),
         )
         .unwrap();
         fs::write(repo.join(folder).join("dist/index.js"), id).unwrap();
@@ -600,19 +600,31 @@ mod tests {
         fs::create_dir_all(&repo).unwrap();
         fixture_git(&repo, &["init", "-q", "-b", "main"]);
         fs::write(repo.join(CONFIG), r#"{"packages":["packages/*"]}"#).unwrap();
-        package(&repo, "packages/good", "tilr/good");
-        package(&repo, "packages/bad", "tilr/bad");
+        package(
+            &repo,
+            "packages/good",
+            "4069fb66-ac4d-5fd6-be14-f879cc2fe60b",
+        );
+        package(
+            &repo,
+            "packages/bad",
+            "6e70259e-8a87-54cb-af99-38e45820ef71",
+        );
         fs::write(
             repo.join("packages/bad/plugin.json"),
-            r#"{"id":"tilr/bad","version":"1.0.0","dist":"../escape"}"#,
+            r#"{"id":"6e70259e-8a87-54cb-af99-38e45820ef71","name": "fixture", "version":"1.0.0","dist":"../escape"}"#,
         )
         .unwrap();
         let head = commit(&repo);
         let layout = layout_at(&repo, &head).unwrap().unwrap();
         assert_eq!(layout.problems.len(), 1);
-        assert_eq!(layout.problems[0].id.as_deref(), Some("tilr/bad"));
-        assert!(find_at(&repo, &head, Some("tilr/good")).is_ok());
-        let error = find_at(&repo, &head, Some("tilr/bad")).unwrap_err();
+        assert_eq!(
+            layout.problems[0].id.as_deref(),
+            Some("6e70259e-8a87-54cb-af99-38e45820ef71")
+        );
+        assert!(find_at(&repo, &head, Some("4069fb66-ac4d-5fd6-be14-f879cc2fe60b")).is_ok());
+        let error =
+            find_at(&repo, &head, Some("6e70259e-8a87-54cb-af99-38e45820ef71")).unwrap_err();
         assert_eq!(error.kind(), "invalid_manifest");
         assert!(error.to_string().contains("invalid manifest dist path"));
     }
@@ -624,9 +636,21 @@ mod tests {
         fs::create_dir_all(&repo).unwrap();
         fixture_git(&repo, &["init", "-q", "-b", "main"]);
         fs::write(repo.join(CONFIG), r#"{"packages":["packages/*"]}"#).unwrap();
-        package(&repo, "packages/store", "tilr/store");
-        package(&repo, "packages/theme", "tilr/theme");
-        package(&repo, "other/skip", "tilr/skip");
+        package(
+            &repo,
+            "packages/store",
+            "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+        );
+        package(
+            &repo,
+            "packages/theme",
+            "f851f609-bb81-52d6-bfef-33798624782c",
+        );
+        package(
+            &repo,
+            "540b12c6-1d6b-58c9-87ca-13a7122f4350",
+            "9c7f3d0b-d12f-5be1-949f-3ad17d3d141b",
+        );
         let first = commit(&repo);
         let found = packages_at(&repo, &first).unwrap().unwrap();
         assert_eq!(
@@ -634,17 +658,24 @@ mod tests {
             ["packages/store", "packages/theme"]
         );
         assert_eq!(
-            find_at(&repo, &first, Some("tilr/theme")).unwrap().path,
+            find_at(&repo, &first, Some("f851f609-bb81-52d6-bfef-33798624782c"))
+                .unwrap()
+                .path,
             "packages/theme"
         );
         let error = find_at(&repo, &first, None).unwrap_err();
         assert_eq!(error.kind(), "invalid_argument");
         assert!(
-            error.to_string().contains("tilr/store (packages/store)")
-                && error.to_string().contains("tilr/theme (packages/theme)"),
+            error
+                .to_string()
+                .contains("76a9b591-60f3-5c7f-9e1c-31648fc73bfd (packages/store)")
+                && error
+                    .to_string()
+                    .contains("f851f609-bb81-52d6-bfef-33798624782c (packages/theme)"),
             "{error}"
         );
-        let error = find_at(&repo, &first, Some("tilr/skip")).unwrap_err();
+        let error =
+            find_at(&repo, &first, Some("9c7f3d0b-d12f-5be1-949f-3ad17d3d141b")).unwrap_err();
         assert!(
             error.to_string().contains("not in this repository"),
             "{error}"
@@ -652,19 +683,19 @@ mod tests {
 
         // The working tree does not matter, only the commit.
         fs::remove_dir_all(repo.join("packages/theme")).unwrap();
-        assert!(find_at(&repo, &first, Some("tilr/theme")).is_ok());
+        assert!(find_at(&repo, &first, Some("f851f609-bb81-52d6-bfef-33798624782c")).is_ok());
 
         // Without gitpm.json the root is the package.
         let single = dir.join("single");
         fs::create_dir_all(&single).unwrap();
         fixture_git(&single, &["init", "-q", "-b", "main"]);
-        package(&single, ".", "tilr/single");
+        package(&single, ".", "883f0498-5990-55fe-8b2e-019b5d34a292");
         let head = commit(&single);
         assert!(packages_at(&single, &head).unwrap().is_none());
         let root = find_at(&single, &head, None).unwrap();
         assert_eq!((root.path.as_str(), root.subdir()), ("", None));
         assert_eq!(
-            find_at(&single, &head, Some("tilr/other"))
+            find_at(&single, &head, Some("44ae8198-322d-5d87-b3e0-d20d1fa2b6ed"))
                 .unwrap_err()
                 .kind(),
             "invalid_argument"
@@ -672,15 +703,15 @@ mod tests {
     }
 
     #[test]
-    fn ids_differing_only_in_case_make_both_folders_defective() {
+    fn duplicate_uuids_make_both_folders_defective() {
         let dir = TempDir::new("packages");
         let repo = dir.join("mono");
         fs::create_dir_all(&repo).unwrap();
         fixture_git(&repo, &["init", "-q", "-b", "main"]);
         fs::write(repo.join(CONFIG), r#"{"packages":["packages/*"]}"#).unwrap();
-        package(&repo, "packages/a", "tilr/Same");
-        package(&repo, "packages/b", "tilr/same");
-        package(&repo, "packages/c", "tilr/other");
+        package(&repo, "packages/a", "a42e9925-947e-561b-967e-2e14b4b94ab2");
+        package(&repo, "packages/b", "a42e9925-947e-561b-967e-2e14b4b94ab2");
+        package(&repo, "packages/c", "44ae8198-322d-5d87-b3e0-d20d1fa2b6ed");
         let head = commit(&repo);
         let layout = layout_at(&repo, &head).unwrap().unwrap();
         assert_eq!(
@@ -699,8 +730,8 @@ mod tests {
         assert_eq!(
             problems,
             [
-                ("packages/a", Some("tilr/Same")),
-                ("packages/b", Some("tilr/same"))
+                ("packages/a", Some("a42e9925-947e-561b-967e-2e14b4b94ab2")),
+                ("packages/b", Some("a42e9925-947e-561b-967e-2e14b4b94ab2"))
             ]
         );
         for problem in &layout.problems {
@@ -714,19 +745,26 @@ mod tests {
                 problem.error
             );
         }
-        // Selecting either spelling (or a third one) names the conflict.
-        for id in ["tilr/same", "tilr/Same", "TILR/SAME"] {
-            let error = layout.clone().select(Some(id), "").unwrap_err();
-            assert_eq!(error.kind(), "invalid_manifest", "{id}");
-            assert!(error.to_string().contains("appears in both"), "{error}");
-        }
+        // Selecting the duplicated UUID names the conflict.
+        let error = layout
+            .clone()
+            .select(Some("a42e9925-947e-561b-967e-2e14b4b94ab2"), "")
+            .unwrap_err();
+        assert_eq!(error.kind(), "invalid_manifest");
+        assert!(error.to_string().contains("appears in both"), "{error}");
         // The sibling is unaffected; the strict listing refuses.
         assert_eq!(
-            layout.clone().select(Some("tilr/other"), "").unwrap().path,
+            layout
+                .clone()
+                .select(Some("44ae8198-322d-5d87-b3e0-d20d1fa2b6ed"), "")
+                .unwrap()
+                .path,
             "packages/c"
         );
         assert_eq!(
-            find_at(&repo, &head, Some("tilr/same")).unwrap_err().kind(),
+            find_at(&repo, &head, Some("a42e9925-947e-561b-967e-2e14b4b94ab2"))
+                .unwrap_err()
+                .kind(),
             "invalid_manifest"
         );
         assert!(packages_at(&repo, &head).is_err());
@@ -739,8 +777,8 @@ mod tests {
         fs::create_dir_all(&repo).unwrap();
         fixture_git(&repo, &["init", "-q", "-b", "main"]);
         fs::write(repo.join(CONFIG), r#"{"packages":["packages/*"]}"#).unwrap();
-        package(&repo, "packages/a", "tilr/same");
-        package(&repo, "packages/b", "tilr/same");
+        package(&repo, "packages/a", "6f34fcf0-53ec-5e53-a400-9008722000be");
+        package(&repo, "packages/b", "6f34fcf0-53ec-5e53-a400-9008722000be");
         let head = commit(&repo);
         let error = packages_at(&repo, &head).unwrap_err();
         assert!(error.to_string().contains("appears in both"), "{error}");
@@ -749,7 +787,7 @@ mod tests {
         let head = commit(&repo);
         assert_eq!(packages_at(&repo, &head).unwrap_err().kind(), "invalid_id");
 
-        package(&repo, "packages/b", "tilr/b");
+        package(&repo, "packages/b", "27e49f66-16b0-5c76-b037-b3002a5a0b93");
         fs::remove_dir_all(repo.join("packages/b/dist")).unwrap();
         std::os::unix::fs::symlink("../a/dist", repo.join("packages/b/dist")).unwrap();
         let head = commit(&repo);

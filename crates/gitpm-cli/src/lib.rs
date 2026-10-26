@@ -295,10 +295,10 @@ pub mod check {
         fn table_names_the_source_and_fork_upstream_place() {
             use gitpm::check::Upstream;
             let mut fork = row(false);
-            fork.id = "me/hello".into();
+            fork.id = "ce6c8a3b-b2f8-5391-8ef8-4cbb7873f5d4".into();
             fork.source = CheckSource::Origin;
             let upstream = |latest: Option<&str>, source| Upstream {
-                id: "acme/hello".into(),
+                id: "7e6e8392-7be8-55ae-bd03-2b430b1c5d59".into(),
                 base: "1.0.0".into(),
                 latest: latest.map(Into::into),
                 newer: latest.is_some(),
@@ -309,7 +309,7 @@ pub mod check {
             let text = display(std::slice::from_ref(&fork));
             assert!(text.contains(" origin "), "{text}");
             assert!(
-                text.contains("me/hello: fork of acme/hello (base 1.0.0); original at origin: 1.1.0 — newer than the fork base"),
+                text.contains("ce6c8a3b-b2f8-5391-8ef8-4cbb7873f5d4: fork of 7e6e8392-7be8-55ae-bd03-2b430b1c5d59 (base 1.0.0); original at origin: 1.1.0 — newer than the fork base"),
                 "{text}"
             );
             fork.upstream = Some(upstream(Some("1.1.0"), Some(CheckSource::Catalog)));

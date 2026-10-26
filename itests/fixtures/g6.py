@@ -1,12 +1,12 @@
 """Group g6: dependencies, global fork replacement and the consumer journey.
 
 Families:
-  * g6_core*   — lib/core 1.0.0/1.1.0/2.0.0 with consumers, a cycle and a missing dependency (UC-058/059);
-  * g6_base*   — vendor/base 1.0.0, consumers app/a, app/b (^1.0), an unrelated other/x, a later
-                 consumer app/c, and a real `gitpm fork` mine/base made the active provider (UC-053/055/056/066);
-  * g6_compat* — vendor/base 1.4.0, forks declaring 1.4.0 / 1.2.0, consumers ^1.0, >=1.3 and a transitive
-                 chain app/c → lib/mid → vendor/base (UC-054);
-  * g6_journey — dan/hello 0.1.0 registered and installed from the catalog (UC-068).
+  * g6_core*   — 757fd5ca-2b6a-5b2f-8a5d-60980b028665 1.0.0/1.1.0/2.0.0 with consumers, a cycle and a missing dependency (UC-058/059);
+  * g6_base*   — c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 1.0.0, consumers 9692fc07-23c7-5f20-8779-f09374f1a571, f5984d44-92bd-51ac-8e8f-d911dd824ef3 (^1.0), an unrelated a768d335-0cf7-597a-b1ba-0eb542495aec, a later
+                 consumer 1a620c0a-aa3c-533c-9960-3d49016fa231, and a real `gitpm fork` db33e43e-e652-5767-8e21-27fb3cef9723 made the active provider (UC-053/055/056/066);
+  * g6_compat* — c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 1.4.0, forks declaring 1.4.0 / 1.2.0, consumers ^1.0, >=1.3 and a transitive
+                 chain 1a620c0a-aa3c-533c-9960-3d49016fa231 → c4304791-586c-54cb-a7c6-27bd09f28dbd → c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 (UC-054);
+  * g6_journey — 3dce1568-569c-5b53-9321-37185e751947 0.1.0 registered and installed from the catalog (UC-068).
 """
 
 import json
@@ -16,21 +16,21 @@ from gitpmtest import T, fixture
 # ------------------------------------------------------------------------- g6_core
 
 CORE = {
-    "lib/core": [("1.0.0", {}), ("1.1.0", {}), ("2.0.0", {})],
-    "app/a": [("1.0.0", {"lib/core": "^1.0"})],
-    "app/b": [("1.0.0", {"lib/core": "^2.0"})],
-    "app/c": [("1.0.0", {"lib/core": "^1"})],
-    "app/lonely": [("1.0.0", {"lib/missing": "^1"})],
-    "x/a": [("1.0.0", {"x/b": "^1"})],
-    "x/b": [("1.0.0", {"x/a": "^1"})],
-    "other/x": [("1.0.0", {})],
+    "757fd5ca-2b6a-5b2f-8a5d-60980b028665": [("1.0.0", {}), ("1.1.0", {}), ("2.0.0", {})],
+    "9692fc07-23c7-5f20-8779-f09374f1a571": [("1.0.0", {"757fd5ca-2b6a-5b2f-8a5d-60980b028665": "^1.0"})],
+    "f5984d44-92bd-51ac-8e8f-d911dd824ef3": [("1.0.0", {"757fd5ca-2b6a-5b2f-8a5d-60980b028665": "^2.0"})],
+    "1a620c0a-aa3c-533c-9960-3d49016fa231": [("1.0.0", {"757fd5ca-2b6a-5b2f-8a5d-60980b028665": "^1"})],
+    "2a8af310-7783-5cbb-8218-c875e4f8a3e6": [("1.0.0", {"0276fe29-bef5-5d0b-aae9-f9920c809729": "^1"})],
+    "d35b3151-28fd-557a-a363-b5f18ae491c8": [("1.0.0", {"3a53cdea-2cb1-5653-bf22-898b679440ee": "^1"})],
+    "3a53cdea-2cb1-5653-bf22-898b679440ee": [("1.0.0", {"d35b3151-28fd-557a-a363-b5f18ae491c8": "^1"})],
+    "a768d335-0cf7-597a-b1ba-0eb542495aec": [("1.0.0", {})],
 }
 
 
 @fixture()
 def g6_core(t: T):
-    """Author repos: lib/core 1.0.0, 1.1.0, 2.0.0; app/a (lib/core ^1.0), app/b (^2.0), app/c (^1),
-    app/lonely (lib/missing ^1), the cycle x/a ↔ x/b, and other/x without dependencies."""
+    """Author repos: 757fd5ca-2b6a-5b2f-8a5d-60980b028665 1.0.0, 1.1.0, 2.0.0; 9692fc07-23c7-5f20-8779-f09374f1a571 (757fd5ca-2b6a-5b2f-8a5d-60980b028665 ^1.0), f5984d44-92bd-51ac-8e8f-d911dd824ef3 (^2.0), 1a620c0a-aa3c-533c-9960-3d49016fa231 (^1),
+    2a8af310-7783-5cbb-8218-c875e4f8a3e6 (0276fe29-bef5-5d0b-aae9-f9920c809729 ^1), the cycle d35b3151-28fd-557a-a363-b5f18ae491c8 ↔ 3a53cdea-2cb1-5653-bf22-898b679440ee, and a768d335-0cf7-597a-b1ba-0eb542495aec without dependencies."""
     for id, releases in CORE.items():
         first, deps = releases[0]
         t.new_package(id, first, deps=deps)
@@ -64,35 +64,35 @@ def _(t: T):
 
 @fixture(requires=["g6_core_catalog"], gitpm=True)
 def g6_core_deps_installed(t: T):
-    """From the catalog: app/a and app/c (both on lib/core, pulled in at 1.1.0) and other/x."""
-    for id in ["app/a", "app/c", "other/x"]:
+    """From the catalog: 9692fc07-23c7-5f20-8779-f09374f1a571 and 1a620c0a-aa3c-533c-9960-3d49016fa231 (both on 757fd5ca-2b6a-5b2f-8a5d-60980b028665, pulled in at 1.1.0) and a768d335-0cf7-597a-b1ba-0eb542495aec."""
+    for id in ["9692fc07-23c7-5f20-8779-f09374f1a571", "1a620c0a-aa3c-533c-9960-3d49016fa231", "a768d335-0cf7-597a-b1ba-0eb542495aec"]:
         t.gitpm_ok("install-catalog", id)
 
 
 @g6_core_deps_installed.check
 def _(t: T):
     state = t.state()
-    t.eq(sorted(state["packages"]), ["app/a", "app/c", "lib/core", "other/x"], "installed")
-    t.eq(state["packages"]["lib/core"]["current"]["version"], "1.1.0", "lib/core version")
+    t.eq(sorted(state["packages"]), sorted(["9692fc07-23c7-5f20-8779-f09374f1a571", "1a620c0a-aa3c-533c-9960-3d49016fa231", "757fd5ca-2b6a-5b2f-8a5d-60980b028665", "a768d335-0cf7-597a-b1ba-0eb542495aec"]), "installed")
+    t.eq(state["packages"]["757fd5ca-2b6a-5b2f-8a5d-60980b028665"]["current"]["version"], "1.1.0", "757fd5ca-2b6a-5b2f-8a5d-60980b028665 version")
     resolved = {p["id"]: p for p in t.gitpm_ok("list").json()["resolved"]}
-    t.eq(resolved["lib/core"].get("dependents"), ["app/a", "app/c"], "lib/core dependents")
+    t.eq(resolved["757fd5ca-2b6a-5b2f-8a5d-60980b028665"].get("dependents"), sorted(["9692fc07-23c7-5f20-8779-f09374f1a571", "1a620c0a-aa3c-533c-9960-3d49016fa231"]), "757fd5ca-2b6a-5b2f-8a5d-60980b028665 dependents")
 
 
 # ------------------------------------------------------------------------- g6_base
 
 BASE = {
-    "vendor/base": {},
-    "app/a": {"vendor/base": "^1.0"},
-    "app/b": {"vendor/base": "^1.0"},
-    "app/c": {"vendor/base": "^1.0"},
-    "other/x": {},
+    "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9": {},
+    "9692fc07-23c7-5f20-8779-f09374f1a571": {"c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9": "^1.0"},
+    "f5984d44-92bd-51ac-8e8f-d911dd824ef3": {"c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9": "^1.0"},
+    "1a620c0a-aa3c-533c-9960-3d49016fa231": {"c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9": "^1.0"},
+    "a768d335-0cf7-597a-b1ba-0eb542495aec": {},
 }
 FORK_PAYLOAD = "export const greeting = 'fork payload';\n"
 
 
 @fixture()
 def g6_base(t: T):
-    """Author repos at 1.0.0: vendor/base; app/a, app/b, app/c (vendor/base ^1.0); other/x."""
+    """Author repos at 1.0.0: c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9; 9692fc07-23c7-5f20-8779-f09374f1a571, f5984d44-92bd-51ac-8e8f-d911dd824ef3, 1a620c0a-aa3c-533c-9960-3d49016fa231 (c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 ^1.0); a768d335-0cf7-597a-b1ba-0eb542495aec."""
     for id, deps in BASE.items():
         t.new_package(id, "1.0.0", deps=deps)
 
@@ -119,23 +119,33 @@ def _(t: T):
 
 @fixture(requires=["g6_base_catalog"], gitpm=True)
 def g6_base_installed(t: T):
-    """app/a, app/b, other/x installed from the catalog; vendor/base pulled in as their dependency."""
-    for id in ["app/a", "app/b", "other/x"]:
+    """9692fc07-23c7-5f20-8779-f09374f1a571, f5984d44-92bd-51ac-8e8f-d911dd824ef3, a768d335-0cf7-597a-b1ba-0eb542495aec installed from the catalog; c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 pulled in as their dependency."""
+    for id in ["9692fc07-23c7-5f20-8779-f09374f1a571", "f5984d44-92bd-51ac-8e8f-d911dd824ef3", "a768d335-0cf7-597a-b1ba-0eb542495aec"]:
         t.gitpm_ok("install-catalog", id)
 
 
 @g6_base_installed.check
 def _(t: T):
-    t.eq(sorted(t.state()["packages"]), ["app/a", "app/b", "other/x", "vendor/base"], "installed")
+    t.eq(sorted(t.state()["packages"]), sorted(["9692fc07-23c7-5f20-8779-f09374f1a571", "f5984d44-92bd-51ac-8e8f-d911dd824ef3", "a768d335-0cf7-597a-b1ba-0eb542495aec", "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9"]), "installed")
     t.ok(not t.state().get("replacements"), "no replacement")
 
 
 @fixture(requires=["g6_base_installed"], gitpm=True)
 def g6_forked(t: T):
-    """g6_base_installed + `gitpm fork vendor/base --ns mine --into /fx/repos/mine/base`, payload edited,
-    `gitpm commit … 1.0.1` (still replaces vendor/base 1.0.0), mine/base installed from Git. No replacement."""
-    fork = t.repo("mine/base")
-    t.gitpm_ok("fork", "vendor/base", "--ns", "mine", "--into", fork)
+    """A committed fork-shaped author fixture with a fixed initial UUID.
+    Actual fork generation is exercised by the consumer journey scenarios."""
+    original = "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9"
+    fork = t.repo("db33e43e-e652-5767-8e21-27fb3cef9723")
+    current = t.package(original)["current"]
+    t.run("git", "clone", "-q", t.repo(original), fork, check=True)
+    t.git(fork, "checkout", "-q", "-b", "fork", current["commit"])
+    t.git(fork, "remote", "rename", "origin", "upstream")
+    def identify(m):
+        m["id"] = "db33e43e-e652-5767-8e21-27fb3cef9723"
+        m["forkOf"] = {"id": original, **current, "source": t.package(original)["source"]}
+        m["replaces"] = {"id": original, "version": current["version"]}
+    t.edit_json(fork / "plugin.json", identify)
+    t.commit(fork, "Create fork fixture")
     t.write(fork, {"dist/index.js": FORK_PAYLOAD})
     t.gitpm_ok("commit", fork, "1.0.1")
     t.gitpm_ok("install", fork)
@@ -143,72 +153,72 @@ def g6_forked(t: T):
 
 @g6_forked.check
 def _(t: T):
-    m = t.package("mine/base")
+    m = t.package("db33e43e-e652-5767-8e21-27fb3cef9723")
     t.eq(m["current"]["version"], "1.0.1", "fork version")
-    t.eq(m["forkOf"]["id"], "vendor/base", "forkOf")
-    t.eq(m["replaces"], {"id": "vendor/base", "version": "1.0.0"}, "replaces")
-    t.eq((t.dist("mine/base") / "index.js").read_text(), FORK_PAYLOAD, "fork payload")
+    t.eq(m["forkOf"]["id"], "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9", "forkOf")
+    t.eq(m["replaces"], {"id": "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9", "version": "1.0.0"}, "replaces")
+    t.eq((t.dist("db33e43e-e652-5767-8e21-27fb3cef9723") / "index.js").read_text(), FORK_PAYLOAD, "fork payload")
     t.ok(not t.state().get("replacements"), "installing the fork redirects nothing")
 
 
 @fixture(requires=["g6_forked"], gitpm=True)
 def g6_replaced(t: T):
-    """g6_forked + `gitpm replace vendor/base --with mine/base` (no prompt: every consumer satisfied)."""
-    t.gitpm_ok("replace", "vendor/base", "--with", "mine/base")
+    """g6_forked + `gitpm replace c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 --with db33e43e-e652-5767-8e21-27fb3cef9723` (no prompt: every consumer satisfied)."""
+    t.gitpm_ok("replace", "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9", "--with", "db33e43e-e652-5767-8e21-27fb3cef9723")
 
 
 @g6_replaced.check
 def _(t: T):
-    t.eq(t.state().get("replacements"), {"vendor/base": "mine/base"}, "binding")
+    t.eq(t.state().get("replacements"), {"c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9": "db33e43e-e652-5767-8e21-27fb3cef9723"}, "binding")
     resolved = {p["id"]: p for p in t.gitpm_ok("list").json()["resolved"]}
-    for consumer in ["app/a", "app/b"]:
-        t.eq(resolved[consumer]["dependencies"][0]["provider"], "mine/base", f"{consumer} provider")
+    for consumer in ["9692fc07-23c7-5f20-8779-f09374f1a571", "f5984d44-92bd-51ac-8e8f-d911dd824ef3"]:
+        t.eq(resolved[consumer]["dependencies"][0]["provider"], "db33e43e-e652-5767-8e21-27fb3cef9723", f"{consumer} provider")
 
 
 # ----------------------------------------------------------------------- g6_compat
 
 COMPAT = {
-    "vendor/base": ({}, {}),
-    "app/a": ({"vendor/base": "^1.0"}, {}),
-    "app/b": ({"vendor/base": ">=1.3"}, {}),
-    "lib/mid": ({"vendor/base": "^1"}, {}),
-    "app/c": ({"lib/mid": "^1"}, {}),
+    "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9": ({}, {}),
+    "9692fc07-23c7-5f20-8779-f09374f1a571": ({"c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9": "^1.0"}, {}),
+    "f5984d44-92bd-51ac-8e8f-d911dd824ef3": ({"c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9": ">=1.3"}, {}),
+    "c4304791-586c-54cb-a7c6-27bd09f28dbd": ({"c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9": "^1"}, {}),
+    "1a620c0a-aa3c-533c-9960-3d49016fa231": ({"c4304791-586c-54cb-a7c6-27bd09f28dbd": "^1"}, {}),
 }
 COMPAT_FORKS = {
-    "mine/base": "1.4.0",
-    "old/base": "1.2.0",
+    "db33e43e-e652-5767-8e21-27fb3cef9723": "1.4.0",
+    "4e02af40-ea75-510c-b524-5f21e6de2d55": "1.2.0",
 }
 
 
 @fixture()
 def g6_compat(t: T):
-    """vendor/base 1.4.0 (1.0.0 first); app/a (^1.0), app/b (>=1.3), lib/mid (^1), app/c (lib/mid ^1);
-    forks mine/base 0.1.0 (replaces vendor/base 1.4.0) and old/base 0.1.0 (replaces 1.2.0)."""
-    t.new_package("vendor/base", "1.0.0")
-    t.release("vendor/base", "1.4.0")
+    """c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 1.4.0 (1.0.0 first); 9692fc07-23c7-5f20-8779-f09374f1a571 (^1.0), f5984d44-92bd-51ac-8e8f-d911dd824ef3 (>=1.3), c4304791-586c-54cb-a7c6-27bd09f28dbd (^1), 1a620c0a-aa3c-533c-9960-3d49016fa231 (c4304791-586c-54cb-a7c6-27bd09f28dbd ^1);
+    forks db33e43e-e652-5767-8e21-27fb3cef9723 0.1.0 (replaces c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 1.4.0) and 4e02af40-ea75-510c-b524-5f21e6de2d55 0.1.0 (replaces 1.2.0)."""
+    t.new_package("c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9", "1.0.0")
+    t.release("c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9", "1.4.0")
     for id, (deps, _) in COMPAT.items():
-        if id != "vendor/base":
+        if id != "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9":
             t.new_package(id, "1.0.0", deps=deps)
     for id, declares in COMPAT_FORKS.items():
-        t.new_package(id, "0.1.0", extra={"replaces": {"id": "vendor/base", "version": declares}})
+        t.new_package(id, "0.1.0", extra={"replaces": {"id": "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9", "version": declares}})
 
 
 @g6_compat.check
 def _(t: T):
     for id, declares in COMPAT_FORKS.items():
         m = json.loads(t.git(id, "show", f"v0.1.0:plugin.json"))
-        t.eq(m["replaces"], {"id": "vendor/base", "version": declares}, f"{id} replaces")
-    t.eq(json.loads(t.git("app/c", "show", "HEAD:plugin.json"))["dependencies"], {"lib/mid": "^1"}, "app/c deps")
+        t.eq(m["replaces"], {"id": "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9", "version": declares}, f"{id} replaces")
+    t.eq(json.loads(t.git("1a620c0a-aa3c-533c-9960-3d49016fa231", "show", "HEAD:plugin.json"))["dependencies"], {"c4304791-586c-54cb-a7c6-27bd09f28dbd": "^1"}, "1a620c0a-aa3c-533c-9960-3d49016fa231 deps")
 
 
 @fixture(requires=["g6_compat"], gitpm=True)
 def g6_compat_installed(t: T):
-    """vendor/base 1.4.0, app/a, app/b, lib/mid, app/c registered and app/a, app/b, app/c installed from
-    the catalog (vendor/base and lib/mid pulled in); forks mine/base and old/base installed from Git."""
-    t.gitpm_ok("register", t.repo("vendor/base"), "--ref", "v1.4.0")
-    for id in ["app/a", "app/b", "lib/mid", "app/c"]:
+    """c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 1.4.0, 9692fc07-23c7-5f20-8779-f09374f1a571, f5984d44-92bd-51ac-8e8f-d911dd824ef3, c4304791-586c-54cb-a7c6-27bd09f28dbd, 1a620c0a-aa3c-533c-9960-3d49016fa231 registered and 9692fc07-23c7-5f20-8779-f09374f1a571, f5984d44-92bd-51ac-8e8f-d911dd824ef3, 1a620c0a-aa3c-533c-9960-3d49016fa231 installed from
+    the catalog (c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 and c4304791-586c-54cb-a7c6-27bd09f28dbd pulled in); forks db33e43e-e652-5767-8e21-27fb3cef9723 and 4e02af40-ea75-510c-b524-5f21e6de2d55 installed from Git."""
+    t.gitpm_ok("register", t.repo("c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9"), "--ref", "v1.4.0")
+    for id in ["9692fc07-23c7-5f20-8779-f09374f1a571", "f5984d44-92bd-51ac-8e8f-d911dd824ef3", "c4304791-586c-54cb-a7c6-27bd09f28dbd", "1a620c0a-aa3c-533c-9960-3d49016fa231"]:
         t.gitpm_ok("register", t.repo(id), "--ref", f"v1.0.0")
-    for id in ["app/a", "app/b", "app/c"]:
+    for id in ["9692fc07-23c7-5f20-8779-f09374f1a571", "f5984d44-92bd-51ac-8e8f-d911dd824ef3", "1a620c0a-aa3c-533c-9960-3d49016fa231"]:
         t.gitpm_ok("install-catalog", id)
     for id in COMPAT_FORKS:
         t.gitpm_ok("install", t.repo(id))
@@ -218,8 +228,8 @@ def g6_compat_installed(t: T):
 def _(t: T):
     state = t.state()
     t.eq(sorted(state["packages"]),
-         ["app/a", "app/b", "app/c", "lib/mid", "mine/base", "old/base", "vendor/base"], "installed")
-    t.eq(state["packages"]["vendor/base"]["current"]["version"], "1.4.0", "vendor/base version")
+         sorted(["9692fc07-23c7-5f20-8779-f09374f1a571", "f5984d44-92bd-51ac-8e8f-d911dd824ef3", "1a620c0a-aa3c-533c-9960-3d49016fa231", "c4304791-586c-54cb-a7c6-27bd09f28dbd", "db33e43e-e652-5767-8e21-27fb3cef9723", "4e02af40-ea75-510c-b524-5f21e6de2d55", "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9"]), "installed")
+    t.eq(state["packages"]["c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9"]["current"]["version"], "1.4.0", "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 version")
     t.ok(not state.get("replacements"), "no replacement")
 
 
@@ -228,17 +238,17 @@ def _(t: T):
 
 @fixture(requires=["hello"], gitpm=True)
 def g6_journey(t: T):
-    """dan/hello 0.1.0 registered in /fx/catalog (verified) and installed from it with install-catalog."""
-    t.gitpm_ok("register", t.repo("dan/hello"), "--ref", "v0.1.0")
+    """3dce1568-569c-5b53-9321-37185e751947 0.1.0 registered in /fx/catalog (verified) and installed from it with install-catalog."""
+    t.gitpm_ok("register", t.repo("3dce1568-569c-5b53-9321-37185e751947"), "--ref", "v0.1.0")
     # A verified catalog: the installed package records it (protected).
     t.edit_json(t.catalog / "catalog.json", lambda c: c.update(verified=True))
-    t.gitpm_ok("install-catalog", "dan/hello")
+    t.gitpm_ok("install-catalog", "3dce1568-569c-5b53-9321-37185e751947")
 
 
 @g6_journey.check
 def _(t: T):
-    p = t.package("dan/hello")
-    t.eq(p["current"], {"version": "0.1.0", "commit": t.rev("dan/hello", "v0.1.0")}, "current")
+    p = t.package("3dce1568-569c-5b53-9321-37185e751947")
+    t.eq(p["current"], {"version": "0.1.0", "commit": t.rev("3dce1568-569c-5b53-9321-37185e751947", "v0.1.0")}, "current")
     t.eq(p["previous"], None, "previous")
     t.ok(p.get("catalog"), "catalog recorded")
-    t.eq(t.rev(t.worktree("dan/hello")), p["current"]["commit"], "clone HEAD")
+    t.eq(t.rev(t.worktree("3dce1568-569c-5b53-9321-37185e751947")), p["current"]["commit"], "clone HEAD")

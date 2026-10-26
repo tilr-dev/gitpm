@@ -122,6 +122,12 @@ pub(super) fn installed_repo(root: &Path, id: &str, p: &Installed) -> Result<Pat
     }
     txn::ensure_managed_parents(root, &format!("worktrees/{id}"))?;
     let repo = root.join("worktrees").join(id);
+    if fs::symlink_metadata(&repo).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Err(Error::Workspace(format!(
+            "managed path is a symlink: {}",
+            repo.display()
+        )));
+    }
     if !exact_path(&root.join("worktrees"), id)? || !repo.join(".git").is_file() {
         return Err(Error::RepositoryNotFound { id: id.into() });
     }

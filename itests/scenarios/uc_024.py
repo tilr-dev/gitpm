@@ -1,7 +1,7 @@
 """UC-024: Fork release independence and branch collision (P0).
 
-vendor/demo 0.1.0 installed (g3_vendor_installed); the fork author/demo lives in
-/fx/repos/author/demo.
+dd3387ed-a5a3-5059-81ad-b1f6987a28f2 0.1.0 installed (g3_vendor_installed); the fork be517c52-cf84-5615-9a18-9fae7d82c819 lives in
+/fx/repos/be517c52-cf84-5615-9a18-9fae7d82c819.
 
 updating_fork_leaves_original: the fork repository also holds the upstream tag
 v0.1.1 (fetched from upstream); updating the fork must not count that tag as
@@ -10,12 +10,12 @@ local work. updating_fork_without_upstream_tags checks the same without that tag
 
 from gitpmtest import T, case
 
-ID, NEW = "vendor/demo", "author/demo"
+ID, NEW = "dd3387ed-a5a3-5059-81ad-b1f6987a28f2", "be517c52-cf84-5615-9a18-9fae7d82c819"
 
 
 def fork(t: T):
-    dest = t.repo(NEW)
-    t.gitpm_ok("fork", ID, "--ns", "author", "--into", dest)
+    dest = t.root / "authors/fork"
+    t.gitpm_ok("fork", ID, "--into", dest)
     return dest
 
 
@@ -35,8 +35,9 @@ def branch_name_is_unique(t: T):
     t.git(source, "branch", "fork-2")
     before = t.snap(t.ws, source, git=True)
     dest = fork(t)
+    NEW = t.manifest_id(dest)
     t.eq(t.git(dest, "branch", "--show-current"), "fork-3", "new branch")
-    t.eq((t.rev(dest, "upstream/fork"), t.rev(dest, "upstream/fork-2")), (head, head), "source branches")
+    t.eq((t.rev(source, "fork"), t.rev(source, "fork-2")), (head, head), "source branches")
     t.same(before, "installation and source branches")
 
 
@@ -59,6 +60,7 @@ def installation_only_branch_is_ignored(t: T):
 def inherited_vendor_tags_are_not_fork_releases(t: T):
     """A fork without its own release tag has no stable release (vendor tags do not count)."""
     dest = fork(t)
+    NEW = t.manifest_id(dest)
     t.has(t.git(dest, "tag", "--list"), "v0.1.0")
     r = t.gitpm_err("install", dest, kind="no_releases")
     t.lacks(r.err, "Warning:")
@@ -71,6 +73,7 @@ def fork_release_uses_a_new_repository_version(t: T):
     t.release(ID, "0.3.0")
     t.gitpm_ok("update", ID)
     dest = fork(t)
+    NEW = t.manifest_id(dest)
     t.has(t.git(dest, "tag", "--list"), "v0.3.0")
     commit = fork_release(t, dest, "0.4.0")
     t.gitpm_ok("install", dest)
@@ -80,6 +83,7 @@ def fork_release_uses_a_new_repository_version(t: T):
 def both_released(t: T):
     """The fork releases v0.1.2 and retains the upstream v0.1.1 tag after fetching."""
     dest = fork(t)
+    NEW = t.manifest_id(dest)
     mine = fork_release(t, dest, "0.1.2")
     theirs = t.release(ID, "0.1.1")
     t.git(dest, "fetch", "-q", "upstream", "--tags")
@@ -89,6 +93,7 @@ def both_released(t: T):
 @case(fixture="g3_vendor_installed", spec=["package-ids/release-tag-names#vversion-tag-of-a-scoped-single-package-repository"])
 def distinct_repository_tags_do_not_conflict(t: T):
     dest, mine, theirs = both_released(t)
+    NEW = t.manifest_id(dest)
     t.eq(t.rev(dest, "v0.1.2"), mine, "fork tag")
     t.eq(t.rev(dest, f"v0.1.1"), theirs, "vendor tag in the fork")
     t.ok(mine != theirs, "different commits")
@@ -97,6 +102,7 @@ def distinct_repository_tags_do_not_conflict(t: T):
 @case(fixture="g3_vendor_installed", spec=["fork-replacement/replacement-is-explicit-and-global"])
 def fork_installs_alongside_without_replacement(t: T):
     dest, mine, _ = both_released(t)
+    NEW = t.manifest_id(dest)
     base = t.package(ID)["current"]
     vendor_before = t.snap(t.worktree(ID), t.dist(ID), git=True)
     t.gitpm_ok("install", dest)
@@ -113,12 +119,13 @@ def fork_installs_alongside_without_replacement(t: T):
 @case(fixture="g3_vendor_installed", spec=["fork-replacement/fork-copies-an-installed-package", "updates/stable-update-moves-to-the-newest-release"])
 def updating_original_leaves_fork(t: T):
     dest, _, theirs = both_released(t)
+    NEW = t.manifest_id(dest)
     t.gitpm_ok("install", dest)
     fork_before = t.snap(t.worktree(NEW), t.dist(NEW), git=True)
     fork_state = t.package(NEW)
     t.gitpm_ok("update", ID)
     t.eq(t.package(ID)["current"], {"version": "0.1.1", "commit": theirs}, "original updated")
-    t.has((t.dist(ID) / "index.js").read_text(), "vendor/demo 0.1.1")
+    t.has((t.dist(ID) / "index.js").read_text(), "dd3387ed-a5a3-5059-81ad-b1f6987a28f2 0.1.1")
     t.eq(t.package(NEW), fork_state, "fork state")
     t.same(fork_before, "fork clone and dist")
     t.ok(not t.state().get("replacements"), "no replacement")
@@ -127,6 +134,7 @@ def updating_original_leaves_fork(t: T):
 @case(fixture="g3_vendor_installed", spec=["updates/stable-update-moves-to-the-newest-release", "updates/local-work-blocks-update-and-rollback"])
 def updating_fork_leaves_original(t: T):
     dest, mine, _ = both_released(t)
+    NEW = t.manifest_id(dest)
     t.gitpm_ok("install", dest)
     vendor_before = t.snap(t.worktree(ID), t.dist(ID), git=True)
     vendor_state = t.package(ID)
@@ -145,6 +153,7 @@ def updating_fork_leaves_original(t: T):
 def updating_fork_without_upstream_tags(t: T):
     """Independent fork update when the fork repo holds no upstream-only tags."""
     dest = fork(t)
+    NEW = t.manifest_id(dest)
     mine = fork_release(t, dest, "0.1.1")
     t.gitpm_ok("install", dest)
     vendor_before = t.snap(t.worktree(ID), t.dist(ID), git=True)

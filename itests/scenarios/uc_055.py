@@ -1,9 +1,9 @@
 """UC-055: Required replacement update rollback and failure (P0, mandatory).
 
-Fixture g6_replaced: vendor/base 1.0.0 with consumers app/a, app/b (^1.0) and other/x
-from the catalog; mine/base is a `gitpm fork` of vendor/base (payload edited, 1.0.1,
-replaces vendor/base 1.0.0) installed from /fx/repos/mine/base and bound by
-`gitpm replace vendor/base --with mine/base`.
+Fixture g6_replaced: c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 1.0.0 with consumers 9692fc07-23c7-5f20-8779-f09374f1a571, f5984d44-92bd-51ac-8e8f-d911dd824ef3 (^1.0) and a768d335-0cf7-597a-b1ba-0eb542495aec
+from the catalog; db33e43e-e652-5767-8e21-27fb3cef9723 is a `gitpm fork` of c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 (payload edited, 1.0.1,
+replaces c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 1.0.0) installed from /fx/repos/db33e43e-e652-5767-8e21-27fb3cef9723 and bound by
+`gitpm replace c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 --with db33e43e-e652-5767-8e21-27fb3cef9723`.
 
 Each gitpm call is a new process, so "reopen the manager and recheck" is the `list` after
 every step. The library entry points (Manager::update/rollback on a replaced provider)
@@ -15,8 +15,8 @@ import shutil
 
 from gitpmtest import T, case
 
-ORIGINAL, FORK = "vendor/base", "mine/base"
-CONSUMERS = ["app/a", "app/b"]
+ORIGINAL, FORK = "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9", "db33e43e-e652-5767-8e21-27fb3cef9723"
+CONSUMERS = ["9692fc07-23c7-5f20-8779-f09374f1a571", "f5984d44-92bd-51ac-8e8f-d911dd824ef3"]
 FORK_PAYLOAD = "export const greeting = 'fork payload';\n"
 
 
@@ -25,7 +25,7 @@ def resolved(t: T) -> dict:
 
 
 def resolution(t: T) -> dict:
-    """consumer → (provider, offered version, satisfied) for vendor/base, read by a new process."""
+    """consumer → (provider, offered version, satisfied) for c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9, read by a new process."""
     view = resolved(t)
     out = {}
     for consumer in CONSUMERS:
@@ -103,11 +103,11 @@ def fork_rollback_follows_revision(t: T):
 
 @case(fixture="g6_replaced", spec=["dependencies/updates-keep-dependents-working", "errors/failing-operations-leave-the-workspace-unchanged"])
 def incompatible_fork_release_refused(t: T):
-    """A fork release declaring vendor/base 2.0.0 (consumers need ^1.0) is refused; binding, state, dist kept."""
+    """A fork release declaring c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 2.0.0 (consumers need ^1.0) is refused; binding, state, dist kept."""
     before = t.snap(t.ws)
     fork_release(t, "1.0.2", payload="incompatible\n", declares="2.0.0")
     r = t.gitpm_err("update", FORK, kind="dependency_conflict")
-    t.ok("app/a" in r.err or "app/b" in r.err, "the refusal names a consumer")
+    t.ok("9692fc07-23c7-5f20-8779-f09374f1a571" in r.err or "f5984d44-92bd-51ac-8e8f-d911dd824ef3" in r.err, "the refusal names a consumer")
     t.same(before, "workspace")
     bound(t)
 
@@ -117,7 +117,7 @@ def fork_release_dropping_replaces_refused(t: T):
     """A fork release that no longer declares `replaces` cannot update the active provider."""
     before = t.snap(t.ws)
     fork_release(t, "1.0.2", payload="no replaces\n", declares=None)
-    t.gitpm_err("update", FORK, kind="version_conflict", contains="no longer declares that it replaces vendor/base")
+    t.gitpm_err("update", FORK, kind="version_conflict", contains="no longer declares that it replaces c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9")
     t.same(before, "workspace")
     bound(t)
 
@@ -144,7 +144,7 @@ def corrupt_fork_release_preserves_binding(t: T):
     t.gitpm_err("update", FORK, kind="invalid_manifest", contains="dist")
     t.same(before, "workspace")
     bound(t)
-    fork_release(t, "1.0.3", payload="x\n", manifest_text='{"id": "mine/base", "version": "1.0.3",')
+    fork_release(t, "1.0.3", payload="x\n", manifest_text='{"id": "db33e43e-e652-5767-8e21-27fb3cef9723", "name": "fixture", "version": "1.0.3",')
     t.gitpm_err("update", FORK, "--ref", f"v1.0.3", kind="invalid_manifest")
     t.same(before, "workspace")
     bound(t)

@@ -7,11 +7,18 @@ hide the others; `full_journey` runs all eight steps in one workspace from autho
 
 import hashlib
 import json
+from pathlib import Path
 
 from gitpmtest import T, case
 
-ORIGINAL, FORK = "vendor/base", "mine/base"
-CONSUMERS = ["app/a", "app/b"]
+ORIGINAL = "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9"
+
+def fork_id(t: T):
+    path = t.root / "authors/mine-base"
+    if not path.exists():
+        path = t.repo("db33e43e-e652-5767-8e21-27fb3cef9723")
+    return t.manifest_id(path)
+CONSUMERS = ["9692fc07-23c7-5f20-8779-f09374f1a571", "f5984d44-92bd-51ac-8e8f-d911dd824ef3"]
 FORK_PAYLOAD = "export const greeting = 'fork payload';\n"
 
 
@@ -29,7 +36,7 @@ def providers(t: T) -> dict:
 
 
 def provider_payload(t: T) -> str:
-    """Hash of the payload of the package that provides vendor/base to the consumers."""
+    """Hash of the payload of the package that provides c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 to the consumers."""
     (provider,) = set(providers(t).values())
     return sha(t.dist(provider) / "index.js")
 
@@ -37,7 +44,7 @@ def provider_payload(t: T) -> str:
 def step1_publish(t: T):
     for id in [ORIGINAL, *CONSUMERS]:
         t.gitpm_ok("register", t.repo(id), "--ref", f"v1.0.0")
-    for id, deps in [(ORIGINAL, {}), ("app/a", {ORIGINAL: "^1.0"}), ("app/b", {ORIGINAL: "^1.0"})]:
+    for id, deps in [(ORIGINAL, {}), ("9692fc07-23c7-5f20-8779-f09374f1a571", {ORIGINAL: "^1.0"}), ("f5984d44-92bd-51ac-8e8f-d911dd824ef3", {ORIGINAL: "^1.0"})]:
         t.eq(json.loads(t.catalog_release(id, "1.0.0").read_text())["manifest"].get("dependencies", {}), deps,
              f"{id} catalog dependencies")
 
@@ -45,92 +52,92 @@ def step1_publish(t: T):
 def step2_install(t: T):
     for id in CONSUMERS:
         t.gitpm_ok("install-catalog", id)
-    t.eq(sorted(t.state()["packages"]), ["app/a", "app/b", ORIGINAL], "vendor/base pulled in as a dependency")
+    t.eq(sorted(t.state()["packages"]), sorted(["9692fc07-23c7-5f20-8779-f09374f1a571", "f5984d44-92bd-51ac-8e8f-d911dd824ef3", ORIGINAL]), "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 pulled in as a dependency")
     view = resolved(t)
     for c in CONSUMERS:
         t.eq(t.state()["packages"][c]["dependencies"], {ORIGINAL: "^1.0"}, f"{c} edge")
-    t.eq(view[ORIGINAL].get("dependents"), CONSUMERS, "vendor/base dependents")
+    t.eq(view[ORIGINAL].get("dependents"), CONSUMERS, "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 dependents")
     t.eq(providers(t), {c: ORIGINAL for c in CONSUMERS}, "providers")
 
 
 def step3_fork(t: T, fork):
-    t.gitpm_ok("fork", ORIGINAL, "--ns", "mine", "--into", fork)
+    t.gitpm_ok("fork", ORIGINAL, "--into", fork)
     t.write(fork, {"dist/index.js": FORK_PAYLOAD})
     t.gitpm_ok("commit", fork, "1.0.1")
     manifest = json.loads((fork / "plugin.json").read_text())
     t.eq(manifest["replaces"], {"id": ORIGINAL, "version": "1.0.0"}, "fork declares replaces 1.0.0")
     t.eq(manifest["version"], "1.0.1", "fork version")
     t.gitpm_ok("install", fork)
-    t.eq(t.package(FORK)["current"]["version"], "1.0.1", "fork installed")
+    t.eq(t.package(fork_id(t))["current"]["version"], "1.0.1", "fork installed")
     t.eq(providers(t), {c: ORIGINAL for c in CONSUMERS}, "installing the fork redirects nothing")
 
 
 def step4_replace(t: T):
-    r = t.gitpm_ok("replace", ORIGINAL, "--with", FORK)
+    r = t.gitpm_ok("replace", ORIGINAL, "--with", fork_id(t))
     t.lacks(r.err, "Warning", "[y/N]")
-    t.eq(t.state()["replacements"], {ORIGINAL: FORK}, "binding")
-    t.eq(providers(t), {c: FORK for c in CONSUMERS}, "providers")
-    t.eq(resolved(t)[FORK].get("replacing"), [ORIGINAL], "list: replacing")
-    t.has(r.out, f"{ORIGINAL} replaced by {FORK} 1.0.1 (as {ORIGINAL} 1.0.0) for: app/a, app/b")
-    t.has(t.gitpm_ok("check").out, f"Replacement: {ORIGINAL} → {FORK} (for every consumer)")
+    t.eq(t.state()["replacements"], {ORIGINAL: fork_id(t)}, "binding")
+    t.eq(providers(t), {c: fork_id(t) for c in CONSUMERS}, "providers")
+    t.eq(resolved(t)[fork_id(t)].get("replacing"), [ORIGINAL], "list: replacing")
+    t.has(r.out, f"{ORIGINAL} replaced by {fork_id(t)} 1.0.1 (as {ORIGINAL} 1.0.0) for: 9692fc07-23c7-5f20-8779-f09374f1a571, f5984d44-92bd-51ac-8e8f-d911dd824ef3")
+    t.has(t.gitpm_ok("check").out, f"Replacement: {ORIGINAL} → {fork_id(t)} (for every consumer)")
     t.eq(provider_payload(t), hashlib.sha256(FORK_PAYLOAD.encode()).hexdigest(), "consumers get the fork payload")
     t.ok(not t.dist(ORIGINAL).exists(), "dist/ holds only the active provider, not the replaced original")
 
 
 def step5_reopen(t: T):
     before = (t.ws / "state.json").read_bytes()
-    t.eq(providers(t), {c: FORK for c in CONSUMERS}, "providers in a new process")
-    t.eq(t.state()["replacements"], {ORIGINAL: FORK}, "binding in a new process")
+    t.eq(providers(t), {c: fork_id(t) for c in CONSUMERS}, "providers in a new process")
+    t.eq(t.state()["replacements"], {ORIGINAL: fork_id(t)}, "binding in a new process")
     t.eq((t.ws / "state.json").read_bytes(), before, "state.json untouched by reading")
 
 
 def step6_fork_update(t: T, fork):
     t.write(fork, {"dist/index.js": "fork payload 1.0.2\n"})
     t.gitpm_ok("commit", fork, "1.0.2")
-    t.gitpm_ok("update", FORK)
-    t.eq(t.package(FORK)["current"]["version"], "1.0.2", "fork version")
-    t.eq(t.rev(t.worktree(FORK)), t.rev(fork, f"v1.0.2"), "fork clone HEAD")
-    t.eq(providers(t), {c: FORK for c in CONSUMERS}, "providers")
+    t.gitpm_ok("update", fork_id(t))
+    t.eq(t.package(fork_id(t))["current"]["version"], "1.0.2", "fork version")
+    t.eq(t.rev(t.worktree(fork_id(t))), t.rev(fork, f"v1.0.2"), "fork clone HEAD")
+    t.eq(providers(t), {c: fork_id(t) for c in CONSUMERS}, "providers")
     t.eq(provider_payload(t), hashlib.sha256(b"fork payload 1.0.2\n").hexdigest(), "consumers follow the fork")
 
 
 def step7_switch_back(t: T, fork):
-    fork_head = t.rev(t.worktree(FORK))
+    fork_head = t.rev(t.worktree(fork_id(t)))
     fork_author = t.snap(fork, git=True)
     t.gitpm_ok("replace", ORIGINAL, "--with", ORIGINAL)
     t.ok("replacements" not in t.state(), "binding removed")
     t.eq(providers(t), {c: ORIGINAL for c in CONSUMERS}, "providers")
     t.eq(provider_payload(t), sha(t.dist(ORIGINAL) / "index.js"), "original payload")
-    t.has((t.dist(ORIGINAL) / "index.js").read_text(), "vendor/base 1.0.0")  # redeployed by --back
-    t.eq(t.package(FORK)["current"]["version"], "1.0.2", "fork still installed")
-    t.eq(t.rev(t.worktree(FORK)), fork_head, "fork history kept")
-    t.eq((t.dist(FORK) / "index.js").read_text(), "fork payload 1.0.2\n", "fork edits kept")
+    t.has((t.dist(ORIGINAL) / "index.js").read_text(), "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 1.0.0")  # redeployed by --back
+    t.eq(t.package(fork_id(t))["current"]["version"], "1.0.2", "fork still installed")
+    t.eq(t.rev(t.worktree(fork_id(t))), fork_head, "fork history kept")
+    t.eq((t.dist(fork_id(t)) / "index.js").read_text(), "fork payload 1.0.2\n", "fork edits kept")
     t.same(fork_author, "fork author repository")
 
 
 def step8_uninstall_fork(t: T):
-    t.ok(not resolved(t)[FORK].get("dependents"), "fork has no dependents")
-    t.gitpm_ok("uninstall", FORK)
-    t.not_installed(FORK)
+    t.ok(not resolved(t)[fork_id(t)].get("dependents"), "fork has no dependents")
+    t.gitpm_ok("uninstall", fork_id(t))
+    t.not_installed(fork_id(t))
     t.eq(providers(t), {c: ORIGINAL for c in CONSUMERS}, "providers")
 
 
 @case(fixture="g6_base", spec=["catalog/register-one-version"])
 def s1_publish_to_catalog(t: T):
-    """1. vendor/base, app/a, app/b (^1.0) released in Git and registered in a local catalog."""
+    """1. c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9, 9692fc07-23c7-5f20-8779-f09374f1a571, f5984d44-92bd-51ac-8e8f-d911dd824ef3 (^1.0) released in Git and registered in a local catalog."""
     step1_publish(t)
 
 
 @case(fixture="g6_base_catalog", spec=["dependencies/install-resolves-dependencies#dependency-pulled-from-the-catalog"])
 def s2_install_pulls_dependency(t: T):
-    """2. install-catalog app/a and app/b; vendor/base is pulled in; list shows the edges."""
+    """2. install-catalog 9692fc07-23c7-5f20-8779-f09374f1a571 and f5984d44-92bd-51ac-8e8f-d911dd824ef3; c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 is pulled in; list shows the edges."""
     step2_install(t)
 
 
 @case(fixture="g6_base_installed", spec=["fork-replacement/fork-copies-an-installed-package", "fork-replacement/fork-metadata#fork-manifest", "authoring/commit-releases-a-version"])
 def s3_fork_edit_release_install(t: T):
-    """3. fork vendor/base as mine/base, edit payload, release 1.0.1 (replaces vendor/base 1.0.0), install."""
-    step3_fork(t, t.repo(FORK))
+    """3. fork c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 as db33e43e-e652-5767-8e21-27fb3cef9723, edit payload, release 1.0.1 (replaces c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 1.0.0), install."""
+    step3_fork(t, t.root / "authors/mine-base")
 
 
 @case(fixture="g6_forked", spec=["fork-replacement/replacement-is-explicit-and-global#replace-for-all-consumers", "dist/replace-removes-the-original-s-dist"])
@@ -147,15 +154,16 @@ def s5_reopen_keeps_binding(t: T):
 
 @case(fixture="g6_replaced", spec=["fork-replacement/active-fork-rules"])
 def s6_fork_update_followed(t: T):
-    """6. release mine/base 1.0.2 and update it: both consumers follow the new fork revision."""
-    step6_fork_update(t, t.repo(FORK))
+    """6. release db33e43e-e652-5767-8e21-27fb3cef9723 1.0.2 and update it: both consumers follow the new fork revision."""
+    step6_fork_update(t, Path(t.package(fork_id(t))["source"]))
 
 
 @case(fixture="g6_replaced", spec=["fork-replacement/switching-back", "dist/switching-back-redeploys-the-original#back-to-the-original"])
 def s7_switch_back(t: T):
     """7. switch back: consumers on the original payload; the fork stays with history and edits."""
-    step6_fork_update(t, t.repo(FORK))
-    step7_switch_back(t, t.repo(FORK))
+    fork = Path(t.package(fork_id(t))["source"])
+    step6_fork_update(t, fork)
+    step7_switch_back(t, fork)
 
 
 @case(fixture="g6_replaced", spec=["install-uninstall/only-manager-owned-files-are-deleted#uninstalling-a-fork"])

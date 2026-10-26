@@ -275,7 +275,7 @@ mod tests {
     #[test]
     fn repository_tags_are_discovered_in_numeric_order() {
         let dir = TempDir::new("releases");
-        let author = Author::new(dir.join("repo"), "dan/demo1");
+        let author = Author::new(dir.join("repo"), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let c19 = author.release("1.9.0");
         let c110 = author.release("1.10.0");
         author.release("1.2.0");
@@ -290,14 +290,24 @@ mod tests {
     #[test]
     fn legacy_package_tags_are_not_releases() {
         let dir = TempDir::new("releases");
-        let author = Author::untagged(dir.join("repo"), "dan/demo1", "0.1.0");
-        git(&author.path, &["tag", "dan/demo1@0.1.0"]);
+        let author = Author::untagged(
+            dir.join("repo"),
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+            "0.1.0",
+        );
+        git(
+            &author.path,
+            &["tag", "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc@0.1.0"],
+        );
         let error = discover_all(&author.path, None).unwrap_err();
         assert_eq!(error.kind(), "no_releases");
-        let scoped = Author::new(dir.join("scoped"), "dan/demo1");
+        let scoped = Author::new(dir.join("scoped"), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         fs::write(scoped.path.join("dist/index.js"), "changed").unwrap();
         git(&scoped.path, &["commit", "-q", "-am", "same version"]);
-        git(&scoped.path, &["tag", "dan/demo1@0.1.0"]);
+        git(
+            &scoped.path,
+            &["tag", "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc@0.1.0"],
+        );
         let found = discover_all(&scoped.path, None).unwrap();
         assert_eq!(names(&found.tags), ["v0.1.0"]);
         assert!(found.skipped.is_empty(), "{:?}", found.skipped);
@@ -306,7 +316,7 @@ mod tests {
     #[test]
     fn non_release_and_foreign_tags_are_ignored() {
         let dir = TempDir::new("releases");
-        let author = Author::new(dir.join("repo"), "me/demo1");
+        let author = Author::new(dir.join("repo"), "fd9b5add-4cae-5e71-b6bf-5e868519eb9c");
         for tag in [
             "v1.0",
             "v1.0.0+build",
@@ -317,9 +327,9 @@ mod tests {
             "v2.0.0+b1",
             "v2.0.0-beta+b1",
             "v2.0.0-01",
-            "me/demo1@0.1.0",
-            "vendor/demo1@9.0.0",
-            "me/demo10@9.0.0",
+            "fd9b5add-4cae-5e71-b6bf-5e868519eb9c@0.1.0",
+            "3e91bfd4-69a0-55a1-9f05-93c3e97dab8a@9.0.0",
+            "a247e3a8-afce-5711-984a-1689fc3b8b9d@9.0.0",
         ] {
             git(&author.path, &["tag", tag]);
         }
@@ -329,7 +339,7 @@ mod tests {
     #[test]
     fn pre_release_tags_are_releases_in_semver_order_but_not_the_latest() {
         let dir = TempDir::new("releases");
-        let author = Author::new(dir.join("repo"), "me/demo1");
+        let author = Author::new(dir.join("repo"), "fd9b5add-4cae-5e71-b6bf-5e868519eb9c");
         author.release("1.0.0-beta");
         author.release("1.0.0-alpha");
         author.release("1.0.0");
@@ -365,44 +375,50 @@ mod tests {
     #[test]
     fn upstream_tags_retained_by_a_fork_are_not_fork_releases() {
         let dir = TempDir::new("releases");
-        let author = Author::new(dir.join("repo"), "vendor/demo1");
+        let author = Author::new(dir.join("repo"), "3e91bfd4-69a0-55a1-9f05-93c3e97dab8a");
         author.release("0.2.0");
-        write_manifest(&author.path, &manifest("me/demo1", "0.3.0"));
+        write_manifest(
+            &author.path,
+            &manifest("fd9b5add-4cae-5e71-b6bf-5e868519eb9c", "0.3.0"),
+        );
         git(&author.path, &["commit", "-q", "-am", "fork"]);
         git(&author.path, &["tag", "v0.3.0"]);
         let tags = discover(&author.path, None).unwrap();
         assert_eq!(names(&tags), ["v0.3.0"]);
-        let found = discover_all(&author.path, Some("vendor/demo1")).unwrap();
+        let found =
+            discover_all(&author.path, Some("3e91bfd4-69a0-55a1-9f05-93c3e97dab8a")).unwrap();
         assert!(
             found.skipped.is_empty(),
             "foreign tags are not broken releases"
         );
         assert_eq!(
-            latest(&author.path, Some("vendor/demo1"))
+            latest(&author.path, Some("3e91bfd4-69a0-55a1-9f05-93c3e97dab8a"))
                 .unwrap()
                 .manifest
                 .version,
             "0.2.0"
         );
         assert!(
-            discover_all(&author.path, Some("me/demo1"))
+            discover_all(&author.path, Some("fd9b5add-4cae-5e71-b6bf-5e868519eb9c"))
                 .unwrap()
                 .skipped
                 .is_empty()
         );
         // The upstream ID can still be asked for explicitly.
-        let upstream = discover(&author.path, Some("vendor/demo1")).unwrap();
+        let upstream =
+            discover(&author.path, Some("3e91bfd4-69a0-55a1-9f05-93c3e97dab8a")).unwrap();
         assert_eq!(names(&upstream), ["v0.1.0", "v0.2.0"]);
     }
 
     #[test]
     fn tags_before_the_root_package_exists_are_not_broken_releases() {
         let dir = TempDir::new("releases-before-package");
-        let author = Author::new(dir.join("repo"), "dan/demo1");
+        let author = Author::new(dir.join("repo"), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         fs::remove_file(author.path.join("plugin.json")).unwrap();
         git(&author.path, &["commit", "-q", "-am", "remove package"]);
         git(&author.path, &["tag", "v2.0.0"]);
-        let found = discover_all(&author.path, Some("dan/demo1")).unwrap();
+        let found =
+            discover_all(&author.path, Some("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc")).unwrap();
         assert!(found.skipped.is_empty());
         found.ensure_latest_is_valid().unwrap();
         assert_eq!(names(&found.tags), ["v0.1.0"]);
@@ -411,7 +427,7 @@ mod tests {
     #[test]
     fn tag_disagreeing_with_manifest_version_is_a_conflict() {
         let dir = TempDir::new("releases");
-        let author = Author::new(dir.join("repo"), "dan/demo1");
+        let author = Author::new(dir.join("repo"), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         git(&author.path, &["tag", "v0.2.0"]);
         // Discovery skips the broken tag and reports it ...
         let found = discover_all(&author.path, None).unwrap();
@@ -432,7 +448,11 @@ mod tests {
     #[test]
     fn no_release_tags_and_broken_head_manifest() {
         let dir = TempDir::new("releases");
-        let author = Author::untagged(dir.join("repo"), "dan/demo1", "0.1.0");
+        let author = Author::untagged(
+            dir.join("repo"),
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+            "0.1.0",
+        );
         let error = discover(&author.path, None).unwrap_err();
         assert_eq!(error.kind(), "no_releases");
         assert!(error.to_string().contains("vVERSION"));
@@ -461,7 +481,7 @@ mod tests {
     #[test]
     fn bad_historical_tag_does_not_hide_valid_releases() {
         let dir = TempDir::new("releases");
-        let author = Author::new(dir.join("repo"), "dan/demo1");
+        let author = Author::new(dir.join("repo"), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         // An old commit with a broken manifest got a release-looking tag.
         fs::write(author.path.join("plugin.json"), "{broken").unwrap();
         git(&author.path, &["commit", "-q", "-am", "broken"]);
@@ -482,7 +502,12 @@ mod tests {
         m.install_package(author.source(), None, InstallTarget::Ref("v0.1.0".into()))
             .unwrap();
         // The ref pinned it; back to releases.
-        let change = m.update_to("dan/demo1", crate::Target::Release).unwrap();
+        let change = m
+            .update_to(
+                "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+                crate::Target::Release,
+            )
+            .unwrap();
         assert_eq!(change.to.commit, good);
         assert_eq!(skipped_names(&change.skipped), ["v0.0.1"]);
         assert!(change.skipped[0].reason.contains("invalid manifest"));
@@ -494,7 +519,7 @@ mod tests {
         let state_file = dir.join("ws-update-all/state.json");
         let mut state: serde_json::Value =
             serde_json::from_slice(&fs::read(&state_file).unwrap()).unwrap();
-        state["packages"]["dan/demo1"]
+        state["packages"]["ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc"]
             .as_object_mut()
             .unwrap()
             .remove("mode");

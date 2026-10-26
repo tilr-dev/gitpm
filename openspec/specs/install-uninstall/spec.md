@@ -11,7 +11,7 @@ Defines how packages enter and leave a workspace: installing from a Git source o
 
 #### Scenario: Newest numeric tag wins
 - **WHEN** a repository has tags `v0.9.0` and `v0.10.0` and a newer untagged commit
-- **THEN** install checks out `0.10.0` and prints `installed acme/greeter@0.10.0 from SOURCE`
+- **THEN** install checks out `0.10.0` and prints `installed d135a7cf-1c63-549a-93cb-8f89656b2ced@0.10.0 from SOURCE`
 
 #### Scenario: Repository without releases
 - **WHEN** the source has no release tags
@@ -56,13 +56,13 @@ Defines how packages enter and leave a workspace: installing from a Git source o
 Installing an installed and enabled package again from the same source SHALL change nothing and succeed, reporting `ID already installed (VERSION)` (with a mode: `(VERSION, pinned at REF)`), with `; run update` when the source resolves to another revision or mode (`; requested --ref REF — run update ID --ref REF`). `InstallResult` SHALL carry `already_installed`, `available`, the recorded `mode`, `requested_mode` and `enabled`.
 
 #### Scenario: Repeat install
-- **WHEN** `acme/greeter` 0.2.0 is installed from `./greeter` and the user runs `gitpm install ./greeter`
-- **THEN** it prints `acme/greeter already installed (0.2.0)`, exits 0 and the workspace is byte-identical
+- **WHEN** `d135a7cf-1c63-549a-93cb-8f89656b2ced` 0.2.0 is installed from `./greeter` and the user runs `gitpm install ./greeter`
+- **THEN** it prints `d135a7cf-1c63-549a-93cb-8f89656b2ced already installed (0.2.0)`, exits 0 and the workspace is byte-identical
 - **AND** this is covered by `install_again_reports_already_installed_and_changes_nothing`
 
 #### Scenario: Newer release available
 - **WHEN** the source has a newer release than the installed one
-- **THEN** it prints `acme/greeter already installed (0.2.0); run update` and changes nothing
+- **THEN** it prints `d135a7cf-1c63-549a-93cb-8f89656b2ced already installed (0.2.0); run update` and changes nothing
 
 #### Scenario: Same source
 - **WHEN** the recorded source is `/…/greeter` and the user installs `./greeter`
@@ -77,12 +77,12 @@ Installing an installed and enabled package again from the same source SHALL cha
 Installing an ID that is installed from a different source (including a `file://` URL against a plain path, or a URL with and without `.git`) SHALL fail with `already_installed`. Installing an ID that is forgotten but retained SHALL be refused with `already_installed` until it is restored or uninstalled. Verified by `forgotten_repository_blocks_reinstall_until_restored`.
 
 #### Scenario: Other source
-- **WHEN** `acme/greeter` is installed from `./greeter` and the user installs `file:///…/greeter`
+- **WHEN** `d135a7cf-1c63-549a-93cb-8f89656b2ced` is installed from `./greeter` and the user installs `file:///…/greeter`
 - **THEN** the command fails with `already_installed`
 
 #### Scenario: Forgotten but retained
-- **WHEN** `acme/greeter` was forgotten and its clone `repos/<key>` is retained, and the user installs it again
-- **THEN** the command fails with `already_installed` ("acme/greeter was forgotten and its clone is kept") and the workspace is unchanged
+- **WHEN** `d135a7cf-1c63-549a-93cb-8f89656b2ced` was forgotten and its clone `repos/<key>` is retained, and the user installs it again
+- **THEN** the command fails with `already_installed` ("d135a7cf-1c63-549a-93cb-8f89656b2ced was forgotten and its clone is kept") and the workspace is unchanged
 - **AND** the message names no command; the CLI adds a `Hint:` line naming `gitpm restore ID` and `gitpm uninstall ID` (the same holds for a forgotten package of a shared clone)
 
 ### Requirement: Install from the catalog
@@ -94,12 +94,12 @@ Installing an ID that is installed from a different source (including a `file://
 - **AND** installing from a second catalog is refused as specified in catalog ("One catalog per workspace")
 
 #### Scenario: Catalog install over a direct install
-- **WHEN** `acme/greeter` 0.1.0 was installed or downloaded with `install`/`download ./greeter` and the user runs `install-catalog acme/greeter` from a verified catalog
-- **THEN** the installed revision must be the catalog's record of 0.1.0 (same source and commit, package folder, manifest and file hashes): the record gets `catalog` (a download is also enabled) and the result warns `acme/greeter is now protected by catalog LOCATION`
+- **WHEN** `d135a7cf-1c63-549a-93cb-8f89656b2ced` 0.1.0 was installed or downloaded with `install`/`download ./greeter` and the user runs `install-catalog d135a7cf-1c63-549a-93cb-8f89656b2ced` from a verified catalog
+- **THEN** the installed revision must be the catalog's record of 0.1.0 (same source and commit, package folder, manifest and file hashes): the record gets `catalog` (a download is also enabled) and the result warns `d135a7cf-1c63-549a-93cb-8f89656b2ced is now protected by catalog LOCATION`
 - **AND** another commit or other files fail with `catalog` ("… it cannot be protected by that catalog") and nothing changes; this is covered by `workspace::install_from_a_verified_catalog_protects_a_direct_install_of_its_release`
 
 #### Scenario: Install from an unverified catalog
-- **WHEN** the catalog has no `"verified": true` and the user runs `install-catalog acme/greeter`
+- **WHEN** the catalog has no `"verified": true` and the user runs `install-catalog d135a7cf-1c63-549a-93cb-8f89656b2ced`
 - **THEN** the release is verified as above, the record has no `catalog`, and a Git installation later updates from the origin; a build installation follows its separately recorded catalog location
 
 #### Scenario: Install a build with unavailable source
@@ -126,8 +126,8 @@ gitpm SHALL offer `disable` (disable and undeploy), `forget` (undeploy, move the
 - **THEN** the clone stays; it is removed only with its last package (multi-package-repos, "One shared clone per source")
 
 #### Scenario: Forget then restore
-- **WHEN** the user runs `forget acme/greeter` then `restore acme/greeter`
-- **THEN** the first prints `acme/greeter forgotten (clone kept; restore re-registers it)`, the second `acme/greeter restored 0.2.0`, and `dist/acme/greeter/` is back
+- **WHEN** the user runs `forget d135a7cf-1c63-549a-93cb-8f89656b2ced` then `restore d135a7cf-1c63-549a-93cb-8f89656b2ced`
+- **THEN** the first prints `d135a7cf-1c63-549a-93cb-8f89656b2ced forgotten (clone kept; restore re-registers it)`, the second `d135a7cf-1c63-549a-93cb-8f89656b2ced restored 0.2.0`, and `dist/d135a7cf-1c63-549a-93cb-8f89656b2ced/` is back
 
 #### Scenario: Restore without a clone
 - **WHEN** the user restores an ID that has no `forgotten` record
@@ -198,7 +198,7 @@ Without `--force`, the CLI SHALL report the plan's refusal when it has one, befo
 Uninstall SHALL delete only what the workspace owns (the clone inside the workspace, `dist/<id>`, the state entry); a fork repository or author repository outside the workspace MUST NOT be touched.
 
 #### Scenario: Uninstalling a fork
-- **WHEN** `me/hello` was installed from `./hello-fork` and is uninstalled
+- **WHEN** `ce6c8a3b-b2f8-5391-8ef8-4cbb7873f5d4` was installed from `./hello-fork` and is uninstalled
 - **THEN** `./hello-fork` still exists unchanged
 
 ### Requirement: Download without enabling
@@ -216,8 +216,8 @@ Uninstall SHALL delete only what the workspace owns (the clone inside the worksp
 `uninstall ID` and `forget ID` of a recorded Git package whose bare repository or package worktree is gone SHALL succeed without confirmation, drop the record and deployed folder, keep no forgotten record, and retain dependent guards (dependencies, "Dependents guard removal"). Builds intentionally have no clone and SHALL follow the cache lifecycle below. Verified by `workspace::uninstall_and_forget_of_a_package_without_clone_drop_the_record`.
 
 #### Scenario: Clone deleted by hand
-- **WHEN** `repos/<key>` or its package worktree was deleted by hand while `acme/greeter` is recorded and active, and the user runs `uninstall acme/greeter`
-- **THEN** it prints `acme/greeter uninstalled`, the record and `dist/acme/greeter/` are gone, and later commands warn no more
+- **WHEN** `repos/<key>` or its package worktree was deleted by hand while `d135a7cf-1c63-549a-93cb-8f89656b2ced` is recorded and active, and the user runs `uninstall d135a7cf-1c63-549a-93cb-8f89656b2ced`
+- **THEN** it prints `d135a7cf-1c63-549a-93cb-8f89656b2ced uninstalled`, the record and `dist/d135a7cf-1c63-549a-93cb-8f89656b2ced/` are gone, and later commands warn no more
 
 #### Scenario: Orphan worktree survives missing source storage
 - **WHEN** a package bare repository was deleted by hand while its worktree still contains local files, and the package is uninstalled or forgotten
@@ -225,7 +225,7 @@ Uninstall SHALL delete only what the workspace owns (the clone inside the worksp
 
 #### Scenario: Forget without a clone
 - **WHEN** the same package is forgotten instead
-- **THEN** it prints `acme/greeter forgotten (no clone; record and dist removed)` (`clone_kept` false), the record is dropped and no `forgotten` record is kept, because there is nothing to restore; a later `restore acme/greeter` fails with `repository_not_found`
+- **THEN** it prints `d135a7cf-1c63-549a-93cb-8f89656b2ced forgotten (no clone; record and dist removed)` (`clone_kept` false), the record is dropped and no `forgotten` record is kept, because there is nothing to restore; a later `restore d135a7cf-1c63-549a-93cb-8f89656b2ced` fails with `repository_not_found`
 
 #### Scenario: Forget and restore a build
 - **WHEN** a build package is forgotten and restored
@@ -236,7 +236,7 @@ Uninstall SHALL delete only what the workspace owns (the clone inside the worksp
 - **THEN** managed cached output needs no lost-work confirmation; forget retains its record and cached output for restore, while uninstall removes the cache, subject to dependent guards
 
 #### Scenario: Reinstall refuses an orphan worktree
-- **WHEN** an orphan `worktrees/<id>` remains after missing source storage and the same package is installed again
+- **WHEN** an orphan `worktrees/<uuid>` remains after missing source storage and the same package is installed again
 - **THEN** install refuses with `workspace`, preserves the orphan files and leaves package state unchanged
 
 ### Requirement: Explicit local linking is distinct from branch following
@@ -251,7 +251,7 @@ gitpm SHALL provide a library link operation and equivalent FFI and CLI entry po
 - **THEN** the link identifies that package and resolves its installation folder relative to its package folder
 
 #### Scenario: Explicitly link a prepared fork
-- **WHEN** the author prepares a repository with `gitpm fork acme/hello --ns me --into hello-fork` and then explicitly links its `me/hello` package
+- **WHEN** the author prepares a repository with `gitpm fork 7e6e8392-7be8-55ae-bd03-2b430b1c5d59 --into hello-fork` and then explicitly links its `ce6c8a3b-b2f8-5391-8ef8-4cbb7873f5d4` package
 - **THEN** only that selected package is installed in link mode, without requiring a new release or changing the original's installation or replacement bindings
 - **AND** fork preparation alone neither installs the fork nor publishes a linked deployment; sibling packages remain uninstalled
 

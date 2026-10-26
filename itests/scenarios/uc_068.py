@@ -1,6 +1,6 @@
 """UC-068: Consumer journey: install from catalog → lifecycle → uninstall (P0).
 
-Fixture g6_journey: dan/hello 0.1.0 registered in /fx/catalog (verified) and installed from it.
+Fixture g6_journey: 3dce1568-569c-5b53-9321-37185e751947 0.1.0 registered in /fx/catalog (verified) and installed from it.
 Each step is its own case that first replays the earlier steps (`journey`), and
 `whole_journey` checks that the author repository and the catalog are byte-identical
 across all consumer steps.
@@ -8,7 +8,7 @@ across all consumer steps.
 
 from gitpmtest import T, case
 
-ID = "dan/hello"
+ID = "3dce1568-569c-5b53-9321-37185e751947"
 
 
 def payload(t: T, version: str) -> str:

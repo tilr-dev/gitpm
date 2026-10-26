@@ -1,8 +1,8 @@
 """UC-057: Single selected catalog policy (P0).
 
-Fixture g4_two_catalogs: A=/fx/catA (x/p 1.0.0 from /fx/repos/x/p, z/r 1.0.0) and
-B=/fx/catB (x/p 1.0.0 + 1.1.0 from /fx/mirror/x/p - a different source, y/q 1.0.0,
-z/r 1.0.0 identical to A). Both are verified; B is also served over loopback HTTP where noted.
+Fixture g4_two_catalogs: A=/fx/catA (c65a9f2a-2e3b-56bd-95d5-92a4bdde6fe5 1.0.0 from /fx/repos/c65a9f2a-2e3b-56bd-95d5-92a4bdde6fe5, 055241a5-ec83-58c8-9b54-93e74bee2e74 1.0.0) and
+B=/fx/catB (c65a9f2a-2e3b-56bd-95d5-92a4bdde6fe5 1.0.0 + 1.1.0 from /fx/mirror/c65a9f2a-2e3b-56bd-95d5-92a4bdde6fe5 - a different source, 627a9f5c-10d4-5960-a0ab-4df072d8b52d 1.0.0,
+055241a5-ec83-58c8-9b54-93e74bee2e74 1.0.0 identical to A). Both are verified; B is also served over loopback HTTP where noted.
 """
 
 import json
@@ -10,7 +10,7 @@ import os
 
 from gitpmtest import T, case
 
-XP, YQ, ZR = "x/p", "y/q", "z/r"
+XP, YQ, ZR = "c65a9f2a-2e3b-56bd-95d5-92a4bdde6fe5", "627a9f5c-10d4-5960-a0ab-4df072d8b52d", "055241a5-ec83-58c8-9b54-93e74bee2e74"
 
 
 def cat(t: T, name: str):
@@ -35,7 +35,7 @@ def readonly(t: T, fn):
 
 @case(fixture="g4_two_catalogs", spec=["workspace-layout/installed-package-record", "install-uninstall/install-from-the-catalog"])
 def origin_catalog_recorded(t: T):
-    """1. install-catalog x/p from A stores the originating catalog in state."""
+    """1. install-catalog c65a9f2a-2e3b-56bd-95d5-92a4bdde6fe5 from A stores the originating catalog in state."""
     install_from_a(t)
     p = t.package(XP)
     t.eq(p["catalog"], os.path.realpath(cat(t, "catA") / "catalog.json"), "state.catalog")
@@ -45,7 +45,7 @@ def origin_catalog_recorded(t: T):
 
 @case(fixture="g4_two_catalogs", spec=["catalog/check-compares-installed-packages-with-their-catalog-or-origin#identity-mismatch", "catalog/check-compares-installed-packages-with-their-catalog-or-origin#other-catalog"])
 def check_against_b_reports_different_source(t: T):
-    """2. GITPM_CATALOG switched to B (local and HTTP): x/p is "different source", not an update to 1.1.0."""
+    """2. GITPM_CATALOG switched to B (local and HTTP): c65a9f2a-2e3b-56bd-95d5-92a4bdde6fe5 is "different source", not an update to 1.1.0."""
     install_from_a(t)
     srv = t.serve(cat(t, "catB"))
     for location in [str(cat(t, "catB")), srv.url]:
@@ -57,12 +57,12 @@ def check_against_b_reports_different_source(t: T):
 
 @case(fixture="g4_two_catalogs", spec=["catalog/one-catalog-per-workspace", "updates/protected-packages-update-through-their-catalog#newer-tag-not-in-the-catalog"])
 def update_keeps_original_source(t: T):
-    """3. update x/p (no --ref) with GITPM_CATALOG=B reads x/p's own verified catalog A, never B:
+    """3. update c65a9f2a-2e3b-56bd-95d5-92a4bdde6fe5 (no --ref) with GITPM_CATALOG=B reads c65a9f2a-2e3b-56bd-95d5-92a4bdde6fe5's own verified catalog A, never B:
     its origin's 1.1.0 is not in A, so it stays; once A lists 1.1.0 it moves there from its own
     origin; source and recorded catalog stay A's."""
     install_from_a(t)
     r = t.gitpm_ok("update", XP, env={"GITPM_CATALOG": str(cat(t, "catB"))})
-    t.has(r.out, "x/p kept at 1.0.0 (upstream 1.1.0 not in catalog)")
+    t.has(r.out, "c65a9f2a-2e3b-56bd-95d5-92a4bdde6fe5 kept at 1.0.0 (upstream 1.1.0 not in catalog)")
     t.gitpm_ok("--catalog", cat(t, "catA"), "register", t.repo(XP), "--ref", "v1.1.0")
     t.gitpm_ok("update", XP, env={"GITPM_CATALOG": str(cat(t, "catB"))})
     p = t.package(XP)
@@ -74,7 +74,7 @@ def update_keeps_original_source(t: T):
 
 @case(fixture="g4_two_catalogs", spec=["catalog/one-catalog-per-workspace#second-catalog"])
 def mixing_catalogs_refused(t: T):
-    """4. install-catalog y/q from B while x/p from A is installed is refused (no mixing)."""
+    """4. install-catalog 627a9f5c-10d4-5960-a0ab-4df072d8b52d from B while c65a9f2a-2e3b-56bd-95d5-92a4bdde6fe5 from A is installed is refused (no mixing)."""
     install_from_a(t)
     before = t.snap(t.ws)
     for location in [str(cat(t, "catB")), t.serve(cat(t, "catB")).url]:
@@ -86,7 +86,7 @@ def mixing_catalogs_refused(t: T):
 
 @case(fixture="g4_two_catalogs", spec=["catalog/check-compares-installed-packages-with-their-catalog-or-origin#other-catalog"])
 def same_commit_same_source_is_up_to_date(t: T):
-    """5. z/r installed from A, identical release (source + commit) in B: check against B says "up to date"."""
+    """5. 055241a5-ec83-58c8-9b54-93e74bee2e74 installed from A, identical release (source + commit) in B: check against B says "up to date"."""
     install_from_a(t, ZR)
     srv = t.serve(cat(t, "catB"))
     for location in [str(cat(t, "catB")), srv.url]:
@@ -101,15 +101,15 @@ def info_shows_the_selected_catalog_only(t: T):
     install_from_a(t)
     a, b = str(cat(t, "catA")), str(cat(t, "catB"))
     out = readonly(t, lambda: t.gitpm_ok("info", env={"GITPM_CATALOG": b}).out)
-    t.has(out, f"Catalog: {b}\n", "y/q — latest: 1.0.0", "x/p — latest: 1.1.0")
+    t.has(out, f"Catalog: {b}\n", "627a9f5c-10d4-5960-a0ab-4df072d8b52d — latest: 1.0.0", "c65a9f2a-2e3b-56bd-95d5-92a4bdde6fe5 — latest: 1.1.0")
     out = readonly(t, lambda: t.gitpm_ok("--catalog", a, "info", env={"GITPM_CATALOG": b}).out)
-    t.has(out, f"Catalog: {a}\n", "x/p — latest: 1.0.0")
-    t.lacks(out, "y/q", b)
+    t.has(out, f"Catalog: {a}\n", "c65a9f2a-2e3b-56bd-95d5-92a4bdde6fe5 — latest: 1.0.0")
+    t.lacks(out, "627a9f5c-10d4-5960-a0ab-4df072d8b52d", b)
 
 
 @case(fixture="g4_two_catalogs", spec=["catalog/one-catalog-per-workspace#second-catalog", "install-uninstall/install-from-the-catalog#install-from-an-unverified-catalog", "catalog/check-compares-installed-packages-with-their-catalog-or-origin#verified-or-not"])
 def unverified_catalog_is_exempt(t: T):
-    """7. B without the flag serves discovery only: y/q installs beside x/p from A, records no
+    """7. B without the flag serves discovery only: 627a9f5c-10d4-5960-a0ab-4df072d8b52d installs beside c65a9f2a-2e3b-56bd-95d5-92a4bdde6fe5 from A, records no
     catalog and updates from its origin; check says the catalog is unverified."""
     install_from_a(t)
     t.edit_json(cat(t, "catB") / "catalog.json", lambda c: c.pop("verified"))
@@ -139,19 +139,19 @@ def catalog_update_refused_for_a_verified_catalog(t: T):
 
 @case(fixture="g4_two_catalogs", spec=["updates/protected-packages-update-through-their-catalog#detach", "updates/protected-packages-update-through-their-catalog#newer-tag-not-in-the-catalog", "catalog/check-compares-installed-packages-with-their-catalog-or-origin#protected-package-with-a-newer-upstream", "catalog/check-compares-installed-packages-with-their-catalog-or-origin#verified-or-not"])
 def protected_update_check_and_detach(t: T):
-    """9. Protected x/p: update all keeps it; check uses the listed catalog release
+    """9. Protected c65a9f2a-2e3b-56bd-95d5-92a4bdde6fe5: update all keeps it; check uses the listed catalog release
     without querying origin; --detach takes the origin's 1.1.0."""
     install_from_a(t)
     a = str(cat(t, "catA"))
     r = t.gitpm_ok("update", "all")
-    t.has(r.out, "x/p kept at 1.0.0 (upstream 1.1.0 not in catalog)")
+    t.has(r.out, "c65a9f2a-2e3b-56bd-95d5-92a4bdde6fe5 kept at 1.0.0 (upstream 1.1.0 not in catalog)")
     out = readonly(t, lambda: t.gitpm_ok("check", env={"GITPM_CATALOG": a}).out)
     t.has(out, f"Catalog: {a} (verified)")
     t.has(row(out, XP), "up to date", "catalog")
     t.lacks(row(out, XP), "1.1.0")
     t.gitpm_err("update", XP, "--ref", "v1.1.0", kind="invalid_argument", contains="detach it")
     r = t.gitpm_ok("update", XP, "--detach")
-    t.has(r.out, "x/p detached from catalog", "x/p updated 1.0.0 → 1.1.0")
+    t.has(r.out, "c65a9f2a-2e3b-56bd-95d5-92a4bdde6fe5 detached from catalog", "c65a9f2a-2e3b-56bd-95d5-92a4bdde6fe5 updated 1.0.0 → 1.1.0")
     p = t.package(XP)
     t.ok("catalog" not in p, "catalog dropped")
     t.eq(p["current"], {"version": "1.1.0", "commit": t.rev(XP, "v1.1.0")}, "origin release")
@@ -159,7 +159,7 @@ def protected_update_check_and_detach(t: T):
 
 @case(fixture="g4_two_catalogs", spec=["updates/protected-packages-update-through-their-catalog#hash-mismatch-on-update"])
 def tampered_release_refused_on_update(t: T):
-    """10. A lists x/p 1.1.0 with file hashes that do not match the tagged dist: update and
+    """10. A lists c65a9f2a-2e3b-56bd-95d5-92a4bdde6fe5 1.1.0 with file hashes that do not match the tagged dist: update and
     update all fail with `catalog` and the workspace is unchanged."""
     install_from_a(t)
     a = cat(t, "catA")
@@ -169,7 +169,7 @@ def tampered_release_refused_on_update(t: T):
             digest["sha256"] = "0" * 64
     t.edit_json(t.catalog_release(XP, "1.1.0", a), tamper)
     before = t.snap(t.ws)
-    t.gitpm_err("update", XP, kind="catalog", contains="catalog file hashes do not match git dist of x/p@1.1.0")
+    t.gitpm_err("update", XP, kind="catalog", contains="catalog file hashes do not match git dist of c65a9f2a-2e3b-56bd-95d5-92a4bdde6fe5@1.1.0")
     t.gitpm_err("update", "all", kind="catalog", contains="catalog file hashes do not match git dist")
     t.same(before, "workspace")
     t.eq(t.package(XP)["current"]["version"], "1.0.0", "still 1.0.0")

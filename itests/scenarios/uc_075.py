@@ -3,8 +3,8 @@
 Every mutating command prints one line per affected package, `ID <verb> …` (detail lines
 such as `Fork created:` aside), and never an `OK:` line (README "Changed in 0.5");
 `--version`/`-V` print `gitpm VERSION` (plus `-dev+HASH` for a Git checkout build).
-The packages are created with `gitpm init` inside the case: vendor/base 0.1.0 and app/a
-0.1.1 depending on vendor/base ^0.1.
+The packages are created with `gitpm init` inside the case: c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 0.1.0 and 9692fc07-23c7-5f20-8779-f09374f1a571
+0.1.1 depending on c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 ^0.1.
 """
 
 import json
@@ -13,7 +13,7 @@ import re
 from gitpmtest import T, case
 
 VERBS = "cli/one-output-line-per-affected-package"
-BASE, APP, FORK = "vendor/base", "app/a", "mine/base"
+BASE, APP, FORK = "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9", "9692fc07-23c7-5f20-8779-f09374f1a571", "db33e43e-e652-5767-8e21-27fb3cef9723"
 
 
 class Out:
@@ -37,8 +37,8 @@ class Out:
 
 def setup(t: T):
     base, app = t.repo(BASE), t.repo(APP)
-    t.gitpm_ok("init", BASE, "--into", base)
-    t.gitpm_ok("init", APP, "--into", app)
+    t.new_package(BASE, extra={"name": "base"})
+    t.new_package(APP, extra={"name": "app"})
     t.edit_json(app / "plugin.json", lambda m: m.update(dependencies={BASE: "^0.1"}))
     t.gitpm_ok("commit", app, "0.1.1")
     return base, app
@@ -72,16 +72,18 @@ def fork_replace_and_commit_verbs(t: T):
     o = Out(t)
     o.ok("install", base)
     o.ok("install", app)
-    fork = t.repo(FORK)
-    out = o.ok("fork", BASE, "--ns", "mine", "--into", fork)
-    t.ok(f"{FORK} forked from {BASE} (repository root)" in out, "fork line")
+    fork = t.root / "authors/fork"
+    out = o.ok("fork", BASE, "--into", fork)
+    fork_id = json.loads((fork / "plugin.json").read_text())["id"]
+    t.ok(fork_id != BASE, "fresh fork UUID")
+    t.ok(f"{fork_id} forked from {BASE} (repository root)" in out, "fork line")
     t.ok(f"Fork created: {fork}" in out, "Fork created: detail line")
-    o.lines(["commit", fork, "0.1.3"], [f"{FORK} committed 0.1.3 (local commit and tag v0.1.3)"])
-    o.lines(["install", fork], [f"installed {FORK}@0.1.3 from {fork}"])
-    o.lines(["replace", BASE, "--with", FORK], [f"{BASE} replaced by {FORK} 0.1.3 (as {BASE} 0.1.0) for: {APP}"])
+    o.lines(["commit", fork, "0.1.3"], [f"{fork_id} committed 0.1.3 (local commit and tag v0.1.3)"])
+    o.lines(["install", fork], [f"installed {fork_id}@0.1.3 from {fork}"])
+    o.lines(["replace", BASE, "--with", fork_id], [f"{BASE} replaced by {fork_id} 0.1.3 (as {BASE} 0.1.0) for: {APP}"])
     out = o.ok("replace", BASE, "--with", BASE)
     t.eq(len(out), 1, "one line for replace ORIGINAL --with ORIGINAL")
-    t.ok(out[0].startswith(f"{BASE} switched back from {FORK} ({BASE} 0.1.0 for: {APP})"), "switch-back line")
+    t.ok(out[0].startswith(f"{BASE} switched back from {fork_id} ({BASE} 0.1.0 for: {APP})"), "switch-back line")
     o.no_ok_lines()
 
 

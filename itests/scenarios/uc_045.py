@@ -1,8 +1,8 @@
 """UC-045: Corrupt state and missing managed files (P0).
 
-Workspace g3_trio_installed: A = dan/a (0.1.1, previous 0.1.0), B = dan/b (0.1.0), plus
-other/c. Subcases 1–2 are split per command (one case each) so each command's verdict is
-visible; a catalog with dan/a is registered first so `check` has a real catalog to read and
+Workspace g3_trio_installed: A = 807b9715-06b4-55c2-add2-59b487bfa42e (0.1.1, previous 0.1.0), B = 03c25ec4-f583-513d-adfb-092fb98d8dba (0.1.0), plus
+48cd1267-06f0-5741-820c-7d167ecfd3f8. Subcases 1–2 are split per command (one case each) so each command's verdict is
+visible; a catalog with 807b9715-06b4-55c2-add2-59b487bfa42e is registered first so `check` has a real catalog to read and
 can only fail because of the state.
 """
 
@@ -11,7 +11,7 @@ import shutil
 
 from gitpmtest import T, case
 
-A, B = "dan/a", "dan/b"
+A, B = "807b9715-06b4-55c2-add2-59b487bfa42e", "03c25ec4-f583-513d-adfb-092fb98d8dba"
 
 
 def everything(t: T):
@@ -47,8 +47,8 @@ BREAKS = {"truncated": (truncate, "invalid_data"), "bad_id_key": (bad_id_key, "i
 
 def command(t: T, name: str) -> list:
     if name == "install":
-        t.new_package("dan/new", "0.1.0")
-        return ["install", t.repo("dan/new")]
+        t.new_package("fa23817e-e759-54b4-8988-041fba13e5f9", "0.1.0")
+        return ["install", t.repo("fa23817e-e759-54b4-8988-041fba13e5f9")]
     if name == "update":
         t.release(A, "0.1.2")
         return ["update", A]
@@ -94,11 +94,11 @@ def missing_clone_case(name: str, argv: list):
         t.same(b_before, "B untouched")
         t.gitpm_ok("update", B)
         t.eq(t.package(B)["current"], {"version": "0.1.1", "commit": t.rev(B, "v0.1.1")}, "B updated")
-        t.has((t.dist(B) / "index.js").read_text(), "dan/b 0.1.1")
+        t.has((t.dist(B) / "index.js").read_text(), "03c25ec4-f583-513d-adfb-092fb98d8dba 0.1.1")
         t.eq(t.package(A), state["packages"][A], "A state entry kept")
 
     fn.__name__ = f"missing_clone_{name}"
-    fn.__doc__ = f"3. packages/dan/a removed: `{' '.join(argv)}` fails ({'already_installed' if name == 'restore' else 'repository_not_found'}); B untouched and updatable."
+    fn.__doc__ = f"3. packages/807b9715-06b4-55c2-add2-59b487bfa42e removed: `{' '.join(argv)}` fails ({'already_installed' if name == 'restore' else 'repository_not_found'}); B untouched and updatable."
     return case(fixture="g3_trio_installed", spec=["dist/undeployable-packages-do-not-block-others",
                                                    "errors/failing-operations-leave-the-workspace-unchanged"])(fn)
 
@@ -111,7 +111,7 @@ for _name, _argv in [("update", ["update", A]), ("rollback", ["rollback", A]),
 @case(fixture="g3_trio_installed", spec=["dist/sync-dist-repairs-dist-explicitly",
                                          "dist/undeployable-packages-do-not-block-others"])
 def missing_clone_uninstall_drops_the_record(t: T):
-    """3. packages/dan/a removed: `uninstall dan/a` drops its record and dist (what sync-dist's hint
+    """3. packages/807b9715-06b4-55c2-add2-59b487bfa42e removed: `uninstall 807b9715-06b4-55c2-add2-59b487bfa42e` drops its record and dist (what sync-dist's hint
     names); B untouched."""
     shutil.rmtree(t.clone(A))
     orphan = t.snap(t.worktree(A), git=True)
@@ -127,22 +127,22 @@ def missing_clone_uninstall_drops_the_record(t: T):
 
 @case(fixture="g3_trio_installed", spec=["dist/every-mutating-command-reconciles-all-of-dist"])
 def missing_dist_update_redeploys(t: T):
-    """4. dist/dan/a removed: update to a new release recreates it from the clone."""
+    """4. dist/807b9715-06b4-55c2-add2-59b487bfa42e removed: update to a new release recreates it from the clone."""
     commit = t.release(A, "0.1.2")
     shutil.rmtree(t.dist(A))
     t.gitpm_ok("update", A)
     t.eq(t.package(A)["current"], {"version": "0.1.2", "commit": commit}, "current")
     t.eq((t.dist(A) / "index.js").read_text(), (t.worktree(A) / "dist/index.js").read_text(), "dist from clone")
-    t.has((t.dist(A) / "index.js").read_text(), "dan/a 0.1.2")
+    t.has((t.dist(A) / "index.js").read_text(), "807b9715-06b4-55c2-add2-59b487bfa42e 0.1.2")
 
 
 @case(fixture="g3_trio_installed", spec=["dist/forget-restore-and-uninstall-settle-dist"])
 def missing_dist_restore_redeploys(t: T):
-    """4. dist/dan/a removed: forget + restore recreates it from the clone."""
+    """4. dist/807b9715-06b4-55c2-add2-59b487bfa42e removed: forget + restore recreates it from the clone."""
     shutil.rmtree(t.dist(A))
     t.gitpm_ok("forget", A)
     t.gitpm_ok("restore", A)
-    t.has((t.dist(A) / "index.js").read_text(), "dan/a 0.1.1")
+    t.has((t.dist(A) / "index.js").read_text(), "807b9715-06b4-55c2-add2-59b487bfa42e 0.1.1")
     t.eq(t.package(A)["current"]["version"], "0.1.1", "restored version")
 
 
@@ -180,10 +180,10 @@ def uncommitted_transaction_discarded(t: T):
     """6. <ws>/.pm-txn/new/... without a journal: list reads the live state and leaves it; the next command
     that opens the workspace discards it; state and packages identical."""
     before = everything(t)
-    t.write(t.ws / ".pm-txn/new/packages/dan/a", {"junk.txt": "half-staged\n"})
+    t.write(t.ws / ".pm-txn/d45d917e-29d1-58e1-b499-e9f264bf891d/807b9715-06b4-55c2-add2-59b487bfa42e", {"junk.txt": "half-staged\n"})
     t.write(t.ws / ".pm-txn/new", {"state.json": "{}"})
     out = t.gitpm_ok("list").json()
-    t.eq(sorted(out["packages"]), [A, B, "other/c"], "listed packages")
+    t.eq(sorted(out["packages"]), sorted([A, B, "48cd1267-06f0-5741-820c-7d167ecfd3f8"]), "listed packages")
     t.ok((t.ws / ".pm-txn").exists(), "list does not recover")
     t.gitpm_ok("sync-dist")
     t.ok(not (t.ws / ".pm-txn").exists(), "leftover discarded")

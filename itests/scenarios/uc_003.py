@@ -1,12 +1,7 @@
-"""UC-003: Namespace validation (P0).
-
-gitpm has no default namespace and no namespace configuration: `init`/`create` take a
-full NAMESPACE/NAME. An unscoped name is refused; an invalid namespace is refused with
-`invalid_id` before anything is written; valid characters and an 80-character component
-are accepted. Releasing a package later never renames it.
-"""
+"""UC-003: generated UUID identities and independent nonunique aliases."""
 
 import json
+from uuid import UUID
 
 from gitpmtest import T, case
 
@@ -17,68 +12,66 @@ def created_id(t: T, path) -> str:
     return json.loads((t.root / path / "plugin.json").read_text())["id"]
 
 
-@case(spec=["package-ids/no-default-namespace#init-without-a-namespace"])
-def init_without_namespace_refused(t: T):
-    """`init hello --into a/p1` (no namespace) is refused and creates nothing."""
-    r = t.gitpm("init", "hello", "--into", "a/p1")
-    t.ok(r.code != 0, "init refused")
-    t.has(r.err, "package ID needs a namespace: use NAMESPACE/NAME, for example acme/hello")
-    t.has(r.err, "Error kind: invalid_id")
-    t.ok(not (t.root / "a").exists(), "nothing created")
+@case(spec=[SYNTAX])
+def init_without_namespace_generates_uuid(t: T):
+    """A bare name creates a package with a canonical UUID."""
+    t.gitpm_ok("init", "hello", "--into", "hello")
+    id = created_id(t, "hello")
+    t.eq(str(UUID(id)), id, "canonical UUID")
+    t.eq(json.loads((t.root / "hello/plugin.json").read_text())["name"], "hello", "alias")
 
 
 def invalid_case(name: str, value: str, doc: str):
     def fn(t: T):
         before = t.snap(t.root, git=True)
-        for command in ("init",):
-            r = t.gitpm(command, f"{value}/x", "--into", "a/x")
-            t.ok(r.code != 0, f"{command} {value!r}/x refused (exit {r.code})")
-            if value.startswith("-"):
-                # A positional starting with '-' is parsed as an option (usage error).
-                t.has(r.err, f"unknown option: {value}/x")
-            else:
-                t.has(r.err, "Error kind: invalid_id", "1–80 ASCII letters, digits, '-' or '_'")
+        r = t.gitpm("init", value, "--into", "invalid")
+        t.ok(r.code != 0, f"invalid alias {value!r} refused")
         t.same(before, "fixture (files)")
-        t.ok(not (t.root / "a").exists(), "no package directory created")
+        t.ok(not (t.root / "invalid").exists(), "nothing created")
     fn.__name__, fn.__doc__, fn.__module__ = name, doc, __name__
-    tag = f"{SYNTAX}#empty-namespace" if value == "" else f"{SYNTAX}#unsafe-components-are-refused"
-    case(spec=[tag])(fn)
+    case(spec=["package-manifest/known-manifest-keys"])(fn)
 
 
 for _name, _value, _doc in [
-    ("empty_namespace_refused", "", "An empty namespace is invalid."),
-    ("slash_refused", "a/b", "A slash in the namespace (three components)."),
-    ("dot_dot_refused", "..", "A '..' namespace."),
-    ("dot_refused", "a.b", "A dot in the namespace."),
-    ("non_ascii_refused", "дан", "Non-ASCII (Cyrillic) namespace."),
-    ("accented_refused", "é", "Non-ASCII (é) namespace."),
-    ("space_refused", "a b", "A space in the namespace."),
-    ("leading_dash_refused", "-x", "A namespace starting with '-'."),
-    ("too_long_refused", "n" * 81, "An 81-character namespace."),
+    ("empty_name_refused", "", "An empty alias is invalid."),
+    ("slash_refused", "acme/hello", "A scoped ID is not a name."),
+    ("dot_dot_refused", "..", "A parent path is invalid."),
+    ("dot_refused", "a.b", "A dotted alias is invalid."),
+    ("non_ascii_refused", "дан", "Non-ASCII alias is invalid."),
+    ("accented_refused", "é", "An accented alias is invalid."),
+    ("space_refused", "a b", "A spaced alias is invalid."),
+    ("leading_dash_refused", "-x", "A leading dash is invalid."),
+    ("too_long_refused", "n" * 81, "An 81-character alias is invalid."),
 ]:
     invalid_case(_name, _value, _doc)
 
 
-@case(spec=[f"{SYNTAX}#valid-scoped-id"])
+@case(spec=["package-manifest/known-manifest-keys"])
 def valid_characters_accepted(t: T):
-    """Underscore, hyphen, ASCII digits and an 80-character component are accepted."""
+    """Safe aliases preserve their spelling beside a generated UUID."""
     for i, value in enumerate(["my_ns-2", "0_9", "_x", "n" * 80]):
-        t.gitpm_ok("init", f"{value}/ok", "--into", f"a/ok{i}")
-        t.eq(created_id(t, f"a/ok{i}"), f"{value}/ok", "ID")
-        t.has(t.git(t.root / f"a/ok{i}", "tag", "--list"), f"v0.1.0")
+        path = f"valid-{i}"
+        t.gitpm_ok("init", value, "--into", path)
+        id = created_id(t, path)
+        t.eq(str(UUID(id)), id, "canonical UUID")
+        t.eq(json.loads((t.root / path / "plugin.json").read_text())["name"], value, "alias")
+        t.eq(t.git(t.root / path, "tag", "--list"), "v0.1.0", "tag")
 
 
-@case(spec=["package-ids/no-default-namespace"])
+@case(spec=["package-ids/ids-are-matched-exactly", "package-ids/case-colliding-ids-are-refused"])
 def release_and_update_keep_the_id(t: T):
-    """A package keeps its ID through install, a new release and update; nothing is renamed."""
-    t.gitpm_ok("init", "first/keep", "--into", "a/keep")
-    repo = t.root / "a/keep"
-    t.gitpm_ok("install", repo)
-    t.gitpm_ok("init", "second/new", "--into", "a/new")
-    t.eq(created_id(t, "a/new"), "second/new", "new ID")
-    t.gitpm_ok("commit", repo, "0.1.1")
-    t.gitpm_ok("update", "first/keep")
-    state = t.gitpm_ok("list").json()
-    t.eq(sorted(state["packages"]), ["first/keep"], "installed IDs")
-    t.eq(t.package("first/keep")["current"]["version"], "0.1.1", "updated under its own ID")
-    t.ok(t.worktree("first/keep").is_dir() and not (t.ws / "packages").exists(), "clone path kept")
+    """Equal aliases coexist and releasing preserves identity."""
+    t.gitpm_ok("init", "keep", "--into", "first")
+    t.gitpm_ok("init", "keep", "--into", "second")
+    first, second = created_id(t, "first"), created_id(t, "second")
+    t.ok(first != second, "distinct identities")
+    for path in ("first", "second"):
+        t.gitpm_ok("install", t.root / path)
+    t.gitpm_ok("commit", t.root / "first", "0.1.1")
+    t.eq(created_id(t, "first"), first, "immutable identity")
+    t.gitpm_ok("update", first)
+    t.eq(sorted(t.gitpm_ok("list").json()["packages"]), sorted([first, second]), "installed UUIDs")
+    t.eq(t.package(first)["current"]["version"], "0.1.1", "updated own UUID")
+    for id in (first, second):
+        t.ok(t.dist(id).is_dir(), "UUID deployment")
+    t.ok(t.gitpm("uninstall", "keep", "--force").code != 0, "alias does not resolve")

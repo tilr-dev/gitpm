@@ -11,7 +11,7 @@ import json
 
 from gitpmtest import T, case
 
-ID = "dan/hello"
+ID = "3dce1568-569c-5b53-9321-37185e751947"
 SETTINGS = "cli/settings-come-from-flags-environment-defaults"
 GITPM_VARS = ["GITPM_ROOT", "GITPM_CATALOG", "GITPM_SOURCES"]
 # The stand's variable, spelled in two parts: scenarios must not reference it otherwise.
@@ -55,14 +55,14 @@ def catalog_option_beats_env(t: T):
 @case(fixture="hello", spec=[SETTINGS])
 def sources_option_beats_env(t: T):
     """--sources wins over GITPM_SOURCES; without it GITPM_SOURCES is used."""
-    t.new_package("dan/other", "1.0.0")
-    (t.root / "sources.txt").write_text(f"{t.repo('dan/other')}\n")   # GITPM_SOURCES
+    t.new_package("95d14dc8-6dfc-5022-9fd1-7146ee6aee58", "1.0.0")
+    (t.root / "sources.txt").write_text(f"{t.repo('95d14dc8-6dfc-5022-9fd1-7146ee6aee58')}\n")   # GITPM_SOURCES
     (t.root / "explicit.txt").write_text(f"{t.repo(ID)}\n")
     t.gitpm_ok("catalog-update", "--sources", t.root / "explicit.txt")
     t.ok(t.catalog_index(ID).is_file(), "explicit source registered")
-    t.ok(not t.catalog_index("dan/other").exists(), "GITPM_SOURCES not read when --sources is given")
+    t.ok(not t.catalog_index("95d14dc8-6dfc-5022-9fd1-7146ee6aee58").exists(), "GITPM_SOURCES not read when --sources is given")
     t.gitpm_ok("catalog-update")
-    t.ok(t.catalog_index("dan/other").is_file(), "GITPM_SOURCES used without --sources")
+    t.ok(t.catalog_index("95d14dc8-6dfc-5022-9fd1-7146ee6aee58").is_file(), "GITPM_SOURCES used without --sources")
 
 
 @case(fixture="hello", spec=[SETTINGS])
@@ -107,4 +107,4 @@ def catalog_commands_without_catalog(t: T):
         r = t.run(*without_gitpm_env("gitpm", *argv), cwd=iso)
         t.ok(r.code != 0, f"{argv[0]} fails")
         t.has(r.err, f"{' '.join(argv[:2]) if argv[0] == 'catalog' else argv[0]} needs a catalog: pass --catalog DIR_OR_JSON_OR_URL or set GITPM_CATALOG")
-    t.eq(sorted(p.name for p in iso.iterdir()), [], "nothing created")
+    t.eq(sorted(p.name for p in iso.iterdir()), sorted([]), "nothing created")

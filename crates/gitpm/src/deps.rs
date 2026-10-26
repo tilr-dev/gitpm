@@ -627,7 +627,7 @@ impl fmt::Display for Package {
 pub(crate) struct Fixed {
     pub version: Version,
     pub dependencies: BTreeMap<String, String>,
-    /// Shown in explanations, e.g. "replaced by mine/base".
+    /// Shown in explanations, e.g. "replaced by db33e43e-e652-5767-8e21-27fb3cef9723".
     pub note: Option<String>,
 }
 
@@ -1054,32 +1054,71 @@ mod tests {
     #[test]
     fn solver_explains_conflicts_naming_both_consumers() {
         let pinned = BTreeMap::from([
-            ("lib/core".to_string(), fixed("1.1.0", &[])),
-            ("app/a".to_string(), fixed("1.0.0", &[("lib/core", "^1.0")])),
-            ("app/b".to_string(), fixed("1.0.0", &[("lib/core", "^2.0")])),
+            (
+                "757fd5ca-2b6a-5b2f-8a5d-60980b028665".to_string(),
+                fixed("1.1.0", &[]),
+            ),
+            (
+                "9692fc07-23c7-5f20-8779-f09374f1a571".to_string(),
+                fixed("1.0.0", &[("757fd5ca-2b6a-5b2f-8a5d-60980b028665", "^1.0")]),
+            ),
+            (
+                "f5984d44-92bd-51ac-8e8f-d911dd824ef3".to_string(),
+                fixed("1.0.0", &[("757fd5ca-2b6a-5b2f-8a5d-60980b028665", "^2.0")]),
+            ),
         ]);
         let roots = BTreeMap::from([
-            ("app/a".to_string(), version("1.0.0").unwrap()),
-            ("app/b".to_string(), version("1.0.0").unwrap()),
+            (
+                "9692fc07-23c7-5f20-8779-f09374f1a571".to_string(),
+                version("1.0.0").unwrap(),
+            ),
+            (
+                "f5984d44-92bd-51ac-8e8f-d911dd824ef3".to_string(),
+                version("1.0.0").unwrap(),
+            ),
         ]);
         let error = solve(&pinned, &roots, None).unwrap_err();
         assert_eq!(error.kind(), "dependency_conflict");
         let text = error.to_string();
-        assert!(text.contains("app/a") && text.contains("app/b"), "{text}");
-        assert!(text.contains("lib/core"), "{text}");
+        assert!(
+            text.contains("9692fc07-23c7-5f20-8779-f09374f1a571")
+                && text.contains("f5984d44-92bd-51ac-8e8f-d911dd824ef3"),
+            "{text}"
+        );
+        assert!(
+            text.contains("757fd5ca-2b6a-5b2f-8a5d-60980b028665"),
+            "{text}"
+        );
     }
 
     #[test]
     fn solver_accepts_cycles_and_reports_missing_packages() {
         let pinned = BTreeMap::from([
-            ("x/a".to_string(), fixed("1.0.0", &[("x/b", "^1")])),
-            ("x/b".to_string(), fixed("1.0.0", &[("x/a", "^1")])),
+            (
+                "d35b3151-28fd-557a-a363-b5f18ae491c8".to_string(),
+                fixed("1.0.0", &[("3a53cdea-2cb1-5653-bf22-898b679440ee", "^1")]),
+            ),
+            (
+                "3a53cdea-2cb1-5653-bf22-898b679440ee".to_string(),
+                fixed("1.0.0", &[("d35b3151-28fd-557a-a363-b5f18ae491c8", "^1")]),
+            ),
         ]);
-        let roots = BTreeMap::from([("x/a".to_string(), version("1.0.0").unwrap())]);
+        let roots = BTreeMap::from([(
+            "d35b3151-28fd-557a-a363-b5f18ae491c8".to_string(),
+            version("1.0.0").unwrap(),
+        )]);
         assert!(solve(&pinned, &roots, None).unwrap().is_empty());
-        let pinned = BTreeMap::from([("x/a".to_string(), fixed("1.0.0", &[("x/missing", "^1")]))]);
+        let pinned = BTreeMap::from([(
+            "d35b3151-28fd-557a-a363-b5f18ae491c8".to_string(),
+            fixed("1.0.0", &[("abc0fa74-a23f-55b0-a3ad-a041144fae9f", "^1")]),
+        )]);
         let error = solve(&pinned, &roots, None).unwrap_err();
-        assert!(error.to_string().contains("x/missing"), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("abc0fa74-a23f-55b0-a3ad-a041144fae9f"),
+            "{error}"
+        );
         assert!(
             error.to_string().contains("no catalog configured"),
             "{error}"

@@ -3,15 +3,15 @@
 forget keeps the whole record under `forgotten`; restore records it again as it was
 (revisions, catalog, enabled flag, mode).
 
-Fixture g2_hello_history: dan/hello installed at 0.1.0 and updated to 0.1.1 and 0.1.2
-(current 0.1.2, previous 0.1.1). g1_ws_catalog: dan/hello 0.1.1 installed from the catalog.
+Fixture g2_hello_history: 3dce1568-569c-5b53-9321-37185e751947 installed at 0.1.0 and updated to 0.1.1 and 0.1.2
+(current 0.1.2, previous 0.1.1). g1_ws_catalog: 3dce1568-569c-5b53-9321-37185e751947 0.1.1 installed from the catalog.
 """
 
 import shutil
 
 from gitpmtest import T, case
 
-ID = "dan/hello"
+ID = "3dce1568-569c-5b53-9321-37185e751947"
 
 
 def tagged(t: T, version: str) -> str:
@@ -79,7 +79,7 @@ def restore_keeps_the_catalog(t: T):
     t.gitpm_ok("forget", ID)
     t.gitpm_ok("restore", ID)
     t.eq(t.package(ID), record, "record with catalog")
-    t.has((t.dist(ID) / "index.js").read_text(), "dan/hello 0.1.1")
+    t.has((t.dist(ID) / "index.js").read_text(), "3dce1568-569c-5b53-9321-37185e751947 0.1.1")
 
 
 @case(fixture="g2_hello_history", spec=["install-uninstall/restore-preconditions"])
@@ -100,11 +100,11 @@ def restore_refuses_a_moved_head(t: T):
 def unknown_id(t: T):
     """forget/restore of an ID that has neither entry nor files: error naming the ID, nothing changes."""
     before = t.snap(t.ws, git=True)
-    t.gitpm_err("forget", "dan/missing", kind="not_installed", contains="package dan/missing is not installed")
+    t.gitpm_err("forget", "a68376c0-a262-545a-a4f8-afe9998880a6", kind="not_installed", contains="package a68376c0-a262-545a-a4f8-afe9998880a6 is not installed")
     t.same(before, "workspace")
-    t.gitpm_err("restore", "dan/missing", kind="repository_not_found", contains="dan/missing")
+    t.gitpm_err("restore", "a68376c0-a262-545a-a4f8-afe9998880a6", kind="repository_not_found", contains="a68376c0-a262-545a-a4f8-afe9998880a6")
     t.same(before, "workspace")
-    t.gitpm_err("restore", "dan", kind="invalid_id", contains="namespace/name")
+    t.gitpm_err("restore", "dan", kind="invalid_id", contains="UUID")
     t.same(before, "workspace (a namespace is not a package ID)")
 
 
@@ -156,10 +156,10 @@ def retained_manifest_with_other_id(t: T):
     """Retained clone with a commit renaming the package: unpublished work, restore refuses, nothing fabricated."""
     t.gitpm_ok("forget", ID)
     clone = t.worktree(ID)
-    (clone / "plugin.json").write_text('{"id": "dan/renamed", "version": "0.1.2"}\n')
+    (clone / "plugin.json").write_text('{"id": "d92f82f0-1472-59b9-b4c5-eb76b0706d47", "name": "fixture", "version": "0.1.2"}\n')
     t.git(clone, "commit", "-q", "-am", "rename")
     before = t.snap(t.ws, git=True)
     t.gitpm_err("restore", ID, kind="local_changes", contains="worktree HEAD moved away from the recorded revision")
     t.same(before, "workspace")
     no_entry(t)
-    t.ok("dan/renamed" not in t.state()["packages"], "no entry for the other ID")
+    t.ok("d92f82f0-1472-59b9-b4c5-eb76b0706d47" not in t.state()["packages"], "no entry for the other ID")

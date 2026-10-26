@@ -2,7 +2,7 @@
 
 A copy of the `catalog` fixture is served over loopback HTTP by a local server that can
 override single paths (status, headers, body) - gitpmtest's serve() cannot return a 301 or
-a crafted body. dan/num 1.9.0 is installed from the served catalog first; every failing
+a crafted body. 2190eee8-4be5-5a91-81d2-6ca95c1e61d0 1.9.0 is installed from the served catalog first; every failing
 read must leave that workspace byte-identical.
 """
 
@@ -16,7 +16,7 @@ from pathlib import Path
 
 from gitpmtest import T, case
 
-NUM, HELLO = "dan/num", "dan/hello"
+NUM, HELLO = "2190eee8-4be5-5a91-81d2-6ca95c1e61d0", "3dce1568-569c-5b53-9321-37185e751947"
 
 
 class Server:
@@ -95,14 +95,14 @@ def plugin_404_is_not_in_catalog(t: T):
     """A package whose index answers 404: install-catalog says it is not in the catalog
     (naming the ID); check of an installed package whose index is gone reads its origin."""
     srv, served = setup(t)
-    r = failing(t, srv, "--catalog", srv.url, "install-catalog", "dan/missing", contains="not found in catalog")
-    t.not_installed("dan/missing")
-    shutil.rmtree(served / "namespaces/dan/num")
+    r = failing(t, srv, "--catalog", srv.url, "install-catalog", "a68376c0-a262-545a-a4f8-afe9998880a6", contains="not found in catalog")
+    t.not_installed("a68376c0-a262-545a-a4f8-afe9998880a6")
+    shutil.rmtree(served / "packages/2190eee8-4be5-5a91-81d2-6ca95c1e61d0")
     before = t.snap(t.ws)
     out = t.gitpm_ok("--catalog", srv.url, "check").out
     t.has(next(l for l in out.splitlines() if l.startswith(NUM)), " origin ")
     t.same(before, "installed workspace")
-    t.has(r.err, "dan/missing")  # error messages name the package ID (product decision)
+    t.has(r.err, "a68376c0-a262-545a-a4f8-afe9998880a6")  # error messages name the package ID (product decision)
 
 
 @case(fixture="catalog", spec=["catalog/catalog-locations-and-transport", "errors/stable-error-kinds"])
@@ -113,11 +113,11 @@ def malformed_and_truncated_json(t: T):
     failing(t, srv, "--catalog", srv.url, "catalog", kinds=("catalog", "invalid_data"))
     failing(t, srv, "--catalog", srv.url, "info", kinds=("catalog", "invalid_data"))
     del srv.overrides["/catalog.json"]
-    srv.overrides["/namespaces/dan/hello/plugin.json"] = (200, {}, b'{"schema": 1, "id": ')
+    srv.overrides["/packages/3dce1568-569c-5b53-9321-37185e751947/plugin.json"] = (200, {}, b'{"schema": 1, "id": ')
     failing(t, srv, "--catalog", srv.url, "install-catalog", HELLO, kinds=("catalog", "invalid_data"))
-    del srv.overrides["/namespaces/dan/hello/plugin.json"]
-    release = (served / "namespaces/dan/num/versions/1.10.0/release.json").read_bytes()
-    srv.overrides["/namespaces/dan/num/versions/1.10.0/release.json"] = (200, {}, release[: len(release) // 2])
+    del srv.overrides["/packages/3dce1568-569c-5b53-9321-37185e751947/plugin.json"]
+    release = (served / "packages/2190eee8-4be5-5a91-81d2-6ca95c1e61d0/versions/1.10.0/release.json").read_bytes()
+    srv.overrides["/packages/2190eee8-4be5-5a91-81d2-6ca95c1e61d0/versions/1.10.0/release.json"] = (200, {}, release[: len(release) // 2])
     failing(t, srv, "--catalog", srv.url, "check", kinds=("catalog", "invalid_data"))
     t.not_installed(HELLO)
 
@@ -126,12 +126,12 @@ def malformed_and_truncated_json(t: T):
 def unsupported_schema(t: T):
     """schema 2 in a directory catalog and in a package index: refused (catalog/invalid_data)."""
     srv, served = setup(t)
-    srv.overrides["/catalog.json"] = (200, {}, json.dumps({"schema": 2, "directories": {"namespaces": "namespaces/"}}).encode())
+    srv.overrides["/catalog.json"] = (200, {}, json.dumps({"schema": 2, "directories": {"packages": "packages/"}}).encode())
     failing(t, srv, "--catalog", srv.url, "info", kinds=("catalog", "invalid_data"))
     del srv.overrides["/catalog.json"]
-    index = json.loads((served / "namespaces/dan/hello/plugin.json").read_text())
+    index = json.loads((served / "packages/3dce1568-569c-5b53-9321-37185e751947/plugin.json").read_text())
     index["schema"] = 2
-    srv.overrides["/namespaces/dan/hello/plugin.json"] = (200, {}, json.dumps(index).encode())
+    srv.overrides["/packages/3dce1568-569c-5b53-9321-37185e751947/plugin.json"] = (200, {}, json.dumps(index).encode())
     failing(t, srv, "--catalog", srv.url, "install-catalog", HELLO, kinds=("catalog", "invalid_data"))
     t.not_installed(HELLO)
 
@@ -156,7 +156,7 @@ def redirect_is_not_followed(t: T):
     srv, _ = setup(t)
     target = t.serve(t.catalog)
     srv.overrides["/catalog.json"] = (301, {"Location": target.url + "/catalog.json"}, b"")
-    srv.overrides["/namespaces/dan/hello/plugin.json"] = (301, {"Location": target.url + "/namespaces/dan/hello/plugin.json"}, b"")
+    srv.overrides["/packages/3dce1568-569c-5b53-9321-37185e751947/plugin.json"] = (301, {"Location": target.url + "/packages/3dce1568-569c-5b53-9321-37185e751947/plugin.json"}, b"")
     failing(t, srv, "--catalog", srv.url, "catalog", kinds=("http",), contains="301")
     failing(t, srv, "--catalog", srv.url, "install-catalog", HELLO, kinds=("http",), contains="301")
     t.eq(target.requests, [], "redirect target never requested")
@@ -171,7 +171,7 @@ def response_over_16_mib_refused(t: T):
     srv.overrides["/catalog.json"] = (200, {}, big)
     failing(t, srv, "--catalog", srv.url, "catalog", kinds=("http",))
     del srv.overrides["/catalog.json"]
-    srv.overrides["/namespaces/dan/hello/plugin.json"] = (200, {}, big)
+    srv.overrides["/packages/3dce1568-569c-5b53-9321-37185e751947/plugin.json"] = (200, {}, big)
     failing(t, srv, "--catalog", srv.url, "install-catalog", HELLO, kinds=("http",))
     t.not_installed(HELLO)
 
@@ -182,8 +182,8 @@ def unsafe_directory_links_refused(t: T):
     and never followed."""
     srv, _ = setup(t)
     evil = t.serve(t.catalog)
-    for link in ["../", "../../etc/", "/etc/", "/namespaces/", evil.url + "/namespaces/", "//evil.example/x/"]:
-        srv.overrides["/catalog.json"] = (200, {}, json.dumps({"schema": 1, "directories": {"namespaces": link}}).encode())
+    for link in ["../", "../../etc/", "/etc/", "/packages/", evil.url + "/packages/", "//evil.example/x/"]:
+        srv.overrides["/catalog.json"] = (200, {}, json.dumps({"schema": 1, "directories": {"packages": link}}).encode())
         failing(t, srv, "--catalog", srv.url, "info", contains="invalid directory link")
     t.eq(evil.requests, [], "foreign host never requested")
 
@@ -194,18 +194,18 @@ def unsafe_release_links_refused(t: T):
     refused (kind catalog) by install-catalog, check and info."""
     srv, served = setup(t)
     evil = t.serve(t.catalog)
-    index = json.loads((served / "namespaces/dan/num/plugin.json").read_text())
+    index = json.loads((served / "packages/2190eee8-4be5-5a91-81d2-6ca95c1e61d0/plugin.json").read_text())
     for link in ["versions/1.10.0/../../../hello/versions/0.2.0/release.json", "../num/versions/1.10.0/release.json",
-                 "/namespaces/dan/num/versions/1.10.0/release.json",
-                 evil.url + "/namespaces/dan/num/versions/1.10.0/release.json"]:
+                 "/packages/2190eee8-4be5-5a91-81d2-6ca95c1e61d0/versions/1.10.0/release.json",
+                 evil.url + "/packages/2190eee8-4be5-5a91-81d2-6ca95c1e61d0/versions/1.10.0/release.json"]:
         crafted = dict(index, versions={**index["versions"], "1.10.0": link})
-        srv.overrides["/namespaces/dan/num/plugin.json"] = (200, {}, json.dumps(crafted).encode())
+        srv.overrides["/packages/2190eee8-4be5-5a91-81d2-6ca95c1e61d0/plugin.json"] = (200, {}, json.dumps(crafted).encode())
         for args in [("install-catalog", NUM, "--version", "1.10.0"), ("check",), ("info",)]:
             root = ("--root", t.root / "other-ws") if args[0] == "install-catalog" else ()
             failing(t, srv, *root, "--catalog", srv.url, *args, contains="invalid release link")
     t.eq(evil.requests, [], "foreign host never requested")
     t.ok(not (t.worktree(NUM, t.root / "other-ws")).exists(), "no clone in the other workspace")
-    t.ok(not (t.root / "other-ws/dist/dan/num").exists(), "no dist in the other workspace")
+    t.ok(not (t.root / "other-ws/dist/2190eee8-4be5-5a91-81d2-6ca95c1e61d0").exists(), "no dist in the other workspace")
     state = t.root / "other-ws/state.json"
     t.ok(not state.exists() or NUM not in json.loads(state.read_text()).get("packages", {}), "no state entry")
 

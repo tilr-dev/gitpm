@@ -9,7 +9,7 @@ import subprocess
 
 from gitpmtest import T, case
 
-ID = "dan/hello"
+ID = "3dce1568-569c-5b53-9321-37185e751947"
 
 
 def committed(repo, rev: str, path: str) -> dict:
@@ -78,7 +78,7 @@ def other_source_same_id_conflicts(t: T):
     """4. The same ID from another source (a mirror clone) is refused, even for a new
     version; the catalog is unchanged."""
     t.release(ID, "0.3.0")
-    mirror = t.root / "mirror/hello"
+    mirror = t.root / "790a24b3-6ad7-5a64-8632-0c229695164c"
     t.run("git", "clone", "-q", t.repo(ID), mirror, check=True)
     before = t.snap(t.catalog)
     errors = []
@@ -95,15 +95,15 @@ def uncommitted_dist_does_not_affect_hashes(t: T):
     registered with hashes of the committed content only; older releases untouched."""
     commit = t.release(ID, "0.3.0", files={"dist/extra.js": "committed extra\n"})
     t.write(ID, {"dist/index.js": "UNCOMMITTED EDIT\n", "dist/extra.js": "dirty\n", "dist/untracked.js": "x\n"})
-    others = t.snap(t.catalog / "namespaces/dan/hello/versions", t.catalog / "namespaces/dan/num")
+    others = t.snap(t.catalog / "packages/3dce1568-569c-5b53-9321-37185e751947/versions", t.catalog / "packages/2190eee8-4be5-5a91-81d2-6ca95c1e61d0")
     t.gitpm_ok("register", t.repo(ID), "--ref", f"v0.3.0")
     stored = release(t, "0.3.0")
     t.eq(stored["commit"], commit, "commit")
     t.eq(stored["files"], {"index.js": committed(t.repo(ID), commit, "dist/index.js"),
                            "extra.js": committed(t.repo(ID), commit, "dist/extra.js")}, "committed hashes only")
-    t.eq(sorted(json.loads(t.catalog_index(ID).read_text())["versions"]), ["0.1.0", "0.1.1", "0.2.0", "0.3.0"],
+    t.eq(sorted(json.loads(t.catalog_index(ID).read_text())["versions"]), sorted(["0.1.0", "0.1.1", "0.2.0", "0.3.0"]),
          "versions")
     t.has(t.git(ID, "status", "--porcelain"), "dist/index.js", "dist/untracked.js")
-    after = t.snap(t.catalog / "namespaces/dan/hello/versions", t.catalog / "namespaces/dan/num")
+    after = t.snap(t.catalog / "packages/3dce1568-569c-5b53-9321-37185e751947/versions", t.catalog / "packages/2190eee8-4be5-5a91-81d2-6ca95c1e61d0")
     t.eq({k: v for k, v in after.items() if "/0.3.0/" not in k}, dict(others), "older releases unchanged")
     t.ok(not t.ws.exists(), "nothing installed")

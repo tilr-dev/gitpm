@@ -4,7 +4,7 @@ import json
 
 from gitpmtest import T, case
 
-ID = "dan/num"
+ID = "2190eee8-4be5-5a91-81d2-6ca95c1e61d0"
 
 
 def registered(t: T, version: str) -> dict:
@@ -18,7 +18,7 @@ def install_exact_version(t: T):
     p = t.package(ID)
     t.eq(p["current"], {"version": "1.9.0", "commit": registered(t, "1.9.0")["commit"]}, "current")
     t.eq(t.rev(t.worktree(ID)), p["current"]["commit"], "clone HEAD")
-    t.has((t.dist(ID) / "index.js").read_text(), "dan/num 1.9.0")
+    t.has((t.dist(ID) / "index.js").read_text(), "2190eee8-4be5-5a91-81d2-6ca95c1e61d0 1.9.0")
 
 
 @case(fixture="catalog", spec=["install-uninstall/install-from-the-catalog", "package-ids/version-format#numeric-ordering"])
@@ -31,7 +31,7 @@ def install_latest_is_numeric_and_pinned(t: T):
     t.gitpm_ok("install-catalog", ID)
     p = t.package(ID)
     t.eq(p["current"], {"version": "1.10.0", "commit": pinned}, "current")
-    t.has((t.dist(ID) / "index.js").read_text(), "dan/num 1.10.0")
+    t.has((t.dist(ID) / "index.js").read_text(), "2190eee8-4be5-5a91-81d2-6ca95c1e61d0 1.10.0")
 
 
 @case(fixture="catalog", spec=["install-uninstall/install-from-the-catalog", "cli/settings-come-from-flags-environment-defaults"])
@@ -77,8 +77,8 @@ def tampered_commit(t: T):
 
 @case(fixture="catalog", spec=["install-uninstall/install-from-the-catalog", "errors/errors-name-the-package"])
 def unknown_id(t: T):
-    t.gitpm_err("install-catalog", "dan/missing", contains="dan/missing")
-    t.not_installed("dan/missing")
+    t.gitpm_err("install-catalog", "a68376c0-a262-545a-a4f8-afe9998880a6", contains="a68376c0-a262-545a-a4f8-afe9998880a6")
+    t.not_installed("a68376c0-a262-545a-a4f8-afe9998880a6")
 
 
 @case(fixture="catalog", spec=["install-uninstall/install-from-the-catalog"])

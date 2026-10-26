@@ -9,7 +9,7 @@ import json
 
 from gitpmtest import Failure, T, case
 
-HELLO = "dan/hello"
+HELLO = "3dce1568-569c-5b53-9321-37185e751947"
 
 
 def resolved(t: T) -> dict:
@@ -40,11 +40,11 @@ def lifecycle_matches_library_contract(t: T):
     t.eq(t.package(HELLO)["previous"].get("mode"), {"pinned": f"v0.1.0"}, "previous keeps its mode")
     t.eq((normalized(t, HELLO)["current"], normalized(t, HELLO)["previous"]), (rev(t, "0.1.1"), rev(t, "0.1.0")),
          "update: current/previous")
-    t.has((t.dist(HELLO) / "index.js").read_text(), "dan/hello 0.1.1")
+    t.has((t.dist(HELLO) / "index.js").read_text(), "3dce1568-569c-5b53-9321-37185e751947 0.1.1")
     t.gitpm_ok("rollback", HELLO)
     t.eq((normalized(t, HELLO)["current"], normalized(t, HELLO)["previous"]), (rev(t, "0.1.0"), rev(t, "0.1.1")),
          "rollback swaps")
-    t.has((t.dist(HELLO) / "index.js").read_text(), "dan/hello 0.1.0")
+    t.has((t.dist(HELLO) / "index.js").read_text(), "3dce1568-569c-5b53-9321-37185e751947 0.1.0")
     t.gitpm_ok("disable", HELLO)
     t.eq(t.package(HELLO)["enabled"], False, "disable")
     t.gitpm_ok("enable", HELLO)
@@ -55,13 +55,14 @@ def lifecycle_matches_library_contract(t: T):
     t.gitpm_ok("restore", HELLO)
     t.eq((normalized(t, HELLO)["current"], normalized(t, HELLO)["previous"]), (rev(t, "0.1.0"), rev(t, "0.1.1")),
          "restore: the record as it was")
-    t.has((t.dist(HELLO) / "index.js").read_text(), "dan/hello 0.1.0")
-    fork = t.root / "forks/hello"
-    r = t.gitpm_ok("fork", HELLO, "--ns", "mine", "--into", fork)
-    t.has(r.out, "mine/hello forked from dan/hello (repository root)", "Next steps (choose the packages to install and replace):")
+    t.has((t.dist(HELLO) / "index.js").read_text(), "3dce1568-569c-5b53-9321-37185e751947 0.1.0")
+    fork = t.root / "d2e59a73-093a-59d2-912a-78d95856c963"
+    r = t.gitpm_ok("fork", HELLO, "--into", fork)
+    fork_id = t.manifest_id(fork)
+    t.has(r.out, f"{fork_id} forked from {HELLO} (repository root)", "Next steps (choose the packages to install and replace):")
     m = json.loads((fork / "plugin.json").read_text())
     t.eq((m["id"], m["forkOf"]["id"], m["forkOf"]["commit"], m["replaces"]),
-         ("mine/hello", HELLO, rev(t, "0.1.0")["commit"], {"id": HELLO, "version": "0.1.0"}), "fork manifest")
+         (fork_id, HELLO, rev(t, "0.1.0")["commit"], {"id": HELLO, "version": "0.1.0"}), "fork manifest")
     t.eq(t.git(fork, "branch", "--show-current"), "fork", "fork branch")
     t.gitpm_ok("uninstall", HELLO)
     t.not_installed(HELLO)
@@ -70,46 +71,46 @@ def lifecycle_matches_library_contract(t: T):
 
 @case(fixture="g6_core_catalog", spec=["dependencies/install-resolves-dependencies#dependency-pulled-from-the-catalog"])
 def catalog_install_with_dependency(t: T):
-    """install-catalog app/a: the library's catalog_install_resolves_dependencies_and_records_edges outcome
+    """install-catalog 9692fc07-23c7-5f20-8779-f09374f1a571: the library's catalog_install_resolves_dependencies_and_records_edges outcome
     (the catalog verified, so the pulled dependency records it)."""
     t.edit_json(t.catalog / "catalog.json", lambda c: c.update(verified=True))
-    t.gitpm_ok("install-catalog", "app/a")
+    t.gitpm_ok("install-catalog", "9692fc07-23c7-5f20-8779-f09374f1a571")
     state = t.state()
-    t.eq(sorted(state["packages"]), ["app/a", "lib/core"], "ids")
-    t.eq(state["packages"]["lib/core"]["current"]["version"], "1.1.0", "highest version matching ^1.0")
-    t.eq(state["packages"]["app/a"]["dependencies"], {"lib/core": "^1.0"}, "edge")
-    t.eq(state["packages"]["lib/core"]["catalog"], str(t.catalog / "catalog.json"), "canonical catalog origin")
+    t.eq(sorted(state["packages"]), sorted(["9692fc07-23c7-5f20-8779-f09374f1a571", "757fd5ca-2b6a-5b2f-8a5d-60980b028665"]), "ids")
+    t.eq(state["packages"]["757fd5ca-2b6a-5b2f-8a5d-60980b028665"]["current"]["version"], "1.1.0", "highest version matching ^1.0")
+    t.eq(state["packages"]["9692fc07-23c7-5f20-8779-f09374f1a571"]["dependencies"], {"757fd5ca-2b6a-5b2f-8a5d-60980b028665": "^1.0"}, "edge")
+    t.eq(state["packages"]["757fd5ca-2b6a-5b2f-8a5d-60980b028665"]["catalog"], str(t.catalog / "catalog.json"), "canonical catalog origin")
     view = resolved(t)
-    t.eq(view["lib/core"]["dependents"], ["app/a"], "dependents")
-    row = view["app/a"]["dependencies"][0]
-    t.eq((row["provider"], row["satisfied"]), ("lib/core", True), "provider")
-    t.ok((t.dist("lib/core") / "index.js").is_file(), "dist")
+    t.eq(view["757fd5ca-2b6a-5b2f-8a5d-60980b028665"]["dependents"], ["9692fc07-23c7-5f20-8779-f09374f1a571"], "dependents")
+    row = view["9692fc07-23c7-5f20-8779-f09374f1a571"]["dependencies"][0]
+    t.eq((row["provider"], row["satisfied"]), ("757fd5ca-2b6a-5b2f-8a5d-60980b028665", True), "provider")
+    t.ok((t.dist("757fd5ca-2b6a-5b2f-8a5d-60980b028665") / "index.js").is_file(), "dist")
 
 
 @case(fixture="g6_forked", spec=["fork-replacement/replacement-is-explicit-and-global#replace-for-all-consumers", "fork-replacement/switching-back"])
 def replace_and_switch_back(t: T):
     """replace / switch back: the library's fork_replacement_main_scenario outcome."""
-    r = t.gitpm_ok("replace", "vendor/base", "--with", "mine/base")
-    t.has(r.out, "for: app/a, app/b")  # ReplacementPlan.consumers
+    r = t.gitpm_ok("replace", "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9", "--with", "db33e43e-e652-5767-8e21-27fb3cef9723")
+    t.has(r.out, "for: 9692fc07-23c7-5f20-8779-f09374f1a571, f5984d44-92bd-51ac-8e8f-d911dd824ef3")  # ReplacementPlan.consumers
     view = resolved(t)
-    t.eq(t.state()["replacements"], {"vendor/base": "mine/base"}, "replacements")
-    t.eq(view["mine/base"]["replacing"], ["vendor/base"], "replacing")
-    t.eq(view["mine/base"]["dependents"], ["app/a", "app/b"], "dependents")
-    for c in ["app/a", "app/b"]:
+    t.eq(t.state()["replacements"], {"c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9": "db33e43e-e652-5767-8e21-27fb3cef9723"}, "replacements")
+    t.eq(view["db33e43e-e652-5767-8e21-27fb3cef9723"]["replacing"], ["c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9"], "replacing")
+    t.eq(view["db33e43e-e652-5767-8e21-27fb3cef9723"]["dependents"], ["9692fc07-23c7-5f20-8779-f09374f1a571", "f5984d44-92bd-51ac-8e8f-d911dd824ef3"], "dependents")
+    for c in ["9692fc07-23c7-5f20-8779-f09374f1a571", "f5984d44-92bd-51ac-8e8f-d911dd824ef3"]:
         row = view[c]["dependencies"][0]
-        t.eq((row["provider"], row["satisfied"]), ("mine/base", True), f"{c} provider")
-    t.gitpm_ok("replace", "vendor/base", "--with", "vendor/base")
+        t.eq((row["provider"], row["satisfied"]), ("db33e43e-e652-5767-8e21-27fb3cef9723", True), f"{c} provider")
+    t.gitpm_ok("replace", "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9", "--with", "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9")
     t.ok("replacements" not in t.state(), "replacements empty (skipped when empty)")
     view = resolved(t)
-    t.ok(not view["mine/base"].get("dependents"), "fork has no dependents")
-    for c in ["app/a", "app/b"]:
-        t.eq(view[c]["dependencies"][0]["provider"], "vendor/base", f"{c} back on the original")
+    t.ok(not view["db33e43e-e652-5767-8e21-27fb3cef9723"].get("dependents"), "fork has no dependents")
+    for c in ["9692fc07-23c7-5f20-8779-f09374f1a571", "f5984d44-92bd-51ac-8e8f-d911dd824ef3"]:
+        t.eq(view[c]["dependencies"][0]["provider"], "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9", f"{c} back on the original")
 
 
 @case(fixture="hello", spec=["dist/a-revision-without-dist-is-refused#release-without-dist", "errors/stable-error-kinds"])
 def bad_manifest_kind(t: T):
     """A release without dist/ and one with broken plugin.json: invalid_manifest, nothing installed."""
-    t.commit(HELLO, "no dist", {"dist/index.js": None, "plugin.json": json.dumps({"id": HELLO, "version": "0.2.0"})})
+    t.commit(HELLO, "no dist", {"dist/index.js": None, "plugin.json": json.dumps({"id": HELLO, "name": "fixture", "version": "0.2.0"})})
     t.tag(HELLO, f"v0.2.0")
     t.gitpm_err("install", t.repo(HELLO), "--ref", f"v0.2.0", kind="invalid_manifest",
              contains="dist/ directory")
@@ -142,21 +143,21 @@ def repeated_install_is_idempotent(t: T):
 
 @case(fixture="g6_core_deps_installed", spec=["dependencies/dependents-guard-removal", "errors/display-is-the-complete-message#has-dependents"])
 def dependent_guard_kind(t: T):
-    """has_dependents with the library's message for uninstall/forget/disable of lib/core."""
+    """has_dependents with the library's message for uninstall/forget/disable of 757fd5ca-2b6a-5b2f-8a5d-60980b028665."""
     before = t.snap(t.ws)
     for action in ["uninstall", "forget", "disable"]:
-        t.gitpm_err(action, "lib/core", kind="has_dependents",
-                 contains=f"cannot {action} lib/core: required by app/a, app/c; doing it anyway requires force")
+        t.gitpm_err(action, "757fd5ca-2b6a-5b2f-8a5d-60980b028665", kind="has_dependents",
+                 contains=f"cannot {action} 757fd5ca-2b6a-5b2f-8a5d-60980b028665: required by 1a620c0a-aa3c-533c-9960-3d49016fa231, 9692fc07-23c7-5f20-8779-f09374f1a571; doing it anyway requires force")
     t.same(before, "workspace")
 
 
 @case(fixture="g6_compat_installed", spec=["fork-replacement/compatibility-is-checked-by-versions-only"])
 def incompatible_replacement_kind(t: T):
-    """Replacement leaving app/b unsatisfied: incompatible_replacement with no confirmation bypass."""
+    """Replacement leaving f5984d44-92bd-51ac-8e8f-d911dd824ef3 unsatisfied: incompatible_replacement with no confirmation bypass."""
     before = t.snap(t.ws)
-    t.gitpm_err("replace", "vendor/base", "--with", "old/base", kind="incompatible_replacement",
-             contains="old/base provides vendor/base 1.2.0, which some consumers do not accept: "
-                      "app/b needs vendor/base >=1.3")
+    t.gitpm_err("replace", "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9", "--with", "4e02af40-ea75-510c-b524-5f21e6de2d55", kind="incompatible_replacement",
+             contains="4e02af40-ea75-510c-b524-5f21e6de2d55 provides c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 1.2.0, which some consumers do not accept: "
+                      "f5984d44-92bd-51ac-8e8f-d911dd824ef3 needs c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 >=1.3")
     t.same(before, "workspace")
 
 
