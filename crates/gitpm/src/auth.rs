@@ -318,7 +318,7 @@ mod tests {
     fn check_reads_local_repositories_without_cloning() {
         use crate::test_support::{Author, TempDir};
         let dir = TempDir::new("auth");
-        let author = Author::new(dir.join("repo"), "dan/demo1");
+        let author = Author::new(dir.join("repo"), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let before = crate::test_support::tree_hash(dir.path());
         let options = Options {
             custom_ssh: true,

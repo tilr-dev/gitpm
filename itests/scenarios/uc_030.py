@@ -9,7 +9,7 @@ import os
 
 from gitpmtest import T, case
 
-ID = "dan/hello"
+ID = "3dce1568-569c-5b53-9321-37185e751947"
 SHA = "ab" * 32
 URL = "https://pkg.example.invalid/builds/hello-0.3.0.tar.zst"
 
@@ -100,7 +100,7 @@ def changing_existing_build_is_rejected(t: T):
 
 @case(fixture="catalog", spec=["catalog/published-versions-are-immutable#register-with-another-build"])
 def adding_build_to_existing_release_is_rejected(t: T):
-    """dan/hello 0.2.0 was registered without build; adding build metadata later is refused."""
+    """3dce1568-569c-5b53-9321-37185e751947 0.2.0 was registered without build; adding build metadata later is refused."""
     before = t.snap(t.catalog)
     t.gitpm_err(*register(t, "--build-url", URL, "--build-sha256", SHA, ref=f"v0.2.0"),
              kind="version_conflict", contains="immutable")

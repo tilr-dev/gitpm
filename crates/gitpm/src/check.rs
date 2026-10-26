@@ -892,7 +892,7 @@ mod tests {
                     version.into(),
                     Release {
                         manifest: Manifest {
-                            id: "vendor/demo".into(),
+                            id: "dd3387ed-a5a3-5059-81ad-b1f6987a28f2".into(),
                             version: version.into(),
                             ..Default::default()
                         },
@@ -912,7 +912,7 @@ mod tests {
             .collect();
         let catalog = Catalog {
             packages: [(
-                "vendor/demo".into(),
+                "dd3387ed-a5a3-5059-81ad-b1f6987a28f2".into(),
                 Package {
                     source: installed.source.clone(),
                     versions,
@@ -922,7 +922,7 @@ mod tests {
         };
         (
             State {
-                packages: [("vendor/demo".into(), installed)].into(),
+                packages: [("dd3387ed-a5a3-5059-81ad-b1f6987a28f2".into(), installed)].into(),
                 ..Default::default()
             },
             catalog,
@@ -948,7 +948,11 @@ mod tests {
             (CheckStatus::OriginUnreachable, CheckSource::Origin)
         );
         assert!(row.problem.is_some() && !row.update_available);
-        catalog.packages.get_mut("vendor/demo").unwrap().source = "another".into();
+        catalog
+            .packages
+            .get_mut("dd3387ed-a5a3-5059-81ad-b1f6987a28f2")
+            .unwrap()
+            .source = "another".into();
         assert_eq!(
             compare(&state, &catalog)[0].status.message(),
             "origin unreachable"
@@ -956,7 +960,7 @@ mod tests {
         let (_, catalog) = fixture();
         state
             .packages
-            .get_mut("vendor/demo")
+            .get_mut("dd3387ed-a5a3-5059-81ad-b1f6987a28f2")
             .unwrap()
             .current
             .commit = "c".repeat(40);
@@ -967,13 +971,16 @@ mod tests {
     #[test]
     fn current_and_ahead_versions() {
         let (mut state, catalog) = fixture();
-        let plugin = state.packages.get_mut("vendor/demo").unwrap();
+        let plugin = state
+            .packages
+            .get_mut("dd3387ed-a5a3-5059-81ad-b1f6987a28f2")
+            .unwrap();
         plugin.current.version = "1.10.0".into();
         plugin.current.commit = "b".repeat(40);
         assert_eq!(compare(&state, &catalog)[0].status.message(), "up to date");
         state
             .packages
-            .get_mut("vendor/demo")
+            .get_mut("dd3387ed-a5a3-5059-81ad-b1f6987a28f2")
             .unwrap()
             .current
             .version = "2.0.0".into();
@@ -985,7 +992,11 @@ mod tests {
     #[test]
     fn plugin_from_another_catalog_is_never_offered_an_update() {
         let (mut state, mut catalog) = fixture();
-        state.packages.get_mut("vendor/demo").unwrap().catalog = Some("/catalogs/a".into());
+        state
+            .packages
+            .get_mut("dd3387ed-a5a3-5059-81ad-b1f6987a28f2")
+            .unwrap()
+            .catalog = Some("/catalogs/a".into());
         let row = |state: &State, catalog: &Catalog| {
             compare_in(state, catalog, Some("/catalogs/b"))[0].clone()
         };
@@ -996,12 +1007,19 @@ mod tests {
             (CheckStatus::OtherCatalog, false)
         );
         // Exactly the installed release in B: up to date.
-        let plugin = state.packages.get_mut("vendor/demo").unwrap();
+        let plugin = state
+            .packages
+            .get_mut("dd3387ed-a5a3-5059-81ad-b1f6987a28f2")
+            .unwrap();
         plugin.current.version = "1.10.0".into();
         plugin.current.commit = "b".repeat(40);
         assert_eq!(row(&state, &catalog).status, CheckStatus::UpToDate);
         // Another source in B: reported as such.
-        catalog.packages.get_mut("vendor/demo").unwrap().source = "another".into();
+        catalog
+            .packages
+            .get_mut("dd3387ed-a5a3-5059-81ad-b1f6987a28f2")
+            .unwrap()
+            .source = "another".into();
         assert_eq!(row(&state, &catalog).status, CheckStatus::DifferentSource);
         // Not in B at all.
         assert_eq!(
@@ -1027,7 +1045,7 @@ mod tests {
             change(
                 catalog
                     .packages
-                    .get_mut("vendor/demo")
+                    .get_mut("dd3387ed-a5a3-5059-81ad-b1f6987a28f2")
                     .unwrap()
                     .versions
                     .get_mut("1.10.0")
@@ -1043,7 +1061,10 @@ mod tests {
         }
         // A version key that is not MAJOR.MINOR.PATCH invalidates the entry too.
         let mut bad = catalog.clone();
-        let plugin = bad.packages.get_mut("vendor/demo").unwrap();
+        let plugin = bad
+            .packages
+            .get_mut("dd3387ed-a5a3-5059-81ad-b1f6987a28f2")
+            .unwrap();
         let mut release = plugin.versions["1.10.0"].clone();
         release.manifest.version = "2.0".into();
         plugin.versions.insert("2.0".into(), release);
@@ -1055,7 +1076,7 @@ mod tests {
         let (mut state, mut catalog) = fixture();
         catalog
             .packages
-            .get_mut("vendor/demo")
+            .get_mut("dd3387ed-a5a3-5059-81ad-b1f6987a28f2")
             .unwrap()
             .versions
             .clear();
@@ -1066,7 +1087,7 @@ mod tests {
         let (_, catalog) = fixture();
         state
             .packages
-            .get_mut("vendor/demo")
+            .get_mut("dd3387ed-a5a3-5059-81ad-b1f6987a28f2")
             .unwrap()
             .current
             .version = "1.9".into();
@@ -1079,7 +1100,11 @@ mod tests {
     #[test]
     fn installed_version_missing_from_catalog_still_compares_numerically() {
         let (mut state, catalog) = fixture();
-        let current = &mut state.packages.get_mut("vendor/demo").unwrap().current;
+        let current = &mut state
+            .packages
+            .get_mut("dd3387ed-a5a3-5059-81ad-b1f6987a28f2")
+            .unwrap()
+            .current;
         current.version = "1.9.5".into();
         current.commit = "f".repeat(40);
         let row = &compare(&state, &catalog)[0];
@@ -1091,18 +1116,31 @@ mod tests {
     fn rows_follow_state_order_and_match_full_ids() {
         let (state, catalog) = fixture();
         let mut state = state;
-        let demo = state.packages["vendor/demo"].clone();
-        // Same name in another namespace is a different package.
-        state.packages.insert("dan/demo".into(), demo.clone());
-        state.packages.insert("a/zzz".into(), demo);
+        let demo = state.packages["dd3387ed-a5a3-5059-81ad-b1f6987a28f2"].clone();
+        // Equal aliases with different UUIDs are distinct packages.
+        state
+            .packages
+            .insert("826a054b-0fad-5e5a-8890-f87c6452943b".into(), demo.clone());
+        state
+            .packages
+            .insert("bacf6322-3731-5678-9dc6-c623c89c72a7".into(), demo);
         let rows = compare(&state, &catalog);
         let summary: Vec<_> = rows.iter().map(|r| (r.id.as_str(), r.status)).collect();
         assert_eq!(
             summary,
             [
-                ("a/zzz", CheckStatus::OriginUnreachable),
-                ("dan/demo", CheckStatus::OriginUnreachable),
-                ("vendor/demo", CheckStatus::UpdateAvailable),
+                (
+                    "826a054b-0fad-5e5a-8890-f87c6452943b",
+                    CheckStatus::OriginUnreachable
+                ),
+                (
+                    "bacf6322-3731-5678-9dc6-c623c89c72a7",
+                    CheckStatus::OriginUnreachable
+                ),
+                (
+                    "dd3387ed-a5a3-5059-81ad-b1f6987a28f2",
+                    CheckStatus::UpdateAvailable
+                ),
             ]
         );
         assert_eq!(rows[0].installed, "1.9.0");
@@ -1143,7 +1181,7 @@ mod tests {
         assert_eq!(
             value,
             serde_json::json!({
-                "id": "vendor/demo", "installed": "1.9.0", "latest": "1.10.0",
+                "id": "dd3387ed-a5a3-5059-81ad-b1f6987a28f2", "installed": "1.9.0", "latest": "1.10.0",
                 "enabled": false, "update_available": true, "status": "update_available",
                 "source": "catalog", "major": false
             })
@@ -1219,27 +1257,50 @@ mod tests {
         let cat = dir.join("catalog");
         let source = "https://example.com/demo.git";
         let mut state = State::default();
-        for id in ["dan/broken", "dan/healthy"] {
+        for id in [
+            "a9283cd6-70d6-5936-8fd5-cf5a907fed13",
+            "559d0351-3e39-5cf9-a1cf-cc24de772fd7",
+        ] {
             crate::catalog::tests::save(&cat, &release(id, "1.0.0", source, 'a'));
             state
                 .packages
                 .extend(state_with(id, source, "1.0.0", &"a".repeat(40)).packages);
         }
-        let path = cat.join("namespaces/dan/broken/versions/1.0.0/release.json");
+        let path =
+            cat.join("packages/a9283cd6-70d6-5936-8fd5-cf5a907fed13/versions/1.0.0/release.json");
         let mut value: serde_json::Value =
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        value["manifest"]["id"] = "dan/wrong".into();
+        value["manifest"]["id"] = "c3d20c6a-6408-5e35-8cf1-9e3ebc5725a9".into();
         fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
         let rows = check_state(&state, cat.to_str(), false).unwrap();
-        assert_eq!(rows[0].status, CheckStatus::InvalidCatalogData);
-        assert_eq!(rows[1].status, CheckStatus::UpToDate);
-        assert!(crate::catalog::lookup(cat.to_str().unwrap(), "dan/broken", None).is_err());
+        assert_eq!(
+            rows.iter()
+                .find(|row| row.id == "a9283cd6-70d6-5936-8fd5-cf5a907fed13")
+                .unwrap()
+                .status,
+            CheckStatus::InvalidCatalogData
+        );
+        assert_eq!(
+            rows.iter()
+                .find(|row| row.id == "559d0351-3e39-5cf9-a1cf-cc24de772fd7")
+                .unwrap()
+                .status,
+            CheckStatus::UpToDate
+        );
+        assert!(
+            crate::catalog::lookup(
+                cat.to_str().unwrap(),
+                "a9283cd6-70d6-5936-8fd5-cf5a907fed13",
+                None
+            )
+            .is_err()
+        );
         // Directory indexes are unrelated to installed-package diagnostics.
         fs::write(cat.join("catalog.json"), "{ broken").unwrap();
         assert_eq!(check_state(&state, cat.to_str(), false).unwrap().len(), 2);
         // Unreadable release data must remain a hard error.
         fs::write(
-            cat.join("namespaces/dan/broken/versions/1.0.0/release.json"),
+            cat.join("packages/a9283cd6-70d6-5936-8fd5-cf5a907fed13/versions/1.0.0/release.json"),
             "{ broken",
         )
         .unwrap();
@@ -1250,10 +1311,13 @@ mod tests {
     fn check_ignores_repository_tags_of_other_package_ids() {
         use crate::test_support::{Author, TempDir, git, manifest, write_manifest};
         let dir = TempDir::new("check-tag-membership");
-        let author = Author::new(dir.join("author"), "dan/demo");
+        let author = Author::new(dir.join("author"), "826a054b-0fad-5e5a-8890-f87c6452943b");
         let manager = crate::Manager::open(dir.join("workspace")).unwrap();
         manager.install(author.source()).unwrap();
-        write_manifest(&author.path, &manifest("other/demo", "2.0.0"));
+        write_manifest(
+            &author.path,
+            &manifest("2bcee201-bfb7-517f-8773-de2c9559fcd4", "2.0.0"),
+        );
         git(&author.path, &["commit", "-q", "-am", "rename package"]);
         git(&author.path, &["tag", "v2.0.0"]);
         let report = check(&dir.join("workspace"), None).unwrap();
@@ -1265,7 +1329,7 @@ mod tests {
     fn origin_fallback_fetches_only_newest_matching_metadata() {
         use crate::test_support::{Author, TempDir, git, manifest, write_manifest};
         let dir = TempDir::new("partial-check");
-        let author = Author::new(dir.join("author"), "dan/demo");
+        let author = Author::new(dir.join("author"), "826a054b-0fad-5e5a-8890-f87c6452943b");
         git(&author.path, &["config", "uploadpack.allowFilter", "true"]);
         git(
             &author.path,
@@ -1273,13 +1337,21 @@ mod tests {
         );
         author.release("2.0.0");
         let dist = git(&author.path, &["rev-parse", "v2.0.0:dist/index.js"]);
-        write_manifest(&author.path, &manifest("other/demo", "3.0.0"));
+        write_manifest(
+            &author.path,
+            &manifest("2bcee201-bfb7-517f-8773-de2c9559fcd4", "3.0.0"),
+        );
         git(&author.path, &["commit", "-qam", "another package"]);
         git(&author.path, &["tag", "-am", "release", "v3.0.0"]);
         let mut origins = Origins::default();
         assert_eq!(
             origins
-                .latest(author.source(), "dan/demo", "0.1.0", false)
+                .latest(
+                    author.source(),
+                    "826a054b-0fad-5e5a-8890-f87c6452943b",
+                    "0.1.0",
+                    false
+                )
                 .unwrap()
                 .as_deref(),
             Some("2.0.0")
@@ -1306,7 +1378,12 @@ mod tests {
         // Reusing this source for a different package must still consider its newest tag.
         assert_eq!(
             origins
-                .latest(author.source(), "other/demo", "0.1.0", false)
+                .latest(
+                    author.source(),
+                    "2bcee201-bfb7-517f-8773-de2c9559fcd4",
+                    "0.1.0",
+                    false
+                )
                 .unwrap()
                 .as_deref(),
             Some("3.0.0")
@@ -1316,7 +1393,11 @@ mod tests {
     #[test]
     fn catalog_bypass_ignores_a_snapshot_loaded_for_other_installations() {
         let (mut state, catalog) = fixture();
-        state.packages.get_mut("vendor/demo").unwrap().catalog = Some("/catalog".into());
+        state
+            .packages
+            .get_mut("dd3387ed-a5a3-5059-81ad-b1f6987a28f2")
+            .unwrap()
+            .catalog = Some("/catalog".into());
         let own = BTreeMap::from([("/catalog".to_owned(), catalog)]);
         let normal = rows(&state, None, &own, &BTreeSet::new(), false, false);
         assert_eq!(normal[0].source, CheckSource::Catalog);
@@ -1332,11 +1413,19 @@ mod tests {
         let catalog = dir.join("catalog");
         let source = "https://example.com/demo.git";
         for (version, c) in [("1.9.0", 'a'), ("1.10.0", 'b'), ("1.2.0", 'c')] {
-            crate::catalog::tests::save(&catalog, &release("dan/demo", version, source, c));
+            crate::catalog::tests::save(
+                &catalog,
+                &release("826a054b-0fad-5e5a-8890-f87c6452943b", version, source, c),
+            );
         }
         let root = dir.join("workspace");
         fs::create_dir(&root).unwrap();
-        let state = crate::test_support::state_with("dan/demo", source, "1.9.0", &"a".repeat(40));
+        let state = crate::test_support::state_with(
+            "826a054b-0fad-5e5a-8890-f87c6452943b",
+            source,
+            "1.9.0",
+            &"a".repeat(40),
+        );
         fs::write(root.join("state.json"), serde_json::to_vec(&state).unwrap()).unwrap();
         let report = check(&root, catalog.to_str()).unwrap();
         assert!(report.replacements.is_empty() && report.unsatisfied.is_empty());
@@ -1352,10 +1441,15 @@ mod tests {
         fs::write(root.join("state.json"), serde_json::to_vec(state).unwrap()).unwrap();
     }
     fn installed(source: &str, version: &str) -> Installed {
-        crate::test_support::state_with("x/y", source, version, &"a".repeat(40))
-            .packages
-            .remove("x/y")
-            .unwrap()
+        crate::test_support::state_with(
+            "7d3c44ac-286f-5db5-8c90-ecfa368e5b4d",
+            source,
+            version,
+            &"a".repeat(40),
+        )
+        .packages
+        .remove("7d3c44ac-286f-5db5-8c90-ecfa368e5b4d")
+        .unwrap()
     }
 
     #[test]
@@ -1364,9 +1458,9 @@ mod tests {
         use crate::{InstallTarget, Manager, Options};
         let dir = TempDir::new("check-modes");
         let root = dir.join("workspace");
-        let released = Author::new(dir.join("released"), "acme/released");
-        let pinned = Author::new(dir.join("pinned"), "acme/pinned");
-        let branch = Author::new(dir.join("branch"), "acme/branch");
+        let released = Author::new(dir.join("released"), "2454b358-69da-5cd4-aed8-7a2632f29b76");
+        let pinned = Author::new(dir.join("pinned"), "96eae968-7cde-52da-bf95-bfc5c0e039d1");
+        let branch = Author::new(dir.join("branch"), "1eb889ae-7e4a-5823-b61d-24ca75c94bda");
         let m = Manager::open_with(&root, Options::default()).unwrap();
         m.install(released.source()).unwrap();
         m.install_package(pinned.source(), None, InstallTarget::Ref("v0.1.0".into()))
@@ -1388,16 +1482,20 @@ mod tests {
             summary(&root),
             [
                 (
-                    "acme/branch".into(),
+                    "1eb889ae-7e4a-5823-b61d-24ca75c94bda".into(),
                     CheckStatus::UpToDate,
                     branch_mode.clone()
                 ),
                 (
-                    "acme/pinned".into(),
+                    "2454b358-69da-5cd4-aed8-7a2632f29b76".into(),
+                    CheckStatus::UpToDate,
+                    Mode::Release
+                ),
+                (
+                    "96eae968-7cde-52da-bf95-bfc5c0e039d1".into(),
                     CheckStatus::Pinned,
                     pinned_mode.clone()
                 ),
-                ("acme/released".into(), CheckStatus::UpToDate, Mode::Release),
             ]
         );
         // A newer release does not concern the pinned package; a moved branch is an update
@@ -1411,25 +1509,29 @@ mod tests {
             summary(&root),
             [
                 (
-                    "acme/branch".into(),
+                    "1eb889ae-7e4a-5823-b61d-24ca75c94bda".into(),
                     CheckStatus::UpdateAvailable,
                     branch_mode
                 ),
                 (
-                    "acme/pinned".into(),
-                    CheckStatus::Pinned,
-                    pinned_mode.clone()
-                ),
-                (
-                    "acme/released".into(),
+                    "2454b358-69da-5cd4-aed8-7a2632f29b76".into(),
                     CheckStatus::UpdateAvailable,
                     Mode::Release
+                ),
+                (
+                    "96eae968-7cde-52da-bf95-bfc5c0e039d1".into(),
+                    CheckStatus::Pinned,
+                    pinned_mode.clone()
                 ),
             ]
         );
         // A pinned package is never queried: even an unreachable origin is not read.
         let mut state = read_state(&root).unwrap();
-        state.packages.get_mut("acme/pinned").unwrap().source = "ext::sh -c id".into();
+        state
+            .packages
+            .get_mut("96eae968-7cde-52da-bf95-bfc5c0e039d1")
+            .unwrap()
+            .source = "ext::sh -c id".into();
         let row = rows(
             &state,
             None,
@@ -1438,13 +1540,18 @@ mod tests {
             false,
             false,
         )
-        .remove(1);
+        .into_iter()
+        .find(|row| row.id == "96eae968-7cde-52da-bf95-bfc5c0e039d1")
+        .unwrap();
         assert_eq!(
             (row.status, row.problem, row.mode),
             (CheckStatus::Pinned, None, pinned_mode)
         );
         // A branch the origin no longer has is reported, not hidden.
-        let entry = state.packages.get_mut("acme/branch").unwrap();
+        let entry = state
+            .packages
+            .get_mut("1eb889ae-7e4a-5823-b61d-24ca75c94bda")
+            .unwrap();
         entry.mode = Mode::Branch("gone".into());
         let row = rows(
             &state,
@@ -1468,7 +1575,7 @@ mod tests {
         use crate::{Manager, Options};
         let dir = TempDir::new("check-origin");
         let root = dir.join("workspace");
-        let greeter = Author::new(dir.join("greeter"), "acme/greeter");
+        let greeter = Author::new(dir.join("greeter"), "d135a7cf-1c63-549a-93cb-8f89656b2ced");
         let m = Manager::open_with(&root, Options::default()).unwrap();
         m.install(greeter.source()).unwrap();
         // A newer release appears on the origin after the install.
@@ -1487,7 +1594,7 @@ mod tests {
                 row.latest.as_deref()
             ),
             (
-                "acme/greeter",
+                "d135a7cf-1c63-549a-93cb-8f89656b2ced",
                 CheckStatus::UpdateAvailable,
                 CheckSource::Origin,
                 Some("0.2.0")
@@ -1500,18 +1607,37 @@ mod tests {
         drop(m);
 
         // Every origin status, each distinct origin read once.
-        let newer = Author::new(dir.join("newer"), "acme/newer");
-        let untagged = Author::untagged(dir.join("untagged"), "acme/untagged", "0.1.0");
+        let newer = Author::new(dir.join("newer"), "769ccb53-e0de-5311-9e8b-815d9ad1cbcd");
+        let untagged = Author::untagged(
+            dir.join("untagged"),
+            "d98860c4-754e-51e3-b473-cff9f2429ea3",
+            "0.1.0",
+        );
         // Legacy package tags and non-release names do not count.
-        crate::test_support::git(&untagged.path, &["tag", "acme/other@9.0.0"]);
-        crate::test_support::git(&untagged.path, &["tag", "acme/untagged@9.0.0"]);
-        crate::test_support::git(&untagged.path, &["tag", "acme/untagged@banana"]);
+        crate::test_support::git(
+            &untagged.path,
+            &["tag", "cde71d60-4de0-5f8d-a3c9-26b40d4af02a@9.0.0"],
+        );
+        crate::test_support::git(
+            &untagged.path,
+            &["tag", "d98860c4-754e-51e3-b473-cff9f2429ea3@9.0.0"],
+        );
+        crate::test_support::git(
+            &untagged.path,
+            &["tag", "d98860c4-754e-51e3-b473-cff9f2429ea3@banana"],
+        );
         let state = State {
             packages: [
-                ("acme/greeter".into(), installed(greeter.source(), "0.2.0")),
-                ("acme/newer".into(), installed(newer.source(), "0.3.0")),
                 (
-                    "acme/untagged".into(),
+                    "d135a7cf-1c63-549a-93cb-8f89656b2ced".into(),
+                    installed(greeter.source(), "0.2.0"),
+                ),
+                (
+                    "769ccb53-e0de-5311-9e8b-815d9ad1cbcd".into(),
+                    installed(newer.source(), "0.3.0"),
+                ),
+                (
+                    "d98860c4-754e-51e3-b473-cff9f2429ea3".into(),
                     installed(untagged.source(), "0.1.0"),
                 ),
             ]
@@ -1533,16 +1659,20 @@ mod tests {
             statuses,
             [
                 (
-                    "acme/greeter".into(),
+                    "769ccb53-e0de-5311-9e8b-815d9ad1cbcd".into(),
+                    CheckStatus::NewerThanOrigin,
+                    Some("0.1.0".into())
+                ),
+                (
+                    "d135a7cf-1c63-549a-93cb-8f89656b2ced".into(),
                     CheckStatus::UpToDate,
                     Some("0.2.0".into())
                 ),
                 (
-                    "acme/newer".into(),
-                    CheckStatus::NewerThanOrigin,
-                    Some("0.1.0".into())
+                    "d98860c4-754e-51e3-b473-cff9f2429ea3".into(),
+                    CheckStatus::NoReleases,
+                    None
                 ),
-                ("acme/untagged".into(), CheckStatus::NoReleases, None),
             ]
         );
     }
@@ -1551,26 +1681,33 @@ mod tests {
     fn check_mixes_catalog_and_origin_rows() {
         use crate::test_support::{Author, TempDir, release};
         let dir = TempDir::new("check-mixed");
-        let listed = Author::new(dir.join("listed"), "acme/listed");
-        let direct = Author::new(dir.join("direct"), "acme/direct");
+        let listed = Author::new(dir.join("listed"), "52c9669b-1ee0-5d3d-b549-45e7885e1ff6");
+        let direct = Author::new(dir.join("direct"), "2e6e67e1-7565-5c2f-811d-cad1a7f945c0");
         direct.release("0.2.0");
         let cat = dir.join("catalog");
-        let mut record = release("acme/listed", "0.1.0", listed.source(), 'a');
+        let mut record = release(
+            "52c9669b-1ee0-5d3d-b549-45e7885e1ff6",
+            "0.1.0",
+            listed.source(),
+            'a',
+        );
         record.commit = listed.head();
         crate::catalog::tests::save(&cat, &record);
         let mut state = State::default();
+        state.packages.insert(
+            "52c9669b-1ee0-5d3d-b549-45e7885e1ff6".into(),
+            installed(listed.source(), "0.1.0"),
+        );
         state
             .packages
-            .insert("acme/listed".into(), installed(listed.source(), "0.1.0"));
-        state
-            .packages
-            .get_mut("acme/listed")
+            .get_mut("52c9669b-1ee0-5d3d-b549-45e7885e1ff6")
             .unwrap()
             .current
             .commit = listed.head();
-        state
-            .packages
-            .insert("acme/direct".into(), installed(direct.source(), "0.1.0"));
+        state.packages.insert(
+            "2e6e67e1-7565-5c2f-811d-cad1a7f945c0".into(),
+            installed(direct.source(), "0.1.0"),
+        );
         let root = dir.join("workspace");
         write_state(&root, &state);
         let report = check(&root, cat.to_str()).unwrap();
@@ -1583,11 +1720,15 @@ mod tests {
             summary,
             [
                 (
-                    "acme/direct",
+                    "2e6e67e1-7565-5c2f-811d-cad1a7f945c0",
                     CheckStatus::UpdateAvailable,
                     CheckSource::Origin
                 ),
-                ("acme/listed", CheckStatus::UpToDate, CheckSource::Catalog),
+                (
+                    "52c9669b-1ee0-5d3d-b549-45e7885e1ff6",
+                    CheckStatus::UpToDate,
+                    CheckSource::Catalog
+                ),
             ]
         );
     }
@@ -1596,15 +1737,18 @@ mod tests {
     fn unreachable_origin_is_a_row_not_a_failure() {
         use crate::test_support::{Author, TempDir};
         let dir = TempDir::new("check-unreachable");
-        let healthy = Author::new(dir.join("healthy"), "acme/healthy");
+        let healthy = Author::new(dir.join("healthy"), "e914c724-686f-5c52-a507-7cb1111fda8d");
         let gone = dir.join("gone");
         let state = State {
             packages: [
                 (
-                    "acme/gone".into(),
+                    "0d33ddaf-c197-5882-8059-fee90f2f22f9".into(),
                     installed(gone.to_str().unwrap(), "0.1.0"),
                 ),
-                ("acme/healthy".into(), installed(healthy.source(), "0.1.0")),
+                (
+                    "e914c724-686f-5c52-a507-7cb1111fda8d".into(),
+                    installed(healthy.source(), "0.1.0"),
+                ),
             ]
             .into(),
             ..Default::default()
@@ -1625,11 +1769,11 @@ mod tests {
     fn fork_upstream_from_fork_of_source() {
         use crate::test_support::{Author, TempDir, release};
         let dir = TempDir::new("check-fork");
-        let original = Author::new(dir.join("hello"), "acme/hello");
+        let original = Author::new(dir.join("hello"), "7e6e8392-7be8-55ae-bd03-2b430b1c5d59");
         original.release("1.1.0");
-        let fork = Author::new(dir.join("fork"), "me/hello");
+        let fork = Author::new(dir.join("fork"), "ce6c8a3b-b2f8-5391-8ef8-4cbb7873f5d4");
         let base = |source: Option<&str>| ForkOf {
-            id: "acme/hello".into(),
+            id: "7e6e8392-7be8-55ae-bd03-2b430b1c5d59".into(),
             version: "0.1.0".into(),
             commit: "a".repeat(40),
             source: source.map(Into::into),
@@ -1637,7 +1781,9 @@ mod tests {
         let mut state = State::default();
         let mut me = installed(fork.source(), "0.1.0");
         me.fork_of = Some(base(Some(original.source())));
-        state.packages.insert("me/hello".into(), me);
+        state
+            .packages
+            .insert("ce6c8a3b-b2f8-5391-8ef8-4cbb7873f5d4".into(), me);
         let upstream = |state: &State, catalog: Option<&Catalog>| {
             rows(
                 state,
@@ -1654,7 +1800,7 @@ mod tests {
         assert_eq!(
             upstream(&state, None),
             Upstream {
-                id: "acme/hello".into(),
+                id: "7e6e8392-7be8-55ae-bd03-2b430b1c5d59".into(),
                 base: "0.1.0".into(),
                 latest: Some("1.1.0".into()),
                 newer: true,
@@ -1671,7 +1817,12 @@ mod tests {
         let cat = dir.join("catalog");
         crate::catalog::tests::save(
             &cat,
-            &release("acme/hello", "1.0.0", original.source(), 'b'),
+            &release(
+                "7e6e8392-7be8-55ae-bd03-2b430b1c5d59",
+                "1.0.0",
+                original.source(),
+                'b',
+            ),
         );
         let snapshot = crate::catalog::selected_for_check(cat.to_str().unwrap(), &state).unwrap();
         let from_catalog = upstream(&state, Some(&snapshot));
@@ -1680,8 +1831,11 @@ mod tests {
             (Some("1.0.0"), Some(CheckSource::Catalog))
         );
         // An unreachable forkOf.source keeps the reason.
-        state.packages.get_mut("me/hello").unwrap().fork_of =
-            Some(base(Some(dir.join("gone").to_str().unwrap())));
+        state
+            .packages
+            .get_mut("ce6c8a3b-b2f8-5391-8ef8-4cbb7873f5d4")
+            .unwrap()
+            .fork_of = Some(base(Some(dir.join("gone").to_str().unwrap())));
         let gone = upstream(&state, None);
         assert_eq!(
             (gone.latest, gone.source),
@@ -1689,7 +1843,11 @@ mod tests {
         );
         assert!(gone.problem.unwrap().starts_with("Repository not found"));
         // Without forkOf.source and catalog the original's latest is unknown.
-        state.packages.get_mut("me/hello").unwrap().fork_of = Some(base(None));
+        state
+            .packages
+            .get_mut("ce6c8a3b-b2f8-5391-8ef8-4cbb7873f5d4")
+            .unwrap()
+            .fork_of = Some(base(None));
         let unknown = upstream(&state, None);
         assert_eq!(
             (unknown.latest, unknown.newer, unknown.source),
@@ -1705,15 +1863,22 @@ mod tests {
         let ext = format!("ext::sh -c touch% {}", marker.display());
         let mut state = State::default();
         for (id, source) in [
-            ("acme/ext", ext.as_str()),
-            ("acme/fd", "fd::5"),
-            ("acme/relative", "foo/bar"),
+            ("527fc2ea-c1ee-5b23-a265-b3516c3ed655", ext.as_str()),
+            ("eba8ed95-5887-5bb9-8294-c455a2fedc7c", "fd::5"),
+            (
+                "e628c4ae-44fd-51b4-982c-c89a575e9f6c",
+                "933fda30-c501-532d-9414-ed499eea3141",
+            ),
         ] {
             state.packages.insert(id.into(), installed(source, "0.1.0"));
         }
         // A fork whose forkOf.source came from a foreign manifest.
-        state.packages.get_mut("acme/relative").unwrap().fork_of = Some(ForkOf {
-            id: "acme/original".into(),
+        state
+            .packages
+            .get_mut("e628c4ae-44fd-51b4-982c-c89a575e9f6c")
+            .unwrap()
+            .fork_of = Some(ForkOf {
+            id: "32485fb1-a32d-53d8-b3d0-42cc220c1c2b".into(),
             version: "0.1.0".into(),
             commit: "a".repeat(40),
             source: Some(ext.clone()),
@@ -1734,7 +1899,13 @@ mod tests {
                 row.problem
             );
         }
-        let upstream = rows[2].upstream.as_ref().unwrap();
+        let upstream = rows
+            .iter()
+            .find(|row| row.id == "e628c4ae-44fd-51b4-982c-c89a575e9f6c")
+            .unwrap()
+            .upstream
+            .as_ref()
+            .unwrap();
         assert!(
             upstream
                 .problem

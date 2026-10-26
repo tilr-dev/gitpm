@@ -28,7 +28,7 @@ changing code. The shared default check set does not include `dt`.
 
 `t.clone(ID)` is the shared **bare repository** under `repos/<key>`; it has `objects`
 and `HEAD`, not a `.git` subdirectory. `t.worktree(ID)` is the detached package checkout
-under `worktrees/<namespace>/<name>` and has a `.git` **file** linking its admin directory
+under `worktrees/<uuid>` and has a `.git` **file** linking its admin directory
 in the bare repository. Assert both when preparing an installed fixture. To create a
 local test ref in the bare store, use `git update-ref refs/heads/NAME COMMIT`: `git branch`
 can refuse a store whose HEAD points outside `refs/heads`.
@@ -133,7 +133,7 @@ itests/
 
 ```
 /fx              working directory, the fixture snapshot
-/fx/repos/ID     author repositories (git), e.g. /fx/repos/dan/hello
+/fx/repos/ID     author repositories (git), e.g. /fx/repos/3dce1568-569c-5b53-9321-37185e751947
 /fx/ws           GITPM_ROOT       /fx/catalog  GITPM_CATALOG
 /fx/sources.txt  GITPM_SOURCES
 gitpm, gitpm-api the binaries under test; git, python3, curl, script(1)
@@ -150,9 +150,9 @@ from gitpmtest import T, case
 @case(fixture="hello_installed", spec=["updates/stable-update-moves-to-the-newest-release"])
 def update_to_new_release(t: T):
     """1. update without a catalog picks the new release tag."""
-    commit = t.release("dan/hello", "0.1.1")
-    t.gitpm_ok("update", "dan/hello")
-    t.eq(t.package("dan/hello")["current"], {"version": "0.1.1", "commit": commit}, "current")
+    commit = t.release("3dce1568-569c-5b53-9321-37185e751947", "0.1.1")
+    t.gitpm_ok("update", "3dce1568-569c-5b53-9321-37185e751947")
+    t.eq(t.package("3dce1568-569c-5b53-9321-37185e751947")["current"], {"version": "0.1.1", "commit": commit}, "current")
 ```
 
 * `spec=[…]` names what the case verifies: `CAPABILITY/REQUIREMENT-SLUG[#SCENARIO-SLUG]`,
@@ -197,12 +197,12 @@ from gitpmtest import T, fixture
 
 @fixture(requires=["hello"], gitpm=True)
 def hello_installed(t: T):
-    """dan/hello 0.1.0 installed directly from Git; no catalog."""
-    t.gitpm_ok("install", t.repo("dan/hello"), "--ref", "dan/hello@0.1.0")
+    """3dce1568-569c-5b53-9321-37185e751947 0.1.0 installed directly from Git; no catalog."""
+    t.gitpm_ok("install", t.repo("3dce1568-569c-5b53-9321-37185e751947"), "--ref", "v0.1.0")
 
 @hello_installed.check
 def _(t: T):
-    t.eq(t.package("dan/hello")["current"]["version"], "0.1.0", "current version")
+    t.eq(t.package("3dce1568-569c-5b53-9321-37185e751947")["current"]["version"], "0.1.0", "current version")
 ```
 
 * Every fixture has a check (the registry refuses one without). A failed fixture marks its
@@ -226,16 +226,16 @@ From the old stand suite (`~/projects/tilr/pm-dagger`, which drove the stand CLI
 
 Whole files (58 cases), obsolete by design:
 
-- `uc_005` Interactive init and EOF (7): `gitpm init` takes `NS/NAME --into DIR` and never prompts (spec `package-ids`, no default namespace).
+- `uc_005` Interactive init and EOF (7): `gitpm init` takes `NAME --into DIR` and never prompts (spec `package-ids`, generated UUID).
 - `uc_038` Sync dry-run and upload validation (15), `uc_039` Sync upload failures and cache purge (19), `uc_064` Sync against existing remote state (10): R2/Cloudflare publication is Tilr infrastructure; gitpm never uploads.
 - `uc_051` Publish and consumer consistency under failure (7): publication via `sync`; its consumer side is re-expressed as `uc_077` (partial publication over loopback HTTP).
 
 Single cases dropped from ported files (and what replaced them, if anything):
 
-- `uc_001:missing_fork_path` (fork takes `ID [ID...] --ns --into`; now `missing_fork_id`, `missing_fork_into`, `missing_init_into`), `uc_001:publish_outside_catalog_update` and `uc_063:publish_with_sync` (no `--publish`, no `sync`), `uc_001:dry_run_outside_sync` (now `dry_run_outside_update_all`).
+- `uc_001:missing_fork_path` (fork takes `ID [ID...] --into`; now `missing_fork_id`, `missing_fork_into`, `missing_init_into`), `uc_001:publish_outside_catalog_update` and `uc_063:publish_with_sync` (no `--publish`, no `sync`), `uc_001:dry_run_outside_sync` (now `dry_run_outside_update_all`).
 - `uc_002:wrapper_preserves_cwd_and_relative_init`, `uc_002:wrapper_defaults_point_at_the_stand`, `uc_002:env_file_sourced_twice` (the stand wrapper and its `.env`); `uc_002:direct_binary_defaults_in_isolated_cwd` (stand defaults; now `defaults_in_isolated_cwd`).
-- `uc_003:fallback_is_local`, `config_beats_fallback`, `env_beats_config`, `option_beats_env`, `changing_default_renames_nothing` (namespace config, `PM_NAMESPACE`, `namespace` command; now `init_without_namespace_refused`, `release_and_update_keep_the_id`).
-- `uc_063:namespace_with_install` (now `namespace_flag_is_unknown`), `uc_062:namespace_same_value`, `uc_025:same_namespace_from_config` (now `missing_namespace`).
+- `uc_003:fallback_is_local`, `config_beats_fallback`, `env_beats_config`, `option_beats_env`, `changing_default_renames_nothing` (namespace config, `PM_NAMESPACE`, `namespace` command; now `init_without_namespace_generates_uuid`, `release_and_update_keep_the_id`).
+- `uc_063:namespace_with_install` (now `namespace_flag_is_unknown`), `uc_062:namespace_same_value`, `uc_025:same_namespace_from_config` (now `repeated_forks_have_distinct_uuids`).
 - `uc_034:overview_selection_precedence` (remote/public catalog precedence; now `info_without_a_catalog_names_it`), `uc_057:info_prints_both_addresses_and_public_fallback` (now `info_shows_the_selected_catalog_only`), `uc_057:catalog_does_not_change_publish_destination` (R2).
 - `uc_037:backup_excluded_from_publication`, `uc_041:fifo_in_catalog_is_skipped_by_sync`, `uc_041:symlink_in_catalog_is_refused_by_sync`, `uc_042:sync_dry_run_lists_reachable_files` (`sync`).
 - The stand's `sync` test kind (`scripts/test_sync.py`) and `lint:clippy-stand`.

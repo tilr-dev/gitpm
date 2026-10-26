@@ -484,14 +484,14 @@ mod tests {
         };
         let stash = LostWork::Stash { entry: "s".into() };
         let message = |items: Vec<LostWork>| {
-            let error = refusal("dan/demo1", items.clone());
+            let error = refusal("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", items.clone());
             match error {
                 Error::LocalChanges {
                     id,
                     message,
                     items: kept,
                 } => {
-                    assert_eq!(id, "dan/demo1");
+                    assert_eq!(id, "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
                     assert_eq!(kept, items, "items are kept unchanged");
                     message
                 }
@@ -526,7 +526,7 @@ mod tests {
 
     /// A clone of a tagged author repository (has `origin`, like an installed package).
     fn clone(dir: &TempDir) -> PathBuf {
-        let author = Author::new(dir.join("author"), "dan/demo1");
+        let author = Author::new(dir.join("author"), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         fixture_git(dir.path(), &["clone", "-q", author.source(), "clone"]);
         dir.join("clone")
     }
@@ -544,12 +544,18 @@ mod tests {
                 &repo,
                 &[
                     "update-ref",
-                    &format!("refs/gitpm/dan/demo1/{slot}"),
+                    &format!("refs/gitpm/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/{slot}"),
                     &local,
                 ],
             );
         }
-        let items = worktree_removal(&repo, "dan/demo1", &recorded, false).unwrap();
+        let items = worktree_removal(
+            &repo,
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+            &recorded,
+            false,
+        )
+        .unwrap();
         assert!(items.iter().any(
             |item| matches!(item, LostWork::UnpublishedCommit { commit, .. } if commit == &local)
         ));
@@ -563,7 +569,13 @@ mod tests {
         ] {
             fixture_git(&repo, &["update-ref", reference, &local]);
             fs::write(repo.join("scratch.txt"), "keep").unwrap();
-            let items = worktree_removal(&repo, "dan/demo1", &recorded, false).unwrap();
+            let items = worktree_removal(
+                &repo,
+                "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+                &recorded,
+                false,
+            )
+            .unwrap();
             assert_eq!(items.len(), 2, "{reference}: {items:?}");
             assert!(
                 items
@@ -585,8 +597,17 @@ mod tests {
         let repo = clone(&dir);
         let head = fixture_git(&repo, &["rev-parse", "HEAD"]);
         assert!(status(&repo, false).unwrap().is_empty());
-        assert!(clean(&repo, "dan/demo1", false).is_ok());
-        assert!(require_head(&repo, "dan/demo1", &head, "m", false).is_ok());
+        assert!(clean(&repo, "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", false).is_ok());
+        assert!(
+            require_head(
+                &repo,
+                "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+                &head,
+                "m",
+                false
+            )
+            .is_ok()
+        );
         assert_eq!(detect(&repo, Some(&head), false).unwrap(), []);
         assert_eq!(detect(&repo, None, false).unwrap(), []);
     }
@@ -607,8 +628,8 @@ mod tests {
         fs::write(repo.join("staged.txt"), "new").unwrap();
         fixture_git(&repo, &["add", "staged.txt"]);
         fs::remove_file(repo.join("plugin.json")).unwrap();
-        fs::create_dir_all(repo.join("new/deep")).unwrap();
-        fs::write(repo.join("new/deep/u.txt"), "u").unwrap();
+        fs::create_dir_all(repo.join("47f645b0-9acc-5fed-8ebf-537034550bba")).unwrap();
+        fs::write(repo.join("47f645b0-9acc-5fed-8ebf-537034550bba/u.txt"), "u").unwrap();
         fs::write(repo.join("debug.log"), "l").unwrap();
 
         let mut items = status(&repo, false).unwrap();
@@ -622,10 +643,10 @@ mod tests {
                 "modified: plugin.json",
                 "modified: renamed файл.txt",
                 "modified: staged.txt",
-                "untracked: new/deep/u.txt",
+                "untracked: 47f645b0-9acc-5fed-8ebf-537034550bba/u.txt",
             ]
         );
-        let error = clean(&repo, "dan/demo1", false).unwrap_err();
+        let error = clean(&repo, "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", false).unwrap_err();
         assert_eq!(error.kind(), "local_changes");
         assert_eq!(error.to_string(), DIRTY);
         assert!(matches!(error, Error::LocalChanges { items, .. } if items.len() == 6));
@@ -644,7 +665,14 @@ mod tests {
         fs::write(repo.join("dist/index.js"), "stashed").unwrap();
         fixture_git(&repo, &["stash", "-q"]);
 
-        let error = require_head(&repo, "dan/demo1", &installed, "moved", false).unwrap_err();
+        let error = require_head(
+            &repo,
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+            &installed,
+            "moved",
+            false,
+        )
+        .unwrap_err();
         assert_eq!(error.to_string(), "moved");
         let Error::LocalChanges { items, .. } = error else {
             panic!()
@@ -690,7 +718,7 @@ mod tests {
     #[test]
     fn detached_checkout_of_a_published_commit_is_only_a_head_move() {
         let dir = TempDir::new("lost-work");
-        let author = Author::new(dir.join("author"), "dan/demo1");
+        let author = Author::new(dir.join("author"), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let first = author.head();
         author.release("0.2.0");
         fixture_git(dir.path(), &["clone", "-q", author.source(), "clone"]);

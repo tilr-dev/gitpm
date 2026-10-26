@@ -2,39 +2,39 @@
 
 from gitpmtest import T, fixture
 
-HELLO = "dan/hello"
+HELLO = "3dce1568-569c-5b53-9321-37185e751947"
 
 
 @fixture()
 def g2_demos(t: T):
-    """vendor/demo and author/demo: same basename, different namespaces and payloads; 0.1.0 each."""
-    t.new_package("vendor/demo", "0.1.0")
-    t.new_package("author/demo", "0.1.0")
+    """dd3387ed-a5a3-5059-81ad-b1f6987a28f2 and be517c52-cf84-5615-9a18-9fae7d82c819: same basename, different namespaces and payloads; 0.1.0 each."""
+    t.new_package("dd3387ed-a5a3-5059-81ad-b1f6987a28f2", "0.1.0")
+    t.new_package("be517c52-cf84-5615-9a18-9fae7d82c819", "0.1.0")
 
 
 @g2_demos.check
 def _(t: T):
-    for id in ["vendor/demo", "author/demo"]:
+    for id in ["dd3387ed-a5a3-5059-81ad-b1f6987a28f2", "be517c52-cf84-5615-9a18-9fae7d82c819"]:
         t.eq(t.git(id, "tag", "--list"), f"v0.1.0", f"{id} tags")
         t.has(t.git(id, "show", "HEAD:dist/index.js"), f"{id} 0.1.0")
 
 
 @fixture(requires=["g2_demos"], gitpm=True)
 def g2_demos_installed(t: T):
-    """vendor/demo and author/demo 0.1.0 both installed directly from Git into /fx/ws."""
-    t.gitpm_ok("install", t.repo("vendor/demo"))
-    t.gitpm_ok("install", t.repo("author/demo"))
+    """dd3387ed-a5a3-5059-81ad-b1f6987a28f2 and be517c52-cf84-5615-9a18-9fae7d82c819 0.1.0 both installed directly from Git into /fx/ws."""
+    t.gitpm_ok("install", t.repo("dd3387ed-a5a3-5059-81ad-b1f6987a28f2"))
+    t.gitpm_ok("install", t.repo("be517c52-cf84-5615-9a18-9fae7d82c819"))
 
 
 @g2_demos_installed.check
 def _(t: T):
-    for id in ["vendor/demo", "author/demo"]:
+    for id in ["dd3387ed-a5a3-5059-81ad-b1f6987a28f2", "be517c52-cf84-5615-9a18-9fae7d82c819"]:
         p = t.package(id)
         t.eq(p["current"], {"version": "0.1.0", "commit": t.rev(id)}, f"{id} current")
         t.eq(p["enabled"], True, f"{id} enabled")
         t.eq(t.rev(t.worktree(id)), p["current"]["commit"], f"{id} clone HEAD")
         t.has((t.dist(id) / "index.js").read_text(), f"{id} 0.1.0")
-    t.eq(sorted(t.state()["packages"]), ["author/demo", "vendor/demo"], "installed")
+    t.eq(sorted(t.state()["packages"]), ["be517c52-cf84-5615-9a18-9fae7d82c819", "dd3387ed-a5a3-5059-81ad-b1f6987a28f2"], "installed")
 
 
 def _reverse(t: T, id: str, annotated_first: bool):
@@ -54,15 +54,15 @@ def _reverse(t: T, id: str, annotated_first: bool):
 
 @fixture()
 def g2_reverse_tags(t: T):
-    """dan/rev: 1.10.0 (annotated tag) created before 1.9.0 (lightweight) and an untagged
-    1.11.0 HEAD; dan/rev2: the same with lightweight 1.10.0 and annotated 1.9.0."""
-    _reverse(t, "dan/rev", annotated_first=True)
-    _reverse(t, "dan/rev2", annotated_first=False)
+    """d0a24c12-6c98-54aa-9226-f2a923716f63: 1.10.0 (annotated tag) created before 1.9.0 (lightweight) and an untagged
+    1.11.0 HEAD; ac004289-237b-5412-9383-e963b2c10d1d: the same with lightweight 1.10.0 and annotated 1.9.0."""
+    _reverse(t, "d0a24c12-6c98-54aa-9226-f2a923716f63", annotated_first=True)
+    _reverse(t, "ac004289-237b-5412-9383-e963b2c10d1d", annotated_first=False)
 
 
 @g2_reverse_tags.check
 def _(t: T):
-    for id, kinds in [("dan/rev", ("tag", "commit")), ("dan/rev2", ("commit", "tag"))]:
+    for id, kinds in [("d0a24c12-6c98-54aa-9226-f2a923716f63", ("tag", "commit")), ("ac004289-237b-5412-9383-e963b2c10d1d", ("commit", "tag"))]:
         t.eq(sorted(t.git(id, "tag", "--list").split()), [f"v1.10.0", f"v1.9.0"], f"{id} tags")
         t.eq((t.git(id, "cat-file", "-t", f"refs/tags/v1.10.0"),
               t.git(id, "cat-file", "-t", f"refs/tags/v1.9.0")), kinds, f"{id} tag object types")
@@ -74,7 +74,7 @@ def _(t: T):
 
 @fixture(requires=["hello_installed"], gitpm=True)
 def g2_hello_history(t: T):
-    """dan/hello installed at 0.1.0, updated to 0.1.1 and then 0.1.2: current 0.1.2, previous 0.1.1."""
+    """3dce1568-569c-5b53-9321-37185e751947 installed at 0.1.0, updated to 0.1.1 and then 0.1.2: current 0.1.2, previous 0.1.1."""
     t.release(HELLO, "0.1.1")
     t.gitpm_ok("update", HELLO)
     t.release(HELLO, "0.1.2")
@@ -88,25 +88,25 @@ def _(t: T):
     t.eq(p["previous"], {"version": "0.1.1", "commit": t.rev(HELLO, f"v0.1.1")}, "previous")
     t.eq(p["enabled"], True, "enabled")
     t.eq(t.rev(t.worktree(HELLO)), p["current"]["commit"], "clone HEAD")
-    t.has((t.dist(HELLO) / "index.js").read_text(), "dan/hello 0.1.2")
+    t.has((t.dist(HELLO) / "index.js").read_text(), "3dce1568-569c-5b53-9321-37185e751947 0.1.2")
     t.eq(t.git(t.worktree(HELLO), "status", "--porcelain", "--ignored"), "", "clean clone")
 
 
 @fixture(requires=["g2_hello_history"], gitpm=True)
 def g2_guarded(t: T):
-    """g2_hello_history plus an unrelated dan/other 0.1.0 installed, and an unapplied
-    upstream release dan/hello 0.1.3 (so update and rollback would both change something)."""
-    t.new_package("dan/other", "0.1.0")
-    t.gitpm_ok("install", t.repo("dan/other"))
+    """g2_hello_history plus an unrelated 95d14dc8-6dfc-5022-9fd1-7146ee6aee58 0.1.0 installed, and an unapplied
+    upstream release 3dce1568-569c-5b53-9321-37185e751947 0.1.3 (so update and rollback would both change something)."""
+    t.new_package("95d14dc8-6dfc-5022-9fd1-7146ee6aee58", "0.1.0")
+    t.gitpm_ok("install", t.repo("95d14dc8-6dfc-5022-9fd1-7146ee6aee58"))
     t.release(HELLO, "0.1.3")
 
 
 @g2_guarded.check
 def _(t: T):
     p = t.package(HELLO)
-    t.eq((p["current"]["version"], p["previous"]["version"]), ("0.1.2", "0.1.1"), "dan/hello history")
-    t.eq(t.package("dan/other")["current"]["version"], "0.1.0", "dan/other installed")
+    t.eq((p["current"]["version"], p["previous"]["version"]), ("0.1.2", "0.1.1"), "3dce1568-569c-5b53-9321-37185e751947 history")
+    t.eq(t.package("95d14dc8-6dfc-5022-9fd1-7146ee6aee58")["current"]["version"], "0.1.0", "95d14dc8-6dfc-5022-9fd1-7146ee6aee58 installed")
     t.has(t.git(HELLO, "tag", "--list"), f"v0.1.3")
-    for id in [HELLO, "dan/other"]:
+    for id in [HELLO, "95d14dc8-6dfc-5022-9fd1-7146ee6aee58"]:
         t.eq(t.git(t.worktree(id), "status", "--porcelain", "--ignored"), "", f"{id} clean clone")
         t.eq(t.git(t.worktree(id), "stash", "list"), "", f"{id} no stash")

@@ -1,6 +1,6 @@
 """UC-019: Failed update transaction (P0).
 
-Fixture g2_hello_history: dan/hello current 0.1.2, previous 0.1.1 (rollback is possible).
+Fixture g2_hello_history: 3dce1568-569c-5b53-9321-37185e751947 current 0.1.2, previous 0.1.1 (rollback is possible).
 Every failed update must exit non-zero, leave the whole workspace (state, clone incl.
 .git, dist) byte-identical with no `.pm-txn` leftovers, keep rollback working, and a later
 valid update must succeed.
@@ -10,7 +10,7 @@ import shutil
 
 from gitpmtest import T, case
 
-ID = "dan/hello"
+ID = "3dce1568-569c-5b53-9321-37185e751947"
 
 
 def tagged(t: T, version: str) -> str:
@@ -72,8 +72,8 @@ def release_with_malformed_manifest(t: T):
 
 @case(fixture="g2_hello_history", spec=["errors/failing-operations-leave-the-workspace-unchanged"])
 def release_with_mismatched_id(t: T):
-    """Revision 0.1.3 whose manifest says dan/renamed: update --ref (tag and SHA) fails."""
-    sha = t.release(ID, "0.1.3", extra={"id": "dan/renamed"})
+    """Revision 0.1.3 whose manifest says d92f82f0-1472-59b9-b4c5-eb76b0706d47: update --ref (tag and SHA) fails."""
+    sha = t.release(ID, "0.1.3", extra={"id": "d92f82f0-1472-59b9-b4c5-eb76b0706d47"})
     failed_update(t, "--ref", f"v0.1.3", kind="invalid_manifest", contains="id changed")
     failed_update(t, "--ref", sha, kind="invalid_manifest", contains="id changed")
     rollback_still_works(t)

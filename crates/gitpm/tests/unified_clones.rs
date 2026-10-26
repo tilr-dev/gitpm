@@ -1,4 +1,5 @@
 //! A root package and later nested siblings share one source-keyed workspace clone.
+mod common;
 use gitpm::{InstallTarget, Manager, scaffold};
 use std::{
     fs,
@@ -45,9 +46,11 @@ fn git(repo: &Path, args: &[&str]) -> String {
 }
 
 fn installed_workspace(dir: &TempDir) -> (PathBuf, PathBuf, Manager) {
-    let source = scaffold::init(&dir.path().join("source"), "acme", "root")
-        .unwrap()
-        .repo;
+    let source = common::author(
+        &dir.path().join("source"),
+        "365ade82-57cd-53a7-a61f-c790d46cba87",
+        "root",
+    );
     let root = dir.path().join("workspace");
     let manager = Manager::open(&root).unwrap();
     manager.install(source.to_str().unwrap()).unwrap();
@@ -58,8 +61,8 @@ fn installed_workspace(dir: &TempDir) -> (PathBuf, PathBuf, Manager) {
 fn copied_workspace_repairs_links_and_keeps_source_unchanged() {
     let dir = TempDir::new();
     let (source, root, original) = installed_workspace(&dir);
-    let record = original.state().unwrap().packages["acme/root"].clone();
-    let checkout = root.join("worktrees/acme/root");
+    let record = original.state().unwrap().packages["365ade82-57cd-53a7-a61f-c790d46cba87"].clone();
+    let checkout = root.join("worktrees/365ade82-57cd-53a7-a61f-c790d46cba87");
     let original_gitfile = fs::read(checkout.join(".git")).unwrap();
     let original_state = fs::read(root.join("state.json")).unwrap();
     let original_head = git(&checkout, &["rev-parse", "HEAD"]);
@@ -75,7 +78,7 @@ fn copied_workspace_repairs_links_and_keeps_source_unchanged() {
     );
     let manager = Manager::open(&copied).unwrap();
     assert_eq!(manager.list().unwrap().len(), 1);
-    let copied_checkout = copied.join("worktrees/acme/root");
+    let copied_checkout = copied.join("worktrees/365ade82-57cd-53a7-a61f-c790d46cba87");
     assert_eq!(
         fs::canonicalize(git(&copied_checkout, &["rev-parse", "--git-common-dir"])).unwrap(),
         copied.join("repos").join(record.clone.as_ref().unwrap())
@@ -90,12 +93,18 @@ fn copied_workspace_repairs_links_and_keeps_source_unchanged() {
         record.current.commit
     );
     scaffold::commit_package(&source, "0.2.0", None).unwrap();
-    manager.update("acme/root").unwrap();
+    manager
+        .update("365ade82-57cd-53a7-a61f-c790d46cba87")
+        .unwrap();
     assert_eq!(git(&copied_checkout, &["status", "--porcelain"]), "");
-    manager.rollback("acme/root").unwrap();
+    manager
+        .rollback("365ade82-57cd-53a7-a61f-c790d46cba87")
+        .unwrap();
     assert_eq!(git(&copied_checkout, &["status", "--porcelain"]), "");
     assert_eq!(git(&copied_checkout, &["rev-parse", "HEAD"]), original_head);
-    manager.uninstall("acme/root", &[], false).unwrap();
+    manager
+        .uninstall("365ade82-57cd-53a7-a61f-c790d46cba87", &[], false)
+        .unwrap();
     assert!(manager.list().unwrap().is_empty());
     assert!(!copied_checkout.exists());
     assert_eq!(fs::read(root.join("state.json")).unwrap(), original_state);
@@ -108,19 +117,27 @@ fn copied_workspace_repairs_links_and_keeps_source_unchanged() {
 fn moved_workspace_repairs_forgotten_worktrees_without_losing_local_work() {
     let dir = TempDir::new();
     let (_source, root, manager) = installed_workspace(&dir);
-    manager.forget("acme/root").unwrap();
-    fs::write(root.join("worktrees/acme/root/local.txt"), "keep me").unwrap();
+    manager
+        .forget("365ade82-57cd-53a7-a61f-c790d46cba87")
+        .unwrap();
+    fs::write(
+        root.join("worktrees/365ade82-57cd-53a7-a61f-c790d46cba87/local.txt"),
+        "keep me",
+    )
+    .unwrap();
     drop(manager);
     let moved = dir.path().join("moved");
     fs::rename(&root, &moved).unwrap();
     let before_state = fs::read(moved.join("state.json")).unwrap();
     let manager = Manager::open(&moved).unwrap();
-    let checkout = moved.join("worktrees/acme/root");
+    let checkout = moved.join("worktrees/365ade82-57cd-53a7-a61f-c790d46cba87");
     assert_eq!(git(&checkout, &["status", "--porcelain"]), "?? local.txt");
     assert_eq!(fs::read(checkout.join("local.txt")).unwrap(), b"keep me");
     assert_eq!(fs::read(moved.join("state.json")).unwrap(), before_state);
     fs::remove_file(checkout.join("local.txt")).unwrap();
-    manager.restore("acme/root").unwrap();
+    manager
+        .restore("365ade82-57cd-53a7-a61f-c790d46cba87")
+        .unwrap();
     assert_eq!(git(&checkout, &["status", "--porcelain"]), "");
     let gitfile = checkout.join(".git");
     let modified = fs::metadata(&gitfile).unwrap().modified().unwrap();
@@ -140,9 +157,11 @@ fn opening_workspace_through_alias_preserves_correct_links() {
         time::{Duration, SystemTime},
     };
     let dir = TempDir::new();
-    let source = scaffold::init(&dir.path().join("source"), "acme", "root")
-        .unwrap()
-        .repo;
+    let source = common::author(
+        &dir.path().join("source"),
+        "365ade82-57cd-53a7-a61f-c790d46cba87",
+        "root",
+    );
     let real = dir.path().join("real");
     fs::create_dir(&real).unwrap();
     let alias = dir.path().join("alias");
@@ -150,7 +169,7 @@ fn opening_workspace_through_alias_preserves_correct_links() {
     let root = alias.join("workspace");
     let manager = Manager::open(&root).unwrap();
     manager.install(source.to_str().unwrap()).unwrap();
-    let gitfile = root.join("worktrees/acme/root/.git");
+    let gitfile = root.join("worktrees/365ade82-57cd-53a7-a61f-c790d46cba87/.git");
     let content = fs::read(&gitfile).unwrap();
     // A fixed old timestamp makes rewrites observable without clock resolution races.
     let stamp = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
@@ -170,7 +189,7 @@ fn opening_workspace_through_alias_preserves_correct_links() {
     );
     assert_eq!(
         git(
-            &root.join("worktrees/acme/root"),
+            &root.join("worktrees/365ade82-57cd-53a7-a61f-c790d46cba87"),
             &["status", "--porcelain"]
         ),
         ""
@@ -182,7 +201,7 @@ fn opening_workspace_restores_missing_link_files() {
     for target in [".git", "gitdir", "commondir"] {
         let dir = TempDir::new();
         let (_source, root, manager) = installed_workspace(&dir);
-        let checkout = root.join("worktrees/acme/root");
+        let checkout = root.join("worktrees/365ade82-57cd-53a7-a61f-c790d46cba87");
         let gitfile = checkout.join(".git");
         let content = fs::read_to_string(&gitfile).unwrap();
         let admin = Path::new(content.trim().strip_prefix("gitdir: ").unwrap());
@@ -212,8 +231,8 @@ fn opening_workspace_restores_missing_link_files() {
 fn opening_workspace_refuses_symlinked_worktree_metadata_and_parents() {
     use std::os::unix::fs::symlink;
     for target in [
-        "worktrees/acme/root/.git",
-        "worktrees/acme",
+        "worktrees/365ade82-57cd-53a7-a61f-c790d46cba87/.git",
+        "worktrees/365ade82-57cd-53a7-a61f-c790d46cba87",
         "repos",
         "gitdir",
         "commondir",
@@ -222,7 +241,10 @@ fn opening_workspace_refuses_symlinked_worktree_metadata_and_parents() {
         let (_source, root, manager) = installed_workspace(&dir);
         drop(manager);
         let path = if matches!(target, "gitdir" | "commondir") {
-            let gitfile = fs::read_to_string(root.join("worktrees/acme/root/.git")).unwrap();
+            let gitfile = fs::read_to_string(
+                root.join("worktrees/365ade82-57cd-53a7-a61f-c790d46cba87/.git"),
+            )
+            .unwrap();
             Path::new(gitfile.trim().strip_prefix("gitdir: ").unwrap()).join(target)
         } else {
             root.join(target)
@@ -246,14 +268,16 @@ fn opening_workspace_refuses_symlinked_worktree_metadata_and_parents() {
 #[test]
 fn root_to_nested_lifecycle_keeps_one_clone_and_all_owners() {
     let dir = TempDir::new();
-    let source = scaffold::init(&dir.path().join("source"), "acme", "root")
-        .unwrap()
-        .repo;
+    let source = common::author(
+        &dir.path().join("source"),
+        "365ade82-57cd-53a7-a61f-c790d46cba87",
+        "root",
+    );
     let root = dir.path().join("workspace");
     let manager = Manager::open(&root).unwrap();
     assert!(!root.join("packages").exists());
     manager.install(source.to_str().unwrap()).unwrap();
-    let initial = manager.state().unwrap().packages["acme/root"].clone();
+    let initial = manager.state().unwrap().packages["365ade82-57cd-53a7-a61f-c790d46cba87"].clone();
     let key = initial
         .clone
         .clone()
@@ -264,7 +288,10 @@ fn root_to_nested_lifecycle_keeps_one_clone_and_all_owners() {
     assert!(clone.join("objects").is_dir());
     assert!(!clone.join(".git").exists());
     assert_eq!(git(&clone, &["rev-parse", "--is-bare-repository"]), "true");
-    assert!(root.join("worktrees/acme/root/.git").is_file());
+    assert!(
+        root.join("worktrees/365ade82-57cd-53a7-a61f-c790d46cba87/.git")
+            .is_file()
+    );
 
     fs::create_dir_all(source.join("apps/root")).unwrap();
     fs::rename(
@@ -276,75 +303,134 @@ fn root_to_nested_lifecycle_keeps_one_clone_and_all_owners() {
     fs::create_dir_all(source.join("apps/sibling/dist")).unwrap();
     fs::write(
         source.join("apps/sibling/plugin.json"),
-        r#"{"id":"acme/sibling","version":"0.2.0"}"#,
+        r#"{"id":"33832cb1-5888-5a42-83e7-843d3b4b7224","name": "fixture", "version":"0.2.0"}"#,
     )
     .unwrap();
     fs::write(source.join("apps/sibling/dist/index.js"), "sibling").unwrap();
     fs::write(source.join("gitpm.json"), r#"{"packages":["apps/*"]}"#).unwrap();
-    scaffold::commit_package(&source, "0.2.0", Some("acme/root")).unwrap();
+    scaffold::commit_package(
+        &source,
+        "0.2.0",
+        Some("365ade82-57cd-53a7-a61f-c790d46cba87"),
+    )
+    .unwrap();
 
     // Refused mutations leave both state and deployed output unchanged.
     let before = fs::read(root.join("state.json")).unwrap();
-    fs::write(root.join("worktrees/acme/root/local.txt"), "local work").unwrap();
+    fs::write(
+        root.join("worktrees/365ade82-57cd-53a7-a61f-c790d46cba87/local.txt"),
+        "local work",
+    )
+    .unwrap();
     assert_eq!(
-        manager.update("acme/root").unwrap_err().kind(),
+        manager
+            .update("365ade82-57cd-53a7-a61f-c790d46cba87")
+            .unwrap_err()
+            .kind(),
         "local_changes"
     );
     assert_eq!(fs::read(root.join("state.json")).unwrap(), before);
-    assert!(root.join("dist/acme/root/index.js").is_file());
-    fs::remove_file(root.join("worktrees/acme/root/local.txt")).unwrap();
+    assert!(
+        root.join("dist/365ade82-57cd-53a7-a61f-c790d46cba87/index.js")
+            .is_file()
+    );
+    fs::remove_file(root.join("worktrees/365ade82-57cd-53a7-a61f-c790d46cba87/local.txt")).unwrap();
 
-    manager.update("acme/root").unwrap();
+    manager
+        .update("365ade82-57cd-53a7-a61f-c790d46cba87")
+        .unwrap();
     manager
         .install_package(
             source.to_str().unwrap(),
-            Some("acme/sibling"),
+            Some("33832cb1-5888-5a42-83e7-843d3b4b7224"),
             InstallTarget::Release,
         )
         .unwrap();
     let state = manager.state().unwrap();
-    assert_eq!(state.packages["acme/root"].clone.as_ref(), Some(&key));
     assert_eq!(
-        state.packages["acme/root"].path.as_deref(),
+        state.packages["365ade82-57cd-53a7-a61f-c790d46cba87"]
+            .clone
+            .as_ref(),
+        Some(&key)
+    );
+    assert_eq!(
+        state.packages["365ade82-57cd-53a7-a61f-c790d46cba87"]
+            .path
+            .as_deref(),
         Some("apps/root")
     );
-    assert_eq!(state.packages["acme/sibling"].clone.as_ref(), Some(&key));
-    assert_eq!(fs::read_dir(root.join("repos")).unwrap().count(), 1);
-    let sibling_head = git(&root.join("worktrees/acme/sibling"), &["rev-parse", "HEAD"]);
-    let sibling_manifest =
-        fs::read(root.join("worktrees/acme/sibling/apps/sibling/plugin.json")).unwrap();
-    manager.rollback("acme/root").unwrap();
     assert_eq!(
-        git(&root.join("worktrees/acme/root"), &["rev-parse", "HEAD"]),
+        state.packages["33832cb1-5888-5a42-83e7-843d3b4b7224"]
+            .clone
+            .as_ref(),
+        Some(&key)
+    );
+    assert_eq!(fs::read_dir(root.join("repos")).unwrap().count(), 1);
+    let sibling_head = git(
+        &root.join("worktrees/33832cb1-5888-5a42-83e7-843d3b4b7224"),
+        &["rev-parse", "HEAD"],
+    );
+    let sibling_manifest = fs::read(
+        root.join("worktrees/33832cb1-5888-5a42-83e7-843d3b4b7224/apps/sibling/plugin.json"),
+    )
+    .unwrap();
+    manager
+        .rollback("365ade82-57cd-53a7-a61f-c790d46cba87")
+        .unwrap();
+    assert_eq!(
+        git(
+            &root.join("worktrees/365ade82-57cd-53a7-a61f-c790d46cba87"),
+            &["rev-parse", "HEAD"]
+        ),
         initial.current.commit
     );
     assert_eq!(
-        git(&root.join("worktrees/acme/sibling"), &["rev-parse", "HEAD"]),
+        git(
+            &root.join("worktrees/33832cb1-5888-5a42-83e7-843d3b4b7224"),
+            &["rev-parse", "HEAD"]
+        ),
         sibling_head
     );
     assert_eq!(
-        fs::read(root.join("worktrees/acme/sibling/apps/sibling/plugin.json")).unwrap(),
+        fs::read(
+            root.join("worktrees/33832cb1-5888-5a42-83e7-843d3b4b7224/apps/sibling/plugin.json")
+        )
+        .unwrap(),
         sibling_manifest
     );
     assert!(
-        manager.state().unwrap().packages["acme/root"]
+        manager.state().unwrap().packages["365ade82-57cd-53a7-a61f-c790d46cba87"]
             .path
             .is_none()
     );
     assert_eq!(
-        fs::read_to_string(root.join("dist/acme/sibling/index.js")).unwrap(),
+        fs::read_to_string(root.join("dist/33832cb1-5888-5a42-83e7-843d3b4b7224/index.js"))
+            .unwrap(),
         "sibling"
     );
-    manager.update("acme/root").unwrap();
-    manager.forget("acme/root").unwrap();
-    manager.uninstall("acme/sibling", &[], false).unwrap();
+    manager
+        .update("365ade82-57cd-53a7-a61f-c790d46cba87")
+        .unwrap();
+    manager
+        .forget("365ade82-57cd-53a7-a61f-c790d46cba87")
+        .unwrap();
+    manager
+        .uninstall("33832cb1-5888-5a42-83e7-843d3b4b7224", &[], false)
+        .unwrap();
     assert!(
         clone.join("objects").is_dir(),
         "forgotten owner retains the clone"
     );
-    manager.restore("acme/root").unwrap();
-    assert!(root.join("dist/acme/root/index.js").is_file());
-    manager.uninstall("acme/root", &[], false).unwrap();
+    manager
+        .restore("365ade82-57cd-53a7-a61f-c790d46cba87")
+        .unwrap();
+    assert!(
+        root.join("dist/365ade82-57cd-53a7-a61f-c790d46cba87/index.js")
+            .is_file()
+    );
+    manager
+        .uninstall("365ade82-57cd-53a7-a61f-c790d46cba87", &[], false)
+        .unwrap();
     assert!(!clone.exists());
     assert!(!root.join("repos").exists());
     assert!(!root.join("packages").exists());
@@ -355,15 +441,19 @@ fn legacy_clones_are_left_untouched_and_never_used() {
     let dir = TempDir::new();
     let root = dir.path().join("workspace");
     drop(Manager::open(&root).unwrap());
-    let legacy = root.join("packages/acme/root");
+    let legacy = root.join("packages/365ade82-57cd-53a7-a61f-c790d46cba87");
     fs::create_dir_all(&legacy).unwrap();
     fs::write(legacy.join("local.txt"), "keep").unwrap();
-    let source = scaffold::init(&dir.path().join("source"), "acme", "root")
-        .unwrap()
-        .repo;
+    let source = common::author(
+        &dir.path().join("source"),
+        "365ade82-57cd-53a7-a61f-c790d46cba87",
+        "root",
+    );
     let manager = Manager::open(&root).unwrap();
     manager.install(source.to_str().unwrap()).unwrap();
-    manager.uninstall("acme/root", &[], false).unwrap();
+    manager
+        .uninstall("365ade82-57cd-53a7-a61f-c790d46cba87", &[], false)
+        .unwrap();
     assert_eq!(
         fs::read_to_string(legacy.join("local.txt")).unwrap(),
         "keep"
@@ -374,9 +464,11 @@ fn legacy_clones_are_left_untouched_and_never_used() {
 fn root_and_nested_worktrees_guard_dirty_files_and_every_moved_head() {
     for nested in [false, true] {
         let dir = TempDir::new();
-        let source = scaffold::init(&dir.path().join("source"), "acme", "root")
-            .unwrap()
-            .repo;
+        let source = common::author(
+            &dir.path().join("source"),
+            "365ade82-57cd-53a7-a61f-c790d46cba87",
+            "root",
+        );
         if nested {
             fs::create_dir_all(source.join("apps/root")).unwrap();
             fs::rename(
@@ -386,15 +478,28 @@ fn root_and_nested_worktrees_guard_dirty_files_and_every_moved_head() {
             .unwrap();
             fs::rename(source.join("dist"), source.join("apps/root/dist")).unwrap();
             fs::write(source.join("gitpm.json"), r#"{"packages":["apps/*"]}"#).unwrap();
-            scaffold::commit_package(&source, "0.2.0", Some("acme/root")).unwrap();
+            scaffold::commit_package(
+                &source,
+                "0.2.0",
+                Some("365ade82-57cd-53a7-a61f-c790d46cba87"),
+            )
+            .unwrap();
         }
         let root = dir.path().join("workspace");
         let manager = Manager::open(&root).unwrap();
         manager.install(source.to_str().unwrap()).unwrap();
-        scaffold::commit_package(&source, "0.3.0", Some("acme/root")).unwrap();
-        manager.update("acme/root").unwrap();
-        let record = manager.state().unwrap().packages["acme/root"].clone();
-        let checkout = root.join("worktrees/acme/root");
+        scaffold::commit_package(
+            &source,
+            "0.3.0",
+            Some("365ade82-57cd-53a7-a61f-c790d46cba87"),
+        )
+        .unwrap();
+        manager
+            .update("365ade82-57cd-53a7-a61f-c790d46cba87")
+            .unwrap();
+        let record =
+            manager.state().unwrap().packages["365ade82-57cd-53a7-a61f-c790d46cba87"].clone();
+        let checkout = root.join("worktrees/365ade82-57cd-53a7-a61f-c790d46cba87");
         let payload = checkout.join(if nested {
             "apps/root/dist/index.js"
         } else {
@@ -402,32 +507,45 @@ fn root_and_nested_worktrees_guard_dirty_files_and_every_moved_head() {
         });
         let original = fs::read(&payload).unwrap();
         let state = fs::read(root.join("state.json")).unwrap();
-        let deployed = fs::read(root.join("dist/acme/root/index.js")).unwrap();
+        let deployed =
+            fs::read(root.join("dist/365ade82-57cd-53a7-a61f-c790d46cba87/index.js")).unwrap();
         for staged in [false, true] {
             fs::write(&payload, "local edits").unwrap();
             if staged {
                 git(&checkout, &["add", "--all"]);
             }
             for result in [
-                manager.update("acme/root").map(|_| ()),
-                manager.rollback("acme/root").map(|_| ()),
-                manager.uninstall("acme/root", &[], false).map(|_| ()),
+                manager
+                    .update("365ade82-57cd-53a7-a61f-c790d46cba87")
+                    .map(|_| ()),
+                manager
+                    .rollback("365ade82-57cd-53a7-a61f-c790d46cba87")
+                    .map(|_| ()),
+                manager
+                    .uninstall("365ade82-57cd-53a7-a61f-c790d46cba87", &[], false)
+                    .map(|_| ()),
             ] {
                 assert_eq!(result.unwrap_err().kind(), "local_changes");
             }
             assert_eq!(fs::read(&payload).unwrap(), b"local edits");
             assert_eq!(fs::read(root.join("state.json")).unwrap(), state);
             assert_eq!(
-                fs::read(root.join("dist/acme/root/index.js")).unwrap(),
+                fs::read(root.join("dist/365ade82-57cd-53a7-a61f-c790d46cba87/index.js")).unwrap(),
                 deployed
             );
             git(&checkout, &["reset", "--hard", &record.current.commit]);
         }
         fs::write(checkout.join("untracked.txt"), "keep").unwrap();
         for result in [
-            manager.update("acme/root").map(|_| ()),
-            manager.rollback("acme/root").map(|_| ()),
-            manager.uninstall("acme/root", &[], false).map(|_| ()),
+            manager
+                .update("365ade82-57cd-53a7-a61f-c790d46cba87")
+                .map(|_| ()),
+            manager
+                .rollback("365ade82-57cd-53a7-a61f-c790d46cba87")
+                .map(|_| ()),
+            manager
+                .uninstall("365ade82-57cd-53a7-a61f-c790d46cba87", &[], false)
+                .map(|_| ()),
         ] {
             assert_eq!(result.unwrap_err().kind(), "local_changes");
         }
@@ -439,9 +557,15 @@ fn root_and_nested_worktrees_guard_dirty_files_and_every_moved_head() {
             &["checkout", "--detach", &record.previous.unwrap().commit],
         );
         for result in [
-            manager.update("acme/root").map(|_| ()),
-            manager.rollback("acme/root").map(|_| ()),
-            manager.uninstall("acme/root", &[], false).map(|_| ()),
+            manager
+                .update("365ade82-57cd-53a7-a61f-c790d46cba87")
+                .map(|_| ()),
+            manager
+                .rollback("365ade82-57cd-53a7-a61f-c790d46cba87")
+                .map(|_| ()),
+            manager
+                .uninstall("365ade82-57cd-53a7-a61f-c790d46cba87", &[], false)
+                .map(|_| ()),
         ] {
             let error = result.unwrap_err();
             assert_eq!(error.kind(), "local_changes");
@@ -449,14 +573,23 @@ fn root_and_nested_worktrees_guard_dirty_files_and_every_moved_head() {
                 matches!(error, gitpm::Error::LocalChanges { items, .. } if items.iter().any(|item| matches!(item, gitpm::LostWork::HeadMoved { .. })))
             );
         }
-        manager.forget("acme/root").unwrap();
+        manager
+            .forget("365ade82-57cd-53a7-a61f-c790d46cba87")
+            .unwrap();
         assert_eq!(
-            manager.restore("acme/root").unwrap_err().kind(),
+            manager
+                .restore("365ade82-57cd-53a7-a61f-c790d46cba87")
+                .unwrap_err()
+                .kind(),
             "local_changes"
         );
         git(&checkout, &["checkout", "--detach", &record.current.commit]);
-        manager.restore("acme/root").unwrap();
-        manager.uninstall("acme/root", &[], false).unwrap();
+        manager
+            .restore("365ade82-57cd-53a7-a61f-c790d46cba87")
+            .unwrap();
+        manager
+            .uninstall("365ade82-57cd-53a7-a61f-c790d46cba87", &[], false)
+            .unwrap();
         assert!(!checkout.exists());
     }
 }
@@ -465,43 +598,60 @@ fn root_and_nested_worktrees_guard_dirty_files_and_every_moved_head() {
 fn missing_bare_preserves_orphan_worktree_on_removal() {
     for forget in [false, true] {
         let dir = TempDir::new();
-        let source = scaffold::init(&dir.path().join("source"), "acme", "root")
-            .unwrap()
-            .repo;
+        let source = common::author(
+            &dir.path().join("source"),
+            "365ade82-57cd-53a7-a61f-c790d46cba87",
+            "root",
+        );
         let root = dir.path().join("workspace");
         let manager = Manager::open(&root).unwrap();
         manager.install(source.to_str().unwrap()).unwrap();
-        let record = manager.state().unwrap().packages["acme/root"].clone();
-        let checkout = root.join("worktrees/acme/root");
+        let record =
+            manager.state().unwrap().packages["365ade82-57cd-53a7-a61f-c790d46cba87"].clone();
+        let checkout = root.join("worktrees/365ade82-57cd-53a7-a61f-c790d46cba87");
         fs::write(checkout.join("scratch.txt"), "keep my work").unwrap();
         fs::remove_dir_all(root.join("repos").join(record.clone.unwrap())).unwrap();
         if forget {
-            manager.forget("acme/root").unwrap();
+            manager
+                .forget("365ade82-57cd-53a7-a61f-c790d46cba87")
+                .unwrap();
         } else {
-            manager.uninstall("acme/root", &[], false).unwrap();
+            manager
+                .uninstall("365ade82-57cd-53a7-a61f-c790d46cba87", &[], false)
+                .unwrap();
         }
         assert_eq!(
             fs::read(checkout.join("scratch.txt")).unwrap(),
             b"keep my work"
         );
-        assert!(!manager.state().unwrap().packages.contains_key("acme/root"));
+        assert!(
+            !manager
+                .state()
+                .unwrap()
+                .packages
+                .contains_key("365ade82-57cd-53a7-a61f-c790d46cba87")
+        );
     }
 }
 
 #[test]
 fn reinstall_preserves_orphan_worktree_after_missing_bare() {
     let dir = TempDir::new();
-    let source = scaffold::init(&dir.path().join("source"), "acme", "root")
-        .unwrap()
-        .repo;
+    let source = common::author(
+        &dir.path().join("source"),
+        "365ade82-57cd-53a7-a61f-c790d46cba87",
+        "root",
+    );
     let root = dir.path().join("workspace");
     let manager = Manager::open(&root).unwrap();
     manager.install(source.to_str().unwrap()).unwrap();
-    let record = manager.state().unwrap().packages["acme/root"].clone();
-    let checkout = root.join("worktrees/acme/root");
+    let record = manager.state().unwrap().packages["365ade82-57cd-53a7-a61f-c790d46cba87"].clone();
+    let checkout = root.join("worktrees/365ade82-57cd-53a7-a61f-c790d46cba87");
     fs::write(checkout.join("scratch.txt"), "keep my work").unwrap();
     fs::remove_dir_all(root.join("repos").join(record.clone.unwrap())).unwrap();
-    manager.uninstall("acme/root", &[], false).unwrap();
+    manager
+        .uninstall("365ade82-57cd-53a7-a61f-c790d46cba87", &[], false)
+        .unwrap();
     let state = fs::read(root.join("state.json")).unwrap();
     let error = manager.install(source.to_str().unwrap()).unwrap_err();
     assert_eq!(error.kind(), "workspace");

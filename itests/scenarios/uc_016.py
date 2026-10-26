@@ -1,11 +1,11 @@
 """UC-016: Explicit update and version identity (P0).
 
-Fixture hello_installed: dan/hello 0.1.0 installed directly from Git.
+Fixture hello_installed: 3dce1568-569c-5b53-9321-37185e751947 0.1.0 installed directly from Git.
 """
 
 from gitpmtest import Failure, T, case
 
-ID = "dan/hello"
+ID = "3dce1568-569c-5b53-9321-37185e751947"
 
 
 def blob(t: T, ref: str) -> str:
@@ -78,7 +78,7 @@ def same_version_other_commit_is_accepted(t: T):
 @case(fixture="hello_installed", spec=["errors/failing-operations-leave-the-workspace-unchanged"])
 def id_change_by_ref_is_rejected(t: T):
     """A revision whose manifest has another ID is refused at manifest check (invalid_manifest)."""
-    sha = t.release(ID, "0.1.1", extra={"id": "dan/renamed"}, tag=False)
+    sha = t.release(ID, "0.1.1", extra={"id": "d92f82f0-1472-59b9-b4c5-eb76b0706d47"}, tag=False)
     refused(t, "update", ID, "--ref", sha, kind="invalid_manifest", contains="id changed")
     at(t, "0.1.0", t.rev(ID, f"v0.1.0"), None)
 
@@ -86,7 +86,7 @@ def id_change_by_ref_is_rejected(t: T):
 @case(fixture="hello_installed", spec=["updates/stable-update-never-downgrades", "package-ids/release-tag-names#repository-tag-does-not-contain-this-package"])
 def repository_tag_with_another_id_is_ignored(t: T):
     """Release tag v0.1.1 with another manifest ID is ignored silently by stable update."""
-    t.release(ID, "0.1.1", extra={"id": "dan/renamed"})
+    t.release(ID, "0.1.1", extra={"id": "d92f82f0-1472-59b9-b4c5-eb76b0706d47"})
     t.eq(t.git(ID, "tag", "--points-at", "HEAD"), f"v0.1.1", "tag on the renamed commit")
     before = t.package(ID)["current"]
     result = t.gitpm_ok("update", ID)

@@ -11,15 +11,15 @@ from pathlib import Path
 
 from gitpmtest import T, case
 
-ID = "dan/hello"
+ID = "3dce1568-569c-5b53-9321-37185e751947"
 OUTSIDE = Path("/fx/outside")
 
 
 def sentinels(t: T):
     """Outside files a broken path check could follow, overwrite or delete; also a Git
     repository that looks like an installed package."""
-    t.write(OUTSIDE, {"sentinel.txt": "do not touch\n", "evil/plugin.json": '{"id": "evil", "version": "0.1.0"}\n',
-                      "evil/dist/index.js": "evil\n", "x/plugin.json": '{"id": "evil/x", "version": "0.1.0"}\n',
+    t.write(OUTSIDE, {"sentinel.txt": "do not touch\n", "evil/plugin.json": '{"id": "evil", "name": "fixture", "version": "0.1.0"}\n',
+                      "evil/dist/index.js": "evil\n", "x/plugin.json": '{"id": "evil/x", "name": "fixture", "version": "0.1.0"}\n',
                       "x/dist/index.js": "x\n"})
     for repo in ["evil", "x"]:
         t.git(OUTSIDE / repo, "init", "-q", "-b", "main")
@@ -34,7 +34,7 @@ def symlinked_plugin(t: T, id: str, links: dict[str, str], version: str = "0.1.0
     if not repo.exists():
         (repo / "dist").mkdir(parents=True)
         t.git(repo, "init", "-q", "-b", "main")
-    t.write(repo, {"plugin.json": json.dumps({"id": id, "version": version}) + "\n",
+    t.write(repo, {"plugin.json": json.dumps({"id": id, "name": "fixture", "version": version}) + "\n",
                    "dist/index.js": f"export const v = '{id} {version}';\n", "README.md": "readme\n"})
     for path, target in links.items():
         (repo / path).parent.mkdir(parents=True, exist_ok=True)
@@ -52,7 +52,7 @@ def dist_symlink_refused_at_install(t: T):
     """dist/ with a relative and an absolute symlink: install refused (unsupported), no
     partial installation, the unrelated package and the outside target untouched."""
     outside = sentinels(t)
-    for id, target in [("dan/rel", "index.js"), ("dan/abs", str(OUTSIDE / "sentinel.txt"))]:
+    for id, target in [("7a5be427-d89d-5ebc-b168-9e78169e8b60", "index.js"), ("03c6c374-e73a-5c5b-979c-94fe05acc7e2", str(OUTSIDE / "sentinel.txt"))]:
         symlinked_plugin(t, id, {"dist/link.js": target})
         before = t.snap(t.ws)
         t.gitpm_err("install", t.repo(id), kind="unsupported", contains="symlinks are not supported")
@@ -64,9 +64,9 @@ def dist_symlink_refused_at_install(t: T):
 @case(fixture="catalog", spec=["catalog/register-one-version", "package-manifest/package-folder-contents"])
 def dist_symlink_refused_at_register(t: T):
     outside = sentinels(t)
-    symlinked_plugin(t, "dan/abs", {"dist/link.js": str(OUTSIDE / "sentinel.txt")})
+    symlinked_plugin(t, "03c6c374-e73a-5c5b-979c-94fe05acc7e2", {"dist/link.js": str(OUTSIDE / "sentinel.txt")})
     before = t.snap(t.catalog)
-    t.gitpm_err("register", t.repo("dan/abs"), "--ref", "v0.1.0", kind="unsupported",
+    t.gitpm_err("register", t.repo("03c6c374-e73a-5c5b-979c-94fe05acc7e2"), "--ref", "v0.1.0", kind="unsupported",
              contains="build contains a symlink")
     t.same(before, "catalog")
     t.same(outside, "outside sentinels")
@@ -78,19 +78,19 @@ def repository_symlink_is_kept_not_followed(t: T):
     through install, update and fork; its target is never read into or written by gitpm."""
     outside = sentinels(t)
     target = str(OUTSIDE / "sentinel.txt")
-    symlinked_plugin(t, "dan/linky", {"docs/outside": target})
-    t.gitpm_ok("install", t.repo("dan/linky"))
-    link = t.worktree("dan/linky") / "docs/outside"
+    symlinked_plugin(t, "fc8bc03a-1524-54e6-9111-f57fd8ce96c2", {"docs/outside": target})
+    t.gitpm_ok("install", t.repo("fc8bc03a-1524-54e6-9111-f57fd8ce96c2"))
+    link = t.worktree("fc8bc03a-1524-54e6-9111-f57fd8ce96c2") / "docs/outside"
     t.ok(link.is_symlink() and os.readlink(link) == target, "clone keeps the symlink")
-    t.eq(sorted(p.name for p in t.dist("dan/linky").iterdir()), ["index.js"], "dist has plain files only")
-    symlinked_plugin(t, "dan/linky", {"docs/outside": target}, version="0.2.0")
-    t.gitpm_ok("update", "dan/linky")
+    t.eq(sorted(p.name for p in t.dist("fc8bc03a-1524-54e6-9111-f57fd8ce96c2").iterdir()), sorted(["index.js"]), "dist has plain files only")
+    symlinked_plugin(t, "fc8bc03a-1524-54e6-9111-f57fd8ce96c2", {"docs/outside": target}, version="0.2.0")
+    t.gitpm_ok("update", "fc8bc03a-1524-54e6-9111-f57fd8ce96c2")
     t.ok(link.is_symlink() and os.readlink(link) == target, "symlink kept through update")
-    fork = t.root / "forks/linky"
-    t.gitpm_ok("fork", "dan/linky", "--ns", "mine", "--into", fork)
+    fork = t.root / "2f05ff6d-12d1-5bb7-ab6b-7d1834ced1f1"
+    t.gitpm_ok("fork", "fc8bc03a-1524-54e6-9111-f57fd8ce96c2", "--into", fork)
     t.ok((fork / "docs/outside").is_symlink() and os.readlink(fork / "docs/outside") == target, "fork copies the link")
-    t.gitpm_ok("uninstall", "dan/linky", "--force")
-    t.not_installed("dan/linky")
+    t.gitpm_ok("uninstall", "fc8bc03a-1524-54e6-9111-f57fd8ce96c2", "--force")
+    t.not_installed("fc8bc03a-1524-54e6-9111-f57fd8ce96c2")
     t.same(outside, "outside sentinels")
 
 
@@ -100,8 +100,8 @@ def fifo_in_clone_is_refused_without_hanging(t: T):
     outside = sentinels(t)
     os.mkfifo(t.worktree(ID) / "pipe")
     before = t.snap(t.ws)
-    fork = t.root / "forks/hello"
-    t.gitpm_ok("fork", ID, "--ns", "mine", "--into", fork)
+    fork = t.root / "d2e59a73-093a-59d2-912a-78d95856c963"
+    t.gitpm_ok("fork", ID, "--into", fork)
     t.ok(not (fork / "pipe").exists(), "local FIFO excluded from fork")
     t.release(ID, "0.1.1")
     t.gitpm_err("update", ID, kind="unsupported", contains=f"unsupported file: {t.worktree(ID)}/pipe", timeout=30)
@@ -112,17 +112,17 @@ def fifo_in_clone_is_refused_without_hanging(t: T):
 
 
 BAD_IDS = ["../../outside/evil", "/fx/outside/evil", "dan/../../../outside/evil", "..", ".", "dan/./hello",
-           "dan/hello/", "./dan", "dan//hello", "dan/hello/extra", "", "-rf"]
+           "3dce1568-569c-5b53-9321-37185e751947/", "./dan", "dan//hello", "3dce1568-569c-5b53-9321-37185e751947/extra", "", "-rf"]
 
 
-@case(fixture="hello_installed", spec=["package-ids/package-id-syntax#unsafe-components-are-refused"])
+@case(fixture="hello_installed", spec=["package-ids/package-id-syntax#scoped-and-bare-ids-refused"])
 def traversal_and_absolute_ids_are_refused(t: T):
     outside = sentinels(t)
     before = t.snap(t.ws)
     for bad in BAD_IDS:
         for args in [("uninstall", bad, "--force"), ("forget", bad, "--force"), ("disable", bad, "--force"),
                      ("enable", bad), ("restore", bad), ("update", bad), ("rollback", bad),
-                     ("install-catalog", bad), ("fork", bad, "--ns", "mine", "--into", str(t.root / "forks/x")),
+                     ("install-catalog", bad), ("fork", bad, "--into", str(t.root / "6d1f6684-cf5f-573a-a60a-e28021e4fd7e")),
                      ("replace", ID, "--with", bad)]:
             r = t.gitpm(*args)
             t.ok(r.code != 0, f"gitpm {' '.join(args)} refused")
@@ -133,13 +133,13 @@ def traversal_and_absolute_ids_are_refused(t: T):
     t.ok(not (t.root / "forks").exists(), "no fork destination")
 
 
-@case(fixture="hello_installed", spec=["package-ids/package-id-syntax#unsafe-components-are-refused", "install-uninstall/refused-input-creates-nothing"])
+@case(fixture="hello_installed", spec=["package-ids/package-id-syntax#scoped-and-bare-ids-refused", "install-uninstall/refused-input-creates-nothing"])
 def manifest_with_a_path_id_is_refused(t: T):
     outside = sentinels(t)
     before = t.snap(t.ws)
     for bad in ["../../outside/evil", "/fx/outside/evil", "dan/../evil"]:
         repo = t.root / "authors" / str(abs(hash(bad)))
-        t.write(repo, {"plugin.json": json.dumps({"id": bad, "version": "0.1.0"}) + "\n", "dist/index.js": "x\n"})
+        t.write(repo, {"plugin.json": json.dumps({"id": bad, "name": "fixture", "version": "0.1.0"}) + "\n", "dist/index.js": "x\n"})
         t.git(repo, "init", "-q", "-b", "main")
         t.git(repo, "add", "--all")
         t.git(repo, "commit", "-q", "-m", "bad id")
@@ -151,17 +151,17 @@ def manifest_with_a_path_id_is_refused(t: T):
 
 @case(fixture="hello_installed", spec=["install-uninstall/only-manager-owned-files-are-deleted"])
 def namespace_folder_cannot_be_removed(t: T):
-    t.new_package("dan/other", "0.1.0")
-    t.gitpm_ok("install", t.repo("dan/other"))
+    t.new_package("95d14dc8-6dfc-5022-9fd1-7146ee6aee58", "0.1.0")
+    t.gitpm_ok("install", t.repo("95d14dc8-6dfc-5022-9fd1-7146ee6aee58"))
     before = t.snap(t.ws)
-    t.gitpm_err("uninstall", "dan", "--force", kind="invalid_id", contains="namespace/name")
+    t.gitpm_err("uninstall", "dan", "--force", kind="invalid_id", contains="UUID")
     t.gitpm_err("uninstall", "dan", kind="invalid_id")
     t.gitpm_err("restore", "dan", kind="invalid_id")
     for args in [("forget", "dan", "--force"), ("disable", "dan", "--force"), ("update", "dan")]:
-        t.gitpm_err(*args, kind="invalid_id", contains="namespace/name")
-    t.gitpm_err("uninstall", "Dan/Hello", "--force")
+        t.gitpm_err(*args, kind="invalid_id", contains="UUID")
+    t.gitpm_err("uninstall", "9654efcc-76b6-5c25-ac06-d0ea43a31aff", "--force")
     t.same(before, "workspace")
-    t.eq(sorted(t.state()["packages"]), ["dan/hello", "dan/other"], "both packages kept")
+    t.eq(sorted(t.state()["packages"]), sorted(["3dce1568-569c-5b53-9321-37185e751947", "95d14dc8-6dfc-5022-9fd1-7146ee6aee58"]), "both packages kept")
 
 
 @case(fixture="hello_installed", spec=["transactions-locking/managed-paths-are-never-followed-through-symlinks"])

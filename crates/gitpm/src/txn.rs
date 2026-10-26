@@ -155,7 +155,7 @@ fn remove(path: &Path) -> Result<()> {
     }
     Ok(())
 }
-/// Every directory between the root and a managed path (`dist/<ns>`) must be a real directory: through a symlink a write or delete would
+/// Every directory between the root and a managed path (`dist`) must be a real directory: through a symlink a write or delete would
 /// land outside the workspace.
 pub(crate) fn ensure_managed_parents(root: &Path, relative: &str) -> Result<()> {
     let mut current = root.to_path_buf();
@@ -182,6 +182,39 @@ pub(crate) fn ensure_managed_parents(root: &Path, relative: &str) -> Result<()> 
     }
     Ok(())
 }
+/// A UUID deployment leaf is owned only when it is a real directory or the
+/// recorded dev-link entry. Foreign files and links are never replaced or removed.
+pub(crate) fn ensure_dist_leaf(root: &Path, id: &str) -> Result<()> {
+    let leaf = root.join("dist").join(id);
+    let metadata = match fs::symlink_metadata(&leaf) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if metadata.is_dir() {
+        return Ok(());
+    }
+    if metadata.file_type().is_symlink() {
+        let state = match fs::read(root.join("state.json")) {
+            Ok(bytes) => Some(State::parse(&bytes)?),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        if let Some(record) = state
+            .as_ref()
+            .and_then(|s| s.packages.get(id).or_else(|| s.forgotten.get(id)))
+            && let Some(link) = record.link()
+            && fs::read_link(&leaf)? == Path::new(&link.target)
+        {
+            return Ok(());
+        }
+    }
+    Err(Error::Workspace(format!(
+        "managed path is not a directory: {}",
+        leaf.display()
+    )))
+}
+
 fn present(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok()
 }
@@ -413,10 +446,12 @@ impl Txn {
     }
     /// Remove the package's deployed files on commit (also drops a staged deploy).
     pub(crate) fn delete_dist(&mut self, id: &str) -> Result<()> {
+        ensure_dist_leaf(&self.root, id)?;
         self.delete_repo(&format!("dist/{id}"))
     }
     /// An empty staged `dist/<id>` to fill (replaces the live one on commit).
     pub(crate) fn stage_dist(&mut self, id: &str) -> Result<PathBuf> {
+        ensure_dist_leaf(&self.root, id)?;
         let relative = format!("dist/{id}");
         ensure_managed_parents(&self.root, &relative)?;
         let staged = self.staged(&relative);
@@ -518,7 +553,7 @@ pub(crate) fn recover(root: &Path) -> Result<()> {
     }
 }
 
-/// After a delete, remove the parents it left empty (`dist/<ns>`, `repos`); `dist` itself stays, as `Manager::open` creates them.
+/// After a delete, remove the parents it left empty (`repos`); `dist` itself stays, as `Manager::open` creates them.
 /// Best effort: a folder that is not empty (or cannot be removed) is kept.
 fn remove_empty_parents(root: &Path, relative: &str) {
     let parts: Vec<&str> = relative.split('/').collect();
@@ -621,24 +656,24 @@ fn record(event: DurabilityEvent) {
 fn last_user_removal_does_not_stage_bare() {
     for forget in [false, true] {
         let temp = crate::test_support::TempDir::new("remove-no-bare-copy");
-        let source = crate::scaffold::init(&temp.join("source"), "acme", "root")
-            .unwrap()
-            .repo;
+        let created = crate::scaffold::init(&temp.join("source"), "root").unwrap();
+        let source = created.repo;
+        let id = created.id;
         let root = temp.join("workspace");
         let manager = crate::Manager::open(&root).unwrap();
         manager.install(source.to_str().unwrap()).unwrap();
-        let key = manager.state().unwrap().packages["acme/root"]
+        let key = manager.state().unwrap().packages[&id]
             .clone
             .clone()
             .unwrap();
         if forget {
-            fs::remove_dir_all(root.join("worktrees/acme/root")).unwrap();
+            fs::remove_dir_all(root.join("worktrees").join(&id)).unwrap();
         }
         let _capture = Capture::new();
         if forget {
-            manager.forget("acme/root").unwrap();
+            manager.forget(&id).unwrap();
         } else {
-            manager.uninstall("acme/root", &[], false).unwrap();
+            manager.uninstall(&id, &[], false).unwrap();
         }
         let events = DURABILITY_EVENTS.with(|events| events.borrow_mut().take().unwrap());
         assert!(
@@ -659,7 +694,8 @@ fn absent_worktree_registration_does_not_stage_bare() {
     let relative = "repos/source-0123456789abcdef";
     fs::create_dir_all(temp.join(relative)).unwrap();
     let mut txn = Txn::begin(temp.path()).unwrap();
-    txn.remove_worktree("acme/root", relative).unwrap();
+    txn.remove_worktree("7e6e8392-7be8-55ae-bd03-2b430b1c5d59", relative)
+        .unwrap();
     assert!(!txn.staged(relative).exists());
     assert!(!txn.journal.paths.contains_key(relative));
 }

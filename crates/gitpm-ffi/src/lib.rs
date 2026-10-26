@@ -714,7 +714,7 @@ pub struct Unchanged {
     /// Why it stays although it could move (pinned, diverged branch history, a broken
     /// dependency).
     pub reason: Option<UnchangedReason>,
-    /// `reason` as the CLI prints it (`dependency acme/lib is not installed`).
+    /// `reason` as the CLI prints it (`dependency cfbc4d17-8707-5571-853d-c9136a7f9f21 is not installed`).
     pub message: Option<String>,
     /// A moved or deleted installed release tag (the installed commit is kept).
     pub warnings: Vec<String>,
@@ -843,7 +843,7 @@ pub struct DistSync {
     /// Inactive packages whose `dist/<id>` is removed.
     pub removed: Vec<String>,
     /// Workspace-relative paths under `dist/` of no known package, or not real folders
-    /// where a namespace folder belongs (left alone).
+    /// where a UUID folder belongs (left alone).
     pub unmanaged: Vec<String>,
     /// Active packages left without `dist/`, with the reason (clone missing, …).
     pub skipped: Vec<SkippedDist>,
@@ -1609,32 +1609,31 @@ impl PackageManager {
     ) -> Result<ReplacementResolution> {
         Ok(self.inner.replace_resolve(&original, &replacement)?.into())
     }
-    /// Fork the entire source repository of an installed package into a new folder
-    /// `destination` outside the workspace. Every package receives a new namespace;
-    /// all repository files and the package layout are preserved.
-    pub fn fork(&self, id: String, destination: String, namespace: String) -> Result<ForkResult> {
-        let path =
-            self.inner
-                .fork_in_namespace(&id, std::path::Path::new(&destination), &namespace)?;
-        let name = id.rsplit('/').next().unwrap_or(&id);
+    /// Copy the installed repository, assigning fresh UUIDs and preserving aliases.
+    pub fn fork(&self, id: String, destination: String) -> Result<ForkResult> {
+        let result = self
+            .inner
+            .fork_packages(&[&id], std::path::Path::new(&destination))?;
+        let package = result
+            .packages
+            .iter()
+            .find(|p| p.original == id)
+            .ok_or_else(|| {
+                PmError::from(pm::Error::InvalidArgument(
+                    "fork result omitted requested package".into(),
+                ))
+            })?;
         Ok(ForkResult {
-            id: pm::identity::qualified(&namespace, name)?,
-            path: path.to_string_lossy().into_owned(),
+            id: package.id.clone(),
+            path: result.path.to_string_lossy().into_owned(),
         })
     }
-    /// Fork the entire repository identified by installed IDs into a new folder
-    /// `destination`. Rename all packages into `namespace`, preserve repository files
-    /// and layout, and rewrite dependencies between packages in the repository.
-    pub fn fork_packages(
-        &self,
-        ids: Vec<String>,
-        destination: String,
-        namespace: String,
-    ) -> Result<PackageFork> {
+    /// Copy all repository packages and rewrite their internal dependency edges.
+    pub fn fork_packages(&self, ids: Vec<String>, destination: String) -> Result<PackageFork> {
         let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
         Ok(self
             .inner
-            .fork_packages(&ids, std::path::Path::new(&destination), &namespace)?
+            .fork_packages(&ids, std::path::Path::new(&destination))?
             .into())
     }
 }
@@ -1649,7 +1648,6 @@ pub fn fork_source(
     source: String,
     ids: Vec<String>,
     reference: Option<String>,
-    namespace: String,
     destination: String,
     custom_ssh: bool,
 ) -> Result<PackageFork> {
@@ -1658,7 +1656,6 @@ pub fn fork_source(
         &source,
         &ids,
         reference.as_deref(),
-        &namespace,
         std::path::Path::new(&destination),
         &pm::Options {
             custom_ssh,
@@ -1752,11 +1749,19 @@ mod tests {
     use std::fs;
     #[test]
     fn errors_keep_kind_and_message() {
-        let error: PmError = pm::Error::NotInstalled { id: "a/b".into() }.into();
-        assert!(matches!(&error, PmError::NotInstalled { id, .. } if id == "a/b"));
-        assert_eq!(error.to_string(), "package a/b is not installed");
+        let error: PmError = pm::Error::NotInstalled {
+            id: "75494f24-1c7e-5480-9e39-738ff3d038c4".into(),
+        }
+        .into();
+        assert!(
+            matches!(&error, PmError::NotInstalled { id, .. } if id == "75494f24-1c7e-5480-9e39-738ff3d038c4")
+        );
+        assert_eq!(
+            error.to_string(),
+            "package 75494f24-1c7e-5480-9e39-738ff3d038c4 is not installed"
+        );
         let error: PmError = pm::Error::LocalChanges {
-            id: "a/b".into(),
+            id: "75494f24-1c7e-5480-9e39-738ff3d038c4".into(),
             message: "dirty".into(),
             items: vec![pm::LostWork::Stash {
                 entry: "stash@{0}".into(),
@@ -1771,12 +1776,11 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let source = dir.join("source");
         let dest = dir.join("fork");
-        pm::scaffold::init(&source, "acme", "theme").unwrap();
+        let original = pm::scaffold::init(&source, "theme").unwrap().id;
         let result = fork_source(
             source.to_string_lossy().into(),
-            vec!["acme/theme".into()],
+            vec![original.clone()],
             None,
-            "me".into(),
             dest.to_string_lossy().into(),
             false,
         )
@@ -1785,16 +1789,18 @@ mod tests {
         assert_eq!(result.path, dest.canonicalize().unwrap().to_string_lossy());
         assert_eq!(result.commit.len(), 40);
         assert_eq!(result.packages.len(), 1);
-        assert_eq!(result.packages[0].id, "me/theme");
-        assert_eq!(result.packages[0].original, "acme/theme");
+        pm::valid_id(&result.packages[0].id).unwrap();
+        assert_ne!(result.packages[0].id, original);
+        assert_eq!(result.packages[0].original, original);
+        let manifest = pm::packages::find_at(&dest, "HEAD", None).unwrap().manifest;
+        assert_eq!(manifest.name, "theme");
         assert_eq!(result.packages[0].path, "");
         assert!(result.rewrites.is_empty());
         assert!(matches!(
             fork_source(
                 source.to_string_lossy().into(),
-                vec!["acme/theme".into()],
+                vec![original.clone()],
                 None,
-                "me".into(),
                 dest.to_string_lossy().into(),
                 false,
             ),
@@ -1812,7 +1818,7 @@ mod tests {
             PackageManager::open(root.to_string_lossy().into(), ManagerOptions::default()).unwrap();
         assert!(manager.list().unwrap().is_empty());
         assert!(matches!(
-            manager.uninstall_plan("a/b".into()),
+            manager.uninstall_plan("75494f24-1c7e-5480-9e39-738ff3d038c4".into()),
             Err(PmError::RepositoryNotFound { .. })
         ));
         let report = check(root.to_string_lossy().into(), None, false).unwrap();
@@ -1824,15 +1830,15 @@ mod tests {
         assert!(manager.update_all_plan().unwrap().updates.is_empty());
         assert!(manager.update_all().unwrap().installs.is_empty());
         assert!(matches!(
-            manager.enable("a/b".into(), true),
+            manager.enable("75494f24-1c7e-5480-9e39-738ff3d038c4".into(), true),
             Err(PmError::NotInstalled { .. })
         ));
         assert!(matches!(
-            manager.download_from_catalog("a/b".into(), None),
+            manager.download_from_catalog("75494f24-1c7e-5480-9e39-738ff3d038c4".into(), None),
             Err(PmError::InvalidArgument { .. })
         ));
         assert!(matches!(
-            manager.install_from_catalog("a/b".into(), None, true),
+            manager.install_from_catalog("75494f24-1c7e-5480-9e39-738ff3d038c4".into(), None, true),
             Err(PmError::InvalidArgument { .. })
         ));
         assert!(manager.list().unwrap().is_empty());
@@ -1844,13 +1850,15 @@ mod tests {
     fn library_errors() -> Vec<pm::Error> {
         let m = || "msg".to_owned();
         vec![
-            pm::Error::NotInstalled { id: "a/b".into() },
+            pm::Error::NotInstalled {
+                id: "75494f24-1c7e-5480-9e39-738ff3d038c4".into(),
+            },
             pm::Error::AlreadyInstalled {
-                id: "a/b".into(),
+                id: "75494f24-1c7e-5480-9e39-738ff3d038c4".into(),
                 message: m(),
             },
             pm::Error::LocalChanges {
-                id: "a/b".into(),
+                id: "75494f24-1c7e-5480-9e39-738ff3d038c4".into(),
                 message: m(),
                 items: vec![],
             },
@@ -1867,11 +1875,13 @@ mod tests {
                 message: m(),
             },
             pm::Error::NoPreviousVersion {
-                id: "a/b".into(),
+                id: "75494f24-1c7e-5480-9e39-738ff3d038c4".into(),
                 commit: Some("c0ffee".into()),
             },
             pm::Error::NoReleases(m()),
-            pm::Error::RepositoryNotFound { id: "a/b".into() },
+            pm::Error::RepositoryNotFound {
+                id: "75494f24-1c7e-5480-9e39-738ff3d038c4".into(),
+            },
             pm::Error::Workspace(m()),
             pm::Error::Catalog(m()),
             pm::Error::Git(m()),
@@ -1880,21 +1890,21 @@ mod tests {
             pm::Error::Unsupported(m()),
             pm::Error::DependencyConflict(m()),
             pm::Error::HasDependents {
-                id: "x/one".into(),
+                id: "2e39f1f3-22c4-5d8c-94fd-872d764ca554".into(),
                 message: m(),
-                dependents: vec!["app/a".into()],
+                dependents: vec!["9692fc07-23c7-5f20-8779-f09374f1a571".into()],
                 lost_work: vec![],
             },
             pm::Error::IncompatibleReplacement {
-                id: "x/one".into(),
+                id: "2e39f1f3-22c4-5d8c-94fd-872d764ca554".into(),
                 message: m(),
-                consumers: vec!["app/b".into()],
+                consumers: vec!["f5984d44-92bd-51ac-8e8f-d911dd824ef3".into()],
             },
             pm::Error::NotDeployed {
                 message: m(),
                 sync: Box::new(pm::DistSync {
                     skipped: vec![pm::SkippedDist {
-                        id: "x/one".into(),
+                        id: "2e39f1f3-22c4-5d8c-94fd-872d764ca554".into(),
                         reason: "clone missing".into(),
                         clone_missing: true,
                         link: None,
@@ -1995,28 +2005,28 @@ mod tests {
         };
         for error in [
             pm::Error::InvalidManifest {
-                id: Some("x/one".into()),
-                message: "x/one: rollback manifest mismatch".into(),
+                id: Some("2e39f1f3-22c4-5d8c-94fd-872d764ca554".into()),
+                message: "2e39f1f3-22c4-5d8c-94fd-872d764ca554: rollback manifest mismatch".into(),
             },
             pm::Error::VersionConflict {
-                id: Some("x/one".into()),
-                message: "x/one: history of main diverged; automatic update refused".into(),
+                id: Some("2e39f1f3-22c4-5d8c-94fd-872d764ca554".into()),
+                message: "2e39f1f3-22c4-5d8c-94fd-872d764ca554: history of main diverged; automatic update refused".into(),
             },
-            pm::Error::NotInstalled { id: "x/one".into() },
+            pm::Error::NotInstalled { id: "2e39f1f3-22c4-5d8c-94fd-872d764ca554".into() },
             pm::Error::AlreadyInstalled {
-                id: "x/one".into(),
+                id: "2e39f1f3-22c4-5d8c-94fd-872d764ca554".into(),
                 message: "m".into(),
             },
             pm::Error::NoPreviousVersion {
-                id: "x/one".into(),
+                id: "2e39f1f3-22c4-5d8c-94fd-872d764ca554".into(),
                 commit: Some("c0ffee".into()),
             },
-            pm::Error::RepositoryNotFound { id: "x/one".into() },
+            pm::Error::RepositoryNotFound { id: "2e39f1f3-22c4-5d8c-94fd-872d764ca554".into() },
         ] {
             let message = error.to_string();
             let mapped = PmError::from(error);
             assert_eq!(mapped.to_string(), message);
-            assert_eq!(id_of(mapped), "x/one");
+            assert_eq!(id_of(mapped), "2e39f1f3-22c4-5d8c-94fd-872d764ca554");
         }
         for error in [
             pm::Error::InvalidManifest {
@@ -2039,7 +2049,7 @@ mod tests {
         }
         let PmError::NoPreviousVersion { commit, .. } =
             PmError::from(pm::Error::NoPreviousVersion {
-                id: "x/one".into(),
+                id: "2e39f1f3-22c4-5d8c-94fd-872d764ca554".into(),
                 commit: Some("c0ffee".into()),
             })
         else {
@@ -2048,7 +2058,7 @@ mod tests {
         assert_eq!(commit.as_deref(), Some("c0ffee"));
         let items = all_lost_work();
         let error = PmError::from(pm::Error::LocalChanges {
-            id: "x/one".into(),
+            id: "2e39f1f3-22c4-5d8c-94fd-872d764ca554".into(),
             message: "local commits detected".into(),
             items: items.clone(),
         });
@@ -2062,15 +2072,18 @@ mod tests {
         };
         assert_eq!(
             (id.as_str(), message.as_str()),
-            ("x/one", "local commits detected")
+            (
+                "2e39f1f3-22c4-5d8c-94fd-872d764ca554",
+                "local commits detected"
+            )
         );
         let back: Vec<pm::LostWork> = mapped.into_iter().map(Into::into).collect();
         assert_eq!(back, items, "order and content are kept");
         // The dependents refusal of uninstall carries the lost work too.
         let error = PmError::from(pm::Error::HasDependents {
-            id: "x/one".into(),
+            id: "2e39f1f3-22c4-5d8c-94fd-872d764ca554".into(),
             message: "m".into(),
-            dependents: vec!["app/a".into()],
+            dependents: vec!["9692fc07-23c7-5f20-8779-f09374f1a571".into()],
             lost_work: items.clone(),
         });
         let PmError::HasDependents {
@@ -2084,17 +2097,20 @@ mod tests {
         };
         assert_eq!(
             (id.as_str(), dependents.as_slice()),
-            ("x/one", ["app/a".to_owned()].as_slice())
+            (
+                "2e39f1f3-22c4-5d8c-94fd-872d764ca554",
+                ["9692fc07-23c7-5f20-8779-f09374f1a571".to_owned()].as_slice()
+            )
         );
         let back: Vec<pm::LostWork> = lost_work.into_iter().map(Into::into).collect();
         assert_eq!(back, items);
         // uninstallRefusal throws exactly the library's refusal of the plan.
         let plan = pm::UninstallPlan {
-            id: "x/one".into(),
+            id: "2e39f1f3-22c4-5d8c-94fd-872d764ca554".into(),
             registered: true,
             deletes: vec![],
             lost_work: items.clone(),
-            dependents: vec!["app/a".into()],
+            dependents: vec!["9692fc07-23c7-5f20-8779-f09374f1a571".into()],
             dependency_conflict: None,
         };
         let expected = plan.refusal().unwrap().to_string();
@@ -2164,10 +2180,10 @@ mod tests {
     }
     fn fork_of() -> pm::ForkOf {
         pm::ForkOf {
-            id: "vendor/x".into(),
+            id: "d5f44edd-9f12-5cf9-a2ff-325a191144d1".into(),
             version: "0.9.0".into(),
             commit: "f".repeat(40),
-            source: Some("https://git.example/vendor/x.git".into()),
+            source: Some("https://git.example/d5f44edd-9f12-5cf9-a2ff-325a191144d1.git".into()),
         }
     }
 
@@ -2182,7 +2198,7 @@ mod tests {
         assert!(options.custom_ssh);
         assert!(!pm::Options::from(ManagerOptions::default()).custom_ssh);
         let package = InstalledPackage::from(pm::InstalledPackage {
-            id: "me/x".into(),
+            id: "e7bdeedc-dd0d-5620-82cf-760780dfe975".into(),
             source: "src".into(),
             current: Some(revision("1.0.0")),
             version: None,
@@ -2209,7 +2225,7 @@ mod tests {
                 package.source.as_str(),
                 package.enabled
             ),
-            ("me/x", "src", false)
+            ("e7bdeedc-dd0d-5620-82cf-760780dfe975", "src", false)
         );
         assert_eq!(
             package.mode,
@@ -2236,17 +2252,21 @@ mod tests {
         let f = package.fork_of.unwrap();
         assert_eq!(
             (f.id.as_str(), f.version.as_str(), f.commit),
-            ("vendor/x", "0.9.0", "f".repeat(40))
+            (
+                "d5f44edd-9f12-5cf9-a2ff-325a191144d1",
+                "0.9.0",
+                "f".repeat(40)
+            )
         );
         assert_eq!(
             f.source.as_deref(),
-            Some("https://git.example/vendor/x.git")
+            Some("https://git.example/d5f44edd-9f12-5cf9-a2ff-325a191144d1.git")
         );
 
         let check = CheckReport::from(pm::check::CheckReport {
             catalog_verified: true,
             rows: vec![pm::check::CheckRow {
-                id: "me/x".into(),
+                id: "e7bdeedc-dd0d-5620-82cf-760780dfe975".into(),
                 installed: "1.0.0".into(),
                 latest: None,
                 enabled: true,
@@ -2259,7 +2279,7 @@ mod tests {
                 major: true,
                 prerelease: Some("2.1.0-rc.1".into()),
                 upstream: Some(pm::check::Upstream {
-                    id: "vendor/x".into(),
+                    id: "d5f44edd-9f12-5cf9-a2ff-325a191144d1".into(),
                     base: "0.9.0".into(),
                     latest: Some("1.0.0".into()),
                     newer: true,
@@ -2267,10 +2287,14 @@ mod tests {
                     problem: Some("original gone".into()),
                 }),
             }],
-            replacements: [("vendor/x".to_owned(), "me/x".to_owned())].into(),
+            replacements: [(
+                "d5f44edd-9f12-5cf9-a2ff-325a191144d1".to_owned(),
+                "e7bdeedc-dd0d-5620-82cf-760780dfe975".to_owned(),
+            )]
+            .into(),
             unsatisfied: vec![pm::check::UnsatisfiedDependency {
-                package: "me/x".into(),
-                dependency: "lib/core".into(),
+                package: "e7bdeedc-dd0d-5620-82cf-760780dfe975".into(),
+                dependency: "757fd5ca-2b6a-5b2f-8a5d-60980b028665".into(),
                 requirement: "^2".into(),
                 problem: Some("not installed".into()),
             }],
@@ -2288,7 +2312,13 @@ mod tests {
                 row.enabled,
                 row.update_available
             ),
-            ("me/x", "1.0.0", None, true, false)
+            (
+                "e7bdeedc-dd0d-5620-82cf-760780dfe975",
+                "1.0.0",
+                None,
+                true,
+                false
+            )
         );
         assert!(matches!(row.status, CheckStatus::OriginUnreachable));
         assert_eq!(row.status_message, "origin unreachable");
@@ -2312,14 +2342,17 @@ mod tests {
                 upstream.source
             ),
             (
-                "vendor/x",
+                "d5f44edd-9f12-5cf9-a2ff-325a191144d1",
                 "0.9.0",
                 Some("1.0.0"),
                 true,
                 Some(CheckSource::Origin)
             )
         );
-        assert_eq!(check.replacements["vendor/x"], "me/x");
+        assert_eq!(
+            check.replacements["d5f44edd-9f12-5cf9-a2ff-325a191144d1"],
+            "e7bdeedc-dd0d-5620-82cf-760780dfe975"
+        );
         let dep = &check.unsatisfied[0];
         assert_eq!(
             (
@@ -2328,7 +2361,12 @@ mod tests {
                 dep.requirement.as_str(),
                 dep.problem.as_deref()
             ),
-            ("me/x", "lib/core", "^2", Some("not installed"))
+            (
+                "e7bdeedc-dd0d-5620-82cf-760780dfe975",
+                "757fd5ca-2b6a-5b2f-8a5d-60980b028665",
+                "^2",
+                Some("not installed")
+            )
         );
 
         let skipped = || {
@@ -2339,12 +2377,12 @@ mod tests {
             }]
         };
         let report = || pm::DistSync {
-            deployed: vec!["me/x".into()],
-            removed: vec!["vendor/x".into()],
+            deployed: vec!["e7bdeedc-dd0d-5620-82cf-760780dfe975".into()],
+            removed: vec!["d5f44edd-9f12-5cf9-a2ff-325a191144d1".into()],
             unmanaged: vec!["dist/custom".into()],
             warnings: vec!["submodule warning".into()],
             skipped: vec![pm::SkippedDist {
-                id: "me/y".into(),
+                id: "70742621-8b0b-57a6-829c-00b17c94cdca".into(),
                 reason: "clone missing".into(),
                 clone_missing: true,
                 link: None,
@@ -2354,32 +2392,32 @@ mod tests {
             assert_eq!(
                 (dist.deployed.as_slice(), dist.removed.as_slice()),
                 (
-                    ["me/x".to_owned()].as_slice(),
-                    ["vendor/x".to_owned()].as_slice()
+                    ["e7bdeedc-dd0d-5620-82cf-760780dfe975".to_owned()].as_slice(),
+                    ["d5f44edd-9f12-5cf9-a2ff-325a191144d1".to_owned()].as_slice()
                 )
             );
             assert_eq!(dist.unmanaged, ["dist/custom"]);
             assert_eq!(dist.warnings, ["submodule warning"]);
             assert_eq!(
                 (dist.skipped[0].id.as_str(), dist.skipped[0].reason.as_str()),
-                ("me/y", "clone missing")
+                ("70742621-8b0b-57a6-829c-00b17c94cdca", "clone missing")
             );
             assert!(dist.skipped[0].clone_missing);
         };
         let result = InstallResult::from(pm::InstallResult {
-            id: "me/x".into(),
+            id: "e7bdeedc-dd0d-5620-82cf-760780dfe975".into(),
             source: "src".into(),
             current: revision("1.0.0"),
             fork_of: None,
             skipped: skipped(),
-            warnings: vec!["me/x 1.0.0: plugin.json title must be a string; ignored".into()],
+            warnings: vec!["e7bdeedc-dd0d-5620-82cf-760780dfe975 1.0.0: plugin.json title must be a string; ignored".into()],
             already_installed: true,
             available: Some(revision("1.1.0")),
             mode: pm::Mode::Branch("main".into()),
             requested_mode: Some(pm::Mode::Release),
             enabled: false,
             dependencies: vec![pm::InstalledDependency {
-                id: "me/lib".into(),
+                id: "98f07301-e78e-5c5c-a989-47467cdfb879".into(),
                 source: "lib-src".into(),
                 current: revision("2.0.0"),
                 enabled: false,
@@ -2400,7 +2438,7 @@ mod tests {
                 dependency.warnings.as_slice()
             ),
             (
-                "me/lib",
+                "98f07301-e78e-5c5c-a989-47467cdfb879",
                 "lib-src",
                 "2.0.0",
                 "2.0.0-commit",
@@ -2430,12 +2468,14 @@ mod tests {
         );
         assert_eq!(
             result.warnings,
-            ["me/x 1.0.0: plugin.json title must be a string; ignored"]
+            [
+                "e7bdeedc-dd0d-5620-82cf-760780dfe975 1.0.0: plugin.json title must be a string; ignored"
+            ]
         );
         check_report(&result.dist);
 
         let change = RevisionChange::from(pm::RevisionChange {
-            id: "me/x".into(),
+            id: "e7bdeedc-dd0d-5620-82cf-760780dfe975".into(),
             from: revision("1.0.0"),
             to: revision("2.0.0"),
             changed: true,
@@ -2491,16 +2531,16 @@ mod tests {
             updates: vec![],
             installs: vec![],
             kept_back: vec![pm::HeldBack {
-                id: "me/fork".into(),
+                id: "8521deaf-12b3-527a-87ff-70b6d8930dc4".into(),
                 selected: "2.0.0".into(),
                 latest: "3.0.0".into(),
                 reason: pm::HeldBackReason::NoLongerReplaces {
-                    original: "vendor/base".into(),
+                    original: "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9".into(),
                 },
             }],
             unchanged: vec![
                 pm::Unchanged {
-                    id: "app/b".into(),
+                    id: "f5984d44-92bd-51ac-8e8f-d911dd824ef3".into(),
                     version: "2.0.0".into(),
                     reason: Some(pm::UnchangedReason::Diverged {
                         branch: "main".into(),
@@ -2508,20 +2548,20 @@ mod tests {
                     warnings: vec![],
                 },
                 pm::Unchanged {
-                    id: "app/c".into(),
+                    id: "1a620c0a-aa3c-533c-9960-3d49016fa231".into(),
                     version: "1.0.0".into(),
                     reason: Some(pm::UnchangedReason::BrokenDependency {
-                        dependency: "acme/lib".into(),
+                        dependency: "cfbc4d17-8707-5571-853d-c9136a7f9f21".into(),
                         problem: "not installed".into(),
                     }),
                     warnings: vec![],
                 },
                 pm::Unchanged {
-                    id: "app/d".into(),
+                    id: "6cea710f-56ee-5b05-8ef5-5dd784a92ca5".into(),
                     version: "1.0.0".into(),
                     reason: None,
                     warnings: vec![
-                        "installed release app/d@1.0.0 no longer exists on the origin".into(),
+                        "installed release 6cea710f-56ee-5b05-8ef5-5dd784a92ca5@1.0.0 no longer exists on the origin".into(),
                     ],
                 },
             ],
@@ -2533,7 +2573,7 @@ mod tests {
                 plan.unchanged[0].id.as_str(),
                 plan.unchanged[0].version.as_str()
             ),
-            ("app/b", "2.0.0")
+            ("f5984d44-92bd-51ac-8e8f-d911dd824ef3", "2.0.0")
         );
         assert_eq!(
             plan.unchanged[0].reason,
@@ -2548,42 +2588,47 @@ mod tests {
                 held.selected.as_str(),
                 held.latest.as_str()
             ),
-            ("me/fork", "2.0.0", "3.0.0")
+            ("8521deaf-12b3-527a-87ff-70b6d8930dc4", "2.0.0", "3.0.0")
         );
         assert_eq!(
             held.reason,
             HeldBackReason::NoLongerReplaces {
-                original: "vendor/base".into()
+                original: "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9".into()
             }
         );
-        assert_eq!(held.message, "no longer replaces vendor/base");
+        assert_eq!(
+            held.message,
+            "no longer replaces c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9"
+        );
         assert_eq!(
             plan.unchanged[1].reason,
             Some(UnchangedReason::BrokenDependency {
-                dependency: "acme/lib".into(),
+                dependency: "cfbc4d17-8707-5571-853d-c9136a7f9f21".into(),
                 problem: "not installed".into()
             })
         );
         assert_eq!(
             plan.unchanged[1].message.as_deref(),
-            Some("dependency acme/lib is not installed")
+            Some("dependency cfbc4d17-8707-5571-853d-c9136a7f9f21 is not installed")
         );
         assert_eq!(
             plan.unchanged[2].warnings,
-            ["installed release app/d@1.0.0 no longer exists on the origin"]
+            [
+                "installed release 6cea710f-56ee-5b05-8ef5-5dd784a92ca5@1.0.0 no longer exists on the origin"
+            ]
         );
         assert_eq!(plan.unchanged[2].reason, None);
         check_report(&plan.dist);
         assert_eq!(plan.skipped[0].name, "v0.5.0");
 
         let replacement = pm::ReplacementPlan {
-            original: "vendor/x".into(),
-            provider: "me/x".into(),
+            original: "d5f44edd-9f12-5cf9-a2ff-325a191144d1".into(),
+            provider: "e7bdeedc-dd0d-5620-82cf-760780dfe975".into(),
             version: "1.4.0".into(),
             current: None,
-            consumers: vec!["app/a".into()],
+            consumers: vec!["9692fc07-23c7-5f20-8779-f09374f1a571".into()],
             incompatible: vec![pm::IncompatibleConsumer {
-                id: "app/a".into(),
+                id: "9692fc07-23c7-5f20-8779-f09374f1a571".into(),
                 requirement: "^2".into(),
             }],
             installed_version: Some("0.3.0".into()),
@@ -2592,9 +2637,9 @@ mod tests {
         let replacement_report = pm::ReplacementCheck {
             plan: replacement.clone(),
             issues: vec![pm::ReplacementIssue {
-                consumer: "app/x".into(),
+                consumer: "c3095c12-41cf-5c0a-be7a-b673739e705d".into(),
                 dependency: pm::deps::DependencyStatus {
-                    id: "lib/new".into(),
+                    id: "61cfe0c5-cc76-56a1-8a43-f9ca4faad534".into(),
                     requirement: "^1".into(),
                     provider: None,
                     version: None,
@@ -2602,13 +2647,25 @@ mod tests {
                     problem: Some("not installed".into()),
                 },
             }],
-            missing: std::collections::BTreeMap::from([("lib/new".into(), "1.0.0".into())]),
+            missing: std::collections::BTreeMap::from([(
+                "61cfe0c5-cc76-56a1-8a43-f9ca4faad534".into(),
+                "1.0.0".into(),
+            )]),
             resolution_error: None,
         };
         let ffi_report = ReplacementCheck::from(replacement_report.clone());
-        assert_eq!(ffi_report.issues[0].consumer, "app/x");
-        assert_eq!(ffi_report.issues[0].dependency.id, "lib/new");
-        assert_eq!(ffi_report.missing["lib/new"], "1.0.0");
+        assert_eq!(
+            ffi_report.issues[0].consumer,
+            "c3095c12-41cf-5c0a-be7a-b673739e705d"
+        );
+        assert_eq!(
+            ffi_report.issues[0].dependency.id,
+            "61cfe0c5-cc76-56a1-8a43-f9ca4faad534"
+        );
+        assert_eq!(
+            ffi_report.missing["61cfe0c5-cc76-56a1-8a43-f9ca4faad534"],
+            "1.0.0"
+        );
         assert!(ffi_report.resolution_error.is_none());
         let resolution = ReplacementResolution::from(pm::ReplacementResolution {
             check: replacement_report,
@@ -2622,21 +2679,24 @@ mod tests {
         assert_eq!(ffi.incompatible[0].requirement, "^2");
         check_report(&ffi.dist);
         let error = PmError::from(pm::Error::NotDeployed {
-            message: "1 package(s) not deployed: me/y".into(),
+            message: "1 package(s) not deployed: 70742621-8b0b-57a6-829c-00b17c94cdca".into(),
             sync: Box::new(report()),
         });
         let PmError::NotDeployed { message, sync } = error else {
             panic!()
         };
-        assert_eq!(message, "1 package(s) not deployed: me/y");
+        assert_eq!(
+            message,
+            "1 package(s) not deployed: 70742621-8b0b-57a6-829c-00b17c94cdca"
+        );
         check_report(&sync);
         let plan = UninstallPlan::from(pm::UninstallPlan {
-            id: "me/x".into(),
+            id: "e7bdeedc-dd0d-5620-82cf-760780dfe975".into(),
             registered: false,
-            deletes: vec!["/w/repos/x-0123456789abcdef".into(), "/w/dist/me/x".into()],
+            deletes: vec!["/w/repos/x-0123456789abcdef".into(), "/w/dist/e7bdeedc-dd0d-5620-82cf-760780dfe975".into()],
             lost_work: all_lost_work(),
             dependents: vec![],
-            dependency_conflict: Some("cannot uninstall me/x, which would reactivate vendor/x: lib is disabled; enable it".into()),
+            dependency_conflict: Some("cannot uninstall e7bdeedc-dd0d-5620-82cf-760780dfe975, which would reactivate d5f44edd-9f12-5cf9-a2ff-325a191144d1: lib is disabled; enable it".into()),
         });
         assert!(!plan.registered);
         assert!(
@@ -2645,7 +2705,10 @@ mod tests {
         );
         assert_eq!(
             plan.deletes,
-            ["/w/repos/x-0123456789abcdef", "/w/dist/me/x"]
+            [
+                "/w/repos/x-0123456789abcdef",
+                "/w/dist/e7bdeedc-dd0d-5620-82cf-760780dfe975"
+            ]
         );
         assert_eq!(plan.lost_work.len(), 8);
         assert!(matches!(
@@ -2809,7 +2872,7 @@ mod tests {
         ];
         for (status, name) in statuses {
             let row = CheckRow::from(pm::check::CheckRow {
-                id: "me/x".into(),
+                id: "e7bdeedc-dd0d-5620-82cf-760780dfe975".into(),
                 installed: "1.0.0".into(),
                 latest: Some("1.1.0".into()),
                 enabled: false,
@@ -2851,13 +2914,13 @@ mod tests {
             items: vec![
                 I::Directory {
                     depth: 1,
-                    name: "namespaces".into(),
+                    name: "packages".into(),
                 },
                 I::Empty { depth: 2 },
                 I::Package {
                     depth: 3,
                     package: P {
-                        id: "dan/x".into(),
+                        id: "6d082077-2279-5cc6-b47f-b78cd35cec24".into(),
                         source: "src".into(),
                         versions: vec!["1.9.0".into(), "1.10.0".into()],
                         latest: Some("1.10.0".into()),
@@ -2880,7 +2943,7 @@ mod tests {
             ("https://pkg.example", true, true, true)
         );
         assert!(
-            matches!(&overview.items[0], OverviewItem::Directory { depth: 1, name } if name == "namespaces")
+            matches!(&overview.items[0], OverviewItem::Directory { depth: 1, name } if name == "packages")
         );
         assert!(matches!(
             overview.items[1],
@@ -2899,7 +2962,7 @@ mod tests {
         assert!(package.tags.is_empty());
 
         let mut files = std::collections::BTreeMap::new();
-        for name in ["a.js", "b/c.js"] {
+        for name in ["a.js", "2aa28126-a0c7-5808-a658-5d166ea36dde.js"] {
             files.insert(
                 name.to_owned(),
                 FileDigest {
@@ -2914,7 +2977,7 @@ mod tests {
         extra.insert("tags".into(), vec!["a"].into());
         let release = CatalogRelease::from(Release {
             manifest: pm::Manifest {
-                id: "me/x".into(),
+                id: "e7bdeedc-dd0d-5620-82cf-760780dfe975".into(),
                 version: "1.0.0".into(),
                 fork_of: Some(fork_of()),
                 extra,
@@ -2936,11 +2999,14 @@ mod tests {
                 release.version.as_str(),
                 release.file_count
             ),
-            ("me/x", "1.0.0", 2)
+            ("e7bdeedc-dd0d-5620-82cf-760780dfe975", "1.0.0", 2)
         );
         assert_eq!(release.reference, "v1.0.0");
         assert_eq!(release.path.as_deref(), Some("packages/x"));
-        assert_eq!(release.fork_of.unwrap().id, "vendor/x");
+        assert_eq!(
+            release.fork_of.unwrap().id,
+            "d5f44edd-9f12-5cf9-a2ff-325a191144d1"
+        );
         assert_eq!(
             release.build_url.as_deref(),
             Some("https://pkg.example/x.tar.zst")
@@ -2992,14 +3058,18 @@ mod tests {
         assert!(matches!(
             catalog_release(
                 "/nonexistent-pm-catalog".into(),
-                "acme/x".into(),
+                "8384861b-4de7-53fb-a770-1fc6c8441244".into(),
                 Some("1.0".into())
             ),
             Err(PmError::InvalidVersion { .. })
         ));
         // A local catalog location that does not exist is refused, not "no catalog".
         assert!(matches!(
-            catalog_release("/nonexistent-pm-catalog".into(), "acme/x".into(), None),
+            catalog_release(
+                "/nonexistent-pm-catalog".into(),
+                "8384861b-4de7-53fb-a770-1fc6c8441244".into(),
+                None
+            ),
             Err(PmError::InvalidArgument { .. })
         ));
         assert!(matches!(
@@ -3042,9 +3112,9 @@ mod tests {
     fn download_from_catalog_then_enable() {
         let dir = std::env::temp_dir().join(format!("pm-ffi-download-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let repo = pm::scaffold::init(&dir.join("hello"), "dan", "hello")
-            .unwrap()
-            .repo;
+        let created = pm::scaffold::init(&dir.join("hello"), "hello").unwrap();
+        let id = created.id;
+        let repo = created.repo;
         let catalog = dir.join("catalog").to_string_lossy().into_owned();
         pm::catalog::register(&catalog, repo.to_str().unwrap(), "v0.1.0").unwrap();
         let manager = PackageManager::open(
@@ -3056,19 +3126,19 @@ mod tests {
         )
         .unwrap();
         let downloaded = manager
-            .download_from_catalog("dan/hello".into(), None)
+            .download_from_catalog(id.as_str().into(), None)
             .unwrap();
         assert!(!downloaded.enabled && !downloaded.already_installed);
         assert_eq!(downloaded.current.version, "0.1.0");
         assert!(downloaded.dist.deployed.is_empty());
-        assert!(!dir.join("workspace/dist/dan/hello").exists());
+        assert!(!dir.join(format!("workspace/dist/{id}").as_str()).exists());
         let listed = manager.list().unwrap();
         assert!(!listed[0].enabled);
         assert_eq!(
-            manager.enable("dan/hello".into(), false).unwrap().deployed,
-            ["dan/hello"]
+            manager.enable(id.as_str().into(), false).unwrap().deployed,
+            [id.as_str()]
         );
-        assert!(dir.join("workspace/dist/dan/hello").is_dir());
+        assert!(dir.join(format!("workspace/dist/{id}").as_str()).is_dir());
         drop(manager);
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -3080,7 +3150,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(
             root.join("state.json"),
-            r#"{"format":1,"packages":{"acme/greeter":{"source":"s","current":{"version":"0.1.0","commit":"c"},"previous":null,"enabled":false,"clone":"root-0123456789abcdef","mode":{"pinned":"v0.1.0"},"metadata":{}}}}"#,
+            r#"{"format":1,"packages":{"d135a7cf-1c63-549a-93cb-8f89656b2ced":{"source":"s","current":{"version":"0.1.0","commit":"c"},"previous":null,"enabled":false,"clone":"root-0123456789abcdef","mode":{"pinned":"v0.1.0"},"metadata":{}}}}"#,
         )
         .unwrap();
         let manager =
@@ -3090,9 +3160,16 @@ mod tests {
         };
         assert_eq!(manager.list().unwrap()[0].mode, pinned);
         let view = read_state(root.to_string_lossy().into()).unwrap();
-        assert_eq!(view.packages["acme/greeter"].mode, pinned);
+        assert_eq!(
+            view.packages["d135a7cf-1c63-549a-93cb-8f89656b2ced"].mode,
+            pinned
+        );
         let change = manager
-            .update("acme/greeter".into(), Target::Recorded, false)
+            .update(
+                "d135a7cf-1c63-549a-93cb-8f89656b2ced".into(),
+                Target::Recorded,
+                false,
+            )
             .unwrap();
         assert!(!change.changed);
         assert_eq!(
@@ -3129,17 +3206,27 @@ mod tests {
         );
         std::fs::write(
             root.join("state.json"),
-            r#"{"format":1,"packages":{"me/x":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":false,"clone":"x-0123456789abcdef","forkOf":{"id":"vendor/x","version":"0.9.0","commit":"f"},"metadata":{}}}}"#,
+            r#"{"format":1,"packages":{"e7bdeedc-dd0d-5620-82cf-760780dfe975":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":false,"clone":"x-0123456789abcdef","forkOf":{"id":"d5f44edd-9f12-5cf9-a2ff-325a191144d1","version":"0.9.0","commit":"f"},"metadata":{}}}}"#,
         )
         .unwrap();
         let view = read_state(root.to_string_lossy().into()).unwrap();
         let list = view.resolved;
         assert_eq!(list.len(), 1);
-        assert_eq!((list[0].id.as_str(), list[0].enabled), ("me/x", false));
-        assert_eq!(list[0].fork_of.as_ref().unwrap().id, "vendor/x");
+        assert_eq!(
+            (list[0].id.as_str(), list[0].enabled),
+            ("e7bdeedc-dd0d-5620-82cf-760780dfe975", false)
+        );
+        assert_eq!(
+            list[0].fork_of.as_ref().unwrap().id,
+            "d5f44edd-9f12-5cf9-a2ff-325a191144d1"
+        );
         assert_eq!(view.format, 1);
         assert_eq!(
-            view.packages["me/x"].current.as_ref().unwrap().version,
+            view.packages["e7bdeedc-dd0d-5620-82cf-760780dfe975"]
+                .current
+                .as_ref()
+                .unwrap()
+                .version,
             "1.0.0"
         );
 
@@ -3166,7 +3253,7 @@ mod tests {
             Err(PmError::InvalidId { .. })
         ));
         assert!(
-            matches!(manager.rollback("me/missing".into()), Err(PmError::NotInstalled { id, .. }) if id == "me/missing")
+            matches!(manager.rollback("6be2bcd7-408d-5a45-8c2e-a981e9132b31".into()), Err(PmError::NotInstalled { id, .. }) if id == "6be2bcd7-408d-5a45-8c2e-a981e9132b31")
         );
         assert!(matches!(
             manager.install("-x".into(), InstallTarget::Dev, None, true),
@@ -3174,7 +3261,7 @@ mod tests {
         ));
         assert!(matches!(
             manager.update(
-                "me/missing".into(),
+                "6be2bcd7-408d-5a45-8c2e-a981e9132b31".into(),
                 Target::Ref {
                     reference: "main".into()
                 },
@@ -3184,26 +3271,23 @@ mod tests {
         ));
         assert!(matches!(
             manager.fork(
-                "me/x".into(),
-                dir.join("fork").to_string_lossy().into(),
-                "bad ns".into()
+                "invalid-id".into(),
+                dir.join("fork").to_string_lossy().into()
             ),
             Err(PmError::InvalidId { .. })
         ));
         assert!(matches!(
             manager.fork_packages(
-                vec!["me/x".into(), "me/y".into()],
-                dir.join("fork").to_string_lossy().into(),
-                "you".into()
+                vec![
+                    "e7bdeedc-dd0d-5620-82cf-760780dfe975".into(),
+                    "70742621-8b0b-57a6-829c-00b17c94cdca".into()
+                ],
+                dir.join("fork").to_string_lossy().into()
             ),
             Err(PmError::NotInstalled { .. })
         ));
         assert!(matches!(
-            manager.fork_packages(
-                vec![],
-                dir.join("fork").to_string_lossy().into(),
-                "you".into()
-            ),
+            manager.fork_packages(vec![], dir.join("fork").to_string_lossy().into()),
             Err(PmError::InvalidArgument { .. })
         ));
         drop(manager);

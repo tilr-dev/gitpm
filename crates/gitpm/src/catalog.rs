@@ -91,7 +91,7 @@ impl IndexSummary {
 }
 fn folder(id: &str) -> Result<String> {
     valid_id(id)?;
-    Ok(format!("namespaces/{id}"))
+    Ok(format!("packages/{id}"))
 }
 /// The root `catalog.json` at `location` as a directory file; anything else (a v1
 /// monolithic catalog included) is refused with `catalog`.
@@ -1558,11 +1558,19 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn folders_are_namespaced_ids() {
-        assert_eq!(folder("dan/demo1").unwrap(), "namespaces/dan/demo1");
+    fn folders_are_uuid_ids() {
+        assert_eq!(
+            folder("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc").unwrap(),
+            "packages/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc"
+        );
         assert_eq!(folder("demo1").unwrap_err().kind(), "invalid_id");
         assert_eq!(folder("../x").unwrap_err().kind(), "invalid_id");
-        assert_eq!(folder("a/b/c").unwrap_err().kind(), "invalid_id");
+        assert_eq!(
+            folder("75494f24-1c7e-5480-9e39-738ff3d038c4/c")
+                .unwrap_err()
+                .kind(),
+            "invalid_id"
+        );
     }
 
     #[test]
@@ -1620,40 +1628,42 @@ pub(crate) mod tests {
 
     #[test]
     fn validate_release_checks_identity_commit_paths_and_build() {
-        let good = release("dan/demo1", "1.0.0", SOURCE, 'a');
-        assert!(validate_release(&good, "dan/demo1", "1.0.0").is_ok());
+        let good = release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "1.0.0", SOURCE, 'a');
+        assert!(validate_release(&good, "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "1.0.0").is_ok());
         let mut sha256 = good.clone();
         sha256.commit = "b".repeat(64);
-        assert!(validate_release(&sha256, "dan/demo1", "1.0.0").is_ok());
+        assert!(validate_release(&sha256, "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "1.0.0").is_ok());
         let mut with_build = good.clone();
         with_build.build = Some(Build {
             url: "https://pkg.example/demo1.tar.zst".into(),
             sha256: ABC.to_uppercase(),
         });
-        assert!(validate_release(&with_build, "dan/demo1", "1.0.0").is_ok());
+        assert!(
+            validate_release(&with_build, "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "1.0.0").is_ok()
+        );
         let mut no_files = good.clone();
         no_files.files.clear();
         assert_eq!(
-            validate_release(&no_files, "dan/demo1", "1.0.0")
+            validate_release(&no_files, "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "1.0.0")
                 .unwrap_err()
                 .to_string(),
-            "catalog release of dan/demo1 has no file hashes"
+            "catalog release of ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc has no file hashes"
         );
 
         assert_eq!(
-            validate_release(&good, "dan/other", "1.0.0")
+            validate_release(&good, "95d14dc8-6dfc-5022-9fd1-7146ee6aee58", "1.0.0")
                 .unwrap_err()
                 .kind(),
             "catalog"
         );
         assert_eq!(
-            validate_release(&good, "dan/demo1", "1.0.1")
+            validate_release(&good, "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "1.0.1")
                 .unwrap_err()
                 .kind(),
             "catalog"
         );
         assert_eq!(
-            validate_release(&good, "dan/demo1", "1.0")
+            validate_release(&good, "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "1.0")
                 .unwrap_err()
                 .kind(),
             "invalid_version"
@@ -1715,20 +1725,26 @@ pub(crate) mod tests {
         for (name, change) in cases {
             let mut r = good.clone();
             change(&mut r);
-            let error = validate_release(&r, "dan/demo1", "1.0.0").unwrap_err();
+            let error =
+                validate_release(&r, "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "1.0.0").unwrap_err();
             assert_eq!(error.kind(), "catalog", "{name}");
         }
     }
 
     #[test]
     fn release_json_omits_empty_files_and_missing_build() {
-        let mut r = release("dan/demo1", "0.1.2", "git@github.com:x/demo1.git", '3');
+        let mut r = release(
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+            "0.1.2",
+            "git@github.com:x/demo1.git",
+            '3',
+        );
         r.files.clear();
         let value = serde_json::to_value(&r).unwrap();
         assert_eq!(
             value,
             json!({
-                "manifest": {"id": "dan/demo1", "version": "0.1.2", "dependencies": {}},
+                "manifest": {"id": "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "name": "fixture", "version": "0.1.2", "dependencies": {}},
                 "source": "git@github.com:x/demo1.git",
                 "commit": "3".repeat(40),
                 "reference": "v0.1.2"
@@ -1738,7 +1754,7 @@ pub(crate) mod tests {
         assert!(back.files.is_empty() && back.build.is_none());
 
         let full = json!({
-            "manifest": {"id": "dan/demo1", "version": "0.1.0", "dependencies": {}},
+            "manifest": {"id": "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "name": "fixture", "version": "0.1.0", "dependencies": {}},
             "source": SOURCE, "commit": "a".repeat(40), "reference": "v0.1.0",
             "files": {"index.js": {"sha256": ABC, "size": 3}},
             "build": {"url": "https://pkg.example/x.tar.zst", "sha256": ABC}
@@ -1802,60 +1818,66 @@ pub(crate) mod tests {
     fn v2_layout_links_directories_bottom_up() {
         let dir = TempDir::new("catalog");
         let cat = dir.join("catalog");
-        let stored = save(&cat, &release("dan/demo1", "0.1.0", SOURCE, 'a'));
-        assert_eq!(stored.manifest.id, "dan/demo1");
+        let stored = save(
+            &cat,
+            &release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.1.0", SOURCE, 'a'),
+        );
+        assert_eq!(stored.manifest.id, "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         assert_eq!(
             files(&cat),
             [
                 "catalog.json",
-                "namespaces/catalog.json",
-                "namespaces/dan/catalog.json",
-                "namespaces/dan/demo1/plugin.json",
-                "namespaces/dan/demo1/versions/0.1.0/release.json",
+                "packages/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/plugin.json",
+                "packages/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/versions/0.1.0/release.json",
+                "packages/catalog.json",
             ]
         );
         let dirs = |p: &str| read(&cat.join(p));
         assert_eq!(
             dirs("catalog.json"),
-            json!({"schema": 1, "directories": {"namespaces": "namespaces/"}})
+            json!({"schema": 1, "directories": {"packages": "packages/"}})
         );
         assert_eq!(
-            dirs("namespaces/catalog.json"),
-            json!({"schema": 1, "directories": {"dan": "dan/"}})
+            dirs("packages/catalog.json"),
+            json!({"schema": 1, "directories": {"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc": "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/"}})
         );
         assert_eq!(
-            dirs("namespaces/dan/catalog.json"),
-            json!({"schema": 1, "directories": {"demo1": "demo1/"}})
-        );
-        assert_eq!(
-            dirs("namespaces/dan/demo1/plugin.json"),
-            json!({"schema": 1, "id": "dan/demo1", "source": SOURCE,
+            dirs("packages/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/plugin.json"),
+            json!({"schema": 1, "id": "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "source": SOURCE,
                    "versions": {"0.1.0": "versions/0.1.0/release.json"},
                    "latest": {"version": "0.1.0", "title": null, "description": null,
                               "provides": [], "tags": []}})
         );
         assert_eq!(
-            dirs("namespaces/dan/demo1/versions/0.1.0/release.json"),
+            dirs("packages/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/versions/0.1.0/release.json"),
             serde_json::to_value(&stored).unwrap()
         );
         let text = fs::read_to_string(cat.join("catalog.json")).unwrap();
         assert!(text.ends_with("}\n"), "pretty JSON with newline");
 
-        save(&cat, &release("dan/demo1", "0.2.0", SOURCE, 'b'));
         save(
             &cat,
-            &release("dan/demo2", "1.0.0", "https://example.com/demo2.git", 'c'),
+            &release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.2.0", SOURCE, 'b'),
+        );
+        save(
+            &cat,
+            &release(
+                "cad8c1f7-4992-5780-b000-dec19c545b24",
+                "1.0.0",
+                "https://example.com/demo2.git",
+                'c',
+            ),
         );
         assert_eq!(
             dirs("catalog.json"),
-            json!({"schema": 1, "directories": {"namespaces": "namespaces/"}})
+            json!({"schema": 1, "directories": {"packages": "packages/"}})
         );
         assert_eq!(
-            dirs("namespaces/dan/catalog.json"),
-            json!({"schema": 1, "directories": {"demo1": "demo1/", "demo2": "demo2/"}})
+            dirs("packages/catalog.json"),
+            json!({"schema": 1, "directories": {"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc": "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/", "cad8c1f7-4992-5780-b000-dec19c545b24": "cad8c1f7-4992-5780-b000-dec19c545b24/"}})
         );
         assert_eq!(
-            dirs("namespaces/dan/demo1/plugin.json")["versions"],
+            dirs("packages/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/plugin.json")["versions"],
             json!({"0.1.0": "versions/0.1.0/release.json", "0.2.0": "versions/0.2.0/release.json"})
         );
         // No lock or temporary files remain.
@@ -1870,7 +1892,7 @@ pub(crate) mod tests {
     fn published_versions_are_immutable() {
         let dir = TempDir::new("catalog");
         let cat = dir.join("catalog");
-        let original = release("dan/demo1", "0.1.0", SOURCE, 'a');
+        let original = release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.1.0", SOURCE, 'a');
         save(&cat, &original);
         let before = tree_hash(&cat);
         // Identical retry and an alternate ref to the same commit are no-ops.
@@ -1896,10 +1918,15 @@ pub(crate) mod tests {
             assert_eq!(error.kind(), "version_conflict");
             assert_eq!(
                 error.to_string(),
-                "version dan/demo1@0.1.0 already exists and is immutable"
+                "version ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc@0.1.0 already exists and is immutable"
             );
         }
-        let mut other_source = release("dan/demo1", "0.2.0", "https://elsewhere/x.git", 'c');
+        let mut other_source = release(
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+            "0.2.0",
+            "https://elsewhere/x.git",
+            'c',
+        );
         let error = save_release(&path, &other_source).unwrap_err();
         assert_eq!(error.kind(), "catalog");
         assert!(error.to_string().contains("different source"));
@@ -1916,18 +1943,27 @@ pub(crate) mod tests {
     fn release_without_hashes_is_refused() {
         let dir = TempDir::new("catalog");
         let cat = dir.join("catalog");
-        let mut bare = release("dan/demo1", "0.1.0", SOURCE, 'a');
+        let mut bare = release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.1.0", SOURCE, 'a');
         bare.files.clear();
         let error = save_release(&cat.join("catalog.json"), &bare).unwrap_err();
         assert_eq!(error.kind(), "catalog", "{error}");
-        assert!(!cat.join("namespaces").exists(), "nothing written");
+        assert!(!cat.join("packages").exists(), "nothing written");
         // A published record without `files` is refused when it is read.
-        save(&cat, &release("dan/demo1", "0.1.0", SOURCE, 'a'));
-        let stored = cat.join("namespaces/dan/demo1/versions/0.1.0/release.json");
+        save(
+            &cat,
+            &release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.1.0", SOURCE, 'a'),
+        );
+        let stored =
+            cat.join("packages/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/versions/0.1.0/release.json");
         let mut value = read(&stored);
         value.as_object_mut().unwrap().remove("files");
         write_json(&stored, &value);
-        let error = lookup(loc(&cat), "dan/demo1", Some("0.1.0")).unwrap_err();
+        let error = lookup(
+            loc(&cat),
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+            Some("0.1.0"),
+        )
+        .unwrap_err();
         assert_eq!(error.kind(), "catalog");
         assert!(error.to_string().contains("no file hashes"), "{error}");
     }
@@ -1940,13 +1976,20 @@ pub(crate) mod tests {
         let lock_path = dir.join(".catalog.catalog.lock");
         let path = cat.join("catalog.json");
         let held = lock(&path).unwrap();
-        let error = save_release(&path, &release("dan/demo1", "0.1.0", SOURCE, 'a')).unwrap_err();
+        let error = save_release(
+            &path,
+            &release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.1.0", SOURCE, 'a'),
+        )
+        .unwrap_err();
         assert_eq!(error.kind(), "locked");
         assert!(files(&cat).is_empty(), "nothing written while locked");
         drop(held);
-        save(&cat, &release("dan/demo1", "0.1.0", SOURCE, 'a'));
+        save(
+            &cat,
+            &release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.1.0", SOURCE, 'a'),
+        );
         // A failed write releases the lock too.
-        let mut bad = release("dan/demo1", "0.1.0", SOURCE, 'b');
+        let mut bad = release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.1.0", SOURCE, 'b');
         bad.commit = "c".repeat(40);
         assert!(save_release(&path, &bad).is_err());
         drop(lock(&path).expect("released after a failed write"));
@@ -1959,7 +2002,11 @@ pub(crate) mod tests {
         let path = dir.join("catalog/catalog.json");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         let first = lock(&path).unwrap();
-        let error = save_release(&path, &release("dan/demo1", "0.1.0", SOURCE, 'a')).unwrap_err();
+        let error = save_release(
+            &path,
+            &release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.1.0", SOURCE, 'a'),
+        )
+        .unwrap_err();
         assert_eq!(error.kind(), "locked");
 
         let output = Command::new(std::env::current_exe().unwrap())
@@ -1998,7 +2045,7 @@ pub(crate) mod tests {
         fs::write(dir.join(".catalog.catalog.lock"), "").unwrap();
         save_release(
             &cat.join("catalog.json"),
-            &release("dan/demo1", "0.1.0", SOURCE, 'a'),
+            &release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.1.0", SOURCE, 'a'),
         )
         .expect("a lock without a live owner must not block forever");
     }
@@ -2007,14 +2054,24 @@ pub(crate) mod tests {
     fn stale_temporary_file_from_a_dead_writer_does_not_block() {
         let dir = TempDir::new("catalog");
         let cat = dir.join("catalog");
-        save(&cat, &release("dan/demo1", "0.1.0", SOURCE, 'a'));
-        fs::write(cat.join("namespaces/dan/demo1/plugin.json.tmp"), "{partial").unwrap();
+        save(
+            &cat,
+            &release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.1.0", SOURCE, 'a'),
+        );
+        fs::write(
+            cat.join("packages/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/plugin.json.tmp"),
+            "{partial",
+        )
+        .unwrap();
         save_release(
             &cat.join("catalog.json"),
-            &release("dan/demo1", "0.2.0", SOURCE, 'b'),
+            &release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.2.0", SOURCE, 'b'),
         )
         .expect("a stale temporary file must not block new releases");
-        assert!(!cat.join("namespaces/dan/demo1/plugin.json.tmp").exists());
+        assert!(
+            !cat.join("packages/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/plugin.json.tmp")
+                .exists()
+        );
     }
 
     // ---- reading --------------------------------------------------------------------
@@ -2024,9 +2081,12 @@ pub(crate) mod tests {
         let dir = TempDir::new("catalog");
         let cat = dir.join("catalog");
         for (v, c) in [("1.9.0", 'a'), ("1.10.0", 'b'), ("1.2.0", 'c')] {
-            save(&cat, &release("dan/demo1", v, SOURCE, c));
+            save(
+                &cat,
+                &release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", v, SOURCE, c),
+            );
         }
-        let latest = lookup(loc(&cat), "dan/demo1", None).unwrap();
+        let latest = lookup(loc(&cat), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", None).unwrap();
         assert_eq!(
             (latest.manifest.version.as_str(), latest.commit),
             ("1.10.0", "b".repeat(40))
@@ -2034,30 +2094,43 @@ pub(crate) mod tests {
         // Also through the JSON file path.
         let file = cat.join("catalog.json");
         assert_eq!(
-            lookup(file.to_str().unwrap(), "dan/demo1", Some("1.2.0"))
-                .unwrap()
-                .commit,
+            lookup(
+                file.to_str().unwrap(),
+                "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+                Some("1.2.0")
+            )
+            .unwrap()
+            .commit,
             "c".repeat(40)
         );
-        let error = lookup(loc(&cat), "dan/demo1", Some("2.0.0")).unwrap_err();
+        let error = lookup(
+            loc(&cat),
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+            Some("2.0.0"),
+        )
+        .unwrap_err();
         assert_eq!(
             (error.kind(), error.to_string()),
             (
                 "catalog",
-                "version not found in catalog: dan/demo1@2.0.0".into()
+                "version not found in catalog: ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc@2.0.0".into()
             )
         );
         assert_eq!(
-            lookup(loc(&cat), "dan/demo1", Some("2.0"))
-                .unwrap_err()
-                .kind(),
+            lookup(
+                loc(&cat),
+                "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+                Some("2.0")
+            )
+            .unwrap_err()
+            .kind(),
             "invalid_version"
         );
         assert_eq!(
             lookup(loc(&cat), "../x", None).unwrap_err().kind(),
             "invalid_id"
         );
-        let error = lookup(loc(&cat), "dan/missing", None).unwrap_err();
+        let error = lookup(loc(&cat), "a68376c0-a262-545a-a4f8-afe9998880a6", None).unwrap_err();
         assert_eq!(
             (
                 error.kind(),
@@ -2066,7 +2139,12 @@ pub(crate) mod tests {
             ("catalog", true)
         );
         // A local catalog location that does not exist is a caller error, not "no catalog".
-        let error = lookup(loc(&dir.join("nowhere")), "dan/demo1", None).unwrap_err();
+        let error = lookup(
+            loc(&dir.join("nowhere")),
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+            None,
+        )
+        .unwrap_err();
         assert_eq!(error.kind(), "invalid_argument");
         assert!(error.to_string().ends_with("does not exist"), "{error}");
     }
@@ -2075,14 +2153,21 @@ pub(crate) mod tests {
     fn tampered_v2_files_are_rejected() {
         let dir = TempDir::new("catalog");
         let cat = dir.join("catalog");
-        save(&cat, &release("dan/demo1", "0.1.0", SOURCE, 'a'));
-        let index = cat.join("namespaces/dan/demo1/plugin.json");
-        let release_path = cat.join("namespaces/dan/demo1/versions/0.1.0/release.json");
+        save(
+            &cat,
+            &release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.1.0", SOURCE, 'a'),
+        );
+        let index = cat.join("packages/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/plugin.json");
+        let release_path =
+            cat.join("packages/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/versions/0.1.0/release.json");
         let original_index = read(&index);
         let original_release = read(&release_path);
         let index_cases = [
             (json!({"schema": 2}), "catalog"),
-            (json!({"id": "dan/other"}), "catalog"),
+            (
+                json!({"id": "95d14dc8-6dfc-5022-9fd1-7146ee6aee58"}),
+                "catalog",
+            ),
             (
                 json!({"versions": {"0.1.0": "../../evil/release.json"}}),
                 "catalog",
@@ -2099,7 +2184,8 @@ pub(crate) mod tests {
                 value[k] = v.clone();
             }
             write_json(&index, &value);
-            let error = lookup(loc(&cat), "dan/demo1", None).unwrap_err();
+            let error =
+                lookup(loc(&cat), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", None).unwrap_err();
             assert_eq!(error.kind(), kind, "{patch}: {error}");
         }
         write_json(&index, &original_index);
@@ -2110,7 +2196,7 @@ pub(crate) mod tests {
             ),
             (json!({"commit": "xyz"}), "invalid catalog commit"),
             (
-                json!({"manifest": {"id": "dan/demo1", "version": "0.1.1"}}),
+                json!({"manifest": {"id": "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "name": "fixture", "version": "0.1.1"}}),
                 "catalog identity mismatch",
             ),
         ];
@@ -2120,7 +2206,12 @@ pub(crate) mod tests {
                 value[k] = v.clone();
             }
             write_json(&release_path, &value);
-            let error = lookup(loc(&cat), "dan/demo1", Some("0.1.0")).unwrap_err();
+            let error = lookup(
+                loc(&cat),
+                "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+                Some("0.1.0"),
+            )
+            .unwrap_err();
             assert_eq!(
                 (error.kind(), error.to_string()),
                 ("catalog", message.into())
@@ -2128,13 +2219,13 @@ pub(crate) mod tests {
         }
         fs::remove_file(&release_path).unwrap();
         assert_eq!(
-            lookup(loc(&cat), "dan/demo1", None)
+            lookup(loc(&cat), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", None)
                 .unwrap_err()
                 .to_string(),
             "release not found"
         );
         fs::write(&release_path, "{not json").unwrap();
-        let error = lookup(loc(&cat), "dan/demo1", None).unwrap_err();
+        let error = lookup(loc(&cat), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", None).unwrap_err();
         assert!(
             error.to_string().starts_with("invalid catalog JSON"),
             "{error}"
@@ -2146,21 +2237,36 @@ pub(crate) mod tests {
         let dir = TempDir::new("catalog");
         let cat = dir.join("catalog");
         for (v, c) in [("1.9.0", 'a'), ("1.10.0", 'b'), ("1.2.0", 'c')] {
-            save(&cat, &release("dan/demo1", v, SOURCE, c));
+            save(
+                &cat,
+                &release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", v, SOURCE, c),
+            );
         }
-        save(&cat, &release("dan/other", "1.0.0", SOURCE, 'd'));
+        save(
+            &cat,
+            &release("95d14dc8-6dfc-5022-9fd1-7146ee6aee58", "1.0.0", SOURCE, 'd'),
+        );
         // Another package's broken index is never read.
-        fs::write(cat.join("namespaces/dan/other/plugin.json"), "{broken").unwrap();
+        fs::write(
+            cat.join("packages/95d14dc8-6dfc-5022-9fd1-7146ee6aee58/plugin.json"),
+            "{broken",
+        )
+        .unwrap();
         // So is a version that is neither latest nor installed.
         fs::write(
-            cat.join("namespaces/dan/demo1/versions/1.9.0/release.json"),
+            cat.join("packages/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/versions/1.9.0/release.json"),
             "{broken",
         )
         .unwrap();
 
-        let state = state_with("dan/demo1", SOURCE, "1.2.0", &"c".repeat(40));
+        let state = state_with(
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+            SOURCE,
+            "1.2.0",
+            &"c".repeat(40),
+        );
         let selected = selected(loc(&cat), &state).unwrap();
-        let plugin = &selected.packages["dan/demo1"];
+        let plugin = &selected.packages["ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc"];
         assert_eq!(plugin.source, SOURCE);
         assert_eq!(
             plugin.versions.keys().collect::<Vec<_>>(),
@@ -2168,8 +2274,13 @@ pub(crate) mod tests {
         );
 
         // Installed version unknown to the catalog: only the latest.
-        let state = state_with("dan/demo1", SOURCE, "1.5.0", &"e".repeat(40));
-        let selected_versions = super::selected(loc(&cat), &state).unwrap().packages["dan/demo1"]
+        let state = state_with(
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+            SOURCE,
+            "1.5.0",
+            &"e".repeat(40),
+        );
+        let selected_versions = super::selected(loc(&cat), &state).unwrap().packages["ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc"]
             .versions
             .keys()
             .cloned()
@@ -2177,7 +2288,12 @@ pub(crate) mod tests {
         assert_eq!(selected_versions, ["1.10.0"]);
 
         // A package absent from a v2 catalog is simply missing.
-        let state = state_with("dan/absent", SOURCE, "1.0.0", &"e".repeat(40));
+        let state = state_with(
+            "cb558618-2f22-51d5-8502-e570cadb5534",
+            SOURCE,
+            "1.0.0",
+            &"e".repeat(40),
+        );
         assert!(
             super::selected(loc(&cat), &state)
                 .unwrap()
@@ -2196,7 +2312,10 @@ pub(crate) mod tests {
             ("2.0.0", 'c'),
             ("2.1.0-rc.1", 'd'),
         ] {
-            save(&cat, &release("dan/demo1", v, SOURCE, c));
+            save(
+                &cat,
+                &release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", v, SOURCE, c),
+            );
         }
         // SemVer order; latest is the newest release; a pre-release is taken by name.
         let summary = browse(loc(&cat)).unwrap();
@@ -2214,20 +2333,29 @@ pub(crate) mod tests {
         );
         assert_eq!(package.latest.as_deref(), Some("2.0.0"));
         assert_eq!(
-            lookup(loc(&cat), "dan/demo1", None)
+            lookup(loc(&cat), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", None)
                 .unwrap()
                 .manifest
                 .version,
             "2.0.0"
         );
         assert_eq!(
-            lookup(loc(&cat), "dan/demo1", Some("1.3.0-beta.1"))
-                .unwrap()
-                .commit,
+            lookup(
+                loc(&cat),
+                "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+                Some("1.3.0-beta.1")
+            )
+            .unwrap()
+            .commit,
             "b".repeat(40)
         );
         // check: 2.0.0 is a major update; the newer 2.1.0-rc.1 is named, not offered.
-        let state = state_with("dan/demo1", SOURCE, "1.2.0", &"a".repeat(40));
+        let state = state_with(
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+            SOURCE,
+            "1.2.0",
+            &"a".repeat(40),
+        );
         let snapshot = selected(loc(&cat), &state).unwrap();
         let row = crate::check::compare(&state, &snapshot).remove(0);
         assert_eq!(
@@ -2245,12 +2373,25 @@ pub(crate) mod tests {
             )
         );
         // An installed pre-release follows its own track to the release.
-        let state = state_with("dan/demo1", SOURCE, "1.3.0-beta.1", &"b".repeat(40));
+        let state = state_with(
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+            SOURCE,
+            "1.3.0-beta.1",
+            &"b".repeat(40),
+        );
         let row = crate::check::compare(&state, &selected(loc(&cat), &state).unwrap()).remove(0);
         assert_eq!((row.latest.as_deref(), row.major), (Some("2.0.0"), true));
         // Only pre-releases: nothing to install without a version.
-        save(&cat, &release("dan/beta", "1.0.0-beta.1", SOURCE, 'e'));
-        let error = lookup(loc(&cat), "dan/beta", None).unwrap_err();
+        save(
+            &cat,
+            &release(
+                "461e020c-ac68-5226-bf76-9de83ab836d8",
+                "1.0.0-beta.1",
+                SOURCE,
+                'e',
+            ),
+        );
+        let error = lookup(loc(&cat), "461e020c-ac68-5226-bf76-9de83ab836d8", None).unwrap_err();
         assert_eq!(error.kind(), "catalog");
         assert!(error.to_string().contains("only pre-release"), "{error}");
         assert_eq!(newest_eligible(["1.0.0-beta.1"], None), None);
@@ -2269,9 +2410,9 @@ pub(crate) mod tests {
         let cat = dir.join("catalog");
         let v1 = json!({
             "plugins": {
-                "dan/demo2": {
+                "cad8c1f7-4992-5780-b000-dec19c545b24": {
                     "source": SOURCE,
-                    "versions": {"1.9.0": release("dan/demo2", "1.9.0", SOURCE, 'a')}
+                    "versions": {"1.9.0": release("cad8c1f7-4992-5780-b000-dec19c545b24", "1.9.0", SOURCE, 'a')}
                 }
             }
         });
@@ -2281,15 +2422,20 @@ pub(crate) mod tests {
             assert_eq!(error.kind(), "catalog", "{error}");
             assert!(error.to_string().contains("v1 catalogs"), "{error}");
         };
-        refused(lookup(loc(&cat), "dan/demo2", None).unwrap_err());
-        refused(versions(loc(&cat), "dan/demo2").unwrap_err());
+        refused(lookup(loc(&cat), "cad8c1f7-4992-5780-b000-dec19c545b24", None).unwrap_err());
+        refused(versions(loc(&cat), "cad8c1f7-4992-5780-b000-dec19c545b24").unwrap_err());
         refused(browse(loc(&cat)).unwrap_err());
-        let state = state_with("dan/demo2", SOURCE, "1.9.0", &"a".repeat(40));
+        let state = state_with(
+            "cad8c1f7-4992-5780-b000-dec19c545b24",
+            SOURCE,
+            "1.9.0",
+            &"a".repeat(40),
+        );
         refused(selected(loc(&cat), &state).unwrap_err());
         refused(
             save_release(
                 &cat.join("catalog.json"),
-                &release("dan/demo2", "2.0.0", SOURCE, 'f'),
+                &release("cad8c1f7-4992-5780-b000-dec19c545b24", "2.0.0", SOURCE, 'f'),
             )
             .unwrap_err(),
         );
@@ -2304,21 +2450,32 @@ pub(crate) mod tests {
         let path = cat.join("catalog.json");
         fs::create_dir_all(&cat).unwrap();
         fs::write(&path, "{garbage").unwrap();
-        let error = save_release(&path, &release("dan/demo1", "0.1.0", SOURCE, 'a')).unwrap_err();
+        let error = save_release(
+            &path,
+            &release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.1.0", SOURCE, 'a'),
+        )
+        .unwrap_err();
         assert!(
             error.to_string().starts_with("invalid existing catalog"),
             "{error}"
         );
         assert_eq!(fs::read(&path).unwrap(), b"{garbage");
         write_json(&path, &json!({"schema": 2, "directories": {}}));
-        let error = save_release(&path, &release("dan/demo1", "0.1.0", SOURCE, 'a')).unwrap_err();
+        let error = save_release(
+            &path,
+            &release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.1.0", SOURCE, 'a'),
+        )
+        .unwrap_err();
         assert_eq!(error.kind(), "catalog");
         // An empty folder gets a fresh root.
         let fresh = dir.join("fresh");
-        save(&fresh, &release("dan/demo1", "0.1.0", SOURCE, 'a'));
+        save(
+            &fresh,
+            &release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.1.0", SOURCE, 'a'),
+        );
         assert_eq!(
             read(&fresh.join("catalog.json")),
-            json!({"schema": 1, "directories": {"namespaces": "namespaces/"}})
+            json!({"schema": 1, "directories": {"packages": "packages/"}})
         );
     }
 
@@ -2326,11 +2483,16 @@ pub(crate) mod tests {
     fn index_summary_matches_the_latest_release() {
         let dir = TempDir::new("catalog-summary");
         let cat = dir.join("catalog");
-        let index_path = cat.join("namespaces/dan/demo1/plugin.json");
+        let index_path = cat.join("packages/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/plugin.json");
         let check = |version: &str| {
             let index = read(&index_path);
             assert_eq!(index["schema"], 1);
-            let stored = lookup(loc(&cat), "dan/demo1", Some(version)).unwrap();
+            let stored = lookup(
+                loc(&cat),
+                "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+                Some(version),
+            )
+            .unwrap();
             let metadata = stored.metadata();
             assert_eq!(
                 index["latest"],
@@ -2348,7 +2510,7 @@ pub(crate) mod tests {
             "1.9.0",
             "4.0.0-alpha",
         ] {
-            let mut record = release("dan/demo1", version, SOURCE, 'a');
+            let mut record = release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", version, SOURCE, 'a');
             record.manifest.extra = serde_json::from_value(json!({
                 "title": version, "description": "Details", "provides": "theme",
                 "tags": ["ui", "colors"],
@@ -2365,7 +2527,12 @@ pub(crate) mod tests {
         let mut index = read(&index_path);
         index.as_object_mut().unwrap().remove("latest");
         write_json(&index_path, &index);
-        let old = lookup(loc(&cat), "dan/demo1", Some("1.9.0")).unwrap();
+        let old = lookup(
+            loc(&cat),
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+            Some("1.9.0"),
+        )
+        .unwrap();
         save(&cat, &old);
         check("1.10.0");
     }
@@ -2374,11 +2541,14 @@ pub(crate) mod tests {
     fn browse_reads_only_indexes() {
         let dir = TempDir::new("catalog-summary");
         let cat = dir.join("catalog");
-        for name in ["a", "b"] {
-            let mut record = release(&format!("dan/{name}"), "1.0.0", SOURCE, 'a');
+        for (name, id) in [
+            ("a", "00000000-0000-0000-0000-000000000001"),
+            ("b", "00000000-0000-0000-0000-000000000002"),
+        ] {
+            let mut record = release(id, "1.0.0", SOURCE, 'a');
             record.manifest.extra.insert("title".into(), json!(name));
             save(&cat, &record);
-            fs::remove_file(cat.join(format!("namespaces/dan/{name}/versions/1.0.0/release.json")))
+            fs::remove_file(cat.join(format!("packages/{id}/versions/1.0.0/release.json")))
                 .unwrap();
         }
         let rows = || {
@@ -2402,7 +2572,7 @@ pub(crate) mod tests {
                 .collect::<Vec<_>>(),
             [Some("a"), Some("b")]
         );
-        let path = cat.join("namespaces/dan/a/plugin.json");
+        let path = cat.join("packages/00000000-0000-0000-0000-000000000001/plugin.json");
         let original = read(&path);
         for bad in [
             serde_json::Value::Null,
@@ -2434,9 +2604,23 @@ pub(crate) mod tests {
             items(&cat)[..],
             [OverviewItem::Empty { depth: 1 }]
         ));
-        save(&cat, &release("dan/demo1", "1.10.0", SOURCE, 'a'));
-        save(&cat, &release("dan/demo1", "1.9.0", SOURCE, 'b'));
-        save(&cat, &release("acme/demo2", "0.1.0", SOURCE, 'c'));
+        save(
+            &cat,
+            &release(
+                "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+                "1.10.0",
+                SOURCE,
+                'a',
+            ),
+        );
+        save(
+            &cat,
+            &release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "1.9.0", SOURCE, 'b'),
+        );
+        save(
+            &cat,
+            &release("80b84611-1d3c-5cd6-be71-ad33787c0b53", "0.1.0", SOURCE, 'c'),
+        );
         let overview = browse(loc(&cat)).unwrap();
         assert_eq!(overview.location, loc(&cat));
         assert!(!overview.remote && !overview.truncated);
@@ -2455,13 +2639,11 @@ pub(crate) mod tests {
         assert_eq!(
             rows,
             [
-                "1 dir namespaces",
-                "2 dir acme",
-                "3 dir demo2",
-                r#"3 package acme/demo2 ["0.1.0"] Some("0.1.0")"#,
-                "2 dir dan",
-                "3 dir demo1",
-                r#"3 package dan/demo1 ["1.9.0", "1.10.0"] Some("1.10.0")"#,
+                "1 dir packages",
+                "2 dir 80b84611-1d3c-5cd6-be71-ad33787c0b53",
+                r#"2 package 80b84611-1d3c-5cd6-be71-ad33787c0b53 ["0.1.0"] Some("0.1.0")"#,
+                "2 dir ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+                r#"2 package ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc ["1.9.0", "1.10.0"] Some("1.10.0")"#,
             ]
         );
     }
@@ -2518,23 +2700,19 @@ pub(crate) mod tests {
         let wide = dir.join("wide");
         let mut directories = serde_json::Map::new();
         for n in 0..OVERVIEW_LIMIT + 5 {
-            let name = format!("p{n:02}");
+            let name = format!("00000000-0000-4000-8000-{n:012x}");
             directories.insert(name.clone(), json!(format!("{name}/")));
             write_json(
-                &wide.join(format!("namespaces/dan/{name}/plugin.json")),
-                &json!({"schema": 1, "id": format!("dan/{name}"), "source": SOURCE, "versions": {}}),
+                &wide.join(format!("packages/{name}/plugin.json")),
+                &json!({"schema": 1, "id": name.clone(), "source": SOURCE, "versions": {}}),
             );
         }
         write_json(
             &wide.join("catalog.json"),
-            &json!({"schema": 1, "directories": {"namespaces": "namespaces/"}}),
+            &json!({"schema": 1, "directories": {"packages": "packages/"}}),
         );
         write_json(
-            &wide.join("namespaces/catalog.json"),
-            &json!({"schema": 1, "directories": {"dan": "dan/"}}),
-        );
-        write_json(
-            &wide.join("namespaces/dan/catalog.json"),
+            &wide.join("packages/catalog.json"),
             &json!({"schema": 1, "directories": directories}),
         );
         let overview = browse(loc(&wide)).unwrap();
@@ -2580,7 +2758,7 @@ pub(crate) mod tests {
     #[test]
     fn register_records_the_committed_tree_with_hashes() {
         let dir = TempDir::new("catalog");
-        let author = Author::new(dir.join("author"), "dan/demo1");
+        let author = Author::new(dir.join("author"), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let commit = author.head();
         let committed = fs::read(author.path.join("dist/index.js")).unwrap();
         // Uncommitted edits never reach the catalog.
@@ -2595,7 +2773,10 @@ pub(crate) mod tests {
         assert_eq!(r.files["index.js"].size, committed.len() as u64);
         assert!(r.build.is_none());
         assert_eq!(
-            serde_json::to_value(lookup(loc(&cat), "dan/demo1", None).unwrap()).unwrap(),
+            serde_json::to_value(
+                lookup(loc(&cat), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", None).unwrap()
+            )
+            .unwrap(),
             serde_json::to_value(&r).unwrap()
         );
         // Same commit through another ref: accepted, the stored reference is kept.
@@ -2606,7 +2787,7 @@ pub(crate) mod tests {
     #[test]
     fn register_build_validates_metadata_and_inputs() {
         let dir = TempDir::new("catalog");
-        let author = Author::new(dir.join("author"), "dan/demo1");
+        let author = Author::new(dir.join("author"), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let cat = dir.join("catalog");
         let bad = Build {
             url: "http://pkg.example/x.tar.zst".into(),
@@ -2617,7 +2798,7 @@ pub(crate) mod tests {
             (error.kind(), error.to_string()),
             ("catalog", "build URL must use HTTPS".into())
         );
-        assert!(!cat.join("namespaces").exists());
+        assert!(!cat.join("packages").exists());
         let good = Build {
             url: "https://pkg.example/x.tar.zst".into(),
             sha256: ABC.into(),
@@ -2648,7 +2829,7 @@ pub(crate) mod tests {
         // A non-numeric manifest version is refused at registration.
         crate::test_support::write_manifest(
             &author.path,
-            &crate::test_support::manifest("dan/demo1", "1.0"),
+            &crate::test_support::manifest("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "1.0"),
         );
         fixture_git(&author.path, &["commit", "-q", "-am", "bad version"]);
         assert_eq!(
@@ -2662,7 +2843,7 @@ pub(crate) mod tests {
     #[test]
     fn verified_catalog_takes_only_registered_versions() {
         let dir = TempDir::new("catalog");
-        let author = Author::new(dir.join("repo"), "dan/demo1");
+        let author = Author::new(dir.join("repo"), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let cat = dir.join("catalog");
         register(loc(&cat), author.source(), "v0.1.0").unwrap();
         assert!(!is_verified(loc(&cat)).unwrap());
@@ -2674,7 +2855,12 @@ pub(crate) mod tests {
         author.release("0.2.0");
         register(loc(&cat), author.source(), "v0.2.0").unwrap();
         assert_eq!(read(&cat.join("catalog.json"))["verified"], json!(true));
-        assert_eq!(versions(loc(&cat), "dan/demo1").unwrap().len(), 2);
+        assert_eq!(
+            versions(loc(&cat), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc")
+                .unwrap()
+                .len(),
+            2
+        );
         // Bulk generation is refused before anything is read or written.
         author.release("0.3.0");
         let list = sources(dir.path(), "repo\n");
@@ -2686,8 +2872,8 @@ pub(crate) mod tests {
             "a verified catalog takes versions only one by one through register"
         );
         assert_eq!(tree_hash(&cat), before);
-        // The ID stays bound to its first source (namespace ownership).
-        let other = Author::new(dir.join("other"), "dan/demo1");
+        // The ID stays bound to its first source (UUID ownership).
+        let other = Author::new(dir.join("other"), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         other.release("0.4.0");
         let error = register(loc(&cat), other.source(), "v0.4.0").unwrap_err();
         assert_eq!(error.kind(), "catalog");
@@ -2703,7 +2889,7 @@ pub(crate) mod tests {
     #[test]
     fn update_sources_skips_and_reports_a_broken_historical_tag() {
         let dir = TempDir::new("catalog");
-        let author = Author::new(dir.join("repo"), "dan/demo1");
+        let author = Author::new(dir.join("repo"), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         // Old tag pointing at a commit whose manifest says another version.
         fixture_git(&author.path, &["tag", "v0.0.9"]);
         author.release("0.2.0");
@@ -2715,7 +2901,7 @@ pub(crate) mod tests {
         assert_eq!(report.skipped[0].source, author.source());
         assert_eq!(report.skipped[0].tag.name, "v0.0.9");
         assert_eq!(
-            lookup(loc(&cat), "dan/demo1", None)
+            lookup(loc(&cat), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", None)
                 .unwrap()
                 .manifest
                 .version,
@@ -2727,20 +2913,28 @@ pub(crate) mod tests {
     fn update_sources_and_register_read_every_package_of_a_monorepo() {
         let dir = TempDir::new("catalog");
         let repo = dir.join("mono");
-        crate::scaffold::create_package(&repo, "tilr", "store").unwrap();
-        crate::scaffold::create_package(&repo, "tilr", "theme").unwrap();
-        fs::write(repo.join("packages/store/dist/index.js"), "store 2").unwrap();
-        crate::scaffold::commit_package(&repo, "0.2.0", Some("tilr/store")).unwrap();
+        let store_path = crate::scaffold::create_package(&repo, "store").unwrap();
+        let store_id = crate::model::manifest(&store_path).unwrap().id;
+        let theme_path = crate::scaffold::create_package(&repo, "theme").unwrap();
+        let theme_id = crate::model::manifest(&theme_path).unwrap().id;
+        fs::write(store_path.join("dist/index.js"), "store 2").unwrap();
+        crate::scaffold::commit_package(&repo, "0.2.0", Some(&store_id)).unwrap();
         let cat = dir.join("catalog");
         let list = sources(dir.path(), "mono\n");
         let report = update_sources(loc(&cat), &list, &mut |_| {}).unwrap();
         assert_eq!(report.releases, 3);
-        let store = lookup(loc(&cat), "tilr/store", None).unwrap();
+        let store = lookup(loc(&cat), &store_id, None).unwrap();
         assert_eq!(store.manifest.version, "0.2.0");
-        assert_eq!(store.path.as_deref(), Some("packages/store"));
+        assert_eq!(
+            store.path.as_deref(),
+            Some(format!("packages/{store_id}").as_str())
+        );
         assert_eq!(store.files["index.js"].size, 7);
-        let theme = lookup(loc(&cat), "tilr/theme", None).unwrap();
-        assert_eq!(theme.path.as_deref(), Some("packages/theme"));
+        let theme = lookup(loc(&cat), &theme_id, None).unwrap();
+        assert_eq!(
+            theme.path.as_deref(),
+            Some(format!("packages/{theme_id}").as_str())
+        );
         // Running again changes nothing (releases are immutable and equal).
         update_sources(loc(&cat), &list, &mut |_| {}).unwrap();
 
@@ -2749,10 +2943,12 @@ pub(crate) mod tests {
         let error = register(loc(&other), source, "main").unwrap_err();
         assert_eq!(error.kind(), "invalid_argument");
         let release =
-            register_package(loc(&other), source, "v0.2.0", Some("tilr/theme"), None).unwrap();
-        assert_eq!(release.path.as_deref(), Some("packages/theme"));
-        let release =
-            register_package(loc(&other), source, "main", Some("tilr/store"), None).unwrap();
+            register_package(loc(&other), source, "v0.2.0", Some(&theme_id), None).unwrap();
+        assert_eq!(
+            release.path.as_deref(),
+            Some(format!("packages/{theme_id}").as_str())
+        );
+        let release = register_package(loc(&other), source, "main", Some(&store_id), None).unwrap();
         assert_eq!(release.manifest.version, "0.2.0");
     }
 
@@ -2765,9 +2961,9 @@ pub(crate) mod tests {
     #[test]
     fn update_sources_publishes_every_release_tag_once() {
         let dir = TempDir::new("catalog");
-        let scoped = Author::new(dir.join("scoped"), "dan/demo1");
+        let scoped = Author::new(dir.join("scoped"), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         scoped.release("1.10.0");
-        let other = Author::new(dir.join("other"), "acme/demo2");
+        let other = Author::new(dir.join("other"), "80b84611-1d3c-5cd6-be71-ad33787c0b53");
         let cat = dir.join("catalog");
         let list = sources(dir.path(), "# comment\n\n  scoped  \nother\nscoped\n");
         let mut seen = Vec::new();
@@ -2779,12 +2975,14 @@ pub(crate) mod tests {
         assert!(report.skipped.is_empty());
         assert_eq!(report.sources, [other.source(), scoped.source()]);
         assert_eq!(seen, report.sources);
-        let latest = lookup(loc(&cat), "dan/demo1", None).unwrap();
+        let latest = lookup(loc(&cat), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", None).unwrap();
         assert_eq!(latest.manifest.version, "1.10.0");
         assert_eq!(latest.reference, "v1.10.0");
         assert_eq!(latest.files.len(), 1);
         assert_eq!(
-            lookup(loc(&cat), "acme/demo2", None).unwrap().reference,
+            lookup(loc(&cat), "80b84611-1d3c-5cd6-be71-ad33787c0b53", None)
+                .unwrap()
+                .reference,
             "v0.1.0"
         );
         // A second run changes nothing.
@@ -2796,7 +2994,7 @@ pub(crate) mod tests {
     #[test]
     fn summary_generation_preserves_export_warnings() {
         let dir = TempDir::new("catalog-summary");
-        let author = Author::new(dir.join("author"), "dan/demo1");
+        let author = Author::new(dir.join("author"), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let entry = format!("160000,{},dist/vendor", author.head());
         fixture_git(
             &author.path,
@@ -2810,7 +3008,8 @@ pub(crate) mod tests {
         assert_eq!(report.warnings.len(), 1);
         assert!(report.warnings[0].contains("dist/vendor is a Git submodule"));
         assert_eq!(
-            read(&cat.join("namespaces/dan/demo1/plugin.json"))["latest"]["version"],
+            read(&cat.join("packages/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/plugin.json"))["latest"]
+                ["version"],
             "0.1.0"
         );
     }
@@ -2818,8 +3017,8 @@ pub(crate) mod tests {
     #[test]
     fn failed_summary_regeneration_leaves_catalog_unchanged() {
         let dir = TempDir::new("catalog-summary");
-        let first = Author::new(dir.join("first"), "dan/a");
-        let second = Author::new(dir.join("second"), "dan/b");
+        let first = Author::new(dir.join("first"), "807b9715-06b4-55c2-add2-59b487bfa42e");
+        let second = Author::new(dir.join("second"), "03c25ec4-f583-513d-adfb-092fb98d8dba");
         second.release("0.2.0");
         let cat = dir.join("catalog");
         let list = sources(dir.path(), "first\nsecond\n");
@@ -2828,7 +3027,7 @@ pub(crate) mod tests {
         fixture_git(&second.path, &["tag", "-d", "v0.2.0"]);
         // The published newest release is no longer part of source discovery.
         fs::write(
-            cat.join("namespaces/dan/b/versions/0.2.0/release.json"),
+            cat.join("packages/03c25ec4-f583-513d-adfb-092fb98d8dba/versions/0.2.0/release.json"),
             "{broken",
         )
         .unwrap();
@@ -2844,7 +3043,7 @@ pub(crate) mod tests {
     #[test]
     fn update_sources_keeps_build_metadata_and_published_records() {
         let dir = TempDir::new("catalog");
-        let author = Author::new(dir.join("author"), "dan/demo1");
+        let author = Author::new(dir.join("author"), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let cat = dir.join("catalog");
         let build = Build {
             url: "https://pkg.example/x.tar.zst".into(),
@@ -2853,12 +3052,18 @@ pub(crate) mod tests {
         register_build(loc(&cat), author.source(), "v0.1.0", Some(build)).unwrap();
         let list = sources(dir.path(), "author\n");
         update_sources(loc(&cat), &list, &mut |_| {}).unwrap();
-        let stored = lookup(loc(&cat), "dan/demo1", Some("0.1.0")).unwrap();
+        let stored = lookup(
+            loc(&cat),
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+            Some("0.1.0"),
+        )
+        .unwrap();
         assert_eq!(
             stored.build.as_ref().unwrap().url,
             "https://pkg.example/x.tar.zst"
         );
-        let record = cat.join("namespaces/dan/demo1/versions/0.1.0/release.json");
+        let record =
+            cat.join("packages/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/versions/0.1.0/release.json");
         let published = fs::read(&record).unwrap();
 
         // The published tag is moved to another commit with the same version: the record
@@ -2873,13 +3078,13 @@ pub(crate) mod tests {
         assert_eq!(
             report.warnings,
             [format!(
-                "release dan/demo1@0.1.0: tag now points to {}; the published record is kept",
+                "release ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc@0.1.0: tag now points to {}; the published record is kept",
                 &moved[..12]
             )]
         );
         assert_eq!(fs::read(&record).unwrap(), published);
         assert_eq!(
-            lookup(loc(&cat), "dan/demo1", None)
+            lookup(loc(&cat), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", None)
                 .unwrap()
                 .manifest
                 .version,
@@ -2899,7 +3104,7 @@ pub(crate) mod tests {
         assert_eq!(
             report.warnings,
             [
-                "release dan/demo1@0.1.0 differs from the published record; the published record is kept"
+                "release ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc@0.1.0 differs from the published record; the published record is kept"
             ]
         );
         assert_eq!(fs::read(&record).unwrap(), edited);
@@ -2908,8 +3113,8 @@ pub(crate) mod tests {
     #[test]
     fn update_sources_rejects_bad_inputs() {
         let dir = TempDir::new("catalog");
-        let one = Author::new(dir.join("one"), "dan/demo1");
-        Author::new(dir.join("two"), "dan/demo1");
+        let one = Author::new(dir.join("one"), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
+        Author::new(dir.join("two"), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let cat = dir.join("catalog");
         let run = |lines: &str| {
             let list = sources(dir.path(), lines);
@@ -2921,7 +3126,10 @@ pub(crate) mod tests {
         let error = run("one\ntwo\n");
         assert_eq!(
             (error.kind(), error.to_string()),
-            ("catalog", "multiple sources claim package dan/demo1".into())
+            (
+                "catalog",
+                "multiple sources claim package ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc".into()
+            )
         );
         assert!(
             !cat.exists(),
@@ -2941,7 +3149,10 @@ pub(crate) mod tests {
             "io"
         );
         // The catalog already has this ID from another source.
-        save(&cat, &release("dan/demo1", "0.0.1", SOURCE, 'a'));
+        save(
+            &cat,
+            &release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.0.1", SOURCE, 'a'),
+        );
         let error = update_sources(loc(&cat), &list, &mut |_| {}).unwrap_err();
         assert_eq!(error.kind(), "catalog");
         assert!(error.to_string().contains("different source"));

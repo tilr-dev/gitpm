@@ -13,7 +13,7 @@ from gitpmtest import T, case
 
 AUTH = "git-safety/read-only-repository-access-check"
 
-ID = "dan/hello"
+ID = "3dce1568-569c-5b53-9321-37185e751947"
 OK = "Read access confirmed"
 
 
@@ -46,7 +46,7 @@ def empty_bare_repository(t: T):
 @case(fixture="g1_ws_catalog", spec=[AUTH])
 def author_working_repository(t: T):
     """A non-bare author repository path (relative, from cwd) is readable."""
-    check_ok(t, "./repos/dan/hello")
+    check_ok(t, "./repos/3dce1568-569c-5b53-9321-37185e751947")
 
 
 @case(fixture="g1_ws_catalog", spec=[AUTH])

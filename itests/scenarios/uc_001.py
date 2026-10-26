@@ -10,7 +10,7 @@ import shutil
 
 from gitpmtest import T, case
 
-ID = "dan/hello"
+ID = "3dce1568-569c-5b53-9321-37185e751947"
 OPT = "cli/option-validation"
 # Every command of `gitpm --help` (main.rs COMMANDS).
 COMMANDS = ["install", "install-catalog", "download", "download-catalog", "list", "check", "update", "rollback", "enable", "disable", "forget",
@@ -95,7 +95,7 @@ for _args in [
     ("missing_remote_url", "3. remote with only the repository", ["remote", "@REPO"],
      "remote: expected 2 argument(s), got 1"),
     ("missing_fork_id", "3. fork without an ID", ["fork"], "fork: expected 1 argument(s), got 0"),
-    ("missing_fork_into", "3. fork without --into", ["fork", ID, "--ns", "mine"], "fork needs --into DIR"),
+    ("missing_fork_into", "3. fork without --into", ["fork", ID], "fork needs --into DIR"),
     ("missing_init_into", "3. init without --into", ["init", ID],
      "init needs --into DIR", "authoring/init-creates-a-package-with-its-first-release#init-without-into"),
     ("missing_auth_url", "3. auth check without a URL", ["auth", "check"], "auth: expected 2 argument(s), got 1"),

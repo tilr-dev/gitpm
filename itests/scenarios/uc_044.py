@@ -1,6 +1,6 @@
 """UC-044: Fork recorded source, isolate local work and fork of fork (P0).
 
-The spec's vendor/module is played by vendor/demo (g3_vendor_installed). In the installed
+The spec's cc6c3e20-6fe0-58c4-944e-991c2a154a47 is played by dd3387ed-a5a3-5059-81ad-b1f6987a28f2 (g3_vendor_installed). In the installed
 clone: a local commit that bumps plugin.json to 0.1.5 and edits dist, then a staged
 unrelated file, an unstaged tracked edit, an untracked and an ignored file.
 """
@@ -9,13 +9,13 @@ import json
 
 from gitpmtest import T, case
 
-ID, MINE, THIRD = "vendor/demo", "mine/demo", "third/demo"
+ID, MINE, THIRD = "dd3387ed-a5a3-5059-81ad-b1f6987a28f2", "fe3ac959-50ab-5e6c-849f-6e69253d8676", "66230c71-b50b-575d-80cc-0352b1ad2275"
 
 
 def prepare(t: T):
-    """Local work in the installed clone, then fork to /fx/repos/mine/demo."""
+    """Local work in the installed clone, then fork to /fx/repos/fe3ac959-50ab-5e6c-849f-6e69253d8676."""
     clone = t.worktree(ID)
-    t.write(clone, {"plugin.json": json.dumps({"id": ID, "version": "0.1.5"}, indent=2) + "\n",
+    t.write(clone, {"plugin.json": json.dumps({"id": ID, "name": "fixture", "version": "0.1.5"}, indent=2) + "\n",
                     "dist/index.js": "export const greeting = 'local commit';\n"})
     t.commit(clone, "local commit")
     t.write(clone, {"staged.txt": "staged\n"})
@@ -24,7 +24,7 @@ def prepare(t: T):
                     "untracked.txt": "untracked\n", "node_modules/x.js": "ignored\n"})
     before = t.snap(t.ws, t.repo(ID), git=True)
     dest = t.repo(MINE)
-    t.gitpm_ok("fork", ID, "--ns", "mine", "--into", dest)
+    t.gitpm_ok("fork", ID, "--into", dest)
     return dest, t.package(ID)["current"]["commit"], before
 
 
@@ -33,6 +33,7 @@ def fork_of_recorded_revision(t: T):
     """Fork metadata and identity commit come from the installed source revision."""
     installed = t.package(ID)["current"]
     dest, source_commit, before = prepare(t)
+    MINE = t.manifest_id(dest)
     m = json.loads((dest / "plugin.json").read_text())
     t.eq(m["forkOf"], {"id": ID, "version": "0.1.0", "commit": source_commit, "source": t.package(ID)["source"]}, "forkOf")
     t.eq(m["version"], "0.1.0", "fork version")
@@ -50,6 +51,7 @@ def fork_of_recorded_revision(t: T):
 @case(fixture="g3_vendor_installed", spec=["fork-replacement/fork-copies-an-installed-package"])
 def local_work_is_excluded_from_fork(t: T):
     dest, commit, before = prepare(t)
+    MINE = t.manifest_id(dest)
     t.eq(t.git(dest, "status", "--porcelain", "--untracked-files=all"), "", "clean fork")
     expected = t.git(t.worktree(ID), "show", f"{commit}:dist/index.js")
     t.eq((dest / "dist/index.js").read_text().strip(), expected, "source revision bytes")
@@ -60,25 +62,27 @@ def local_work_is_excluded_from_fork(t: T):
 
 @case(fixture="g3_vendor_installed", spec=["fork-replacement/fork-metadata"])
 def fork_of_fork_records_immediate_parent(t: T):
-    """Install the fork by explicit HEAD, fork it again: third/demo forkOf is mine/demo."""
+    """Install the fork by explicit HEAD, fork it again: 66230c71-b50b-575d-80cc-0352b1ad2275 forkOf is fe3ac959-50ab-5e6c-849f-6e69253d8676."""
     dest, _, _ = prepare(t)
+    MINE = t.manifest_id(dest)
     fork_head = t.rev(dest)
     t.gitpm_ok("install", dest, "--ref", "HEAD")
     p = t.package(MINE)
     t.eq(p["current"], {"version": "0.1.0", "commit": fork_head}, "fork installed at its HEAD")
     third = t.root / "authors/third"
-    t.gitpm_ok("fork", MINE, "--ns", "third", "--into", third)
+    t.gitpm_ok("fork", MINE, "--into", third)
     m = json.loads((third / "plugin.json").read_text())
-    t.eq(m["id"], THIRD, "id")
+    t.ok(m["id"] not in [ID, MINE], "fresh UUID for fork of fork")
     t.eq(m["forkOf"], {"id": MINE, "version": "0.1.0", "commit": fork_head, "source": t.package(MINE)["source"]}, "immediate parent")
     t.eq(m["replaces"], {"id": MINE, "version": "0.1.0"}, "replaces the immediate parent")
-    t.eq(t.git(third, "remote", "get-url", "upstream"), str(dest), "upstream is the mine/demo source")
+    t.eq(t.git(third, "remote", "get-url", "upstream"), str(dest), "upstream is the fe3ac959-50ab-5e6c-849f-6e69253d8676 source")
 
 
 @case(fixture="g3_vendor_installed", spec=["fork-replacement/fork-metadata", "catalog/register-one-version"])
 def catalog_round_trip_keeps_provenance(t: T):
     """Fork release registered in the catalog keeps forkOf; install-catalog restores it."""
     dest, source_commit, _ = prepare(t)
+    MINE = t.manifest_id(dest)
     t.gitpm_ok("commit", dest, "0.2.0")
     t.gitpm_ok("register", dest, "--ref", f"v0.2.0")
     release = json.loads(t.catalog_release(MINE, "0.2.0").read_text())
@@ -92,6 +96,7 @@ def catalog_round_trip_keeps_provenance(t: T):
 @case(fixture="g3_vendor_installed", spec=["fork-replacement/active-fork-rules", "updates/rollback-swaps-current-and-previous"])
 def update_and_rollback_keep_provenance(t: T):
     dest, source_commit, _ = prepare(t)
+    MINE = t.manifest_id(dest)
     forkof = {"id": ID, "version": "0.1.0", "commit": source_commit, "source": t.package(ID)["source"]}
     first = (t.gitpm_ok("commit", dest, "0.2.0"), t.rev(dest))[1]
     t.gitpm_ok("install", dest)

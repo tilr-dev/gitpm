@@ -54,7 +54,7 @@ mod tests {
         assert!(view.state.packages.is_empty() && view.resolved.is_empty());
         assert!(!root.exists() && !dir.join(".workspace.lock").exists());
         // While a Manager holds the lock, the list still reads the committed state.
-        let author = Author::new(dir.join("author"), "dan/demo1");
+        let author = Author::new(dir.join("author"), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let m = crate::Manager::open(&root).unwrap();
         m.install(author.source()).unwrap();
         let before = tree_hash(dir.path());
@@ -65,8 +65,11 @@ mod tests {
         // One JSON object: the raw state with `resolved` beside it.
         let json = serde_json::to_value(&view).unwrap();
         assert_eq!(json["format"], crate::STATE_FORMAT);
-        assert!(json["packages"]["dan/demo1"].is_object());
-        assert_eq!(json["resolved"][0]["id"], "dan/demo1");
+        assert!(json["packages"]["ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc"].is_object());
+        assert_eq!(
+            json["resolved"][0]["id"],
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc"
+        );
         drop(m);
     }
 
@@ -75,31 +78,61 @@ mod tests {
         let dir = TempDir::new("list");
         let root = dir.join("workspace");
         fs::create_dir(&root).unwrap();
-        let mut state = state_with("tilr/theme", "s", "1.0.0", &"a".repeat(40));
-        state
-            .packages
-            .extend(state_with("me/theme", "s", "1.0.0", &"b".repeat(40)).packages);
-        state
-            .packages
-            .extend(state_with("tilr/store", "s", "1.0.0", &"c".repeat(40)).packages);
-        for id in ["tilr/theme", "me/theme"] {
+        let mut state = state_with(
+            "f851f609-bb81-52d6-bfef-33798624782c",
+            "s",
+            "1.0.0",
+            &"a".repeat(40),
+        );
+        state.packages.extend(
+            state_with(
+                "d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50",
+                "s",
+                "1.0.0",
+                &"b".repeat(40),
+            )
+            .packages,
+        );
+        state.packages.extend(
+            state_with(
+                "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+                "s",
+                "1.0.0",
+                &"c".repeat(40),
+            )
+            .packages,
+        );
+        for id in [
+            "f851f609-bb81-52d6-bfef-33798624782c",
+            "d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50",
+        ] {
             state.packages.get_mut(id).unwrap().metadata.provides = vec!["theme".into()];
         }
-        state
-            .replacements
-            .insert("tilr/theme".into(), "me/theme".into());
+        state.replacements.insert(
+            "f851f609-bb81-52d6-bfef-33798624782c".into(),
+            "d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50".into(),
+        );
         fs::write(root.join("state.json"), serde_json::to_vec(&state).unwrap()).unwrap();
         let options = ListOptions {
             provides: Some("theme".into()),
         };
         let view = list_with(&root, &options).unwrap();
         let ids: Vec<&str> = view.resolved.iter().map(|p| p.id.as_str()).collect();
-        assert_eq!(ids, ["me/theme", "tilr/theme"]);
+        assert_eq!(
+            ids,
+            [
+                "d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50",
+                "f851f609-bb81-52d6-bfef-33798624782c"
+            ]
+        );
         // A replaced provider is kept (status view), shown inactive.
         assert!(!view.resolved[1].active && view.resolved[0].active);
         assert_eq!(
             view.state.packages.keys().collect::<Vec<_>>(),
-            ["me/theme", "tilr/theme"]
+            [
+                "d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50",
+                "f851f609-bb81-52d6-bfef-33798624782c"
+            ]
         );
         assert_eq!(view.state.replacements.len(), 1);
         let none = ListOptions {

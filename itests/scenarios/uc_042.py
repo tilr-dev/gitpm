@@ -12,7 +12,7 @@ from pathlib import Path
 from gitpmtest import T, case
 
 REPO = Path("/fx/authors/journey")
-ID = "dan/journey"
+ID = "0c318dfa-7376-5e00-8edd-81474abe756a"
 
 
 def blob(repo: Path, rev: str, path: str) -> bytes:
@@ -23,7 +23,7 @@ def blob(repo: Path, rev: str, path: str) -> bytes:
 def canonical(t: T, text: str, id: str, version: str) -> dict:
     m = json.loads(text)
     t.eq(text, json.dumps(m, indent=2, ensure_ascii=False) + "\n", f"{id} {version} manifest is canonical JSON")
-    t.eq(list(m)[:3], ["id", "version", "dependencies"], "canonical key order")
+    t.eq(list(m)[:3], ["id", "name", "version"], "canonical key order")
     t.eq((m["id"], m["version"]), (id, version), "manifest identity")
     return m
 
@@ -65,15 +65,17 @@ def check_release(t: T, repo: Path, id: str, version: str):
 @case(spec=["authoring/init-creates-a-package-with-its-first-release", "authoring/commit-releases-a-version"])
 def each_commit_creates_one_commit_and_tag(t: T):
     """init NS/NAME --into DIR → 0.1.0; edit dist + commit 0.1.1; edit + commit 0.1.2."""
-    t.has(t.gitpm_ok("init", ID, "--into", REPO).out, f"ID: {ID}", f"v0.1.0")
-    released(t, REPO, ID, "0.1.0", None)
+    result = t.gitpm_ok("init", "journey", "--into", REPO)
+    id = json.loads((REPO / "plugin.json").read_text())["id"]
+    t.has(result.out, f"ID: {id}", "v0.1.0")
+    released(t, REPO, id, "0.1.0", None)
     t.eq(t.git(REPO, "branch", "--show-current"), "main", "branch main")
     for version, before in [("0.1.1", t.rev(REPO)), ("0.1.2", None)]:
         before = before or t.rev(REPO)
         dist = f"export const greeting = 'journey {version}';\n".encode()
         t.write(REPO, {"dist/index.js": dist})
-        t.has(t.gitpm_ok("commit", REPO, version).out, f"{ID} committed {version} (local commit and tag v{version})")
-        released(t, REPO, ID, version, before, dist)
+        t.has(t.gitpm_ok("commit", REPO, version).out, f"{id} committed {version} (local commit and tag v{version})")
+        released(t, REPO, id, version, before, dist)
     t.eq(sorted(t.git(REPO, "tag", "--list").split()), [f"v0.1.0", f"v0.1.1", f"v0.1.2"], "all tags")
 
 
@@ -83,12 +85,12 @@ def catalog_update_is_idempotent_and_keeps_old_releases(t: T):
     for v in ["0.1.0", "0.1.1"]:
         check_release(t, REPO, ID, v)
     before = t.snap(t.catalog)
-    t.gitpm_ok("catalog-update")
+    t.gitpm_ok("catalog", "update")
     t.same(before, "catalog after a run without changes")
     old = {v: t.catalog_release(ID, v).read_bytes() for v in ["0.1.0", "0.1.1"]}
     t.write(REPO, {"dist/index.js": "export const greeting = 'journey 0.1.2';\n"})
     t.gitpm_ok("commit", REPO, "0.1.2")
-    t.gitpm_ok("catalog-update")
+    t.gitpm_ok("catalog", "update")
     check_release(t, REPO, ID, "0.1.2")
     for v, data in old.items():
         t.ok(t.catalog_release(ID, v).read_bytes() == data, f"release {v} byte-identical")
@@ -106,27 +108,28 @@ def fork_release_gets_its_own_catalog_entry(t: T):
     t.gitpm_ok("--root", scratch, "install", REPO)
     base = t.rev(REPO, f"v0.1.1")
     fork = t.root / "authors/fork-journey"
-    t.gitpm_ok("--root", scratch, "fork", ID, "--ns", "mine", "--into", fork)
+    t.gitpm_ok("--root", scratch, "fork", ID, "--into", fork)
     m = json.loads((fork / "plugin.json").read_text())
-    t.eq(m["id"], "mine/journey", "fork ID")
+    fork_id = m["id"]
+    t.ok(fork_id != ID, "new fork UUID")
     t.eq(m["forkOf"], {"id": ID, "version": "0.1.1", "commit": base, "source": str(REPO)}, "forkOf")
     t.eq(m["replaces"], {"id": ID, "version": "0.1.1"}, "replaces")
     before_commit = t.rev(fork)
     dist = b"export const greeting = 'mine fork';\n"
     t.write(fork, {"dist/index.js": dist})
     t.gitpm_ok("commit", fork, "0.1.2")
-    released(t, fork, "mine/journey", "0.1.2", before_commit, dist)
+    released(t, fork, fork_id, "0.1.2", before_commit, dist)
     fm = json.loads(blob(fork, "HEAD", "plugin.json"))
     t.eq((fm["forkOf"], fm["replaces"]), (m["forkOf"], m["replaces"]), "release keeps forkOf/replaces")
-    original = t.snap(t.catalog / "namespaces/dan")
+    original = t.snap(t.catalog / "packages" / ID)
     with open(t.root / "sources.txt", "a") as f:
         f.write("authors/fork-journey\n")
-    t.gitpm_ok("catalog-update")
-    index = json.loads(t.catalog_index("mine/journey").read_text())
+    t.gitpm_ok("catalog", "update")
+    index = json.loads(t.catalog_index(fork_id).read_text())
     t.eq(index["source"], str(fork), "fork entry source")
-    t.eq(sorted(index["versions"]), ["0.1.2"], "fork has only its own release (old dan/journey tags ignored)")
-    check_release(t, fork, "mine/journey", "0.1.2")
-    r = release_json(t, "mine/journey", "0.1.2")
+    t.eq(sorted(index["versions"]), ["0.1.2"], "fork has only its own release (old 0c318dfa-7376-5e00-8edd-81474abe756a tags ignored)")
+    check_release(t, fork, fork_id, "0.1.2")
+    r = release_json(t, fork_id, "0.1.2")
     t.eq((r["manifest"]["forkOf"], r["manifest"]["replaces"]), (m["forkOf"], m["replaces"]), "catalog keeps provenance")
-    t.has((t.catalog / "namespaces/catalog.json").read_text(), '"mine": "mine/"')
+    t.has((t.catalog / "packages/catalog.json").read_text(), fork_id)
     t.same(original, "original's catalog entry")

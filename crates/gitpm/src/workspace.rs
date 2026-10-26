@@ -461,11 +461,10 @@ pub struct DistSync {
     /// Inactive (disabled, replaced, forgotten or retained) packages whose `dist/<id>`
     /// is removed.
     pub removed: Vec<String>,
-    /// Workspace-relative paths under `dist/` that belong to no known package, or are not
-    /// real folders where a namespace folder belongs; left alone.
+    /// Workspace-relative paths under `dist/` that belong to no known package; left alone.
     pub unmanaged: Vec<String>,
     /// Active packages whose missing `dist/<id>` is not deployed, with the reason (clone
-    /// or installed commit missing, a blocked namespace, or another error in `sync_dist`).
+    /// or installed commit missing, or another error in `sync_dist`).
     pub skipped: Vec<SkippedDist>,
     /// Actionable warnings from committed dist exports.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -694,7 +693,7 @@ fn updated_package(
 }
 
 /// Each component of `id` exists under `base` with exactly this spelling. On a
-/// case-insensitive file system `Vendor/Module` must not resolve to `vendor/module`.
+/// case-insensitive file system the spelling must match the canonical UUID.
 fn exact_path(base: &Path, id: &str) -> Result<bool> {
     let mut current = base.to_path_buf();
     for part in id.split('/') {
@@ -717,8 +716,8 @@ fn exact_path(base: &Path, id: &str) -> Result<bool> {
     }
     Ok(true)
 }
-/// Refuse an ID that would land on an existing path spelled differently (`Dan/p` vs
-/// `dan/p` on a case-insensitive file system): it would share or overwrite that clone.
+/// Refuse an ID that would land on an existing path spelled differently on a
+/// case-insensitive file system: it would share or overwrite that clone.
 fn ensure_no_case_collision(base: &Path, id: &str) -> Result<()> {
     let mut current = base.to_path_buf();
     for part in id.split('/') {
@@ -740,11 +739,7 @@ fn ensure_no_case_collision(base: &Path, id: &str) -> Result<()> {
     Ok(())
 }
 fn ids_collide(a: &str, b: &str) -> bool {
-    let (a, b): (Vec<_>, Vec<_>) = (a.split('/').collect(), b.split('/').collect());
-    a.iter()
-        .zip(&b)
-        .take_while(|(x, y)| x.eq_ignore_ascii_case(y))
-        .any(|(x, y)| x != y)
+    a != b && a.eq_ignore_ascii_case(b)
 }
 
 /// `.state.json-<pid>-<counter>.tmp`, the name `write_initial_state` stages under.
@@ -2961,7 +2956,7 @@ impl Manager {
 /// package is removed; an active package whose `dist/` is missing, or that just became
 /// active, gets it from its clone at the installed commit. Folders of no known package
 /// are left alone, and so is an active package that cannot be deployed because its clone
-/// or installed commit is missing or its namespace path is not a folder (callers report
+/// or installed commit is missing (callers report
 /// these with [`Manager::sync_dist_plan`]); any other failure fails the operation. Cheap:
 /// one listing of `dist/`, and Git reads only for the packages deployed.
 fn settle_dist(txn: &mut Txn, before: &State, after: &State, custom_ssh: bool) -> Result<()> {
@@ -2978,6 +2973,18 @@ fn settle_dist(txn: &mut Txn, before: &State, after: &State, custom_ssh: bool) -
             if !keep {
                 txn.delete_repo(&relative)?;
             }
+        }
+    }
+    // A transition that removes a deployment must validate its leaf even when an
+    // obstruction makes that leaf unmanaged in the reconciliation report.
+    for id in before.packages.keys() {
+        if before.is_active(id) && !after.is_active(id) {
+            txn.delete_dist(id)?;
+        }
+    }
+    for id in after.packages.keys() {
+        if !before.is_active(id) && after.is_active(id) {
+            txn::ensure_dist_leaf(txn.root(), id)?;
         }
     }
     let staged = txn.staged_dists().into_iter().collect();
@@ -3044,42 +3051,34 @@ fn dist_drift_unstaged(
         valid_id(id).is_ok()
             && (state.packages.contains_key(id) || state.forgotten.contains_key(id))
     };
-    let is_namespace = |name: &str| {
-        state
-            .packages
-            .keys()
-            .chain(state.forgotten.keys())
-            .any(|id| id.split_once('/').is_some_and(|(ns, _)| ns == name))
-    };
-    // (name, real directory: not a symlink, not a file)
-    let names = |folder: &Path| -> Result<Vec<(String, bool)>> {
-        let mut names = Vec::new();
-        for entry in fs::read_dir(folder)? {
-            let entry = entry?;
-            let directory = entry.file_type()?.is_dir();
-            names.push((entry.file_name().to_string_lossy().into_owned(), directory));
-        }
-        names.sort();
-        Ok(names)
-    };
     let mut present = Vec::new();
-    // Namespace paths that are not real folders: nothing is deployed below them.
-    let mut blocked = Vec::new();
+    let mut blocked = BTreeSet::new();
     if dist.is_dir() {
-        for (name, directory) in names(&dist)? {
+        let mut names = fs::read_dir(&dist)?
+            .map(|entry| Ok(entry?.file_name().to_string_lossy().into_owned()))
+            .collect::<Result<Vec<_>>>()?;
+        names.sort();
+        for name in names {
             if known(&name) {
-                present.push(name);
-            } else if is_namespace(&name) && !directory {
-                plan.unmanaged.push(format!("dist/{name}"));
-                blocked.push(name);
-            } else if directory && is_namespace(&name) {
-                for (child, _) in names(&dist.join(&name))? {
-                    let id = format!("{name}/{child}");
-                    if known(&id) {
-                        present.push(id);
-                    } else {
-                        plan.unmanaged.push(format!("dist/{id}"));
+                let path = dist.join(&name);
+                let meta = fs::symlink_metadata(&path)?;
+                let linked = state
+                    .packages
+                    .get(&name)
+                    .or_else(|| state.forgotten.get(&name))
+                    .and_then(Installed::link);
+                let managed = match linked {
+                    Some(link) => {
+                        meta.file_type().is_symlink()
+                            && fs::read_link(&path)? == Path::new(&link.target)
                     }
+                    None => meta.is_dir(),
+                };
+                if managed {
+                    present.push(name);
+                } else {
+                    plan.unmanaged.push(format!("dist/{name}"));
+                    blocked.insert(name);
                 }
             } else {
                 plan.unmanaged.push(format!("dist/{name}"));
@@ -3095,14 +3094,10 @@ fn dist_drift_unstaged(
         if !state.is_active(id) {
             continue;
         }
-        // A blocked namespace is unmanaged, and its active packages remain undeployed.
-        let namespace = id.split_once('/').map(|(ns, _)| ns);
-        if let Some(ns) = namespace
-            && blocked.iter().any(|b| b == ns)
-        {
+        if blocked.contains(id) && !staged.contains(id) {
             plan.skipped.push(SkippedDist {
                 id: id.clone(),
-                reason: format!("dist/{ns} is not a folder"),
+                reason: format!("dist/{id} is not a folder"),
                 clone_missing: false,
                 link: p.link().cloned(),
             });
@@ -3334,6 +3329,7 @@ fn clone_revision(txn: &Txn, fetch: &Fetch, name: &str, custom_ssh: bool) -> Res
 
 /// The new package's ID must not collide with anything installed or retained.
 fn check_new_id(root: &Path, state: &State, m: &Manifest) -> Result<()> {
+    valid_id(&m.id)?;
     if state.packages.contains_key(&m.id) {
         return Err(Error::AlreadyInstalled {
             message: format!("already installed: {}", m.id),
@@ -4108,21 +4104,22 @@ mod tests {
     fn copy_tree_copies_nested_files_and_refuses_symlinks() {
         let dir = TempDir::new("workspace");
         let from = dir.join("from");
-        fs::create_dir_all(from.join("a/b")).unwrap();
+        fs::create_dir_all(from.join("75494f24-1c7e-5480-9e39-738ff3d038c4")).unwrap();
         fs::create_dir_all(from.join("empty")).unwrap();
-        fs::write(from.join("a/b/c.txt"), "c").unwrap();
+        fs::write(from.join("75494f24-1c7e-5480-9e39-738ff3d038c4/c.txt"), "c").unwrap();
         fs::write(from.join("top"), [0u8, 255]).unwrap();
         copy_tree(&from, &dir.join("to"), false).unwrap();
         assert_eq!(tree_hash(&dir.join("to")), tree_hash(&from));
 
-        std::os::unix::fs::symlink("top", from.join("a/link")).unwrap();
+        std::os::unix::fs::symlink("top", from.join("e5bc1bca-9c70-51f4-a360-9f2a468b501c"))
+            .unwrap();
         let error = copy_tree(&from, &dir.join("to2"), false).unwrap_err();
         assert_eq!(error.kind(), "unsupported");
         assert!(error.to_string().contains("symlinks are not supported"));
         // Repository copies keep symlinks as symlinks.
         copy_tree(&from, &dir.join("to4"), true).unwrap();
         assert_eq!(
-            fs::read_link(dir.join("to4/a/link")).unwrap(),
+            fs::read_link(dir.join("to4/e5bc1bca-9c70-51f4-a360-9f2a468b501c")).unwrap(),
             Path::new("top")
         );
         let error = copy_tree(&dir.join("missing"), &dir.join("to3"), false).unwrap_err();
@@ -4133,11 +4130,16 @@ mod tests {
     #[test]
     fn exact_path_matches_spelling_component_by_component() {
         let dir = TempDir::new("workspace");
-        fs::create_dir_all(dir.join("dist/vendor/module/.git")).unwrap();
+        fs::create_dir_all(dir.join("dist/cc6c3e20-6fe0-58c4-944e-991c2a154a47/.git")).unwrap();
         let plugins = dir.join("dist");
-        assert!(exact_path(&plugins, "vendor/module").unwrap());
-        assert!(exact_path(&plugins, "vendor").unwrap());
-        for other in ["Vendor/module", "vendor/Module", "vendor/mod", "x"] {
+        assert!(exact_path(&plugins, "cc6c3e20-6fe0-58c4-944e-991c2a154a47").unwrap());
+        assert!(exact_path(&plugins, "cc6c3e20-6fe0-58c4-944e-991c2a154a47/.git").unwrap());
+        for other in [
+            "CC6C3E20-6FE0-58C4-944E-991C2A154A47",
+            "cc6c3e20-6fe0-58c4-944e-991c2a154a47/.GIT",
+            "cc6c3e20-6fe0-58c4-944e-991c2a154a47/missing",
+            "x",
+        ] {
             assert!(!exact_path(&plugins, other).unwrap(), "{other}");
         }
         assert!(!exact_path(&dir.join("missing"), "vendor").unwrap());
@@ -4376,7 +4378,7 @@ mod tests {
                 "invalid_id",
             ),
             (
-                r#"{"format":1,"packages":{"a/b/c":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true,"metadata":{}}}}"#,
+                r#"{"format":1,"packages":{"75494f24-1c7e-5480-9e39-738ff3d038c4/c":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true,"metadata":{}}}}"#,
                 "invalid_id",
             ),
             (
@@ -4403,8 +4405,8 @@ mod tests {
     fn update_all_recovers_every_plugin_after_an_interrupted_commit() {
         // Two bare stores, two worktrees, two payloads and state: thirteen renames.
         for renames in 0..13 {
-            let (ws, m) = Ws::installed("x/a");
-            let other = ws.other_author("other", "x/b");
+            let (ws, m) = Ws::installed("d35b3151-28fd-557a-a363-b5f18ae491c8");
+            let other = ws.other_author("other", "3a53cdea-2cb1-5653-bf22-898b679440ee");
             m.install(other.source()).unwrap();
             ws.author.release("0.2.0");
             other.release("0.2.0");
@@ -4431,7 +4433,7 @@ mod tests {
 
     #[test]
     fn disable_and_enable_roll_dist_forward_after_an_interrupted_commit() {
-        let id = "dan/demo1";
+        let id = "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc";
         // disable: dist out, state.json; enable: dist in, state.json.
         for renames in 0..2 {
             let (ws, m) = Ws::installed(id);
@@ -4443,10 +4445,7 @@ mod tests {
                 "crash after {renames}"
             );
             assert!(!ws.dist().exists(), "crash after {renames}");
-            assert!(
-                !ws.root.join("dist/dan").exists(),
-                "empty namespace removed"
-            );
+            assert_eq!(fs::read_dir(ws.root.join("dist")).unwrap().count(), 0);
             ws.no_leftovers();
             crash_after(renames, || m.enable(id));
             drop(m);
@@ -4466,28 +4465,41 @@ mod tests {
 
     #[test]
     fn a_reconcile_that_deploys_and_removes_rolls_forward_after_an_interrupted_commit() {
-        // dist/x/a in (1), dist/x/b out (1), state.json (1).
+        // dist/d35b3151-28fd-557a-a363-b5f18ae491c8 in (1), dist/3a53cdea-2cb1-5653-bf22-898b679440ee out (1), state.json (1).
         for renames in 0..3 {
-            let (ws, m) = Ws::installed("x/a");
-            let other = ws.other_author("other", "x/b");
+            let (ws, m) = Ws::installed("d35b3151-28fd-557a-a363-b5f18ae491c8");
+            let other = ws.other_author("other", "3a53cdea-2cb1-5653-bf22-898b679440ee");
             m.install(other.source()).unwrap();
-            m.disable("x/b").unwrap();
-            fs::remove_dir_all(ws.root.join("dist/x/a")).unwrap();
-            copy_tree(&other.path.join("dist"), &ws.root.join("dist/x/b"), false).unwrap();
+            m.disable("3a53cdea-2cb1-5653-bf22-898b679440ee").unwrap();
+            fs::remove_dir_all(ws.root.join("dist/d35b3151-28fd-557a-a363-b5f18ae491c8")).unwrap();
+            copy_tree(
+                &other.path.join("dist"),
+                &ws.root.join("dist/3a53cdea-2cb1-5653-bf22-898b679440ee"),
+                false,
+            )
+            .unwrap();
             let plan = m.sync_dist_plan().unwrap();
             assert_eq!(
                 (plan.deployed, plan.removed),
-                (vec!["x/a".into()], vec!["x/b".into()])
+                (
+                    vec!["d35b3151-28fd-557a-a363-b5f18ae491c8".into()],
+                    vec!["3a53cdea-2cb1-5653-bf22-898b679440ee".into()]
+                )
             );
             crash_after(renames, || m.sync_dist());
             drop(m);
             let m = ws.open();
             assert_eq!(
-                tree_hash(&ws.root.join("dist/x/a")),
+                tree_hash(&ws.root.join("dist/d35b3151-28fd-557a-a363-b5f18ae491c8")),
                 tree_hash(&ws.author.path.join("dist")),
                 "crash after {renames}"
             );
-            assert!(!ws.root.join("dist/x/b").exists(), "crash after {renames}");
+            assert!(
+                !ws.root
+                    .join("dist/3a53cdea-2cb1-5653-bf22-898b679440ee")
+                    .exists(),
+                "crash after {renames}"
+            );
             ws.no_leftovers();
             assert_eq!(m.sync_dist_plan().unwrap(), DistSync::default());
         }
@@ -4495,7 +4507,7 @@ mod tests {
 
     #[test]
     fn a_revision_without_dist_is_never_deployed_empty() {
-        let (ws, m) = Ws::installed("dan/demo1");
+        let (ws, m) = Ws::installed("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         fixture_git(&ws.author.path, &["rm", "-q", "-r", "dist"]);
         fixture_git(&ws.author.path, &["commit", "-q", "-m", "no dist"]);
         let commit = ws.author.head();
@@ -4509,7 +4521,7 @@ mod tests {
 
     #[test]
     fn open_rolls_an_interrupted_commit_forward() {
-        let id = "dan/demo1";
+        let id = "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc";
         // An update commit makes 5 renames (repo out/in, dist out/in, state.json).
         for renames in 0..5 {
             let (ws, m) = Ws::installed(id);
@@ -4539,7 +4551,7 @@ mod tests {
 
     #[test]
     fn open_discards_an_uncommitted_transaction() {
-        let (ws, m) = Ws::installed("dan/demo1");
+        let (ws, m) = Ws::installed("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         drop(m);
         let before = tree_hash(&ws.root);
         // Crash while staging: no journal yet.
@@ -4556,20 +4568,20 @@ mod tests {
         drop(m);
         fs::create_dir_all(ws.root.join(txn::DIR).join("scratch")).unwrap();
         let m = ws.open();
-        m.disable("dan/demo1").unwrap();
+        m.disable("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc").unwrap();
         ws.no_leftovers();
     }
 
     #[test]
     fn neighbours_named_like_old_stage_folders_are_never_touched() {
-        let (ws, m) = Ws::installed("dan/demo1");
+        let (ws, m) = Ws::installed("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         drop(m);
         for name in [".workspace.stage", ".workspace.backup"] {
             fs::create_dir_all(ws.dir.join(name)).unwrap();
             fs::write(ws.dir.join(name).join("user.txt"), "user data").unwrap();
         }
         let m = ws.open();
-        m.disable("dan/demo1").unwrap();
+        m.disable("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc").unwrap();
         for name in [".workspace.stage", ".workspace.backup"] {
             assert_eq!(read(&ws.dir.join(name).join("user.txt")), "user data");
         }
@@ -4579,9 +4591,15 @@ mod tests {
 
     #[test]
     fn every_operation_rejects_invalid_ids_without_changes() {
-        let (ws, m) = Ws::installed("dan/demo1");
+        let (ws, m) = Ws::installed("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let dest = ws.dir.join("fork");
-        for id in ["", "../evil", "a/b/c", "dan/demo 1", "dan\\demo1"] {
+        for id in [
+            "",
+            "../evil",
+            "75494f24-1c7e-5480-9e39-738ff3d038c4/c",
+            "826a054b-0fad-5e5a-8890-f87c6452943b 1",
+            "dan\\demo1",
+        ] {
             ws.refuses("invalid_id", || m.update(id));
             ws.refuses("invalid_id", || m.update_to(id, Target::Dev));
             ws.refuses("invalid_id", || m.rollback(id));
@@ -4591,15 +4609,15 @@ mod tests {
             ws.refuses("invalid_id", || m.restore(id));
             ws.refuses("invalid_id", || m.uninstall_plan(id));
             ws.refuses("invalid_id", || m.uninstall(id, &[], false));
-            ws.refuses("invalid_id", || m.fork_in_namespace(id, &dest, "me"));
+            ws.refuses("invalid_id", || m.fork_into(id, &dest));
         }
         assert!(!dest.exists());
     }
 
     #[test]
     fn every_operation_on_a_missing_id_fails_without_changes() {
-        let (ws, m) = Ws::installed("dan/demo1");
-        let id = "dan/missing";
+        let (ws, m) = Ws::installed("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
+        let id = "a68376c0-a262-545a-a4f8-afe9998880a6";
         for error in [
             ws.refuses("not_installed", || m.update(id)),
             ws.refuses("not_installed", || {
@@ -4610,9 +4628,7 @@ mod tests {
             ws.refuses("not_installed", || m.enable(id)),
             ws.refuses("not_installed", || m.disable(id)),
             ws.refuses("not_installed", || m.forget(id)),
-            ws.refuses("not_installed", || {
-                m.fork_in_namespace(id, &ws.dir.join("f"), "me")
-            }),
+            ws.refuses("not_installed", || m.fork_into(id, &ws.dir.join("f"))),
         ] {
             assert!(
                 matches!(&error, Error::NotInstalled { id: e } if e == id),
@@ -4629,7 +4645,7 @@ mod tests {
         ] {
             assert!(matches!(error, Error::RepositoryNotFound { .. }));
         }
-        // A namespace is not a package ID.
+        // An alias is not a package ID.
         ws.refuses("invalid_id", || m.uninstall("dan", &[], false));
         // Restore of an unknown ID fails too (see the ignored test for its kind).
         let before = tree_hash(&ws.root);
@@ -4640,16 +4656,18 @@ mod tests {
 
     #[test]
     fn restore_of_a_missing_repository_is_repository_not_found() {
-        let (ws, m) = Ws::installed("dan/demo1");
-        ws.refuses("repository_not_found", || m.restore("dan/missing"));
+        let (ws, m) = Ws::installed("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
+        ws.refuses("repository_not_found", || {
+            m.restore("a68376c0-a262-545a-a4f8-afe9998880a6")
+        });
     }
 
     #[test]
     fn corrupt_state_blocks_every_operation_and_is_not_overwritten() {
-        let (ws, m) = Ws::installed("dan/demo1");
-        let id = "dan/demo1";
+        let (ws, m) = Ws::installed("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
+        let id = "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc";
         fs::write(ws.root.join("state.json"), "{\"packages\": {").unwrap();
-        let other = ws.other_author("other", "dan/other");
+        let other = ws.other_author("other", "95d14dc8-6dfc-5022-9fd1-7146ee6aee58");
         ws.refuses("invalid_data", || m.state());
         ws.refuses("invalid_data", || m.list());
         ws.refuses("invalid_data", || m.check());
@@ -4661,9 +4679,7 @@ mod tests {
         ws.refuses("invalid_data", || m.restore(id));
         ws.refuses("invalid_data", || m.uninstall_plan(id));
         ws.refuses("invalid_data", || m.uninstall(id, &[], false));
-        ws.refuses("invalid_data", || {
-            m.fork_in_namespace(id, &ws.dir.join("f"), "me")
-        });
+        ws.refuses("invalid_data", || m.fork_into(id, &ws.dir.join("f")));
         assert_eq!(read(&ws.root.join("state.json")), "{\"packages\": {");
         assert!(!ws.dir.join("f").exists());
     }
@@ -4672,7 +4688,7 @@ mod tests {
 
     #[test]
     fn install_clones_checks_out_the_latest_release_and_deploys_dist() {
-        let ws = Ws::new("dan/demo1");
+        let ws = Ws::new("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         ws.author.release("1.9.0");
         let c110 = ws.author.release("1.10.0");
         ws.author.commit("2.0.0"); // untagged HEAD is not a release
@@ -4680,7 +4696,7 @@ mod tests {
         // A non-canonical spelling of a local source is stored canonically.
         let spelled = ws.dir.join("author/../author");
         let result = m.install(spelled.to_str().unwrap()).unwrap();
-        assert_eq!(result.id, "dan/demo1");
+        assert_eq!(result.id, "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         assert_eq!(result.source, ws.author.source());
         assert_eq!(
             result.current,
@@ -4693,7 +4709,7 @@ mod tests {
         assert!(result.fork_of.is_none());
 
         let state = m.state().unwrap();
-        let p = &state.packages["dan/demo1"];
+        let p = &state.packages["ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc"];
         assert!(p.enabled && p.previous.is_none() && p.fork_of.is_none());
         assert_eq!(p.current.commit, c110);
         assert_eq!(fixture_git(&ws.repo(), &["rev-parse", "HEAD"]), c110);
@@ -4718,7 +4734,7 @@ mod tests {
 
     #[test]
     fn install_by_ref_and_default_branch() {
-        let ws = Ws::new("dan/demo1");
+        let ws = Ws::new("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let first = ws.author.head();
         ws.author.release("0.2.0");
         let head = ws.author.commit("0.3.0");
@@ -4732,11 +4748,16 @@ mod tests {
             .unwrap();
         assert_eq!(
             (r.id.as_str(), r.current.commit.as_str()),
-            ("dan/demo1", first.as_str())
+            ("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", first.as_str())
         );
         assert!(ws.repo().join(".git").is_file());
-        assert!(ws.root.join("dist/dan/demo1/index.js").is_file());
-        m.uninstall("dan/demo1", &[], false).unwrap();
+        assert!(
+            ws.root
+                .join("dist/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/index.js")
+                .is_file()
+        );
+        m.uninstall("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", &[], false)
+            .unwrap();
         let r = m
             .install_package(ws.author.source(), None, InstallTarget::Dev)
             .unwrap();
@@ -4749,8 +4770,11 @@ mod tests {
     #[test]
     fn install_by_ref_rejects_empty_manifest_versions() {
         for version in [" ", ""] {
-            let ws = Ws::new("dan/demo1");
-            write_manifest(&ws.author.path, &make_manifest("dan/demo1", version));
+            let ws = Ws::new("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
+            write_manifest(
+                &ws.author.path,
+                &make_manifest("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", version),
+            );
             fixture_git(&ws.author.path, &["commit", "-q", "-am", "empty version"]);
             let m = ws.open();
             let error = ws.refuses("invalid_manifest", || {
@@ -4769,7 +4793,7 @@ mod tests {
 
     #[test]
     fn install_refusals_leave_the_workspace_unchanged() {
-        let (ws, m) = Ws::installed("dan/demo1");
+        let (ws, m) = Ws::installed("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         // The same source again: reported, nothing changed.
         let before = tree_hash(&ws.root);
         let again = m.install(ws.author.source()).unwrap();
@@ -4779,7 +4803,7 @@ mod tests {
         );
         assert_eq!(
             again.current,
-            m.state().unwrap().packages["dan/demo1"].current
+            m.state().unwrap().packages["ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc"].current
         );
         assert_eq!(tree_hash(&ws.root), before);
         ws.no_leftovers();
@@ -4798,39 +4822,54 @@ mod tests {
             )
         });
 
-        let untagged = Author::untagged(ws.dir.join("untagged"), "dan/untagged", "0.1.0");
+        let untagged = Author::untagged(
+            ws.dir.join("untagged"),
+            "27dc8a36-f6bf-58de-b04a-5e0a109b64c0",
+            "0.1.0",
+        );
         ws.refuses("no_releases", || m.install(untagged.source()));
 
-        let deps = Author::new(ws.dir.join("deps"), "dan/deps");
-        let mut with_deps = make_manifest("dan/deps", "0.2.0");
+        let deps = Author::new(ws.dir.join("deps"), "edb302df-447b-516b-b327-2033ad60fc14");
+        let mut with_deps = make_manifest("edb302df-447b-516b-b327-2033ad60fc14", "0.2.0");
         with_deps
             .dependencies
-            .insert("dan/missing".into(), "^1.0".into());
+            .insert("a68376c0-a262-545a-a4f8-afe9998880a6".into(), "^1.0".into());
         write_manifest(&deps.path, &with_deps);
         fixture_git(&deps.path, &["commit", "-q", "-am", "deps"]);
         let error = ws.refuses("dependency_conflict", || {
             m.install_package(deps.source(), None, InstallTarget::Ref("HEAD".into()))
         });
-        assert!(error.to_string().contains("dan/missing"), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("a68376c0-a262-545a-a4f8-afe9998880a6"),
+            "{error}"
+        );
 
-        let no_dist = Author::new(ws.dir.join("nodist"), "dan/nodist");
+        let no_dist = Author::new(
+            ws.dir.join("nodist"),
+            "c1c24ebf-4890-5ef8-a066-d7fe34227376",
+        );
         fixture_git(&no_dist.path, &["rm", "-q", "-r", "dist"]);
-        write_manifest(&no_dist.path, &make_manifest("dan/nodist", "0.2.0"));
+        write_manifest(
+            &no_dist.path,
+            &make_manifest("c1c24ebf-4890-5ef8-a066-d7fe34227376", "0.2.0"),
+        );
         fixture_git(&no_dist.path, &["commit", "-q", "-am", "no dist"]);
         ws.refuses("invalid_manifest", || {
             m.install_package(no_dist.source(), None, InstallTarget::Ref("HEAD".into()))
         });
 
-        // An unscoped ID is refused, also when it equals an installed namespace.
+        // Aliases cannot be used as package identities.
         let unscoped = ws.other_author("unscoped", "dan");
         ws.refuses("invalid_id", || m.install(unscoped.source()));
         let solo = ws.other_author("solo", "solo");
         ws.refuses("invalid_id", || m.install(solo.source()));
 
         // The expected manifest must match the Git revision exactly.
-        let other = ws.other_author("other", "dan/other");
+        let other = ws.other_author("other", "95d14dc8-6dfc-5022-9fd1-7146ee6aee58");
         let wrong = catalog::Release {
-            manifest: make_manifest("dan/other", "9.9.9"),
+            manifest: make_manifest("95d14dc8-6dfc-5022-9fd1-7146ee6aee58", "9.9.9"),
             source: other.source().into(),
             commit: other.head(),
             reference: "v9.9.9".into(),
@@ -4852,7 +4891,7 @@ mod tests {
             },
         );
         let release = catalog::Release {
-            manifest: make_manifest("dan/other", "0.1.0"),
+            manifest: make_manifest("95d14dc8-6dfc-5022-9fd1-7146ee6aee58", "0.1.0"),
             source: other.source().into(),
             commit: other.head(),
             reference: "v0.1.0".into(),
@@ -4869,8 +4908,8 @@ mod tests {
 
     #[test]
     fn forgotten_repository_blocks_reinstall_until_restored() {
-        let (ws, m) = Ws::installed("dan/demo1");
-        m.forget("dan/demo1").unwrap();
+        let (ws, m) = Ws::installed("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
+        m.forget("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc").unwrap();
         assert!(m.list().unwrap().is_empty());
         assert!(ws.repo().join(".git").is_file() && !ws.dist().exists());
         let error = ws.refuses("already_installed", || m.install(ws.author.source()));
@@ -4880,32 +4919,46 @@ mod tests {
                 .contains("was forgotten and its clone is kept"),
             "{error}"
         );
-        ws.refuses("not_installed", || m.forget("dan/demo1"));
-        let restored = m.restore("dan/demo1").unwrap();
+        ws.refuses("not_installed", || {
+            m.forget("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc")
+        });
+        let restored = m.restore("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc").unwrap();
         assert_eq!(restored.source, ws.author.source());
         assert_eq!(restored.current.version, "0.1.0");
-        let p = &m.state().unwrap().packages["dan/demo1"];
+        let p = &m.state().unwrap().packages["ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc"];
         assert!(p.enabled && p.previous.is_none());
         assert!(ws.dist().join("index.js").is_file());
-        let error = ws.refuses("already_installed", || m.restore("dan/demo1"));
-        assert_eq!(error.to_string(), "package dan/demo1 is already registered");
+        let error = ws.refuses("already_installed", || {
+            m.restore("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc")
+        });
+        assert_eq!(
+            error.to_string(),
+            "package ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc is already registered"
+        );
     }
 
     #[test]
     fn restore_of_a_recorded_package_is_already_installed() {
-        let (ws, m) = Ws::installed("dan/demo1");
+        let (ws, m) = Ws::installed("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         // Restore works on forgotten records only, even when the clone is gone.
         fs::remove_dir_all(ws.repo()).unwrap();
-        let error = ws.refuses("already_installed", || m.restore("dan/demo1"));
-        assert_eq!(error.to_string(), "package dan/demo1 is already registered");
+        let error = ws.refuses("already_installed", || {
+            m.restore("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc")
+        });
+        assert_eq!(
+            error.to_string(),
+            "package ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc is already registered"
+        );
     }
 
     #[test]
     fn restore_refuses_dirty_clones_and_needs_a_forgotten_record() {
-        let (ws, m) = Ws::installed("dan/demo1");
-        m.forget("dan/demo1").unwrap();
+        let (ws, m) = Ws::installed("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
+        m.forget("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc").unwrap();
         fs::write(ws.repo().join("dist/index.js"), "local edit").unwrap();
-        let error = ws.refuses("local_changes", || m.restore("dan/demo1"));
+        let error = ws.refuses("local_changes", || {
+            m.restore("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc")
+        });
         assert!(matches!(error, Error::LocalChanges { items, .. } if items.len() == 1));
         fixture_git(&ws.repo(), &["checkout", "-q", "--", "dist/index.js"]);
         // A clone without a forgotten record is not restorable.
@@ -4915,17 +4968,22 @@ mod tests {
             true,
         )
         .unwrap();
-        ws.refuses("repository_not_found", || m.restore("dan/alias2"));
+        ws.refuses("repository_not_found", || {
+            m.restore("49d31595-f96a-55e1-a50f-f5be869f8941")
+        });
         // A forgotten clone that is gone: the record is all that is left.
         fs::remove_dir_all(ws.repo()).unwrap();
-        ws.refuses("repository_not_found", || m.restore("dan/demo1"));
-        m.uninstall("dan/demo1", &[], false).unwrap();
+        ws.refuses("repository_not_found", || {
+            m.restore("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc")
+        });
+        m.uninstall("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", &[], false)
+            .unwrap();
         assert!(m.state().unwrap().forgotten.is_empty());
     }
 
     #[test]
     fn restore_keeps_the_forgotten_record() {
-        let id = "dan/demo1";
+        let id = "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc";
         let ws = Ws::new(id);
         let catalog_dir = ws.dir.join("catalog");
         let location = catalog_dir.to_str().unwrap().to_owned();
@@ -4989,7 +5047,7 @@ mod tests {
 
     #[test]
     fn restore_refuses_an_unpublished_commit_in_every_mode() {
-        let id = "dan/demo1";
+        let id = "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc";
         for target in [InstallTarget::Release, InstallTarget::Dev] {
             let ws = Ws::new(id);
             let m = ws.open();
@@ -5009,7 +5067,7 @@ mod tests {
 
     #[test]
     fn branch_mode_restore_refuses_a_published_moved_head() {
-        let id = "dan/demo1";
+        let id = "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc";
         let ws = Ws::new(id);
         let m = ws.open();
         let recorded = m
@@ -5029,8 +5087,8 @@ mod tests {
 
     #[test]
     fn update_and_rollback_swap_revisions_and_redeploy() {
-        let (ws, m) = Ws::installed("dan/demo1");
-        let id = "dan/demo1";
+        let (ws, m) = Ws::installed("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
+        let id = "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc";
         let v1 = ws.author.head();
         let noop = m.update(id).unwrap();
         assert!(!noop.changed && noop.from == noop.to);
@@ -5074,8 +5132,8 @@ mod tests {
 
     #[test]
     fn major_updates_are_marked() {
-        let (ws, m) = Ws::installed("dan/demo1");
-        let id = "dan/demo1";
+        let (ws, m) = Ws::installed("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
+        let id = "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc";
         // 0.x: a new PATCH is compatible, a new MINOR is major.
         ws.author.release("0.1.1");
         let change = m.update(id).unwrap();
@@ -5120,7 +5178,7 @@ mod tests {
 
     #[test]
     fn pre_releases_are_opt_in() {
-        let id = "dan/demo1";
+        let id = "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc";
         let (ws, m) = Ws::installed(id);
         // A newer pre-release is never picked implicitly, nor reported as broken.
         ws.author.release("1.3.0-beta.1");
@@ -5201,7 +5259,7 @@ mod tests {
         let plan = m.update_all().unwrap();
         assert_eq!(plan.updates[0].to.version, "2.0.0-rc.2", "{plan:?}");
         // A repository with pre-release tags only has nothing to install implicitly.
-        let beta = ws.other_author("beta", "dan/beta");
+        let beta = ws.other_author("beta", "461e020c-ac68-5226-bf76-9de83ab836d8");
         fixture_git(&beta.path, &["tag", "-d", "v0.1.0"]);
         beta.release("1.0.0-beta.1");
         let error = ws.refuses("no_releases", || m.install(beta.source()));
@@ -5218,7 +5276,7 @@ mod tests {
 
     #[test]
     fn rollback_manifest_mismatch_names_the_package() {
-        let id = "dan/demo1";
+        let id = "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc";
         let (ws, m) = Ws::installed(id);
         ws.author.release("0.2.0");
         m.update(id).unwrap();
@@ -5228,10 +5286,16 @@ mod tests {
         state["packages"][id]["previous"]["version"] = "0.0.9".into();
         fs::write(&path, state.to_string()).unwrap();
         let error = ws.refuses("invalid_manifest", || m.rollback(id));
-        assert_eq!(error.to_string(), "dan/demo1: rollback manifest mismatch");
+        assert_eq!(
+            error.to_string(),
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc: rollback manifest mismatch"
+        );
         assert!(matches!(error, Error::InvalidManifest { id: Some(package), .. } if package == id));
         // Point the previous revision at a valid commit declaring another package.
-        write_manifest(&ws.author.path, &make_manifest("dan/renamed", "0.3.0"));
+        write_manifest(
+            &ws.author.path,
+            &make_manifest("d92f82f0-1472-59b9-b4c5-eb76b0706d47", "0.3.0"),
+        );
         fixture_git(&ws.author.path, &["commit", "-qam", "rename"]);
         let renamed = ws.author.head();
         fixture_git(&ws.repo(), &["fetch", ws.author.source(), &renamed]);
@@ -5239,18 +5303,24 @@ mod tests {
         state["packages"][id]["previous"]["version"] = "0.3.0".into();
         fs::write(&path, state.to_string()).unwrap();
         let error = ws.refuses("invalid_manifest", || m.rollback(id));
-        assert_eq!(error.to_string(), "dan/demo1: rollback manifest mismatch");
+        assert_eq!(
+            error.to_string(),
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc: rollback manifest mismatch"
+        );
         assert!(matches!(error, Error::InvalidManifest { id: Some(package), .. } if package == id));
     }
 
     #[test]
     fn update_all_upstream_identity_refusal_names_the_package() {
-        let id = "dan/demo1";
+        let id = "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc";
         let ws = Ws::new(id);
         let m = ws.open();
         m.install_package(ws.author.source(), None, InstallTarget::Dev)
             .unwrap();
-        write_manifest(&ws.author.path, &make_manifest("dan/renamed", "0.2.0"));
+        write_manifest(
+            &ws.author.path,
+            &make_manifest("d92f82f0-1472-59b9-b4c5-eb76b0706d47", "0.2.0"),
+        );
         fixture_git(&ws.author.path, &["commit", "-qam", "rename"]);
         for error in [
             ws.refuses("invalid_manifest", || m.update_all()),
@@ -5258,7 +5328,7 @@ mod tests {
         ] {
             assert_eq!(
                 error.to_string(),
-                "dan/demo1: package id changed upstream to dan/renamed"
+                "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc: package id changed upstream to d92f82f0-1472-59b9-b4c5-eb76b0706d47"
             );
             assert!(
                 matches!(error, Error::InvalidManifest { id: Some(package), .. } if package == id)
@@ -5268,7 +5338,7 @@ mod tests {
 
     #[test]
     fn update_all_local_work_names_the_package_and_items() {
-        let (ws, m) = Ws::installed("dan/demo1");
+        let (ws, m) = Ws::installed("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let repo = ws.repo();
         fs::write(repo.join("local.txt"), "local work").unwrap();
         fixture_git(&repo, &["add", "local.txt"]);
@@ -5278,15 +5348,15 @@ mod tests {
         let error = ws.refuses("local_changes", || m.update_all());
         assert_eq!(
             error.to_string(),
-            "dan/demo1: unpublished local work blocks update all; unpublished tag: local-only"
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc: unpublished local work blocks update all; unpublished tag: local-only"
         );
         assert!(matches!(error, Error::LocalChanges { id, items, .. }
-            if id == "dan/demo1" && items == [LostWork::UnpublishedTag { name: "local-only".into() }]));
+            if id == "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc" && items == [LostWork::UnpublishedTag { name: "local-only".into() }]));
     }
 
     #[test]
     fn update_refusals_leave_the_workspace_unchanged() {
-        let id = "dan/demo1";
+        let id = "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc";
         let (ws, m) = Ws::installed(id);
         ws.refuses("no_previous_version", || m.rollback(id));
         ws.refuses("invalid_argument", || {
@@ -5301,7 +5371,10 @@ mod tests {
         assert_eq!(change.mode, Mode::Pinned(same.clone()));
         assert!(change.warnings.is_empty(), "{:?}", change.warnings);
         m.rollback(id).unwrap();
-        write_manifest(&ws.author.path, &make_manifest("dan/renamed", "0.2.0"));
+        write_manifest(
+            &ws.author.path,
+            &make_manifest("d92f82f0-1472-59b9-b4c5-eb76b0706d47", "0.2.0"),
+        );
         fixture_git(&ws.author.path, &["commit", "-q", "-am", "rename"]);
         let renamed = ws.author.head();
         let error = ws.refuses("invalid_manifest", || {
@@ -5309,7 +5382,7 @@ mod tests {
         });
         assert_eq!(
             error.to_string(),
-            "dan/demo1: package id changed upstream to dan/renamed"
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc: package id changed upstream to d92f82f0-1472-59b9-b4c5-eb76b0706d47"
         );
         assert!(matches!(error, Error::InvalidManifest { id: Some(package), .. } if package == id));
     }
@@ -5324,7 +5397,7 @@ mod tests {
 
     #[test]
     fn return_to_releases_at_the_installed_version_keeps_the_commit() {
-        let ws = Ws::new("dan/demo1");
+        let ws = Ws::new("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let pinned = same_version_commit(&ws.author);
         let m = ws.open();
         // Pinned to 0.1.0 at HEAD, but the 0.1.0 release tag is another commit.
@@ -5335,7 +5408,9 @@ mod tests {
         )
         .unwrap();
         // Versions only: the installed revision stays, only the mode changes.
-        let change = m.update_to("dan/demo1", Target::Release).unwrap();
+        let change = m
+            .update_to("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", Target::Release)
+            .unwrap();
         assert!(change.changed);
         assert_eq!(change.mode, Mode::Release);
         assert_eq!(change.to.commit, pinned);
@@ -5350,11 +5425,14 @@ mod tests {
 
     #[test]
     fn explicit_ref_to_the_moved_installed_tag_is_accepted() {
-        let (ws, m) = Ws::installed("dan/demo1");
+        let (ws, m) = Ws::installed("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let moved = same_version_commit(&ws.author);
         fixture_git(&ws.author.path, &["tag", "-f", "v0.1.0"]);
         let change = m
-            .update_to("dan/demo1", Target::Ref("v0.1.0".into()))
+            .update_to(
+                "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+                Target::Ref("v0.1.0".into()),
+            )
             .unwrap();
         assert!(change.changed);
         assert_eq!(change.to.commit, moved);
@@ -5367,33 +5445,41 @@ mod tests {
 
     #[test]
     fn update_takes_a_moved_release_tag_at_its_new_commit() {
-        let (ws, m) = Ws::installed("dan/demo1");
+        let (ws, m) = Ws::installed("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         ws.author.release("0.1.1");
         let original = ws.author.release("0.1.2");
-        m.update_to("dan/demo1", Target::Ref("v0.1.1".into()))
-            .unwrap();
+        m.update_to(
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+            Target::Ref("v0.1.1".into()),
+        )
+        .unwrap();
         assert_eq!(resolve_ref(&ws.repo(), "v0.1.2", false).unwrap(), original);
         let moved = same_version_commit(&ws.author);
         fixture_git(&ws.author.path, &["tag", "-f", "v0.1.2"]);
         // The explicit ref pinned it: back to releases, or to the moved tag, both take
         // the tag where it is now.
         for target in [Target::Release, Target::Ref("v0.1.2".into())] {
-            let change = m.update_to("dan/demo1", target.clone()).unwrap();
+            let change = m
+                .update_to("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", target.clone())
+                .unwrap();
             assert_eq!(change.to.commit, moved);
             assert_eq!(resolve_ref(&ws.repo(), "v0.1.2", false).unwrap(), moved);
-            m.rollback("dan/demo1").unwrap();
+            m.rollback("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc").unwrap();
         }
     }
 
     #[test]
     fn stable_update_ignores_repository_tag_with_another_manifest_id() {
-        let (ws, m) = Ws::installed("dan/demo1");
+        let (ws, m) = Ws::installed("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         ws.author.commit("0.1.1");
-        write_manifest(&ws.author.path, &make_manifest("dan/renamed", "0.1.1"));
+        write_manifest(
+            &ws.author.path,
+            &make_manifest("d92f82f0-1472-59b9-b4c5-eb76b0706d47", "0.1.1"),
+        );
         fixture_git(&ws.author.path, &["add", "."]);
         fixture_git(&ws.author.path, &["commit", "-qm", "rename"]);
         ws.author.tag("0.1.1");
-        let change = m.update("dan/demo1").unwrap();
+        let change = m.update("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc").unwrap();
         assert!(!change.changed);
         assert_eq!(change.to.version, "0.1.0");
         assert!(change.skipped.is_empty());
@@ -5402,14 +5488,14 @@ mod tests {
 
     #[test]
     fn stable_update_follows_deleted_and_moved_upstream_tags() {
-        let (ws, m) = Ws::installed("dan/demo1");
+        let (ws, m) = Ws::installed("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let installed = ws.author.release("0.2.0");
-        m.update("dan/demo1").unwrap();
+        m.update("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc").unwrap();
         let state = read(&ws.root.join("state.json"));
         // Moved release tag: same version, other commit; the clone mirrors it.
         let moved = same_version_commit(&ws.author);
         fixture_git(&ws.author.path, &["tag", "-f", "v0.2.0"]);
-        let change = m.update("dan/demo1").unwrap();
+        let change = m.update("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc").unwrap();
         assert!(!change.changed);
         assert_eq!(change.to.commit, installed);
         assert_eq!(
@@ -5423,11 +5509,13 @@ mod tests {
         assert_eq!(read(&ws.root.join("state.json")), state);
         // Deleted release tag: the installed release was retracted, the package stays.
         fixture_git(&ws.author.path, &["tag", "-d", "v0.2.0"]);
-        let change = m.update("dan/demo1").unwrap();
+        let change = m.update("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc").unwrap();
         assert!(!change.changed);
         assert_eq!(
             change.warnings,
-            ["installed release dan/demo1@0.2.0 no longer exists on the origin"]
+            [
+                "installed release ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc@0.2.0 no longer exists on the origin"
+            ]
         );
         assert!(resolve_ref(&ws.repo(), "refs/tags/v0.2.0", false).is_err());
         assert_eq!(read(&ws.root.join("state.json")), state);
@@ -5435,9 +5523,9 @@ mod tests {
 
     #[test]
     fn a_broken_installed_release_tag_is_named_as_skipped() {
-        let (ws, m) = Ws::installed("dan/demo1");
+        let (ws, m) = Ws::installed("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let installed = ws.author.release("0.2.0");
-        m.update("dan/demo1").unwrap();
+        m.update("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc").unwrap();
         // The 0.2.0 tag now points at a commit whose manifest says 0.3.0.
         let broken = ws.author.commit("0.3.0");
         fixture_git(&ws.author.path, &["tag", "-f", "v0.2.0"]);
@@ -5450,24 +5538,28 @@ mod tests {
             )]
         );
         assert_eq!(
-            m.state().unwrap().packages["dan/demo1"].current.commit,
+            m.state().unwrap().packages["ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc"]
+                .current
+                .commit,
             installed
         );
         // The one tag refusal left: a broken newest tag is never silently passed over.
-        let error = ws.refuses("version_conflict", || m.update("dan/demo1"));
+        let error = ws.refuses("version_conflict", || {
+            m.update("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc")
+        });
         assert!(
             error
                 .to_string()
-                .starts_with("dan/demo1: latest release tag is broken")
+                .starts_with("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc: latest release tag is broken")
         );
     }
 
     #[test]
     fn moved_and_deleted_tags_are_taken_as_they_are() {
         // Source-keyed clone: update all reports what update ID reports, and never fails.
-        let (ws, m) = Ws::installed("dan/demo1");
+        let (ws, m) = Ws::installed("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let installed = ws.author.release("0.2.0");
-        m.update("dan/demo1").unwrap();
+        m.update("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc").unwrap();
         let moved = same_version_commit(&ws.author);
         fixture_git(&ws.author.path, &["tag", "-f", "v0.2.0"]);
         for plan in [m.update_all_plan().unwrap(), m.update_all().unwrap()] {
@@ -5475,7 +5567,7 @@ mod tests {
             assert_eq!(
                 plan.unchanged,
                 [Unchanged {
-                    id: "dan/demo1".into(),
+                    id: "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc".into(),
                     version: "0.2.0".into(),
                     reason: None,
                     warnings: vec![format!(
@@ -5488,23 +5580,25 @@ mod tests {
         // Every release tag deleted on the origin: still up to date, with the warning.
         fixture_git(&ws.author.path, &["tag", "-d", "v0.2.0"]);
         fixture_git(&ws.author.path, &["tag", "-d", "v0.1.0"]);
-        let retracted = ["installed release dan/demo1@0.2.0 no longer exists on the origin"];
+        let retracted = [
+            "installed release ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc@0.2.0 no longer exists on the origin",
+        ];
         let plan = m.update_all().unwrap();
         assert_eq!(plan.unchanged[0].warnings, retracted);
-        let change = m.update("dan/demo1").unwrap();
+        let change = m.update("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc").unwrap();
         assert!(!change.changed);
         assert_eq!(change.to.commit, installed);
         assert_eq!(change.warnings, retracted);
         // A new release after the retraction is an ordinary update.
         ws.author.release("0.3.0");
-        let change = m.update("dan/demo1").unwrap();
+        let change = m.update("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc").unwrap();
         assert_eq!(change.to.version, "0.3.0");
         assert!(change.warnings.is_empty());
     }
 
     #[test]
     fn direct_install_reports_skipped_broken_release_tags() {
-        let ws = Ws::new("dan/demo1");
+        let ws = Ws::new("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         // An old tag whose manifest disagrees with the tag version.
         fixture_git(&ws.author.path, &["tag", "v0.0.9"]);
         ws.author.release("0.2.0");
@@ -5516,39 +5610,47 @@ mod tests {
 
     #[test]
     fn stable_update_never_downgrades() {
-        let ws = Ws::new("dan/demo1");
+        let ws = Ws::new("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         ws.author.release("0.5.0");
         let m = ws.open();
         m.install(ws.author.source()).unwrap();
         // The installed release disappears upstream: following releases never goes down.
         fixture_git(&ws.author.path, &["tag", "-d", "v0.5.0"]);
-        let change = m.update("dan/demo1").unwrap();
+        let change = m.update("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc").unwrap();
         assert!(!change.changed);
         assert_eq!(change.to.version, "0.5.0");
         assert_eq!(
             change.warnings,
-            ["installed release dan/demo1@0.5.0 no longer exists on the origin"]
+            [
+                "installed release ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc@0.5.0 no longer exists on the origin"
+            ]
         );
         assert!(m.update_all().unwrap().updates.is_empty());
         // An explicit return to releases may go down to the newest one (here from branch
         // mode above every release).
-        m.update_to("dan/demo1", Target::Dev).unwrap();
-        let change = m.update_to("dan/demo1", Target::Release).unwrap();
+        m.update_to("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", Target::Dev)
+            .unwrap();
+        let change = m
+            .update_to("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", Target::Release)
+            .unwrap();
         assert_eq!(
             (change.from.version.as_str(), change.to.version.as_str()),
             ("0.5.0", "0.1.0")
         );
-        m.rollback("dan/demo1").unwrap();
+        m.rollback("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc").unwrap();
         // An explicit ref may downgrade.
         let change = m
-            .update_to("dan/demo1", Target::Ref("v0.1.0".into()))
+            .update_to(
+                "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+                Target::Ref("v0.1.0".into()),
+            )
             .unwrap();
         assert_eq!(change.to.version, "0.1.0");
     }
 
     #[test]
     fn local_work_blocks_update_and_rollback() {
-        let id = "dan/demo1";
+        let id = "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc";
         let (ws, m) = Ws::installed(id);
         ws.author.release("0.2.0");
         m.update(id).unwrap();
@@ -5591,14 +5693,16 @@ mod tests {
 
     #[test]
     fn update_all_invalid_requirement_on_the_branch_names_the_package() {
-        let id = "dan/demo1";
+        let id = "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc";
         let ws = Ws::new(id);
         let m = ws.open();
         m.install_package(ws.author.source(), None, InstallTarget::Dev)
             .unwrap();
         let mut next = make_manifest(id, "0.2.0");
-        next.dependencies
-            .insert("dan/lib".into(), "^1 || ^2".into());
+        next.dependencies.insert(
+            "3e50b09e-0230-5fb3-b065-df9324c02f0a".into(),
+            "^1 || ^2".into(),
+        );
         write_manifest(&ws.author.path, &next);
         fixture_git(&ws.author.path, &["commit", "-qam", "bad requirement"]);
         for error in [
@@ -5606,9 +5710,9 @@ mod tests {
             ws.refuses("invalid_manifest", || m.update_all_plan()),
         ] {
             assert!(
-                error
-                    .to_string()
-                    .starts_with("dan/demo1: invalid version requirement"),
+                error.to_string().starts_with(
+                    "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc: invalid version requirement"
+                ),
                 "{error}"
             );
             assert!(
@@ -5619,7 +5723,7 @@ mod tests {
 
     #[test]
     fn branch_mode_follows_origin_head_and_refuses_diverged_history() {
-        let id = "dan/demo1";
+        let id = "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc";
         let ws = Ws::new(id);
         let m = ws.open();
         m.install_package(ws.author.source(), None, InstallTarget::Dev)
@@ -5649,7 +5753,7 @@ mod tests {
             assert!(
                 error
                     .to_string()
-                    .starts_with("dan/demo1: history of main diverged; automatic update refused"),
+                    .starts_with("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc: history of main diverged; automatic update refused"),
                 "{error}"
             );
             assert!(
@@ -5664,7 +5768,7 @@ mod tests {
 
     #[test]
     fn update_to_a_branch_uses_the_fetched_upstream_branch() {
-        let id = "dan/demo1";
+        let id = "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc";
         let (ws, m) = Ws::installed(id);
         let next = ws.author.commit("0.2.0");
         let change = m.update_to(id, Target::Ref("main".into())).unwrap();
@@ -5691,16 +5795,23 @@ mod tests {
 
     #[test]
     fn enable_and_disable_change_only_the_flag() {
-        let (ws, m) = Ws::installed("dan/demo1");
-        let before = serde_json::to_value(&m.state().unwrap().packages["dan/demo1"]).unwrap();
+        let (ws, m) = Ws::installed("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
+        let before = serde_json::to_value(
+            &m.state().unwrap().packages["ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc"],
+        )
+        .unwrap();
         let payload = tree_hash(&ws.root.join("repos"));
-        m.disable("dan/demo1").unwrap();
-        m.disable("dan/demo1").unwrap();
-        let mut after = serde_json::to_value(&m.state().unwrap().packages["dan/demo1"]).unwrap();
+        m.disable("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc").unwrap();
+        m.disable("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc").unwrap();
+        let mut after = serde_json::to_value(
+            &m.state().unwrap().packages["ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc"],
+        )
+        .unwrap();
         assert_eq!(after["enabled"], false);
         after["enabled"] = true.into();
         assert_eq!(after, before);
-        m.set_enabled("dan/demo1", true).unwrap();
+        m.set_enabled("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", true)
+            .unwrap();
         assert!(m.list().unwrap()[0].enabled);
         assert_eq!(tree_hash(&ws.root.join("repos")), payload);
         ws.no_leftovers();
@@ -5708,13 +5819,16 @@ mod tests {
 
     #[test]
     fn mutating_results_carry_the_dist_report() {
-        let (ws, m) = Ws::installed("dan/demo1");
-        let id = "dan/demo1";
+        let (ws, m) = Ws::installed("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
+        let id = "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc";
         // A folder of no package is reported, never touched.
         fs::create_dir_all(ws.root.join("dist/custom")).unwrap();
-        let other = ws.other_author("other", "dan/other");
+        let other = ws.other_author("other", "95d14dc8-6dfc-5022-9fd1-7146ee6aee58");
         let installed = m.install(other.source()).unwrap();
-        assert_eq!(installed.dist.deployed, ["dan/other"]);
+        assert_eq!(
+            installed.dist.deployed,
+            ["95d14dc8-6dfc-5022-9fd1-7146ee6aee58"]
+        );
         assert!(installed.dist.removed.is_empty() && installed.dist.skipped.is_empty());
         assert_eq!(installed.dist.unmanaged, ["dist/custom"]);
         let report = m.disable(id).unwrap();
@@ -5734,12 +5848,12 @@ mod tests {
         // An active package whose clone and deployed folder are gone is skipped, and every
         // other mutating result says so.
         fs::remove_dir_all(ws.root.join("repos").join(clones::repo_key(other.source()))).unwrap();
-        fs::remove_dir_all(ws.root.join("dist/dan/other")).unwrap();
+        fs::remove_dir_all(ws.root.join("dist/95d14dc8-6dfc-5022-9fd1-7146ee6aee58")).unwrap();
         let report = m.disable(id).unwrap();
         assert_eq!(
             report.skipped,
             [SkippedDist {
-                id: "dan/other".into(),
+                id: "95d14dc8-6dfc-5022-9fd1-7146ee6aee58".into(),
                 reason: "clone missing".into(),
                 clone_missing: true,
                 link: None,
@@ -5748,18 +5862,22 @@ mod tests {
         assert_eq!(m.enable(id).unwrap().skipped.len(), 1);
         let removed = m.uninstall(id, &[], false).unwrap();
         assert_eq!(removed.removed, [id]);
-        assert_eq!(removed.skipped[0].id, "dan/other");
+        assert_eq!(
+            removed.skipped[0].id,
+            "95d14dc8-6dfc-5022-9fd1-7146ee6aee58"
+        );
         ws.no_leftovers();
     }
 
     #[test]
     fn download_records_disabled_packages_and_dependencies() {
-        let ws = Ws::new("dan/app");
-        let lib = ws.other_author("lib", "dan/lib");
+        let ws = Ws::new("10e6f6ab-d86f-5997-8a82-3547ffea48ab");
+        let lib = ws.other_author("lib", "3e50b09e-0230-5fb3-b065-df9324c02f0a");
         let location = ws.dir.join("catalog").to_str().unwrap().to_owned();
         catalog::register(&location, lib.source(), "v0.1.0").unwrap();
-        let mut app = make_manifest("dan/app", "0.2.0");
-        app.dependencies.insert("dan/lib".into(), "^0.1".into());
+        let mut app = make_manifest("10e6f6ab-d86f-5997-8a82-3547ffea48ab", "0.2.0");
+        app.dependencies
+            .insert("3e50b09e-0230-5fb3-b065-df9324c02f0a".into(), "^0.1".into());
         write_manifest(&ws.author.path, &app);
         fixture_git(&ws.author.path, &["commit", "-q", "-am", "0.2.0"]);
         ws.author.tag("0.2.0");
@@ -5776,7 +5894,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             (downloaded.id.as_str(), downloaded.current.version.as_str()),
-            ("dan/app", "0.2.0")
+            ("10e6f6ab-d86f-5997-8a82-3547ffea48ab", "0.2.0")
         );
         assert!(!downloaded.enabled && downloaded.mode == Mode::Release);
         let dependencies: Vec<_> = downloaded
@@ -5784,10 +5902,16 @@ mod tests {
             .iter()
             .map(|d| (d.id.as_str(), d.current.version.as_str(), d.enabled))
             .collect();
-        assert_eq!(dependencies, [("dan/lib", "0.1.0", false)]);
+        assert_eq!(
+            dependencies,
+            [("3e50b09e-0230-5fb3-b065-df9324c02f0a", "0.1.0", false)]
+        );
         assert!(downloaded.dist.deployed.is_empty() && downloaded.dist.removed.is_empty());
         let state = m.state().unwrap();
-        for id in ["dan/app", "dan/lib"] {
+        for id in [
+            "10e6f6ab-d86f-5997-8a82-3547ffea48ab",
+            "3e50b09e-0230-5fb3-b065-df9324c02f0a",
+        ] {
             assert!(!state.packages[id].enabled, "{id}");
             assert!(state.packages[id].mode.is_release(), "{id}");
             assert!(
@@ -5803,23 +5927,42 @@ mod tests {
         // enable needs the dependency active; it works without the catalog (offline).
         drop(m);
         let m = ws.open();
-        let error = ws.refuses("dependency_conflict", || m.enable("dan/app"));
+        let error = ws.refuses("dependency_conflict", || {
+            m.enable("10e6f6ab-d86f-5997-8a82-3547ffea48ab")
+        });
         assert!(
-            error.to_string().contains("dan/lib is disabled; enable it"),
+            error
+                .to_string()
+                .contains("3e50b09e-0230-5fb3-b065-df9324c02f0a is disabled; enable it"),
             "{error}"
         );
-        assert_eq!(m.enable("dan/lib").unwrap().deployed, ["dan/lib"]);
-        assert_eq!(m.enable("dan/app").unwrap().deployed, ["dan/app"]);
-        assert!(ws.root.join("dist/dan/app/index.js").is_file());
+        assert_eq!(
+            m.enable("3e50b09e-0230-5fb3-b065-df9324c02f0a")
+                .unwrap()
+                .deployed,
+            ["3e50b09e-0230-5fb3-b065-df9324c02f0a"]
+        );
+        assert_eq!(
+            m.enable("10e6f6ab-d86f-5997-8a82-3547ffea48ab")
+                .unwrap()
+                .deployed,
+            ["10e6f6ab-d86f-5997-8a82-3547ffea48ab"]
+        );
+        assert!(
+            ws.root
+                .join("dist/10e6f6ab-d86f-5997-8a82-3547ffea48ab/index.js")
+                .is_file()
+        );
         ws.no_leftovers();
     }
 
     #[test]
     fn enable_refuses_inactive_dependencies_unless_forced() {
-        let ws = Ws::new("dan/app");
-        let lib = ws.other_author("lib", "dan/lib");
-        let mut app = make_manifest("dan/app", "0.2.0");
-        app.dependencies.insert("dan/lib".into(), "^0.1".into());
+        let ws = Ws::new("10e6f6ab-d86f-5997-8a82-3547ffea48ab");
+        let lib = ws.other_author("lib", "3e50b09e-0230-5fb3-b065-df9324c02f0a");
+        let mut app = make_manifest("10e6f6ab-d86f-5997-8a82-3547ffea48ab", "0.2.0");
+        app.dependencies
+            .insert("3e50b09e-0230-5fb3-b065-df9324c02f0a".into(), "^0.1".into());
         write_manifest(&ws.author.path, &app);
         fixture_git(&ws.author.path, &["commit", "-q", "-am", "0.2.0"]);
         ws.author.tag("0.2.0");
@@ -5829,58 +5972,123 @@ mod tests {
         m.download(ws.author.source(), None, InstallTarget::Release)
             .unwrap();
         // Both disabled: enable app names the disabled dependency and changes nothing.
-        let error = ws.refuses("dependency_conflict", || m.enable("dan/app"));
+        let error = ws.refuses("dependency_conflict", || {
+            m.enable("10e6f6ab-d86f-5997-8a82-3547ffea48ab")
+        });
         let text = error.to_string();
-        assert!(text.contains("dan/lib is disabled; enable it"), "{text}");
+        assert!(
+            text.contains("3e50b09e-0230-5fb3-b065-df9324c02f0a is disabled; enable it"),
+            "{text}"
+        );
         assert!(text.contains("force"), "{text}");
         // Forced: app is enabled and deployed alone, and reported broken.
         assert_eq!(
-            m.enable_with("dan/app", true).unwrap().deployed,
-            ["dan/app"]
+            m.enable_with("10e6f6ab-d86f-5997-8a82-3547ffea48ab", true)
+                .unwrap()
+                .deployed,
+            ["10e6f6ab-d86f-5997-8a82-3547ffea48ab"]
         );
         let state = m.state().unwrap();
-        assert!(state.packages["dan/app"].enabled && !state.packages["dan/lib"].enabled);
-        assert!(!ws.root.join("dist/dan/lib").exists());
+        assert!(
+            state.packages["10e6f6ab-d86f-5997-8a82-3547ffea48ab"].enabled
+                && !state.packages["3e50b09e-0230-5fb3-b065-df9324c02f0a"].enabled
+        );
+        assert!(
+            !ws.root
+                .join("dist/3e50b09e-0230-5fb3-b065-df9324c02f0a")
+                .exists()
+        );
         let listed = m.list().unwrap();
         let row = &listed
             .iter()
-            .find(|p| p.id == "dan/app")
+            .find(|p| p.id == "10e6f6ab-d86f-5997-8a82-3547ffea48ab")
             .unwrap()
             .dependencies[0];
         assert!(!row.satisfied);
-        assert_eq!(row.problem.as_deref(), Some("dan/lib is disabled"));
+        assert_eq!(
+            row.problem.as_deref(),
+            Some("3e50b09e-0230-5fb3-b065-df9324c02f0a is disabled")
+        );
         // Enabling an enabled package changes nothing.
-        ws.refuses_nothing(|| m.enable("dan/app"));
+        ws.refuses_nothing(|| m.enable("10e6f6ab-d86f-5997-8a82-3547ffea48ab"));
         // A missing dependency is named too.
-        m.disable("dan/app").unwrap();
-        m.uninstall("dan/lib", &[], true).unwrap();
-        let error = ws.refuses("dependency_conflict", || m.enable("dan/app"));
+        m.disable("10e6f6ab-d86f-5997-8a82-3547ffea48ab").unwrap();
+        m.uninstall("3e50b09e-0230-5fb3-b065-df9324c02f0a", &[], true)
+            .unwrap();
+        let error = ws.refuses("dependency_conflict", || {
+            m.enable("10e6f6ab-d86f-5997-8a82-3547ffea48ab")
+        });
         assert!(
-            error.to_string().contains("dan/lib ^0.1: not installed"),
+            error
+                .to_string()
+                .contains("3e50b09e-0230-5fb3-b065-df9324c02f0a ^0.1: not installed"),
             "{error}"
         );
         ws.no_leftovers();
     }
 
     #[test]
+    fn a_uuid_path_that_is_not_a_folder_blocks_nothing_else() {
+        for symlink in [false, true] {
+            let id = "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc";
+            let (ws, m) = Ws::installed(id);
+            let leaf = ws.dist();
+            fs::remove_dir_all(&leaf).unwrap();
+            let outside = ws.dir.join("outside");
+            fs::create_dir(&outside).unwrap();
+            fs::write(outside.join("sentinel"), "keep").unwrap();
+            if symlink {
+                std::os::unix::fs::symlink(&outside, &leaf).unwrap();
+            } else {
+                fs::write(&leaf, "obstacle").unwrap();
+            }
+            let other = ws.other_author("other", "95d14dc8-6dfc-5022-9fd1-7146ee6aee58");
+            let report = m.install(other.source()).unwrap().dist;
+            assert_eq!(report.unmanaged, [format!("dist/{id}")]);
+            assert_eq!(report.skipped[0].id, id);
+            assert_eq!(
+                report.skipped[0].reason,
+                format!("dist/{id} is not a folder")
+            );
+            assert!(!report.skipped[0].clone_missing);
+            assert_eq!(m.sync_dist().unwrap_err().kind(), "not_deployed");
+            ws.refuses("workspace", || m.disable(id));
+            ws.refuses("workspace", || m.uninstall(id, &[], true));
+            assert_eq!(read(&outside.join("sentinel")), "keep");
+            if !symlink {
+                assert_eq!(read(&leaf), "obstacle");
+            }
+            fs::remove_file(&leaf).unwrap();
+            m.disable(id).unwrap();
+            fs::write(&leaf, "activation obstacle").unwrap();
+            ws.refuses("workspace", || m.enable(id));
+            assert!(!m.state().unwrap().packages[id].enabled);
+            assert_eq!(read(&leaf), "activation obstacle");
+        }
+    }
+
+    #[test]
     fn sync_dist_fails_with_not_deployed_after_syncing_the_others() {
-        let (ws, m) = Ws::installed("dan/demo1");
-        let other = ws.other_author("other", "dan/other");
+        let (ws, m) = Ws::installed("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
+        let other = ws.other_author("other", "95d14dc8-6dfc-5022-9fd1-7146ee6aee58");
         m.install(other.source()).unwrap();
-        // dan/demo1 lost its deployed folder (repairable), dan/other its clone (not).
+        // ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc lost its deployed folder (repairable), 95d14dc8-6dfc-5022-9fd1-7146ee6aee58 its clone (not).
         fs::remove_dir_all(ws.dist()).unwrap();
         fs::remove_dir_all(ws.root.join("repos").join(clones::repo_key(other.source()))).unwrap();
-        fs::remove_dir_all(ws.root.join("dist/dan/other")).unwrap();
+        fs::remove_dir_all(ws.root.join("dist/95d14dc8-6dfc-5022-9fd1-7146ee6aee58")).unwrap();
         let plan = m.sync_dist_plan().unwrap();
-        assert_eq!(plan.deployed, ["dan/demo1"]);
-        assert_eq!(plan.skipped[0].id, "dan/other");
+        assert_eq!(plan.deployed, ["ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc"]);
+        assert_eq!(plan.skipped[0].id, "95d14dc8-6dfc-5022-9fd1-7146ee6aee58");
         let error = m.sync_dist().unwrap_err();
         assert_eq!(error.kind(), "not_deployed");
-        assert_eq!(error.to_string(), "1 package(s) not deployed: dan/other");
+        assert_eq!(
+            error.to_string(),
+            "1 package(s) not deployed: 95d14dc8-6dfc-5022-9fd1-7146ee6aee58"
+        );
         let Error::NotDeployed { sync, .. } = &error else {
             panic!("{error:?}");
         };
-        assert_eq!(sync.deployed, ["dan/demo1"]);
+        assert_eq!(sync.deployed, ["ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc"]);
         assert_eq!(sync.skipped[0].reason, "clone missing");
         // What could be synced is committed.
         assert!(ws.dist().join("index.js").is_file());
@@ -5888,18 +6096,28 @@ mod tests {
         assert_eq!(m.sync_dist().unwrap_err().kind(), "not_deployed");
         // A recorded package whose clone is gone can be uninstalled (record and dist);
         // then there is nothing left to deploy.
-        let plan = m.uninstall_plan("dan/other").unwrap();
+        let plan = m
+            .uninstall_plan("95d14dc8-6dfc-5022-9fd1-7146ee6aee58")
+            .unwrap();
         assert!(plan.registered && plan.lost_work.is_empty());
-        m.uninstall("dan/other", &[], false).unwrap();
-        assert!(!m.state().unwrap().packages.contains_key("dan/other"));
+        m.uninstall("95d14dc8-6dfc-5022-9fd1-7146ee6aee58", &[], false)
+            .unwrap();
+        assert!(
+            !m.state()
+                .unwrap()
+                .packages
+                .contains_key("95d14dc8-6dfc-5022-9fd1-7146ee6aee58")
+        );
         assert_eq!(m.sync_dist().unwrap(), DistSync::default());
     }
 
     #[test]
     fn uninstall_plan_is_read_only_and_lists_paths() {
-        let (ws, m) = Ws::installed("dan/demo1");
+        let (ws, m) = Ws::installed("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let before = tree_hash(&ws.root);
-        let plan = m.uninstall_plan("dan/demo1").unwrap();
+        let plan = m
+            .uninstall_plan("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc")
+            .unwrap();
         assert_eq!(tree_hash(&ws.root), before);
         assert!(plan.registered && plan.lost_work.is_empty());
         assert_eq!(
@@ -5915,8 +6133,10 @@ mod tests {
             ]
         );
         fs::remove_dir_all(ws.dist()).unwrap();
-        m.forget("dan/demo1").unwrap();
-        let plan = m.uninstall_plan("dan/demo1").unwrap();
+        m.forget("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc").unwrap();
+        let plan = m
+            .uninstall_plan("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc")
+            .unwrap();
         assert!(!plan.registered);
         assert_eq!(
             plan.deletes,
@@ -5929,7 +6149,8 @@ mod tests {
                     .into_owned()
             ]
         );
-        m.uninstall("dan/demo1", &[], false).unwrap();
+        m.uninstall("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", &[], false)
+            .unwrap();
         assert!(!ws.repo().exists() && !ws.dist().exists());
         assert!(m.list().unwrap().is_empty());
         ws.no_leftovers();
@@ -5937,22 +6158,27 @@ mod tests {
 
     #[test]
     fn uninstall_keeps_other_plugins() {
-        let (ws, m) = Ws::installed("dan/demo1");
-        let other = ws.other_author("other", "dan/other");
+        let (ws, m) = Ws::installed("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
+        let other = ws.other_author("other", "95d14dc8-6dfc-5022-9fd1-7146ee6aee58");
         m.install(other.source()).unwrap();
         let other_repo = tree_hash(&ws.root.join("repos").join(clones::repo_key(other.source())));
-        m.uninstall("dan/demo1", &[], false).unwrap();
+        m.uninstall("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", &[], false)
+            .unwrap();
         assert_eq!(
             tree_hash(&ws.root.join("repos").join(clones::repo_key(other.source()))),
             other_repo
         );
-        assert!(ws.root.join("dist/dan/other/index.js").is_file());
+        assert!(
+            ws.root
+                .join("dist/95d14dc8-6dfc-5022-9fd1-7146ee6aee58/index.js")
+                .is_file()
+        );
         assert_eq!(m.list().unwrap().len(), 1);
     }
 
     // ---- protected (verified) catalogs ----------------------------------------------
 
-    /// `dan/demo1` 0.1.0 and 0.2.0 registered in a verified catalog, installed from it at
+    /// `ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc` 0.1.0 and 0.2.0 registered in a verified catalog, installed from it at
     /// 0.1.0; returns the catalog folder.
     fn protected_install(ws: &Ws) -> PathBuf {
         let catalog_dir = ws.dir.join("catalog");
@@ -5969,13 +6195,14 @@ mod tests {
             },
         )
         .unwrap();
-        m.install_from_catalog("dan/demo1", Some("0.1.0")).unwrap();
+        m.install_from_catalog("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", Some("0.1.0"))
+            .unwrap();
         catalog_dir
     }
 
     #[test]
     fn protected_packages_update_only_to_catalog_versions() {
-        let id = "dan/demo1";
+        let id = "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc";
         let ws = Ws::new(id);
         let catalog_dir = protected_install(&ws);
         let recorded = catalog::canonical_location(catalog_dir.to_str().unwrap()).unwrap();
@@ -6036,7 +6263,8 @@ mod tests {
         // A catalog release whose files do not match the tagged dist: refused, unchanged.
         let tampered = ws.author.release("0.4.0");
         catalog::register(catalog_dir.to_str().unwrap(), ws.author.source(), "v0.4.0").unwrap();
-        let release_json = catalog_dir.join("namespaces/dan/demo1/versions/0.4.0/release.json");
+        let release_json = catalog_dir
+            .join("packages/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/versions/0.4.0/release.json");
         let mut value = crate::test_support::read_json(&release_json);
         value["files"]["index.js"]["sha256"] = serde_json::Value::String("0".repeat(64));
         crate::test_support::write_json(&release_json, &value);
@@ -6044,7 +6272,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("catalog file hashes do not match git dist of dan/demo1@0.4.0"),
+                .contains("catalog file hashes do not match git dist of ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc@0.4.0"),
             "{error}"
         );
         assert!(
@@ -6089,7 +6317,7 @@ mod tests {
 
     #[test]
     fn detach_without_a_new_release_is_a_change() {
-        let id = "dan/demo1";
+        let id = "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc";
         let ws = Ws::new(id);
         protected_install(&ws);
         let m = ws.open();
@@ -6104,7 +6332,7 @@ mod tests {
 
     #[test]
     fn a_catalog_that_is_no_longer_verified_refuses_protected_updates() {
-        let id = "dan/demo1";
+        let id = "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc";
         let ws = Ws::new(id);
         let catalog_dir = protected_install(&ws);
         let path = catalog_dir.join("catalog.json");
@@ -6144,12 +6372,12 @@ mod tests {
         ));
     }
 
-    /// `dan/demo1` 0.1.0 protected by a verified catalog that also lists `dan/lib`
-    /// 0.1.0 and `dan/demo1` 0.2.0, which needs `dan/lib ^0.1`; returns the catalog.
+    /// `ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc` 0.1.0 protected by a verified catalog that also lists `3e50b09e-0230-5fb3-b065-df9324c02f0a`
+    /// 0.1.0 and `ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc` 0.2.0, which needs `3e50b09e-0230-5fb3-b065-df9324c02f0a ^0.1`; returns the catalog.
     fn protected_with_new_dependency(ws: &Ws) -> PathBuf {
         let catalog_dir = ws.dir.join("catalog");
         let location = catalog_dir.to_str().unwrap().to_owned();
-        let lib = ws.other_author("lib", "dan/lib");
+        let lib = ws.other_author("lib", "3e50b09e-0230-5fb3-b065-df9324c02f0a");
         catalog::register(&location, lib.source(), "v0.1.0").unwrap();
         catalog::register(&location, ws.author.source(), "v0.1.0").unwrap();
         crate::test_support::verify_catalog(&catalog_dir);
@@ -6161,10 +6389,11 @@ mod tests {
             },
         )
         .unwrap()
-        .install_from_catalog("dan/demo1", None)
+        .install_from_catalog("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", None)
         .unwrap();
-        let mut app = make_manifest("dan/demo1", "0.2.0");
-        app.dependencies.insert("dan/lib".into(), "^0.1".into());
+        let mut app = make_manifest("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.2.0");
+        app.dependencies
+            .insert("3e50b09e-0230-5fb3-b065-df9324c02f0a".into(), "^0.1".into());
         write_manifest(&ws.author.path, &app);
         fixture_git(&ws.author.path, &["commit", "-q", "-am", "0.2.0"]);
         ws.author.tag("0.2.0");
@@ -6176,22 +6405,22 @@ mod tests {
     fn new_dependencies_of_a_protected_package_come_from_its_catalog() {
         let recorded = |dir: &Path| catalog::canonical_location(dir.to_str().unwrap()).unwrap();
         // (a) update ID without a configured catalog.
-        let ws = Ws::new("dan/demo1");
+        let ws = Ws::new("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let catalog_dir = protected_with_new_dependency(&ws);
         let m = ws.open();
-        let change = m.update("dan/demo1").unwrap();
+        let change = m.update("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc").unwrap();
         assert_eq!(change.to.version, "0.2.0");
         let state = m.state().unwrap();
         assert_eq!(
-            state.packages["dan/lib"].catalog,
+            state.packages["3e50b09e-0230-5fb3-b065-df9324c02f0a"].catalog,
             Some(recorded(&catalog_dir))
         );
         drop(m);
-        // (b) update all with an unverified catalog configured that lacks `dan/lib`.
-        let ws = Ws::new("dan/demo1");
+        // (b) update all with an unverified catalog configured that lacks `3e50b09e-0230-5fb3-b065-df9324c02f0a`.
+        let ws = Ws::new("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let catalog_dir = protected_with_new_dependency(&ws);
         let other = ws.dir.join("other-catalog");
-        let stranger = ws.other_author("stranger", "dan/stranger");
+        let stranger = ws.other_author("stranger", "65b2371b-3e8f-5ce4-86e7-7aa35b4ecb9c");
         catalog::register(other.to_str().unwrap(), stranger.source(), "v0.1.0").unwrap();
         let m = Manager::open_with(
             &ws.root,
@@ -6202,16 +6431,21 @@ mod tests {
         )
         .unwrap();
         let plan = m.update_all().unwrap();
-        assert_eq!(plan.installs[0].id, "dan/lib");
+        assert_eq!(plan.installs[0].id, "3e50b09e-0230-5fb3-b065-df9324c02f0a");
         let state = m.state().unwrap();
-        assert_eq!(state.packages["dan/demo1"].current.version, "0.2.0");
         assert_eq!(
-            state.packages["dan/lib"].catalog,
+            state.packages["ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc"]
+                .current
+                .version,
+            "0.2.0"
+        );
+        assert_eq!(
+            state.packages["3e50b09e-0230-5fb3-b065-df9324c02f0a"].catalog,
             Some(recorded(&catalog_dir))
         );
         // update ID the same way, from a fresh workspace with the unverified catalog set.
         drop(m);
-        let ws = Ws::new("dan/demo1");
+        let ws = Ws::new("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let catalog_dir = protected_with_new_dependency(&ws);
         let m = Manager::open_with(
             &ws.root,
@@ -6221,16 +6455,16 @@ mod tests {
             },
         )
         .unwrap();
-        m.update("dan/demo1").unwrap();
+        m.update("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc").unwrap();
         assert_eq!(
-            m.state().unwrap().packages["dan/lib"].catalog,
+            m.state().unwrap().packages["3e50b09e-0230-5fb3-b065-df9324c02f0a"].catalog,
             Some(recorded(&catalog_dir))
         );
     }
 
     #[test]
     fn install_from_a_verified_catalog_protects_a_direct_install_of_its_release() {
-        let id = "dan/demo1";
+        let id = "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc";
         let ws = Ws::new(id);
         let catalog_dir = ws.dir.join("catalog");
         let location = catalog_dir.to_str().unwrap().to_owned();
@@ -6296,7 +6530,7 @@ mod tests {
 
     #[test]
     fn unverified_catalog_installs_follow_the_origin() {
-        let id = "dan/demo1";
+        let id = "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc";
         let ws = Ws::new(id);
         let location = ws.dir.join("catalog").to_str().unwrap().to_owned();
         catalog::register(&location, ws.author.source(), "v0.1.0").unwrap();
@@ -6316,7 +6550,7 @@ mod tests {
 
     #[test]
     fn check_compares_protected_packages_with_their_catalog() {
-        let id = "dan/demo1";
+        let id = "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc";
         let ws = Ws::new(id);
         let catalog_dir = protected_install(&ws);
         let location = catalog_dir.to_str().unwrap();
@@ -6358,15 +6592,17 @@ mod tests {
 
     #[test]
     fn catalog_operations_need_a_configured_catalog() {
-        let (ws, m) = Ws::installed("dan/demo1");
+        let (ws, m) = Ws::installed("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         // check needs no catalog: it reads the origin.
         let rows = m.check().unwrap();
         assert_eq!(rows[0].source, check::CheckSource::Origin);
         let error = ws.refuses("invalid_argument", || m.browse_catalog());
         assert_eq!(error.to_string(), "no catalog configured");
-        ws.refuses("invalid_argument", || m.catalog_release("dan/demo1", None));
         ws.refuses("invalid_argument", || {
-            m.install_from_catalog("dan/demo1", None)
+            m.catalog_release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", None)
+        });
+        ws.refuses("invalid_argument", || {
+            m.install_from_catalog("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", None)
         });
         drop(m);
         // An empty workspace never needs the catalog for check.
@@ -6376,7 +6612,7 @@ mod tests {
 
     #[test]
     fn install_from_catalog_verifies_and_check_compares() {
-        let ws = Ws::new("dan/demo1");
+        let ws = Ws::new("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let catalog_dir = ws.dir.join("catalog");
         let location = catalog_dir.to_str().unwrap().to_owned();
         catalog::register(&location, ws.author.source(), "v0.1.0").unwrap();
@@ -6391,7 +6627,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            m.catalog_release("dan/demo1", None)
+            m.catalog_release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", None)
                 .unwrap()
                 .manifest
                 .version,
@@ -6399,17 +6635,21 @@ mod tests {
         );
         assert!(!m.browse_catalog().unwrap().items.is_empty());
 
-        let installed = m.install_from_catalog("dan/demo1", Some("0.1.0")).unwrap();
+        let installed = m
+            .install_from_catalog("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", Some("0.1.0"))
+            .unwrap();
         assert_eq!(installed.current.version, "0.1.0");
         let rows = m.check().unwrap();
         assert_eq!(rows[0].status, check::CheckStatus::UpdateAvailable);
         assert_eq!(rows[0].latest.as_deref(), Some("0.2.0"));
-        m.update("dan/demo1").unwrap();
+        m.update("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc").unwrap();
         assert_eq!(m.check().unwrap()[0].status, check::CheckStatus::UpToDate);
-        ws.refuses("catalog", || m.install_from_catalog("dan/missing", None));
+        ws.refuses("catalog", || {
+            m.install_from_catalog("a68376c0-a262-545a-a4f8-afe9998880a6", None)
+        });
         // Installed from Git, offered by the catalog from the same source: already there.
         assert!(
-            m.install_from_catalog("dan/demo1", None)
+            m.install_from_catalog("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", None)
                 .unwrap()
                 .already_installed
         );
@@ -6417,10 +6657,10 @@ mod tests {
 
     #[test]
     fn release_with_empty_files_is_still_verified() {
-        let ws = Ws::new("dan/demo1");
+        let ws = Ws::new("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let m = ws.open();
         let release = catalog::Release {
-            manifest: make_manifest("dan/demo1", "0.1.0"),
+            manifest: make_manifest("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.1.0"),
             source: ws.author.source().into(),
             commit: ws.author.head(),
             reference: "v0.1.0".into(),
@@ -6432,55 +6672,68 @@ mod tests {
     }
 
     #[test]
-    fn ids_differing_only_in_case_are_refused() {
-        assert!(ids_collide("dan/p", "Dan/p"));
-        assert!(ids_collide("dan/p", "Dan/q"), "namespace folder is shared");
-        assert!(ids_collide("dan/p", "dan/P"));
-        assert!(!ids_collide("dan/p", "dan/p"));
-        assert!(!ids_collide("dan/p", "dan/q"));
-        assert!(!ids_collide("dan/p", "other/P"));
-        let (ws, m) = Ws::installed("dan/p");
-        let upper = ws.other_author("upper", "Dan/p");
-        let error = ws.refuses("workspace", || m.install(upper.source()));
-        assert!(error.to_string().contains("letter case"), "{error}");
-        let sibling = ws.other_author("sibling", "Dan/q");
-        ws.refuses("workspace", || m.install(sibling.source()));
-        // A forgotten repository still occupies its path.
-        m.forget("dan/p").unwrap();
-        let error = ws.refuses("workspace", || m.install(upper.source()));
-        assert!(error.to_string().contains("letter case"), "{error}");
-        m.restore("dan/p").unwrap();
-        let error = ws.refuses("invalid_argument", || {
-            m.fork_in_namespace("dan/p", &ws.dir.join("forks/p"), "Dan")
-        });
-        assert!(error.to_string().contains("letter case"), "{error}");
+    fn uppercase_manifest_uuid_is_invalid_before_installed_or_retained_collision() {
+        let id = "b19dabd5-0619-5414-b4d6-56c38472e88d";
+        let (ws, m) = Ws::installed(id);
+        let uppercase = ws.other_author("uppercase", &id.to_uppercase());
+        let install =
+            || m.install_package(uppercase.source(), None, InstallTarget::Ref("HEAD".into()));
+        ws.refuses("invalid_id", install);
+        m.forget(id).unwrap();
+        ws.refuses("invalid_id", install);
+    }
+
+    #[test]
+    fn equal_aliases_keep_distinct_uuid_identities() {
+        let id = "b19dabd5-0619-5414-b4d6-56c38472e88d";
+        assert!(ids_collide(id, &id.to_uppercase()));
+        assert!(!ids_collide(id, id));
+        let (ws, m) = Ws::installed(id);
+        let other_id = "bd282222-297a-57fb-99d4-0357a8a70172";
+        let other = ws.other_author("sibling", other_id);
+        assert_eq!(
+            crate::model::manifest(&other.path).unwrap().name,
+            crate::model::manifest(&ws.author.path).unwrap().name
+        );
+        m.install_package(other.source(), None, InstallTarget::Ref("HEAD".into()))
+            .unwrap();
+        assert_eq!(m.list().unwrap().len(), 2);
+        ws.refuses("invalid_id", || m.disable(&id.to_uppercase()));
     }
 
     // ---- fork -----------------------------------------------------------------------
 
     #[test]
     fn fork_creates_an_independent_author_checkout() {
-        let (ws, m) = Ws::installed("vendor/demo1");
+        let (ws, m) = Ws::installed("3e91bfd4-69a0-55a1-9f05-93c3e97dab8a");
         let base = ws.author.head();
         // Branch naming considers the recorded source, not local installation refs.
         fixture_git(&ws.author.path, &["branch", "fork"]);
         let before = tree_hash(&ws.root);
         let path = m
-            .fork_in_namespace("vendor/demo1", &ws.dir.join("forks/demo1"), "me")
+            .fork_into(
+                "3e91bfd4-69a0-55a1-9f05-93c3e97dab8a",
+                &ws.dir.join("cac04534-5921-5c69-842e-406646a68c5b"),
+            )
             .unwrap();
         assert_eq!(
             tree_hash(&ws.root),
             before,
             "fork never changes the workspace"
         );
-        assert_eq!(path, ws.dir.join("forks/demo1"));
+        assert_eq!(path, ws.dir.join("cac04534-5921-5c69-842e-406646a68c5b"));
         let manifest = crate::model::manifest(&path).unwrap();
-        assert_eq!(manifest.id, "me/demo1");
+        valid_id(&manifest.id).unwrap();
+        assert_ne!(manifest.id, "3e91bfd4-69a0-55a1-9f05-93c3e97dab8a");
+        assert_eq!(
+            manifest.name,
+            crate::model::manifest(&ws.author.path).unwrap().name
+        );
         assert_eq!(manifest.version, "0.1.0");
         assert_eq!(
             manifest.fork_of,
             Some(ForkOf {
-                id: "vendor/demo1".into(),
+                id: "3e91bfd4-69a0-55a1-9f05-93c3e97dab8a".into(),
                 version: "0.1.0".into(),
                 commit: base.clone(),
                 source: Some(ws.author.source().into()),
@@ -6506,7 +6759,10 @@ mod tests {
         assert_eq!(fixture_git(&path, &["status", "--porcelain"]), "");
         assert_eq!(
             fixture_git(&path, &["log", "-1", "--format=%s"]),
-            "Fork vendor/demo1 as me/demo1"
+            format!(
+                "Fork 3e91bfd4-69a0-55a1-9f05-93c3e97dab8a as {}",
+                manifest.id
+            )
         );
         // Installing the fork is independent of the original.
         let r = m
@@ -6516,32 +6772,30 @@ mod tests {
                 InstallTarget::Ref("HEAD".into()),
             )
             .unwrap();
-        assert_eq!(r.id, "me/demo1");
-        assert_eq!(r.fork_of.unwrap().id, "vendor/demo1");
+        assert_eq!(r.id, manifest.id);
+        assert_eq!(
+            r.fork_of.unwrap().id,
+            "3e91bfd4-69a0-55a1-9f05-93c3e97dab8a"
+        );
         assert_eq!(m.list().unwrap().len(), 2);
     }
 
     #[test]
     fn fork_refusals_create_nothing() {
-        let (ws, m) = Ws::installed("vendor/demo1");
-        let id = "vendor/demo1";
-        let dest = ws.dir.join("forks/demo1");
-        let error = ws.refuses("invalid_argument", || {
-            m.fork_in_namespace(id, &dest, "vendor")
-        });
-        assert!(error.to_string().contains("different namespace"));
-        ws.refuses("invalid_id", || m.fork_in_namespace(id, &dest, "bad ns"));
+        let (ws, m) = Ws::installed("3e91bfd4-69a0-55a1-9f05-93c3e97dab8a");
+        let id = "3e91bfd4-69a0-55a1-9f05-93c3e97dab8a";
+        let dest = ws.dir.join("cac04534-5921-5c69-842e-406646a68c5b");
         ws.refuses("invalid_argument", || {
-            m.fork_in_namespace(id, &ws.dir.join("forks/../demo1"), "me")
+            m.fork_into(id, &ws.dir.join("forks/../demo1"))
         });
         ws.refuses("invalid_argument", || {
-            m.fork_in_namespace(id, &ws.root.join("inside"), "me")
+            m.fork_into(id, &ws.root.join("inside"))
         });
         ws.refuses("invalid_argument", || {
-            m.fork_in_namespace(id, &ws.repo().join("new/deeper"), "me")
+            m.fork_into(id, &ws.repo().join("373f9c38-fead-5b2e-b3d1-35d360a349ec"))
         });
         fs::create_dir_all(&dest).unwrap();
-        let error = ws.refuses("invalid_argument", || m.fork_in_namespace(id, &dest, "me"));
+        let error = ws.refuses("invalid_argument", || m.fork_into(id, &dest));
         assert!(
             error.to_string().starts_with("destination already exists"),
             "{error}"
@@ -6551,9 +6805,9 @@ mod tests {
         assert!(!ws.root.join("inside").exists());
         // Not inside the source's working tree either (new or existing folder).
         let before = tree_hash(&ws.author.path);
-        for inside in ["forks/demo1", "."] {
+        for inside in ["cac04534-5921-5c69-842e-406646a68c5b", "."] {
             let error = ws.refuses("invalid_argument", || {
-                m.fork_in_namespace(id, &ws.author.path.join(inside), "me")
+                m.fork_into(id, &ws.author.path.join(inside))
             });
             assert!(error.to_string().contains("source repository"), "{error}");
         }
@@ -6564,15 +6818,17 @@ mod tests {
 
     #[test]
     fn one_handle_serializes_concurrent_operations() {
-        let (ws, m) = Ws::installed("dan/demo1");
+        let (ws, m) = Ws::installed("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let m = std::sync::Arc::new(m);
         let threads: Vec<_> = (0..4)
             .map(|n| {
                 let m = m.clone();
                 std::thread::spawn(move || {
                     for _ in 0..3 {
-                        m.set_enabled("dan/demo1", n % 2 == 0).unwrap();
-                        m.uninstall_plan("dan/demo1").unwrap();
+                        m.set_enabled("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", n % 2 == 0)
+                            .unwrap();
+                        m.uninstall_plan("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc")
+                            .unwrap();
                     }
                 })
             })
@@ -6586,8 +6842,8 @@ mod tests {
 
     #[test]
     fn symlink_outside_dist_does_not_block_other_plugins() {
-        let (ws, m) = Ws::installed("dan/demo1");
-        let linked = ws.other_author("linked", "dan/linked");
+        let (ws, m) = Ws::installed("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
+        let linked = ws.other_author("linked", "66605e42-b138-5617-b773-d0cf94406f35");
         std::os::unix::fs::symlink("plugin.json", linked.path.join("manifest-link")).unwrap();
         fixture_git(&linked.path, &["add", "manifest-link"]);
         fixture_git(
@@ -6596,19 +6852,23 @@ mod tests {
         );
         fixture_git(&linked.path, &["tag", "-f", "v0.1.0"]);
         m.install(linked.source()).expect("dist/ has no symlink");
-        m.disable("dan/demo1")
+        m.disable("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc")
             .expect("other packages stay manageable");
         // The package itself stays updatable; its repository symlink is kept.
         linked.release("0.2.0");
-        m.update("dan/linked").unwrap();
+        m.update("66605e42-b138-5617-b773-d0cf94406f35").unwrap();
         assert!(
-            fs::symlink_metadata(ws.root.join("worktrees/dan/linked").join("manifest-link"))
-                .unwrap()
-                .file_type()
-                .is_symlink()
+            fs::symlink_metadata(
+                ws.root
+                    .join("worktrees/66605e42-b138-5617-b773-d0cf94406f35")
+                    .join("manifest-link")
+            )
+            .unwrap()
+            .file_type()
+            .is_symlink()
         );
         // A symlink inside dist/ is refused before anything is committed.
-        let bad = ws.other_author("bad", "dan/bad");
+        let bad = ws.other_author("bad", "86ca4dbd-0966-543b-a2cf-a2d5ea1d22f6");
         std::os::unix::fs::symlink("index.js", bad.path.join("dist/link.js")).unwrap();
         fixture_git(&bad.path, &["add", "--all"]);
         fixture_git(&bad.path, &["commit", "-q", "-m", "symlink in dist"]);
@@ -6618,8 +6878,8 @@ mod tests {
 
     #[test]
     fn a_submodule_in_dist_deploys_an_empty_folder() {
-        let (ws, m) = Ws::installed("dan/demo1");
-        let bad = ws.other_author("bad", "dan/bad");
+        let (ws, m) = Ws::installed("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
+        let bad = ws.other_author("bad", "86ca4dbd-0966-543b-a2cf-a2d5ea1d22f6");
         let sha = transport::object_id(&bad.path, "HEAD", false).unwrap();
         fixture_git(
             &bad.path,
@@ -6633,10 +6893,12 @@ mod tests {
         fixture_git(&bad.path, &["commit", "-q", "-m", "submodule in dist"]);
         fixture_git(&bad.path, &["tag", "-f", "v0.1.0"]);
         let result = m.install(bad.source()).unwrap();
-        let vendor = ws.root.join("dist/dan/bad/vendor");
+        let vendor = ws
+            .root
+            .join("dist/86ca4dbd-0966-543b-a2cf-a2d5ea1d22f6/vendor");
         assert!(vendor.is_dir());
         assert_eq!(fs::read_dir(vendor).unwrap().count(), 0);
-        assert_eq!(result.id, "dan/bad");
+        assert_eq!(result.id, "86ca4dbd-0966-543b-a2cf-a2d5ea1d22f6");
         assert!(
             result
                 .dist
@@ -6644,29 +6906,39 @@ mod tests {
                 .iter()
                 .any(|warning| warning.contains("dist/vendor is a Git submodule"))
         );
-        fs::remove_dir_all(ws.root.join("dist/dan/bad")).unwrap();
+        fs::remove_dir_all(ws.root.join("dist/86ca4dbd-0966-543b-a2cf-a2d5ea1d22f6")).unwrap();
         let synced = m.sync_dist().unwrap();
         assert_eq!(synced.warnings, result.dist.warnings);
-        assert!(ws.root.join("dist/dan/bad/vendor").is_dir());
-        fs::remove_dir_all(ws.root.join("dist/dan/bad")).unwrap();
+        assert!(
+            ws.root
+                .join("dist/86ca4dbd-0966-543b-a2cf-a2d5ea1d22f6/vendor")
+                .is_dir()
+        );
+        fs::remove_dir_all(ws.root.join("dist/86ca4dbd-0966-543b-a2cf-a2d5ea1d22f6")).unwrap();
         fs::remove_dir_all(ws.dist()).unwrap();
         let state = m.state().unwrap();
         fs::remove_dir_all(
-            ws.root
-                .join(state.packages["dan/demo1"].clone_folder("dan/demo1")),
+            ws.root.join(
+                state.packages["ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc"]
+                    .clone_folder("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc"),
+            ),
         )
         .unwrap();
         let Error::NotDeployed { sync, .. } = m.sync_dist().unwrap_err() else {
             panic!("missing clone must produce a partial reconciliation report");
         };
         assert_eq!(sync.warnings, result.dist.warnings);
-        assert!(ws.root.join("dist/dan/bad/vendor").is_dir());
+        assert!(
+            ws.root
+                .join("dist/86ca4dbd-0966-543b-a2cf-a2d5ea1d22f6/vendor")
+                .is_dir()
+        );
     }
 
     #[test]
-    fn symlinked_namespace_directory_is_never_followed() {
+    fn symlinked_managed_parent_is_never_followed() {
         // Install: `repos` points outside; nothing may be written there.
-        let ws = Ws::new("vendor/demo1");
+        let ws = Ws::new("3e91bfd4-69a0-55a1-9f05-93c3e97dab8a");
         let m = ws.open();
         let outside = ws.dir.join("outside");
         fs::create_dir_all(&outside).unwrap();
@@ -6674,14 +6946,16 @@ mod tests {
         ws.refuses("workspace", || m.install(ws.author.source()));
         assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
 
-        // Uninstall/update of an installed package whose namespace was swapped for a
+        // Uninstall/update of an installed package whose clone parent was swapped for a
         // symlink: the external directory survives untouched.
-        let (ws, m) = Ws::installed("dan/demo1");
+        let (ws, m) = Ws::installed("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let outside = ws.dir.join("outside");
         fs::create_dir_all(&outside).unwrap();
         fs::rename(ws.root.join("repos"), outside.join("dan")).unwrap();
         std::os::unix::fs::symlink(outside.join("dan"), ws.root.join("repos")).unwrap();
-        ws.refuses("workspace", || m.uninstall("dan/demo1", &[], true));
+        ws.refuses("workspace", || {
+            m.uninstall("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", &[], true)
+        });
         assert!(
             outside
                 .join("dan")
@@ -6690,30 +6964,47 @@ mod tests {
                 .is_dir()
         );
         ws.author.release("0.2.0");
-        ws.refuses("workspace", || m.update("dan/demo1"));
+        ws.refuses("workspace", || {
+            m.update("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc")
+        });
 
-        let (ws, m) = Ws::installed("dan/demo1");
+        let (ws, m) = Ws::installed("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let outside = ws.dir.join("outside");
         fs::create_dir_all(&outside).unwrap();
-        fs::rename(ws.root.join("dist/dan"), outside.join("dan")).unwrap();
-        std::os::unix::fs::symlink(outside.join("dan"), ws.root.join("dist/dan")).unwrap();
-        ws.refuses("workspace", || m.uninstall("dan/demo1", &[], true));
-        assert!(outside.join("dan/demo1").is_dir());
+        fs::rename(ws.root.join("dist"), outside.join("dan")).unwrap();
+        std::os::unix::fs::symlink(outside.join("dan"), ws.root.join("dist")).unwrap();
+        ws.refuses("workspace", || {
+            m.uninstall("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", &[], true)
+        });
+        assert!(
+            outside
+                .join("dan/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc")
+                .is_dir()
+        );
     }
 
     #[test]
     fn symlinked_worktree_parents_are_never_followed() {
-        for relative in ["worktrees", "worktrees/dan"] {
-            let (ws, m) = Ws::installed("dan/demo1");
+        for relative in [
+            "worktrees",
+            "worktrees/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+        ] {
+            let (ws, m) = Ws::installed("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
             ws.author.release("0.2.0");
-            m.update("dan/demo1").unwrap();
+            m.update("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc").unwrap();
             let outside = ws.dir.join("outside");
             fs::rename(ws.root.join(relative), &outside).unwrap();
             std::os::unix::fs::symlink(&outside, ws.root.join(relative)).unwrap();
             let before = tree_hash(&outside);
-            ws.refuses("workspace", || m.update_to("dan/demo1", Target::Release));
-            ws.refuses("workspace", || m.rollback("dan/demo1"));
-            ws.refuses("workspace", || m.uninstall("dan/demo1", &[], true));
+            ws.refuses("workspace", || {
+                m.update_to("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", Target::Release)
+            });
+            ws.refuses("workspace", || {
+                m.rollback("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc")
+            });
+            ws.refuses("workspace", || {
+                m.uninstall("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", &[], true)
+            });
             assert_eq!(tree_hash(&outside), before);
         }
     }
@@ -6743,34 +7034,41 @@ mod tests {
             }),
         ];
         for (name, setup) in cases {
-            let (ws, m) = Ws::installed("dan/demo1");
+            let (ws, m) = Ws::installed("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
             ws.author.release("0.2.0");
-            m.update("dan/demo1").unwrap();
+            m.update("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc").unwrap();
             ws.author.release("0.3.0");
             setup(&ws.repo());
-            let error = ws.refuses("local_changes", || m.update("dan/demo1"));
+            let error = ws.refuses("local_changes", || {
+                m.update("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc")
+            });
             assert!(error.to_string().contains("stash"), "{name}: {error}");
-            ws.refuses("local_changes", || m.rollback("dan/demo1"));
+            ws.refuses("local_changes", || {
+                m.rollback("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc")
+            });
         }
     }
 
     #[test]
     fn rollback_of_a_fork_treats_fetched_upstream_tags_as_published() {
-        let ws = Ws::new("me/hello");
+        let ws = Ws::new("ce6c8a3b-b2f8-5391-8ef8-4cbb7873f5d4");
         // The fork's repository holds a tag of its upstream on a commit no branch of the
         // fork contains (the upstream released after the fork point).
         let author = &ws.author.path;
         fixture_git(author, &["switch", "-q", "--detach"]);
-        write_manifest(author, &make_manifest("acme/hello", "0.0.1"));
+        write_manifest(
+            author,
+            &make_manifest("7e6e8392-7be8-55ae-bd03-2b430b1c5d59", "0.0.1"),
+        );
         fixture_git(author, &["commit", "-qam", "upstream 0.0.1"]);
         fixture_git(author, &["tag", "v0.0.1"]);
         fixture_git(author, &["switch", "-q", "main"]);
         let m = ws.open();
         m.install(ws.author.source()).unwrap();
         ws.author.release("0.2.0");
-        m.update("me/hello").unwrap();
+        m.update("ce6c8a3b-b2f8-5391-8ef8-4cbb7873f5d4").unwrap();
         // Offline, as published as it was for the update.
-        let change = m.rollback("me/hello").unwrap();
+        let change = m.rollback("ce6c8a3b-b2f8-5391-8ef8-4cbb7873f5d4").unwrap();
         assert_eq!(
             (change.from.version.as_str(), change.to.version.as_str()),
             ("0.2.0", "0.1.0")
@@ -6784,8 +7082,12 @@ mod tests {
         fixture_git(&repo, &["tag", "local-only"]);
         fixture_git(&repo, &["switch", "-q", "--detach", "HEAD~1"]);
         for error in [
-            ws.refuses("local_changes", || m.rollback("me/hello")),
-            ws.refuses("local_changes", || m.update("me/hello")),
+            ws.refuses("local_changes", || {
+                m.rollback("ce6c8a3b-b2f8-5391-8ef8-4cbb7873f5d4")
+            }),
+            ws.refuses("local_changes", || {
+                m.update("ce6c8a3b-b2f8-5391-8ef8-4cbb7873f5d4")
+            }),
         ] {
             let Error::LocalChanges { items, .. } = error else {
                 unreachable!()
@@ -6801,7 +7103,7 @@ mod tests {
 
     #[test]
     fn rollback_to_a_pruned_commit_names_it() {
-        let (ws, m) = Ws::installed("dan/demo1");
+        let (ws, m) = Ws::installed("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let first = ws.author.head();
         // The origin rewrites its history: 0.1.0 is on no branch and its tag is gone.
         let author = &ws.author.path;
@@ -6810,7 +7112,7 @@ mod tests {
         ws.author.release("0.2.0");
         fixture_git(author, &["branch", "-q", "-M", "main"]);
         fixture_git(author, &["tag", "-d", "v0.1.0"]);
-        m.update("dan/demo1").unwrap();
+        m.update("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc").unwrap();
         let repo = ws.repo();
         for branch in fixture_git(
             &repo,
@@ -6822,20 +7124,28 @@ mod tests {
         }
         fixture_git(
             &repo,
-            &["update-ref", "-d", "refs/gitpm/dan/demo1/previous"],
+            &[
+                "update-ref",
+                "-d",
+                "refs/gitpm/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/previous",
+            ],
         );
         fixture_git(&repo, &["reflog", "expire", "--expire=now", "--all"]);
         fixture_git(&repo, &["gc", "-q", "--prune=now"]);
-        let error = ws.refuses("no_previous_version", || m.rollback("dan/demo1"));
+        let error = ws.refuses("no_previous_version", || {
+            m.rollback("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc")
+        });
         assert_eq!(
             error.to_string(),
-            format!("previous revision {first} of dan/demo1 is no longer available")
+            format!(
+                "previous revision {first} of ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc is no longer available"
+            )
         );
     }
 
     #[test]
     fn symlinked_workspace_root_shares_the_lock() {
-        let ws = Ws::new("dan/demo1");
+        let ws = Ws::new("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let m = ws.open();
         let alias = ws.dir.join("alias");
         std::os::unix::fs::symlink(&ws.root, &alias).unwrap();
@@ -6855,7 +7165,7 @@ mod tests {
         root: PathBuf,
     }
     impl Mono {
-        /// `tilr/store` and `tilr/theme` at 1.0.0, sharing one repository release tag.
+        /// `76a9b591-60f3-5c7f-9e1c-31648fc73bfd` and `f851f609-bb81-52d6-bfef-33798624782c` at 1.0.0, sharing one repository release tag.
         fn new() -> Self {
             let dir = TempDir::new("mono");
             let repo = dir.join("mono");
@@ -6880,7 +7190,15 @@ mod tests {
         fn write(&self, name: &str, version: &str, deps: &[(&str, &str)]) {
             let folder = self.repo.join("packages").join(name);
             fs::create_dir_all(folder.join("dist")).unwrap();
-            let mut m = make_manifest(&format!("tilr/{name}"), version);
+            let mut m = make_manifest(
+                match name {
+                    "store" => "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+                    "theme" => "f851f609-bb81-52d6-bfef-33798624782c",
+                    "dock" => "4ec10364-80f2-5ed8-b2ff-594149bfecb5",
+                    _ => panic!("unknown fixture package"),
+                },
+                version,
+            );
             for (id, requirement) in deps {
                 m.dependencies.insert((*id).into(), (*requirement).into());
             }
@@ -6917,7 +7235,18 @@ mod tests {
             reopen(&self.root).unwrap()
         }
         fn dist(&self, name: &str) -> String {
-            read(&self.root.join("dist/tilr").join(name).join("index.js"))
+            read(
+                &self
+                    .root
+                    .join("dist")
+                    .join(match name {
+                        "store" => "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+                        "theme" => "f851f609-bb81-52d6-bfef-33798624782c",
+                        "dock" => "4ec10364-80f2-5ed8-b2ff-594149bfecb5",
+                        _ => panic!("unknown fixture package"),
+                    })
+                    .join("index.js"),
+            )
         }
         fn clones(&self) -> Vec<String> {
             fs::read_dir(self.root.join("repos"))
@@ -6943,11 +7272,19 @@ mod tests {
         let mono = Mono::new();
         let m = mono.open();
         let store = m
-            .install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
+            .install_package(
+                mono.source(),
+                Some("76a9b591-60f3-5c7f-9e1c-31648fc73bfd"),
+                InstallTarget::Release,
+            )
             .unwrap();
         assert_eq!(store.current.version, "1.0.0");
-        m.install_package(mono.source(), Some("tilr/theme"), InstallTarget::Release)
-            .unwrap();
+        m.install_package(
+            mono.source(),
+            Some("f851f609-bb81-52d6-bfef-33798624782c"),
+            InstallTarget::Release,
+        )
+        .unwrap();
         assert_eq!(mono.dist("store"), "store 1.0.0");
         assert_eq!(mono.dist("theme"), "theme 1.0.0");
         let clones = mono.clones();
@@ -6955,11 +7292,16 @@ mod tests {
         assert!(clones[0].starts_with("mono-"), "{clones:?}");
         assert!(!mono.root.join("packages/tilr").exists());
         let state = m.state().unwrap();
-        let p = &state.packages["tilr/store"];
+        let p = &state.packages["76a9b591-60f3-5c7f-9e1c-31648fc73bfd"];
         assert_eq!(p.clone.as_deref(), Some(clones[0].as_str()));
         assert_eq!(p.path.as_deref(), Some("packages/store"));
         // Only the package's own dist is deployed.
-        assert!(!mono.root.join("dist/tilr/store/plugin.json").exists());
+        assert!(
+            !mono
+                .root
+                .join("dist/76a9b591-60f3-5c7f-9e1c-31648fc73bfd/plugin.json")
+                .exists()
+        );
         let listed = m.list().unwrap();
         assert_eq!(listed[1].path.as_deref(), Some("packages/theme"));
     }
@@ -6971,35 +7313,39 @@ mod tests {
         let error = mono.refuses("invalid_argument", || m.install(mono.source()));
         let text = error.to_string();
         assert!(
-            text.contains("tilr/store (packages/store)")
-                && text.contains("tilr/theme (packages/theme)"),
+            text.contains("76a9b591-60f3-5c7f-9e1c-31648fc73bfd (packages/store)")
+                && text.contains("f851f609-bb81-52d6-bfef-33798624782c (packages/theme)"),
             "{text}"
         );
         mono.refuses("invalid_argument", || {
-            m.install_package(mono.source(), Some("tilr/missing"), InstallTarget::Release)
+            m.install_package(
+                mono.source(),
+                Some("68b9dd6f-1b5a-56db-9965-6160d1299901"),
+                InstallTarget::Release,
+            )
         });
         // A repository release tag requires a separate package selector.
         m.install_package(
             mono.source(),
-            Some("tilr/theme"),
+            Some("f851f609-bb81-52d6-bfef-33798624782c"),
             InstallTarget::Ref("v1.0.0".into()),
         )
         .unwrap();
         assert_eq!(mono.dist("theme"), "theme 1.0.0");
         // A root repository checks a given ID.
-        let ws = Ws::new("dan/demo1");
+        let ws = Ws::new("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let other = ws.open();
         ws.refuses("invalid_argument", || {
             other.install_package(
                 ws.author.source(),
-                Some("dan/other"),
+                Some("95d14dc8-6dfc-5022-9fd1-7146ee6aee58"),
                 InstallTarget::Release,
             )
         });
         other
             .install_package(
                 ws.author.source(),
-                Some("dan/demo1"),
+                Some("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc"),
                 InstallTarget::Release,
             )
             .unwrap();
@@ -7009,12 +7355,15 @@ mod tests {
     fn packages_release_together_and_update_independently() {
         let mono = Mono::new();
         let m = mono.open();
-        for id in ["tilr/store", "tilr/theme"] {
+        for id in [
+            "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+            "f851f609-bb81-52d6-bfef-33798624782c",
+        ] {
             m.install_package(mono.source(), Some(id), InstallTarget::Release)
                 .unwrap();
         }
         mono.release("store", "1.1.0");
-        let change = m.update("tilr/store").unwrap();
+        let change = m.update("76a9b591-60f3-5c7f-9e1c-31648fc73bfd").unwrap();
         assert_eq!(
             (change.to.version.as_str(), change.changed),
             ("1.1.0", true)
@@ -7023,17 +7372,25 @@ mod tests {
         assert_eq!(mono.dist("theme"), "theme 1.0.0");
         // Its sibling stays at its installed revision until explicitly updated.
         assert_eq!(
-            m.state().unwrap().packages["tilr/theme"].current.version,
+            m.state().unwrap().packages["f851f609-bb81-52d6-bfef-33798624782c"]
+                .current
+                .version,
             "1.0.0"
         );
-        assert!(m.update("tilr/theme").unwrap().changed);
+        assert!(
+            m.update("f851f609-bb81-52d6-bfef-33798624782c")
+                .unwrap()
+                .changed
+        );
         assert_eq!(
-            m.state().unwrap().packages["tilr/theme"].current.version,
+            m.state().unwrap().packages["f851f609-bb81-52d6-bfef-33798624782c"]
+                .current
+                .version,
             "1.1.0"
         );
-        m.rollback("tilr/store").unwrap();
+        m.rollback("76a9b591-60f3-5c7f-9e1c-31648fc73bfd").unwrap();
         assert_eq!(mono.dist("store"), "store 1.0.0");
-        m.update("tilr/store").unwrap();
+        m.update("76a9b591-60f3-5c7f-9e1c-31648fc73bfd").unwrap();
 
         // Joint upgrade moves both packages in one clone.
         mono.release("store", "1.2.0");
@@ -7049,13 +7406,15 @@ mod tests {
         // --dev follows the default branch for one package.
         mono.write("theme", "2.1.0", &[]);
         let head = mono.commit("theme work");
-        let dev = m.update_to("tilr/theme", Target::Dev).unwrap();
+        let dev = m
+            .update_to("f851f609-bb81-52d6-bfef-33798624782c", Target::Dev)
+            .unwrap();
         assert_eq!(dev.to.commit, head);
         assert_eq!(mono.dist("theme"), "theme 2.1.0");
         assert_eq!(mono.dist("store"), "store 1.2.0");
         // HEAD of the shared clone is now theme's untagged revision: store still updates.
         mono.release("store", "2.2.0");
-        m.update("tilr/store").unwrap();
+        m.update("76a9b591-60f3-5c7f-9e1c-31648fc73bfd").unwrap();
         assert_eq!(mono.dist("store"), "store 2.2.0");
     }
 
@@ -7063,39 +7422,65 @@ mod tests {
     fn uninstalling_one_package_keeps_the_shared_clone() {
         let mono = Mono::new();
         let m = mono.open();
-        for id in ["tilr/store", "tilr/theme"] {
+        for id in [
+            "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+            "f851f609-bb81-52d6-bfef-33798624782c",
+        ] {
             m.install_package(mono.source(), Some(id), InstallTarget::Release)
                 .unwrap();
         }
-        let plan = m.uninstall_plan("tilr/store").unwrap();
+        let plan = m
+            .uninstall_plan("76a9b591-60f3-5c7f-9e1c-31648fc73bfd")
+            .unwrap();
         assert_eq!(plan.deletes.len(), 2, "{:?}", plan.deletes);
         assert!(
             plan.deletes
                 .iter()
-                .any(|path| path.ends_with("dist/tilr/store"))
+                .any(|path| path.ends_with("dist/76a9b591-60f3-5c7f-9e1c-31648fc73bfd"))
         );
-        m.uninstall("tilr/store", &[], false).unwrap();
-        assert!(!mono.root.join("dist/tilr/store").exists());
+        m.uninstall("76a9b591-60f3-5c7f-9e1c-31648fc73bfd", &[], false)
+            .unwrap();
+        assert!(
+            !mono
+                .root
+                .join("dist/76a9b591-60f3-5c7f-9e1c-31648fc73bfd")
+                .exists()
+        );
         assert_eq!(mono.clones().len(), 1);
         mono.release("theme", "1.1.0");
-        m.update("tilr/theme").unwrap();
+        m.update("f851f609-bb81-52d6-bfef-33798624782c").unwrap();
         assert_eq!(mono.dist("theme"), "theme 1.1.0");
         // Reinstall reuses the clone.
-        m.install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
-            .unwrap();
+        m.install_package(
+            mono.source(),
+            Some("76a9b591-60f3-5c7f-9e1c-31648fc73bfd"),
+            InstallTarget::Release,
+        )
+        .unwrap();
         assert_eq!(mono.clones().len(), 1);
-        m.uninstall("tilr/store", &[], false).unwrap();
+        m.uninstall("76a9b591-60f3-5c7f-9e1c-31648fc73bfd", &[], false)
+            .unwrap();
         // The last package takes the clone with it; local work there is guarded.
-        let clone = mono.root.join("worktrees/tilr/theme");
+        let clone = mono
+            .root
+            .join("worktrees/f851f609-bb81-52d6-bfef-33798624782c");
         fs::write(clone.join("scratch.txt"), "mine").unwrap();
-        mono.refuses("local_changes", || m.update("tilr/theme"));
-        let plan = m.uninstall_plan("tilr/theme").unwrap();
+        mono.refuses("local_changes", || {
+            m.update("f851f609-bb81-52d6-bfef-33798624782c")
+        });
+        let plan = m
+            .uninstall_plan("f851f609-bb81-52d6-bfef-33798624782c")
+            .unwrap();
         assert_eq!(plan.deletes.len(), 3);
         assert!(!plan.lost_work.is_empty());
-        mono.refuses("local_changes", || m.uninstall("tilr/theme", &[], false));
+        mono.refuses("local_changes", || {
+            m.uninstall("f851f609-bb81-52d6-bfef-33798624782c", &[], false)
+        });
         m.uninstall(
-            "tilr/theme",
-            &m.uninstall_plan("tilr/theme").unwrap().lost_work,
+            "f851f609-bb81-52d6-bfef-33798624782c",
+            &m.uninstall_plan("f851f609-bb81-52d6-bfef-33798624782c")
+                .unwrap()
+                .lost_work,
             false,
         )
         .unwrap();
@@ -7113,14 +7498,18 @@ mod tests {
         mono.commit("drop store");
         mono.tag("2.0.0");
         let installed = m
-            .install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
+            .install_package(
+                mono.source(),
+                Some("76a9b591-60f3-5c7f-9e1c-31648fc73bfd"),
+                InstallTarget::Release,
+            )
             .unwrap();
         assert_eq!(installed.current.version, "1.0.0");
         assert!(installed.skipped.is_empty());
         let error = mono.refuses("invalid_argument", || {
             m.install_package(
                 mono.source(),
-                Some("tilr/store"),
+                Some("76a9b591-60f3-5c7f-9e1c-31648fc73bfd"),
                 InstallTarget::Ref("v2.0.0".into()),
             )
         });
@@ -7129,9 +7518,16 @@ mod tests {
             "{error}"
         );
         // Legacy package tags are ignored without a warning.
-        fixture_git(&mono.repo, &["tag", "tilr/theme@3.0.0"]);
+        fixture_git(
+            &mono.repo,
+            &["tag", "f851f609-bb81-52d6-bfef-33798624782c@3.0.0"],
+        );
         let installed = m
-            .install_package(mono.source(), Some("tilr/theme"), InstallTarget::Release)
+            .install_package(
+                mono.source(),
+                Some("f851f609-bb81-52d6-bfef-33798624782c"),
+                InstallTarget::Release,
+            )
             .unwrap();
         assert_eq!(installed.current.version, "2.0.0");
     }
@@ -7139,108 +7535,181 @@ mod tests {
     #[test]
     fn plain_fork_preserves_workspace_until_explicit_install_and_replace() {
         let mono = Mono::new();
-        for (name, id) in [("store", "demo/a"), ("theme", "demo/b")] {
+        for (name, id) in [
+            ("store", "d63a8a6b-85d6-509c-87db-9a6096daa66c"),
+            ("theme", "e66d8976-2209-50e5-abaf-9360c0a03411"),
+        ] {
             write_manifest(
                 &mono.repo.join(format!("packages/{name}")),
                 &make_manifest(id, "0.2.0"),
             );
         }
         mono.commit("Independent A and B");
-        for tag in ["demo/a@0.2.0", "demo/b@0.2.0", "v0.2.0"] {
+        for tag in [
+            "d63a8a6b-85d6-509c-87db-9a6096daa66c@0.2.0",
+            "e66d8976-2209-50e5-abaf-9360c0a03411@0.2.0",
+            "v0.2.0",
+        ] {
             fixture_git(&mono.repo, &["tag", tag]);
         }
         let m = mono.open();
-        for id in ["demo/a", "demo/b"] {
+        for id in [
+            "d63a8a6b-85d6-509c-87db-9a6096daa66c",
+            "e66d8976-2209-50e5-abaf-9360c0a03411",
+        ] {
             m.install_package(mono.source(), Some(id), InstallTarget::Release)
                 .unwrap();
         }
         let state_path = mono.root.join("state.json");
         let state_before = fs::read(&state_path).unwrap();
         let before = m.state().unwrap();
-        let a_dist = fs::read(mono.root.join("dist/demo/a/index.js")).unwrap();
-        let b_dist = fs::read(mono.root.join("dist/demo/b/index.js")).unwrap();
+        let a_dist = fs::read(
+            mono.root
+                .join("dist/d63a8a6b-85d6-509c-87db-9a6096daa66c/index.js"),
+        )
+        .unwrap();
+        let b_dist = fs::read(
+            mono.root
+                .join("dist/e66d8976-2209-50e5-abaf-9360c0a03411/index.js"),
+        )
+        .unwrap();
         let tags = fixture_git(&mono.repo, &["show-ref", "--tags"]);
         let destination = mono.dir.join("my-fork");
-        m.fork_in_namespace("demo/a", &destination, "my").unwrap();
+        m.fork_into("d63a8a6b-85d6-509c-87db-9a6096daa66c", &destination)
+            .unwrap();
+        let fork_store = package_manifest(&destination, Some("packages/store"))
+            .unwrap()
+            .id;
+        let fork_theme = package_manifest(&destination, Some("packages/theme"))
+            .unwrap()
+            .id;
         assert_eq!(fixture_git(&destination, &["show-ref", "--tags"]), tags);
         assert_eq!(fs::read(&state_path).unwrap(), state_before);
         assert_eq!(
-            fs::read(mono.root.join("dist/demo/a/index.js")).unwrap(),
+            fs::read(
+                mono.root
+                    .join("dist/d63a8a6b-85d6-509c-87db-9a6096daa66c/index.js")
+            )
+            .unwrap(),
             a_dist
         );
         assert_eq!(
-            fs::read(mono.root.join("dist/demo/b/index.js")).unwrap(),
+            fs::read(
+                mono.root
+                    .join("dist/e66d8976-2209-50e5-abaf-9360c0a03411/index.js")
+            )
+            .unwrap(),
             b_dist
         );
-        assert!(!mono.root.join("dist/my").exists());
-        for (name, id, original) in [("store", "my/a", "demo/a"), ("theme", "my/b", "demo/b")] {
+        assert_eq!(fs::read_dir(mono.root.join("dist")).unwrap().count(), 2);
+        for (name, _id, original) in [
+            (
+                "store",
+                fork_store.as_str(),
+                "d63a8a6b-85d6-509c-87db-9a6096daa66c",
+            ),
+            (
+                "theme",
+                fork_theme.as_str(),
+                "e66d8976-2209-50e5-abaf-9360c0a03411",
+            ),
+        ] {
             let manifest: Manifest = serde_json::from_slice(
                 &fs::read(destination.join(format!("packages/{name}/plugin.json"))).unwrap(),
             )
             .unwrap();
-            assert_eq!(manifest.id, id);
+            valid_id(&manifest.id).unwrap();
+            assert_ne!(manifest.id, original);
             assert_eq!(manifest.fork_of.unwrap().id, original);
             assert_eq!(manifest.replaces.unwrap().id, original);
         }
-        crate::scaffold::commit_package(&destination, "0.3.0", Some("my/a")).unwrap();
+        crate::scaffold::commit_package(&destination, "0.3.0", Some(fork_store.as_str())).unwrap();
         let head = fixture_git(&destination, &["rev-parse", "HEAD"]);
         let error =
-            crate::scaffold::commit_package(&destination, "0.3.0", Some("my/a")).unwrap_err();
+            crate::scaffold::commit_package(&destination, "0.3.0", Some(fork_store.as_str()))
+                .unwrap_err();
         assert_eq!(error.kind(), "version_conflict");
         assert!(error.to_string().contains("tag already exists"));
         assert_eq!(fixture_git(&destination, &["rev-parse", "HEAD"]), head);
         assert_eq!(fs::read(&state_path).unwrap(), state_before);
         m.install_package(
             destination.to_str().unwrap(),
-            Some("my/a"),
+            Some(fork_store.as_str()),
             InstallTarget::Release,
         )
         .unwrap();
         assert!(m.state().unwrap().replacements.is_empty());
-        m.replace("demo/a", "my/a").unwrap();
+        m.replace("d63a8a6b-85d6-509c-87db-9a6096daa66c", fork_store.as_str())
+            .unwrap();
         let after = m.state().unwrap();
         assert_eq!(
-            serde_json::to_value(&after.packages["demo/b"]).unwrap(),
-            serde_json::to_value(&before.packages["demo/b"]).unwrap()
+            serde_json::to_value(&after.packages["e66d8976-2209-50e5-abaf-9360c0a03411"]).unwrap(),
+            serde_json::to_value(&before.packages["e66d8976-2209-50e5-abaf-9360c0a03411"]).unwrap()
         );
         assert_eq!(after.replacements.len(), 1);
-        assert_eq!(after.replacements["demo/a"], "my/a");
-        assert!(!after.packages.contains_key("my/b"));
         assert_eq!(
-            fs::read(mono.root.join("dist/demo/b/index.js")).unwrap(),
+            after.replacements["d63a8a6b-85d6-509c-87db-9a6096daa66c"],
+            fork_store.as_str()
+        );
+        assert!(!after.packages.contains_key(fork_theme.as_str()));
+        assert_eq!(
+            fs::read(
+                mono.root
+                    .join("dist/e66d8976-2209-50e5-abaf-9360c0a03411/index.js")
+            )
+            .unwrap(),
             b_dist
         );
         assert_eq!(
-            fs::read(mono.root.join("dist/my/a/index.js")).unwrap(),
+            fs::read(mono.root.join(format!("dist/{}/index.js", fork_store))).unwrap(),
             a_dist
         );
-        assert!(!mono.root.join("dist/demo/a").exists());
-        assert!(!mono.root.join("dist/my/b").exists());
+        assert!(
+            !mono
+                .root
+                .join("dist/d63a8a6b-85d6-509c-87db-9a6096daa66c")
+                .exists()
+        );
+        assert!(!mono.root.join(format!("dist/{}", fork_theme)).exists());
     }
 
     #[test]
     fn a_fork_of_several_packages_starts_each_from_its_installed_revision() {
         let mono = Mono::new();
         let m = mono.open();
-        m.install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
-            .unwrap();
+        m.install_package(
+            mono.source(),
+            Some("76a9b591-60f3-5c7f-9e1c-31648fc73bfd"),
+            InstallTarget::Release,
+        )
+        .unwrap();
         let old = fixture_git(&mono.repo, &["rev-parse", "HEAD"]);
         let mut store_manifest = package_manifest(&mono.repo, Some("packages/store")).unwrap();
         store_manifest.version = "1.1.0".into();
         write_manifest(&mono.repo.join("packages/store"), &store_manifest);
-        mono.write("theme", "1.1.0", &[("tilr/store", "^1.0")]);
+        mono.write(
+            "theme",
+            "1.1.0",
+            &[("76a9b591-60f3-5c7f-9e1c-31648fc73bfd", "^1.0")],
+        );
         mono.commit("theme 1.1.0");
         mono.tag("1.1.0");
         mono.release("store", "1.2.0");
         m.install_package(
             mono.source(),
-            Some("tilr/theme"),
+            Some("f851f609-bb81-52d6-bfef-33798624782c"),
             InstallTarget::Ref("v1.1.0".into()),
         )
         .unwrap();
-        let destination = mono.dir.join("forks/me/mono");
+        let destination = mono.dir.join("7200845d-5956-5ec3-85d1-a7161d3592de/mono");
         let fork = m
-            .fork_packages(&["tilr/theme", "tilr/store"], &destination, "me")
+            .fork_packages(
+                &[
+                    "f851f609-bb81-52d6-bfef-33798624782c",
+                    "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+                ],
+                &destination,
+            )
             .unwrap();
         assert!(fork.created);
         // theme 1.1.0 is the newest installed revision; store keeps its 1.0.0 files.
@@ -7256,13 +7725,13 @@ mod tests {
         assert_eq!(store.version, "1.0.0");
         assert_eq!(store.fork_of.unwrap().commit, old);
         let theme = package_manifest(&destination, Some("packages/theme")).unwrap();
-        assert_eq!(theme.dependencies["me/store"], "^1.0");
+        assert_eq!(theme.dependencies[&store.id], "^1.0");
         assert_eq!(
             fork.rewrites,
             [DependencyRewrite {
-                package: "me/theme".into(),
-                from: "tilr/store".into(),
-                to: "me/store".into(),
+                package: theme.id.clone(),
+                from: "76a9b591-60f3-5c7f-9e1c-31648fc73bfd".into(),
+                to: store.id.clone(),
                 requirement: "^1.0".into(),
                 new_requirement: None,
             }]
@@ -7271,31 +7740,42 @@ mod tests {
 
         // Refusals create nothing and leave the existing fork alone.
         let head = fixture_git(&destination, &["rev-parse", "HEAD"]);
-        let other = mono.dir.join("forks/other");
-        for (ids, namespace) in [
-            (&["tilr/theme", "tilr/theme"][..], "you"),
-            (&["tilr/theme", "tilr/missing"][..], "you"),
-            (&["tilr/theme"][..], "tilr"),
-            (&[][..], "you"),
+        let other = mono.dir.join("35239b5d-1bfa-5cb7-b0b7-75ea4ce7bc50");
+        for ids in [
+            &[
+                "f851f609-bb81-52d6-bfef-33798624782c",
+                "f851f609-bb81-52d6-bfef-33798624782c",
+            ][..],
+            &[
+                "f851f609-bb81-52d6-bfef-33798624782c",
+                "68b9dd6f-1b5a-56db-9965-6160d1299901",
+            ][..],
+            &[][..],
         ] {
-            assert!(m.fork_packages(ids, &other, namespace).is_err(), "{ids:?}");
+            assert!(m.fork_packages(ids, &other).is_err(), "{ids:?}");
         }
         assert!(!other.exists());
         let error = m
-            .fork_packages(&["tilr/theme"], &destination, "me")
+            .fork_packages(&["f851f609-bb81-52d6-bfef-33798624782c"], &destination)
             .unwrap_err();
         assert!(error.to_string().contains("already exists"), "{error}");
         assert_eq!(error.kind(), "invalid_argument");
         // Dirty existing targets are also refused without touching their files.
-        let single = mono.dir.join("forks/single");
-        m.fork_packages(&["tilr/store"], &single, "s").unwrap();
+        let single = mono.dir.join("fec22843-df1f-5957-8a53-7aa1be4e276c");
+        m.fork_packages(&["76a9b591-60f3-5c7f-9e1c-31648fc73bfd"], &single)
+            .unwrap();
+        let single_theme = package_manifest(&single, Some("packages/theme"))
+            .unwrap()
+            .id;
         let before = fixture_git(&single, &["rev-parse", "HEAD"]);
         fs::write(
             single.join(packages::CONFIG),
             "{\"packages\":[\"packages/*\"]}",
         )
         .unwrap();
-        let error = m.fork_packages(&["tilr/theme"], &single, "s").unwrap_err();
+        let error = m
+            .fork_packages(&["f851f609-bb81-52d6-bfef-33798624782c"], &single)
+            .unwrap_err();
         assert!(
             error.to_string().contains("destination already exists"),
             "{error}"
@@ -7304,7 +7784,7 @@ mod tests {
             package_manifest(&single, Some("packages/theme"))
                 .unwrap()
                 .id,
-            "s/theme"
+            single_theme
         );
         assert_eq!(fixture_git(&single, &["rev-parse", "HEAD"]), before);
         assert_eq!(fixture_git(&destination, &["rev-parse", "HEAD"]), head);
@@ -7312,7 +7792,7 @@ mod tests {
 
     #[test]
     fn install_records_the_ref_mode() {
-        let id = "dan/demo1";
+        let id = "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc";
         let ws = Ws::new(id);
         let first = ws.author.head();
         let release = ws.author.release("0.2.0");
@@ -7397,7 +7877,7 @@ mod tests {
 
     #[test]
     fn update_follows_and_switches_the_recorded_mode() {
-        let id = "dan/demo1";
+        let id = "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc";
         let ws = Ws::new(id);
         let m = ws.open();
         m.install_package(
@@ -7493,8 +7973,8 @@ mod tests {
 
     #[test]
     fn a_branch_gone_from_the_origin_is_reported_not_fatal() {
-        let ws = Ws::new("dan/a");
-        let other = ws.other_author("other", "dan/other");
+        let ws = Ws::new("807b9715-06b4-55c2-add2-59b487bfa42e");
+        let other = ws.other_author("other", "95d14dc8-6dfc-5022-9fd1-7146ee6aee58");
         let m = ws.open();
         fixture_git(&ws.author.path, &["checkout", "-q", "-b", "feature"]);
         ws.author.commit("0.2.0");
@@ -7508,18 +7988,20 @@ mod tests {
         m.install(other.source()).unwrap();
         fixture_git(&ws.author.path, &["branch", "-q", "-D", "feature"]);
         other.release("0.2.0");
-        let error = ws.refuses("version_conflict", || m.update("dan/a"));
+        let error = ws.refuses("version_conflict", || {
+            m.update("807b9715-06b4-55c2-add2-59b487bfa42e")
+        });
         assert_eq!(
             error.to_string(),
-            "dan/a: the origin no longer has the branch feature it follows; automatic update refused"
+            "807b9715-06b4-55c2-add2-59b487bfa42e: the origin no longer has the branch feature it follows; automatic update refused"
         );
         let plan = m.update_all().unwrap();
         assert_eq!(plan.updates.len(), 1, "{plan:?}");
-        assert_eq!(plan.updates[0].id, "dan/other");
+        assert_eq!(plan.updates[0].id, "95d14dc8-6dfc-5022-9fd1-7146ee6aee58");
         assert_eq!(
             plan.unchanged,
             [Unchanged {
-                id: "dan/a".into(),
+                id: "807b9715-06b4-55c2-add2-59b487bfa42e".into(),
                 version: "0.2.0".into(),
                 reason: Some(UnchangedReason::BranchGone {
                     branch: "feature".into()
@@ -7539,30 +8021,38 @@ mod tests {
         mono.commit("store on side");
         fixture_git(&mono.repo, &["checkout", "-q", "main"]);
         let theme = m
-            .install_package(mono.source(), Some("tilr/theme"), InstallTarget::Dev)
+            .install_package(
+                mono.source(),
+                Some("f851f609-bb81-52d6-bfef-33798624782c"),
+                InstallTarget::Dev,
+            )
             .unwrap()
             .current;
         m.install_package(
             mono.source(),
-            Some("tilr/store"),
+            Some("76a9b591-60f3-5c7f-9e1c-31648fc73bfd"),
             InstallTarget::Ref("side".into()),
         )
         .unwrap();
-        m.forget("tilr/theme").unwrap();
+        m.forget("f851f609-bb81-52d6-bfef-33798624782c").unwrap();
         // Store has its own revision on side; theme comes back at its recorded commit.
-        let store_head = head_of(&mono.root.join("worktrees/tilr/store"));
+        let store_head = head_of(
+            &mono
+                .root
+                .join("worktrees/76a9b591-60f3-5c7f-9e1c-31648fc73bfd"),
+        );
         assert_ne!(store_head, theme.commit);
-        let restored = m.restore("tilr/theme").unwrap();
+        let restored = m.restore("f851f609-bb81-52d6-bfef-33798624782c").unwrap();
         assert_eq!(restored.current, theme);
         assert_eq!(
-            m.state().unwrap().packages["tilr/theme"].mode,
+            m.state().unwrap().packages["f851f609-bb81-52d6-bfef-33798624782c"].mode,
             Mode::Branch("main".into())
         );
     }
 
     #[test]
     fn branch_mode_restore_checks_dependencies() {
-        let id = "dan/demo1";
+        let id = "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc";
         let ws = Ws::new(id);
         let m = ws.open();
         m.install_package(ws.author.source(), None, InstallTarget::Dev)
@@ -7571,11 +8061,16 @@ mod tests {
         // The branch moves on to a revision that needs a package nobody installed.
         let mut next = make_manifest(id, "0.2.0");
         next.dependencies
-            .insert("dan/missing".into(), "^1.0".into());
+            .insert("a68376c0-a262-545a-a4f8-afe9998880a6".into(), "^1.0".into());
         write_manifest(&ws.author.path, &next);
         fixture_git(
             &ws.author.path,
-            &["commit", "-q", "-am", "needs dan/missing"],
+            &[
+                "commit",
+                "-q",
+                "-am",
+                "needs a68376c0-a262-545a-a4f8-afe9998880a6",
+            ],
         );
         fixture_git(&ws.repo(), &["fetch", "-q", "origin"]);
         fixture_git(&ws.repo(), &["checkout", "-q", "--detach", "origin/main"]);
@@ -7588,9 +8083,9 @@ mod tests {
 
     #[test]
     fn update_all_follows_each_mode() {
-        let ws = Ws::new("dan/a");
-        let b = ws.other_author("b", "dan/b");
-        let c = ws.other_author("c", "dan/c");
+        let ws = Ws::new("807b9715-06b4-55c2-add2-59b487bfa42e");
+        let b = ws.other_author("b", "03c25ec4-f583-513d-adfb-092fb98d8dba");
+        let c = ws.other_author("c", "78d36dc2-2c10-5dc8-a889-056564906e06");
         let m = ws.open();
         m.install(ws.author.source()).unwrap();
         m.install_package(b.source(), None, InstallTarget::Ref("v0.1.0".into()))
@@ -7606,11 +8101,17 @@ mod tests {
         let c_head = c.head();
         let plan = m.update_all_plan().unwrap();
         let updated: Vec<_> = plan.updates.iter().map(|u| u.id.as_str()).collect();
-        assert_eq!(updated, ["dan/a", "dan/c"]);
+        assert_eq!(
+            updated,
+            [
+                "78d36dc2-2c10-5dc8-a889-056564906e06",
+                "807b9715-06b4-55c2-add2-59b487bfa42e"
+            ]
+        );
         assert_eq!(
             plan.unchanged,
             [Unchanged {
-                id: "dan/b".into(),
+                id: "03c25ec4-f583-513d-adfb-092fb98d8dba".into(),
                 version: "0.1.0".into(),
                 reason: Some(UnchangedReason::Pinned {
                     reference: "v0.1.0".into()
@@ -7621,10 +8122,28 @@ mod tests {
         assert!(plan.kept_back.is_empty());
         m.update_all().unwrap();
         let state = m.state().unwrap();
-        assert_eq!(state.packages["dan/a"].current.version, "0.2.0");
-        assert_eq!(state.packages["dan/b"].current.version, "0.1.0");
-        assert_eq!(state.packages["dan/c"].current.commit, c_head);
-        assert_eq!(state.packages["dan/c"].mode, Mode::Branch("main".into()));
+        assert_eq!(
+            state.packages["807b9715-06b4-55c2-add2-59b487bfa42e"]
+                .current
+                .version,
+            "0.2.0"
+        );
+        assert_eq!(
+            state.packages["03c25ec4-f583-513d-adfb-092fb98d8dba"]
+                .current
+                .version,
+            "0.1.0"
+        );
+        assert_eq!(
+            state.packages["78d36dc2-2c10-5dc8-a889-056564906e06"]
+                .current
+                .commit,
+            c_head
+        );
+        assert_eq!(
+            state.packages["78d36dc2-2c10-5dc8-a889-056564906e06"].mode,
+            Mode::Branch("main".into())
+        );
         // A rewritten branch keeps the package with a reason; the others stay up to date.
         fixture_git(&c.path, &["reset", "-q", "--hard", "HEAD~1"]);
         c.commit("0.3.0");
@@ -7638,19 +8157,19 @@ mod tests {
         assert_eq!(
             reasons,
             [
-                ("dan/a", None),
                 (
-                    "dan/b",
+                    "03c25ec4-f583-513d-adfb-092fb98d8dba",
                     Some(UnchangedReason::Pinned {
                         reference: "v0.1.0".into()
                     })
                 ),
                 (
-                    "dan/c",
+                    "78d36dc2-2c10-5dc8-a889-056564906e06",
                     Some(UnchangedReason::Diverged {
                         branch: "main".into()
                     })
                 ),
+                ("807b9715-06b4-55c2-add2-59b487bfa42e", None),
             ]
         );
     }
@@ -7660,35 +8179,56 @@ mod tests {
         let mono = Mono::new();
         let m = mono.open();
         let store = m
-            .install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
+            .install_package(
+                mono.source(),
+                Some("76a9b591-60f3-5c7f-9e1c-31648fc73bfd"),
+                InstallTarget::Release,
+            )
             .unwrap()
             .current;
-        m.install_package(mono.source(), Some("tilr/theme"), InstallTarget::Dev)
-            .unwrap();
+        m.install_package(
+            mono.source(),
+            Some("f851f609-bb81-52d6-bfef-33798624782c"),
+            InstallTarget::Dev,
+        )
+        .unwrap();
         // Release mode, disabled: theme's separate worktree can advance while store
         // retains its recorded revision.
-        m.disable("tilr/store").unwrap();
-        m.forget("tilr/store").unwrap();
+        m.disable("76a9b591-60f3-5c7f-9e1c-31648fc73bfd").unwrap();
+        m.forget("76a9b591-60f3-5c7f-9e1c-31648fc73bfd").unwrap();
         mono.write("theme", "1.1.0", &[]);
         let next = mono.commit("theme 1.1.0");
-        m.update("tilr/theme").unwrap();
-        assert_eq!(head_of(&mono.root.join("worktrees/tilr/theme")), next);
-        let restored = m.restore("tilr/store").unwrap();
+        m.update("f851f609-bb81-52d6-bfef-33798624782c").unwrap();
+        assert_eq!(
+            head_of(
+                &mono
+                    .root
+                    .join("worktrees/f851f609-bb81-52d6-bfef-33798624782c")
+            ),
+            next
+        );
+        let restored = m.restore("76a9b591-60f3-5c7f-9e1c-31648fc73bfd").unwrap();
         assert_eq!(restored.current, store);
         assert!(restored.dist.deployed.is_empty());
         let state = m.state().unwrap();
-        let p = &state.packages["tilr/store"];
+        let p = &state.packages["76a9b591-60f3-5c7f-9e1c-31648fc73bfd"];
         assert!(!p.enabled && p.mode == Mode::Release && p.current == store);
         // A published moved HEAD in the forgotten package is still local work.
-        m.forget("tilr/theme").unwrap();
+        m.forget("f851f609-bb81-52d6-bfef-33798624782c").unwrap();
         mono.write("theme", "1.2.0", &[]);
         mono.commit("theme 1.2.0");
-        let theme = mono.root.join("worktrees/tilr/theme");
+        let theme = mono
+            .root
+            .join("worktrees/f851f609-bb81-52d6-bfef-33798624782c");
         fixture_git(&theme, &["fetch", "-q", "origin"]);
         fixture_git(&theme, &["checkout", "-q", "--detach", "origin/main"]);
-        mono.refuses("local_changes", || m.restore("tilr/theme"));
+        mono.refuses("local_changes", || {
+            m.restore("f851f609-bb81-52d6-bfef-33798624782c")
+        });
         assert_eq!(
-            m.state().unwrap().forgotten["tilr/theme"].current.commit,
+            m.state().unwrap().forgotten["f851f609-bb81-52d6-bfef-33798624782c"]
+                .current
+                .commit,
             next
         );
     }
@@ -7709,19 +8249,31 @@ mod tests {
         // Theme and store have separate worktrees at different recorded revisions.
         let mono = Mono::new();
         let m = mono.open();
-        m.install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
-            .unwrap();
+        m.install_package(
+            mono.source(),
+            Some("76a9b591-60f3-5c7f-9e1c-31648fc73bfd"),
+            InstallTarget::Release,
+        )
+        .unwrap();
         let store_commit = head_of(&mono.repo);
         mono.release("theme", "1.1.0");
-        m.install_package(mono.source(), Some("tilr/theme"), InstallTarget::Release)
-            .unwrap();
+        m.install_package(
+            mono.source(),
+            Some("f851f609-bb81-52d6-bfef-33798624782c"),
+            InstallTarget::Release,
+        )
+        .unwrap();
         assert_eq!(
-            head_of(&mono.root.join("worktrees/tilr/store")),
+            head_of(
+                &mono
+                    .root
+                    .join("worktrees/76a9b591-60f3-5c7f-9e1c-31648fc73bfd")
+            ),
             store_commit
         );
-        let destination = mono.dir.join("forks/store");
+        let destination = mono.dir.join("66747cfe-15d5-50e5-bd73-8281dacc1346");
         let path = m
-            .fork_in_namespace("tilr/store", &destination, "me")
+            .fork_into("76a9b591-60f3-5c7f-9e1c-31648fc73bfd", &destination)
             .unwrap();
         assert_eq!(fixture_git(&path, &["branch", "--show-current"]), "fork");
         assert_eq!(
@@ -7740,10 +8292,9 @@ mod tests {
                 .commit,
             store_commit
         );
-        assert_eq!(
-            package_manifest(&path, Some("packages/theme")).unwrap().id,
-            "me/theme"
-        );
+        let sibling = package_manifest(&path, Some("packages/theme")).unwrap();
+        valid_id(&sibling.id).unwrap();
+        assert_ne!(sibling.id, "f851f609-bb81-52d6-bfef-33798624782c");
         let config: packages::Config =
             serde_json::from_slice(&fs::read(path.join(packages::CONFIG)).unwrap()).unwrap();
         assert_eq!(config.packages, ["packages/*"]);
@@ -7754,7 +8305,8 @@ mod tests {
     fn a_root_package_moved_into_a_folder_keeps_updating_and_forks() {
         // Root and nested releases keep the same source-keyed clone.
         let dir = TempDir::new("moved");
-        let repo = scaffold::init(&dir.join("x"), "acme", "x").unwrap().repo;
+        let repo = scaffold::init(&dir.join("x"), "x").unwrap().repo;
+        let id = crate::model::manifest(&repo).unwrap().id;
         let m = reopen(&dir.join("workspace")).unwrap();
         m.install(repo.to_str().unwrap()).unwrap();
         fs::create_dir_all(repo.join("packages/x")).unwrap();
@@ -7769,10 +8321,10 @@ mod tests {
             r#"{"packages":["packages/*"]}"#,
         )
         .unwrap();
-        scaffold::commit_package(&repo, "0.2.0", Some("acme/x")).unwrap();
-        m.update("acme/x").unwrap();
+        scaffold::commit_package(&repo, "0.2.0", Some(id.as_str())).unwrap();
+        m.update(id.as_str()).unwrap();
         let state = m.state().unwrap();
-        let p = &state.packages["acme/x"];
+        let p = &state.packages[id.as_str()];
         assert_eq!(p.path.as_deref(), Some("packages/x"));
         assert_eq!(
             p.clone.as_deref(),
@@ -7780,24 +8332,30 @@ mod tests {
         );
         assert!(!p.is_root_package());
         fs::write(repo.join("packages/x/dist/index.js"), "x 0.3.0").unwrap();
-        scaffold::commit_package(&repo, "0.3.0", Some("acme/x")).unwrap();
+        scaffold::commit_package(&repo, "0.3.0", Some(id.as_str())).unwrap();
         let plan = m.update_all().unwrap();
         assert_eq!(plan.updates.len(), 1, "{plan:?}");
-        assert_eq!(read(&dir.join("workspace/dist/acme/x/index.js")), "x 0.3.0");
-        m.rollback("acme/x").unwrap();
-        m.update("acme/x").unwrap();
+        assert_eq!(
+            read(&dir.join(format!("workspace/dist/{id}/index.js"))),
+            "x 0.3.0"
+        );
+        m.rollback(id.as_str()).unwrap();
+        m.update(id.as_str()).unwrap();
         // Forked as a package folder, not refused as a root package.
         let fork = m
-            .fork_packages(&["acme/x"], &dir.join("forks/x"), "me")
+            .fork_packages(
+                &[id.as_str()],
+                &dir.join("6d1f6684-cf5f-573a-a60a-e28021e4fd7e"),
+            )
             .unwrap();
         assert_eq!(fork.packages[0].path, "packages/x");
         assert!(fork.path.join(packages::CONFIG).is_file());
         // forget/restore of the keyed clone finds the folder too.
-        m.forget("acme/x").unwrap();
-        let restored = m.restore("acme/x").unwrap();
+        m.forget(id.as_str()).unwrap();
+        let restored = m.restore(id.as_str()).unwrap();
         assert_eq!(restored.current.version, "0.3.0");
         assert_eq!(
-            m.state().unwrap().packages["acme/x"].path.as_deref(),
+            m.state().unwrap().packages[id.as_str()].path.as_deref(),
             Some("packages/x")
         );
     }
@@ -7807,20 +8365,38 @@ mod tests {
         // B4
         let mono = Mono::new();
         let m = mono.open();
-        for id in ["tilr/store", "tilr/theme"] {
+        for id in [
+            "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+            "f851f609-bb81-52d6-bfef-33798624782c",
+        ] {
             m.install_package(mono.source(), Some(id), InstallTarget::Release)
                 .unwrap();
         }
-        m.forget("tilr/store").unwrap();
+        m.forget("76a9b591-60f3-5c7f-9e1c-31648fc73bfd").unwrap();
         let state = m.state().unwrap();
-        assert!(!state.packages.contains_key("tilr/store"));
+        assert!(
+            !state
+                .packages
+                .contains_key("76a9b591-60f3-5c7f-9e1c-31648fc73bfd")
+        );
         assert_eq!(
-            state.forgotten["tilr/store"].path.as_deref(),
+            state.forgotten["76a9b591-60f3-5c7f-9e1c-31648fc73bfd"]
+                .path
+                .as_deref(),
             Some("packages/store")
         );
-        assert!(!mono.root.join("dist/tilr/store").exists());
+        assert!(
+            !mono
+                .root
+                .join("dist/76a9b591-60f3-5c7f-9e1c-31648fc73bfd")
+                .exists()
+        );
         let error = mono.refuses("already_installed", || {
-            m.install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
+            m.install_package(
+                mono.source(),
+                Some("76a9b591-60f3-5c7f-9e1c-31648fc73bfd"),
+                InstallTarget::Release,
+            )
         });
         assert!(
             error
@@ -7829,35 +8405,48 @@ mod tests {
             "{error}"
         );
         // The last registered user goes; the forgotten one still holds the clone.
-        let plan = m.uninstall_plan("tilr/theme").unwrap();
+        let plan = m
+            .uninstall_plan("f851f609-bb81-52d6-bfef-33798624782c")
+            .unwrap();
         assert_eq!(plan.deletes.len(), 2, "{:?}", plan.deletes);
-        m.uninstall("tilr/theme", &[], false).unwrap();
+        m.uninstall("f851f609-bb81-52d6-bfef-33798624782c", &[], false)
+            .unwrap();
         assert_eq!(mono.clones().len(), 1);
-        let restored = m.restore("tilr/store").unwrap();
+        let restored = m.restore("76a9b591-60f3-5c7f-9e1c-31648fc73bfd").unwrap();
         assert_eq!(restored.current.version, "1.0.0");
         assert_eq!(mono.dist("store"), "store 1.0.0");
         let state = m.state().unwrap();
         assert!(state.forgotten.is_empty());
         assert_eq!(
-            state.packages["tilr/store"].clone.as_deref(),
+            state.packages["76a9b591-60f3-5c7f-9e1c-31648fc73bfd"]
+                .clone
+                .as_deref(),
             Some(mono.clones()[0].as_str())
         );
         mono.release("store", "1.1.0");
-        m.update("tilr/store").unwrap();
+        m.update("76a9b591-60f3-5c7f-9e1c-31648fc73bfd").unwrap();
         assert_eq!(mono.dist("store"), "store 1.1.0");
         // Uninstalling a forgotten package removes the clone it was last on (forget
         // already removed its dist).
-        m.forget("tilr/store").unwrap();
-        let plan = m.uninstall_plan("tilr/store").unwrap();
+        m.forget("76a9b591-60f3-5c7f-9e1c-31648fc73bfd").unwrap();
+        let plan = m
+            .uninstall_plan("76a9b591-60f3-5c7f-9e1c-31648fc73bfd")
+            .unwrap();
         assert!(!plan.registered);
         assert_eq!(plan.deletes.len(), 2, "{:?}", plan.deletes);
-        m.uninstall("tilr/store", &[], false).unwrap();
+        m.uninstall("76a9b591-60f3-5c7f-9e1c-31648fc73bfd", &[], false)
+            .unwrap();
         assert!(mono.clones().is_empty());
-        assert!(!mono.root.join("dist/tilr/store").exists());
+        assert!(
+            !mono
+                .root
+                .join("dist/76a9b591-60f3-5c7f-9e1c-31648fc73bfd")
+                .exists()
+        );
         let state = m.state().unwrap();
         assert!(state.packages.is_empty() && state.forgotten.is_empty());
         mono.refuses("repository_not_found", || {
-            m.uninstall("tilr/store", &[], false)
+            m.uninstall("76a9b591-60f3-5c7f-9e1c-31648fc73bfd", &[], false)
         });
     }
 
@@ -7865,28 +8454,37 @@ mod tests {
     fn removing_a_package_keeps_other_worktree_head_and_local_files() {
         let mono = Mono::new();
         let m = mono.open();
-        for id in ["tilr/store", "tilr/theme"] {
+        for id in [
+            "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+            "f851f609-bb81-52d6-bfef-33798624782c",
+        ] {
             m.install_package(mono.source(), Some(id), InstallTarget::Release)
                 .unwrap();
         }
-        let store = mono.root.join("worktrees/tilr/store");
-        let theme = mono.root.join("worktrees/tilr/theme");
+        let store = mono
+            .root
+            .join("worktrees/76a9b591-60f3-5c7f-9e1c-31648fc73bfd");
+        let theme = mono
+            .root
+            .join("worktrees/f851f609-bb81-52d6-bfef-33798624782c");
         let recorded = head_of(&store);
         mono.write("theme", "1.1.0", &[]);
         let dev = mono.commit("theme work");
-        m.update_to("tilr/theme", Target::Dev).unwrap();
+        m.update_to("f851f609-bb81-52d6-bfef-33798624782c", Target::Dev)
+            .unwrap();
         assert_eq!(head_of(&theme), dev);
         fs::write(store.join("scratch.txt"), "mine").unwrap();
-        m.forget("tilr/theme").unwrap();
+        m.forget("f851f609-bb81-52d6-bfef-33798624782c").unwrap();
         assert_eq!(head_of(&theme), dev);
-        m.restore("tilr/theme").unwrap();
-        m.uninstall("tilr/theme", &[], false).unwrap();
+        m.restore("f851f609-bb81-52d6-bfef-33798624782c").unwrap();
+        m.uninstall("f851f609-bb81-52d6-bfef-33798624782c", &[], false)
+            .unwrap();
         assert!(!theme.exists());
         assert_eq!(head_of(&store), recorded);
         assert_eq!(read(&store.join("scratch.txt")), "mine");
         fs::remove_file(store.join("scratch.txt")).unwrap();
         mono.release("store", "1.1.0");
-        m.update("tilr/store").unwrap();
+        m.update("76a9b591-60f3-5c7f-9e1c-31648fc73bfd").unwrap();
         assert_eq!(mono.dist("store"), "store 1.1.0");
     }
 
@@ -7898,25 +8496,41 @@ mod tests {
         fs::remove_dir_all(mono.repo.join("packages/theme/dist")).unwrap();
         mono.release("store", "1.1.0");
         let result = m
-            .install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
+            .install_package(
+                mono.source(),
+                Some("76a9b591-60f3-5c7f-9e1c-31648fc73bfd"),
+                InstallTarget::Release,
+            )
             .unwrap();
         assert_eq!(result.current.version, "1.1.0");
         assert_eq!(mono.dist("store"), "store 1.1.0");
         let head = head_of(&mono.repo);
-        let error = packages::find_at(&mono.repo, &head, Some("tilr/theme")).unwrap_err();
+        let error = packages::find_at(
+            &mono.repo,
+            &head,
+            Some("f851f609-bb81-52d6-bfef-33798624782c"),
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("ready dist/"), "{error}");
         // Strict listing still reports the defect; the lenient one keeps store.
         assert!(packages::packages_at(&mono.repo, &head).is_err());
         let layout = packages::layout_at(&mono.repo, &head).unwrap().unwrap();
         assert_eq!(layout.packages.len(), 1);
-        assert_eq!(layout.problems[0].id.as_deref(), Some("tilr/theme"));
+        assert_eq!(
+            layout.problems[0].id.as_deref(),
+            Some("f851f609-bb81-52d6-bfef-33798624782c")
+        );
         // The shared newest release is broken for theme; an explicit older ref remains usable.
         mono.refuses("version_conflict", || {
-            m.install_package(mono.source(), Some("tilr/theme"), InstallTarget::Release)
+            m.install_package(
+                mono.source(),
+                Some("f851f609-bb81-52d6-bfef-33798624782c"),
+                InstallTarget::Release,
+            )
         });
         m.install_package(
             mono.source(),
-            Some("tilr/theme"),
+            Some("f851f609-bb81-52d6-bfef-33798624782c"),
             InstallTarget::Ref("v1.0.0".into()),
         )
         .unwrap();
@@ -7927,8 +8541,12 @@ mod tests {
     fn a_package_can_move_to_another_folder_between_releases() {
         let mono = Mono::new();
         let m = mono.open();
-        m.install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
-            .unwrap();
+        m.install_package(
+            mono.source(),
+            Some("76a9b591-60f3-5c7f-9e1c-31648fc73bfd"),
+            InstallTarget::Release,
+        )
+        .unwrap();
         fs::create_dir_all(mono.repo.join("apps")).unwrap();
         fs::rename(
             mono.repo.join("packages/store"),
@@ -7940,22 +8558,26 @@ mod tests {
             r#"{"packages":["packages/*","apps/*"]}"#,
         )
         .unwrap();
-        let mut moved = make_manifest("tilr/store", "1.1.0");
+        let mut moved = make_manifest("76a9b591-60f3-5c7f-9e1c-31648fc73bfd", "1.1.0");
         moved.dependencies.clear();
         write_manifest(&mono.repo.join("apps/store"), &moved);
         fs::write(mono.repo.join("apps/store/dist/index.js"), "store moved").unwrap();
         mono.commit("move store");
         mono.tag("1.1.0");
-        m.update("tilr/store").unwrap();
+        m.update("76a9b591-60f3-5c7f-9e1c-31648fc73bfd").unwrap();
         assert_eq!(mono.dist("store"), "store moved");
         assert_eq!(
-            m.state().unwrap().packages["tilr/store"].path.as_deref(),
+            m.state().unwrap().packages["76a9b591-60f3-5c7f-9e1c-31648fc73bfd"]
+                .path
+                .as_deref(),
             Some("apps/store")
         );
-        m.rollback("tilr/store").unwrap();
+        m.rollback("76a9b591-60f3-5c7f-9e1c-31648fc73bfd").unwrap();
         assert_eq!(mono.dist("store"), "store 1.0.0");
         assert_eq!(
-            m.state().unwrap().packages["tilr/store"].path.as_deref(),
+            m.state().unwrap().packages["76a9b591-60f3-5c7f-9e1c-31648fc73bfd"]
+                .path
+                .as_deref(),
             Some("packages/store")
         );
         m.update_all().unwrap();
@@ -7967,17 +8589,33 @@ mod tests {
         // B10: store is installed at the first commit, its folder changed since.
         let mono = Mono::new();
         let m = mono.open();
-        m.install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
-            .unwrap();
+        m.install_package(
+            mono.source(),
+            Some("76a9b591-60f3-5c7f-9e1c-31648fc73bfd"),
+            InstallTarget::Release,
+        )
+        .unwrap();
         mono.write("store", "1.1.0", &[]);
         mono.release("theme", "1.1.0");
-        m.install_package(mono.source(), Some("tilr/theme"), InstallTarget::Release)
-            .unwrap();
-        let clone = mono.root.join("worktrees/tilr/store");
+        m.install_package(
+            mono.source(),
+            Some("f851f609-bb81-52d6-bfef-33798624782c"),
+            InstallTarget::Release,
+        )
+        .unwrap();
+        let clone = mono
+            .root
+            .join("worktrees/76a9b591-60f3-5c7f-9e1c-31648fc73bfd");
         fs::write(clone.join("packages/store/dist/index.js"), "store edit").unwrap();
-        let destination = mono.dir.join("forks/both");
-        m.fork_packages(&["tilr/store", "tilr/theme"], &destination, "me")
-            .unwrap();
+        let destination = mono.dir.join("a55086f3-f908-56f5-a248-1b56559c8b56");
+        m.fork_packages(
+            &[
+                "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+                "f851f609-bb81-52d6-bfef-33798624782c",
+            ],
+            &destination,
+        )
+        .unwrap();
         assert_eq!(
             read(&destination.join("packages/store/dist/index.js")),
             "store 1.0.0"
@@ -7989,13 +8627,13 @@ mod tests {
         // A missing installed revision is reported as such, not as diverged history.
         let mut state: serde_json::Value =
             serde_json::from_slice(&fs::read(mono.root.join("state.json")).unwrap()).unwrap();
-        state["packages"]["tilr/store"]["current"]["commit"] = "1".repeat(40).into();
+        state["packages"]["76a9b591-60f3-5c7f-9e1c-31648fc73bfd"]["current"]["commit"] =
+            "1".repeat(40).into();
         fs::write(mono.root.join("state.json"), state.to_string()).unwrap();
         let error = m
             .fork_packages(
-                &["tilr/store"],
+                &["76a9b591-60f3-5c7f-9e1c-31648fc73bfd"],
                 &mono.dir.join("new/parents/missing"),
-                "you",
             )
             .unwrap_err();
         assert_eq!(error.kind(), "git", "{error}");
@@ -8037,7 +8675,7 @@ mod tests {
         let m = mono.open();
         m.install_package(
             mono.source(),
-            Some("tilr/theme"),
+            Some("f851f609-bb81-52d6-bfef-33798624782c"),
             InstallTarget::Ref("HEAD".into()),
         )
         .unwrap();
@@ -8047,11 +8685,21 @@ mod tests {
         // gitlink and configuration from its older installed revision.
         fixture_git(&mono.repo, &["rm", "-f", "packages/theme/src/vendor"]);
         mono.release("store", "1.1.0");
-        m.install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
-            .unwrap();
-        let destination = mono.dir.join("forks/me");
-        m.fork_packages(&["tilr/store", "tilr/theme"], &destination, "me")
-            .unwrap();
+        m.install_package(
+            mono.source(),
+            Some("76a9b591-60f3-5c7f-9e1c-31648fc73bfd"),
+            InstallTarget::Release,
+        )
+        .unwrap();
+        let destination = mono.dir.join("7200845d-5956-5ec3-85d1-a7161d3592de");
+        m.fork_packages(
+            &[
+                "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+                "f851f609-bb81-52d6-bfef-33798624782c",
+            ],
+            &destination,
+        )
+        .unwrap();
         let link = fixture_git(
             &destination,
             &["ls-tree", "HEAD", "packages/theme/src/vendor"],
@@ -8072,15 +8720,12 @@ mod tests {
             read(&destination.join("packages/theme/src/vendor/source.txt")),
             "recorded"
         );
-        assert_eq!(
-            crate::model::manifest(&destination.join("packages/theme"))
-                .unwrap()
-                .id,
-            "me/theme"
-        );
+        let sibling = crate::model::manifest(&destination.join("packages/theme")).unwrap();
+        valid_id(&sibling.id).unwrap();
+        assert_ne!(sibling.id, "f851f609-bb81-52d6-bfef-33798624782c");
         let before = snapshot(&destination);
         let error = m
-            .fork_packages(&["tilr/store"], &destination, "me")
+            .fork_packages(&["76a9b591-60f3-5c7f-9e1c-31648fc73bfd"], &destination)
             .unwrap_err();
         assert_eq!(error.kind(), "invalid_argument");
         assert_eq!(snapshot(&destination), before);
@@ -8090,26 +8735,52 @@ mod tests {
     fn dependency_cycle_between_forks_can_be_copied_without_installing() {
         let mono = Mono::new();
         let m = mono.open();
-        m.install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
-            .unwrap();
-        mono.write("theme", "1.1.0", &[("tilr/store", "^1.0")]);
+        m.install_package(
+            mono.source(),
+            Some("76a9b591-60f3-5c7f-9e1c-31648fc73bfd"),
+            InstallTarget::Release,
+        )
+        .unwrap();
+        mono.write(
+            "theme",
+            "1.1.0",
+            &[("76a9b591-60f3-5c7f-9e1c-31648fc73bfd", "^1.0")],
+        );
         mono.commit("theme needs store");
         mono.tag("1.1.0");
-        m.install_package(mono.source(), Some("tilr/theme"), InstallTarget::Release)
-            .unwrap();
-        mono.write("store", "1.2.0", &[("tilr/theme", "^1.0")]);
-        mono.write("theme", "1.2.0", &[("tilr/store", "^1.0")]);
+        m.install_package(
+            mono.source(),
+            Some("f851f609-bb81-52d6-bfef-33798624782c"),
+            InstallTarget::Release,
+        )
+        .unwrap();
+        mono.write(
+            "store",
+            "1.2.0",
+            &[("f851f609-bb81-52d6-bfef-33798624782c", "^1.0")],
+        );
+        mono.write(
+            "theme",
+            "1.2.0",
+            &[("76a9b591-60f3-5c7f-9e1c-31648fc73bfd", "^1.0")],
+        );
         mono.commit("store needs theme");
         mono.tag("1.2.0");
-        m.update("tilr/store").unwrap();
-        let destination = mono.dir.join("forks/cycle");
-        m.fork_packages(&["tilr/store", "tilr/theme"], &destination, "me")
-            .unwrap();
+        m.update("76a9b591-60f3-5c7f-9e1c-31648fc73bfd").unwrap();
+        let destination = mono.dir.join("007bfc85-5762-57f2-a76a-c7c1bfcea231");
+        m.fork_packages(
+            &[
+                "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+                "f851f609-bb81-52d6-bfef-33798624782c",
+            ],
+            &destination,
+        )
+        .unwrap();
     }
 
     #[test]
     fn a_workspace_of_another_state_format_is_refused_unchanged() {
-        let (ws, m) = Ws::installed("dan/demo1");
+        let (ws, m) = Ws::installed("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         drop(m);
         let path = ws.root.join("state.json");
         let mut state: serde_json::Value =
@@ -8159,26 +8830,37 @@ mod tests {
         let mono = Mono::new();
         let first = fixture_git(&mono.repo, &["rev-parse", "HEAD"]);
         let m = mono.open();
-        m.install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
-            .unwrap();
+        m.install_package(
+            mono.source(),
+            Some("76a9b591-60f3-5c7f-9e1c-31648fc73bfd"),
+            InstallTarget::Release,
+        )
+        .unwrap();
         mono.release("theme", "1.1.0");
-        m.install_package(mono.source(), Some("tilr/theme"), InstallTarget::Release)
-            .unwrap();
+        m.install_package(
+            mono.source(),
+            Some("f851f609-bb81-52d6-bfef-33798624782c"),
+            InstallTarget::Release,
+        )
+        .unwrap();
         // theme follows the default branch to an untagged commit; 1.1.0 is its previous.
         mono.write("theme", "1.2.0", &[]);
         let dev = mono.commit("theme dev");
-        m.update_to("tilr/theme", Target::Dev).unwrap();
+        m.update_to("f851f609-bb81-52d6-bfef-33798624782c", Target::Dev)
+            .unwrap();
         assert_eq!(
-            m.state().unwrap().packages["tilr/theme"].current.commit,
+            m.state().unwrap().packages["f851f609-bb81-52d6-bfef-33798624782c"]
+                .current
+                .commit,
             dev
         );
         let clone = mono.clone_dir();
         assert_eq!(
             keep_refs(&clone),
             [
-                "refs/gitpm/tilr/store/current",
-                "refs/gitpm/tilr/theme/current",
-                "refs/gitpm/tilr/theme/previous"
+                "refs/gitpm/76a9b591-60f3-5c7f-9e1c-31648fc73bfd/current",
+                "refs/gitpm/f851f609-bb81-52d6-bfef-33798624782c/current",
+                "refs/gitpm/f851f609-bb81-52d6-bfef-33798624782c/previous"
             ]
         );
         // Upstream drops theme's history and its tag; store releases on the rewrite.
@@ -8186,11 +8868,11 @@ mod tests {
         fixture_git(&mono.repo, &["tag", "-d", "v1.1.0"]);
         mono.release("store", "1.1.0");
         // Updating store prunes and moves HEAD: only the keep refs hold theme's revisions.
-        m.update("tilr/store").unwrap();
+        m.update("76a9b591-60f3-5c7f-9e1c-31648fc73bfd").unwrap();
         gc(&clone);
         for commit in [
             &dev,
-            &m.state().unwrap().packages["tilr/theme"]
+            &m.state().unwrap().packages["f851f609-bb81-52d6-bfef-33798624782c"]
                 .previous
                 .clone()
                 .unwrap()
@@ -8200,25 +8882,28 @@ mod tests {
         }
         let plan = m.update_all().unwrap();
         assert!(plan.updates.is_empty(), "{plan:?}");
-        m.rollback("tilr/theme").unwrap();
+        m.rollback("f851f609-bb81-52d6-bfef-33798624782c").unwrap();
         assert_eq!(mono.dist("theme"), "theme 1.1.0");
-        m.rollback("tilr/theme").unwrap();
+        m.rollback("f851f609-bb81-52d6-bfef-33798624782c").unwrap();
         assert_eq!(mono.dist("theme"), "theme 1.2.0");
         // A whole-repository fork also includes store: its rewritten history diverges
         // from theme's recorded revision, so it cannot form one fork branch.
         let destination = mono.dir.join("theme-fork");
         let error = m
-            .fork_packages(&["tilr/theme"], &destination, "me")
+            .fork_packages(&["f851f609-bb81-52d6-bfef-33798624782c"], &destination)
             .unwrap_err();
         assert_eq!(error.kind(), "invalid_argument");
         assert!(error.to_string().contains("on diverged histories"));
         assert!(!destination.exists());
         // Retaining store leaves theme as the sole installed revision to pin. The
         // fork still includes every package from theme's source revision.
-        m.forget("tilr/store").unwrap();
-        assert!(keep_refs(&clone).contains(&"refs/gitpm/tilr/store/current".to_owned()));
+        m.forget("76a9b591-60f3-5c7f-9e1c-31648fc73bfd").unwrap();
+        assert!(
+            keep_refs(&clone)
+                .contains(&"refs/gitpm/76a9b591-60f3-5c7f-9e1c-31648fc73bfd/current".to_owned())
+        );
         let fork = m
-            .fork_packages(&["tilr/theme"], &destination, "me")
+            .fork_packages(&["f851f609-bb81-52d6-bfef-33798624782c"], &destination)
             .unwrap();
         assert_eq!(
             read(&fork.path.join("packages/theme/dist/index.js")),
@@ -8229,18 +8914,21 @@ mod tests {
             "the fork has no workspace refs"
         );
         // Records that go take their refs with them.
-        m.uninstall("tilr/store", &[], false).unwrap();
+        m.uninstall("76a9b591-60f3-5c7f-9e1c-31648fc73bfd", &[], false)
+            .unwrap();
         assert_eq!(
             keep_refs(&clone),
             [
-                "refs/gitpm/tilr/theme/current",
-                "refs/gitpm/tilr/theme/previous"
+                "refs/gitpm/f851f609-bb81-52d6-bfef-33798624782c/current",
+                "refs/gitpm/f851f609-bb81-52d6-bfef-33798624782c/previous"
             ]
         );
         // Upstream dropped theme's revisions: they are local work now.
         m.uninstall(
-            "tilr/theme",
-            &m.uninstall_plan("tilr/theme").unwrap().lost_work,
+            "f851f609-bb81-52d6-bfef-33798624782c",
+            &m.uninstall_plan("f851f609-bb81-52d6-bfef-33798624782c")
+                .unwrap()
+                .lost_work,
             false,
         )
         .unwrap();
@@ -8251,8 +8939,12 @@ mod tests {
     fn a_moved_tag_of_a_package_that_is_not_installed_is_taken_from_upstream() {
         let mono = Mono::new();
         let m = mono.open();
-        m.install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
-            .unwrap();
+        m.install_package(
+            mono.source(),
+            Some("76a9b591-60f3-5c7f-9e1c-31648fc73bfd"),
+            InstallTarget::Release,
+        )
+        .unwrap();
         // theme 1.0.0 is retagged upstream (it was never installed here).
         fs::write(
             mono.repo.join("packages/theme/dist/index.js"),
@@ -8262,7 +8954,11 @@ mod tests {
         let moved = mono.commit("retag theme");
         fixture_git(&mono.repo, &["tag", "-f", "v1.0.0"]);
         let installed = m
-            .install_package(mono.source(), Some("tilr/theme"), InstallTarget::Release)
+            .install_package(
+                mono.source(),
+                Some("f851f609-bb81-52d6-bfef-33798624782c"),
+                InstallTarget::Release,
+            )
             .unwrap();
         assert_eq!(installed.current.commit, moved);
         assert_eq!(mono.dist("theme"), "theme retagged");
@@ -8273,13 +8969,18 @@ mod tests {
     fn a_deleted_tag_in_a_shared_clone_is_reported_not_fatal() {
         let mono = Mono::new();
         let m = mono.open();
-        for id in ["tilr/store", "tilr/theme"] {
+        for id in [
+            "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+            "f851f609-bb81-52d6-bfef-33798624782c",
+        ] {
             m.install_package(mono.source(), Some(id), InstallTarget::Release)
                 .unwrap();
         }
         fixture_git(&mono.repo, &["tag", "-d", "v1.0.0"]);
-        let retracted = ["installed release tilr/store@1.0.0 no longer exists on the origin"];
-        let change = m.update("tilr/store").unwrap();
+        let retracted = [
+            "installed release 76a9b591-60f3-5c7f-9e1c-31648fc73bfd@1.0.0 no longer exists on the origin",
+        ];
+        let change = m.update("76a9b591-60f3-5c7f-9e1c-31648fc73bfd").unwrap();
         assert!(!change.changed);
         assert_eq!(change.warnings, retracted);
         let plan = m.update_all().unwrap();
@@ -8287,7 +8988,7 @@ mod tests {
         let store = plan
             .unchanged
             .iter()
-            .find(|u| u.id == "tilr/store")
+            .find(|u| u.id == "76a9b591-60f3-5c7f-9e1c-31648fc73bfd")
             .unwrap();
         assert_eq!(store.warnings, retracted);
         assert_eq!(mono.dist("store"), "store 1.0.0");
@@ -8297,22 +8998,32 @@ mod tests {
     fn sibling_install_preserves_an_unpublished_colliding_tag() {
         let mono = Mono::new();
         let m = mono.open();
-        m.install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
-            .unwrap();
-        let checkout = mono.root.join("worktrees/tilr/store");
+        m.install_package(
+            mono.source(),
+            Some("76a9b591-60f3-5c7f-9e1c-31648fc73bfd"),
+            InstallTarget::Release,
+        )
+        .unwrap();
+        let checkout = mono
+            .root
+            .join("worktrees/76a9b591-60f3-5c7f-9e1c-31648fc73bfd");
         fixture_git(&checkout, &["commit", "--allow-empty", "-m", "local only"]);
         let local = fixture_git(&checkout, &["rev-parse", "HEAD"]);
         fixture_git(&checkout, &["tag", "-f", "v1.0.0"]);
-        let recorded = m.state().unwrap().packages["tilr/store"]
+        let recorded = m.state().unwrap().packages["76a9b591-60f3-5c7f-9e1c-31648fc73bfd"]
             .current
             .commit
             .clone();
         fixture_git(&checkout, &["checkout", "--detach", &recorded]);
         let state = fs::read(mono.root.join("state.json")).unwrap();
         assert_eq!(
-            m.install_package(mono.source(), Some("tilr/theme"), InstallTarget::Release)
-                .unwrap_err()
-                .kind(),
+            m.install_package(
+                mono.source(),
+                Some("f851f609-bb81-52d6-bfef-33798624782c"),
+                InstallTarget::Release
+            )
+            .unwrap_err()
+            .kind(),
             "local_changes"
         );
         assert_eq!(
@@ -8327,16 +9038,24 @@ mod tests {
         let mono = Mono::new();
         fixture_git(&mono.repo, &["tag", "extra"]);
         let m = mono.open();
-        m.install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
-            .unwrap();
+        m.install_package(
+            mono.source(),
+            Some("76a9b591-60f3-5c7f-9e1c-31648fc73bfd"),
+            InstallTarget::Release,
+        )
+        .unwrap();
         let clone = mono.clone_dir();
         assert!(resolve_ref(&clone, "refs/origin-tags/extra", false).is_ok());
         // A tag made by hand on a published commit, then the origin drops the commit
         // and the tag `extra`; installing a sibling fetches without pruning tags.
         fixture_git(&clone, &["tag", "mine"]);
         fixture_git(&mono.repo, &["tag", "-d", "extra"]);
-        m.install_package(mono.source(), Some("tilr/theme"), InstallTarget::Release)
-            .unwrap();
+        m.install_package(
+            mono.source(),
+            Some("f851f609-bb81-52d6-bfef-33798624782c"),
+            InstallTarget::Release,
+        )
+        .unwrap();
         assert!(resolve_ref(&clone, "refs/origin-tags/extra", false).is_err());
         assert!(resolve_ref(&clone, "refs/origin-tags/mine", false).is_err());
         fixture_git(&mono.repo, &["switch", "-q", "--orphan", "rewritten"]);
@@ -8356,9 +9075,17 @@ mod tests {
             ],
         );
         // The clone goes with its last package: its plan lists the hand-made tag.
-        assert!(m.uninstall_plan("tilr/theme").unwrap().lost_work.is_empty());
-        m.uninstall("tilr/theme", &[], false).unwrap();
-        let plan = m.uninstall_plan("tilr/store").unwrap();
+        assert!(
+            m.uninstall_plan("f851f609-bb81-52d6-bfef-33798624782c")
+                .unwrap()
+                .lost_work
+                .is_empty()
+        );
+        m.uninstall("f851f609-bb81-52d6-bfef-33798624782c", &[], false)
+            .unwrap();
+        let plan = m
+            .uninstall_plan("76a9b591-60f3-5c7f-9e1c-31648fc73bfd")
+            .unwrap();
         assert!(
             plan.lost_work.contains(&LostWork::UnpublishedTag {
                 name: "mine".into()
@@ -8372,11 +9099,14 @@ mod tests {
     fn a_moved_tag_of_an_installed_package_does_not_block_a_sibling() {
         let mono = Mono::new();
         let m = mono.open();
-        for id in ["tilr/store", "tilr/theme"] {
+        for id in [
+            "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+            "f851f609-bb81-52d6-bfef-33798624782c",
+        ] {
             m.install_package(mono.source(), Some(id), InstallTarget::Release)
                 .unwrap();
         }
-        let store = m.state().unwrap().packages["tilr/store"]
+        let store = m.state().unwrap().packages["76a9b591-60f3-5c7f-9e1c-31648fc73bfd"]
             .current
             .commit
             .clone();
@@ -8389,16 +9119,28 @@ mod tests {
         .unwrap();
         let moved = mono.commit("move store");
         fixture_git(&mono.repo, &["tag", "-f", "v1.0.0"]);
-        m.install_package(mono.source(), Some("tilr/dock"), InstallTarget::Release)
-            .unwrap();
-        assert_eq!(m.update("tilr/theme").unwrap().to.version, "1.0.0");
-        // The shared clone took the moved tag; tilr/store keeps its installed commit.
+        m.install_package(
+            mono.source(),
+            Some("4ec10364-80f2-5ed8-b2ff-594149bfecb5"),
+            InstallTarget::Release,
+        )
+        .unwrap();
+        assert_eq!(
+            m.update("f851f609-bb81-52d6-bfef-33798624782c")
+                .unwrap()
+                .to
+                .version,
+            "1.0.0"
+        );
+        // The shared clone took the moved tag; 76a9b591-60f3-5c7f-9e1c-31648fc73bfd keeps its installed commit.
         assert_eq!(
             resolve_ref(&mono.clone_dir(), "v1.0.0", false).unwrap(),
             moved
         );
         assert_eq!(
-            m.state().unwrap().packages["tilr/store"].current.commit,
+            m.state().unwrap().packages["76a9b591-60f3-5c7f-9e1c-31648fc73bfd"]
+                .current
+                .commit,
             store
         );
         assert_eq!(mono.dist("store"), "store 1.0.0");
@@ -8406,12 +9148,17 @@ mod tests {
             "release tag v1.0.0 now points to {}; the installed commit is kept",
             &moved[..12]
         );
-        assert_eq!(m.update("tilr/store").unwrap().warnings, [warning.as_str()]);
+        assert_eq!(
+            m.update("76a9b591-60f3-5c7f-9e1c-31648fc73bfd")
+                .unwrap()
+                .warnings,
+            [warning.as_str()]
+        );
         let plan = m.update_all().unwrap();
         let unchanged = plan
             .unchanged
             .iter()
-            .find(|u| u.id == "tilr/store")
+            .find(|u| u.id == "76a9b591-60f3-5c7f-9e1c-31648fc73bfd")
             .unwrap();
         assert_eq!(unchanged.warnings, [warning]);
     }
@@ -8420,23 +9167,39 @@ mod tests {
     fn a_forgotten_record_whose_clone_is_gone_can_be_uninstalled() {
         let mono = Mono::new();
         let m = mono.open();
-        for id in ["tilr/store", "tilr/theme"] {
+        for id in [
+            "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+            "f851f609-bb81-52d6-bfef-33798624782c",
+        ] {
             m.install_package(mono.source(), Some(id), InstallTarget::Release)
                 .unwrap();
         }
-        m.forget("tilr/store").unwrap();
-        m.uninstall("tilr/theme", &[], false).unwrap();
+        m.forget("76a9b591-60f3-5c7f-9e1c-31648fc73bfd").unwrap();
+        m.uninstall("f851f609-bb81-52d6-bfef-33798624782c", &[], false)
+            .unwrap();
         fs::remove_dir_all(mono.clone_dir()).unwrap();
         // Like a restore without a clone: the clone is what restore needs.
-        let error = mono.refuses("repository_not_found", || m.restore("tilr/store"));
-        assert!(matches!(&error, Error::RepositoryNotFound { id } if id == "tilr/store"));
-        let plan = m.uninstall_plan("tilr/store").unwrap();
+        let error = mono.refuses("repository_not_found", || {
+            m.restore("76a9b591-60f3-5c7f-9e1c-31648fc73bfd")
+        });
+        assert!(
+            matches!(&error, Error::RepositoryNotFound { id } if id == "76a9b591-60f3-5c7f-9e1c-31648fc73bfd")
+        );
+        let plan = m
+            .uninstall_plan("76a9b591-60f3-5c7f-9e1c-31648fc73bfd")
+            .unwrap();
         assert!(!plan.registered && plan.lost_work.is_empty());
         assert!(plan.deletes.is_empty(), "{:?}", plan.deletes);
-        m.uninstall("tilr/store", &[], false).unwrap();
+        m.uninstall("76a9b591-60f3-5c7f-9e1c-31648fc73bfd", &[], false)
+            .unwrap();
         let state = m.state().unwrap();
         assert!(state.forgotten.is_empty() && state.packages.is_empty());
-        assert!(!mono.root.join("dist/tilr/store").exists());
+        assert!(
+            !mono
+                .root
+                .join("dist/76a9b591-60f3-5c7f-9e1c-31648fc73bfd")
+                .exists()
+        );
     }
 
     /// A recorded package whose clone was deleted by hand: uninstall and forget drop the
@@ -8444,7 +9207,7 @@ mod tests {
     /// (clones with one or several package users alike).
     #[test]
     fn uninstall_and_forget_of_a_package_without_clone_drop_the_record() {
-        let id = "dan/demo1";
+        let id = "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc";
         for forget in [false, true] {
             let (ws, m) = Ws::installed(id);
             fs::remove_dir_all(ws.repo()).unwrap();
@@ -8469,23 +9232,44 @@ mod tests {
         for forget in [false, true] {
             let mono = Mono::new();
             let m = mono.open();
-            m.install_package(mono.source(), Some("tilr/store"), InstallTarget::Release)
-                .unwrap();
-            m.install_package(mono.source(), Some("tilr/theme"), InstallTarget::Release)
-                .unwrap();
+            m.install_package(
+                mono.source(),
+                Some("76a9b591-60f3-5c7f-9e1c-31648fc73bfd"),
+                InstallTarget::Release,
+            )
+            .unwrap();
+            m.install_package(
+                mono.source(),
+                Some("f851f609-bb81-52d6-bfef-33798624782c"),
+                InstallTarget::Release,
+            )
+            .unwrap();
             fs::remove_dir_all(mono.clone_dir()).unwrap();
             let dist = if forget {
-                let forgotten = m.forget("tilr/store").unwrap();
+                let forgotten = m.forget("76a9b591-60f3-5c7f-9e1c-31648fc73bfd").unwrap();
                 assert!(!forgotten.clone_kept);
                 forgotten.dist
             } else {
-                m.uninstall("tilr/store", &[], false).unwrap()
+                m.uninstall("76a9b591-60f3-5c7f-9e1c-31648fc73bfd", &[], false)
+                    .unwrap()
             };
-            assert_eq!(dist.removed, ["tilr/store"]);
+            assert_eq!(dist.removed, ["76a9b591-60f3-5c7f-9e1c-31648fc73bfd"]);
             let state = m.state().unwrap();
-            assert!(!state.packages.contains_key("tilr/store"));
-            assert!(!state.forgotten.contains_key("tilr/store"));
-            assert!(state.packages.contains_key("tilr/theme"));
+            assert!(
+                !state
+                    .packages
+                    .contains_key("76a9b591-60f3-5c7f-9e1c-31648fc73bfd")
+            );
+            assert!(
+                !state
+                    .forgotten
+                    .contains_key("76a9b591-60f3-5c7f-9e1c-31648fc73bfd")
+            );
+            assert!(
+                state
+                    .packages
+                    .contains_key("f851f609-bb81-52d6-bfef-33798624782c")
+            );
         }
     }
 
@@ -8493,7 +9277,7 @@ mod tests {
     /// forget depends on it); a missing installed commit is not.
     #[test]
     fn skipped_dists_say_structurally_whether_the_clone_is_missing() {
-        let id = "dan/demo1";
+        let id = "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc";
         let (ws, m) = Ws::installed(id);
         let path = ws.root.join("state.json");
         let mut state: serde_json::Value =

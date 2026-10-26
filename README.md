@@ -53,24 +53,24 @@ Everything below works on local folders: package repositories and the catalog ar
 directories, nothing is pushed or uploaded.
 
 A package is a Git repository with `plugin.json` and a ready output folder (`dist/` by default); a release is
-a repository `vVERSION` tag. Package IDs always have a namespace.
+a repository `vVERSION` tag. Package IDs are immutable UUIDs; `name` is a nonunique human alias.
 Repositories are plain folders named by you (`./greeter`); gitpm never derives a folder
 from an ID:
 
 ```console
 $ mkdir -p greeter/dist && cd greeter && git init -q -b main
-$ echo '{"id": "acme/greeter", "version": "0.1.0"}' > plugin.json
+$ echo '{"id": "d135a7cf-1c63-549a-93cb-8f89656b2ced", "name": "greeter", "version": "0.1.0"}' > plugin.json
 $ echo 'export const greeting = "greeter v1";' > dist/index.js
 $ git add . && git commit -qm "greeter 0.1.0" && git tag -m "Release v0.1.0" v0.1.0 && cd ..
 $ gitpm install ./greeter
-installed acme/greeter@0.1.0 from /…/greeter
-$ cat gitpm-workspace/dist/acme/greeter/index.js
+installed d135a7cf-1c63-549a-93cb-8f89656b2ced@0.1.0 from /…/greeter
+$ cat gitpm-workspace/dist/d135a7cf-1c63-549a-93cb-8f89656b2ced/index.js
 export const greeting = "greeter v1";
 $ gitpm list
 {
   "format": 1,
   "packages": {
-    "acme/greeter": {
+    "d135a7cf-1c63-549a-93cb-8f89656b2ced": {
       "source": "/…/greeter",
       "current": {
         "version": "0.1.0",
@@ -82,22 +82,22 @@ Release 0.2.0, update, roll back (one previous version is kept):
 
 ```console
 $ echo 'export const greeting = "greeter v2";' > greeter/dist/index.js
-$ echo '{"id": "acme/greeter", "version": "0.2.0"}' > greeter/plugin.json
+$ echo '{"id": "d135a7cf-1c63-549a-93cb-8f89656b2ced", "name": "greeter", "version": "0.2.0"}' > greeter/plugin.json
 $ git -C greeter commit -qam "greeter 0.2.0" && git -C greeter tag -m "Release v0.2.0" v0.2.0
-$ gitpm update acme/greeter
-acme/greeter updated 0.1.0 → 0.2.0 (major)
-$ cat gitpm-workspace/dist/acme/greeter/index.js
+$ gitpm update d135a7cf-1c63-549a-93cb-8f89656b2ced
+d135a7cf-1c63-549a-93cb-8f89656b2ced updated 0.1.0 → 0.2.0 (major)
+$ cat gitpm-workspace/dist/d135a7cf-1c63-549a-93cb-8f89656b2ced/index.js
 export const greeting = "greeter v2";
-$ gitpm rollback acme/greeter
-acme/greeter rolled back 0.2.0 → 0.1.0
-$ cat gitpm-workspace/dist/acme/greeter/index.js
+$ gitpm rollback d135a7cf-1c63-549a-93cb-8f89656b2ced
+d135a7cf-1c63-549a-93cb-8f89656b2ced rolled back 0.2.0 → 0.1.0
+$ cat gitpm-workspace/dist/d135a7cf-1c63-549a-93cb-8f89656b2ced/index.js
 export const greeting = "greeter v1";
-$ gitpm update acme/greeter
-acme/greeter updated 0.1.0 → 0.2.0 (major)
-$ gitpm update acme/greeter
-acme/greeter up to date (0.2.0)
+$ gitpm update d135a7cf-1c63-549a-93cb-8f89656b2ced
+d135a7cf-1c63-549a-93cb-8f89656b2ced updated 0.1.0 → 0.2.0 (major)
+$ gitpm update d135a7cf-1c63-549a-93cb-8f89656b2ced
+d135a7cf-1c63-549a-93cb-8f89656b2ced up to date (0.2.0)
 $ gitpm install ./greeter         # installed already: nothing changes, exit 0
-acme/greeter already installed (0.2.0)
+d135a7cf-1c63-549a-93cb-8f89656b2ced already installed (0.2.0)
 ```
 
 Installing an installed package again from the same source changes nothing and exits 0:
@@ -114,7 +114,7 @@ package disabled and deploys nothing; missing dependencies are downloaded from t
 catalog the same way, disabled, so a later `enable` needs no network. `install` is a
 download plus enabling the package and the dependencies it downloaded, in one
 transaction. A disabled package satisfies no dependency: `install`, `enable` and `update
-ID` of an enabled consumer refuse with `dependency_conflict` ("lib/core is disabled;
+ID` of an enabled consumer refuse with `dependency_conflict` ("757fd5ca-2b6a-5b2f-8a5d-60980b028665 is disabled;
 enable it") while a dependency resolves only to a disabled package, `list` and `check`
 report it unsatisfied, and `update all` skips such a consumer (`dependency DEP: DEP is
 disabled`). `enable ID` never enables dependencies itself;
@@ -125,16 +125,16 @@ same check) and prints the install line. `rollback` of an active package and `re
 of an enabled record refuse a disabled dependency as well:
 
 ```console
-$ gitpm download-catalog acme/app
-downloaded acme/app@1.0.0 from /…/app (disabled)
-downloaded lib/core@1.2.0 from /…/core (disabled)
-$ gitpm enable acme/app
-Error: cannot enable acme/app: lib/core is disabled; enable it; force does it anyway
+$ gitpm download-catalog b879842f-16c2-558f-9d03-a271dc901f57
+downloaded b879842f-16c2-558f-9d03-a271dc901f57@1.0.0 from /…/app (disabled)
+downloaded 757fd5ca-2b6a-5b2f-8a5d-60980b028665@1.2.0 from /…/core (disabled)
+$ gitpm enable b879842f-16c2-558f-9d03-a271dc901f57
+Error: cannot enable b879842f-16c2-558f-9d03-a271dc901f57: 757fd5ca-2b6a-5b2f-8a5d-60980b028665 is disabled; enable it; force does it anyway
 Error kind: dependency_conflict
-Hint: `gitpm enable acme/app --force` enables it anyway
-$ gitpm enable lib/core && gitpm enable acme/app
-lib/core enabled
-acme/app enabled
+Hint: `gitpm enable b879842f-16c2-558f-9d03-a271dc901f57 --force` enables it anyway
+$ gitpm enable 757fd5ca-2b6a-5b2f-8a5d-60980b028665 && gitpm enable b879842f-16c2-558f-9d03-a271dc901f57
+757fd5ca-2b6a-5b2f-8a5d-60980b028665 enabled
+b879842f-16c2-558f-9d03-a271dc901f57 enabled
 ```
 
 ### Live author folders
@@ -144,11 +144,11 @@ gitpm link ./hello                   # link this package's ready dist/ output
 gitpm link ./repo/packages/theme     # select one package, leaving siblings alone
 gitpm check
 gitpm update all --dry-run
-gitpm uninstall acme/hello           # remove the workspace entry; keep the author tree
+gitpm uninstall 7e6e8392-7be8-55ae-bd03-2b430b1c5d59           # remove the workspace entry; keep the author tree
 ```
 
 `link LOCAL_PACKAGE_PATH` (library `Manager::link`, FFI `PackageManager.link`)
-validates the local manifest and publishes `dist/<namespace>/<name>` as a symlink
+validates the local manifest and publishes `dist/<uuid>` as a symlink
 to its canonical absolute installation folder. As for managed installs,
 `plugin.json.dist` defaults to `"dist"`; `"."` selects the package root and any other
 valid package-relative folder selects that output. Prepare missing output yourself:
@@ -204,10 +204,10 @@ covers workspace entries and state, not a concurrent external build's whole outp
 Fork preparation and live installation are separate:
 
 ```sh
-gitpm fork acme/hello --ns me --into hello-fork
+gitpm fork 7e6e8392-7be8-55ae-bd03-2b430b1c5d59 --into hello-fork
 # Build the manifest-selected output yourself if needed.
 gitpm link ./hello-fork
-gitpm replace acme/hello --with me/hello
+gitpm replace 7e6e8392-7be8-55ae-bd03-2b430b1c5d59 --with ce6c8a3b-b2f8-5391-8ef8-4cbb7873f5d4
 ```
 
 Fork alone changes no workspace installation, deployment or release tags. Link
@@ -226,7 +226,7 @@ release mode), and `update ID` follows it:
 | Install | Mode (`state.json`) | `update ID` |
 | --- | --- | --- |
 | `install SRC` | release (no `mode`) | newest release |
-| `install SRC --ref v0.1.0` or `--ref COMMIT` | `{"pinned": "v0.1.0"}` (a commit in full) | stays: `acme/greeter pinned at 0.1.0 (v0.1.0)` |
+| `install SRC --ref v0.1.0` or `--ref COMMIT` | `{"pinned": "v0.1.0"}` (a commit in full) | stays: `d135a7cf-1c63-549a-93cb-8f89656b2ced pinned at 0.1.0 (v0.1.0)` |
 | `install SRC --ref feature` | `{"branch": "feature"}` | HEAD of `origin/feature`, by commit (no version bump needed) |
 | `install SRC --dev` | `{"branch": "main"}` (the origin's default branch, by name) | HEAD of `origin/main` |
 
@@ -267,11 +267,11 @@ no longer available").
 
 ```console
 $ gitpm install ./greeter --ref v0.1.0
-installed acme/greeter@0.1.0 from /…/greeter
-$ gitpm update acme/greeter
-acme/greeter pinned at 0.1.0 (v0.1.0)
-$ gitpm update acme/greeter --release
-acme/greeter updated 0.1.0 → 0.2.0 (major)
+installed d135a7cf-1c63-549a-93cb-8f89656b2ced@0.1.0 from /…/greeter
+$ gitpm update d135a7cf-1c63-549a-93cb-8f89656b2ced
+d135a7cf-1c63-549a-93cb-8f89656b2ced pinned at 0.1.0 (v0.1.0)
+$ gitpm update d135a7cf-1c63-549a-93cb-8f89656b2ced --release
+d135a7cf-1c63-549a-93cb-8f89656b2ced updated 0.1.0 → 0.2.0 (major)
 ```
 
 `forget ID` keeps the whole record in `state.json` under `forgotten`, together with
@@ -284,10 +284,9 @@ refuse with `local_changes`.
 ### Catalogs
 
 A catalog is generated from the release tags of the repositories listed in a sources
-file (paths are relative to that file). `gitpm init NAMESPACE/NAME --into DIR`
+file (paths are relative to that file). `gitpm init NAME --into DIR`
 scaffolds the package with its first release: a new `DIR` becomes a package
-repository, a repository with `gitpm.json` gets a package folder. The namespace and `DIR`
-are required, there are no defaults. `gitpm commit` bumps every package to the same repository version, commits
+repository, a repository with `gitpm.json` gets a package folder. The alias and `DIR` are required; init generates a fresh UUID. `gitpm commit` bumps every package to the same repository version, commits
 everything and tags:
 
 ```console
@@ -301,39 +300,35 @@ Catalog: /…/catalog
 Type: local folder/JSON
 Verified: no (discovery only)
 Directories and packages:
-  namespaces/
-    acme/
-      greeter/
-        acme/greeter — latest: 0.2.0, versions: 2
-            Git: /…/greeter
+  packages/
+    d135a7cf-1c63-549a-93cb-8f89656b2ced/
+      d135a7cf-1c63-549a-93cb-8f89656b2ced — latest: 0.2.0, versions: 2
+          Git: /…/greeter
 $ gitpm init hello --into hello
-Error: package ID needs a namespace: use NAMESPACE/NAME, for example acme/hello
-Error kind: invalid_id
-$ gitpm init acme/hello --into hello
 
 Created: /…/hello
-ID: acme/hello
+ID: 7e6e8392-7be8-55ae-bd03-2b430b1c5d59
 Version 0.1.0: Git commit and tag v0.1.0.
 …
 $ echo 'export const greeting = "hello v2";' > hello/dist/index.js
 $ gitpm commit hello 0.1.1
-acme/hello committed 0.1.1 (local commit and tag v0.1.1)
+7e6e8392-7be8-55ae-bd03-2b430b1c5d59 committed 0.1.1 (local commit and tag v0.1.1)
 $ echo './hello' >> sources.txt
 $ gitpm catalog update
 Reading releases: /…/greeter
 Reading releases: /…/hello
 Catalog ready: 4 release(s) checked from sources.
-$ gitpm install-catalog acme/hello
-installed acme/hello@0.1.1 from /…/hello
-$ cat gitpm-workspace/dist/acme/hello/index.js
+$ gitpm install-catalog 7e6e8392-7be8-55ae-bd03-2b430b1c5d59
+installed 7e6e8392-7be8-55ae-bd03-2b430b1c5d59@0.1.1 from /…/hello
+$ cat gitpm-workspace/dist/7e6e8392-7be8-55ae-bd03-2b430b1c5d59/index.js
 export const greeting = "hello v2";
 $ gitpm check
 Workspace: gitpm-workspace
 Catalog: /…/catalog (unverified: discovery only)
 
 PACKAGE                  INSTALLED      LATEST         ENABLED  SOURCE   STATUS
-acme/greeter             0.2.0          0.2.0          yes      catalog  up to date
-acme/hello               0.1.1          0.1.1          yes      catalog  up to date
+d135a7cf-1c63-549a-93cb-8f89656b2ced             0.2.0          0.2.0          yes      catalog  up to date
+7e6e8392-7be8-55ae-bd03-2b430b1c5d59               0.1.1          0.1.1          yes      catalog  up to date
 
 Updates: 0. Nothing was changed.
 ```
@@ -349,7 +344,7 @@ updates from its origin like a direct install.
 - Versions enter a verified catalog only one by one through `catalog register` (a manual act of
   verification); `catalog update` into it fails with `invalid_argument` ("a verified
   catalog takes versions only one by one through register") and changes nothing. An ID
-  stays bound to the source that first registered it, which is the namespace ownership.
+  stays bound to the source that first registered it, which preserves UUID ownership.
 - A package installed from a verified catalog (and each dependency pulled from it) is
   protected: its record has `catalog` (the canonical location; `list` shows it only for
   protected packages). `update ID` and `update all` move it only to versions that catalog
@@ -378,74 +373,74 @@ updates from its origin like a direct install.
   and `catalog show` a `Verified:` line.
 
 ```console
-$ gitpm install-catalog acme/hello            # catalog.json has "verified": true
-installed acme/hello@0.1.1 from /…/hello
-$ gitpm update acme/hello                     # the origin also has 0.2.0, not registered
-acme/hello kept at 0.1.1 (upstream 0.2.0 not in catalog)
-$ gitpm update acme/hello --detach
-acme/hello detached from catalog /…/catalog/catalog.json; it now follows its origin
-acme/hello updated 0.1.1 → 0.2.0 (major)
+$ gitpm install-catalog 7e6e8392-7be8-55ae-bd03-2b430b1c5d59            # catalog.json has "verified": true
+installed 7e6e8392-7be8-55ae-bd03-2b430b1c5d59@0.1.1 from /…/hello
+$ gitpm update 7e6e8392-7be8-55ae-bd03-2b430b1c5d59                     # the origin also has 0.2.0, not registered
+7e6e8392-7be8-55ae-bd03-2b430b1c5d59 kept at 0.1.1 (upstream 0.2.0 not in catalog)
+$ gitpm update 7e6e8392-7be8-55ae-bd03-2b430b1c5d59 --detach
+7e6e8392-7be8-55ae-bd03-2b430b1c5d59 detached from catalog /…/catalog/catalog.json; it now follows its origin
+7e6e8392-7be8-55ae-bd03-2b430b1c5d59 updated 0.1.1 → 0.2.0 (major)
 ```
 
-`gitpm fork ID --ns NAMESPACE --into DIR` clones the recorded source of an installed
+`gitpm fork ID --into DIR` clones the recorded source of an installed
 package with Git history at its installed revision into `DIR`. All packages in that
-repository receive IDs `NAMESPACE/<same name>`: only the namespace changes, so the original and the fork can be installed side by
+repository receive IDs fresh UUIDs while preserving their names, so the original and the fork can be installed side by
 side. `DIR` must be a new folder; it is never derived from the ID. The output lists the next steps (commit and
 tag, install, replace):
 
 ```console
-$ gitpm fork acme/hello --ns me --into hello-fork
+$ gitpm fork 7e6e8392-7be8-55ae-bd03-2b430b1c5d59 --into hello-fork
 Fork created: /…/hello-fork
 Git history is cloned from the recorded source; the original repository is the upstream remote.
-me/hello forked from acme/hello (repository root)
+ce6c8a3b-b2f8-5391-8ef8-4cbb7873f5d4 forked from 7e6e8392-7be8-55ae-bd03-2b430b1c5d59 (repository root)
 forkOf records each origin; replaces says the fork can stand in for it (used only
 after an explicit replace). The original installations are unchanged.
 
 Next steps (choose the packages to install and replace):
   gitpm commit '/…/hello-fork' NEW_VERSION   commit local edits, release all packages with tag vNEW_VERSION
-  gitpm install '/…/hello-fork' me/hello
-  gitpm replace acme/hello --with me/hello
+  gitpm install '/…/hello-fork' ce6c8a3b-b2f8-5391-8ef8-4cbb7873f5d4
+  gitpm replace 7e6e8392-7be8-55ae-bd03-2b430b1c5d59 --with ce6c8a3b-b2f8-5391-8ef8-4cbb7873f5d4
 Set your own origin with: gitpm remote '/…/hello-fork' GIT_URL
 $ ls -d hello*
 hello
 hello-fork
-$ gitpm uninstall acme/hello
-acme/hello uninstalled
+$ gitpm uninstall 7e6e8392-7be8-55ae-bd03-2b430b1c5d59
+7e6e8392-7be8-55ae-bd03-2b430b1c5d59 uninstalled
 ```
 
 To fork a Git path or URL without installing it or using a workspace:
 
 ```sh
-gitpm init acme/hello --into ./hello
-gitpm fork acme/hello --from ./hello --ns me --into ./hello-fork
+gitpm init hello --into ./hello
+gitpm fork --from ./hello --into ./hello-fork
 ```
 
 `--from SOURCE` clones the latest stable repository release (`vVERSION`) containing
 the first ID; every supplied ID must exist at that revision. Tags without that ID
 and legacy `ID@VERSION` tags are ignored. Add `--ref REF` to select any Git revision,
 including a branch or an untagged commit. Omit IDs only for a single-package source.
-All repository packages are retained and renamed, including siblings not named on
-the command line. Internal dependencies are rewritten. The destination must be new
+All repository packages are retained and assigned fresh UUIDs with their names
+preserved, including siblings not named on the command line. Internal dependencies are rewritten. The destination must be new
 and outside the local source repository. The source's uncommitted edits are excluded.
 No workspace is opened, created or locked, even with `--root` set. `--ref` requires
 `--from` for fork; `--replace`, `--version` and `--force` remain invalid fork options.
 
-`fork ID --ns NAMESPACE --into DIR` only prepares an editable Git repository.
+`fork ID --into DIR` only prepares an editable Git repository.
 It preserves inherited tags and origin metadata, creates no release tag, installs
 nothing and leaves workspace state, replacement bindings and dist unchanged.
 Release the fork with `commit`, install the desired package explicitly, then call
 `replace` for each original you want to replace. For example:
 
 ```sh
-gitpm --root ./workspace fork demo/a --ns my --into ./my-fork
-gitpm commit ./my-fork 0.3.0 --package my/a
-gitpm --root ./workspace install ./my-fork my/a
-gitpm --root ./workspace replace demo/a --with my/a
+gitpm --root ./workspace fork d63a8a6b-85d6-509c-87db-9a6096daa66c --into ./my-fork
+gitpm commit ./my-fork 0.3.0 --package 87fe9d68-adda-5200-92ad-a5c59d2264b9
+gitpm --root ./workspace install ./my-fork 87fe9d68-adda-5200-92ad-a5c59d2264b9
+gitpm --root ./workspace replace d63a8a6b-85d6-509c-87db-9a6096daa66c --with 87fe9d68-adda-5200-92ad-a5c59d2264b9
 ```
 
 An explicit `commit` still refuses an existing release tag. Fork does not delete
-inherited tags or choose a new version automatically. Installing `my/a` does not
-automatically install a sibling `my/b` unless dependency resolution requires it.
+inherited tags or choose a new version automatically. Installing `87fe9d68-adda-5200-92ad-a5c59d2264b9` does not
+automatically install a sibling `e4e7959f-6315-5611-a719-75c5c2a920e3` unless dependency resolution requires it.
 `replace` refuses incompatible consumers without changing the workspace. Use
 `replace-check` for diagnostics and `replace-resolve` to explicitly install missing
 dependencies; replace has no TTY confirmation or `--force` bypass. Successful output
@@ -464,11 +459,11 @@ combinations are the library's, which also returns everything the CLI prints, so
 gets the same through the FFI.
 
 ```console
-$ gitpm forget acme/hello && gitpm install ./hello
-acme/hello forgotten (clone kept; restore re-registers it)
-Error: acme/hello was forgotten and its clone is kept
+$ gitpm forget 7e6e8392-7be8-55ae-bd03-2b430b1c5d59 && gitpm install ./hello
+7e6e8392-7be8-55ae-bd03-2b430b1c5d59 forgotten (clone kept; restore re-registers it)
+Error: 7e6e8392-7be8-55ae-bd03-2b430b1c5d59 was forgotten and its clone is kept
 Error kind: already_installed
-Hint: if acme/hello was forgotten, `gitpm restore acme/hello` records it again and `gitpm uninstall acme/hello` removes its clone
+Hint: if 7e6e8392-7be8-55ae-bd03-2b430b1c5d59 was forgotten, `gitpm restore 7e6e8392-7be8-55ae-bd03-2b430b1c5d59` records it again and `gitpm uninstall 7e6e8392-7be8-55ae-bd03-2b430b1c5d59` removes its clone
 ```
 
 Changed in 0.4: the form `fork ID NAMESPACE/NAME [--into DIR]` (fork folder
@@ -513,8 +508,7 @@ Changed in 0.5:
 - `init --multi` makes a new (or empty) folder a multi-package repository;
   `init --no-release` commits without the release tag.
 - `list`: `resolved[]` entries carry `clone` (as `plugins.<id>.clone`).
-- Removing a package also removes the folders it leaves empty (`dist/<namespace>`,
-  `plugins/<namespace>`, `repos`).
+- Removing a package also removes the folders it leaves empty (`dist`, `repos`).
 - `dist/` holds only active packages (installed, enabled, not replaced; see
   [Workspace layout](#workspace-layout-and-dist)): `replace` removes the original's
   `dist/`, `replace ORIGINAL --with ORIGINAL` and `enable` deploy it again, `disable` and `forget` remove
@@ -526,7 +520,7 @@ Changed in 0.5:
 Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING**):
 
 - **BREAKING:** Source clones in `repos/<key>` are bare repositories. Each installed
-  Git package has a detached worktree in `worktrees/<namespace>/<name>` at its own
+  Git package has a detached worktree in `worktrees/<uuid>` at its own
   recorded commit. Updating or removing one package leaves sibling worktrees intact.
   Update, rollback, restore and unconfirmed uninstall reject local changes or a moved
   HEAD in the affected worktree. Builds have no worktree; Git objects needed for
@@ -594,11 +588,9 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   their files will not be installed, probably a mistake: commit built files to
   `dist/` instead of a submodule.
   Migration: include the dependency's files in the committed `dist/` tree.
-- Package IDs are always `namespace/name`; an unscoped ID (`demo`) is refused with
-  `invalid_id` everywhere (manifests, dependencies, state, commands). `update all` is
-  always the joint upgrade, as no ID can be `all`. Migration: re-create the package
-  under a namespace (`gitpm init NAMESPACE/NAME --into DIR`, or change `id` in
-  `plugin.json` and tag it).
+- Package IDs are canonical lowercase UUIDs, generated by `init NAME --into DIR`.
+  Names are nonunique aliases and are never resolved by the CLI. Legacy scoped IDs
+  are refused with `invalid_id`; no migration or compatibility reader exists.
 - Release tags are only `vVERSION`, in single- and multi-package repositories. All
   package manifests share that version at each release. Legacy `ID@VERSION` tags
   are ignored without a warning; there is no compatibility reader. `init` starts a
@@ -659,9 +651,9 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   record then); the CLI warning for such a package says `uninstall or forget ID to drop
   its record` (was `run \`gitpm sync-dist\``, which could not deploy it); `restore` of a forgotten package whose shared clone is gone fails
   with `repository_not_found` (was `workspace`), like any restore without a clone.
-- Active packages below a file or symlink at `dist/<namespace>` are now reported in
-  `DistSync.skipped` with reason `dist/<namespace> is not a folder`. Mutating commands
-  warn `Warning: ID: dist not deployed (dist/<namespace> is not a folder)`;
+- Active packages below a file or symlink at `dist/<uuid>` are now reported in
+  `DistSync.skipped` with reason `dist/<uuid> is not a folder`. Mutating commands
+  warn `Warning: ID: dist not deployed (dist/<uuid> is not a folder)`;
   `sync-dist` now exits 1 with `not_deployed` for these packages (previously 0), with a
   hint to remove or rename the blocked path and run `gitpm sync-dist` again.
 - `sync-dist` leaving active packages undeployed is the library error `not_deployed` (new
@@ -672,8 +664,7 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   the library's `list_with(root, &ListOptions { provides })`, `--provides` included.
 - Library messages name no CLI command or hosting service; the CLI adds a `Hint:` line
   per error kind (for example after `already_installed`: `gitpm restore ID` /
-  `gitpm uninstall ID`). `init NAME` without a namespace is the library's `invalid_id`
-  ("package ID needs a namespace: …", now with `Error kind`). Prompts (`[y/N]` and what
+  `gitpm uninstall ID`). `init NAME` creates a package with a generated UUID. Prompts (`[y/N]` and what
   they list) go to stderr.
 - `update ID` returns the broken release tags it passed over in `RevisionChange.skipped`,
   `update all` in `UpdateAllPlan.skipped` (for every installed package, updated or not),
@@ -980,16 +971,16 @@ Workspace: gitpm-workspace
 Catalog: none (each package's origin)
 
 PACKAGE                  INSTALLED      LATEST         ENABLED  SOURCE   STATUS
-acme/greeter             0.1.0          0.2.0 (major)  yes      origin   update available
+d135a7cf-1c63-549a-93cb-8f89656b2ced             0.1.0          0.2.0 (major)  yes      origin   update available
 
 Updates: 1. Nothing was changed.
 
 Available updates:
-  acme/greeter: 0.1.0 → 0.2.0 (major)
+  d135a7cf-1c63-549a-93cb-8f89656b2ced: 0.1.0 → 0.2.0 (major)
 ```
 
 A fork records the original's source in `forkOf.source`, so `check` shows the original's
-newest release without a catalog too: `me/hello: fork of acme/hello (base 1.0.0); original
+newest release without a catalog too: `ce6c8a3b-b2f8-5391-8ef8-4cbb7873f5d4: fork of 7e6e8392-7be8-55ae-bd03-2b430b1c5d59 (base 1.0.0); original
 at origin: 1.1.0 — newer than the fork base` (or `original: unreachable (REASON)`).
 
 Catalog commands (`catalog show`, `catalog links`, `catalog update`, `catalog register`) and
@@ -1000,8 +991,8 @@ Catalog commands (`catalog show`, `catalog links`, `catalog update`, `catalog re
 ```text
 state.json              {"format": 1, "packages": …}: installed packages, replacements, forgotten records
 repos/<name>-<hash>/    bare source repository shared by Git packages
-worktrees/<ns>/<name>/  detached worktree at this Git package's recorded commit
-dist/<ns>/<name>/       deployed files of an active package
+worktrees/<uuid>/  detached worktree at this Git package's recorded commit
+dist/<uuid>/       deployed files of an active package
 .pm-txn/                an interrupted operation (finished or discarded on open)
 ```
 
@@ -1013,7 +1004,7 @@ state: when the root holds nothing but such files (and `.DS_Store`), the next op
 removes them under the workspace lock and finishes creation. Any other content
 without `state.json` is refused with `workspace`, untouched.
 
-`dist/<namespace>/<name>/` exists exactly when the package is installed, enabled and not
+`dist/<uuid>/` exists exactly when the package is installed, enabled and not
 replaced by another package (`State::is_active`). A host loads every package folder under
 `dist/` and needs no gitpm knowledge; `list` still reports the full status (installed,
 `enabled`, `replacements`, `resolved[].replacing`) for a UI. Each `resolved[]` entry (and
@@ -1055,16 +1046,16 @@ not derive it. `enabled` is not `active`: a replaced package stays `enabled: tru
   deployed again. Uninstalling or forgetting the original `X` keeps the binding `X → Y`:
   installing `X` again leaves it replaced (no `dist/X/`) until `replace X --with X`.
 - Every change goes through the same transaction as the state, so a crash leaves state
-  and `dist/` consistent; empty `dist/<namespace>` folders are removed.
+  and `dist/` consistent; empty `dist` folders are removed.
 
 Every mutating command (install, update, rollback, replace, enable, disable, forget,
 restore, uninstall) reconciles all of `dist/` with the state in its
 transaction: it deploys the missing folders of active packages and removes those of
 inactive ones (disabled, replaced, forgotten or retained clones); folders of no known
 package are left alone (the CLI warns about them on stderr), an existing folder of an
-active package is not rewritten. A namespace path under `dist/` that is a symlink or a
+active package is not rewritten. A UUID path under `dist/` that is a symlink or a
 file is reported the same way and nothing is written below it. Active packages below
-it are skipped with `Warning: ID: dist not deployed (dist/<namespace> is not a folder)`;
+it are skipped with `Warning: ID: dist not deployed (dist/<uuid> is not a folder)`;
 unrelated commands succeed, while an operation deploying or removing a package below
 that path fails with `workspace`. An active package whose
 clone or installed commit is gone is skipped, so it does not block an unrelated command;
@@ -1084,7 +1075,7 @@ while another process holds the workspace.
 reconcile, as an explicit repair. It syncs and commits every package it can; when an
 active package stays undeployed it then fails with `not_deployed` ("N package(s) not
 deployed: IDS", the report in `Error::NotDeployed.sync`), exit status 1.
-This includes packages below a file or symlink at `dist/<namespace>` (previously
+This includes packages below a file or symlink at `dist/<uuid>` (previously
 `sync-dist` exited 0 for them). The CLI hint tells you to remove or rename that path
 and run `gitpm sync-dist` again; uninstall/forget advice applies only to a missing clone.
 
@@ -1096,9 +1087,9 @@ and a committed output folder:
 
 ```text
 gitpm.json                {"packages": ["packages/*"]}
-packages/store/plugin.json  {"id": "tilr/store", "version": "1.2.0"}
+packages/store/plugin.json  {"id": "76a9b591-60f3-5c7f-9e1c-31648fc73bfd", "name": "fixture", "version": "1.2.0"}
 packages/store/dist/…
-packages/theme/plugin.json  {"id": "tilr/theme", "version": "0.4.0"}
+packages/theme/plugin.json  {"id": "f851f609-bb81-52d6-bfef-33798624782c", "name": "fixture", "version": "0.4.0"}
 packages/theme/dist/…
 ```
 
@@ -1107,7 +1098,7 @@ packages/theme/dist/…
   or hidden folders (no segment may start with `.`, so `.cache` and `.*` are refused, and
   `*` never matches a hidden folder). Without `gitpm.json` the repository root is the only
   package, exactly as before; with it, a root `plugin.json` is not a package.
-- Every package needs a `namespace/name` ID, unique in the repository (in any letter
+- Every package needs a canonical lowercase UUIDs ID, unique in the repository (in any letter
   case), a `plugin.json` file (not a symlink) and a committed output folder selected by manifest `dist` (not a
   symlink); packages cannot nest. Deployed files must be plain files, as for a root
   package. Only the package being installed, updated or registered must be valid at its
@@ -1118,15 +1109,15 @@ packages/theme/dist/…
   so a package may move between releases. Legacy `ID@VERSION` tags are ignored.
   Installing or updating one package leaves its siblings at their installed revisions.
 - `gitpm install REPO ID` (or `--package ID`) installs one package. Without an ID a
-  repository with several packages is refused with the list of its packages (`tilr/store
-  (packages/store), tilr/theme (packages/theme)`); one with a single listed package
+  repository with several packages is refused with the list of its packages (`76a9b591-60f3-5c7f-9e1c-31648fc73bfd
+  (packages/store), f851f609-bb81-52d6-bfef-33798624782c (packages/theme)`); one with a single listed package
   needs none; `--ref vVERSION` still requires a package ID when several are listed. For a single-package
   repository a given ID must match its manifest. `--ref` and `--dev` (the origin's default
   branch) work per package, and each package records its own mode.
 - Workspace: packages of one source share one bare repository in
   `repos/<name>-<hash of the source>`. State records its `clone` key and the package
   folder `path` (absent for a root package). Every Git package has its own detached
-  worktree at `worktrees/<namespace>/<name>`, with HEAD at its recorded commit.
+  worktree at `worktrees/<uuid>`, with HEAD at its recorded commit.
   Update, rollback and restore require that worktree to be clean and at that commit;
   uninstall reports its local work for confirmation. These rules apply equally to
   root and nested packages, even if other packages use the same source.
@@ -1135,7 +1126,7 @@ packages/theme/dist/…
   only with its last user. Builds have no worktree, retaining source objects only
   for a previous Git revision. A root package that moves into a folder keeps its
   source key and worktree identity, changing only `path`.
-- Shared clones keep `refs/gitpm/<namespace>/<name>/current` and `.../previous` for every
+- Shared clones keep `refs/gitpm/<uuid>/current` and `.../previous` for every
   package that uses them (registered or forgotten), updated with each change and deleted
   with the package, so an upstream rewrite, a pruned tag or `git gc` never loses another
   package's installed or rollback revision. Fetching takes the origin's tags as they are
@@ -1153,18 +1144,16 @@ packages/theme/dist/…
   `commit` (absent for a root package). `catalog update` publishes every package listed in
   `gitpm.json` at the source's HEAD from its repository `vVERSION` tags (one source line, all
   packages); `catalog register SRC --ref REF --package ID` registers one (the repository ref does not select a package).
-- Authoring: `gitpm init NAMESPACE/NAME --into DIR` adds a package at the current shared version without a tag
+- Authoring: `gitpm init NAME --into DIR` adds a package at the current shared version without a tag
   to a repository with `gitpm.json`; an existing repository without `gitpm.json` gets that
   file (`{"packages": ["packages/*"]}`), unless its root already is a package (moving it
   into a folder is up to you); a folder that does not exist becomes a single-package
   repository instead, or with `--multi` a multi-package one (`gitpm.json` and
-  `packages/NAME`; also for an empty folder that is not a repository yet), so later
+  `packages/UUID`; also for an empty folder that is not a repository yet), so later
   `init --into DIR` calls add packages to it. `--no-release` makes only the commit, no
   tag; `gitpm commit DIR NEW_VERSION [--package ID]` releases all packages later;
-  the first commit after a new `init --no-release` may use 0.1.0. The folder is `PREFIX/NAME` for the first `PREFIX/*` pattern, else
-  `packages/NAME` (added to `gitpm.json` when no pattern matches it): folders are named
-  after the name part of the ID, so `a/ui` and `b/ui` cannot share a repository (the
-  second `init` is refused naming the package that has the folder). Only `gitpm.json` and
+  the first commit after a new `init --no-release` may use 0.1.0. The folder is `PREFIX/UUID` for the first `PREFIX/*` pattern, else
+  `packages/UUID` (added to `gitpm.json` when no pattern matches it). Equal aliases are allowed because folders use generated UUIDs. Only `gitpm.json` and
   the new folder are committed; `gitpm.json` must have no uncommitted changes. Adding a package never creates a tag. gitpm never writes
   a Git identity into an existing repository: without configured `user.name` and
   `user.email` (or author and committer identity environment variables), `commit`,
@@ -1176,8 +1165,8 @@ packages/theme/dist/…
   when the user has none. `gitpm commit REPO VERSION [--package ID]` sets every package
   version, stages ALL changes of the repository, commits and creates `vVERSION`.
   The selector chooses only the package ID in the result.
-- `gitpm fork ID [ID...] --ns NAMESPACE --into DIR` forks the entire source
-  repository into `DIR`; every package gets the ID `NAMESPACE/<same name>`, including
+- `gitpm fork ID [ID...] --into DIR` forks the entire source
+  repository into `DIR`; every package gets a fresh UUID and keeps its alias, including
   packages that are not installed. The IDs identify the source, never a subset of
   packages. All input IDs must be installed
   from the same repository (otherwise the error lists each ID with its source).
@@ -1207,31 +1196,32 @@ packages/theme/dist/…
     each desired package. Fork does not accept `--replace`, `--version` or `--force`.
 
 ```console
-$ gitpm fork tilr/theme tilr/panel --ns me --into forks/me-packages
+$ gitpm fork f851f609-bb81-52d6-bfef-33798624782c 955bf29f-2893-56ef-9439-369c50455ae7 --into forks/me-packages
 Fork created: /…/forks/me-packages
 Git history is cloned from the recorded source; the original repository is the upstream remote.
 All repository packages are forked; the complete tree and gitpm.json are preserved.
-me/theme forked from tilr/theme (packages/theme)
-me/panel forked from tilr/panel (packages/panel)
-Dependency: me/panel now depends on me/theme ^1.0 (was tilr/theme)
+d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50 forked from f851f609-bb81-52d6-bfef-33798624782c (packages/theme)
+09e5894a-6e33-5a1e-91e0-730a2f8cb569 forked from 955bf29f-2893-56ef-9439-369c50455ae7 (packages/panel)
+Dependency: 09e5894a-6e33-5a1e-91e0-730a2f8cb569 now depends on d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50 ^1.0 (was f851f609-bb81-52d6-bfef-33798624782c)
 …
 ```
 
 ```console
+# Example UUIDs below stand for the IDs generated by init.
 $ git init -q tilr-packages
-$ gitpm init tilr/store --into ./tilr-packages
-$ gitpm init tilr/theme --into ./tilr-packages
+$ gitpm init store --into ./tilr-packages
+$ gitpm init theme --into ./tilr-packages
 $ gitpm commit ./tilr-packages 0.1.1
 $ gitpm install ./tilr-packages
-Error: repository has 2 packages at commit 4b377fe1c0de; choose one by ID: tilr/store (packages/store), tilr/theme (packages/theme)
-$ gitpm install ./tilr-packages tilr/store && gitpm install ./tilr-packages tilr/theme
-installed tilr/store@0.1.1 from /…/tilr-packages
-installed tilr/theme@0.1.1 from /…/tilr-packages
-$ echo 'export const v = 2;' > tilr-packages/packages/store/dist/index.js
-$ gitpm commit ./tilr-packages 0.2.0 --package tilr/store
-tilr/store committed 0.2.0 (local commit and tag v0.2.0)
-$ gitpm update tilr/store       # tilr/theme stays at 0.1.1
-tilr/store updated 0.1.1 → 0.2.0 (major)
+Error: repository has 2 packages at commit 4b377fe1c0de; choose one by ID: 76a9b591-60f3-5c7f-9e1c-31648fc73bfd (packages/76a9b591-60f3-5c7f-9e1c-31648fc73bfd), f851f609-bb81-52d6-bfef-33798624782c (packages/f851f609-bb81-52d6-bfef-33798624782c)
+$ gitpm install ./tilr-packages 76a9b591-60f3-5c7f-9e1c-31648fc73bfd && gitpm install ./tilr-packages f851f609-bb81-52d6-bfef-33798624782c
+installed 76a9b591-60f3-5c7f-9e1c-31648fc73bfd@0.1.1 from /…/tilr-packages
+installed f851f609-bb81-52d6-bfef-33798624782c@0.1.1 from /…/tilr-packages
+$ echo 'export const v = 2;' > tilr-packages/packages/76a9b591-60f3-5c7f-9e1c-31648fc73bfd/dist/index.js
+$ gitpm commit ./tilr-packages 0.2.0 --package 76a9b591-60f3-5c7f-9e1c-31648fc73bfd
+76a9b591-60f3-5c7f-9e1c-31648fc73bfd committed 0.2.0 (local commit and tag v0.2.0)
+$ gitpm update 76a9b591-60f3-5c7f-9e1c-31648fc73bfd       # f851f609-bb81-52d6-bfef-33798624782c stays at 0.1.1
+76a9b591-60f3-5c7f-9e1c-31648fc73bfd updated 0.1.1 → 0.2.0 (major)
 ```
 
 Settings: each has a flag, an environment variable and a default (`gitpm --help` lists
@@ -1249,7 +1239,7 @@ read-only).
 
 When you upload an updated catalog, go in an order that never shows readers a half-updated
 tree: new `versions/<V>/release.json` files first, then each package's
-`namespaces/<ns>/<name>/plugin.json` index, then the directory files from the deepest level
+`packages/<uuid>/plugin.json` index, then the directory files from the deepest level
 up, and the root `catalog.json` last. Never overwrite a `release.json` that is already
 published, never drop versions from an index, and do not delete objects as part of an update.
 
@@ -1309,10 +1299,10 @@ records): all four keys are always present; an absent string (`title`, `descript
 
 ```console
 $ cat packages/theme/plugin.json
-{"id": "tilr/theme", "version": "1.0.0", "title": "Theme", "provides": "theme", "tags": ["ui"]}
+{"id": "f851f609-bb81-52d6-bfef-33798624782c", "name": "fixture", "version": "1.0.0", "title": "Theme", "provides": "theme", "tags": ["ui"]}
 $ gitpm list --provides theme | jq '.resolved[] | {id, title, description, provides, tags, clone}'
 {
-  "id": "tilr/theme",
+  "id": "f851f609-bb81-52d6-bfef-33798624782c",
   "title": "Theme",
   "description": null,
   "provides": ["theme"],
@@ -1351,7 +1341,7 @@ $ gitpm list --provides theme | jq '.resolved[] | {id, title, description, provi
   `StrictHostKeyChecking=accept-new` unless `Options.custom_ssh` is true or Git config
   defines `core.sshCommand`. Hosts pass `custom_ssh` explicitly; Git subprocesses
   inherit the host environment.
-- No backward compatibility before 1.0: package IDs are always `namespace/name`, release
+- No backward compatibility before 1.0: package IDs are always canonical lowercase UUIDs, release
   tags always `vVERSION`, catalogs always the static file tree; there are no aliases,
   migrations or compatibility readers, and the FFI promises no stability. Every breaking
   change is listed under "Changed in X.Y".
@@ -1383,14 +1373,14 @@ use gitpm::{Manager, Options};
 let pm = Manager::open_with("/path/to/workspace", Options { catalog: Some(url), ..Default::default() })?;
 pm.install("git@github.com:acme/demo1.git")?;          // latest release tag
 use gitpm::{InstallTarget, Target};
-pm.install_package(src, None, InstallTarget::Ref("acme/demo1@0.2.0".into()))?; // pinned
+pm.install_package(src, None, InstallTarget::Ref("v0.2.0".into()))?; // pinned
 pm.install_package(src, None, InstallTarget::Dev)?;    // follows the origin's default branch
-pm.install_package(src, Some("tilr/store"), InstallTarget::Release)?; // one package of a gitpm.json repo
-pm.install_from_catalog("acme/demo1", None)?;          // exact catalog release, hashes verified
+pm.install_package(src, Some("76a9b591-60f3-5c7f-9e1c-31648fc73bfd"), InstallTarget::Release)?; // one package of a gitpm.json repo
+pm.install_from_catalog("645eb52e-b765-5211-a9b5-d9e7e23dbd85", None)?;          // exact catalog release, hashes verified
 pm.download(src, None, InstallTarget::Release)?;       // recorded disabled, deps too, nothing deployed
-pm.download_from_catalog("acme/demo1", None)?;         // the same from the catalog
+pm.download_from_catalog("645eb52e-b765-5211-a9b5-d9e7e23dbd85", None)?;         // the same from the catalog
 pm.enable_with(id, /* force: enable over inactive dependencies */ false)?;
-pm.update("acme/demo1")?;                              // by the recorded mode (pinned: unchanged_reason)
+pm.update("645eb52e-b765-5211-a9b5-d9e7e23dbd85")?;                              // by the recorded mode (pinned: unchanged_reason)
 pm.update_to(id, Target::Release)?;  pm.update_to(id, Target::Ref("feature".into()))?;
 pm.update_with(id, Target::Recorded, UpdateOptions { detach: true })?; // leave a verified catalog
 pm.rollback(id)?;  pm.enable(id)?;  pm.disable(id)?;  pm.forget(id)?;  pm.restore(id)?;
@@ -1400,17 +1390,17 @@ let confirmed = if user_said_yes { plan.lost_work.clone() } else { Vec::new() };
 let dist = pm.uninstall(id, &confirmed, /* force: ignore dependents */ false)?;
 // Every mutating result carries its dist report (`dist`, or the returned `DistSync`).
 // Forks: the fork repository is always explicit (new folder).
-pm.fork_in_namespace(id, Path::new("/work/demo1-fork"), "me")?;   // sets forkOf + replaces
+pm.fork_into(id, Path::new("/work/demo1-fork"))?;   // sets forkOf + replaces
 let repo = Path::new("/work/forks/me-packages");               // created as a new folder
-let fork = pm.fork_packages(&["tilr/theme", "tilr/panel"], repo, "me")?; // one repo, deps rewritten
+let fork = pm.fork_packages(&["f851f609-bb81-52d6-bfef-33798624782c", "955bf29f-2893-56ef-9439-369c50455ae7"], repo)?; // one repo, deps rewritten
 // Explicitly release all fork packages, then install only the desired package.
-gitpm::scaffold::commit_package(repo, "2.0.0", Some("me/theme"))?;
-pm.install_package(repo.to_str().unwrap(), Some("me/theme"), InstallTarget::Release)?;
-let check = pm.replace_check("vendor/base", "mine/base")?; // issues + missing catalog releases
+gitpm::scaffold::commit_package(repo, "2.0.0", Some("d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50"))?;
+pm.install_package(repo.to_str().unwrap(), Some("d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50"), InstallTarget::Release)?;
+let check = pm.replace_check("c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9", "db33e43e-e652-5767-8e21-27fb3cef9723")?; // issues + missing catalog releases
 // Only an explicit caller decision installs the missing dependencies:
-if !check.missing.is_empty() { pm.replace_resolve("vendor/base", "mine/base")?; }
-pm.replace("vendor/base", "mine/base")?; // rechecks; no confirm, force or auto-install
-pm.replace("vendor/base", "vendor/base")?; // remove binding with the same check
+if !check.missing.is_empty() { pm.replace_resolve("c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9", "db33e43e-e652-5767-8e21-27fb3cef9723")?; }
+pm.replace("c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9", "db33e43e-e652-5767-8e21-27fb3cef9723")?; // rechecks; no confirm, force or auto-install
+pm.replace("c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9", "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9")?; // remove binding with the same check
 pm.set_enabled_with(id, false, force)?;  pm.forget_with(id, force)?;
 let sync = pm.sync_dist()?;   // dist/ = active packages; Err(NotDeployed) if some cannot be
 pm.list()?;  pm.state()?;  pm.check()?;  pm.browse_catalog()?;  pm.catalog_release(id, None)?;
@@ -1427,9 +1417,9 @@ Modules with free functions (no workspace lock needed):
 | `catalog` | `browse` (`CatalogOverview.verified`), `is_verified`, `list`, `links`, `lookup`, `selected`, `register`, `register_build`, `register_package`, `update_sources` (progress callback), `hash_files`, `version_key`, `validate_location`, `ensure_publishable` |
 | `check` | `read_state` (does not create/lock), `compare`/`compare_in` (read remote refs and verify release manifests in a temporary clone for packages the catalog does not list), `check(root, catalog: Option)` → `CheckReport` (`catalog_verified`); `CheckStatus::message()`, `CheckRow::message()`, `CheckSource` |
 | `auth` | `check(source, &Options)` — `git ls-remote` only; refuses credentials in the URL, stores nothing (SSH itself records a new host's key, `accept-new`); failures are `auth`, except `git` when the check does not finish in 10 s |
-| `scaffold` | `init(dir, namespace, name)` (the `init --into` rule; the only way to create a package besides `create_package`), `init_with` (`InitOptions { multi, release }`), `create_package` (into a multi-package repo), `commit`, `commit_package` (`Commit { package, version, tag }`), `release_current`, `set_remote`, `shell_quote` |
+| `scaffold` | `init(dir, name)` (the `init --into` rule; the only way to create a package besides `create_package`), `init_with` (`InitOptions { multi, release }`), `create_package` (into a multi-package repo), `commit`, `commit_package` (`Commit { package, version, tag }`), `release_current`, `set_remote`, `shell_quote` |
 | `packages` | `config_at`, `layout_at` (packages and defective folders of a commit), `packages_at` (strict), `find_at` (one package of a commit), `read_config`, `packages_in` (working tree), `matches`, `validate_pattern` |
-| `identity` | `valid_part`, `qualified`, `split` (`NAMESPACE/NAME`, else `invalid_id`), `release_tag` (no default namespace, no namespace config) |
+| `identity` | `valid_part` (safe alias), `new_id` (fresh UUID), `release_tag` |
 | `releases` | `discover`, `discover_all` (with the skipped broken tags), `latest` |
 
 ### Uninstall: confirmation by plan
@@ -1445,8 +1435,9 @@ user was asked is never deleted unseen. `dependents` are the consumers that woul
 dependents, lost_work, .. }` unless `force`, and `plan.refusal()` returns that same error
 without calling `uninstall`. A recorded package whose clone is gone has no lost work:
 `uninstall` and `forget` drop its record and `dist/` without confirmation (`forget`
-keeps no `forgotten` record then). The caller decides how to ask the user. IDs match exactly: on a
-case-insensitive file system `Vendor/Module` never resolves to `vendor/module`.
+keeps no `forgotten` record then). The caller decides how to ask the user. IDs must use canonical
+lowercase UUIDs: even on a case-insensitive file system, `D135A7CF-1C63-549A-93CB-8F89656B2CED`
+is rejected with `invalid_id` rather than resolving to `d135a7cf-1c63-549a-93cb-8f89656b2ced`.
 
 ### Versions and pre-releases
 
@@ -1471,8 +1462,8 @@ new MINOR; for 0.0.x any new version). Dependents stay protected by their own ra
 update that breaks one is refused with `dependency_conflict`.
 
 ```console
-$ gitpm update acme/greeter
-acme/greeter updated 1.2.3 → 2.0.0 (major)
+$ gitpm update d135a7cf-1c63-549a-93cb-8f89656b2ced
+d135a7cf-1c63-549a-93cb-8f89656b2ced updated 1.2.3 → 2.0.0 (major)
 ```
 
 ### Joint upgrades
@@ -1516,12 +1507,12 @@ installed enabled only when an active package pulls it; one only disabled packag
 is recorded disabled and takes disabled providers as given:
 
 ```console
-$ gitpm uninstall acme/lib --force
-acme/lib uninstalled
+$ gitpm uninstall cfbc4d17-8707-5571-853d-c9136a7f9f21 --force
+cfbc4d17-8707-5571-853d-c9136a7f9f21 uninstalled
 $ gitpm update all
-acme/app skipped at 1.0.0 (dependency acme/lib is not installed)
-acme/other updated 1.0.0 → 1.1.0
-acme/theme kept back at 1.0.0 (latest 2.0.0: dependency constraints)
+b879842f-16c2-558f-9d03-a271dc901f57 skipped at 1.0.0 (dependency cfbc4d17-8707-5571-853d-c9136a7f9f21 is not installed)
+cde71d60-4de0-5f8d-a3c9-26b40d4af02a updated 1.0.0 → 1.1.0
+0e4950ff-9cb6-54f3-bf22-f5a9f71129c1 kept back at 1.0.0 (latest 2.0.0: dependency constraints)
 1 updates, 0 installs, 1 kept back.
 ```
 
@@ -1585,7 +1576,7 @@ not enforced, so they do not block unrelated operations.
 
 ### Replacement by a fork
 
-A fork declares `"replaces": {"id": "vendor/base", "version": "1.4.0"}` (`fork` sets
+A fork declares `"replaces": {"id": "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9", "version": "1.4.0"}` (`fork` sets
 it to the forked version). `replace(original, fork)` sets the single global binding
 `state.replacements[original] = fork`. Every consumer resolves the original through
 the fork at its declared version. The original must be installed; the fork must be
@@ -1616,10 +1607,10 @@ checks and prints `ORIGINAL already uses original VERSION`.
 The CLI equivalents are:
 
 ```sh
-gitpm replace-check vendor/base --with mine/base   # JSON diagnostics, no changes
-gitpm replace-resolve vendor/base --with mine/base # explicit missing installs
-gitpm replace vendor/base --with mine/base         # apply only when consistent
-gitpm replace vendor/base --with vendor/base       # return to the original
+gitpm replace-check c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 --with db33e43e-e652-5767-8e21-27fb3cef9723   # JSON diagnostics, no changes
+gitpm replace-resolve c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 --with db33e43e-e652-5767-8e21-27fb3cef9723 # explicit missing installs
+gitpm replace c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 --with db33e43e-e652-5767-8e21-27fb3cef9723         # apply only when consistent
+gitpm replace c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 --with c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9       # return to the original
 ```
 
 Returning removes the binding with the same consistency check. The original must be
@@ -1680,10 +1671,10 @@ library and use the generated API:
 import Gitpm
 
 let pm = try PackageManager.open(root: workspace, options: ManagerOptions(catalog: catalogURL))
-let plan = try pm.uninstallPlan(id: "acme/demo1")
+let plan = try pm.uninstallPlan(id: "645eb52e-b765-5211-a9b5-d9e7e23dbd85")
 try uninstallRefusal(plan: plan)   // throws HasDependents (with lostWork) when consumers would break
 if plan.lostWork.isEmpty || userConfirmed(plan.lostWork.map(describeLostWork)) {
-    try pm.uninstall(id: "acme/demo1", confirmed: plan.lostWork)
+    try pm.uninstall(id: "645eb52e-b765-5211-a9b5-d9e7e23dbd85", confirmed: plan.lostWork)
 }
 ```
 
@@ -1709,7 +1700,7 @@ the package folder; `InstalledPackage.clone` names the shared clone; `InstalledP
 `PackageSummary` and `CatalogRelease` carry the [metadata](#package-metadata); the fork
 records `PackageFork`, `ForkedPackage` and `DependencyRewrite` mirror the library
 types of the same names. The FFI-only `ForkResult` wraps the repository path returned
-by library `fork_in_namespace`. Free functions, which read without opening, locking or creating the
+by library `fork_into`. Free functions, which read without opening, locking or creating the
 workspace: `list(root, provides)` and `readState(root)` (`ListView`: `format`,
 `packages`, `replacements`, `forgotten`, `resolved`), `check(root, catalog, customSsh)`
 (`CheckReport`: rows with `source` `.catalog`/`.origin` and `problem`, fork `upstream`
@@ -1756,7 +1747,7 @@ cargo test -p gitpm-cli                  # CLI tests only
 cargo clippy --all-targets -- -D warnings
 ```
 
-Unit tests cover pure parts directly (ID/namespace rules, version keys and ordering,
+Unit tests cover pure parts directly (UUID and alias rules, version keys and ordering,
 manifest/state/catalog serialization, catalog validation, check statuses, auth
 diagnosis, error kinds and messages, lost-work descriptions) and use small real Git
 repositories in temp directories for workspace transactions, release discovery,

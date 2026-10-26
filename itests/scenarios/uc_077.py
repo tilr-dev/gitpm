@@ -3,7 +3,7 @@
 A catalog is static files uploaded by the author in some order, so a consumer can read it
 half-updated: a package index that already lists a version whose release.json is not there
 yet, or an index that does not list a release that is already uploaded. Fixture `catalog`
-(dan/hello 0.1.0, 0.1.1, 0.2.0; dan/num 1.9.0, 1.10.0) copied to /fx/served and read over
+(3dce1568-569c-5b53-9321-37185e751947 0.1.0, 0.1.1, 0.2.0; 2190eee8-4be5-5a91-81d2-6ca95c1e61d0 1.9.0, 1.10.0) copied to /fx/served and read over
 loopback HTTP. Every failing read must leave the workspace byte-identical and name a
 catalog/http error; the same command succeeds once the missing file appears.
 """
@@ -13,7 +13,7 @@ import shutil
 
 from gitpmtest import T, case
 
-HELLO = "dan/hello"
+HELLO = "3dce1568-569c-5b53-9321-37185e751947"
 
 
 def served(t: T):
@@ -69,7 +69,7 @@ def exact_version_of_a_missing_release_fails_others_install(t: T):
 
 @case(fixture="catalog", spec=["catalog/check-compares-installed-packages-with-their-catalog-or-origin#broken-payload"])
 def check_with_a_missing_latest_release_fails_then_recovers(t: T):
-    """dan/hello 0.1.1 installed from the served catalog; 0.2.0 listed but not uploaded:
+    """3dce1568-569c-5b53-9321-37185e751947 0.1.1 installed from the served catalog; 0.2.0 listed but not uploaded:
     check fails (not "up to date" or "no updates") and changes nothing; once uploaded,
     check reports the update."""
     root, srv = served(t)
@@ -88,7 +88,7 @@ def check_with_a_missing_latest_release_fails_then_recovers(t: T):
 @case(fixture="catalog", spec=["catalog/catalog-is-a-tree-of-static-files#direct-lookup",
                                "install-uninstall/install-from-the-catalog"])
 def release_uploaded_before_the_index(t: T):
-    """dan/hello 0.3.0 registered, then the old index is served (release.json uploaded, index
+    """3dce1568-569c-5b53-9321-37185e751947 0.3.0 registered, then the old index is served (release.json uploaded, index
     not yet): latest is still 0.2.0 and --version 0.3.0 is not in the catalog; after the
     index is uploaded both see 0.3.0."""
     t.release(HELLO, "0.3.0")
@@ -117,12 +117,12 @@ def plugin_index_not_yet_uploaded(t: T):
     """A namespace catalog.json links a package whose plugin.json is missing: install-catalog
     of it fails naming the package; after the upload it installs."""
     root, srv = served(t)
-    restore = hide(t.catalog_index("dan/num", root))
-    r = t.gitpm("--catalog", srv.url, "install-catalog", "dan/num")
+    restore = hide(t.catalog_index("2190eee8-4be5-5a91-81d2-6ca95c1e61d0", root))
+    r = t.gitpm("--catalog", srv.url, "install-catalog", "2190eee8-4be5-5a91-81d2-6ca95c1e61d0")
     t.ok(r.code != 0, "install of a package without an index fails")
-    t.has(r.err, "dan/num")
-    t.not_installed("dan/num")
+    t.has(r.err, "2190eee8-4be5-5a91-81d2-6ca95c1e61d0")
+    t.not_installed("2190eee8-4be5-5a91-81d2-6ca95c1e61d0")
     restore()
-    t.gitpm_ok("--catalog", srv.url, "install-catalog", "dan/num")
-    t.eq(t.package("dan/num")["current"]["version"], "1.10.0", "installed after the upload")
-    t.eq(json.loads(t.catalog_index("dan/num", root).read_text())["id"], "dan/num", "index restored")
+    t.gitpm_ok("--catalog", srv.url, "install-catalog", "2190eee8-4be5-5a91-81d2-6ca95c1e61d0")
+    t.eq(t.package("2190eee8-4be5-5a91-81d2-6ca95c1e61d0")["current"]["version"], "1.10.0", "installed after the upload")
+    t.eq(json.loads(t.catalog_index("2190eee8-4be5-5a91-81d2-6ca95c1e61d0", root).read_text())["id"], "2190eee8-4be5-5a91-81d2-6ca95c1e61d0", "index restored")

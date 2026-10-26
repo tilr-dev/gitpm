@@ -9,16 +9,16 @@ from gitpmtest import T, case
                             "cli/command-set#command-list"])
 def catalog_group_runs_every_subcommand(t: T):
     """The four two-word commands reach the existing catalog operations."""
-    t.release("dan/hello", "0.2.0")
-    source = t.repo("dan/hello")
+    t.release("3dce1568-569c-5b53-9321-37185e751947", "0.2.0")
+    source = t.repo("3dce1568-569c-5b53-9321-37185e751947")
     sources = t.root / "group-sources.txt"
     sources.write_text(f"{source}\n")
     update = t.run("gitpm", "catalog", "update", "--sources", sources, check=True)
     t.has(update.out, "Catalog ready: 2 release(s) checked from sources.")
     release = t.run("gitpm", "catalog", "register", source, "--ref", "v0.2.0", check=True)
-    t.eq(json.loads(release.out)["manifest"]["id"], "dan/hello", "registered package")
+    t.eq(json.loads(release.out)["manifest"]["id"], "3dce1568-569c-5b53-9321-37185e751947", "registered package")
     show = t.run("gitpm", "catalog", "show", check=True)
-    t.has(show.out, "dan/hello", "latest: 0.2.0")
+    t.has(show.out, "3dce1568-569c-5b53-9321-37185e751947", "latest: 0.2.0")
     links = t.run("gitpm", "catalog", "links", check=True)
     t.eq(json.loads(links.out)["schema"], 1, "catalog links")
     t.ok(not t.ws.exists(), "catalog operations create no workspace")

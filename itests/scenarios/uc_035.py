@@ -8,7 +8,7 @@ import shutil
 
 from gitpmtest import T, case
 
-HELLO, NUM = "dan/hello", "dan/num"
+HELLO, NUM = "3dce1568-569c-5b53-9321-37185e751947", "2190eee8-4be5-5a91-81d2-6ca95c1e61d0"
 
 
 def status(t: T, out: str, id: str) -> str:
@@ -47,15 +47,15 @@ def update_available_reads_only_installed_plugins(t: T):
     t.has(status(t, out, HELLO), "update available")
     requests = srv.take()
     print(f"  {len(requests)} requests: {requests}")
-    allowed = {"/namespaces/dan/num/plugin.json", "/namespaces/dan/num/versions/1.9.0/release.json",
-               "/namespaces/dan/num/versions/1.10.0/release.json",
-               "/namespaces/dan/hello/plugin.json", "/namespaces/dan/hello/versions/0.1.1/release.json",
-               "/namespaces/dan/hello/versions/0.2.0/release.json", "/catalog.json"}
-    t.eq(sorted(set(requests) - allowed), [], "requests outside the installed packages")
-    t.ok("/namespaces/dan/hello/versions/0.1.0/release.json" not in requests, "unrelated release not read")
+    allowed = {"/packages/2190eee8-4be5-5a91-81d2-6ca95c1e61d0/plugin.json", "/packages/2190eee8-4be5-5a91-81d2-6ca95c1e61d0/versions/1.9.0/release.json",
+               "/packages/2190eee8-4be5-5a91-81d2-6ca95c1e61d0/versions/1.10.0/release.json",
+               "/packages/3dce1568-569c-5b53-9321-37185e751947/plugin.json", "/packages/3dce1568-569c-5b53-9321-37185e751947/versions/0.1.1/release.json",
+               "/packages/3dce1568-569c-5b53-9321-37185e751947/versions/0.2.0/release.json", "/catalog.json"}
+    t.eq(sorted(set(requests) - allowed), sorted([]), "requests outside the installed packages")
+    t.ok("/packages/3dce1568-569c-5b53-9321-37185e751947/versions/0.1.0/release.json" not in requests, "unrelated release not read")
 
     # Unrelated directory indexes broken: same statuses, same requests.
-    for index in [t.catalog / "catalog.json", t.catalog / "namespaces/catalog.json"]:
+    for index in [t.catalog / "catalog.json", t.catalog / "packages/catalog.json"]:
         index.write_text("{ broken")
     again = check(t, srv.url, NUM, "update available")
     t.has(status(t, again, HELLO), "update available")
@@ -67,11 +67,11 @@ def not_in_catalog_reads_the_origin(t: T):
     """A package the catalog does not list gets an origin row from its recorded source:
     up to date, then update available once the origin has a newer release tag."""
     srv = t.serve(t.catalog)
-    t.new_package("dan/extra", "0.1.0")
-    t.gitpm_ok("install", t.repo("dan/extra"))
-    t.has(status(t, check(t, srv.url, "dan/extra", "up to date"), "dan/extra"), "origin")
-    t.release("dan/extra", "0.2.0")
-    row = status(t, check(t, srv.url, "dan/extra", "update available"), "dan/extra")
+    t.new_package("b1b5f31e-7a3f-5312-baf6-10254d3f2a29", "0.1.0")
+    t.gitpm_ok("install", t.repo("b1b5f31e-7a3f-5312-baf6-10254d3f2a29"))
+    t.has(status(t, check(t, srv.url, "b1b5f31e-7a3f-5312-baf6-10254d3f2a29", "up to date"), "b1b5f31e-7a3f-5312-baf6-10254d3f2a29"), "origin")
+    t.release("b1b5f31e-7a3f-5312-baf6-10254d3f2a29", "0.2.0")
+    row = status(t, check(t, srv.url, "b1b5f31e-7a3f-5312-baf6-10254d3f2a29", "update available"), "b1b5f31e-7a3f-5312-baf6-10254d3f2a29")
     t.has(row, "origin", "0.2.0")
 
 
@@ -80,16 +80,16 @@ def origin_statuses(t: T):
     """Origin rows: newer than origin (installed past the last tag), no releases on origin
     (tags gone), origin unreachable (repository moved) — each only its own row, check exits 0."""
     srv = t.serve(t.catalog)
-    t.new_package("dan/ahead", "0.1.0")
-    t.release("dan/ahead", "0.2.0")
-    t.gitpm_ok("install", t.repo("dan/ahead"))
-    t.git("dan/ahead", "tag", "-d", "v0.2.0")
-    check(t, srv.url, "dan/ahead", "newer than origin")
-    t.git("dan/ahead", "tag", "-d", "v0.1.0")
-    check(t, srv.url, "dan/ahead", "no releases on origin")
+    t.new_package("0005e714-a4fd-54f9-9660-55a30d568b9c", "0.1.0")
+    t.release("0005e714-a4fd-54f9-9660-55a30d568b9c", "0.2.0")
+    t.gitpm_ok("install", t.repo("0005e714-a4fd-54f9-9660-55a30d568b9c"))
+    t.git("0005e714-a4fd-54f9-9660-55a30d568b9c", "tag", "-d", "v0.2.0")
+    check(t, srv.url, "0005e714-a4fd-54f9-9660-55a30d568b9c", "newer than origin")
+    t.git("0005e714-a4fd-54f9-9660-55a30d568b9c", "tag", "-d", "v0.1.0")
+    check(t, srv.url, "0005e714-a4fd-54f9-9660-55a30d568b9c", "no releases on origin")
     t.gitpm_ok("--catalog", srv.url, "install-catalog", HELLO)
-    shutil.move(t.repo("dan/ahead"), t.root / "moved")
-    out = check(t, srv.url, "dan/ahead", "origin unreachable")
+    shutil.move(t.repo("0005e714-a4fd-54f9-9660-55a30d568b9c"), t.root / "moved")
+    out = check(t, srv.url, "0005e714-a4fd-54f9-9660-55a30d568b9c", "origin unreachable")
     t.has(status(t, out, HELLO), "catalog", "up to date")
 
 
@@ -120,8 +120,8 @@ def same_version_different_commit(t: T):
 def different_source(t: T):
     """An unrelated catalog source for the same ID falls back to the installed origin."""
     srv = t.serve(t.catalog)
-    t.run("git", "clone", "-q", t.repo(HELLO), t.root / "mirror/hello", check=True)
-    t.gitpm_ok("install", t.root / "mirror/hello")
+    t.run("git", "clone", "-q", t.repo(HELLO), t.root / "790a24b3-6ad7-5a64-8632-0c229695164c", check=True)
+    t.gitpm_ok("install", t.root / "790a24b3-6ad7-5a64-8632-0c229695164c")
     out = check(t, srv.url, HELLO, "up to date")
     t.has(status(t, out, HELLO), "origin")
 

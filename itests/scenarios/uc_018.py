@@ -1,7 +1,7 @@
 """UC-018: Local edit and unpublished commit protection (P0, mandatory acceptance).
 
-Fixture g2_guarded: dan/hello current 0.1.2 / previous 0.1.1 with an unapplied upstream
-0.1.3 (so update and rollback would both change something), and an unrelated dan/other.
+Fixture g2_guarded: 3dce1568-569c-5b53-9321-37185e751947 current 0.1.2 / previous 0.1.1 with an unapplied upstream
+0.1.3 (so update and rollback would both change something), and an unrelated 95d14dc8-6dfc-5022-9fd1-7146ee6aee58.
 Each dirtiness type (tracked edit, untracked file, local commit, stash entry) gets its own
 cases for: update+rollback refusal, uninstall without a TTY, the TTY prompt answered
 N / empty / EOF, the prompt answered y, and --force.
@@ -18,7 +18,7 @@ import time
 
 from gitpmtest import R, T, Failure, case
 
-ID, OTHER = "dan/hello", "dan/other"
+ID, OTHER = "3dce1568-569c-5b53-9321-37185e751947", "95d14dc8-6dfc-5022-9fd1-7146ee6aee58"
 
 
 # ----------------------------------------------------------------------------- helpers
@@ -95,7 +95,7 @@ KINDS = {"tracked_edit": make_tracked, "untracked_file": make_untracked,
 
 
 class Guard:
-    """Snapshots of everything that must survive: the dirty installation, the author repo and dan/other."""
+    """Snapshots of everything that must survive: the dirty installation, the author repo and 95d14dc8-6dfc-5022-9fd1-7146ee6aee58."""
 
     def __init__(self, t: T):
         self.t = t
@@ -194,7 +194,7 @@ for _kind, _make in KINDS.items():
 
 @case(fixture="g2_guarded", spec=["install-uninstall/uninstall-is-planned-and-confirmed"])
 def clean_clone_uninstalls_without_prompt(t: T):
-    """Control: a clean clone is removed on a TTY without asking; dan/other untouched."""
+    """Control: a clean clone is removed on a TTY without asking; 95d14dc8-6dfc-5022-9fd1-7146ee6aee58 untouched."""
     g = Guard(t)
     r, prompted = tty_gitpm(t, "uninstall", ID, answer="N")
     t.ok(not prompted, "no prompt for a clean clone")

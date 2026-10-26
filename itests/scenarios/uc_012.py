@@ -3,12 +3,12 @@
 `--ref TAG|COMMIT` pins, `--ref BRANCH` follows that origin branch, `--dev` follows the
 origin's default branch; the mode is recorded per package and `update ID` follows it.
 
-Fixture hello: dan/hello with one release 0.1.0 on main.
+Fixture hello: 3dce1568-569c-5b53-9321-37185e751947 with one release 0.1.0 on main.
 """
 
 from gitpmtest import T, case
 
-ID = "dan/hello"
+ID = "3dce1568-569c-5b53-9321-37185e751947"
 
 
 def dist(t: T) -> str:
@@ -24,7 +24,7 @@ def install_dev_installs_default_branch_head(t: T):
     t.eq(p["current"], {"version": "0.2.0", "commit": head}, "current")
     t.eq(p["mode"], {"branch": "main"}, "mode")
     t.eq(t.rev(t.worktree(ID)), head, "clone HEAD")
-    t.has(dist(t), "dan/hello 0.2.0")
+    t.has(dist(t), "3dce1568-569c-5b53-9321-37185e751947 0.2.0")
     t.lacks((t.ws / "state.json").read_text(), "channel")
 
 
@@ -41,7 +41,7 @@ def update_follows_the_recorded_branch(t: T):
     p = t.package(ID)
     t.eq(p["current"], {"version": "0.3.0", "commit": second}, "current = main HEAD")
     t.eq(p["previous"], {"version": "0.2.0", "commit": first, "mode": {"branch": "main"}}, "previous (with its mode)")
-    t.has(dist(t), "dan/hello 0.3.0")
+    t.has(dist(t), "3dce1568-569c-5b53-9321-37185e751947 0.3.0")
     same_version = t.commit(ID, "code change, same version", {"dist/index.js": "export const greeting = 'dev';\n"})
     r = t.gitpm_ok("update", ID)
     t.has(r.out, f"{ID} updated 0.3.0 (")
@@ -90,7 +90,7 @@ def explicit_ref_selects_its_revision(t: T):
     t.gitpm_ok("update", ID, "--ref", f"v0.2.0")
     t.eq(t.package(ID)["current"], {"version": "0.2.0", "commit": second}, "update --ref tag")
     t.eq(t.rev(t.worktree(ID)), second, "clone HEAD")
-    t.has(dist(t), "dan/hello 0.2.0")
+    t.has(dist(t), "3dce1568-569c-5b53-9321-37185e751947 0.2.0")
     t.gitpm_ok("update", ID, "--ref", "main")
     t.eq(t.package(ID)["current"], {"version": "0.3.0", "commit": head}, "update --ref upstream branch")
     t.eq(t.package(ID)["mode"], {"branch": "main"}, "update --ref branch follows it")

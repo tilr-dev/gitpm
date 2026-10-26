@@ -85,6 +85,7 @@ pub(crate) fn git(repo: &Path, args: &[&str]) -> String {
 pub(crate) fn manifest(id: &str, version: &str) -> Manifest {
     Manifest {
         id: id.into(),
+        name: "fixture".into(),
         version: version.into(),
         ..Default::default()
     }

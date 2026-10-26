@@ -2,7 +2,7 @@
 
 from gitpmtest import T, case
 
-ID = "dan/hello"
+ID = "3dce1568-569c-5b53-9321-37185e751947"
 
 
 @case(fixture="hello_installed", spec=["updates/stable-update-moves-to-the-newest-release#update-and-repeat"])
@@ -37,7 +37,7 @@ def stable_ignores_untagged_head(t: T):
     t.same(before, "workspace")
 
 
-RETRACTED = "Warning: installed release dan/hello@{} no longer exists on the origin"
+RETRACTED = "Warning: installed release 3dce1568-569c-5b53-9321-37185e751947@{} no longer exists on the origin"
 
 
 @case(fixture="hello_releases", spec=["updates/stable-update-never-downgrades#retracted-release-in-update-all", "updates/update-mirrors-the-origin-s-tags#deleted-installed-release-tag"])
