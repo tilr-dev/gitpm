@@ -59,9 +59,10 @@ def missing_manifest(t: T):
 
 @case(fixture="hello_installed", spec=["package-manifest/unknown-keys-are-preserved", "package-manifest/known-manifest-keys"])
 def unknown_manifest_fields_and_missing_version(t: T):
-    """Missing version is invalid_manifest, malformed version is invalid_version; unknown fields survive."""
+    """Missing or blank versions are invalid_manifest; unknown fields survive."""
     for name, text, kind in [("noversion", manifest(id="bad/noversion"), "invalid_manifest"),
-                             ("emptyversion", manifest(id="bad/emptyversion", version=" "), "invalid_version")]:
+                             ("emptyversion", manifest(id="bad/emptyversion", version=" "), "invalid_manifest"),
+                             ("blankversion", manifest(id="bad/blankversion", version=""), "invalid_manifest")]:
         repo, sha = bad_repo(t, name, {"plugin.json": text, **DIST})
         refused(t, repo, "--ref", sha, kind=kind)
         t.not_installed(f"bad/{name}")

@@ -4746,6 +4746,27 @@ mod tests {
     }
 
     #[test]
+    fn install_by_ref_rejects_empty_manifest_versions() {
+        for version in [" ", ""] {
+            let ws = Ws::new("dan/demo1");
+            write_manifest(&ws.author.path, &make_manifest("dan/demo1", version));
+            fixture_git(&ws.author.path, &["commit", "-q", "-am", "empty version"]);
+            let m = ws.open();
+            let error = ws.refuses("invalid_manifest", || {
+                m.install_package(
+                    ws.author.source(),
+                    None,
+                    InstallTarget::Ref(ws.author.head()),
+                )
+            });
+            assert!(
+                error.to_string().contains("version must not be empty"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
     fn install_refusals_leave_the_workspace_unchanged() {
         let (ws, m) = Ws::installed("dan/demo1");
         // The same source again: reported, nothing changed.

@@ -40,8 +40,9 @@ ordinary removal still requires no checkout. Activation journals replace the bar
 store and package checkout separately and record the worktree admin link for recovery.
 
 Diagnostic assertions follow the current specification: moved forgotten HEADs refuse
-restore with `local_changes`; malformed version strings use `invalid_version`, while
-missing required manifest fields use `invalid_manifest`; replacement incompatibility
+restore with `local_changes`; nonempty malformed version strings use `invalid_version`,
+while missing required manifest fields and empty or whitespace-only manifest versions
+use `invalid_manifest`; replacement incompatibility
 has no confirmation bypass. `check` uses a listed catalog source without querying
 origin and falls back to the installed origin for an unrelated catalog source with
 the same ID. Fork provenance records a commit: peel annotated release tags with
