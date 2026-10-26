@@ -66,6 +66,11 @@ Verified by `catalog::validate_release_checks_identity_commit_paths_and_build` a
 - **WHEN** the sources file lists the same repository twice, also in another spelling of its path
 - **THEN** `catalog update` reads it once and indexes each release once
 
+#### Scenario: Submodule inside dist
+- **WHEN** the release contains a Git submodule at `dist/vendor`
+- **THEN** publication succeeds, hashing the staged export with an empty `vendor/` directory
+- **AND** the author is warned that `dist/vendor` is a Git submodule whose files will not be installed, probably a mistake; commit built files to dist instead of a submodule
+
 ### Requirement: A catalog is optional
 Single source for working without a catalog: a direct install SHALL record its source, and updates and `check` SHALL query that origin (updates). Only catalog commands, `install-catalog` and installing missing dependencies SHALL need a catalog; without one the library's catalog reads fail with `invalid_argument` ("no catalog configured"; CLI message: cli). Verified by `workspace::catalog_operations_need_a_configured_catalog` and `lifecycle_and_three_removal_levels`.
 
