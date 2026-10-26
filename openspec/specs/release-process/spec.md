@@ -78,7 +78,7 @@ secrets and advisories SHALL remain subject to the existing checks.
 - **AND** the exception is removed once an upstream update removes basic-toml
 
 ### Requirement: Specification change authorization on dev
-Pull requests into dev SHALL pass the required spec-change check. One shared checker SHALL enforce intake Spec scope and accept authorization only from Dan's comments, using the dedicated read-only task credential. The check SHALL run only from the trusted pull_request_target workflow in main; the dev tree SHALL carry no copy of that workflow. Other tests SHALL remain local for dev.
+Pull requests into dev SHALL pass the required spec-change check. The check SHALL reject nonexistent tasks, tasks in Done or Canceled, and unavailable or incomplete task metadata. One shared checker SHALL enforce intake Spec scope and accept authorization only from Dan's comments, using the dedicated read-only task credential. The check SHALL run only from the trusted pull_request_target workflow in main; the dev tree SHALL carry no copy of that workflow. Other tests SHALL remain local for dev.
 
 #### Scenario: Existing specification is changed without authorization
 - **WHEN** an intake-ready comment declares Spec scope and a pull request removes or changes existing specification lines without a matching spec-change entry from Dan
@@ -90,7 +90,7 @@ Pull requests into dev SHALL pass the required spec-change check. One shared che
 - **AND** deltas that modify existing requirements still require authorization
 
 #### Scenario: Authorized changes
-- **WHEN** every affected existing requirement and foreign change has a matching operation in Dan's spec-change block for this component
+- **WHEN** the task is in Review, Supervise, or Merge and every affected existing requirement and foreign change has a matching operation in Dan's spec-change block for this component
 - **THEN** the check passes
 
 #### Scenario: Bot impersonates authorization
@@ -98,8 +98,9 @@ Pull requests into dev SHALL pass the required spec-change check. One shared che
 - **THEN** the block does not authorize any changes
 
 #### Scenario: Task predates scope declarations
-- **WHEN** the task's intake-ready comments contain no Spec scope line
+- **WHEN** the task was created before 2026-10-22T21:02:26Z, is neither Done nor Canceled, and has a trusted intake-ready comment but no Spec scope line
 - **THEN** the check passes as a legacy task
+- **AND** the cutoff is the landing of the original authorization rule in dev
 
 #### Scenario: Foreign change edited or archived
 - **WHEN** a pull request edits or archives another task's change
@@ -177,6 +178,25 @@ Pull requests into dev SHALL pass the required spec-change check. One shared che
 - **WHEN** a pull request adds a capability directory whose name equals an existing or another added capability after case folding and Unicode normalization
 - **THEN** the check fails with an error instead of treating it as a new capability
 - **AND** the same applies when a delta in the task's own change names a capability that differs from an existing one only by letter case or Unicode form
+
+#### Scenario: Branch names cannot select an unavailable or closed task
+- **WHEN** the task branch names a nonexistent task or a task in Done or Canceled
+- **THEN** the check exits with failure and an actionable error even if no Spec scope line exists
+
+#### Scenario: Missing scope is not proof of legacy status
+- **WHEN** a task without Spec scope was created at or after 2026-10-22T21:02:26Z, or has no trusted intake-ready comment
+- **THEN** the check exits with failure instead of granting a legacy exception
+
+#### Scenario: Grants expire outside the review lifecycle
+- **WHEN** a task outside Review, Supervise, and Merge contains Dan's authorization block
+- **THEN** the block grants no permission to modify existing requirements or foreign changes
+- **AND** additions and edits of the declared own change that need no grant remain permitted
+- **AND** a fresh invocation after the task enters Review, Supervise, or Merge evaluates its grants
+
+#### Scenario: Offline task metadata
+- **WHEN** local verification supplies a trusted export containing the issue metadata and complete comment activity
+- **THEN** the same existence, creation date, closed-state, scope, and grant-lifetime rules apply
+- **AND** a comments-only array or metadata naming a different task fails with an actionable error
 
 ### Requirement: Specification merge readiness diagnostics
 Before fetching a pull request test merge for specification authorization, the trusted check SHALL read the pull request through the GitHub API with pull-requests read permission. It SHALL distinguish a conflict with dev from a pending or stale merge result, and SHALL inspect candidate Git objects without executing candidate code.
