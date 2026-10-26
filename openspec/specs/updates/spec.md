@@ -10,8 +10,8 @@ Defines how installed packages move between revisions: single-package `update` (
 `update ID` SHALL fetch the origin and move to the newest release tag, across major versions and passing over pre-releases ("Major updates are marked", "Pre-releases are opt-in"). When already there it SHALL report `ID up to date (V)` and change nothing; otherwise `ID updated A → B` (same version, another commit: `ID updated V (old → new)`). Failures change nothing (errors). Verified by `workspace::update_and_rollback_swap_revisions_and_redeploy`.
 
 #### Scenario: Update and repeat
-- **WHEN** 0.2.0 is released after installing 0.1.0 and the user runs `update d135a7cf-1c63-549a-93cb-8f89656b2ced` twice
-- **THEN** the first prints `d135a7cf-1c63-549a-93cb-8f89656b2ced updated 0.1.0 → 0.2.0 (major)`, the second `d135a7cf-1c63-549a-93cb-8f89656b2ced up to date (0.2.0)`
+- **WHEN** 0.2.0 is released after installing 0.1.0 and the user runs `update acme/greeter` twice
+- **THEN** the first prints `acme/greeter updated 0.1.0 → 0.2.0 (major)`, the second `acme/greeter up to date (0.2.0)`
 
 ### Requirement: Updates need no catalog
 `update ID` (any mode) and `update all` SHALL read releases and branches from the clone origin (set from `packages.<id>.source`) without catalog reads for unprotected Git packages. `check` SHALL use that origin when the catalog does not list them. Builds SHALL instead follow their recorded catalog, including unverified catalogs, without a catalog option. Verified by `workspace::update_and_rollback_swap_revisions_and_redeploy` (no catalog configured).
@@ -21,16 +21,16 @@ Defines how installed packages move between revisions: single-package `update` (
 - **THEN** `update ID` fails as specified in dependencies ("Install resolves dependencies"), while `update all` keeps that package back ("update all never removes or downgrades")
 
 #### Scenario: Catalog-less update
-- **WHEN** `d135a7cf-1c63-549a-93cb-8f89656b2ced` 0.1.0 was installed with `gitpm install ./greeter`, no `--catalog` or `GITPM_CATALOG` is set, and 0.2.0 is tagged in `./greeter`
-- **THEN** `gitpm update d135a7cf-1c63-549a-93cb-8f89656b2ced` prints `d135a7cf-1c63-549a-93cb-8f89656b2ced updated 0.1.0 → 0.2.0 (major)`
+- **WHEN** `acme/greeter` 0.1.0 was installed with `gitpm install ./greeter`, no `--catalog` or `GITPM_CATALOG` is set, and 0.2.0 is tagged in `./greeter`
+- **THEN** `gitpm update acme/greeter` prints `acme/greeter updated 0.1.0 → 0.2.0 (major)`
 
 #### Scenario: Catalog-less update all preview
 - **WHEN** the same workspace has no catalog and the user runs `gitpm update all --dry-run`
-- **THEN** it prints `d135a7cf-1c63-549a-93cb-8f89656b2ced would be updated 0.1.0 → 0.2.0 (major)` and the totals line ends with `Nothing was changed.`
+- **THEN** it prints `acme/greeter would be updated 0.1.0 → 0.2.0 (major)` and the totals line ends with `Nothing was changed.`
 
 #### Scenario: Catalog-less check
 - **WHEN** the same workspace has no catalog and the user runs `gitpm check`
-- **THEN** the row of `d135a7cf-1c63-549a-93cb-8f89656b2ced` says `update available` with `0.2.0 (major)` from the origin, and nothing in the workspace changes
+- **THEN** the row of `acme/greeter` says `update available` with `0.2.0 (major)` from the origin, and nothing in the workspace changes
 
 #### Scenario: Unverified build follows its recorded catalog
 - **WHEN** a build from an unverified catalog is updated without a catalog option
@@ -98,8 +98,8 @@ Update and rollback SHALL refuse lost work in the affected worktree, including s
 - Verified by `local_work_blocks_update_and_rollback`, `update_and_rollback_refuse_hidden_local_work` and `rollback_of_a_fork_treats_fetched_upstream_tags_as_published`.
 
 #### Scenario: Fork, update, rollback
-- **WHEN** `ce6c8a3b-b2f8-5391-8ef8-4cbb7873f5d4`, a fork whose repository also holds its upstream's tags (for example `v1.0.0` on a commit naming `7e6e8392-7be8-55ae-bd03-2b430b1c5d59`), is installed at 1.0.0, updated to 1.1.0, and the user runs `rollback ce6c8a3b-b2f8-5391-8ef8-4cbb7873f5d4`
-- **THEN** the upstream tags fetched from the fork's origin count as published, as they did for the update, and rollback prints `ce6c8a3b-b2f8-5391-8ef8-4cbb7873f5d4 rolled back 1.1.0 → 1.0.0` without a network access
+- **WHEN** `me/hello`, a fork whose repository also holds its upstream's tags (for example `v1.0.0` on a commit naming `acme/hello`), is installed at 1.0.0, updated to 1.1.0, and the user runs `rollback me/hello`
+- **THEN** the upstream tags fetched from the fork's origin count as published, as they did for the update, and rollback prints `me/hello rolled back 1.1.0 → 1.0.0` without a network access
 
 #### Scenario: Retained upstream tag on rollback
 - **WHEN** the clone of a fork keeps a `vVERSION` tag of its upstream that no remote branch contains, and the fork's origin had that tag with the same object at the last fetch, and the user runs `rollback`
@@ -122,7 +122,7 @@ Update and rollback SHALL refuse lost work in the affected worktree, including s
 
 #### Scenario: Rollback after update
 - **WHEN** a package was updated 0.1.0 → 0.2.0 and the user runs `rollback`
-- **THEN** it prints `d135a7cf-1c63-549a-93cb-8f89656b2ced rolled back 0.2.0 → 0.1.0` and `previous` becomes 0.2.0
+- **THEN** it prints `acme/greeter rolled back 0.2.0 → 0.1.0` and `previous` becomes 0.2.0
 
 #### Scenario: Previous commit gone
 - **WHEN** the previous revision's commit is no longer in the clone (pruned after the origin deleted its tag)
@@ -183,9 +183,9 @@ Update and rollback SHALL refuse lost work in the affected worktree, including s
 - **THEN** `update all` updates the other packages and lists it in `unchanged` with reason `branch_gone` or `diverged`
 
 #### Scenario: Unpublished local work identifies its clone
-- **WHEN** a clone of `d135a7cf-1c63-549a-93cb-8f89656b2ced` has an unpublished local tag and `update all` is run
-- **THEN** it fails with `local_changes`, whose library message names `d135a7cf-1c63-549a-93cb-8f89656b2ced` and the tag, and CLI prints that message unchanged
-- **AND** FFI preserves `id` `d135a7cf-1c63-549a-93cb-8f89656b2ced` and the lost-work items, and the workspace stays unchanged
+- **WHEN** a clone of `acme/greeter` has an unpublished local tag and `update all` is run
+- **THEN** it fails with `local_changes`, whose library message names `acme/greeter` and the tag, and CLI prints that message unchanged
+- **AND** FFI preserves `id` `acme/greeter` and the lost-work items, and the workspace stays unchanged
 
 ### Requirement: update all dry run
 `update all --dry-run` (`update_all_plan`) SHALL resolve and stage payloads to validate them but SHALL NOT commit; output SHALL use `would be updated` / `would be installed` and end with `Nothing was changed.` Apply SHALL resolve again under the lock, so a preview is not a saved plan.
@@ -206,12 +206,12 @@ Update and rollback SHALL refuse lost work in the affected worktree, including s
 Managed `update ID` SHALL follow recorded mode: release moves to the newest release, branch to HEAD, pinned stays with reason `pinned` (CLI: `ID pinned at V (REF)`). Explicit targets SHALL switch managed mode as at install. Links follow "Linked packages report releases without automatic replacement", including explicit targets. Verified by `workspace::update_follows_and_switches_the_recorded_mode`.
 
 #### Scenario: Pinned package
-- **WHEN** `d135a7cf-1c63-549a-93cb-8f89656b2ced` was installed with `--ref v0.1.0`, 0.2.0 is released and the user runs `update d135a7cf-1c63-549a-93cb-8f89656b2ced`
-- **THEN** it prints `d135a7cf-1c63-549a-93cb-8f89656b2ced pinned at 0.1.0 (v0.1.0)` and nothing changes
+- **WHEN** `acme/greeter` was installed with `--ref v0.1.0`, 0.2.0 is released and the user runs `update acme/greeter`
+- **THEN** it prints `acme/greeter pinned at 0.1.0 (v0.1.0)` and nothing changes
 
 #### Scenario: Back to releases
-- **WHEN** the user then runs `update d135a7cf-1c63-549a-93cb-8f89656b2ced --release`
-- **THEN** it prints `d135a7cf-1c63-549a-93cb-8f89656b2ced updated 0.1.0 → 0.2.0 (major)` and the record has no `mode`
+- **WHEN** the user then runs `update acme/greeter --release`
+- **THEN** it prints `acme/greeter updated 0.1.0 → 0.2.0 (major)` and the record has no `mode`
 
 #### Scenario: Explicit managed targets
 - **WHEN** a managed package is updated with `--ref REF`, `--dev` or `--release`
@@ -232,8 +232,8 @@ Managed `update ID` SHALL follow recorded mode: release moves to the newest rele
 An update whose target resolves to the installed commit but records another mode SHALL write the new mode and report a change (`RevisionChange.changed`, `from` and `to` at the same commit; CLI `ID pinned at V (REF)`, `ID follows branch B at V`, `ID follows releases at V`). Verified by `workspace::update_follows_and_switches_the_recorded_mode`.
 
 #### Scenario: Pin at the installed commit
-- **WHEN** `d135a7cf-1c63-549a-93cb-8f89656b2ced` follows releases at 0.2.0 and the user runs `update d135a7cf-1c63-549a-93cb-8f89656b2ced --ref v0.2.0`
-- **THEN** it prints `d135a7cf-1c63-549a-93cb-8f89656b2ced pinned at 0.2.0 (v0.2.0)` and the record says `{"pinned": "v0.2.0"}`
+- **WHEN** `acme/greeter` follows releases at 0.2.0 and the user runs `update acme/greeter --ref v0.2.0`
+- **THEN** it prints `acme/greeter pinned at 0.2.0 (v0.2.0)` and the record says `{"pinned": "v0.2.0"}`
 
 ### Requirement: Rollback restores revision and mode together
 `rollback ID` SHALL swap `current` with `previous` and the recorded mode with the mode `previous` carries (`previous.mode`, written by every update), so a rollback after `update ID --release` of a branch-mode package follows the branch again. This adds to "Rollback swaps current and previous". Verified by `workspace::update_follows_and_switches_the_recorded_mode`.
@@ -246,28 +246,28 @@ An update whose target resolves to the installed commit but records another mode
 Protected packages SHALL update only to versions in their recorded verified catalog, whatever `Options.catalog` is. Git targets SHALL match recorded source, commit, path, manifest and hashes before any change (`catalog` otherwise); builds SHALL verify archive and files without Git. `update ID --detach` (`Manager::update_with`) SHALL drop protection and update from origin in one transaction. Verified by `workspace::protected_packages_update_only_to_catalog_versions`.
 
 #### Scenario: Newer tag not in the catalog
-- **WHEN** protected `d135a7cf-1c63-549a-93cb-8f89656b2ced` 0.2.0 has the tag `v0.3.0` on its origin but the verified catalog lists only 0.1.0 and 0.2.0
-- **THEN** `update d135a7cf-1c63-549a-93cb-8f89656b2ced` prints `d135a7cf-1c63-549a-93cb-8f89656b2ced kept at 0.2.0 (upstream 0.3.0 not in catalog)` and `update all` lists it in `unchanged` with that reason
-- **AND** a ref or branch target needs a detach: `update d135a7cf-1c63-549a-93cb-8f89656b2ced --ref v0.3.0` fails with `invalid_argument` ("… detach it to follow a ref or branch of its origin")
+- **WHEN** protected `acme/greeter` 0.2.0 has the tag `v0.3.0` on its origin but the verified catalog lists only 0.1.0 and 0.2.0
+- **THEN** `update acme/greeter` prints `acme/greeter kept at 0.2.0 (upstream 0.3.0 not in catalog)` and `update all` lists it in `unchanged` with that reason
+- **AND** a ref or branch target needs a detach: `update acme/greeter --ref v0.3.0` fails with `invalid_argument` ("… detach it to follow a ref or branch of its origin")
 
 #### Scenario: Hash mismatch on update
 - **WHEN** the verified catalog lists 0.3.0 but the files at the recorded commit do not match its hashes
-- **THEN** `update d135a7cf-1c63-549a-93cb-8f89656b2ced` and `update all` fail with `catalog` ("catalog file hashes do not match git dist of d135a7cf-1c63-549a-93cb-8f89656b2ced@0.3.0: the release differs from the one added to the catalog") and the workspace is unchanged; a release commit the origin does not have fails with `catalog` ("… is not on the origin")
+- **THEN** `update acme/greeter` and `update all` fail with `catalog` ("catalog file hashes do not match git dist of acme/greeter@0.3.0: the release differs from the one added to the catalog") and the workspace is unchanged; a release commit the origin does not have fails with `catalog` ("… is not on the origin")
 
 #### Scenario: Catalog no longer verified or unreachable
-- **WHEN** the owner removed `"verified": true` from the catalog that protects `d135a7cf-1c63-549a-93cb-8f89656b2ced`, or the catalog cannot be read
-- **THEN** `update d135a7cf-1c63-549a-93cb-8f89656b2ced` fails with `catalog` ("… is no longer verified; detach …") or `http` and nothing changes
-- **AND** `update all` does not fail: it keeps `d135a7cf-1c63-549a-93cb-8f89656b2ced` in `unchanged` with the reason `catalog_unavailable` (`d135a7cf-1c63-549a-93cb-8f89656b2ced kept at 0.2.0 (catalog unavailable: REASON)`) and updates the other packages
+- **WHEN** the owner removed `"verified": true` from the catalog that protects `acme/greeter`, or the catalog cannot be read
+- **THEN** `update acme/greeter` fails with `catalog` ("… is no longer verified; detach …") or `http` and nothing changes
+- **AND** `update all` does not fail: it keeps `acme/greeter` in `unchanged` with the reason `catalog_unavailable` (`acme/greeter kept at 0.2.0 (catalog unavailable: REASON)`) and updates the other packages
 - **AND** this is covered by `workspace::a_catalog_that_is_no_longer_verified_refuses_protected_updates`
 
 #### Scenario: New dependency of a protected package
-- **WHEN** protected `b879842f-16c2-558f-9d03-a271dc901f57` 1.1.0 in its verified catalog adds a dependency `cfbc4d17-8707-5571-853d-c9136a7f9f21` that is not installed, and no catalog or an unverified one is configured
-- **THEN** `update b879842f-16c2-558f-9d03-a271dc901f57` and `update all` install `cfbc4d17-8707-5571-853d-c9136a7f9f21` from the recorded verified catalog and record it protected by that catalog
+- **WHEN** protected `acme/app` 1.1.0 in its verified catalog adds a dependency `acme/lib` that is not installed, and no catalog or an unverified one is configured
+- **THEN** `update acme/app` and `update all` install `acme/lib` from the recorded verified catalog and record it protected by that catalog
 - **AND** this is covered by `workspace::new_dependencies_of_a_protected_package_come_from_its_catalog`
 
 #### Scenario: Detach
-- **WHEN** the user runs `update d135a7cf-1c63-549a-93cb-8f89656b2ced --detach`
-- **THEN** it prints `d135a7cf-1c63-549a-93cb-8f89656b2ced detached from catalog LOCATION; it now follows its origin` and `d135a7cf-1c63-549a-93cb-8f89656b2ced updated 0.2.0 → 0.3.0 (major)`, the record loses `catalog` and later updates follow the origin
+- **WHEN** the user runs `update acme/greeter --detach`
+- **THEN** it prints `acme/greeter detached from catalog LOCATION; it now follows its origin` and `acme/greeter updated 0.2.0 → 0.3.0 (major)`, the record loses `catalog` and later updates follow the origin
 - **AND** a detach with no newer release is still a change (`workspace::detach_without_a_new_release_is_a_change`); detaching an unprotected package fails with `invalid_argument`; `update all --detach` is a usage error (exit status 1)
 
 #### Scenario: Detach a protected build
@@ -282,15 +282,15 @@ Protected packages SHALL update only to versions in their recorded verified cata
 An update to a newer version outside the caret range of the installed one (a new MAJOR; for 0.x a new MINOR; for 0.0.x any newer version) SHALL be marked `major` in its `RevisionChange` and in each `update all` entry, and the CLI SHALL append ` (major)` to its line. Authors mark a breaking release only by its version number. A major update is not held back by itself; dependents stay protected by their own requirements. Verified by `workspace::major_updates_are_marked`.
 
 #### Scenario: Major line
-- **WHEN** `d135a7cf-1c63-549a-93cb-8f89656b2ced` 1.2.3 is installed, 2.0.0 is released and nothing depends on it, and the user runs `update d135a7cf-1c63-549a-93cb-8f89656b2ced`
-- **THEN** it prints `d135a7cf-1c63-549a-93cb-8f89656b2ced updated 1.2.3 → 2.0.0 (major)` and the `RevisionChange` has `major` true
+- **WHEN** `acme/greeter` 1.2.3 is installed, 2.0.0 is released and nothing depends on it, and the user runs `update acme/greeter`
+- **THEN** it prints `acme/greeter updated 1.2.3 → 2.0.0 (major)` and the `RevisionChange` has `major` true
 
 #### Scenario: 0.x minor
 - **WHEN** a package moves from 0.2.5 to 0.3.0
 - **THEN** the change is marked `(major)`; a move from 0.2.5 to 0.2.6 is not, nor one from `2.0.0-beta.1` to `2.0.0`
 
 #### Scenario: A dependent caps the update
-- **WHEN** `b879842f-16c2-558f-9d03-a271dc901f57` requires `d135a7cf-1c63-549a-93cb-8f89656b2ced ^1.2.0` and the user runs `update d135a7cf-1c63-549a-93cb-8f89656b2ced` with 2.0.0 released
+- **WHEN** `acme/app` requires `acme/greeter ^1.2.0` and the user runs `update acme/greeter` with 2.0.0 released
 - **THEN** it fails with `dependency_conflict` and the workspace is unchanged (`cycles_resolve_and_updates_keep_dependents_working`)
 
 ### Requirement: Pre-releases are opt-in

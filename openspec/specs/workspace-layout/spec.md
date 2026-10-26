@@ -7,7 +7,7 @@ Defines the on-disk workspace a `Manager` owns: its folders, `state.json` and it
 ## Requirements
 
 ### Requirement: Workspace folders
-A workspace SHALL contain `state.json` (packages, replacements, forgotten records), `dist/<uuid>` (active deployed output), `repos/<source-key>` (bare source stores), `worktrees/<uuid>` (detached Git package worktrees), and `.pm-txn` only during transactions or recovery. `repos/` and `worktrees/` SHALL exist only while needed. Verified by `workspace::open_creates_the_workspace_layout_and_lock`.
+A workspace SHALL contain `state.json` (packages, replacements, forgotten records), `dist/<ns>/<name>` (active deployed output), `repos/<source-key>` (bare source stores), `worktrees/<ns>/<name>` (detached Git package worktrees), and `.pm-txn` only during transactions or recovery. `repos/` and `worktrees/` SHALL exist only while needed. Verified by `workspace::open_creates_the_workspace_layout_and_lock`.
 
 #### Scenario: A command on a missing workspace root
 - **WHEN** a command that opens a workspace (transactions-locking, "Workspace lock") names a workspace root that does not exist
@@ -81,7 +81,7 @@ Verified by `workspace::open_ds_store_with_other_content_is_refused`.
 - **THEN** opening the state fails with `unsupported`
 
 ### Requirement: Installed package record
-Each `state.json` `packages.<id>` managed record SHALL hold `source`, `current`, at most one `previous`, `enabled`, and optional `mode`, `forkOf`, `dependencies`, `replaces`, `catalog`, `clone`, `path`, `metadata`. Revisions contain `version` and `commit`; `previous` also retains mode. Links follow "Link record format". Git worktree paths SHALL derive from UUID; `path` selects the package folder inside that tree. Builds SHALL own no worktree. Verified by `model::state_round_trips_byte_for_byte`.
+Each `state.json` `packages.<id>` managed record SHALL hold `source`, `current`, at most one `previous`, `enabled`, and optional `mode`, `forkOf`, `dependencies`, `replaces`, `catalog`, `clone`, `path`, `metadata`. Revisions contain `version` and `commit`; `previous` also retains mode. Links follow "Link record format". Git worktree paths SHALL derive from ID; `path` selects the package folder inside that tree. Builds SHALL own no worktree. Verified by `model::state_round_trips_byte_for_byte`.
 
 #### Scenario: Fresh install has no previous revision
 - **WHEN** a package was just installed
@@ -111,20 +111,16 @@ Each `state.json` `packages.<id>` managed record SHALL hold `source`, `current`,
 - **WHEN** a managed package record includes optional fields
 - **THEN** mode is `{"pinned": REF}` or `{"branch": NAME}` (omitted for releases), catalog protects a verified catalog installation, and clone is the source-derived Git-clone key
 
-#### Scenario: UUID identity
-- **WHEN** a package is recorded in state
-- **THEN** its record is keyed only by UUID without an alias hint; format remains 1 and legacy scoped records are refused without migration
-
 ### Requirement: Replacements and forgotten records
 `state.json` SHALL keep `replacements` (the replacement bindings ORIGINAL → FORK, global for the workspace; rules in fork-replacement) and `forgotten` (records of every forgotten package, same format as `packages.<id>`, with a source-keyed bare repository and package worktree, or retained build output; lifecycle in install-uninstall and multi-package-repos).
 
 #### Scenario: Forgetting a package of a shared clone
-- **WHEN** `76a9b591-60f3-5c7f-9e1c-31648fc73bfd` (installed from a multi-package repository) is forgotten
-- **THEN** `packages.76a9b591-60f3-5c7f-9e1c-31648fc73bfd` is removed and `forgotten.76a9b591-60f3-5c7f-9e1c-31648fc73bfd` keeps its revision and clone key
+- **WHEN** `tilr/store` (installed from a multi-package repository) is forgotten
+- **THEN** `packages.tilr/store` is removed and `forgotten.tilr/store` keeps its revision and clone key
 
 #### Scenario: Forgetting a package with its own clone
-- **WHEN** `d135a7cf-1c63-549a-93cb-8f89656b2ced` (root package in `repos/<key>`) is forgotten
-- **THEN** `forgotten.d135a7cf-1c63-549a-93cb-8f89656b2ced` keeps its record, including `catalog`, `enabled` and mode, and its bare repository and worktree stay
+- **WHEN** `acme/greeter` (root package in `repos/<key>`) is forgotten
+- **THEN** `forgotten.acme/greeter` keeps its record, including `catalog`, `enabled` and mode, and its bare repository and worktree stay
 
 ### Requirement: Downgrade is not protected
 A workspace SHALL be usable only by a gitpm that writes its state format, in either direction. README SHALL list the state format of each release and say that a workspace of another format is re-created (its packages installed again), never migrated.
