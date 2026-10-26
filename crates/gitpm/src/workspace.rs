@@ -3298,6 +3298,7 @@ fn clone_revision(txn: &Txn, fetch: &Fetch, name: &str, custom_ssh: bool) -> Res
     }
     let path = found.subdir().map(str::to_owned);
     let m = found.manifest;
+    crate::model::validate_manifest(&m).map_err(|error| error.with_package(&m.id))?;
     if let Some(expected) = fetch.expected {
         ensure!(
             serde_json::to_value(&m)? == serde_json::to_value(expected)?,
