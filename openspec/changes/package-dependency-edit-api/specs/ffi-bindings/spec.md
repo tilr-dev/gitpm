@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Manager surface
-`PackageManager` SHALL be opened with `open(root, ManagerOptions)` and expose every locked workspace operation (catalog reads, install, download, updates, rollback, enable/disable, forget/restore, uninstall, fork, replace, replacement check/resolve, sync-dist, dependency editing, with their plans); free functions: `repositoryPackages(directory, root)`, `editDependency(directory, package, edit)`, `list`, `check`, `readState`, `catalogLinks`, `authCheck`, `browseCatalog`, `catalogRelease`, `describeLostWork`, `uninstallRefusal` (throws `UninstallPlan::refusal`).
+`PackageManager` SHALL open with `open(root, ManagerOptions)` and expose every locked workspace operation and plan, including dependency editing. Free functions SHALL include `repositoryPackages`, `editDependency`, `list`, `check`, `readState`, `catalogLinks`, `authCheck`, `browseCatalog`, `catalogRelease`, `describeLostWork` and `uninstallRefusal` (throws `UninstallPlan::refusal`).
 
 #### Scenario: Which calls open the workspace
 - **WHEN** a host calls a `PackageManager` method, or one of the free functions `list`, `check`, `readState`
@@ -42,6 +42,6 @@
 - **THEN** fork takes no namespace and returns fresh UUIDs, and all package references contain UUIDs without name hints
 
 #### Scenario: Explicit fork dependency rewrite
-- **WHEN** a host inspects an author repository or edits a selected package dependency
+- **WHEN** a host calls `repositoryPackages(directory, root)` or `editDependency(directory, package, edit)`
 - **THEN** the free functions return package descriptions with identity, name, provenance, requirements and installation status, or the edited manifest, without opening a workspace
 - **AND** the manager exposes dependency edits for installed editable packages with the workspace lock

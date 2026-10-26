@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Forking packages of one repository
-`fork ID [ID...]` SHALL accept only installed IDs from one recorded source without `--from`, or IDs from the explicit `--from SOURCE` repository, else `invalid_argument` listing IDs and sources. It SHALL clone the whole repository, retain all files and package layout, and give every package a fresh UUID, preserving its name with `forkOf` and `replaces`. Internal dependencies SHALL retain their original IDs and requirements until explicitly edited by the caller. No package subset SHALL be selected.
+`fork ID [ID...]` SHALL accept only installed IDs from one recorded source without `--from`, or IDs from the explicit `--from SOURCE` repository, else `invalid_argument` listing IDs and sources. It SHALL clone the whole repository, retain all files and package layout, and give every package a fresh UUID, preserving its name with `forkOf` and `replaces`. Internal dependencies SHALL retain their original IDs and requirements until explicitly edited. No package subset SHALL be selected.
 
 #### Scenario: Revisions on diverged histories
 - **WHEN** the installed revisions of the forked packages are not ancestors of the newest one
