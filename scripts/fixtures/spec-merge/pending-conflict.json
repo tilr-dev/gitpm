@@ -1,0 +1,15 @@
+{
+  "polls": [
+    {
+      "mergeable": null
+    },
+    {
+      "mergeable": false,
+      "mergeable_state": "dirty"
+    }
+  ],
+  "error": "PR conflicts with dev: merge dev into task/example (`git merge dev`) and push",
+  "waits": [
+    2
+  ]
+}

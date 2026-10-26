@@ -1,0 +1,13 @@
+{
+  "polls": [
+    {
+      "mergeable": true,
+      "parents": [
+        "base",
+        "candidate"
+      ]
+    }
+  ],
+  "outcome": "base",
+  "waits": []
+}
