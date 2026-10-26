@@ -2,7 +2,7 @@
 use super::*;
 use std::collections::BTreeSet;
 
-/// A dependency of a package rewritten by a fork: `from` (an original) became `to` (its
+/// A dependency of a package rewritten explicitly: `from` (an original) became `to` (its
 /// fork). `new_requirement` is set when `requirement` does not accept the fork's version
 /// and was replaced by `^VERSION`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -36,8 +36,83 @@ pub struct PackageFork {
     /// The commit that created the fork identities.
     pub commit: String,
     pub packages: Vec<ForkedPackage>,
-    pub rewrites: Vec<DependencyRewrite>,
 }
+/// Explicitly rewrite internal dependencies in an editable fork repository.
+/// Reads the current manifests and maps their `forkOf.id` to their new IDs. Returns
+/// only changes made by this call; no workspace, commit, release or install is needed.
+/// Validation failures leave all files unchanged. Write failures restore snapshots
+/// on a best-effort basis; after a process crash, rerun to finish remaining files.
+pub fn fork_rewrite(directory: &Path) -> Result<Vec<DependencyRewrite>> {
+    let directory = fs::canonicalize(directory)?;
+    ensure!(
+        Path::new(&transport::repository_root(&directory, false)?) == directory,
+        InvalidArgument,
+        "pass the repository root"
+    );
+    let folders: Vec<String> = match packages::packages_in(&directory)? {
+        Some(found) => found.into_iter().map(|p| p.path).collect(),
+        None => vec![String::new()],
+    };
+    ensure!(
+        !folders.is_empty(),
+        InvalidManifest,
+        "repository has no packages"
+    );
+    let mut manifests = Vec::new();
+    let mut forks = BTreeMap::new();
+    let mut ids = BTreeSet::new();
+    for folder in folders {
+        let m = package_manifest(&directory, (!folder.is_empty()).then_some(folder.as_str()))?;
+        m.metadata_strict()?;
+        ensure!(
+            ids.insert(m.id.clone()),
+            InvalidManifest,
+            "duplicate package UUID: {}",
+            m.id
+        );
+        let origin = m
+            .fork_of
+            .as_ref()
+            .ok_or_else(|| Error::invalid_manifest(format!("{} has no forkOf", m.id)))?;
+        ensure!(
+            forks
+                .insert(origin.id.clone(), (m.id.clone(), m.version.clone()))
+                .is_none(),
+            InvalidManifest,
+            "multiple forks of {} in one repository",
+            origin.id
+        );
+        let path = directory.join(manifest_path(&folder));
+        ensure!(
+            !fs::symlink_metadata(&path)?.file_type().is_symlink(),
+            Unsupported,
+            "symlinks are not supported: {}",
+            path.display()
+        );
+        let original = fs::read(&path)?;
+        manifests.push((m, path, original));
+    }
+    let mut rewrites = Vec::new();
+    let mut writes = Vec::new();
+    for (mut m, path, original) in manifests {
+        let before = rewrites.len();
+        rewrite_dependencies(&mut m, &forks, &mut rewrites)?;
+        if rewrites.len() != before {
+            crate::model::validate_manifest(&m)?;
+            writes.push((path, original, manifest_json(&m)?));
+        }
+    }
+    for (path, _, updated) in &writes {
+        if let Err(error) = fs::write(path, updated) {
+            for (path, original, _) in &writes {
+                let _ = fs::write(path, original);
+            }
+            return Err(error.into());
+        }
+    }
+    Ok(rewrites)
+}
+
 /// One package to fork: where it comes from and what it becomes.
 struct Source {
     original: String,
@@ -131,7 +206,7 @@ impl Manager {
     /// in the repository receive fresh identities, including uninstalled siblings;
     /// names, repository files and the package layout are preserved.
     /// Each manifest gets its new ID, `forkOf` and `replaces`; dependencies among
-    /// packages forked together are rewritten. Nothing is tagged.
+    /// packages forked together are preserved until `fork_rewrite`. Nothing is tagged.
     pub fn fork_packages(&self, ids: &[&str], destination: &Path) -> Result<PackageFork> {
         self.fork_packages_with(ids, destination)
     }
@@ -536,15 +611,6 @@ fn clone_fork(
     result
 }
 
-/// The forks a dependency may be rewritten to: original ID → (fork ID, declared version).
-fn fork_map(sources: &[Source], manifests: &[Manifest]) -> BTreeMap<String, (String, String)> {
-    sources
-        .iter()
-        .zip(manifests)
-        .map(|(s, m)| (s.original.clone(), (s.id.clone(), m.version.clone())))
-        .collect()
-}
-
 /// Give the package manifest `m` (read from `source.path`) its fork identity.
 fn identify(m: &mut Manifest, source: &Source) {
     m.id = source.id.clone();
@@ -718,11 +784,8 @@ fn new_fork(destination: &Path, sources: &[Source], custom_ssh: bool) -> Result<
     for source in sources {
         manifests.push(package_manifest(destination, source.subdir())?);
     }
-    let forks = fork_map(sources, &manifests);
-    let mut rewrites = Vec::new();
     for (m, source) in manifests.iter_mut().zip(sources) {
         identify(m, source);
-        rewrite_dependencies(m, &forks, &mut rewrites)?;
         fs::write(
             destination.join(manifest_path(&source.path)),
             manifest_json(m)?,
@@ -756,7 +819,6 @@ fn new_fork(destination: &Path, sources: &[Source], custom_ssh: bool) -> Result<
         created: true,
         commit,
         packages: forked(sources, &manifests),
-        rewrites,
     })
 }
 
@@ -782,6 +844,85 @@ fn forked(sources: &[Source], manifests: &[Manifest]) -> Vec<ForkedPackage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_rewrite_validates_all_manifests_and_preserves_external_dependencies_and_metadata() {
+        use crate::test_support::{TempDir, git, manifest, write_manifest};
+        let temp = TempDir::new("fork-rewrite");
+        git(temp.path(), &["init", "-q"]);
+        fs::write(temp.join("gitpm.json"), r#"{"packages":["packages/*"]}"#).unwrap();
+        let originals = [
+            "11111111-1111-4111-8111-111111111111",
+            "22222222-2222-4222-8222-222222222222",
+        ];
+        let ids = [
+            "33333333-3333-4333-8333-333333333333",
+            "44444444-4444-4444-8444-444444444444",
+        ];
+        let external = "55555555-5555-4555-8555-555555555555";
+        for i in 0..2 {
+            let folder = temp.join(format!("packages/{i}"));
+            fs::create_dir_all(folder.join("dist")).unwrap();
+            let mut m = manifest(ids[i], "2.0.0");
+            m.fork_of = Some(ForkOf {
+                id: originals[i].into(),
+                version: "1.0.0".into(),
+                commit: "a".repeat(40),
+                source: None,
+            });
+            m.dependencies.insert(originals[1 - i].into(), "^1".into());
+            m.dependencies.insert(external.into(), "~1.2".into());
+            write_manifest(&folder, &m);
+        }
+        let first = temp.join("packages/0/plugin.json");
+        let last = temp.join("packages/1/plugin.json");
+        let before = fs::read(&first).unwrap();
+        let valid_last = fs::read(&last).unwrap();
+        for problem in ["missing", "ambiguous", "conflict", "self"] {
+            let mut bad: serde_json::Value = serde_json::from_slice(&valid_last).unwrap();
+            match problem {
+                "missing" => {
+                    bad.as_object_mut().unwrap().remove("forkOf");
+                }
+                "ambiguous" => bad["forkOf"]["id"] = originals[0].into(),
+                "conflict" => bad["dependencies"][ids[0]] = "^2".into(),
+                _ => bad["dependencies"][originals[1]] = "^1".into(),
+            }
+            fs::write(&last, serde_json::to_vec(&bad).unwrap()).unwrap();
+            let bad_bytes = fs::read(&last).unwrap();
+            assert_eq!(
+                fork_rewrite(temp.path()).unwrap_err().kind(),
+                "invalid_manifest",
+                "{problem}"
+            );
+            assert_eq!(fs::read(&first).unwrap(), before);
+            assert_eq!(fs::read(&last).unwrap(), bad_bytes);
+        }
+        fs::write(&last, valid_last).unwrap();
+        let mut custom: serde_json::Value = serde_json::from_slice(&before).unwrap();
+        custom["title"] = "Keep me".into();
+        custom["custom"] = serde_json::json!({"nested": [1, 2]});
+        fs::write(&first, serde_json::to_vec(&custom).unwrap()).unwrap();
+        let rewrites = fork_rewrite(temp.path()).unwrap();
+        assert_eq!(rewrites.len(), 2);
+        assert!(
+            rewrites
+                .iter()
+                .all(|r| r.new_requirement.as_deref() == Some("^2.0.0"))
+        );
+        for i in 0..2 {
+            let m = package_manifest(temp.path(), Some(&format!("packages/{i}"))).unwrap();
+            assert_eq!(m.dependencies[ids[1 - i]], "^2.0.0");
+            assert_eq!(m.dependencies[external], "~1.2");
+        }
+        let updated: serde_json::Value =
+            serde_json::from_slice(&fs::read(&first).unwrap()).unwrap();
+        assert_eq!(updated["title"], custom["title"]);
+        assert_eq!(updated["custom"], custom["custom"]);
+        assert!(fork_rewrite(temp.path()).unwrap().is_empty());
+        assert!(!temp.join("state.json").exists());
+        assert!(!temp.join(".git/index").exists());
+    }
 
     #[test]
     fn fork_source_retains_all_packages_at_resolved_revision_without_workspace() {
@@ -832,8 +973,22 @@ mod tests {
             )
             .unwrap();
             assert_eq!(fork.packages.len(), 2);
-            assert_eq!(fork.rewrites.len(), 1);
-            assert_eq!(fork.rewrites[0].to, fork.packages[0].id);
+            let panel = package_manifest(&dest, Some("packages/panel")).unwrap();
+            assert_eq!(
+                panel.dependencies["11111111-1111-4111-8111-111111111111"],
+                "^1"
+            );
+            let rewrites = fork_rewrite(&dest).unwrap();
+            assert_eq!(rewrites.len(), 1);
+            assert_eq!(rewrites[0].to, fork.packages[0].id);
+            let panel = package_manifest(&dest, Some("packages/panel")).unwrap();
+            assert_eq!(panel.dependencies[&rewrites[0].to], "^1");
+            let bytes = fs::read(dest.join("packages/panel/plugin.json")).unwrap();
+            assert!(fork_rewrite(&dest).unwrap().is_empty());
+            assert_eq!(
+                fs::read(dest.join("packages/panel/plugin.json")).unwrap(),
+                bytes
+            );
             for package in &fork.packages {
                 let m = package_manifest(&dest, Some(&package.path)).unwrap();
                 valid_id(&m.id).unwrap();

@@ -7725,9 +7725,13 @@ mod tests {
         assert_eq!(store.version, "1.0.0");
         assert_eq!(store.fork_of.unwrap().commit, old);
         let theme = package_manifest(&destination, Some("packages/theme")).unwrap();
-        assert_eq!(theme.dependencies[&store.id], "^1.0");
         assert_eq!(
-            fork.rewrites,
+            theme.dependencies["76a9b591-60f3-5c7f-9e1c-31648fc73bfd"],
+            "^1.0"
+        );
+        assert!(fixture_git(&destination, &["status", "--porcelain"]).is_empty());
+        assert_eq!(
+            fork::fork_rewrite(&destination).unwrap(),
             [DependencyRewrite {
                 package: theme.id.clone(),
                 from: "76a9b591-60f3-5c7f-9e1c-31648fc73bfd".into(),
@@ -7736,7 +7740,12 @@ mod tests {
                 new_requirement: None,
             }]
         );
-        assert!(fixture_git(&destination, &["status", "--porcelain"]).is_empty());
+        assert_eq!(
+            package_manifest(&destination, Some("packages/theme"))
+                .unwrap()
+                .dependencies[&store.id],
+            "^1.0"
+        );
 
         // Refusals create nothing and leave the existing fork alone.
         let head = fixture_git(&destination, &["rev-parse", "HEAD"]);
