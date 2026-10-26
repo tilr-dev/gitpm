@@ -16,7 +16,7 @@ import time
 from gitpmtest import R, T, case
 
 CORE = "757fd5ca-2b6a-5b2f-8a5d-60980b028665"
-DEPENDENTS = "9692fc07-23c7-5f20-8779-f09374f1a571, 1a620c0a-aa3c-533c-9960-3d49016fa231"
+DEPENDENTS = "1a620c0a-aa3c-533c-9960-3d49016fa231, 9692fc07-23c7-5f20-8779-f09374f1a571"
 
 
 def gitpm_tty(t: T, *args: str, answer: bytes, timeout: int = 60) -> R:

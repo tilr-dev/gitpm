@@ -109,7 +109,7 @@ def new_consumer_after_replacement_resolves_to_fork(t: T):
     view = resolved(t)
     row = dependency(view, "1a620c0a-aa3c-533c-9960-3d49016fa231", ORIGINAL)
     t.eq((row["provider"], row["satisfied"]), (FORK, True), "1a620c0a-aa3c-533c-9960-3d49016fa231 resolution")
-    t.eq(view[FORK].get("dependents"), ["9692fc07-23c7-5f20-8779-f09374f1a571", "f5984d44-92bd-51ac-8e8f-d911dd824ef3", "1a620c0a-aa3c-533c-9960-3d49016fa231"], "fork dependents")
+    t.eq(view[FORK].get("dependents"), sorted(["9692fc07-23c7-5f20-8779-f09374f1a571", "f5984d44-92bd-51ac-8e8f-d911dd824ef3", "1a620c0a-aa3c-533c-9960-3d49016fa231"]), "fork dependents")
     t.eq(t.state()["replacements"], {ORIGINAL: FORK}, "single binding")
 
 

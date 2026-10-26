@@ -147,7 +147,7 @@ def dependent_guard_kind(t: T):
     before = t.snap(t.ws)
     for action in ["uninstall", "forget", "disable"]:
         t.gitpm_err(action, "757fd5ca-2b6a-5b2f-8a5d-60980b028665", kind="has_dependents",
-                 contains=f"cannot {action} 757fd5ca-2b6a-5b2f-8a5d-60980b028665: required by 9692fc07-23c7-5f20-8779-f09374f1a571, 1a620c0a-aa3c-533c-9960-3d49016fa231; doing it anyway requires force")
+                 contains=f"cannot {action} 757fd5ca-2b6a-5b2f-8a5d-60980b028665: required by 1a620c0a-aa3c-533c-9960-3d49016fa231, 9692fc07-23c7-5f20-8779-f09374f1a571; doing it anyway requires force")
     t.same(before, "workspace")
 
 

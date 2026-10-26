@@ -62,7 +62,7 @@ def compatible_fork_replaces_without_prompt(t: T):
     for consumer in ["9692fc07-23c7-5f20-8779-f09374f1a571", "f5984d44-92bd-51ac-8e8f-d911dd824ef3", "c4304791-586c-54cb-a7c6-27bd09f28dbd"]:
         t.eq(provider(view, consumer), ("db33e43e-e652-5767-8e21-27fb3cef9723", True), f"{consumer} provider")
     t.eq(provider(view, "1a620c0a-aa3c-533c-9960-3d49016fa231", "c4304791-586c-54cb-a7c6-27bd09f28dbd"), ("c4304791-586c-54cb-a7c6-27bd09f28dbd", True), "1a620c0a-aa3c-533c-9960-3d49016fa231 still on c4304791-586c-54cb-a7c6-27bd09f28dbd (transitive chain)")
-    t.eq(view["db33e43e-e652-5767-8e21-27fb3cef9723"].get("dependents"), ["9692fc07-23c7-5f20-8779-f09374f1a571", "f5984d44-92bd-51ac-8e8f-d911dd824ef3", "c4304791-586c-54cb-a7c6-27bd09f28dbd"], "fork dependents")
+    t.eq(view["db33e43e-e652-5767-8e21-27fb3cef9723"].get("dependents"), sorted(["9692fc07-23c7-5f20-8779-f09374f1a571", "f5984d44-92bd-51ac-8e8f-d911dd824ef3", "c4304791-586c-54cb-a7c6-27bd09f28dbd"]), "fork dependents")
 
 
 def warned(t: T, r: R):
@@ -168,7 +168,7 @@ def two_compatible_forks_single_binding(t: T):
     t.gitpm_ok("replace", ORIGINAL, "--with", "db33e43e-e652-5767-8e21-27fb3cef9723")
     t.eq(t.state()["replacements"], {ORIGINAL: "db33e43e-e652-5767-8e21-27fb3cef9723"}, "first binding")
     r = t.gitpm_ok("replace", ORIGINAL, "--with", "05a9afb3-6043-51d2-ba6f-e0a71038b7f4")
-    t.has(r.out, "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 replaced by 05a9afb3-6043-51d2-ba6f-e0a71038b7f4 0.1.0 (as c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 1.4.0) for: 9692fc07-23c7-5f20-8779-f09374f1a571, f5984d44-92bd-51ac-8e8f-d911dd824ef3, c4304791-586c-54cb-a7c6-27bd09f28dbd")
+    t.has(r.out, "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 replaced by 05a9afb3-6043-51d2-ba6f-e0a71038b7f4 0.1.0 (as c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 1.4.0) for: 9692fc07-23c7-5f20-8779-f09374f1a571, c4304791-586c-54cb-a7c6-27bd09f28dbd, f5984d44-92bd-51ac-8e8f-d911dd824ef3")
     t.eq(t.state()["replacements"], {ORIGINAL: "05a9afb3-6043-51d2-ba6f-e0a71038b7f4"}, "switched binding")
     view = resolved(t)
     for consumer in ["9692fc07-23c7-5f20-8779-f09374f1a571", "f5984d44-92bd-51ac-8e8f-d911dd824ef3", "c4304791-586c-54cb-a7c6-27bd09f28dbd"]:

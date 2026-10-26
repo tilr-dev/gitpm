@@ -7,6 +7,7 @@ hide the others; `full_journey` runs all eight steps in one workspace from autho
 
 import hashlib
 import json
+from pathlib import Path
 
 from gitpmtest import T, case
 
@@ -154,14 +155,15 @@ def s5_reopen_keeps_binding(t: T):
 @case(fixture="g6_replaced", spec=["fork-replacement/active-fork-rules"])
 def s6_fork_update_followed(t: T):
     """6. release db33e43e-e652-5767-8e21-27fb3cef9723 1.0.2 and update it: both consumers follow the new fork revision."""
-    step6_fork_update(t, t.root / "authors/mine-base")
+    step6_fork_update(t, Path(t.package(fork_id(t))["source"]))
 
 
 @case(fixture="g6_replaced", spec=["fork-replacement/switching-back", "dist/switching-back-redeploys-the-original#back-to-the-original"])
 def s7_switch_back(t: T):
     """7. switch back: consumers on the original payload; the fork stays with history and edits."""
-    step6_fork_update(t, t.root / "authors/mine-base")
-    step7_switch_back(t, t.root / "authors/mine-base")
+    fork = Path(t.package(fork_id(t))["source"])
+    step6_fork_update(t, fork)
+    step7_switch_back(t, fork)
 
 
 @case(fixture="g6_replaced", spec=["install-uninstall/only-manager-owned-files-are-deleted#uninstalling-a-fork"])
