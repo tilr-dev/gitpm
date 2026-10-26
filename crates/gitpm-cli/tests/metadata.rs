@@ -383,10 +383,9 @@ fn fork_and_commit_carry_the_metadata_unchanged() {
     );
     f.ok(&["install", fork.to_str().unwrap(), fork_theme.as_str()]);
     let list = f.list(&["--provides", "theme"]);
-    assert_eq!(
-        ids(&list),
-        [fork_theme.as_str(), "f851f609-bb81-52d6-bfef-33798624782c"]
-    );
+    let mut expected_ids = [fork_theme.as_str(), "f851f609-bb81-52d6-bfef-33798624782c"];
+    expected_ids.sort();
+    assert_eq!(ids(&list), expected_ids);
     assert_eq!(resolved(&list, fork_theme.as_str())["title"], "Theme");
 }
 
