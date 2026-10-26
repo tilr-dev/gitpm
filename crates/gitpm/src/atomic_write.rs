@@ -55,6 +55,7 @@ pub(crate) fn write_atomically(temp_prefix: &Path, path: &Path, bytes: &[u8]) ->
             return Err(std::io::Error::from(std::io::ErrorKind::CrossesDevices).into());
         }
         fs::rename(&temporary, path)?;
+        fs::File::open(path.parent().unwrap())?.sync_all()?;
         Ok(())
     })();
     if result.is_err() {

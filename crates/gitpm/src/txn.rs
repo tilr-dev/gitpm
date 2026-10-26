@@ -40,9 +40,9 @@ fn worktree_admin(id: &str) -> String {
 
 /// Bind both sides explicitly: staging and journal renames change both locations.
 /// The writes are repeatable so recovery can finish after either side was persisted.
-fn bind_worktree(root: &Path, checkout: &Path, admin: &Path) -> Result<()> {
+fn bind_worktree(checkout: &Path, admin: &Path) -> Result<()> {
     validate_worktree_links(checkout, admin)?;
-    write_worktree_links(root, checkout, admin)
+    write_worktree_links(checkout, admin)
 }
 
 fn validate_worktree_links(checkout: &Path, admin: &Path) -> Result<()> {
@@ -69,7 +69,7 @@ fn validate_worktree_links(checkout: &Path, admin: &Path) -> Result<()> {
     Ok(())
 }
 
-fn write_worktree_links(root: &Path, checkout: &Path, admin: &Path) -> Result<()> {
+fn write_worktree_links(checkout: &Path, admin: &Path) -> Result<()> {
     fs::write(
         checkout.join(".git"),
         format!("gitdir: {}\n", admin.display()),
@@ -79,15 +79,7 @@ fn write_worktree_links(root: &Path, checkout: &Path, admin: &Path) -> Result<()
         format!("{}\n", checkout.join(".git").display()),
     )?;
     fs::write(admin.join("commondir"), "../..\n")?;
-    for path in [
-        checkout.join(".git"),
-        admin.join("gitdir"),
-        admin.join("commondir"),
-    ] {
-        sync_path(&path)?;
-    }
-    sync_parents(root, checkout)?;
-    sync_parents(root, admin)
+    Ok(())
 }
 
 fn worktree_link_matches(path: &Path, expected: &[u8]) -> Result<bool> {
@@ -140,7 +132,7 @@ pub(crate) fn repair_worktree_links(root: &Path, state: &State) -> Result<()> {
     }
     // Validate all pairs before writing any, so an unsafe sibling refuses repair.
     for (checkout, admin) in repairs {
-        write_worktree_links(root, &checkout, &admin)?;
+        write_worktree_links(&checkout, &admin)?;
     }
     Ok(())
 }
@@ -226,19 +218,6 @@ pub(crate) fn ensure_dist_leaf(root: &Path, id: &str) -> Result<()> {
 fn present(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok()
 }
-/// Sync only real staged files/directories; repository symlinks must not be followed.
-fn sync_tree(path: &Path) -> Result<()> {
-    let meta = fs::symlink_metadata(path)?;
-    if meta.file_type().is_symlink() {
-        return Ok(());
-    }
-    if meta.is_dir() {
-        for entry in fs::read_dir(path)? {
-            sync_tree(&entry?.path())?;
-        }
-    }
-    sync_path(path)
-}
 fn sync_path(path: &Path) -> Result<()> {
     #[cfg(test)]
     SYNC_FAILURE.with(|failure| {
@@ -266,51 +245,23 @@ fn sync_path(path: &Path) -> Result<()> {
     record(DurabilityEvent::Sync(path.into()));
     Ok(())
 }
-/// Persist directory creation, including the entry in the first existing parent.
-/// Existing ancestors above that boundary are neither changed nor opened.
+/// Create the workspace without syncing ancestors outside its metadata boundary.
 pub(crate) fn create_workspace_dirs(path: &Path) -> Result<()> {
-    let mut missing = Vec::new();
-    let mut current = path;
-    loop {
-        match fs::metadata(current) {
-            Ok(_) => break,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                missing.push(current);
-                current = current.parent().ok_or(e)?;
-            }
-            Err(e) => return Err(e.into()),
-        }
-    }
     fs::create_dir_all(path)?;
-    if !missing.is_empty() {
-        for directory in missing {
-            sync_path(directory)?;
-        }
-        sync_path(current)?;
-    }
     Ok(())
 }
-/// Persist new ancestors child-first. Missing directories may have been pruned.
-fn sync_parents(root: &Path, path: &Path) -> Result<()> {
-    for parent in path.ancestors().take_while(|p| p.starts_with(root)) {
-        match fs::symlink_metadata(parent) {
-            Ok(_) => sync_path(parent)?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
-        }
-    }
-    Ok(())
+/// Persist the journal entry and the newly created transaction directory.
+fn sync_journal_parents(root: &Path, dir: &Path) -> Result<()> {
+    sync_path(dir)?;
+    sync_path(root)
 }
-fn rename(root: &Path, from: &Path, to: &Path) -> Result<()> {
+fn rename(from: &Path, to: &Path) -> Result<()> {
     fs::create_dir_all(to.parent().unwrap())?;
     #[cfg(test)]
     crash_point()?;
     fs::rename(from, to)?;
     #[cfg(test)]
     record(DurabilityEvent::Rename(from.into(), to.into()));
-    // Persist the destination before allowing the source entry to disappear.
-    sync_parents(root, to.parent().unwrap())?;
-    sync_parents(root, from.parent().unwrap())?;
     Ok(())
 }
 
@@ -397,7 +348,7 @@ impl Txn {
             }
             if present(&live) && admin.is_dir() {
                 copy_tree(&live, &staged, true)?;
-                bind_worktree(&self.root, &staged, &admin)?;
+                bind_worktree(&staged, &admin)?;
             } else {
                 if let Some(parent) = staged.parent() {
                     fs::create_dir_all(parent)?;
@@ -418,7 +369,7 @@ impl Txn {
                 if original != admin {
                     fs::rename(original, &admin)?;
                 }
-                bind_worktree(&self.root, &staged, &admin)?;
+                bind_worktree(&staged, &admin)?;
             }
             self.journal.paths.insert(relative.clone(), Change::Replace);
         }
@@ -565,8 +516,8 @@ impl Txn {
             serde_json::to_vec_pretty(state)?,
         )?;
         remove(&self.dir.join("scratch"))?;
-        // Payload data, symlink entries and state must survive before the decision.
-        sync_tree(&self.dir)?;
+        // Persist gitpm state before publishing the commit decision.
+        sync_path(&self.dir.join("state.json"))?;
         let temporary = self.dir.join("journal.tmp");
         fs::write(&temporary, serde_json::to_vec_pretty(&self.journal)?)?;
         sync_path(&temporary)?;
@@ -575,7 +526,7 @@ impl Txn {
         self.committed = true;
         #[cfg(test)]
         record(DurabilityEvent::Rename(temporary, self.dir.join(JOURNAL)));
-        sync_parents(&self.root, &self.dir)?;
+        sync_journal_parents(&self.root, &self.dir)?;
         apply(&self.root, &self.dir)
     }
 }
@@ -620,7 +571,7 @@ fn apply(root: &Path, dir: &Path) -> Result<()> {
         .map_err(|e| Error::Workspace(format!("corrupt transaction journal: {e}")))?;
     // Recovery can follow a failed sync immediately after journal publication.
     sync_path(&dir.join(JOURNAL))?;
-    sync_parents(root, dir)?;
+    sync_journal_parents(root, dir)?;
     for relative in journal.paths.keys() {
         ensure_managed_parents(root, relative)?;
     }
@@ -632,34 +583,32 @@ fn apply(root: &Path, dir: &Path) -> Result<()> {
             Change::Replace => {
                 if present(&staged) {
                     if present(&live) {
-                        rename(root, &live, &old)?;
+                        rename(&live, &old)?;
                     }
-                    rename(root, &staged, &live)?;
+                    rename(&staged, &live)?;
                 }
             }
             Change::Delete => {
                 if present(&live) {
-                    rename(root, &live, &old)?;
+                    rename(&live, &old)?;
                 }
                 remove_empty_parents(root, relative);
             }
         }
-        // Recovery may resume after a rename succeeded but its sync failed.
-        sync_parents(root, live.parent().unwrap())?;
-        sync_parents(root, staged.parent().unwrap())?;
-        sync_parents(root, old.parent().unwrap())?;
     }
     for (checkout, admin) in &journal.worktrees {
         ensure_managed_parents(root, checkout)?;
         ensure_managed_parents(root, admin)?;
-        bind_worktree(root, &root.join(checkout), &root.join(admin))?;
+        bind_worktree(&root.join(checkout), &root.join(admin))?;
     }
     let state = dir.join("state.json");
     if present(&state) {
-        rename(root, &state, &root.join("state.json"))?;
+        sync_path(&state)?;
+        rename(&state, &root.join("state.json"))?;
     }
     sync_path(&root.join("state.json"))?;
     sync_path(root)?;
+    sync_path(dir)?;
     remove(dir)?;
     sync_path(root)
 }
@@ -753,12 +702,16 @@ fn absent_worktree_registration_does_not_stage_bare() {
 
 #[cfg(test)]
 #[test]
-fn commit_syncs_journal_state_and_parents() {
+fn commit_syncs_only_journal_state_and_metadata_parents() {
     let temp = crate::test_support::TempDir::new("txn-sync");
     let root = temp.path();
     let mut txn = Txn::begin(root).unwrap();
     // Stage directly to exercise nested new parents, replacements and deletion.
-    for relative in ["dist/new/plugin", "repos/existing-0123456789abcdef"] {
+    for relative in [
+        "dist/new/plugin",
+        "repos/existing-0123456789abcdef",
+        "worktrees/plugin",
+    ] {
         let path = txn.dir.join("new").join(relative);
         fs::create_dir_all(&path).unwrap();
         fs::write(path.join("payload"), b"new").unwrap();
@@ -783,12 +736,18 @@ fn commit_syncs_journal_state_and_parents() {
     let journal = sync_index(&root.join(DIR).join("journal.tmp"));
     let state = sync_index(&root.join(DIR).join("state.json"));
     assert!(state < journal);
-    assert!(events.iter().all(|event| match event {
-        DurabilityEvent::Sync(path) => path.starts_with(root),
-        _ => true,
-    }));
-    for relative in ["dist/new/plugin", "repos/existing-0123456789abcdef"] {
-        assert!(sync_index(&root.join(DIR).join("new").join(relative).join("payload")) < journal);
+    let allowed = [
+        root.join(DIR).join("state.json"),
+        root.join(DIR).join("journal.tmp"),
+        root.join(DIR).join(JOURNAL),
+        root.join("state.json"),
+        root.join(DIR),
+        root.to_path_buf(),
+    ];
+    for event in &events {
+        if let DurabilityEvent::Sync(path) = event {
+            assert!(allowed.contains(path), "unexpected fsync: {path:?}");
+        }
     }
     let published = events
         .iter()
@@ -808,23 +767,12 @@ fn commit_syncs_journal_state_and_parents() {
     for path in [root.join(DIR), root.to_path_buf()] {
         assert!(events[published + 1..first_move].contains(&DurabilityEvent::Sync(path)));
     }
-    // Every rename must persist both parent chains before the next rename.
-    for (index, event) in events.iter().enumerate().skip(first_move) {
-        if let DurabilityEvent::Rename(from, to) = event {
-            let end = events[index + 1..]
-                .iter()
-                .position(|e| matches!(e, DurabilityEvent::Rename(..)))
-                .map_or(events.len(), |offset| index + 1 + offset);
-            for path in [from.parent().unwrap(), to.parent().unwrap()] {
-                for parent in path.ancestors().take_while(|p| p.starts_with(root)) {
-                    assert!(
-                        events[index + 1..end].contains(&DurabilityEvent::Sync(parent.into())),
-                        "missing parent sync after {event:?}: {}",
-                        parent.display()
-                    );
-                }
-            }
-        }
+    let state_move = events.iter().position(|event| {
+        matches!(event, DurabilityEvent::Rename(_, to) if to == &root.join("state.json"))
+    }).unwrap();
+    assert!(first_move < state_move);
+    for path in [root.join(DIR), root.to_path_buf()] {
+        assert!(events[state_move + 1..].contains(&DurabilityEvent::Sync(path)));
     }
     assert_eq!(events.last(), Some(&DurabilityEvent::Sync(root.into())));
     assert!(!root.join(DIR).exists());
@@ -855,7 +803,7 @@ impl Drop for Capture {
 #[cfg(test)]
 #[test]
 fn sync_errors_preserve_the_commit_decision_and_recovery() {
-    for phase in ["journal", "published", "moved", "state"] {
+    for phase in ["staged-state", "journal", "published", "moved", "state"] {
         let temp = crate::test_support::TempDir::new("txn-sync-failure");
         let root = temp.path();
         let mut txn = Txn::begin(root).unwrap();
@@ -868,9 +816,10 @@ fn sync_errors_preserve_the_commit_decision_and_recovery() {
         fs::write(root.join(relative).join("payload"), b"old").unwrap();
         let _capture = Capture::new();
         let (target, after) = match phase {
+            "staged-state" => (root.join(DIR).join("state.json"), None),
             "journal" => (root.join(DIR).join("journal.tmp"), None),
             "published" => (root.join(DIR), Some(root.join(DIR).join(JOURNAL))),
-            "moved" => (root.join("dist/ns"), Some(root.join(relative))),
+            "moved" => (root.join(DIR).join("state.json"), Some(root.join(relative))),
             "state" => (root.to_path_buf(), Some(root.join("state.json"))),
             _ => unreachable!(),
         };
@@ -881,7 +830,7 @@ fn sync_errors_preserve_the_commit_decision_and_recovery() {
             "{error}"
         );
         SYNC_FAILURE.with(|failure| *failure.borrow_mut() = None);
-        if phase == "journal" {
+        if matches!(phase, "staged-state" | "journal") {
             assert!(!root.join(DIR).exists());
             assert_eq!(
                 fs::read(root.join(relative).join("payload")).unwrap(),
@@ -908,7 +857,7 @@ fn sync_errors_preserve_the_commit_decision_and_recovery() {
 
 #[cfg(all(test, unix))]
 #[test]
-fn commit_syncs_symlink_entries_without_following_targets() {
+fn commit_does_not_sync_repository_symlinks_or_directories() {
     use std::os::unix::fs::symlink;
     let temp = crate::test_support::TempDir::new("txn-sync-symlink");
     let root = temp.path();
@@ -928,14 +877,14 @@ fn commit_syncs_symlink_entries_without_following_targets() {
     DURABILITY_EVENTS.with(|events| {
         let events = events.borrow();
         let events = events.as_ref().unwrap();
-        assert!(events.contains(&DurabilityEvent::Sync(staged.clone())));
+        assert!(!events.contains(&DurabilityEvent::Sync(staged.clone())));
         assert!(!events.contains(&DurabilityEvent::Sync(staged.join("link"))));
     });
 }
 
 #[cfg(test)]
 #[test]
-fn workspace_creation_syncs_only_new_ancestors() {
+fn workspace_creation_does_not_sync_ancestors() {
     let temp = crate::test_support::TempDir::new("txn-new-ancestors");
     let existing = temp.join("existing");
     fs::create_dir(&existing).unwrap();
@@ -952,7 +901,10 @@ fn workspace_creation_syncs_only_new_ancestors() {
             _ => None,
         })
         .collect();
-    assert_eq!(synced, [&parent, &existing, &root, &parent]);
+    assert!(
+        synced.is_empty(),
+        "unexpected workspace creation fsync: {synced:?}"
+    );
     DURABILITY_EVENTS.with(|events| *events.borrow_mut() = Some(Vec::new()));
     drop(manager);
     let _manager = crate::Manager::open(&root).unwrap();

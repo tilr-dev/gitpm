@@ -1314,14 +1314,14 @@ $ gitpm list --provides theme | jq '.resolved[] | {id, title, description, provi
 ## Rules of the library
 
 - A crash means process death or power loss, including interruption before a call
-  returns. Workspace commit syncs staged contents and `state.json`, then the journal
-  and its parents before moving managed paths. Each move syncs destination and source
-  parents; transaction cleanup is persisted before success. A published journal is
-  rolled forward on reopen, so successful commits survive subsequent power loss.
-  Creating a workspace syncs new directories and their parents, stopping after the
-  first pre-existing parent. Later commits sync parent chains only within the
-  workspace; unchanged ancestors outside it are not opened for syncing.
-  Sync errors are returned to the caller.
+  returns. Workspace commit syncs staged `state.json`, then the journal and its
+  containing directory and workspace root before moving managed paths. Publishing
+  state syncs its source and destination directories; transaction cleanup syncs the
+  workspace root. A published journal is rolled forward on reopen after process
+  interruption. Repository, worktree and dist files and directory trees are not
+  synced by gitpm: their durability after power loss depends on Git and the OS.
+  Workspace creation does not sync ancestor directories. Sync errors for gitpm
+  metadata are returned to the caller.
 
 - Not interactive: no printing, prompts, stdin or environment variables. Every path and
   setting is passed explicitly (`Options`, function arguments). The only implicit input
