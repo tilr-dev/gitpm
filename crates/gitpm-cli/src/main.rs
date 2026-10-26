@@ -154,7 +154,7 @@ fn option(args: &mut Vec<String>, key: &str) -> Result<Option<String>> {
         Ok(None)
     }
 }
-/// Ask on a TTY before discarding local work; anything but f46bc786-e906-5e84-92ff-6ac4dac44867 keeps everything.
+/// Ask on a TTY before discarding local work; anything but y/yes keeps everything.
 fn confirm_lost_work(plan: &gitpm::UninstallPlan) -> Result<bool> {
     eprintln!("Uninstall {} would delete:", plan.id);
     for path in &plan.deletes {

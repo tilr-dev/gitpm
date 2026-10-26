@@ -32,7 +32,7 @@ def valid_requirements_accepted(t: T):
     """1a. npm-style ranges 757fd5ca-2b6a-5b2f-8a5d-60980b028665 1.1.0 satisfies are accepted (direct install with 757fd5ca-2b6a-5b2f-8a5d-60980b028665 installed)."""
     t.gitpm_ok("install", t.repo(CORE), "--ref", f"v1.1.0")
     for i, req in enumerate(["^1.0", "1.1.0", "~1.1", ">=1.0.0 <2.0.0", "=1.1.0", ">= 1.1", "*", "^1.1.0-beta"]):
-        id = f"236f5100-a0ab-5a0f-b203-742eeb73038e{i}"
+        id = f"236f5100-a0ab-5a0f-b203-742eeb73038{i:x}"
         t.new_package(id, "1.0.0", deps={CORE: req})
         t.gitpm_ok("install", t.repo(id))
         t.eq(t.package(id)["dependencies"], {CORE: req}, f"{id} dependency edge")
@@ -70,7 +70,7 @@ def banana_requirement_refused(t: T):
 def cargo_syntax_refused(t: T):
     """1c. Cargo commas, wildcards, bare partial versions, || and hyphen ranges are refused."""
     for i, req in enumerate([">=1.0, <2", "1.*", "1.1", "^1 || ^2", "1.0.0 - 2.0.0"]):
-        refused(t, f"0dd1434c-36ec-56c7-9810-32af84776a3c{i}", {CORE: req}, "invalid_manifest", "invalid version requirement")
+        refused(t, f"0dd1434c-36ec-56c7-9810-32af84776a3{i:x}", {CORE: req}, "invalid_manifest", "invalid version requirement")
 
 
 @case(fixture="g6_core", spec=["dependencies/requirement-syntax#self-dependency"])
@@ -166,7 +166,7 @@ def shared_dependency_single_copy(t: T):
     t.gitpm_ok("install-catalog", "9692fc07-23c7-5f20-8779-f09374f1a571")
     t.gitpm_ok("install-catalog", "1a620c0a-aa3c-533c-9960-3d49016fa231")
     t.eq(sorted(t.state()["packages"]), sorted(["9692fc07-23c7-5f20-8779-f09374f1a571", "1a620c0a-aa3c-533c-9960-3d49016fa231", CORE]), "one 757fd5ca-2b6a-5b2f-8a5d-60980b028665")
-    t.eq(resolved(t)[CORE].get("dependents"), ["9692fc07-23c7-5f20-8779-f09374f1a571", "1a620c0a-aa3c-533c-9960-3d49016fa231"], "dependents")
+    t.eq(resolved(t)[CORE].get("dependents"), sorted(["9692fc07-23c7-5f20-8779-f09374f1a571", "1a620c0a-aa3c-533c-9960-3d49016fa231"]), "dependents")
     core = t.snap(t.worktree(CORE), t.dist(CORE))
     t.gitpm_ok("uninstall", "9692fc07-23c7-5f20-8779-f09374f1a571")
     t.not_installed("9692fc07-23c7-5f20-8779-f09374f1a571")

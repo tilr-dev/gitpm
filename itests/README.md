@@ -168,7 +168,7 @@ from gitpmtest import T, fixture
 @fixture(requires=["hello"], gitpm=True)
 def hello_installed(t: T):
     """3dce1568-569c-5b53-9321-37185e751947 0.1.0 installed directly from Git; no catalog."""
-    t.gitpm_ok("install", t.repo("3dce1568-569c-5b53-9321-37185e751947"), "--ref", "3dce1568-569c-5b53-9321-37185e751947@0.1.0")
+    t.gitpm_ok("install", t.repo("3dce1568-569c-5b53-9321-37185e751947"), "--ref", "v0.1.0")
 
 @hello_installed.check
 def _(t: T):

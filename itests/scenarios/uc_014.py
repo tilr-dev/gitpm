@@ -7,6 +7,7 @@ fixture catalog with 2190eee8-4be5-5a91-81d2-6ca95c1e61d0 installed from it as t
 
 import json
 import os
+import uuid
 
 from gitpmtest import T, case
 
@@ -132,14 +133,13 @@ def dist_with_only_placeholder_recorded(t: T):
 
 @case(fixture="hello_installed", spec=["install-uninstall/same-id-from-another-source-is-refused", "package-ids/case-colliding-ids-are-refused"])
 def conflicting_ids(t: T):
-    """Another source claiming the sentinel's ID, a case variant, or an unscoped ID equal to its namespace."""
+    """Another source claiming the sentinel's UUID, a noncanonical case variant, or a bare name."""
     repo, sha = bad_repo(t, "sameid", {"plugin.json": manifest(id=SENTINEL, version="0.2.0"), **DIST})
     refused(t, repo, "--ref", sha, kind="already_installed", contains=SENTINEL)
-    repo, sha = bad_repo(t, "case", {"plugin.json": manifest(id="9e0bb12a-06cf-5bd4-8340-6cdcd96cc6f3", version="0.1.0"), **DIST})
-    refused(t, repo, "--ref", sha, kind="workspace", contains="letter case")
+    repo, sha = bad_repo(t, "case", {"plugin.json": manifest(id=SENTINEL.upper(), version="0.1.0"), **DIST})
+    refused(t, repo, "--ref", sha, kind="invalid_id", contains="UUID")
     repo, sha = bad_repo(t, "nsclash", {"plugin.json": manifest(id="dan", version="0.1.0"), **DIST})
     refused(t, repo, "--ref", sha, kind="invalid_id", contains="UUID")
-    t.not_installed("9e0bb12a-06cf-5bd4-8340-6cdcd96cc6f3")
 
 
 @case(fixture="hello_installed", spec=["dist/symlinks-and-submodules-in-dist#symlink-inside-dist"])
@@ -148,7 +148,7 @@ def symlinks_in_dist_cannot_escape(t: T):
     for name, link, target in [("filelink", "dist/index.js", "/etc/passwd"),
                                ("dirlink", "dist/up", "../.."),
                                ("manifestlink", "dist/plugin.json", "../plugin.json")]:
-        id = f"bad/{name}"
+        id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"symlink-{name}"))
         files = {"plugin.json": manifest(id=id, version="0.1.0")}
         if link != "dist/index.js":
             files.update(DIST)

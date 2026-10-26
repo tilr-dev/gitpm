@@ -45,7 +45,7 @@ def g5_journey(t: T):
     repo.mkdir(parents=True)
     t.git(repo, "init", "-q", "-b", "main")
     t.commit(repo, "Initial author fixture", {
-        "plugin.json": json.dumps({"id": "0c318dfa-7376-5e00-8edd-81474abe756a", "name": "journey", "version": "0.1.0"}) + "\n",
+        "plugin.json": json.dumps({"id": "0c318dfa-7376-5e00-8edd-81474abe756a", "name": "journey", "version": "0.1.0", "dependencies": {}}) + "\n",
         "dist/index.js": "export const greeting = 'journey 0.1.0';\n",
     })
     t.git(repo, "tag", "v0.1.0")

@@ -135,7 +135,7 @@ def g4_v1(t: T):
 def _(t: T):
     value = json.loads((t.root / "v1/catalog.json").read_text())
     t.eq(sorted(value), ["plugins"], "v1 top level")
-    t.eq(sorted(value["plugins"]), ["3dce1568-569c-5b53-9321-37185e751947", "3cfe3093-9e5f-5f64-b4d1-0a169cc3bdf6"], "v1 packages")
+    t.eq(sorted(value["plugins"]), sorted(["3dce1568-569c-5b53-9321-37185e751947", "3cfe3093-9e5f-5f64-b4d1-0a169cc3bdf6"]), "v1 packages")
     for v in value["plugins"]["3cfe3093-9e5f-5f64-b4d1-0a169cc3bdf6"]["versions"].values():
         t.ok("files" not in v and "build" not in v, "old release has no files/build")
     for v in value["plugins"]["3dce1568-569c-5b53-9321-37185e751947"]["versions"].values():

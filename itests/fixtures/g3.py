@@ -121,7 +121,19 @@ def g3_fork_catalog(t: T):
     into /fx/repos/ced9e78d-f1f1-5c12-a495-5f882e50b2d6; fork release ced9e78d-f1f1-5c12-a495-5f882e50b2d6@1.0.1 made with `gitpm commit` and installed."""
     t.gitpm_ok("register", t.repo("dbe02e84-996e-560c-91fc-cce0f29e320e"), "--ref", "v1.0.0")
     t.gitpm_ok("install-catalog", "dbe02e84-996e-560c-91fc-cce0f29e320e", "--version", "1.0.0")
-    t.gitpm_ok("fork", "dbe02e84-996e-560c-91fc-cce0f29e320e", "--into", t.repo("ced9e78d-f1f1-5c12-a495-5f882e50b2d6"))
+    original = "dbe02e84-996e-560c-91fc-cce0f29e320e"
+    fork_id = "ced9e78d-f1f1-5c12-a495-5f882e50b2d6"
+    fork = t.repo(fork_id)
+    current = t.package(original)["current"]
+    t.run("git", "clone", "-q", t.repo(original), fork, check=True)
+    t.git(fork, "checkout", "-q", "-b", "fork", current["commit"])
+    t.git(fork, "remote", "rename", "origin", "upstream")
+    def identify(m):
+        m["id"] = fork_id
+        m["forkOf"] = {"id": original, **current, "source": t.package(original)["source"]}
+        m["replaces"] = {"id": original, "version": current["version"]}
+    t.edit_json(fork / "plugin.json", identify)
+    t.commit(fork, "Create fork fixture")
     t.gitpm_ok("commit", t.repo("ced9e78d-f1f1-5c12-a495-5f882e50b2d6"), "1.0.1")
     t.gitpm_ok("install", t.repo("ced9e78d-f1f1-5c12-a495-5f882e50b2d6"))
 

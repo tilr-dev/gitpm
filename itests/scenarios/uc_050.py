@@ -62,7 +62,7 @@ def clean_txn(t: T, root: Path):
 
 @case(fixture="hello_installed", spec=["transactions-locking/workspace-lock#two-cli-processes"])
 def same_workspace_concurrent_installs(t: T):
-    ids = [f"b19dabd5-0619-5414-b4d6-56c38472e88d{i}" for i in range(1, 7)]
+    ids = [f"b19dabd5-0619-5414-b4d6-56c38472e88{i:x}" for i in range(1, 7)]
     commits = {id: t.new_package(id, "0.1.0") for id in ids}
     hello = t.snap(t.worktree(ID), t.dist(ID))
     hello_entry = t.package(ID)
@@ -129,13 +129,14 @@ def same_workspace_mixed_mutations_lose_nothing(t: T):
 @case(fixture="catalog", spec=["catalog/writers-are-serialized-and-crash-safe"])
 def same_catalog_concurrent_registrations(t: T):
     old = {p: p.read_bytes() for p in t.catalog.rglob("release.json")}
+    existing_ids = set(json.loads((t.catalog / "packages/catalog.json").read_text())["directories"])
     jobs, expected = [], {}
     for patch in range(5):
         v = f"0.3.{patch}"
         expected[("3dce1568-569c-5b53-9321-37185e751947", v)] = t.release(ID, v)
         jobs.append(["register", t.repo(ID), "--ref", f"v{v}"])
     for n in range(1, 4):
-        id = f"521101f8-c190-541c-83b0-8fb50b51cf2a{n}"
+        id = f"521101f8-c190-541c-83b0-8fb50b51cf2{n:x}"
         expected[(id, "0.1.0")] = t.new_package(id, "0.1.0")
         jobs.append(["register", t.repo(id), "--ref", f"v0.1.0"])
     settle(t, jobs, race(t, jobs), "catalog locked")
@@ -144,12 +145,12 @@ def same_catalog_concurrent_registrations(t: T):
          "no lost version in the shared package index")
     for (id, v), commit in expected.items():
         t.eq(json.loads(t.catalog_release(id, v).read_text())["commit"], commit, f"{id}@{v} recorded")
-    t.eq(sorted(json.loads((t.catalog / "packages/dan/catalog.json").read_text())["directories"]),
-         sorted(["hello", "n1", "n2", "n3", "num"]), "no lost directory link")
+    t.eq(sorted(json.loads((t.catalog / "packages/catalog.json").read_text())["directories"]),
+         sorted(existing_ids | {id for id, _ in expected}), "no lost directory link")
     for path, data in old.items():
         t.ok(path.read_bytes() == data, f"existing {path.relative_to(t.catalog)} unchanged")
     t.eq(list(t.catalog.rglob("*.tmp")), [], "no temporary files")
-    t.has(t.gitpm_ok("--catalog", t.catalog, "info").out, "1e0e9f63-8c9a-5b31-a7bd-9358a4d189f2", "b538e2fa-c0de-5ac5-8358-e1b14bb3b0d0", "latest: 0.3.4")
+    t.has(t.gitpm_ok("--catalog", t.catalog, "info").out, *[id for id, _ in expected], "latest: 0.3.4")
 
 
 @case(fixture="catalog", spec=["transactions-locking/workspace-lock", "catalog/writers-are-serialized-and-crash-safe"])

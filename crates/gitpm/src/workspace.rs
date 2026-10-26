@@ -3328,6 +3328,7 @@ fn clone_revision(txn: &Txn, fetch: &Fetch, name: &str, custom_ssh: bool) -> Res
 
 /// The new package's ID must not collide with anything installed or retained.
 fn check_new_id(root: &Path, state: &State, m: &Manifest) -> Result<()> {
+    valid_id(&m.id)?;
     if state.packages.contains_key(&m.id) {
         return Err(Error::AlreadyInstalled {
             message: format!("already installed: {}", m.id),
@@ -6643,6 +6644,18 @@ mod tests {
             path: None,
         };
         ws.refuses("catalog", || m.install_release(&release));
+    }
+
+    #[test]
+    fn uppercase_manifest_uuid_is_invalid_before_installed_or_retained_collision() {
+        let id = "b19dabd5-0619-5414-b4d6-56c38472e88d";
+        let (ws, m) = Ws::installed(id);
+        let uppercase = ws.other_author("uppercase", &id.to_uppercase());
+        let install =
+            || m.install_package(uppercase.source(), None, InstallTarget::Ref("HEAD".into()));
+        ws.refuses("invalid_id", install);
+        m.forget(id).unwrap();
+        ws.refuses("invalid_id", install);
     }
 
     #[test]

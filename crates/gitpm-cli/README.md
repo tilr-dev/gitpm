@@ -25,14 +25,14 @@ and a `dist/` folder, released with a tag (`v0.1.0`, shared by every package in 
 UUIDs below are examples; use the UUIDs printed by your `init` and `fork` runs:
 
 ```sh
-gitpm install ./d135a7cf-1c63-549a-93cb-8f89656b2ced         # latest release tag → ./gitpm-workspace
+gitpm install ./acme/greeter         # latest release tag → ./gitpm-workspace
 gitpm list                           # installed state (JSON)
 gitpm update d135a7cf-1c63-549a-93cb-8f89656b2ced            # newest release tag
 gitpm update all --dry-run           # preview a joint compatible upgrade
 gitpm update all                     # apply all selected versions atomically
 gitpm rollback d135a7cf-1c63-549a-93cb-8f89656b2ced          # back to the previous version
 
-echo './d135a7cf-1c63-549a-93cb-8f89656b2ced' > sources.txt
+echo './acme/greeter' > sources.txt
 gitpm --catalog ./catalog catalog-update     # local catalog from release tags
 gitpm --catalog ./catalog check              # installed versions vs the catalog
 gitpm --catalog ./catalog --root ./other install-catalog d135a7cf-1c63-549a-93cb-8f89656b2ced   # hashes verified

@@ -8,6 +8,7 @@ whole /fx tree incl. Git internals). Also flag order, `info` truncation at 40 en
 """
 
 import json
+import uuid
 
 from gitpmtest import T, case
 
@@ -79,7 +80,7 @@ for _name, _doc, _argv, _needle, _spec in [
      "use: gitpm auth check GIT_URL", "cli/command-set"),
     # 5. --ref, --dev and --release exclude each other as usage errors; --channel is gone (uc_012).
     ("replace_needs_one_mode", "3. replace without --with", ["replace", ID], "replace needs --with PROVIDER", OPT),
-    ("fork_needs_ns", "3. fork without --ns", ["fork", ID, "/fx/forked"], "fork needs --ns NAMESPACE", OPT),
+    ("fork_removed_ns", "3. fork with removed --ns", ["fork", ID, "--ns", "mine"], "unknown option: --ns; use --help", OPT),
 ]:
     usage_case(_name, _doc, _argv, _needle, _spec)
 
@@ -142,7 +143,7 @@ def v2_catalog(t: T, name: str, n: int):
         dirs[name] = f"{name}/"
         (ns / name).mkdir()
         (ns / name / "plugin.json").write_text(json.dumps(
-            {"schema": 1, "id": f"dan/{name}", "source": f"https://example.invalid/{name}.git", "versions": {}}))
+            {"schema": 1, "id": str(uuid.UUID(int=i + 1)), "source": f"https://example.invalid/{name}.git", "versions": {}}))
     (ns / "catalog.json").write_text(json.dumps({"schema": 1, "directories": dirs}))
     return root
 
@@ -151,7 +152,7 @@ def v2_catalog(t: T, name: str, n: int):
 def info_below_the_limit_has_no_hint(t: T):
     """6. A catalog with 39 entries (2 directories, 37 packages) lists all, without the hint."""
     out = t.gitpm_ok("--catalog", v2_catalog(t, "v2-39", 37), "info").out
-    t.has(out, "92724468-66db-5077-be88-56afa6f224c0", "ddbfa64b-e7cd-50b9-b0c8-f1125478d883")
+    t.has(out, str(uuid.UUID(int=1)), str(uuid.UUID(int=37)))
     t.lacks(out, "Overview limit")
 
 
@@ -159,15 +160,15 @@ def info_below_the_limit_has_no_hint(t: T):
 def info_at_the_limit_shows_hint(t: T):
     """6. 40 entries (38 packages) reach the limit: all 40 shown plus the truncation hint."""
     out = t.gitpm_ok("--catalog", v2_catalog(t, "v2-40", 38), "info").out
-    t.has(out, "92724468-66db-5077-be88-56afa6f224c0", "2c5f11ee-66ae-5077-8396-2a6f7d6e4d03", "Overview limit: 40 entries", "gitpm --catalog <branch location> catalog show")
+    t.has(out, str(uuid.UUID(int=1)), str(uuid.UUID(int=38)), "Overview limit: 40 entries", "gitpm --catalog <branch location> catalog show")
 
 
 @case(spec=["catalog/bounded-overview"])
 def info_v2_more_than_40_entries(t: T):
     """6. A catalog tree with 45 package folders is truncated with the hint."""
     out = t.gitpm_ok("--catalog", v2_catalog(t, "v2", 45), "info").out
-    t.has(out, "92724468-66db-5077-be88-56afa6f224c0", "Overview limit: 40 entries")
-    t.lacks(out, "0a29f3d7-6007-54a1-a0c8-8e5b35643627")
+    t.has(out, str(uuid.UUID(int=1)), "Overview limit: 40 entries")
+    t.lacks(out, str(uuid.UUID(int=45)))
 
 
 def tty(t: T, cmd: str, env: dict):

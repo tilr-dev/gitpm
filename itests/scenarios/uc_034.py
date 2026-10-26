@@ -6,6 +6,7 @@ public fallback); `catalog` prints the directory links of one level as JSON.
 """
 
 import json
+import uuid
 from pathlib import Path
 
 from gitpmtest import T, case, gitpm_argv
@@ -83,9 +84,8 @@ def info_and_catalog_over_loopback_http(t: T):
     t.eq(line_after(out, "Catalog:"), srv.url, "catalog address")
     t.has(out, "remote (HTTP)", "Directories and packages:")
     assert_packages(t, out)
-    branch = readonly(t, lambda: gitpm_env(t, "--catalog", srv.url + "/packages/3dce1568-569c-5b53-9321-37185e751947/plugin.json", "info").out)
-    t.has(branch, "3dce1568-569c-5b53-9321-37185e751947 — latest: 0.1.1")
-    t.lacks(branch, "oldie")
+    branch = readonly(t, lambda: gitpm_env(t, "--catalog", srv.url + "/packages/", "info").out)
+    assert_packages(t, branch)
     t.eq(readonly(t, lambda: gitpm_env(t, "--catalog", srv.url, "catalog").json()),
          {"schema": 1, "directories": {"packages": "packages/"}}, "catalog over HTTP")
     t.eq(readonly(t, lambda: gitpm_env(t, "--catalog", srv.url + "/packages/", "catalog").json())["directories"],
@@ -125,7 +125,7 @@ def crafted_v2(root: Path, count: int):
             json.dumps({"schema": 1, "directories": {"p": "p/"}}))
         (root / "packages" / name / "p").mkdir()
         (root / "packages" / name / "p/plugin.json").write_text(json.dumps(
-            {"schema": 1, "id": f"{name}/p", "source": f"https://git.example.invalid/{name}/p.git",
+            {"schema": 1, "id": str(uuid.UUID(int=int(name[1:]) + 1)), "source": f"https://git.example.invalid/{name}/p.git",
              "versions": {"1.0.0": "versions/1.0.0/release.json"}}))
 
 

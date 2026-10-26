@@ -72,10 +72,10 @@ def g6_core_deps_installed(t: T):
 @g6_core_deps_installed.check
 def _(t: T):
     state = t.state()
-    t.eq(sorted(state["packages"]), ["9692fc07-23c7-5f20-8779-f09374f1a571", "1a620c0a-aa3c-533c-9960-3d49016fa231", "757fd5ca-2b6a-5b2f-8a5d-60980b028665", "a768d335-0cf7-597a-b1ba-0eb542495aec"], "installed")
+    t.eq(sorted(state["packages"]), sorted(["9692fc07-23c7-5f20-8779-f09374f1a571", "1a620c0a-aa3c-533c-9960-3d49016fa231", "757fd5ca-2b6a-5b2f-8a5d-60980b028665", "a768d335-0cf7-597a-b1ba-0eb542495aec"]), "installed")
     t.eq(state["packages"]["757fd5ca-2b6a-5b2f-8a5d-60980b028665"]["current"]["version"], "1.1.0", "757fd5ca-2b6a-5b2f-8a5d-60980b028665 version")
     resolved = {p["id"]: p for p in t.gitpm_ok("list").json()["resolved"]}
-    t.eq(resolved["757fd5ca-2b6a-5b2f-8a5d-60980b028665"].get("dependents"), ["9692fc07-23c7-5f20-8779-f09374f1a571", "1a620c0a-aa3c-533c-9960-3d49016fa231"], "757fd5ca-2b6a-5b2f-8a5d-60980b028665 dependents")
+    t.eq(resolved["757fd5ca-2b6a-5b2f-8a5d-60980b028665"].get("dependents"), sorted(["9692fc07-23c7-5f20-8779-f09374f1a571", "1a620c0a-aa3c-533c-9960-3d49016fa231"]), "757fd5ca-2b6a-5b2f-8a5d-60980b028665 dependents")
 
 
 # ------------------------------------------------------------------------- g6_base
@@ -126,7 +126,7 @@ def g6_base_installed(t: T):
 
 @g6_base_installed.check
 def _(t: T):
-    t.eq(sorted(t.state()["packages"]), ["9692fc07-23c7-5f20-8779-f09374f1a571", "f5984d44-92bd-51ac-8e8f-d911dd824ef3", "a768d335-0cf7-597a-b1ba-0eb542495aec", "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9"], "installed")
+    t.eq(sorted(t.state()["packages"]), sorted(["9692fc07-23c7-5f20-8779-f09374f1a571", "f5984d44-92bd-51ac-8e8f-d911dd824ef3", "a768d335-0cf7-597a-b1ba-0eb542495aec", "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9"]), "installed")
     t.ok(not t.state().get("replacements"), "no replacement")
 
 
@@ -228,7 +228,7 @@ def g6_compat_installed(t: T):
 def _(t: T):
     state = t.state()
     t.eq(sorted(state["packages"]),
-         ["9692fc07-23c7-5f20-8779-f09374f1a571", "f5984d44-92bd-51ac-8e8f-d911dd824ef3", "1a620c0a-aa3c-533c-9960-3d49016fa231", "c4304791-586c-54cb-a7c6-27bd09f28dbd", "db33e43e-e652-5767-8e21-27fb3cef9723", "4e02af40-ea75-510c-b524-5f21e6de2d55", "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9"], "installed")
+         sorted(["9692fc07-23c7-5f20-8779-f09374f1a571", "f5984d44-92bd-51ac-8e8f-d911dd824ef3", "1a620c0a-aa3c-533c-9960-3d49016fa231", "c4304791-586c-54cb-a7c6-27bd09f28dbd", "db33e43e-e652-5767-8e21-27fb3cef9723", "4e02af40-ea75-510c-b524-5f21e6de2d55", "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9"]), "installed")
     t.eq(state["packages"]["c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9"]["current"]["version"], "1.4.0", "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 version")
     t.ok(not state.get("replacements"), "no replacement")
 

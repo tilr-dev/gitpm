@@ -37,7 +37,7 @@ def branch_name_is_unique(t: T):
     dest = fork(t)
     NEW = t.manifest_id(dest)
     t.eq(t.git(dest, "branch", "--show-current"), "fork-3", "new branch")
-    t.eq((t.rev(dest, "3a5fc361-2231-5acd-869e-d470a2c132e9"), t.rev(dest, "5aa26591-f2bf-5aaa-a795-434f318404ed")), (head, head), "source branches")
+    t.eq((t.rev(dest, "fork"), t.rev(dest, "fork-2")), (head, head), "source branches")
     t.same(before, "installation and source branches")
 
 

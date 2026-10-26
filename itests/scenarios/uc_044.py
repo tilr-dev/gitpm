@@ -86,7 +86,7 @@ def catalog_round_trip_keeps_provenance(t: T):
     t.gitpm_ok("commit", dest, "0.2.0")
     t.gitpm_ok("register", dest, "--ref", f"v0.2.0")
     release = json.loads(t.catalog_release(MINE, "0.2.0").read_text())
-    forkof = {"id": ID, "name": "fixture", "version": "0.1.0", "commit": source_commit, "source": t.package(ID)["source"]}
+    forkof = {"id": ID, "version": "0.1.0", "commit": source_commit, "source": t.package(ID)["source"]}
     t.eq(release["manifest"]["forkOf"], forkof, "catalog manifest forkOf")
     t.gitpm_ok("--root", t.root / "ws2", "install-catalog", MINE)
     state = json.loads((t.root / "ws2/state.json").read_text())
@@ -97,7 +97,7 @@ def catalog_round_trip_keeps_provenance(t: T):
 def update_and_rollback_keep_provenance(t: T):
     dest, source_commit, _ = prepare(t)
     MINE = t.manifest_id(dest)
-    forkof = {"id": ID, "name": "fixture", "version": "0.1.0", "commit": source_commit, "source": t.package(ID)["source"]}
+    forkof = {"id": ID, "version": "0.1.0", "commit": source_commit, "source": t.package(ID)["source"]}
     first = (t.gitpm_ok("commit", dest, "0.2.0"), t.rev(dest))[1]
     t.gitpm_ok("install", dest)
     t.eq(t.package(MINE)["current"], {"version": "0.2.0", "commit": first}, "installed 0.2.0")

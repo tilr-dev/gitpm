@@ -136,7 +136,7 @@ def removed_source_entries_remain(t: T):
     out = update(t)
     t.has(out.out, "Catalog ready: 4 release(s)")
     t.same(spaced, "removed source's entries")
-    t.ok("spaced" in json.loads((t.catalog / "packages/dan/catalog.json").read_text())["directories"],
+    t.ok("2bf18134-a7da-5c98-841c-4ee91fa6e90e" in json.loads((t.catalog / "packages/catalog.json").read_text())["directories"],
          "directory link kept")
     t.ok(t.catalog_release(HELLO, "0.3.0").exists(), "remaining source updated")
 

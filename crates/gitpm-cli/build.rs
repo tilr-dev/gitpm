@@ -43,7 +43,7 @@ fn main() {
     if let Some(head) = git(dir, &["symbolic-ref", "-q", "HEAD"]) {
         watch(&head);
     }
-    // Release tags only (vX.Y.Z); package tags such as `399f4c31-829e-5063-a806-47d92cd40867@1.0` do not count.
+    // Release tags only (vX.Y.Z); package tags such as `ID@1.0` do not count.
     if git(
         dir,
         &[

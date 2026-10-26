@@ -449,7 +449,7 @@ prints the provider's installed and declared versions.
 Output: stdout carries the result lines (one per affected package for workspace-mutating
 commands, JSON for `list`, `catalog links` and `catalog register`); everything else goes to stderr:
 `Warning: …` lines taken from the result (ignored metadata keys, skipped release tags,
-the dist report), `[4e9e80e0-57d9-50b8-b3cc-fa1af55f3693]` prompts with what they list, and failures. A failure prints
+the dist report), `[y/N]` prompts with what they list, and failures. A failure prints
 `Error: MESSAGE`, for a library error also `Error kind: KIND` (and one `  - item` line
 per lost item for `local_changes` outside update and rollback, whose message already
 lists them, and for an uninstall's `has_dependents`) and, where a gitpm command helps, one `Hint: …` line
@@ -664,7 +664,7 @@ Changed in 0.6 (no backward compatibility before 1.0; every entry is **BREAKING*
   the library's `list_with(root, &ListOptions { provides })`, `--provides` included.
 - Library messages name no CLI command or hosting service; the CLI adds a `Hint:` line
   per error kind (for example after `already_installed`: `gitpm restore ID` /
-  `gitpm uninstall ID`). `init NAME` creates a package with a generated UUID. Prompts (`[4e9e80e0-57d9-50b8-b3cc-fa1af55f3693]` and what
+  `gitpm uninstall ID`). `init NAME` creates a package with a generated UUID. Prompts (`[y/N]` and what
   they list) go to stderr.
 - `update ID` returns the broken release tags it passed over in `RevisionChange.skipped`,
   `update all` in `UpdateAllPlan.skipped` (for every installed package, updated or not),
@@ -1196,8 +1196,8 @@ packages/theme/dist/…
     each desired package. Fork does not accept `--replace`, `--version` or `--force`.
 
 ```console
-$ gitpm fork f851f609-bb81-52d6-bfef-33798624782c 955bf29f-2893-56ef-9439-369c50455ae7 --into 52b35047-cc16-5806-9892-7f07373e8c93
-Fork created: /…/52b35047-cc16-5806-9892-7f07373e8c93
+$ gitpm fork f851f609-bb81-52d6-bfef-33798624782c 955bf29f-2893-56ef-9439-369c50455ae7 --into forks/me-packages
+Fork created: /…/forks/me-packages
 Git history is cloned from the recorded source; the original repository is the upstream remote.
 All repository packages are forked; the complete tree and gitpm.json are preserved.
 d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50 forked from f851f609-bb81-52d6-bfef-33798624782c (packages/theme)
@@ -1371,9 +1371,9 @@ $ gitpm list --provides theme | jq '.resolved[] | {id, title, description, provi
 use gitpm::{Manager, Options};
 
 let pm = Manager::open_with("/path/to/workspace", Options { catalog: Some(url), ..Default::default() })?;
-pm.install("git@github.com:645eb52e-b765-5211-a9b5-d9e7e23dbd85.git")?;          // latest release tag
+pm.install("git@github.com:acme/demo1.git")?;          // latest release tag
 use gitpm::{InstallTarget, Target};
-pm.install_package(src, None, InstallTarget::Ref("645eb52e-b765-5211-a9b5-d9e7e23dbd85@0.2.0".into()))?; // pinned
+pm.install_package(src, None, InstallTarget::Ref("v0.2.0".into()))?; // pinned
 pm.install_package(src, None, InstallTarget::Dev)?;    // follows the origin's default branch
 pm.install_package(src, Some("76a9b591-60f3-5c7f-9e1c-31648fc73bfd"), InstallTarget::Release)?; // one package of a gitpm.json repo
 pm.install_from_catalog("645eb52e-b765-5211-a9b5-d9e7e23dbd85", None)?;          // exact catalog release, hashes verified
@@ -1391,7 +1391,7 @@ let dist = pm.uninstall(id, &confirmed, /* force: ignore dependents */ false)?;
 // Every mutating result carries its dist report (`dist`, or the returned `DistSync`).
 // Forks: the fork repository is always explicit (new folder).
 pm.fork_into(id, Path::new("/work/demo1-fork"))?;   // sets forkOf + replaces
-let repo = Path::new("/work/52b35047-cc16-5806-9892-7f07373e8c93");               // created as a new folder
+let repo = Path::new("/work/forks/me-packages");               // created as a new folder
 let fork = pm.fork_packages(&["f851f609-bb81-52d6-bfef-33798624782c", "955bf29f-2893-56ef-9439-369c50455ae7"], repo)?; // one repo, deps rewritten
 // Explicitly release all fork packages, then install only the desired package.
 gitpm::scaffold::commit_package(repo, "2.0.0", Some("d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50"))?;
@@ -1435,8 +1435,9 @@ user was asked is never deleted unseen. `dependents` are the consumers that woul
 dependents, lost_work, .. }` unless `force`, and `plan.refusal()` returns that same error
 without calling `uninstall`. A recorded package whose clone is gone has no lost work:
 `uninstall` and `forget` drop its record and `dist/` without confirmation (`forget`
-keeps no `forgotten` record then). The caller decides how to ask the user. IDs match exactly: on a
-case-insensitive file system `67b4644e-999c-52c9-aa2a-aa8efdeb8706` never resolves to `cc6c3e20-6fe0-58c4-944e-991c2a154a47`.
+keeps no `forgotten` record then). The caller decides how to ask the user. IDs must use canonical
+lowercase UUIDs: even on a case-insensitive file system, `D135A7CF-1C63-549A-93CB-8F89656B2CED`
+is rejected with `invalid_id` rather than resolving to `d135a7cf-1c63-549a-93cb-8f89656b2ced`.
 
 ### Versions and pre-releases
 

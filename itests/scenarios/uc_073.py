@@ -9,6 +9,7 @@ case (no fixture).
 """
 
 import json
+import uuid
 
 from gitpmtest import T, case
 
@@ -183,7 +184,7 @@ def browse_reads_only_indexes(t: T):
         summary = {"version": "1.0.0", "title": name, "description": None, "provides": [], "tags": []}
         if n == 0:
             summary["provides"] = False
-        index = {"schema": 1, "id": f"tilr/{name}", "source": "https://example.invalid/source.git",
+        index = {"schema": 1, "id": str(uuid.UUID(int=n + 1)), "source": "https://example.invalid/source.git",
                  "versions": {"1.0.0": "versions/1.0.0/release.json"}, "latest": summary}
         if n == 1:
             del index["latest"]
@@ -197,5 +198,5 @@ def browse_reads_only_indexes(t: T):
         server.httpd.shutdown()
         server.httpd.server_close()
     t.eq(paths, ["/catalog.json"] + [f"/p{n:02}/plugin.json" for n in range(40)], "bounded index requests only")
-    t.has(out, "63567819-6827-523e-82f3-f32f8c2330f2", "bf40c7dc-5fa4-5cbb-98f9-61b06bf22ab3", "Title: p02", "Title: p39")
-    t.lacks(out, "Title: p00", "Title: p01", "a73daafb-b5ab-5066-ba71-843179929804")
+    t.has(out, str(uuid.UUID(int=1)), str(uuid.UUID(int=2)), "Title: p02", "Title: p39")
+    t.lacks(out, "Title: p00", "Title: p01", str(uuid.UUID(int=41)))
