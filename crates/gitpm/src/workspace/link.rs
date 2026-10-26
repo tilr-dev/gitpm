@@ -105,6 +105,7 @@ impl Manager {
             }
             let before = state.clone();
             let mut record = Installed {
+                name: m.name.clone(),
                 source: source.clone(),
                 // Internal solver snapshot only: link serialization has a declared
                 // version and no revision, commit, history or managed-clone fields.

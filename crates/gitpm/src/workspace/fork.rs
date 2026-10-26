@@ -2,19 +2,6 @@
 use super::*;
 use std::collections::BTreeSet;
 
-/// A dependency of a package rewritten explicitly: `from` (an original) became `to` (its
-/// fork). `new_requirement` is set when `requirement` does not accept the fork's version
-/// and was replaced by `^VERSION`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct DependencyRewrite {
-    /// Package (its ID in the fork repository) whose `plugin.json` changed.
-    pub package: String,
-    pub from: String,
-    pub to: String,
-    pub requirement: String,
-    #[serde(rename = "newRequirement", skip_serializing_if = "Option::is_none")]
-    pub new_requirement: Option<String>,
-}
 /// One package forked by [`Manager::fork_packages`].
 #[derive(Clone, Debug, Serialize)]
 pub struct ForkedPackage {
@@ -37,82 +24,6 @@ pub struct PackageFork {
     pub commit: String,
     pub packages: Vec<ForkedPackage>,
 }
-/// Explicitly rewrite internal dependencies in an editable fork repository.
-/// Reads the current manifests and maps their `forkOf.id` to their new IDs. Returns
-/// only changes made by this call; no workspace, commit, release or install is needed.
-/// Validation failures leave all files unchanged. Write failures restore snapshots
-/// on a best-effort basis; after a process crash, rerun to finish remaining files.
-pub fn fork_rewrite(directory: &Path) -> Result<Vec<DependencyRewrite>> {
-    let directory = fs::canonicalize(directory)?;
-    ensure!(
-        Path::new(&transport::repository_root(&directory, false)?) == directory,
-        InvalidArgument,
-        "pass the repository root"
-    );
-    let folders: Vec<String> = match packages::packages_in(&directory)? {
-        Some(found) => found.into_iter().map(|p| p.path).collect(),
-        None => vec![String::new()],
-    };
-    ensure!(
-        !folders.is_empty(),
-        InvalidManifest,
-        "repository has no packages"
-    );
-    let mut manifests = Vec::new();
-    let mut forks = BTreeMap::new();
-    let mut ids = BTreeSet::new();
-    for folder in folders {
-        let m = package_manifest(&directory, (!folder.is_empty()).then_some(folder.as_str()))?;
-        m.metadata_strict()?;
-        ensure!(
-            ids.insert(m.id.clone()),
-            InvalidManifest,
-            "duplicate package UUID: {}",
-            m.id
-        );
-        let origin = m
-            .fork_of
-            .as_ref()
-            .ok_or_else(|| Error::invalid_manifest(format!("{} has no forkOf", m.id)))?;
-        ensure!(
-            forks
-                .insert(origin.id.clone(), (m.id.clone(), m.version.clone()))
-                .is_none(),
-            InvalidManifest,
-            "multiple forks of {} in one repository",
-            origin.id
-        );
-        let path = directory.join(manifest_path(&folder));
-        ensure!(
-            !fs::symlink_metadata(&path)?.file_type().is_symlink(),
-            Unsupported,
-            "symlinks are not supported: {}",
-            path.display()
-        );
-        let original = fs::read(&path)?;
-        manifests.push((m, path, original));
-    }
-    let mut rewrites = Vec::new();
-    let mut writes = Vec::new();
-    for (mut m, path, original) in manifests {
-        let before = rewrites.len();
-        rewrite_dependencies(&mut m, &forks, &mut rewrites)?;
-        if rewrites.len() != before {
-            crate::model::validate_manifest(&m)?;
-            writes.push((path, original, manifest_json(&m)?));
-        }
-    }
-    for (path, _, updated) in &writes {
-        if let Err(error) = fs::write(path, updated) {
-            for (path, original, _) in &writes {
-                let _ = fs::write(path, original);
-            }
-            return Err(error.into());
-        }
-    }
-    Ok(rewrites)
-}
-
 /// One package to fork: where it comes from and what it becomes.
 struct Source {
     original: String,
@@ -140,57 +51,6 @@ fn manifest_path(folder: &str) -> String {
     }
 }
 
-/// Rewrite the dependencies of `m` that name a key of `forks` to the fork (ID, version
-/// declared by the fork); a requirement that does not accept that version becomes
-/// `^VERSION`. A manifest that already depends on the fork too (or on two originals of
-/// one fork) is refused, whatever the order of its keys.
-fn rewrite_dependencies(
-    m: &mut Manifest,
-    forks: &BTreeMap<String, (String, String)>,
-    rewrites: &mut Vec<DependencyRewrite>,
-) -> Result<()> {
-    let original = std::mem::take(&mut m.dependencies);
-    let mut dependencies = BTreeMap::new();
-    for (dependency, requirement) in &original {
-        let Some((fork, version)) = forks.get(dependency) else {
-            dependencies.insert(dependency.clone(), requirement.clone());
-            continue;
-        };
-        ensure!(
-            !original.contains_key(fork),
-            InvalidManifest,
-            "{} depends on both {dependency} and its fork {fork}; remove one of them first",
-            m.id
-        );
-        if let Some((other, _)) = original
-            .keys()
-            .filter(|other| *other != dependency)
-            .find_map(|other| forks.get(other).map(|f| (other, f)))
-            .filter(|(_, (f, _))| f == fork)
-        {
-            fail!(
-                InvalidManifest,
-                "{} depends on both {dependency} and {other}, which are both forked as {fork}",
-                m.id
-            );
-        }
-        let new_requirement = (!deps::matches(requirement, version)).then(|| format!("^{version}"));
-        rewrites.push(DependencyRewrite {
-            package: m.id.clone(),
-            from: dependency.clone(),
-            to: fork.clone(),
-            requirement: requirement.clone(),
-            new_requirement: new_requirement.clone(),
-        });
-        dependencies.insert(
-            fork.clone(),
-            new_requirement.unwrap_or_else(|| requirement.clone()),
-        );
-    }
-    m.dependencies = dependencies;
-    Ok(())
-}
-
 impl Manager {
     /// Fork one installed package with a fresh UUID: [`Manager::fork_packages`]
     /// with one ID. Returns the fork repository.
@@ -206,7 +66,7 @@ impl Manager {
     /// in the repository receive fresh identities, including uninstalled siblings;
     /// names, repository files and the package layout are preserved.
     /// Each manifest gets its new ID, `forkOf` and `replaces`; dependencies among
-    /// packages forked together are preserved until `fork_rewrite`. Nothing is tagged.
+    /// packages forked together are preserved until explicitly edited. Nothing is tagged.
     pub fn fork_packages(&self, ids: &[&str], destination: &Path) -> Result<PackageFork> {
         self.fork_packages_with(ids, destination)
     }
@@ -846,85 +706,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn explicit_rewrite_validates_all_manifests_and_preserves_external_dependencies_and_metadata() {
-        use crate::test_support::{TempDir, git, manifest, write_manifest};
-        let temp = TempDir::new("fork-rewrite");
-        git(temp.path(), &["init", "-q"]);
-        fs::write(temp.join("gitpm.json"), r#"{"packages":["packages/*"]}"#).unwrap();
-        let originals = [
-            "11111111-1111-4111-8111-111111111111",
-            "22222222-2222-4222-8222-222222222222",
-        ];
-        let ids = [
-            "33333333-3333-4333-8333-333333333333",
-            "44444444-4444-4444-8444-444444444444",
-        ];
-        let external = "55555555-5555-4555-8555-555555555555";
-        for i in 0..2 {
-            let folder = temp.join(format!("packages/{i}"));
-            fs::create_dir_all(folder.join("dist")).unwrap();
-            let mut m = manifest(ids[i], "2.0.0");
-            m.fork_of = Some(ForkOf {
-                id: originals[i].into(),
-                version: "1.0.0".into(),
-                commit: "a".repeat(40),
-                source: None,
-            });
-            m.dependencies.insert(originals[1 - i].into(), "^1".into());
-            m.dependencies.insert(external.into(), "~1.2".into());
-            write_manifest(&folder, &m);
-        }
-        let first = temp.join("packages/0/plugin.json");
-        let last = temp.join("packages/1/plugin.json");
-        let before = fs::read(&first).unwrap();
-        let valid_last = fs::read(&last).unwrap();
-        for problem in ["missing", "ambiguous", "conflict", "self"] {
-            let mut bad: serde_json::Value = serde_json::from_slice(&valid_last).unwrap();
-            match problem {
-                "missing" => {
-                    bad.as_object_mut().unwrap().remove("forkOf");
-                }
-                "ambiguous" => bad["forkOf"]["id"] = originals[0].into(),
-                "conflict" => bad["dependencies"][ids[0]] = "^2".into(),
-                _ => bad["dependencies"][originals[1]] = "^1".into(),
-            }
-            fs::write(&last, serde_json::to_vec(&bad).unwrap()).unwrap();
-            let bad_bytes = fs::read(&last).unwrap();
-            assert_eq!(
-                fork_rewrite(temp.path()).unwrap_err().kind(),
-                "invalid_manifest",
-                "{problem}"
-            );
-            assert_eq!(fs::read(&first).unwrap(), before);
-            assert_eq!(fs::read(&last).unwrap(), bad_bytes);
-        }
-        fs::write(&last, valid_last).unwrap();
-        let mut custom: serde_json::Value = serde_json::from_slice(&before).unwrap();
-        custom["title"] = "Keep me".into();
-        custom["custom"] = serde_json::json!({"nested": [1, 2]});
-        fs::write(&first, serde_json::to_vec(&custom).unwrap()).unwrap();
-        let rewrites = fork_rewrite(temp.path()).unwrap();
-        assert_eq!(rewrites.len(), 2);
-        assert!(
-            rewrites
-                .iter()
-                .all(|r| r.new_requirement.as_deref() == Some("^2.0.0"))
-        );
-        for i in 0..2 {
-            let m = package_manifest(temp.path(), Some(&format!("packages/{i}"))).unwrap();
-            assert_eq!(m.dependencies[ids[1 - i]], "^2.0.0");
-            assert_eq!(m.dependencies[external], "~1.2");
-        }
-        let updated: serde_json::Value =
-            serde_json::from_slice(&fs::read(&first).unwrap()).unwrap();
-        assert_eq!(updated["title"], custom["title"]);
-        assert_eq!(updated["custom"], custom["custom"]);
-        assert!(fork_rewrite(temp.path()).unwrap().is_empty());
-        assert!(!temp.join("state.json").exists());
-        assert!(!temp.join(".git/index").exists());
-    }
-
-    #[test]
     fn fork_source_retains_all_packages_at_resolved_revision_without_workspace() {
         use crate::test_support::{TempDir, git, manifest, write_manifest};
         let temp = TempDir::new("fork-source");
@@ -978,17 +759,20 @@ mod tests {
                 panel.dependencies["11111111-1111-4111-8111-111111111111"],
                 "^1"
             );
-            let rewrites = fork_rewrite(&dest).unwrap();
-            assert_eq!(rewrites.len(), 1);
-            assert_eq!(rewrites[0].to, fork.packages[0].id);
-            let panel = package_manifest(&dest, Some("packages/panel")).unwrap();
-            assert_eq!(panel.dependencies[&rewrites[0].to], "^1");
-            let bytes = fs::read(dest.join("packages/panel/plugin.json")).unwrap();
-            assert!(fork_rewrite(&dest).unwrap().is_empty());
-            assert_eq!(
-                fs::read(dest.join("packages/panel/plugin.json")).unwrap(),
-                bytes
-            );
+            let before = crate::repository_packages(&dest, None).unwrap();
+            let core = before.iter().find(|p| p.path == "packages/theme").unwrap();
+            let panel = before.iter().find(|p| p.path == "packages/panel").unwrap();
+            let edited = crate::edit_dependency(
+                &dest,
+                &panel.id,
+                &crate::DependencyEdit::Update {
+                    dependency: "11111111-1111-4111-8111-111111111111".into(),
+                    new_dependency: core.id.clone(),
+                    requirement: "^1".into(),
+                },
+            )
+            .unwrap();
+            assert_eq!(edited.dependencies[&core.id], "^1");
             for package in &fork.packages {
                 let m = package_manifest(&dest, Some(&package.path)).unwrap();
                 valid_id(&m.id).unwrap();
@@ -1187,102 +971,5 @@ mod tests {
                 .as_deref(),
             Some(url.as_str())
         );
-    }
-
-    fn with_dependencies(id: &str, dependencies: &[(&str, &str)]) -> Manifest {
-        Manifest {
-            id: id.into(),
-            version: "1.0.0".into(),
-            dependencies: dependencies
-                .iter()
-                .map(|(id, requirement)| ((*id).into(), (*requirement).into()))
-                .collect(),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn a_dependency_on_an_original_and_its_fork_is_refused_in_any_key_order() {
-        // B9: the fork ID sorts after (zz) and before (aa) the original.
-        for fork in [
-            "ffffffff-ffff-4fff-bfff-ffffffffffff",
-            "00000000-0000-4000-8000-000000000000",
-        ] {
-            let fork = fork.to_owned();
-            let forks = BTreeMap::from([(
-                "f851f609-bb81-52d6-bfef-33798624782c".to_owned(),
-                (fork.clone(), "1.0.0".to_owned()),
-            )]);
-            let mut m = with_dependencies(
-                "09e5894a-6e33-5a1e-91e0-730a2f8cb569",
-                &[
-                    ("f851f609-bb81-52d6-bfef-33798624782c", "^1"),
-                    (fork.as_str(), "^2"),
-                ],
-            );
-            let mut rewrites = Vec::new();
-            let error = rewrite_dependencies(&mut m, &forks, &mut rewrites).unwrap_err();
-            assert_eq!(error.kind(), "invalid_manifest", "{fork}");
-            assert!(
-                error.to_string().contains(&format!(
-                    "depends on both f851f609-bb81-52d6-bfef-33798624782c and its fork {fork}"
-                )),
-                "{error}"
-            );
-        }
-        // Two originals of one fork (forkOf and replaces of an existing package).
-        let forks = BTreeMap::from([
-            (
-                "a4f3d15d-34c4-5a54-ac52-07e6c2cbd6bd".to_owned(),
-                (
-                    "d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50".to_owned(),
-                    "1.0.0".to_owned(),
-                ),
-            ),
-            (
-                "1ee84ec0-48e6-51c7-93bd-7f4d43f8275c".to_owned(),
-                (
-                    "d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50".to_owned(),
-                    "1.0.0".to_owned(),
-                ),
-            ),
-        ]);
-        let mut m = with_dependencies(
-            "09e5894a-6e33-5a1e-91e0-730a2f8cb569",
-            &[
-                ("a4f3d15d-34c4-5a54-ac52-07e6c2cbd6bd", "^1"),
-                ("1ee84ec0-48e6-51c7-93bd-7f4d43f8275c", "^1"),
-            ],
-        );
-        let error = rewrite_dependencies(&mut m, &forks, &mut Vec::new()).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("both forked as d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50"),
-            "{error}"
-        );
-        // The plain case: rewritten, with a new requirement when needed.
-        let forks = BTreeMap::from([(
-            "f851f609-bb81-52d6-bfef-33798624782c".to_owned(),
-            (
-                "d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50".to_owned(),
-                "2.0.0".to_owned(),
-            ),
-        )]);
-        let mut m = with_dependencies(
-            "09e5894a-6e33-5a1e-91e0-730a2f8cb569",
-            &[
-                ("f851f609-bb81-52d6-bfef-33798624782c", "^1"),
-                ("7d3c44ac-286f-5db5-8c90-ecfa368e5b4d", "*"),
-            ],
-        );
-        let mut rewrites = Vec::new();
-        rewrite_dependencies(&mut m, &forks, &mut rewrites).unwrap();
-        assert_eq!(
-            m.dependencies["d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50"],
-            "^2.0.0"
-        );
-        assert_eq!(m.dependencies["7d3c44ac-286f-5db5-8c90-ecfa368e5b4d"], "*");
-        assert_eq!(rewrites[0].new_requirement.as_deref(), Some("^2.0.0"));
     }
 }

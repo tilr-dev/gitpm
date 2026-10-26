@@ -486,7 +486,10 @@ fn print_fork_result(fork: &gitpm::PackageFork) {
     println!(
         "forkOf records each origin; replaces says the fork can stand in for it (used only\nafter an explicit replace). The original installations are unchanged.\n\nNext steps (choose the packages to install and replace):"
     );
-    println!("  gitpm fork-rewrite {quoted}   optionally use sibling fork dependencies");
+    println!("  gitpm packages {quoted}   inspect package identities and dependencies");
+    println!(
+        "  gitpm dependency update PACKAGE OLD NEW REQUIREMENT --repo {quoted}   optionally edit dependencies"
+    );
     println!(
         "  gitpm commit {quoted} NEW_VERSION   commit local edits, release all packages with tag vNEW_VERSION"
     );
@@ -526,24 +529,14 @@ fn print_package_fork(fork: &gitpm::PackageFork) {
         );
     }
 }
-fn print_dependency_rewrites(rewrites: &[gitpm::DependencyRewrite]) {
-    for rewrite in rewrites {
-        match &rewrite.new_requirement {
-            None => println!(
-                "Dependency: {} now depends on {} {} (was {})",
-                rewrite.package, rewrite.to, rewrite.requirement, rewrite.from
-            ),
-            Some(new) => println!(
-                "Dependency: {} now depends on {} {new} (was {} {}, which the fork's version does not satisfy)",
-                rewrite.package, rewrite.to, rewrite.from, rewrite.requirement
-            ),
-        }
-    }
-}
 const COMMANDS: &[&str] = &[
     "init",
     "fork",
-    "fork-rewrite",
+    "packages",
+    "dependency",
+    "dependency add",
+    "dependency update",
+    "dependency remove",
     "remote",
     "auth",
     "catalog show",
@@ -677,7 +670,7 @@ Workspace (installed packages):",
                                    Existing destinations are refused. Dependencies
                                    between packages forked together are preserved.
                                    No release, installation or replacement is performed;
-                                   use fork-rewrite, commit, install and replace explicitly
+                                   use packages, dependency, commit, install and replace explicitly
   fork [ID...] --from SOURCE --into DIR [--ref REF]
                                    clone a Git path or URL without a workspace.
                                    Default: latest stable vVERSION release containing
@@ -687,9 +680,18 @@ Workspace (installed packages):",
                                    All packages receive fresh UUIDs; names are preserved",
     },
     Help {
-        commands: &["fork-rewrite"],
-        text: "  fork-rewrite DIR               explicitly rewrite internal dependencies to sibling fork UUIDs;
-                                   edits author manifests without a workspace or commit",
+        commands: &["packages"],
+        text: "  packages DIR                  inspect working-tree repository packages as JSON;
+                                   installation membership uses the configured workspace",
+    },
+    Help {
+        commands: &["dependency", "dependency add", "dependency update", "dependency remove"],
+        text: "  dependency add PACKAGE DEPENDENCY REQUIREMENT [--repo DIR]
+  dependency update PACKAGE OLD NEW REQUIREMENT [--repo DIR]
+  dependency remove PACKAGE DEPENDENCY [--repo DIR]
+                                   edit one package's working-tree manifest explicitly;
+                                   without --repo, edit an installed Git package;
+                                   no release, install or deployment is performed",
     },
     Help {
         commands: &["replace"],
@@ -800,8 +802,19 @@ fn command_usage(command: &str) -> Option<String> {
         .collect();
     (!blocks.is_empty()).then(|| blocks.join("\n"))
 }
-/// Collapse a catalog operation to the same command key used by help and validation.
+/// Collapse a compound operation to the same command key used by help and validation.
 fn catalog_command(args: &mut Vec<String>, help: bool) -> Result<()> {
+    if args.first().is_some_and(|arg| arg == "dependency") {
+        match args.get(1).map(String::as_str) {
+            Some("add" | "update" | "remove") => {
+                let subcommand = args.remove(1);
+                args[0] = format!("dependency {subcommand}");
+            }
+            None | Some("--help" | "-h") if help => {}
+            _ => bail!("dependency needs add, update or remove; use gitpm dependency --help"),
+        }
+        return Ok(());
+    }
     if args.first().is_none_or(|arg| arg != "catalog") {
         return Ok(());
     }
@@ -846,6 +859,7 @@ fn run(invocation: &mut Invocation) -> Result<()> {
         println!("{text}");
         return Ok(());
     }
+    let repo = option(&mut args, "--repo")?;
     let from = option(&mut args, "--from")?;
     let reference = option(&mut args, "--ref")?;
     let version = option(&mut args, "--version")?;
@@ -875,6 +889,10 @@ fn run(invocation: &mut Invocation) -> Result<()> {
         bail!("unknown option: {unknown}; use --help");
     }
     let command = args[0].as_str();
+    ensure!(
+        repo.is_none() || command.starts_with("dependency "),
+        "--repo requires dependency add/update/remove"
+    );
     ensure!(
         !no_catalog || command == "check",
         "--no-catalog requires check"
@@ -967,6 +985,9 @@ fn run(invocation: &mut Invocation) -> Result<()> {
     );
     let expected = match command {
         "catalog show" | "catalog update" | "list" | "check" | "catalog links" | "sync-dist" => 1,
+        "dependency add" => 4,
+        "dependency update" => 5,
+        "dependency remove" => 3,
         // fork ID [ID...]: one or more installed IDs.
         "fork" if from.is_some() => args.len(),
         "fork" => args.len().max(2),
@@ -1253,8 +1274,32 @@ fn run(invocation: &mut Invocation) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&report.release)?);
             return Ok(());
         }
-        "fork-rewrite" => {
-            print_dependency_rewrites(&gitpm::fork::fork_rewrite(Path::new(id))?);
+        "packages" => {
+            let packages = gitpm::repository_packages(Path::new(id), Some(Path::new(&root)))?;
+            println!("{}", serde_json::to_string_pretty(&packages)?);
+            return Ok(());
+        }
+        "dependency add" | "dependency update" | "dependency remove" => {
+            let edit = match command {
+                "dependency add" => gitpm::DependencyEdit::Add {
+                    dependency: args[2].clone(),
+                    requirement: args[3].clone(),
+                },
+                "dependency update" => gitpm::DependencyEdit::Update {
+                    dependency: args[2].clone(),
+                    new_dependency: args[3].clone(),
+                    requirement: args[4].clone(),
+                },
+                _ => gitpm::DependencyEdit::Remove {
+                    dependency: args[2].clone(),
+                },
+            };
+            let result = if let Some(repo) = &repo {
+                gitpm::edit_dependency(Path::new(repo), id, &edit)?
+            } else {
+                Manager::open_with(&root, ssh_options.clone())?.edit_dependency(id, &edit)?
+            };
+            println!("{}", serde_json::to_string_pretty(&result)?);
             return Ok(());
         }
         "remote" => {

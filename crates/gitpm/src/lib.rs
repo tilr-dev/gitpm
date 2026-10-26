@@ -17,6 +17,7 @@ mod atomic_write;
 pub mod auth;
 pub mod catalog;
 pub mod check;
+pub mod dependency_edit;
 pub mod deps;
 mod error;
 pub mod identity;
@@ -34,6 +35,7 @@ mod txn;
 mod upgrade;
 mod workspace;
 
+pub use dependency_edit::{DependencyEdit, PackageDetails, edit_dependency, repository_packages};
 pub use error::{Error, Result};
 pub use list::{ListOptions, ListView, list_with};
 pub use lost_work::LostWork;
@@ -43,11 +45,10 @@ pub use model::{
 };
 pub use workspace::fork;
 pub use workspace::{
-    DependencyRewrite, DistSync, ForgetResult, ForkedPackage, HeldBack, HeldBackReason,
-    IncompatibleConsumer, InstallResult, InstallTarget, InstalledDependency, LinkResult, Manager,
-    Options, PackageFork, ReplacementCheck, ReplacementIssue, ReplacementPlan,
-    ReplacementResolution, RevisionChange, SkippedDist, Target, Unchanged, UnchangedReason,
-    UninstallPlan, UpdateAllPlan, UpdateOptions,
+    DistSync, ForgetResult, ForkedPackage, HeldBack, HeldBackReason, IncompatibleConsumer,
+    InstallResult, InstallTarget, InstalledDependency, LinkResult, Manager, Options, PackageFork,
+    ReplacementCheck, ReplacementIssue, ReplacementPlan, ReplacementResolution, RevisionChange,
+    SkippedDist, Target, Unchanged, UnchangedReason, UninstallPlan, UpdateAllPlan, UpdateOptions,
 };
 
 mod artifact;
