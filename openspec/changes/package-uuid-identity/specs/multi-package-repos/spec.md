@@ -72,7 +72,7 @@ Verified by `two_packages_share_one_clone_and_follow_repository_releases`.
 - **THEN** install refuses with `local_changes`, preserving the local tag, package worktrees and state
 
 ### Requirement: Forgotten packages of shared clones
-Forgetting a package of a shared clone SHALL keep a `forgotten` record (format in workspace-layout) that still holds its bare repository and Git worktree; `restore` SHALL record it again under the rules of install-uninstall ("Restore preconditions") and deploy it when active; `uninstall` of the forgotten package SHALL remove the record its worktree and, if last, the bare repository. Verified by `a_forgotten_shared_package_keeps_its_clone_until_uninstalled`.
+Forgetting a package of a shared clone SHALL keep a `forgotten` record (format in workspace-layout) that still holds its bare repository and Git worktree; `restore` SHALL record it again under the rules of install-uninstall ("Restore preconditions") and deploy it when active; `uninstall` of the forgotten package SHALL remove the record, its worktree and, if last, the bare repository. Verified by `a_forgotten_shared_package_keeps_its_clone_until_uninstalled`.
 
 #### Scenario: Shared clone gone
 - **WHEN** the shared clone of a forgotten package was deleted
