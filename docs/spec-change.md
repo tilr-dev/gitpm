@@ -16,7 +16,12 @@ python3 /trusted/gitpm/scripts/spec_change.py \
 candidate into the current dev and `--base` that dev commit, not the branch tip:
 a branch that is behind dev would otherwise "remove" every requirement dev gained
 after it forked. CI uses GitHub's test merge `refs/pull/<n>/merge` (its first
-parent is dev, its second must be the exact candidate SHA). Local merge
+parent is dev, its second must be the exact candidate SHA). The prepared
+[merge readiness helper](../scripts/spec-merge.md) reads PR mergeability before
+fetching: conflicts instruct the author to merge dev and push, while pending or
+stale results are polled for approximately 60 seconds before advising a re-run.
+It requires `pull-requests: read` in addition to `contents: read`; activation in
+the main-only trusted workflows is a separate explicit deployment. Local merge
 automation passes the dev commit and its uncommitted squash result the same way.
 Use `--comments-json /trusted/comments.json` for offline verification with an
 exported array of comment activity records. Never accept that file from a PR.

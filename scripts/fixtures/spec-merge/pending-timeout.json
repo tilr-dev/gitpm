@@ -1,0 +1,43 @@
+{
+  "polls": [
+    {
+      "mergeable": null,
+      "head": {
+        "sha": "candidate"
+      }
+    }
+  ],
+  "error": "GitHub has not updated the merge result for candidate yet; re-run the job",
+  "waits": [
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2
+  ]
+}
