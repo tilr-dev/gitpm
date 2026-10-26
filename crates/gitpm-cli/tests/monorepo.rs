@@ -607,7 +607,7 @@ fn provider_of(state: &serde_json::Value, consumer: &str) -> String {
 }
 
 #[test]
-fn fork_ids_select_the_repository_and_preserve_dependencies_until_explicit_rewrite() {
+fn fork_ids_select_the_repository_and_preserve_dependencies_until_explicit_edit() {
     let f = Fixture::new();
     three_installed(&f);
     let out = f.ok(&[

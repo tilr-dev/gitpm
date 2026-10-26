@@ -14,6 +14,14 @@ Library, FFI and CLI SHALL expose working-tree packages of a repository, includi
 - **THEN** its entry includes its name, forkOf, dependency IDs and requirements, and installed true
 - **AND** repository inspection with that workspace marks the matching ID installed
 
+### Requirement: Installed package name snapshot
+Install and update SHALL store the installed manifest's name in each package record of state format 1. Installed listing SHALL read the name from that snapshot without reading the clone. A record without `name` SHALL be refused with `invalid_data` without rewriting `state.json`. Verified by `model::state_requires_core_fields`.
+
+#### Scenario: State record without a name
+- **WHEN** an operation reads a format-1 workspace state containing a package record without `name`
+- **THEN** it fails with `invalid_data` (missing field `name`)
+- **AND** `state.json` keeps its original bytes
+
 ### Requirement: Explicit dependency editing
 Library, FFI and CLI SHALL add, update or remove a dependency of one package selected by ID in an author repository, or an installed editable Git worktree through the locked manager. Callers SHALL supply IDs and requirements explicitly. The complete resulting manifest SHALL be validated before writing. Edits SHALL preserve other fields and unknown keys, changing no other manifest, recorded state or deployed output. Successful results SHALL describe the edited package.
 
