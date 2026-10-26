@@ -6,7 +6,7 @@ GitHub can retain an old test merge when a pull request conflicts with dev. Trea
 ## What Changes
 - Distinguish conflicts from pending and stale test merges using the pull request API.
 - Wait up to approximately 60 seconds for the exact candidate merge, with deterministic fixture coverage.
-- Prepare identical trusted merge-fetch logic for deployment from main; the workflow remains absent from dev.
+- Maintain shared trusted merge-fetch logic in gitpm for deployment from main; the workflow remains absent from dev.
 
 ## Impact
 - Adds specification merge readiness diagnostics and a standalone Python helper with fixtures.

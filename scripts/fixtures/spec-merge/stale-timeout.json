@@ -5,7 +5,10 @@
       "parents": [
         "base",
         "old-head"
-      ]
+      ],
+      "head": {
+        "sha": "candidate"
+      }
     }
   ],
   "error": "GitHub has not updated the merge result for candidate yet; re-run the job",

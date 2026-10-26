@@ -6,7 +6,10 @@
       "parents": [
         "old-base",
         "old-head"
-      ]
+      ],
+      "head": {
+        "sha": "candidate"
+      }
     }
   ],
   "error": "PR conflicts with dev: merge dev into task/example (`git merge dev`) and push",

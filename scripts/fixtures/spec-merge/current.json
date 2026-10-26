@@ -5,7 +5,10 @@
       "parents": [
         "base",
         "candidate"
-      ]
+      ],
+      "head": {
+        "sha": "candidate"
+      }
     }
   ],
   "outcome": "base",

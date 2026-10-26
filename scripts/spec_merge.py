@@ -16,7 +16,14 @@ def prepare_merge(repo, repository, pr_number, head_sha, branch, *,
     deadline = clock() + 60
 
     def command(args):
-        return run(args, check=True, text=True, capture_output=True, timeout=15).stdout
+        try:
+            return run(args, check=True, text=True, capture_output=True, timeout=15).stdout
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+            stderr = error.stderr or ''
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode(errors='replace')
+            reason = stderr.strip() or str(error)
+            raise RuntimeError(f'spec-change: {args[0]} {args[1]} failed: {reason}') from error
 
     def git(*args):
         return command(['git', '-C', str(repo), *args])
@@ -25,10 +32,11 @@ def prepare_merge(repo, repository, pr_number, head_sha, branch, *,
         pr = json.loads(command(['gh', 'api', f'repos/{repository}/pulls/{pr_number}']))
         if 'mergeable' not in pr or not any(pr['mergeable'] is v for v in (None, True, False)):
             raise RuntimeError('spec-change: invalid mergeable value in GitHub PR response')
-        if pr['mergeable'] is False:
+        current_head = pr.get('head', {}).get('sha') == head_sha
+        if current_head and pr['mergeable'] is False:
             raise RuntimeError(
                 f'spec-change: PR conflicts with dev: merge dev into {branch} (`git merge dev`) and push')
-        if pr['mergeable'] is True:
+        if current_head and pr['mergeable'] is True:
             # GitHub replaces the synthetic merge; refreshing it is not fast-forward.
             git('fetch', '--no-tags', '--depth=2', 'origin',
                 f'+refs/pull/{pr_number}/merge:refs/inspection/merge')

@@ -5,12 +5,13 @@ initialized bare repository whose `origin` and Git authentication are already
 configured. It reads the PR with `gh api repos/$REPOSITORY/pulls/$PR_NUMBER`
 before fetching candidate objects. It never checks out or executes PR files.
 
-A false `mergeable` value fails immediately with a conflict diagnostic and
-`git merge dev` instructions for the candidate branch. A null value or a merge
+For an API response whose `head.sha` matches `HEAD_SHA`, a false `mergeable`
+value fails immediately with a conflict diagnostic and
+`git merge dev` instructions for the candidate branch. An API response for another head, a null value or a merge
 whose second parent differs from `HEAD_SHA` triggers another API read after two
 seconds, for approximately 60 seconds in total. Only expiration produces the
 GitHub-not-updated / re-run diagnostic. A valid result sets the comparison base
-to its first parent. API/command failures fail closed.
+to its first parent. API/command failures fail closed and preserve the command error output.
 
 ## Deployment from main
 
@@ -51,8 +52,8 @@ python3 -m unittest discover -s scripts -p test_spec_merge.py
 ```
 
 The JSON matrix injects API responses, fetched parents and virtual time. Tests
-cover pending-to-current, stale-to-current, immediate and delayed conflicts,
+cover pending-to-current, stale-to-current, immediate and delayed conflicts, stale API heads,
 pending/stale deadlines and a current result. A local bare Git test replaces an
 actual synthetic merge ref between polls and checks both resulting refs, with
 no network or real waiting. The CLI test verifies the conflict exit status and
-message. All three components carry identical helper, fixtures and tests.
+message. The shared helper, fixtures and tests are maintained in gitpm.

@@ -51,7 +51,7 @@ class FixtureRunner:
 class MergeReadinessFixtures(unittest.TestCase):
     def test_outcomes_and_wait_deadline(self):
         paths = sorted(FIXTURES.glob('*.json'))
-        self.assertEqual(7, len(paths))
+        self.assertEqual(9, len(paths))
         for path in paths:
             case = json.loads(path.read_text())
             runner = FixtureRunner(case)
@@ -68,6 +68,8 @@ class MergeReadinessFixtures(unittest.TestCase):
                     self.assertEqual(case['outcome'], runner.base)
                 self.assertEqual(case['waits'], runner.waits)
                 self.assertEqual('gh', runner.calls[0][0])
+                if path.stem == 'old-head-timeout':
+                    self.assertTrue(all(call[0] == 'gh' for call in runner.calls))
                 if path.stem == 'conflict':
                     self.assertEqual(1, len(runner.calls), 'conflict must fail before fetching stale refs')
                 if path.stem == 'stale-current':
@@ -103,7 +105,7 @@ class MergeReadinessFixtures(unittest.TestCase):
             old_merge = commit('old merge', base, old_head)
             merge = commit('current merge', base, head)
             git(origin, 'update-ref', 'refs/pull/69/merge', old_merge)
-            runner = FixtureRunner({'polls': [{'mergeable': True}]})
+            runner = FixtureRunner({'polls': [{'mergeable': True, 'head': {'sha': head}}]})
             fetch_count = 0
 
             def run(args, **kwargs):
@@ -132,8 +134,22 @@ class MergeReadinessFixtures(unittest.TestCase):
             self.assertEqual([], runner.waits)
             self.assertEqual(1, len(runner.calls))
 
+    def test_command_failures_preserve_stderr(self):
+        for failure in (
+                subprocess.CalledProcessError(1, ['gh', 'api'], stderr='HTTP 403: Resource not accessible'),
+                subprocess.TimeoutExpired(['gh', 'api'], 15, stderr=b'upstream stalled')):
+            with self.subTest(failure=type(failure).__name__):
+                def run(args, **kwargs):
+                    raise failure
+
+                with self.assertRaises(RuntimeError) as error:
+                    spec_merge.prepare_merge('bare.git', 'owner/repo', '69', 'candidate', 'task/example', run=run)
+                self.assertIn('spec-change: gh api failed:', str(error.exception))
+                self.assertIn('HTTP 403' if isinstance(failure, subprocess.CalledProcessError)
+                              else 'upstream stalled', str(error.exception))
+
     def test_cli_reports_conflict_and_returns_failure(self):
-        runner = FixtureRunner({'polls': [{'mergeable': False}]})
+        runner = FixtureRunner({'polls': [{'mergeable': False, 'head': {'sha': 'candidate'}}]})
         stderr = io.StringIO()
         prepare = spec_merge.prepare_merge
         with patch.object(spec_merge, 'prepare_merge', side_effect=lambda *args: prepare(

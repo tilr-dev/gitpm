@@ -6,5 +6,5 @@
 - [x] Document trusted deployment and required permissions.
 
 ## 3. Validation
-- [x] Cover pending, conflict and stale outcomes with deterministic fixtures.
-- [x] Review identical helper behavior across components.
+- [x] Cover pending, conflict, stale API heads and command failures with deterministic fixtures in the shared helper.
+- [x] Verify shared helper deployment without component-local copies.
