@@ -5,6 +5,12 @@
   "head": {
     "openspec/specs/terminal/spec.md": "## Requirements\n\n### Requirement: Existing\nThe system SHALL work.\n\n#### Scenario: Use\n- **WHEN** called\n- **THEN** it changes\n"
   },
-  "comments": [],
+  "comments": [
+    {
+      "actorUserId": "de530293-4ccc-44bc-8d3d-d24a781a8351",
+      "body": "Ready to work.",
+      "kind": "comment"
+    }
+  ],
   "uncovered": []
 }

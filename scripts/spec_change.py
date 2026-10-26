@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Authorize OpenSpec changes using trusted task comments; stdlib only."""
 import argparse
+from datetime import datetime, timezone
 import difflib
 import json
 import os
@@ -12,6 +13,10 @@ import unicodedata
 import urllib.request
 
 DAN = 'Iu7nTn6V69XRWEmaZjjjeNVn9JyMwdsA'
+# Original rule landed in dev as e31c1ac23de1b3f34323029f64dd3bb3a3629057.
+LEGACY_CUTOFF = datetime(2026, 10, 22, 21, 2, 26, tzinfo=timezone.utc)
+CLOSED_COLUMNS = {9, 10}  # Done, Canceled.
+GRANT_COLUMNS = {21, 22, 23}  # Review, Supervise, Merge.
 INTAKE = 'de530293-4ccc-44bc-8d3d-d24a781a8351'
 ENDPOINT = 'https://api-plan.rexuni.dev/mcp'
 # Cloudflare in front of Plan answers 403 to the default Python-urllib User-Agent.
@@ -24,13 +29,39 @@ class CheckError(Exception):
     pass
 
 
+def task_metadata(issue):
+    if not isinstance(issue, dict) or type(issue.get('id')) is not int or issue['id'] <= 0:
+        raise CheckError('Task does not exist or its metadata is unavailable')
+    if type(issue.get('sequenceNumber')) is not int or issue['sequenceNumber'] <= 0:
+        raise CheckError('Task metadata is missing its number')
+    column = issue.get('columnId')
+    if type(column) is not int or column <= 0:
+        raise CheckError('Task metadata is missing its column')
+    created = issue.get('createdAt')
+    if not isinstance(created, str):
+        raise CheckError('Task metadata is missing createdAt')
+    try:
+        created = datetime.fromisoformat(created.replace('Z', '+00:00'))
+    except ValueError as error:
+        raise CheckError('Task createdAt must be an ISO timestamp with timezone') from error
+    if created.tzinfo is None:
+        raise CheckError('Task createdAt must include a timezone')
+    if column in CLOSED_COLUMNS:
+        raise CheckError('Task is Done or Canceled; use the current active task')
+    return created, column
+
+
+def intake_ready(comment):
+    return (isinstance(comment, dict) and comment.get('actorUserId') == INTAKE
+            and comment.get('kind', 'comment') == 'comment'
+            and re.search(r'^Ready\b', comment.get('body', ''), re.M | re.I))
+
+
 def trusted_scope(comments):
     scopes = []
     for comment in comments:
         body = comment.get('body', '')
-        if comment.get('actorUserId') != INTAKE or comment.get('kind', 'comment') != 'comment':
-            continue
-        if not re.search(r'^Ready\b', body, re.M | re.I):
+        if not intake_ready(comment):
             continue
         scopes.extend(re.findall(r'^Spec scope:([^\r\n]*)', body, re.M))
     if not scopes:
@@ -182,13 +213,20 @@ def capability_collisions(base, head):
             raise CheckError(f'Capability {name} collides with {clash[0]} by case or Unicode form')
 
 
-def check(base, head, comments, component):
+def check(base, head, comments, component, issue=None):
     """Trees map OpenSpec paths to UTF-8 text; no candidate code is executed."""
+    created, column = task_metadata(issue)
+    if not isinstance(comments, list) or any(not isinstance(c, dict) for c in comments):
+        raise CheckError('Expected complete comment activity records')
     own = trusted_scope(comments)
     if own is None:
+        if not any(intake_ready(c) for c in comments):
+            raise CheckError('Task has no trusted intake ready comment; run intake')
+        if created >= LEGACY_CUTOFF:
+            raise CheckError('Task created after the legacy cutoff requires intake Spec scope')
         return []
     capability_collisions(base, head)
-    allowed = permissions(comments, component)
+    allowed = permissions(comments, component) if column in GRANT_COLUMNS else set()
     uncovered = set()
     for path in sorted(base.keys() | head.keys()):
         old, new = base.get(path, ''), head.get(path, '')
@@ -325,12 +363,15 @@ class MCP:
             raise CheckError('Task API read failed')
         return data.get('data', data) if isinstance(data, dict) else data
 
-    def comments(self, number):
+    def task(self, number):
         schema = self.schemas['get_issue_by_number']['properties']
         number_key = next((key for key in ('number', 'issueNumber', 'sequenceNumber') if key in schema), None)
         if not number_key:
             raise CheckError('Unsupported task lookup schema')
         issue = self.call('get_issue_by_number', {'projectKey': 'tilr.TILR', number_key: number})
+        task_metadata(issue)
+        if issue['sequenceNumber'] != number:
+            raise CheckError('Task metadata does not match the branch number')
         schema = self.schemas['list_issue_activity']['properties']
         limit = min(schema.get('limit', {}).get('maximum', 100), 100)
         args = {'issueId': issue['id'], 'filter': 'comments', 'limit': limit}
@@ -352,7 +393,7 @@ class MCP:
                 args['offset'] += len(rows)
             else:
                 raise CheckError('Cannot prove comments are complete: pagination unavailable')
-        return sorted(result, key=lambda c: (c.get('createdAt', ''), c.get('id', 0)))
+        return {'issue': issue, 'comments': sorted(result, key=lambda c: (c.get('createdAt', ''), c.get('id', 0)))}
 
 
 def main(argv=None):
@@ -362,24 +403,30 @@ def main(argv=None):
     parser.add_argument('--head', required=True)
     parser.add_argument('--branch', required=True)
     parser.add_argument('--component', required=True, choices=['gitpm', 'tilrd', 'cloud', 'desktop-mac'])
-    parser.add_argument('--comments-json', type=Path, help='trusted exported comment array for offline checks')
+    parser.add_argument('--comments-json', type=Path, help='trusted exported object with issue metadata and complete comments for offline checks')
     args = parser.parse_args(argv)
     try:
         match = re.fullmatch(r'task/TILR-([1-9][0-9]*)', args.branch)
         if not match:
             raise CheckError('Expected branch task/TILR-<number>')
         if args.comments_json:
-            comments = json.loads(args.comments_json.read_text())
+            exported = json.loads(args.comments_json.read_text())
         else:
             token = os.environ.get('ITSAPLAN_READ_ONLY_TOKEN')
             if not token:
                 raise CheckError('Set ITSAPLAN_READ_ONLY_TOKEN to the dedicated read-only CI credential')
-            comments = MCP(token).comments(int(match[1]))
-        failures = check(tree(args.repo, args.base), tree(args.repo, args.head), comments, args.component)
+            exported = MCP(token).task(int(match[1]))
+        if not isinstance(exported, dict) or 'issue' not in exported or 'comments' not in exported:
+            raise CheckError('Expected trusted export with issue metadata and complete comments; comments-only arrays are unsupported')
+        issue, comments = exported['issue'], exported['comments']
+        task_metadata(issue)
+        if issue['sequenceNumber'] != int(match[1]):
+            raise CheckError('Task metadata does not match the branch number')
+        failures = check(tree(args.repo, args.base), tree(args.repo, args.head), comments, args.component, issue)
         if failures:
             print('spec-change: uncovered changes:\n' + '\n'.join('- ' + f for f in failures))
             return 1
-        print('spec-change: authorized (or legacy task without Spec scope)')
+        print('spec-change: authorized (or eligible legacy task)')
         return 0
     except (CheckError, ValueError, KeyError, TypeError, OSError) as error:
         # Never print HTTP request headers or credentials.

@@ -3,7 +3,7 @@
 `spec_change.py` is the single Python 3 standard-library checker shared by gitpm,
 tilrd, cloud, and desktop-mac. It reads Git blobs as data without checking out or
 executing candidate code. Exit 0 means authorization succeeds, including legacy
-tasks without intake scope; exit 1 means uncovered changes or an input/API error.
+tasks created before the rule with trusted intake ready; exit 1 means uncovered changes or an input/API error.
 
 ```sh
 export ITSAPLAN_READ_ONLY_TOKEN  # Dedicated CI read-only credential, never a bot key.
@@ -24,16 +24,34 @@ It requires `pull-requests: read` in addition to `contents: read`; activation in
 the main-only trusted workflows is a separate explicit deployment. Local merge
 automation passes the dev commit and its uncommitted squash result the same way.
 Use `--comments-json /trusted/comments.json` for offline verification with an
-exported array of comment activity records. Never accept that file from a PR.
+exported object containing `issue` and `comments`. `issue` must include `id`,
+`sequenceNumber`, `createdAt` (an ISO timestamp with timezone), and `columnId`;
+`comments` is the complete comment activity array. A comments-only array is no
+longer sufficient. The issue number must match the branch. Never accept that file
+from a PR.
 
 The checker reads `get_issue_by_number` and all `list_issue_activity` comment
 pages through the read-only MCP endpoint. It accepts scope declarations from the
 Intake Bot identity and authorization blocks from Dan's member identity, using
 stable user IDs rather than display names. It does not use task descriptions or
-bot-authored blocks as permission. Comment arrays must be complete and preserve
+bot-authored blocks as permission. Task metadata is required even when scope is absent. Comment arrays must be complete and preserve
 activity metadata. Malformed scope or incomplete reads fail closed. The own
 change is the single `change <id>` inside `own (...)` of the latest `Spec scope:`
 line; no id, several ids, or a `change <id>` outside `own (...)` fail closed.
+
+A legacy exception applies only when the task was created strictly before
+`2026-10-22T21:02:26Z`, has a trusted intake-ready comment and no Spec scope, and is
+neither Done nor Canceled. The cutoff is commit
+`e31c1ac23de1b3f34323029f64dd3bb3a3629057`, where the original checker rule landed
+in gitpm dev. A missing task, missing metadata, a closed task, or a newer task
+without scope fails closed.
+
+Dan's grants count only while the task is in Review, Supervise, or Merge. While
+it is In Progress, additions and edits of the declared own change that require
+no grant still pass; edits requiring a grant fail. After moving the task into
+Review, rerun the required `spec-change` job to read its current column. The
+checker fetches metadata on every invocation; moving a task does not itself
+trigger a GitHub run.
 
 Authorization blocks use exact component, capability, requirement and operation:
 
