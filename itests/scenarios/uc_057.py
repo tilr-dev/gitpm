@@ -139,15 +139,16 @@ def catalog_update_refused_for_a_verified_catalog(t: T):
 
 @case(fixture="g4_two_catalogs", spec=["updates/protected-packages-update-through-their-catalog#detach", "updates/protected-packages-update-through-their-catalog#newer-tag-not-in-the-catalog", "catalog/check-compares-installed-packages-with-their-catalog-or-origin#protected-package-with-a-newer-upstream", "catalog/check-compares-installed-packages-with-their-catalog-or-origin#verified-or-not"])
 def protected_update_check_and_detach(t: T):
-    """9. Protected x/p: update all keeps it (upstream 1.1.0 not in catalog), check names it
-    against A (verified); --detach drops the catalog and takes the origin's 1.1.0."""
+    """9. Protected x/p: update all keeps it; check uses the listed catalog release
+    without querying origin; --detach takes the origin's 1.1.0."""
     install_from_a(t)
     a = str(cat(t, "catA"))
     r = t.gitpm_ok("update", "all")
     t.has(r.out, "x/p kept at 1.0.0 (upstream 1.1.0 not in catalog)")
     out = readonly(t, lambda: t.gitpm_ok("check", env={"GITPM_CATALOG": a}).out)
     t.has(out, f"Catalog: {a} (verified)")
-    t.has(row(out, XP), "upstream 1.1.0 not in catalog")
+    t.has(row(out, XP), "up to date", "catalog")
+    t.lacks(row(out, XP), "1.1.0")
     t.gitpm_err("update", XP, "--ref", "v1.1.0", kind="invalid_argument", contains="detach it")
     r = t.gitpm_ok("update", XP, "--detach")
     t.has(r.out, "x/p detached from catalog", "x/p updated 1.0.0 → 1.1.0")

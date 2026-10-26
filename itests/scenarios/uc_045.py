@@ -114,9 +114,11 @@ def missing_clone_uninstall_drops_the_record(t: T):
     """3. packages/dan/a removed: `uninstall dan/a` drops its record and dist (what sync-dist's hint
     names); B untouched."""
     shutil.rmtree(t.clone(A))
+    orphan = t.snap(t.worktree(A), git=True)
     b_before = t.snap(t.worktree(B), t.dist(B), git=True)
     t.gitpm_ok("uninstall", A)
-    t.not_installed(A)
+    t.not_installed(A, orphan_worktree=True)
+    t.same(orphan, "orphan worktree preserved")
     t.same(b_before, "B untouched")
     t.gitpm_ok("sync-dist")
 
