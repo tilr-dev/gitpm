@@ -1,0 +1,24 @@
+{
+  "polls": [
+    {
+      "mergeable": null,
+      "head": {
+        "sha": "candidate"
+      }
+    },
+    {
+      "mergeable": true,
+      "parents": [
+        "base",
+        "candidate"
+      ],
+      "head": {
+        "sha": "candidate"
+      }
+    }
+  ],
+  "outcome": "base",
+  "waits": [
+    2
+  ]
+}
