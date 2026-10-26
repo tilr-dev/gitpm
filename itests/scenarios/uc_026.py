@@ -1,8 +1,10 @@
 """UC-026: Unscoped IDs and legacy per-package tags are refused (P0).
 
-There is no backward compatibility before 1.0: a package ID is always namespace/name and
-a release tag is always vVERSION. g3_legacy is an unscoped repository `demo` with tags
-v0.1.0/v0.1.1; scoped be517c52-cf84-5615-9a18-9fae7d82c819 and an unscoped `author` live outside /fx/repos/<id>.
+There is no backward compatibility before 1.0: a package ID is always a canonical
+lowercase UUID and a release tag is always vVERSION. g3_legacy contains a repository
+with the invalid bare ID `demo` and tags v0.1.0/v0.1.1. Cases create repositories
+outside /fx/repos/<id> with the UUID be517c52-cf84-5615-9a18-9fae7d82c819 or the
+invalid bare ID `author`.
 """
 
 from gitpmtest import T, case

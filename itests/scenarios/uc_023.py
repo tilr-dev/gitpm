@@ -1,8 +1,8 @@
 """UC-023: Fork isolates installation work and preserves history and provenance (P0).
 
 dd3387ed-a5a3-5059-81ad-b1f6987a28f2 0.1.0 is installed (g3_vendor_installed). Each case adds a tracked edit and an
-untracked file to the installed clone and forks the recorded source with `--ns author --into DIR` into a folder
-whose basename differs from the package name.
+untracked file to the installed clone and forks the recorded source with `--into DIR` into a folder
+whose basename differs from the package name. The fork receives a new UUID.
 """
 
 import json
