@@ -84,6 +84,28 @@ class AuthorizationFixtures(unittest.TestCase):
             with self.subTest(head=head):
                 self.assertEqual([], checker.check({SPEC: ORIGINAL}, {SPEC: head}, [ready()], 'gitpm', issue=task()))
 
+    def test_added_requirement_before_trailing_section_is_free(self):
+        added = '### Requirement: New\nThe system SHALL add behavior.\n\n'
+        for heading in ['# Notes', '## Notes', '### Notes']:
+            with self.subTest(heading=heading):
+                trailing = heading + '\nUnchanged notes.\n'
+                old = ORIGINAL + '\n' + trailing
+                new = ORIGINAL + '\n' + added + trailing
+                self.assertEqual(set(), checker.changed_requirements(old, new))
+                self.assertEqual([], checker.check({SPEC: old}, {SPEC: new}, [ready()],
+                                                  'gitpm', issue=task()))
+
+    def test_requirement_owner_ends_at_peer_or_parent_heading(self):
+        for heading in ['# Notes', '## Notes', '### Notes']:
+            with self.subTest(heading=heading):
+                lines = (ORIGINAL + heading + '\nNotes.\n'
+                         '### Requirement: Next\nNext body.\n').splitlines()
+                boundary = lines.index(heading)
+                self.assertEqual('Existing', checker.requirement_at(lines, boundary - 1))
+                self.assertIsNone(checker.requirement_at(lines, boundary))
+                self.assertIsNone(checker.requirement_at(lines, boundary + 1))
+                self.assertEqual('Next', checker.requirement_at(lines, len(lines) - 1))
+
     def test_operation_and_component_are_exact(self):
         modified = ORIGINAL.replace('it works', 'it fails')
         for line in ['specs/terminal — «Existing»: remove', 'specs/other — «Existing»: modify']:
