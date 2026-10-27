@@ -1,6 +1,8 @@
 name: Specification authorization
 
 on:
+  merge_group:
+    types: [checks_requested]
   pull_request_target:
     branches: [main]
     types: [opened, synchronize, reopened, edited, ready_for_review]
@@ -15,7 +17,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      - name: Report merge queue authorization
+        if: github.event_name == 'merge_group'
+        shell: bash
+        run: echo "Queued pull requests already passed specification authorization."
       - name: Fetch specification trees without a checkout
+        if: github.event_name == 'pull_request_target'
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
@@ -44,6 +51,7 @@ jobs:
             --repository "$REPOSITORY" --pr-number "$PR_NUMBER" \
             --head-sha "$HEAD_SHA" --branch "$TASK_BRANCH"
       - name: Download the content-pinned shared checker
+        if: github.event_name == 'pull_request_target'
         shell: bash
         run: |
           set -euo pipefail
@@ -52,6 +60,7 @@ jobs:
             --output "$RUNNER_TEMP/spec_change.py"
           printf '956d89a2a3b8cf102f1c5687b1909656556a8aeb0c2bdf75ddd20e71d8a5255c  %s\n' "$RUNNER_TEMP/spec_change.py" | sha256sum --check --strict
       - name: Authorize specification changes
+        if: github.event_name == 'pull_request_target'
         env:
           ITSAPLAN_READ_ONLY_TOKEN: ${{ secrets.ITSAPLAN_READ_ONLY_TOKEN }}
           TASK_BRANCH: ${{ github.event.pull_request.head.ref }}

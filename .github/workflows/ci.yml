@@ -62,6 +62,11 @@ jobs:
       # The tests shell out to the runner's git; .cargo/config.toml points them at
       # tests/gitconfig, so the runner's Git config does not matter.
       - run: cargo test --workspace --locked
+      - name: Test specification workflow event routing
+        run: |
+          python3 -m venv "$RUNNER_TEMP/workflow-tests"
+          "$RUNNER_TEMP/workflow-tests/bin/pip" install PyYAML==6.0.2
+          "$RUNNER_TEMP/workflow-tests/bin/python" scripts/test_spec_change_workflow.py
       # Smoke test of the CLI binary as installed: the binary is already built for the
       # tests above (no rebuild); its tests cover --help, this checks --version against
       # the crate version (kept in lockstep with gitpm by release-please).
