@@ -157,8 +157,8 @@ class MergeReadinessFixtures(unittest.TestCase):
             status = spec_merge.main(['--repo', 'bare.git', '--repository', 'owner/repo',
                                       '--pr-number', '69', '--head-sha', 'candidate', '--branch', 'task/example'])
         self.assertEqual(1, status)
-        self.assertIn('PR conflicts with dev', stderr.getvalue())
-        self.assertIn('git merge dev', stderr.getvalue())
+        self.assertIn('PR conflicts with main', stderr.getvalue())
+        self.assertIn('git merge main', stderr.getvalue())
         self.assertNotIn('re-run', stderr.getvalue())
 
 

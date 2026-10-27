@@ -11,7 +11,7 @@ The CLI SHALL offer exactly the commands of its full usage (`gitpm --help`), eac
 
 #### Scenario: Command list
 - **WHEN** the user reads `gitpm --help`
-- **THEN** the commands are `init`, `commit`, `remote` (authoring); `fork`, `fork-rewrite`, `replace`, `replace-check`, `replace-resolve` (fork-replacement); `auth check` (git-safety); `catalog show`, `catalog update`, `catalog register`, `check` (catalog); `catalog links` (below); `install`, `install-catalog`, `download`, `download-catalog`, `forget`, `restore`, `uninstall` (install-uninstall); `enable`, `disable`, `sync-dist` (dist); `update`, `rollback` (updates); `list` (below)
+- **THEN** the commands are `init`, `commit`, `remote` (authoring); `fork`, `replace`, `replace-check`, `replace-resolve` (fork-replacement); `auth check` (git-safety); `catalog show`, `catalog update`, `catalog register`, `check` (catalog); `catalog links` (below); `install`, `install-catalog`, `download`, `download-catalog`, `forget`, `restore`, `uninstall` (install-uninstall); `enable`, `disable`, `sync-dist` (dist); `update`, `rollback` (updates); `list` (below); `packages`, `dependency add`, `dependency update`, `dependency remove` (package-manifest)
 
 #### Scenario: Catalog links
 - **WHEN** the user runs `gitpm --catalog ./catalog catalog links`
@@ -176,7 +176,7 @@ On failure the CLI SHALL print `Error: MESSAGE` to stderr, for a library error a
 `gitpm --version` (or `-V`) SHALL print `gitpm VERSION`; a build from a Git checkout of this repository (one that tracks `crates/gitpm-cli/build.rs`) whose HEAD is not at a tag matching `v[0-9]*` SHALL print `gitpm VERSION-dev+SHORTHASH`. Packaged builds (crates.io, release binaries) SHALL print the plain version. Verified by `version_tests::version_starts_with_the_package_version` and the CI smoke test.
 
 #### Scenario: Dev build
-- **WHEN** the binary is built from `dev` at commit `0b146cf`
+- **WHEN** the binary is built from `main` at commit `0b146cf`
 - **THEN** `gitpm --version` prints `gitpm 0.5.0-dev+0b146cf`
 - **AND** `0.5.0-dev+0b146cf` is a SemVer pre-release and sorts below `0.5.0` although it was built after it; that is intended: a dev build is not that release
 

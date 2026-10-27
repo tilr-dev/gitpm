@@ -246,6 +246,8 @@ impl From<pm::deps::DependencyStatus> for DependencyStatus {
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct InstalledPackage {
     pub id: String,
+    pub name: String,
+    pub installed: bool,
     pub source: String,
     pub current: Option<Revision>,
     pub version: Option<String>,
@@ -280,6 +282,8 @@ impl From<pm::InstalledPackage> for InstalledPackage {
     fn from(p: pm::InstalledPackage) -> Self {
         Self {
             id: p.id,
+            name: p.name,
+            installed: p.installed,
             source: p.source,
             current: p.current.map(Into::into),
             version: p.version,
@@ -1112,6 +1116,7 @@ impl From<pm::check::CheckReport> for CheckReport {
 /// view).
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct PackageRecord {
+    pub name: String,
     pub source: String,
     pub current: Option<Revision>,
     pub version: Option<String>,
@@ -1134,6 +1139,7 @@ impl From<pm::Installed> for PackageRecord {
     fn from(p: pm::Installed) -> Self {
         let linked = p.link().is_some();
         Self {
+            name: p.name,
             source: p.source,
             version: linked.then(|| p.current.version.clone()),
             current: (!linked).then(|| p.current.into()),
@@ -1310,27 +1316,70 @@ pub struct ForkResult {
     pub path: String,
 }
 
-/// A dependency rewritten explicitly in a fork repository (`from` became `to`); `newRequirement`
-/// is set when the old requirement does not accept the fork's version.
+/// A package's current author manifest, including optional workspace membership.
 #[derive(Debug, Clone, uniffi::Record)]
-pub struct DependencyRewrite {
-    pub package: String,
-    pub from: String,
-    pub to: String,
-    pub requirement: String,
-    pub new_requirement: Option<String>,
+pub struct PackageDetails {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub path: String,
+    pub fork_of: Option<ForkOf>,
+    pub dependencies: std::collections::HashMap<String, String>,
+    pub installed: bool,
 }
-impl From<pm::DependencyRewrite> for DependencyRewrite {
-    fn from(r: pm::DependencyRewrite) -> Self {
+impl From<pm::PackageDetails> for PackageDetails {
+    fn from(p: pm::PackageDetails) -> Self {
         Self {
-            package: r.package,
-            from: r.from,
-            to: r.to,
-            requirement: r.requirement,
-            new_requirement: r.new_requirement,
+            id: p.id,
+            name: p.name,
+            version: p.version,
+            path: p.path,
+            fork_of: p.fork_of.map(Into::into),
+            dependencies: p.dependencies.into_iter().collect(),
+            installed: p.installed,
         }
     }
 }
+
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum DependencyEdit {
+    Add {
+        dependency: String,
+        requirement: String,
+    },
+    Update {
+        dependency: String,
+        new_dependency: String,
+        requirement: String,
+    },
+    Remove {
+        dependency: String,
+    },
+}
+impl From<DependencyEdit> for pm::DependencyEdit {
+    fn from(edit: DependencyEdit) -> Self {
+        match edit {
+            DependencyEdit::Add {
+                dependency,
+                requirement,
+            } => Self::Add {
+                dependency,
+                requirement,
+            },
+            DependencyEdit::Update {
+                dependency,
+                new_dependency,
+                requirement,
+            } => Self::Update {
+                dependency,
+                new_dependency,
+                requirement,
+            },
+            DependencyEdit::Remove { dependency } => Self::Remove { dependency },
+        }
+    }
+}
+
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct ForkedPackage {
     pub original: String,
@@ -1446,6 +1495,10 @@ impl PackageManager {
     }
     pub fn link(&self, package: String) -> Result<LinkResult> {
         Ok(self.inner.link(package)?.into())
+    }
+    /// Edit an installed package's working-tree manifest under the workspace lock.
+    pub fn edit_dependency(&self, id: String, edit: DependencyEdit) -> Result<PackageDetails> {
+        Ok(self.inner.edit_dependency(&id, &edit.into())?.into())
     }
     pub fn list(&self) -> Result<Vec<InstalledPackage>> {
         Ok(self.inner.list()?.into_iter().map(Into::into).collect())
@@ -1638,13 +1691,26 @@ impl PackageManager {
 // ---------------------------------------------------------------------------------------
 // Free functions (no workspace needed)
 
-/// Explicitly rewrite dependencies between packages in an editable fork repository.
+/// Inspect working-tree packages without opening or creating a workspace.
 #[uniffi::export]
-pub fn fork_rewrite(directory: String) -> Result<Vec<DependencyRewrite>> {
-    Ok(pm::fork::fork_rewrite(std::path::Path::new(&directory))?
-        .into_iter()
-        .map(Into::into)
-        .collect())
+pub fn repository_packages(directory: String, root: Option<String>) -> Result<Vec<PackageDetails>> {
+    Ok(pm::repository_packages(
+        std::path::Path::new(&directory),
+        root.as_deref().map(std::path::Path::new),
+    )?
+    .into_iter()
+    .map(Into::into)
+    .collect())
+}
+
+/// Edit an author repository manifest without releasing or installing it.
+#[uniffi::export]
+pub fn edit_dependency(
+    directory: String,
+    package: String,
+    edit: DependencyEdit,
+) -> Result<PackageDetails> {
+    Ok(pm::edit_dependency(std::path::Path::new(&directory), &package, &edit.into())?.into())
 }
 
 /// Fork a source repository without opening, creating or locking a workspace.
@@ -1777,6 +1843,95 @@ mod tests {
         assert!(matches!(&error, PmError::LocalChanges { items, .. } if items.len() == 1));
     }
     #[test]
+    fn dependency_api_covers_author_and_installed_forks() {
+        let dir = std::env::temp_dir().join(format!("pm-ffi-dependency-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("source");
+        let id = pm::scaffold::init(&source, "core").unwrap().id;
+        let root = dir.join("workspace");
+        let manager =
+            PackageManager::open(root.to_string_lossy().into(), ManagerOptions::default()).unwrap();
+        manager
+            .install(
+                source.to_string_lossy().into(),
+                InstallTarget::Release,
+                None,
+                false,
+            )
+            .unwrap();
+        let fork = manager
+            .fork(id.clone(), dir.join("fork").to_string_lossy().into())
+            .unwrap();
+        pm::scaffold::commit(std::path::Path::new(&fork.path), "0.2.0").unwrap();
+        manager
+            .install(fork.path.clone(), InstallTarget::Release, None, false)
+            .unwrap();
+        let listed = manager.list().unwrap();
+        let installed = listed.iter().find(|p| p.id == fork.id).unwrap();
+        assert_eq!(installed.name, "core");
+        assert!(installed.installed);
+        assert_eq!(installed.fork_of.as_ref().unwrap().id, id);
+        let dep = "22222222-2222-4222-8222-222222222222";
+        let new = "33333333-3333-4333-8333-333333333333";
+        for author in [true, false] {
+            let before = fs::read(root.join("state.json")).unwrap();
+            let edit = |op: DependencyEdit| {
+                if author {
+                    edit_dependency(fork.path.clone(), fork.id.clone(), op)
+                } else {
+                    manager.edit_dependency(fork.id.clone(), op)
+                }
+            };
+            let added = edit(DependencyEdit::Add {
+                dependency: dep.into(),
+                requirement: "^1".into(),
+            })
+            .unwrap();
+            assert_eq!(added.dependencies[dep], "^1");
+            assert_eq!(added.installed, !author);
+            let folder = if author {
+                std::path::PathBuf::from(&fork.path)
+            } else {
+                root.join("worktrees").join(&fork.id)
+            };
+            let manifest = fs::read(folder.join("plugin.json")).unwrap();
+            assert!(matches!(
+                edit(DependencyEdit::Update {
+                    dependency: dep.into(),
+                    new_dependency: fork.id.clone(),
+                    requirement: "*".into()
+                }),
+                Err(PmError::InvalidManifest { .. })
+            ));
+            assert_eq!(fs::read(folder.join("plugin.json")).unwrap(), manifest);
+            let changed = edit(DependencyEdit::Update {
+                dependency: dep.into(),
+                new_dependency: new.into(),
+                requirement: "~2".into(),
+            })
+            .unwrap();
+            assert_eq!(changed.dependencies[new], "~2");
+            assert!(!changed.dependencies.contains_key(dep));
+            assert!(
+                edit(DependencyEdit::Remove {
+                    dependency: new.into()
+                })
+                .unwrap()
+                .dependencies
+                .is_empty()
+            );
+            assert_eq!(fs::read(root.join("state.json")).unwrap(), before);
+        }
+        let packages =
+            repository_packages(fork.path.clone(), Some(root.to_string_lossy().into())).unwrap();
+        assert_eq!(packages[0].name, "core");
+        assert!(packages[0].installed);
+        assert_eq!(packages[0].fork_of.as_ref().unwrap().id, id);
+        drop(manager);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn fork_source_converts_result_and_errors_without_manager() {
         let dir = std::env::temp_dir().join(format!("pm-ffi-source-fork-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
@@ -1819,22 +1974,24 @@ mod tests {
                 &format!(r#""dependencies": {{"{original}": "^0.1"}}"#),
             );
         fs::write(consumer.join("plugin.json"), updated).unwrap();
-        let changes = fork_rewrite(dest.to_string_lossy().into()).unwrap();
-        assert_eq!(changes.len(), 1);
-        assert_eq!(changes[0].package, consumer_id);
-        assert_eq!(changes[0].from, original);
-        assert_eq!(changes[0].to, result.packages[0].id);
-        assert_eq!(changes[0].requirement, "^0.1");
-        assert!(changes[0].new_requirement.is_none());
-        assert!(
-            fork_rewrite(dest.to_string_lossy().into())
-                .unwrap()
-                .is_empty()
-        );
-        assert!(matches!(
-            fork_rewrite(source.to_string_lossy().into()),
-            Err(PmError::InvalidManifest { .. })
-        ));
+        let packages = repository_packages(dest.to_string_lossy().into(), None).unwrap();
+        let consumer = packages.iter().find(|p| p.id == consumer_id).unwrap();
+        assert_eq!(consumer.name, "theme");
+        assert!(!consumer.installed);
+        assert_eq!(consumer.dependencies[&original], "^0.1");
+        assert!(consumer.fork_of.is_some());
+        let edited = edit_dependency(
+            dest.to_string_lossy().into(),
+            consumer_id.into(),
+            DependencyEdit::Update {
+                dependency: original.clone(),
+                new_dependency: result.packages[0].id.clone(),
+                requirement: "~0.1".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(edited.dependencies[&result.packages[0].id], "~0.1");
+        assert!(!edited.dependencies.contains_key(&original));
 
         assert!(matches!(
             fork_source(
@@ -2238,6 +2395,8 @@ mod tests {
         assert!(options.custom_ssh);
         assert!(!pm::Options::from(ManagerOptions::default()).custom_ssh);
         let package = InstalledPackage::from(pm::InstalledPackage {
+            name: "fixture".into(),
+            installed: true,
             id: "e7bdeedc-dd0d-5620-82cf-760780dfe975".into(),
             source: "src".into(),
             current: Some(revision("1.0.0")),
@@ -2840,9 +2999,26 @@ mod tests {
                 let _ = uninstall_refusal;
                 vec!["uninstallPlan", "uninstall", "uninstallRefusal"]
             }),
-            ("fork-rewrite", {
-                let _ = fork_rewrite;
-                vec!["forkRewrite"]
+            ("packages", {
+                let _ = repository_packages;
+                vec!["repositoryPackages"]
+            }),
+            ("dependency", {
+                let _ = edit_dependency;
+                let _ = PackageManager::edit_dependency;
+                vec!["editDependency"]
+            }),
+            ("dependency add", {
+                let _ = edit_dependency;
+                vec!["editDependency"]
+            }),
+            ("dependency update", {
+                let _ = edit_dependency;
+                vec!["editDependency"]
+            }),
+            ("dependency remove", {
+                let _ = edit_dependency;
+                vec!["editDependency"]
             }),
             ("fork", {
                 let _ = PackageManager::fork_packages;
@@ -3194,7 +3370,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(
             root.join("state.json"),
-            r#"{"format":1,"packages":{"d135a7cf-1c63-549a-93cb-8f89656b2ced":{"source":"s","current":{"version":"0.1.0","commit":"c"},"previous":null,"enabled":false,"clone":"root-0123456789abcdef","mode":{"pinned":"v0.1.0"},"metadata":{}}}}"#,
+            r#"{"format":1,"packages":{"d135a7cf-1c63-549a-93cb-8f89656b2ced":{"name":"fixture","source":"s","current":{"version":"0.1.0","commit":"c"},"previous":null,"enabled":false,"clone":"root-0123456789abcdef","mode":{"pinned":"v0.1.0"},"metadata":{}}}}"#,
         )
         .unwrap();
         let manager =
@@ -3250,7 +3426,7 @@ mod tests {
         );
         std::fs::write(
             root.join("state.json"),
-            r#"{"format":1,"packages":{"e7bdeedc-dd0d-5620-82cf-760780dfe975":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":false,"clone":"x-0123456789abcdef","forkOf":{"id":"d5f44edd-9f12-5cf9-a2ff-325a191144d1","version":"0.9.0","commit":"f"},"metadata":{}}}}"#,
+            r#"{"format":1,"packages":{"e7bdeedc-dd0d-5620-82cf-760780dfe975":{"name":"fixture","source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":false,"clone":"x-0123456789abcdef","forkOf":{"id":"d5f44edd-9f12-5cf9-a2ff-325a191144d1","version":"0.9.0","commit":"f"},"metadata":{}}}}"#,
         )
         .unwrap();
         let view = read_state(root.to_string_lossy().into()).unwrap();

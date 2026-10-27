@@ -35,7 +35,7 @@ def prepare_merge(repo, repository, pr_number, head_sha, branch, *,
         current_head = pr.get('head', {}).get('sha') == head_sha
         if current_head and pr['mergeable'] is False:
             raise RuntimeError(
-                f'spec-change: PR conflicts with dev: merge dev into {branch} (`git merge dev`) and push')
+                f'spec-change: PR conflicts with main: merge main into {branch} (`git merge main`) and push')
         if current_head and pr['mergeable'] is True:
             # GitHub replaces the synthetic merge; refreshing it is not fast-forward.
             git('fetch', '--no-tags', '--depth=2', 'origin',

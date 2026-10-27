@@ -263,6 +263,8 @@ pub struct BuildInstall {
 }
 #[derive(Clone, Debug, Default)]
 pub struct Installed {
+    /// Human-readable alias of the installed manifest.
+    pub name: String,
     /// Verified build provenance; distinct from catalog protection.
     pub build: Option<BuildInstall>,
     /// Provenance of the previous revision, retained for offline rollback.
@@ -292,6 +294,7 @@ pub struct Installed {
 #[derive(Deserialize, Serialize)]
 #[serde(remote = "Installed")]
 struct InstalledFields {
+    pub name: String,
     /// Verified build provenance; distinct from catalog protection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<BuildInstall>,
@@ -415,6 +418,7 @@ impl Installed {
     }
     /// Take the manifest-derived fields of a new current revision.
     pub(crate) fn adopt(&mut self, m: &Manifest) {
+        self.name = m.name.clone();
         self.fork_of = m.fork_of.clone();
         self.dependencies = m.dependencies.clone();
         self.replaces = m.replaces.clone();
@@ -602,6 +606,8 @@ pub(crate) fn valid_clone_key(key: &str) -> Result<()> {
 #[derive(Clone, Debug, Serialize)]
 pub struct InstalledPackage {
     pub id: String,
+    pub name: String,
+    pub installed: bool,
     pub source: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current: Option<Revision>,
@@ -653,6 +659,8 @@ impl State {
             .map(|(id, p)| (id, p, p.metadata.clone()))
             .map(|(id, p, metadata)| InstalledPackage {
                 id: id.clone(),
+                name: p.name.clone(),
+                installed: true,
                 source: p.source.clone(),
                 current: p.link().is_none().then(|| p.current.clone()),
                 version: p.link().map(|_| p.current.version.clone()),
@@ -1341,6 +1349,7 @@ mod tests {
   "format": 1,
   "packages": {
     "53d23fe9-4284-5d06-a9af-0dd04a6390d5": {
+      "name": "fixture",
       "source": "/tmp/demo2",
       "current": {
         "version": "0.3.0",
@@ -1360,6 +1369,7 @@ mod tests {
       }
     },
     "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc": {
+      "name": "fixture",
       "source": "git@github.com:ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc.git",
       "current": {
         "version": "0.1.1",
@@ -1381,6 +1391,7 @@ mod tests {
       }
     },
     "fd9b5add-4cae-5e71-b6bf-5e868519eb9c": {
+      "name": "fixture",
       "source": "/tmp/demo1",
       "current": {
         "version": "1.0.0",
@@ -1510,7 +1521,7 @@ mod tests {
             assert_eq!(error.kind(), "invalid_data", "{bad:?}");
             assert!(error.to_string().contains("invalid clone name"), "{error}");
         }
-        let entry = r#"{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true,"clone":"../evil","path":"packages/x","metadata":{}}"#;
+        let entry = r#"{"name":"fixture","source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true,"clone":"../evil","path":"packages/x","metadata":{}}"#;
         let text = format!(
             r#"{{"format":1,"packages":{{"75494f24-1c7e-5480-9e39-738ff3d038c4":{entry}}}}}"#
         );
@@ -1553,15 +1564,16 @@ mod tests {
     fn state_requires_core_fields() {
         for broken in [
             r#"{}"#,
-            r#"{"format":1,"packages":{"a":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null}}}"#,
+            r#"{"format":1,"packages":{"a":{"name":"fixture","source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null}}}"#,
             r#"{"format":1,"packages":{"a":{"current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true}}}"#,
-            r#"{"format":1,"packages":{"a":{"source":"s","current":{"version":"1.0.0"},"previous":null,"enabled":true}}}"#,
+            r#"{"format":1,"packages":{"a":{"name":"fixture","source":"s","current":{"version":"1.0.0"},"previous":null,"enabled":true}}}"#,
         ] {
             assert!(serde_json::from_str::<State>(broken).is_err(), "{broken}");
         }
         // forkOf is optional; previous may be null.
-        let ok = r#"{"format":1,"packages":{"a":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true,"metadata":{}}}}"#;
+        let ok = r#"{"format":1,"packages":{"a":{"name":"fixture","source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true,"metadata":{}}}}"#;
         assert!(serde_json::from_str::<State>(ok).is_ok());
+        assert!(serde_json::from_str::<State>(&ok.replace(r#""name":"fixture","#, "")).is_err());
         // metadata is required in format 1: a record without it is invalid data.
         let no_metadata = ok.replace(r#","metadata":{}"#, "");
         assert!(serde_json::from_str::<State>(&no_metadata).is_err());

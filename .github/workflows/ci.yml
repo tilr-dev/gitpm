@@ -1,4 +1,5 @@
-# CI: format, lint, tests, MSRV, cargo-deny and gitleaks on every PR and every push to main.
+# CI: format, lint, tests, MSRV, cargo-deny and gitleaks on every PR, merge queue group and push
+# to main or a release branch (release/**: the release PR and cherry-picked fixes).
 # The whole workspace runs on ubuntu-latest, the UniFFI crate included (uniffi is portable;
 # only scripts/build-apple.sh is macOS-specific and is not run here).
 # Only `pull_request` (never pull_request_target): a PR's code runs without secrets.
@@ -7,11 +8,11 @@
 name: ci
 
 on:
-  # PRs into dev: no CI for now, the tests run locally (review-bot, merge-bot) (Dan, 2026-10-20).
+  merge_group:
   pull_request:
-    branches: [main]
+    branches: [main, 'release/**']
   push:
-    branches: [main]
+    branches: [main, 'release/**']
 
 permissions:
   contents: read

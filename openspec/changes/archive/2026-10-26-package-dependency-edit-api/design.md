@@ -1,0 +1,10 @@
+## API
+Extend the existing installed list with package names and an explicit installed flag. Preserve its dependency status records and optional-field omission behavior. Repository inspection reads working-tree manifests using the existing package discovery, with a root package fallback, and reports the same identity, name, provenance and dependency requirements. An explicit optional workspace root determines installation membership by package ID; inspecting a repository does not create or lock a workspace.
+
+Dependency editing selects one package ID within a repository directory, or an installed package via the locked manager. An edit specifies add, update (old ID, new ID, requirement) or remove. Add refuses an existing key; update/remove refuse a missing key; changing an ID refuses an existing destination. No inferred IDs or requirements are supplied. A successful call returns the edited manifest data.
+
+## Installed name snapshot
+Install and update persist the installed manifest's name in every format-1 package record. Listing reads that snapshot without accessing the clone. The name is required: reading a record without it returns invalid_data without rewriting state.json. There is no migration for this unreleased format change; recreate an older workspace by reinstalling its packages.
+
+## Writes and recovery
+Read and validate the original manifest, apply the edit in memory, then validate the entire resulting manifest and dependency map before any write. Reuse the existing manifest serializer to preserve unknown keys and field ordering. Write only the selected manifest; restore its original bytes on a write failure. Do not modify state, refs, package worktrees, deployed output or other package manifests. Installed edits use the existing manager lock and target the selected editable package directory. They leave a normal local modification; subsequent lifecycle operations continue to apply their existing local-changes protection. This is an author edit, not a release or deployment transaction; a process crash can interrupt a file write, as in existing author operations.

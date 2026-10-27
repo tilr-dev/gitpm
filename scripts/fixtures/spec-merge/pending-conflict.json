@@ -14,7 +14,7 @@
       }
     }
   ],
-  "error": "PR conflicts with dev: merge dev into task/example (`git merge dev`) and push",
+  "error": "PR conflicts with main: merge main into task/example (`git merge main`) and push",
   "waits": [
     2
   ]
