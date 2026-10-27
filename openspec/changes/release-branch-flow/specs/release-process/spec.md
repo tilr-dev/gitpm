@@ -46,7 +46,17 @@ Before fetching a pull request test merge for specification authorization, the t
 ## MODIFIED Requirements
 
 ### Requirement: Branch flow
-Work SHALL happen on task branches off `main`; changes SHALL reach `main` only through a pull request; Dependabot SHALL target `main`, the default branch (no `target-branch` in `.github/dependabot.yml`). `main` SHALL be protected (PR only, squash merges, linear history, required checks, no deletion or force-push), and tags `v*` SHALL NOT be deleted or moved. Nothing SHALL be released from `main`: on the owner's explicit instruction a release branch `release/X.Y` is cut from a commit of `main`, and fixes for it SHALL land in `main` first and then be cherry-picked into `release/X.Y`. Release branches SHALL be created only by repository admins, who may bypass their ruleset; anyone else changes them only through squash pull requests (linear history, no deletion or force-push), and their CI checks are not required. These rules live in the GitHub rulesets (`main`, `release branches`, `release tags`; `gh api repos/OWNER/REPO/rulesets`) and `.github/dependabot.yml`.
+Changes SHALL reach `main` only through a pull request from a task branch off `main`, and nothing SHALL be released from `main`: on the owner's explicit instruction a release branch `release/X.Y` is cut from a commit of `main`, and its fixes SHALL land in `main` first and then be cherry-picked. These rules live in the GitHub rulesets `main`, `release branches` and `release tags` (`gh api repos/OWNER/REPO/rulesets`) and in `.github/dependabot.yml`.
+
+#### Scenario: Protected branches and tags
+- **WHEN** someone pushes directly to `main`, force-pushes it or deletes it
+- **THEN** the `main` ruleset refuses it: `main` changes only through squash pull requests with linear history and required checks
+- **AND** tags `v*` cannot be deleted or moved
+
+#### Scenario: Release branch protection
+- **WHEN** someone who is not a repository admin creates `release/0.6` or pushes to it directly
+- **THEN** the `release branches` ruleset refuses it: release branches change only through squash pull requests with linear history and are never deleted or force-pushed
+- **AND** repository admins may bypass that ruleset, and CI checks on release branches are not required
 
 #### Scenario: Merge without a target
 - **WHEN** an agent is told to "merge" without naming a branch
@@ -63,7 +73,13 @@ Work SHALL happen on task branches off `main`; changes SHALL reach `main` only t
 - **AND** the fix is merged into `main` through a pull request first and then cherry-picked into `release/0.6`
 
 ### Requirement: Required CI checks
-Every pull request into `main` or a release branch `release/**`, every merge queue group (`merge_group`) and every push to `main` or `release/**` SHALL run `fmt + clippy` (`cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`), `test` (`cargo test --workspace --locked` plus a `gitpm --version`/`--help` smoke test), `msrv (core crate)` (Rust 1.92, `cargo check -p gitpm -p gitpm-cli --all-targets --locked`), `cargo-deny` and `gitleaks`, with tools pinned by version and SHA-256 and actions pinned by commit.
+Every pull request into `main` or `release/**`, every merge queue group (`merge_group`) and every push to `main` or `release/**` SHALL run the checks `fmt + clippy`, `test`, `msrv (core crate)`, `cargo-deny` and `gitleaks`, with tools pinned by version and SHA-256 and actions pinned by commit.
+
+#### Scenario: Check commands
+- **WHEN** the checks run
+- **THEN** `fmt + clippy` runs `cargo fmt --all --check` and `cargo clippy --workspace --all-targets --locked -- -D warnings`
+- **AND** `test` runs `cargo test --workspace --locked` plus a `gitpm --version`/`--help` smoke test
+- **AND** `msrv (core crate)` runs `cargo check -p gitpm -p gitpm-cli --all-targets --locked` with Rust 1.92
 
 #### Scenario: MSRV break
 - **WHEN** a change uses an API newer than Rust 1.92 in `gitpm` or `gitpm-cli`
@@ -74,7 +90,12 @@ Every pull request into `main` or a release branch `release/**`, every merge que
 - **THEN** the same checks run on it as on a pull request into `main`
 
 ### Requirement: Versioning by Conventional Commits
-Pull request titles SHALL be Conventional Commits (they become the squash commit). release-please SHALL run only on pushes to release branches `release/**` and maintain there a release PR `chore(release/X.Y): release X.Y.Z` into the pushed branch (`target-branch`); a push to `main` SHALL NOT open or update a release PR. `fix`/`perf` bump patch (release-please defaults; `perf` is not configured here), `feat` bumps minor, and before 1.0 `feat!`/BREAKING also bumps minor (`bump-minor-pre-major` in `release-please-config.json`). The release PR SHALL be opened by the GitHub App `tilr-bot` so CI runs on it without bypass.
+Pull request titles SHALL be Conventional Commits (they become the squash commit). release-please SHALL run only on pushes to release branches `release/**` and maintain there a release PR `chore(release/X.Y): release X.Y.Z` into the pushed branch (`target-branch`), opened by the GitHub App `tilr-bot` so CI runs on it without bypass; a push to `main` SHALL NOT open or update a release PR.
+
+#### Scenario: Version bumps
+- **WHEN** release-please computes the next version
+- **THEN** `fix`/`perf` bump patch (release-please defaults; `perf` is not configured here) and `feat` bumps minor
+- **AND** before 1.0 `feat!`/BREAKING also bumps minor (`bump-minor-pre-major` in `release-please-config.json`)
 
 #### Scenario: Feature release
 - **WHEN** `feat: …` is merged into `main` at version 0.5.0 and `release/0.6` is cut from that commit
