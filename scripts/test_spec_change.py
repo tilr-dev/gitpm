@@ -356,7 +356,7 @@ class TaskBinding(unittest.TestCase):
     def test_cli_task_matrix_and_current_column_recheck(self):
         with tempfile.TemporaryDirectory() as directory:
             exported = Path(directory) / 'task.json'
-            args = ['--base', 'dev', '--head', 'HEAD', '--branch', 'task/TILR-123',
+            args = ['--base', 'main', '--head', 'HEAD', '--branch', 'task/TILR-123',
                     '--component', 'gitpm', '--comments-json', str(exported)]
             legacy = [comment(checker.INTAKE, 'Ready')]
             grants = [ready(), grant('specs/terminal — «Existing»: remove')]
@@ -378,7 +378,7 @@ class GitCLIIntegration(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             exported = Path(directory) / 'comments.json'
             exported.write_text('[]')
-            args = ['--base', 'dev', '--head', 'HEAD', '--branch', 'task/TILR-9999',
+            args = ['--base', 'main', '--head', 'HEAD', '--branch', 'task/TILR-9999',
                     '--component', 'gitpm', '--comments-json', str(exported)]
             with patch.object(checker, 'tree', side_effect=[{SPEC: ORIGINAL}, {SPEC: '## Requirements\n\n'}]), \
                     contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):

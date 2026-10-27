@@ -91,8 +91,8 @@ script does not protect the workflow file itself.
 The deployed `pull_request_target` workflow `.github/workflows/spec-change.yml`
 is loaded from each component's main branch: GitHub loads `pull_request_target`
 workflows from the default branch, so a task branch cannot change the workflow
-that checks it. It downloads the shared checker scripts from gitpm (gitpm and
-tilrd from gitpm main, cloud and desktop-mac from a fixed gitpm commit), verifies
+that checks it. It downloads the shared checker scripts from gitpm (gitpm from
+gitpm main; cloud, desktop-mac, and tilrd from a fixed gitpm commit), verifies
 a SHA-256 digest pinned in main's workflow, and fetches candidate
 Git objects into a bare repository solely for inspection. It targets PRs into main, has `contents: read`, supplies only the
 read-only task token to the checker, and never executes candidate files. Its job

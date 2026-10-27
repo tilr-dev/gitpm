@@ -250,7 +250,7 @@ def check(base, head, comments, component, issue=None):
             continue
         change, suffix = match.groups()
         is_archive = path.startswith('openspec/changes/archive/')
-        # An archive already in dev is foreign even when it carries the own change name.
+        # An archive already in the base is foreign even when it carries the own change name.
         folder = '/'.join(path.split('/')[:4]) + '/'
         is_own = change in own and not (is_archive and any(p.startswith(folder) for p in base))
         if not is_own:
