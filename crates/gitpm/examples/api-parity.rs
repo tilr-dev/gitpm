@@ -7,16 +7,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let id = &args[3];
     match args[2].as_str() {
         "install" => {
-            manager.install_ref(id, args.get(4).map(String::as_str), None)?;
+            let target = match args.get(4) {
+                Some(reference) => gitpm::InstallTarget::Ref(reference.clone()),
+                None => gitpm::InstallTarget::Release,
+            };
+            manager.install_package(id, None, target)?;
         }
         "update" => {
-            manager.update_ref(id, args.get(4).map(String::as_str))?;
+            let target = match args.get(4) {
+                Some(reference) => gitpm::Target::Ref(reference.clone()),
+                None => gitpm::Target::Recorded,
+            };
+            manager.update_to(id, target)?;
         }
         "rollback" => {
             manager.rollback(id)?;
         }
-        "disable" => manager.disable(id)?,
-        "enable" => manager.enable(id)?,
+        "disable" => {
+            manager.disable(id)?;
+        }
+        "enable" => {
+            manager.enable(id)?;
+        }
         "forget" => {
             manager.forget(id)?;
         }

@@ -9,7 +9,7 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 #[derive(Debug, Clone, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
-    #[error("plugin {id} is not installed")]
+    #[error("package {id} is not installed")]
     NotInstalled { id: String },
     /// The ID is registered or its repository already exists in the workspace.
     #[error("{message}")]
@@ -26,22 +26,27 @@ pub enum Error {
     Locked(String),
     #[error("{0}")]
     InvalidId(String),
-    #[error("{0}")]
-    InvalidManifest(String),
+    #[error("{message}")]
+    InvalidManifest { id: Option<String>, message: String },
     #[error("{0}")]
     InvalidVersion(String),
     /// Bad caller input: refs, sources, URLs, conflicting options, destinations.
     #[error("{0}")]
     InvalidArgument(String),
     /// Existing release/tag/version rules forbid the operation.
-    #[error("{0}")]
-    VersionConflict(String),
-    #[error("no previous version of {id}")]
-    NoPreviousVersion { id: String },
+    #[error("{message}")]
+    VersionConflict { id: Option<String>, message: String },
+    /// No previous revision to roll back to, or (`commit`) the previous revision's commit
+    /// is no longer in the clone (pruned after the origin deleted or moved its tag).
+    #[error("{}", match commit {
+        Some(commit) => format!("previous revision {commit} of {id} is no longer available"),
+        None => format!("no previous version of {id}"),
+    })]
+    NoPreviousVersion { id: String, commit: Option<String> },
     #[error("{0}")]
     NoReleases(String),
-    /// The path for the ID is not a plugin repository (also for case variants of an ID).
-    #[error("plugin repository {id} not found (a namespace directory is not a plugin)")]
+    /// The path for the ID is not a package repository (also for case variants of an ID).
+    #[error("package repository {id} not found")]
     RepositoryNotFound { id: String },
     /// Workspace layout or path conflicts.
     #[error("{0}")]
@@ -61,20 +66,31 @@ pub enum Error {
     /// Dependencies cannot be satisfied; the message explains why (solver report).
     #[error("{0}")]
     DependencyConflict(String),
-    /// Other installed plugins depend on this one; pass `force` to proceed anyway.
+    /// Other installed packages would break (their dependency resolves to `id`, or to
+    /// it through a replacement the original does not take over); pass `force` to
+    /// proceed anyway. `lost_work` is the local work an uninstall would also lose (the
+    /// plan's), so one refusal tells everything; empty for other operations.
     #[error("{message}")]
     HasDependents {
         id: String,
         message: String,
         dependents: Vec<String>,
+        lost_work: Vec<LostWork>,
     },
-    /// Some consumers do not accept the version the new provider declares; confirm
-    /// to replace anyway. `consumers` are the unsatisfied ones.
+    /// Some consumers do not accept the version the new provider declares.
+    /// Replacement is refused; `consumers` are the unsatisfied ones.
     #[error("{message}")]
     IncompatibleReplacement {
         id: String,
         message: String,
         consumers: Vec<String>,
+    },
+    /// `sync_dist` committed what it could but left active packages without their
+    /// deployed folder; `sync` is the report (its `skipped` lists them with the reason).
+    #[error("{message}")]
+    NotDeployed {
+        message: String,
+        sync: Box<crate::DistSync>,
     },
     /// Malformed JSON/state data.
     #[error("{0}")]
@@ -84,6 +100,41 @@ pub enum Error {
 }
 
 impl Error {
+    /// A manifest error outside a known package operation.
+    pub(crate) fn invalid_manifest(message: String) -> Self {
+        Self::InvalidManifest { id: None, message }
+    }
+
+    /// A version conflict outside a known package operation.
+    pub(crate) fn version_conflict(message: String) -> Self {
+        Self::VersionConflict { id: None, message }
+    }
+
+    /// Identify the package whose update or rollback was refused.
+    pub(crate) fn with_package(mut self, package: &str) -> Self {
+        if let Self::InvalidManifest { id, message } | Self::VersionConflict { id, message } =
+            &mut self
+            && id.is_none()
+        {
+            *id = Some(package.into());
+            *message = format!("{package}: {message}");
+        }
+        self
+    }
+
+    /// Put the clone's ID and its lost-work items into a `LocalChanges` message.
+    /// Applied once, where update, update all and rollback return, so the CLI
+    /// prints the message alone.
+    pub(crate) fn listing_lost_work(mut self) -> Self {
+        if let Self::LocalChanges { id, message, items } = &mut self {
+            *message = format!("{id}: {message}");
+            for item in items {
+                message.push_str(&format!("; {}", item.describe()));
+            }
+        }
+        self
+    }
+
     /// Stable snake_case identifier; never changes for an existing variant.
     pub fn kind(&self) -> &'static str {
         match self {
@@ -92,10 +143,10 @@ impl Error {
             Error::LocalChanges { .. } => "local_changes",
             Error::Locked(_) => "locked",
             Error::InvalidId(_) => "invalid_id",
-            Error::InvalidManifest(_) => "invalid_manifest",
+            Error::InvalidManifest { .. } => "invalid_manifest",
             Error::InvalidVersion(_) => "invalid_version",
             Error::InvalidArgument(_) => "invalid_argument",
-            Error::VersionConflict(_) => "version_conflict",
+            Error::VersionConflict { .. } => "version_conflict",
             Error::NoPreviousVersion { .. } => "no_previous_version",
             Error::NoReleases(_) => "no_releases",
             Error::RepositoryNotFound { .. } => "repository_not_found",
@@ -108,6 +159,7 @@ impl Error {
             Error::DependencyConflict(_) => "dependency_conflict",
             Error::HasDependents { .. } => "has_dependents",
             Error::IncompatibleReplacement { .. } => "incompatible_replacement",
+            Error::NotDeployed { .. } => "not_deployed",
             Error::InvalidData(_) => "invalid_data",
             Error::Io(_) => "io",
         }
@@ -147,6 +199,12 @@ impl From<std::time::SystemTimeError> for Error {
 
 /// `ensure!(condition, Variant, "format", args...)` returns `Error::Variant(message)`.
 macro_rules! ensure {
+    ($cond:expr, InvalidManifest, $($fmt:tt)+) => {
+        if !$cond { return Err($crate::Error::invalid_manifest(format!($($fmt)+))); }
+    };
+    ($cond:expr, VersionConflict, $($fmt:tt)+) => {
+        if !$cond { return Err($crate::Error::version_conflict(format!($($fmt)+))); }
+    };
     ($cond:expr, $variant:ident, $($fmt:tt)+) => {
         if !$cond {
             return Err($crate::Error::$variant(format!($($fmt)+)));
@@ -155,6 +213,12 @@ macro_rules! ensure {
 }
 /// `fail!(Variant, "format", args...)` returns `Error::Variant(message)` immediately.
 macro_rules! fail {
+    (InvalidManifest, $($fmt:tt)+) => {
+        return Err($crate::Error::invalid_manifest(format!($($fmt)+)))
+    };
+    (VersionConflict, $($fmt:tt)+) => {
+        return Err($crate::Error::version_conflict(format!($($fmt)+)))
+    };
     ($variant:ident, $($fmt:tt)+) => {
         return Err($crate::Error::$variant(format!($($fmt)+)))
     };
@@ -189,17 +253,22 @@ mod tests {
     fn all() -> Vec<(Error, &'static str)> {
         let s = || "message".to_owned();
         vec![
-            (Error::NotInstalled { id: "a/b".into() }, "not_installed"),
+            (
+                Error::NotInstalled {
+                    id: "75494f24-1c7e-5480-9e39-738ff3d038c4".into(),
+                },
+                "not_installed",
+            ),
             (
                 Error::AlreadyInstalled {
-                    id: "a/b".into(),
+                    id: "75494f24-1c7e-5480-9e39-738ff3d038c4".into(),
                     message: s(),
                 },
                 "already_installed",
             ),
             (
                 Error::LocalChanges {
-                    id: "a/b".into(),
+                    id: "75494f24-1c7e-5480-9e39-738ff3d038c4".into(),
                     message: s(),
                     items: vec![],
                 },
@@ -207,17 +276,22 @@ mod tests {
             ),
             (Error::Locked(s()), "locked"),
             (Error::InvalidId(s()), "invalid_id"),
-            (Error::InvalidManifest(s()), "invalid_manifest"),
+            (Error::invalid_manifest(s()), "invalid_manifest"),
             (Error::InvalidVersion(s()), "invalid_version"),
             (Error::InvalidArgument(s()), "invalid_argument"),
-            (Error::VersionConflict(s()), "version_conflict"),
+            (Error::version_conflict(s()), "version_conflict"),
             (
-                Error::NoPreviousVersion { id: "a/b".into() },
+                Error::NoPreviousVersion {
+                    id: "75494f24-1c7e-5480-9e39-738ff3d038c4".into(),
+                    commit: None,
+                },
                 "no_previous_version",
             ),
             (Error::NoReleases(s()), "no_releases"),
             (
-                Error::RepositoryNotFound { id: "a/b".into() },
+                Error::RepositoryNotFound {
+                    id: "75494f24-1c7e-5480-9e39-738ff3d038c4".into(),
+                },
                 "repository_not_found",
             ),
             (Error::Workspace(s()), "workspace"),
@@ -229,19 +303,27 @@ mod tests {
             (Error::DependencyConflict(s()), "dependency_conflict"),
             (
                 Error::HasDependents {
-                    id: "a/b".into(),
+                    id: "75494f24-1c7e-5480-9e39-738ff3d038c4".into(),
                     message: s(),
                     dependents: vec![],
+                    lost_work: vec![],
                 },
                 "has_dependents",
             ),
             (
                 Error::IncompatibleReplacement {
-                    id: "a/b".into(),
+                    id: "75494f24-1c7e-5480-9e39-738ff3d038c4".into(),
                     message: s(),
                     consumers: vec![],
                 },
                 "incompatible_replacement",
+            ),
+            (
+                Error::NotDeployed {
+                    message: s(),
+                    sync: Box::default(),
+                },
+                "not_deployed",
             ),
             (Error::InvalidData(s()), "invalid_data"),
             (Error::Io(s()), "io"),
@@ -255,10 +337,10 @@ mod tests {
             | Error::LocalChanges { .. }
             | Error::Locked(_)
             | Error::InvalidId(_)
-            | Error::InvalidManifest(_)
+            | Error::InvalidManifest { .. }
             | Error::InvalidVersion(_)
             | Error::InvalidArgument(_)
-            | Error::VersionConflict(_)
+            | Error::VersionConflict { .. }
             | Error::NoPreviousVersion { .. }
             | Error::NoReleases(_)
             | Error::RepositoryNotFound { .. }
@@ -271,15 +353,53 @@ mod tests {
             | Error::DependencyConflict(_)
             | Error::HasDependents { .. }
             | Error::IncompatibleReplacement { .. }
+            | Error::NotDeployed { .. }
             | Error::InvalidData(_)
             | Error::Io(_) => {}
         }
     }
 
     #[test]
+    fn package_errors_name_the_package() {
+        for error in [
+            Error::invalid_manifest("manifest mismatch".into()),
+            Error::version_conflict("history diverged".into()),
+        ] {
+            let kind = error.kind();
+            let message = error.to_string();
+            assert!(matches!(
+                &error,
+                Error::InvalidManifest { id: None, .. } | Error::VersionConflict { id: None, .. }
+            ));
+            let scoped = error.with_package("826a054b-0fad-5e5a-8890-f87c6452943b");
+            assert_eq!(scoped.kind(), kind);
+            assert_eq!(
+                scoped.to_string(),
+                format!("826a054b-0fad-5e5a-8890-f87c6452943b: {message}")
+            );
+            assert!(matches!(&scoped,
+                Error::InvalidManifest { id: Some(id), .. } | Error::VersionConflict { id: Some(id), .. }
+                if id == "826a054b-0fad-5e5a-8890-f87c6452943b"));
+        }
+        let error = Error::LocalChanges {
+            id: "826a054b-0fad-5e5a-8890-f87c6452943b".into(),
+            message: "local work blocks update".into(),
+            items: vec![LostWork::Untracked {
+                path: "extra.js".into(),
+            }],
+        }
+        .with_package("826a054b-0fad-5e5a-8890-f87c6452943b")
+        .listing_lost_work();
+        assert_eq!(
+            error.to_string(),
+            "826a054b-0fad-5e5a-8890-f87c6452943b: local work blocks update; untracked: extra.js"
+        );
+    }
+
+    #[test]
     fn every_variant_has_its_stable_kind() {
         let all = all();
-        assert_eq!(all.len(), 23);
+        assert_eq!(all.len(), 24);
         for (error, kind) in &all {
             covered(error);
             assert_eq!(error.kind(), *kind, "{error:?}");
@@ -315,16 +435,26 @@ mod tests {
     #[test]
     fn display_is_the_complete_message() {
         assert_eq!(
-            Error::NotInstalled { id: "a/b".into() }.to_string(),
-            "plugin a/b is not installed"
+            Error::NotInstalled {
+                id: "75494f24-1c7e-5480-9e39-738ff3d038c4".into()
+            }
+            .to_string(),
+            "package 75494f24-1c7e-5480-9e39-738ff3d038c4 is not installed"
         );
         assert_eq!(
-            Error::NoPreviousVersion { id: "a/b".into() }.to_string(),
-            "no previous version of a/b"
+            Error::NoPreviousVersion {
+                id: "75494f24-1c7e-5480-9e39-738ff3d038c4".into(),
+                commit: None,
+            }
+            .to_string(),
+            "no previous version of 75494f24-1c7e-5480-9e39-738ff3d038c4"
         );
         assert_eq!(
-            Error::RepositoryNotFound { id: "a/b".into() }.to_string(),
-            "plugin repository a/b not found (a namespace directory is not a plugin)"
+            Error::RepositoryNotFound {
+                id: "75494f24-1c7e-5480-9e39-738ff3d038c4".into()
+            }
+            .to_string(),
+            "package repository 75494f24-1c7e-5480-9e39-738ff3d038c4 not found"
         );
         // Every other variant renders exactly its message.
         for (error, _) in all() {
@@ -337,6 +467,149 @@ mod tests {
                 assert_eq!(error.to_string(), "message", "{error:?}");
             }
         }
+    }
+
+    /// String literals of `source` outside comments and the test module.
+    fn literals(source: &str) -> Vec<String> {
+        let code = source.split("\n#[cfg(test)]\nmod tests").next().unwrap();
+        let chars: Vec<char> = code.chars().collect();
+        let (mut out, mut i) = (Vec::new(), 0);
+        while i < chars.len() {
+            match chars[i] {
+                '/' if chars.get(i + 1) == Some(&'/') => {
+                    while i < chars.len() && chars[i] != '\n' {
+                        i += 1;
+                    }
+                }
+                // A char literal ('"', '\'', 'x'); a lifetime has no closing quote.
+                '\'' if chars.get(i + 1) == Some(&'\\') => i += 4,
+                '\'' if chars.get(i + 2) == Some(&'\'') => i += 3,
+                'r' if chars.get(i + 1) == Some(&'#') && chars.get(i + 2) == Some(&'"') => {
+                    let start = i + 3;
+                    i = start;
+                    while !(chars[i] == '"' && chars.get(i + 1) == Some(&'#')) {
+                        i += 1;
+                    }
+                    out.push(chars[start..i].iter().collect());
+                    i += 2;
+                }
+                '"' => {
+                    let mut text = String::new();
+                    i += 1;
+                    while chars[i] != '"' {
+                        if chars[i] == '\\' {
+                            i += 1;
+                        }
+                        text.push(chars[i]);
+                        i += 1;
+                    }
+                    out.push(text);
+                    i += 1;
+                }
+                _ => i += 1,
+            }
+        }
+        out
+    }
+
+    /// Library messages are neutral: no CLI command, flag or hosting service (the CLI
+    /// adds command hints per error kind). Git commands quoted in messages (`git …`) and
+    /// the README a new package repository gets are not messages.
+    #[test]
+    fn messages_name_no_cli_command() {
+        let scaffold = include_str!("scaffold.rs");
+        let readme_start = scaffold.find("let install = if release").unwrap();
+        let readme_end = scaffold.find("transport::init_repo(&directory,").unwrap();
+        let scaffold = format!("{}{}", &scaffold[..readme_start], &scaffold[readme_end..]);
+        let sources = [
+            ("auth.rs", include_str!("auth.rs")),
+            ("catalog.rs", include_str!("catalog.rs")),
+            ("check.rs", include_str!("check.rs")),
+            ("deps.rs", include_str!("deps.rs")),
+            ("error.rs", include_str!("error.rs")),
+            ("lib.rs", include_str!("lib.rs")),
+            ("transport/mod.rs", include_str!("transport/mod.rs")),
+            ("transport/system.rs", include_str!("transport/system.rs")),
+            ("identity.rs", include_str!("identity.rs")),
+            ("list.rs", include_str!("list.rs")),
+            ("lock.rs", include_str!("lock.rs")),
+            ("lost_work.rs", include_str!("lost_work.rs")),
+            ("model.rs", include_str!("model.rs")),
+            ("packages.rs", include_str!("packages.rs")),
+            ("releases.rs", include_str!("releases.rs")),
+            ("scaffold.rs", scaffold.as_str()),
+            ("txn.rs", include_str!("txn.rs")),
+            ("upgrade.rs", include_str!("upgrade.rs")),
+            ("workspace.rs", include_str!("workspace.rs")),
+            ("workspace/clones.rs", include_str!("workspace/clones.rs")),
+            ("workspace/fork.rs", include_str!("workspace/fork.rs")),
+        ];
+        let commands = [
+            "init",
+            "fork",
+            "remote",
+            "auth",
+            "info",
+            "catalog",
+            "commit",
+            "install",
+            "list",
+            "check",
+            "update",
+            "rollback",
+            "enable",
+            "disable",
+            "forget",
+            "restore",
+            "uninstall",
+            "replace",
+            "sync-dist",
+            "register",
+        ];
+        let mut found = Vec::new();
+        for (file, source) in sources {
+            for text in literals(source) {
+                // Git arguments (`--format=…`) and quoted git commands are not prose.
+                let flag = text.contains(' ')
+                    && !text.starts_with("git ")
+                    && !text.starts_with("--")
+                    && text.match_indices("--").any(|(at, _)| {
+                        text[at + 2..].starts_with(|c: char| c.is_ascii_lowercase())
+                    });
+                // `gitpm restore`, `` `restore ``, or advice such as "use restore"/"run update".
+                let command = commands.iter().any(|c| {
+                    text.contains(&format!("gitpm {c}"))
+                        || text.contains(&format!("`{c}"))
+                        || ["use ", "run "].iter().any(|verb| {
+                            text.match_indices(&format!("{verb}{c}")).any(|(at, m)| {
+                                !text[at + m.len()..]
+                                    .starts_with(|ch: char| ch.is_ascii_alphanumeric())
+                            })
+                        })
+                });
+                if flag || command || text.contains("R2") || text.contains("catalog-update") {
+                    found.push(format!("{file}: {text}"));
+                }
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "messages naming CLI commands:\n{}",
+            found.join("\n")
+        );
+        assert!(literals("x(\"a --b\", '\"', r#\"c\"#) // \"d\"").len() == 2);
+        // The checks catch the advice the messages used to give.
+        let flagged = |text: &str| {
+            commands.iter().any(|c| {
+                ["use ", "run "].iter().any(|verb| {
+                    text.match_indices(&format!("{verb}{c}")).any(|(at, m)| {
+                        !text[at + m.len()..].starts_with(|ch: char| ch.is_ascii_alphanumeric())
+                    })
+                })
+            })
+        };
+        assert!(flagged("kept; use restore, or uninstall it first"));
+        assert!(!flagged("use the default branch") && !flagged("use restored files"));
     }
 
     #[test]

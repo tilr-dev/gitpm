@@ -1,6 +1,6 @@
-//! Persistent formats: plugin manifest and workspace state. Byte-compatible with the stand.
+//! Persistent formats: package manifest and workspace state. Byte-compatible with the stand.
 use crate::error::{Error, Result, ensure};
-use crate::{exec::git, identity};
+use crate::{identity, transport};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fs, path::Path};
 
@@ -9,14 +9,38 @@ use std::{collections::BTreeMap, fs, path::Path};
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Manifest {
     pub id: String,
+    /// Nonunique human alias; never used to resolve references.
+    pub name: String,
     pub version: String,
-    /// Other plugins by ID with a Cargo-style version requirement.
+    /// Package-relative committed output folder; absent means `dist`, `.` means root.
+    #[serde(
+        default,
+        deserialize_with = "optional_string",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub dist: Option<String>,
+    /// Describes how to build the package. gitpm never executes this command.
+    #[serde(
+        default,
+        rename = "buildCommand",
+        deserialize_with = "optional_string",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub build_command: Option<String>,
+    /// Missing output should explain that a committed build result is required.
+    #[serde(
+        default,
+        rename = "buildRequired",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub build_required: bool,
+    /// Other packages by ID with an npm-style version range (see [`crate::deps::requirement`]).
     #[serde(default)]
     pub dependencies: BTreeMap<String, String>,
     #[serde(default, rename = "forkOf", skip_serializing_if = "Option::is_none")]
     pub fork_of: Option<ForkOf>,
-    /// This plugin can stand in for another one at the declared version. Used only when
-    /// the user explicitly replaces that plugin; never applied automatically.
+    /// This package can stand in for another one at the declared version. Used only when
+    /// the user explicitly replaces that package; never applied automatically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replaces: Option<Replaces>,
     /// Top-level keys this library does not know, kept for round-trips. Written after the
@@ -24,7 +48,51 @@ pub struct Manifest {
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
+// Serde defaults handle absent fields; a present value must be a string, never null.
+fn optional_string<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<String>, D::Error> {
+    String::deserialize(deserializer).map(Some)
+}
+
 impl Manifest {
+    /// The selected output folder, relative to the package root.
+    pub fn dist_folder(&self) -> &str {
+        self.dist.as_deref().unwrap_or("dist")
+    }
+
+    pub(crate) fn validate_dist(&self) -> Result<()> {
+        let folder = self.dist_folder();
+        ensure!(
+            folder == "." || crate::packages::validate_path(folder).is_ok(),
+            InvalidManifest,
+            "invalid manifest dist path: {folder:?}"
+        );
+        Ok(())
+    }
+
+    /// Output tree path relative to the repository root (empty for its root).
+    pub(crate) fn dist_path(&self, package: Option<&str>) -> String {
+        match (package.filter(|p| !p.is_empty()), self.dist_folder()) {
+            (Some(package), ".") => package.to_owned(),
+            (None, ".") => String::new(),
+            (Some(package), folder) => format!("{package}/{folder}"),
+            (None, folder) => folder.to_owned(),
+        }
+    }
+
+    pub(crate) fn missing_dist(&self, message: impl Into<String>) -> Error {
+        let mut message = message.into();
+        if self.build_required {
+            message.push_str("; this package requires a committed build result");
+            if let Some(command) = &self.build_command {
+                message.push_str(&format!("; buildCommand: {command}"));
+            }
+            message.push_str(" (gitpm does not run builds)");
+        }
+        Error::invalid_manifest(message)
+    }
+
     /// The descriptive metadata of this manifest (`title`, `description`, `provides`,
     /// `tags`), read from the kept top-level keys. These keys stay in [`Manifest::extra`]
     /// so they are written back exactly as they were (order and the string form of
@@ -43,7 +111,7 @@ impl Manifest {
     pub fn metadata_strict(&self) -> Result<Metadata> {
         let (metadata, problems) = Metadata::read(&self.extra);
         match problems.into_iter().next() {
-            Some(problem) => Err(Error::InvalidManifest(format!(
+            Some(problem) => Err(Error::invalid_manifest(format!(
                 "invalid plugin.json: {problem}"
             ))),
             None => Ok(metadata),
@@ -124,18 +192,122 @@ pub struct ForkOf {
     pub id: String,
     pub version: String,
     pub commit: String,
+    /// Recorded source of the original, so `check` can read its releases without a
+    /// catalog. Optional when reading; never empty when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Revision {
     pub version: String,
     pub commit: String,
+    /// Only in `previous`: the mode the package had at that revision (omitted in
+    /// release mode), so `rollback` restores revision and mode together. Everywhere
+    /// else (`current`, results) it is release; the current mode is the record's `mode`.
+    #[serde(default, skip_serializing_if = "Mode::is_release")]
+    pub mode: Mode,
 }
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+impl Revision {
+    /// This revision as the `previous` of a record in `mode`.
+    pub(crate) fn with_mode(&self, mode: &Mode) -> Self {
+        Self {
+            mode: mode.clone(),
+            ..self.clone()
+        }
+    }
+    /// This revision without a mode (as `current` and in results).
+    pub(crate) fn without_mode(&self) -> Self {
+        self.with_mode(&Mode::Release)
+    }
+}
+/// What `update` follows for an installed package, recorded in state as `mode`
+/// (omitted in release mode, else `{"pinned": REF}` or `{"branch": NAME}`).
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Mode {
+    /// The newest release (`vVERSION` tag); the default.
+    #[default]
+    Release,
+    /// Fixed at a tag or commit: the ref as the user gave it (a commit in full).
+    /// `current.commit` is the installed truth; the ref is for display and `check`.
+    Pinned(String),
+    /// Follows the HEAD of this branch of the origin.
+    Branch(String),
+    /// Live author-owned output; no installed commit or owned clone.
+    Link(LinkDescriptor),
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LinkDescriptor {
+    pub package_root: String,
+    pub target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery: Option<LinkDiscovery>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LinkDiscovery {
+    pub fork_of: ForkOf,
+}
+impl Mode {
+    pub fn is_release(&self) -> bool {
+        matches!(self, Mode::Release)
+    }
+}
+
+/// Catalog build metadata needed for deployment, updates and offline rollback.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct BuildInstall {
+    pub location: Option<String>,
+    pub release: crate::catalog::Release,
+}
+#[derive(Clone, Debug, Default)]
 pub struct Installed {
+    /// Human-readable alias of the installed manifest.
+    pub name: String,
+    /// Verified build provenance; distinct from catalog protection.
+    pub build: Option<BuildInstall>,
+    /// Provenance of the previous revision, retained for offline rollback.
+    pub previous_build: Option<BuildInstall>,
     pub source: String,
     pub current: Revision,
     pub previous: Option<Revision>,
     pub enabled: bool,
+    /// What `update` follows; omitted in release mode.
+    pub mode: Mode,
+    pub fork_of: Option<ForkOf>,
+    /// Dependency edges of the current revision (copied from its manifest).
+    pub dependencies: BTreeMap<String, String>,
+    pub replaces: Option<Replaces>,
+    /// Catalog the package was installed from (canonical location); `None` for Git installs.
+    pub catalog: Option<String>,
+    /// Cache key of the shared clone `repos/<clone>` of a multi-package repository (one
+    /// per source, used by every package installed from it); `None`: the package's own
+    /// clone `packages/<id>`.
+    pub clone: Option<String>,
+    /// Package folder inside the repository (from `gitpm.json`); `None`: the root.
+    pub path: Option<String>,
+    /// Descriptive metadata of the current revision's manifest. Required in format 1: a
+    /// record without it is `invalid_data`.
+    pub metadata: Metadata,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(remote = "Installed")]
+struct InstalledFields {
+    pub name: String,
+    /// Verified build provenance; distinct from catalog protection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<BuildInstall>,
+    /// Provenance of the previous revision, retained for offline rollback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_build: Option<BuildInstall>,
+    pub source: String,
+    pub current: Revision,
+    pub previous: Option<Revision>,
+    pub enabled: bool,
+    /// What `update` follows; omitted in release mode.
+    #[serde(default, skip_serializing_if = "Mode::is_release")]
+    pub mode: Mode,
     #[serde(default, rename = "forkOf", skip_serializing_if = "Option::is_none")]
     pub fork_of: Option<ForkOf>,
     /// Dependency edges of the current revision (copied from its manifest).
@@ -143,68 +315,147 @@ pub struct Installed {
     pub dependencies: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replaces: Option<Replaces>,
-    /// Catalog the plugin was installed from (canonical location); `None` for Git installs.
+    /// Catalog the package was installed from (canonical location); `None` for Git installs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catalog: Option<String>,
-    /// Cache key of the shared clone `repos/<clone>` of a multi-package repository (one
-    /// per source, used by every package installed from it); `None`: the plugin's own
-    /// clone `plugins/<id>`.
+    /// Source key of the clone `repos/<clone>`, shared by root and nested packages.
+    /// Absent only for build installs that have never retained a Git clone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clone: Option<String>,
     /// Package folder inside the repository (from `gitpm.json`); `None`: the root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
-    /// Descriptive metadata of the current revision's manifest (since 0.5). `None` in a
-    /// record written by an older gitpm: [`State::installed_in`] then reads it from the
-    /// clone.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<Metadata>,
+    /// Descriptive metadata of the current revision's manifest. Required in format 1: a
+    /// record without it is `invalid_data`.
+    pub metadata: Metadata,
 }
+impl Serialize for Installed {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Fields<'a>(#[serde(with = "InstalledFields")] &'a Installed);
+        let mut value = serde_json::to_value(Fields(self)).map_err(serde::ser::Error::custom)?;
+        if matches!(self.mode, Mode::Link(_)) {
+            let object = value.as_object_mut().unwrap();
+            for key in [
+                "current",
+                "previous",
+                "clone",
+                "path",
+                "catalog",
+                "forkOf",
+                "build",
+                "previous_build",
+            ] {
+                object.remove(key);
+            }
+            if self.source.is_empty() {
+                object.remove("source");
+            }
+            object.insert("version".into(), self.current.version.clone().into());
+            object.insert(
+                "dependencies".into(),
+                serde_json::to_value(&self.dependencies).map_err(serde::ser::Error::custom)?,
+            );
+        }
+        value.serialize(serializer)
+    }
+}
+impl<'de> Deserialize<'de> for Installed {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let mut value = serde_json::Value::deserialize(deserializer)?;
+        if value.get("mode").and_then(|m| m.get("link")).is_some() {
+            let object = value.as_object_mut().unwrap();
+            for key in [
+                "current",
+                "previous",
+                "clone",
+                "path",
+                "catalog",
+                "forkOf",
+                "build",
+                "previous_build",
+            ] {
+                if object.contains_key(key) {
+                    return Err(serde::de::Error::custom(format!(
+                        "link record cannot hold {key}"
+                    )));
+                }
+            }
+            let version = object
+                .remove("version")
+                .ok_or_else(|| serde::de::Error::custom("link record requires version"))?;
+            if !version.is_string() || !object.contains_key("dependencies") {
+                return Err(serde::de::Error::custom("invalid link snapshot"));
+            }
+            object.insert(
+                "current".into(),
+                serde_json::json!({"version": version, "commit": ""}),
+            );
+            object.entry("source").or_insert(serde_json::json!(""));
+        }
+        InstalledFields::deserialize(value).map_err(serde::de::Error::custom)
+    }
+}
+
 impl Installed {
+    pub fn link(&self) -> Option<&LinkDescriptor> {
+        match &self.mode {
+            Mode::Link(link) => Some(link),
+            _ => None,
+        }
+    }
+    /// Validated provenance, including the nested link discovery snapshot.
+    pub fn discovery_fork(&self) -> Option<&ForkOf> {
+        self.link()
+            .and_then(|l| l.discovery.as_ref())
+            .map(|d| &d.fork_of)
+            .or(self.fork_of.as_ref())
+    }
     /// Take the manifest-derived fields of a new current revision.
     pub(crate) fn adopt(&mut self, m: &Manifest) {
+        self.name = m.name.clone();
         self.fork_of = m.fork_of.clone();
         self.dependencies = m.dependencies.clone();
         self.replaces = m.replaces.clone();
-        self.metadata = Some(m.metadata());
+        self.metadata = m.metadata();
     }
-    /// The root package of its repository (no `gitpm.json` at the installed revision):
-    /// `path` is `None`. Independent of where the clone lives: a root package that moved
-    /// into a package folder keeps its own clone `plugins/<id>` but is no longer a root
-    /// package.
+    /// Whether the package lives at the repository root.
     pub fn is_root_package(&self) -> bool {
         self.path.is_none()
     }
-    /// Workspace-relative folder of the clone: `repos/<clone>` (shared) or `plugins/<id>`.
-    pub fn clone_folder(&self, id: &str) -> String {
-        match &self.clone {
-            Some(key) => format!("repos/{key}"),
-            None => format!("plugins/{id}"),
-        }
+    /// Workspace-relative clone folder. Build-to-Git transitions without a retained
+    /// clone stage their new clone at the same source-derived destination.
+    pub fn clone_folder(&self, _id: &str) -> String {
+        let key = self
+            .clone
+            .clone()
+            .unwrap_or_else(|| crate::workspace::clones::repo_key(&self.source));
+        format!("repos/{key}")
     }
 }
 
-/// Version of the `state.json` layout this library writes. 1 (no `format` key) is the
-/// layout of gitpm 0.3 and earlier; 2 adds shared clones (`clone`, `path`) and
-/// `forgotten`. Older formats are read, newer ones refused.
-pub const STATE_FORMAT: u32 = 2;
-fn legacy_format() -> u32 {
-    1
-}
+/// Version of the `state.json` layout this library reads and writes. Stays 1 before
+/// the first public release. Later, bump once per release only when the previous public
+/// release would misread a change; any other format is refused without migration.
+pub const STATE_FORMAT: u32 = 1;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct State {
-    /// Layout version ([`STATE_FORMAT`] when written; missing in old files: 1).
-    #[serde(default = "legacy_format")]
+    /// Layout version: always [`STATE_FORMAT`].
     pub format: u32,
-    pub plugins: BTreeMap<String, Installed>,
-    /// Global replacements: original ID → installed plugin that provides it for every
+    pub packages: BTreeMap<String, Installed>,
+    /// Global replacements: original ID → installed package that provides it for every
     /// consumer in this workspace.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub replacements: BTreeMap<String, String>,
-    /// Forgotten packages of shared clones (`clone` set): their clone is kept (their
-    /// `dist/` is not: they are not installed) and they still count as users of the clone, so `restore` and `uninstall` find
-    /// them. A forgotten plugin with its own clone needs no record (`plugins/<id>`).
+    /// Forgotten packages, with their whole record: the clone is
+    /// kept (their `dist/` is not: they are not installed), a shared clone still counts
+    /// them as users, and `restore` records them again as they were.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub forgotten: BTreeMap<String, Installed>,
 }
@@ -212,48 +463,121 @@ impl Default for State {
     fn default() -> Self {
         Self {
             format: STATE_FORMAT,
-            plugins: BTreeMap::new(),
+            packages: BTreeMap::new(),
             replacements: BTreeMap::new(),
             forgotten: BTreeMap::new(),
         }
     }
 }
 impl State {
-    /// `dist/<id>` is deployed exactly for the active plugins: installed, enabled and
-    /// not replaced by another plugin. A host loads everything under `dist/`.
+    /// `dist/<id>` is deployed exactly for the active packages: installed, enabled and
+    /// not replaced by another package. A host loads everything under `dist/`.
     pub fn is_active(&self, id: &str) -> bool {
-        self.plugins.get(id).is_some_and(|p| p.enabled) && !self.replacements.contains_key(id)
+        self.packages.get(id).is_some_and(|p| p.enabled) && !self.replacements.contains_key(id)
+    }
+    /// Refuse a `state.json` whose `format` is missing or not [`STATE_FORMAT`] with
+    /// `unsupported` (checked before any other field, so an older layout is never
+    /// misread). Malformed JSON is `invalid_data`.
+    pub(crate) fn check_format(bytes: &[u8]) -> Result<()> {
+        #[derive(Deserialize)]
+        struct Format {
+            format: Option<serde_json::Value>,
+        }
+        let found: Format = serde_json::from_slice(bytes)
+            .map_err(|e| Error::InvalidData(format!("invalid workspace state.json: {e}")))?;
+        let found = match found.format {
+            Some(serde_json::Value::Number(n)) if n.as_u64() == Some(STATE_FORMAT.into()) => {
+                return Ok(());
+            }
+            Some(value) => format!("format {value}"),
+            None => "no format".to_owned(),
+        };
+        Err(Error::Unsupported(format!(
+            "state.json has {found}, but this gitpm reads only format {STATE_FORMAT}; re-create the workspace (install its packages again) or use the gitpm that wrote it"
+        )))
     }
     /// Parse `state.json` and check what serde cannot: the format version, IDs, clone
     /// keys and package folders.
     pub(crate) fn parse(bytes: &[u8]) -> Result<Self> {
+        Self::check_format(bytes)?;
         let state: State = serde_json::from_slice(bytes)
             .map_err(|e| Error::InvalidData(format!("invalid workspace state.json: {e}")))?;
-        ensure!(
-            (1..=STATE_FORMAT).contains(&state.format),
-            Unsupported,
-            "state.json has format {}, but this gitpm reads formats 1 to {STATE_FORMAT}; use a newer gitpm",
-            state.format
-        );
-        for (id, p) in state.plugins.iter().chain(&state.forgotten) {
+        for (id, p) in state.packages.iter().chain(&state.forgotten) {
             valid_id(id)?;
+            if let Some(link) = p.link() {
+                for path in [&link.package_root, &link.target] {
+                    let path = Path::new(path);
+                    ensure!(
+                        path.is_absolute()
+                            && path.components().all(|c| !matches!(
+                                c,
+                                std::path::Component::ParentDir | std::path::Component::CurDir
+                            )),
+                        InvalidData,
+                        "invalid absolute link path of {id}"
+                    );
+                }
+                crate::catalog::version_key(&p.current.version)?;
+                let m = Manifest {
+                    id: id.clone(),
+                    version: p.current.version.clone(),
+                    dependencies: p.dependencies.clone(),
+                    replaces: p.replaces.clone(),
+                    fork_of: p.discovery_fork().cloned(),
+                    ..Default::default()
+                };
+                validate_manifest_references(&m)?;
+            }
+            for (build, revision) in p
+                .build
+                .iter()
+                .map(|b| (b, Some(&p.current)))
+                .chain(p.previous_build.iter().map(|b| (b, p.previous.as_ref())))
+            {
+                let release = &build.release;
+                ensure!(
+                    release.build.is_some()
+                        && revision
+                            .is_some_and(|r| r.version == release.manifest.version
+                                && r.commit == release.commit),
+                    InvalidData,
+                    "invalid build revision of {id}"
+                );
+                crate::catalog::validate_release(release, id, &release.manifest.version)?;
+            }
+            ensure!(
+                p.link().is_some() || p.build.is_some() || p.clone.is_some(),
+                InvalidData,
+                "Git package {id} has no clone key in state.json"
+            );
             if let Some(key) = &p.clone {
                 valid_clone_key(key)?;
             }
             if let Some(path) = &p.path {
                 crate::packages::validate_path(path)?;
             }
+            if let Mode::Pinned(name) | Mode::Branch(name) = &p.mode {
+                ensure!(
+                    !name.is_empty() && !name.starts_with('-'),
+                    InvalidData,
+                    "invalid mode of {id} in state.json: {name:?}"
+                );
+            }
+        }
+        // Disabling a replacing package drops its binding, so a binding to a disabled
+        // package comes from gitpm <= 0.5 (`disable --force` kept it) or a hand edit.
+        for (original, fork) in &state.replacements {
+            ensure!(
+                state.packages.get(fork).is_none_or(|p| p.enabled),
+                InvalidData,
+                "state.json replaces {original} by the disabled package {fork} (written by gitpm 0.5 or earlier, or edited by hand); a replacing package is always enabled: remove the entry {original} from replacements"
+            );
         }
         for id in state.forgotten.keys() {
             ensure!(
-                !state.plugins.contains_key(id),
+                !state.packages.contains_key(id),
                 InvalidData,
                 "state.json lists {id} as installed and as forgotten"
-            );
-            ensure!(
-                state.forgotten[id].clone.is_some(),
-                InvalidData,
-                "state.json lists {id} as forgotten without a shared clone"
             );
         }
         Ok(state)
@@ -273,21 +597,30 @@ pub(crate) fn valid_clone_key(key: &str) -> Result<()> {
             && hash.len() == 16
             && hash.bytes().all(|c| c.is_ascii_hexdigit()),
         InvalidData,
-        "invalid clone name {key:?} in state.json: expected a folder name under repos/ such as plugins-0123456789abcdef"
+        "invalid clone name {key:?} in state.json: expected a folder name under repos/ such as packages-0123456789abcdef"
     );
     Ok(())
 }
 
-/// Flat view of one installed plugin (convenient for UIs and FFI).
+/// Flat view of one installed package (convenient for UIs and FFI).
 #[derive(Clone, Debug, Serialize)]
-pub struct InstalledPlugin {
+pub struct InstalledPackage {
     pub id: String,
+    pub name: String,
+    pub installed: bool,
     pub source: String,
-    pub current: Revision,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current: Option<Revision>,
+    /// Declared snapshot version for a live link.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
     pub previous: Option<Revision>,
     pub enabled: bool,
-    /// Installed, enabled and not replaced ([`State::is_active`]): exactly the plugins
-    /// with `dist/<id>`. `enabled` alone is not enough (a replaced plugin is enabled).
+    /// What `update` follows (omitted in release mode).
+    #[serde(skip_serializing_if = "Mode::is_release")]
+    pub mode: Mode,
+    /// Installed, enabled and not replaced ([`State::is_active`]): exactly the packages
+    /// with `dist/<id>`. `enabled` alone is not enough (a replaced package is enabled).
     pub active: bool,
     #[serde(rename = "forkOf", skip_serializing_if = "Option::is_none")]
     pub fork_of: Option<ForkOf>,
@@ -298,8 +631,7 @@ pub struct InstalledPlugin {
     /// Package folder inside the source repository; `None` for the repository root.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
-    /// Cache key of the shared clone `repos/<clone>` (as in state); `None`: the
-    /// plugin's own clone `plugins/<id>`.
+    /// Source key of the clone `repos/<clone>`; absent for clone-free builds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clone: Option<String>,
     /// Descriptive metadata of the installed revision (`plugin.json`); always present
@@ -308,44 +640,33 @@ pub struct InstalledPlugin {
     pub description: Option<String>,
     pub provides: Vec<String>,
     pub tags: Vec<String>,
-    /// Each dependency with the plugin that provides it and whether it is satisfied.
+    /// Each dependency with the package that provides it and whether it is satisfied.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub dependencies: Vec<crate::deps::DependencyStatus>,
-    /// Original IDs this plugin currently stands in for (active replacements).
+    /// Original IDs this package currently stands in for (active replacements).
     #[serde(rename = "replacing", skip_serializing_if = "Vec::is_empty")]
     pub replacing: Vec<String>,
-    /// Installed plugins that depend on this one (directly, through any replacement).
+    /// Installed packages that depend on this one (directly, through any replacement).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub dependents: Vec<String>,
 }
 impl State {
-    /// Flat view of the installed plugins (sorted by ID), with the metadata recorded in
-    /// state (empty for records of an older gitpm; see [`State::installed_in`]).
-    pub fn installed(&self) -> Vec<InstalledPlugin> {
-        self.installed_with(|_, p| p.metadata.clone().unwrap_or_default())
-    }
-    /// [`State::installed`] for the workspace at `root`: a record without metadata
-    /// (written by gitpm 0.4 or earlier) gets it from the manifest of its installed
-    /// commit in the clone. Read-only; an unreadable manifest gives empty metadata.
-    pub fn installed_in(&self, root: &Path) -> Vec<InstalledPlugin> {
-        self.installed_with(|id, p| match &p.metadata {
-            Some(metadata) => metadata.clone(),
-            None => committed_metadata(root, id, p).unwrap_or_default(),
-        })
-    }
-    fn installed_with(
-        &self,
-        metadata: impl Fn(&str, &Installed) -> Metadata,
-    ) -> Vec<InstalledPlugin> {
-        self.plugins
+    /// Flat view of the installed packages (sorted by ID), with the metadata recorded in
+    /// state (the clone is never read).
+    pub fn installed(&self) -> Vec<InstalledPackage> {
+        self.packages
             .iter()
-            .map(|(id, p)| (id, p, metadata(id, p)))
-            .map(|(id, p, metadata)| InstalledPlugin {
+            .map(|(id, p)| (id, p, p.metadata.clone()))
+            .map(|(id, p, metadata)| InstalledPackage {
                 id: id.clone(),
+                name: p.name.clone(),
+                installed: true,
                 source: p.source.clone(),
-                current: p.current.clone(),
+                current: p.link().is_none().then(|| p.current.clone()),
+                version: p.link().map(|_| p.current.version.clone()),
                 previous: p.previous.clone(),
                 enabled: p.enabled,
+                mode: p.mode.clone(),
                 active: self.is_active(id),
                 fork_of: p.fork_of.clone(),
                 replaces: p.replaces.clone(),
@@ -369,33 +690,20 @@ impl State {
     }
 }
 
-/// Metadata of the manifest at the installed commit of `p` in its clone.
-fn committed_metadata(root: &Path, id: &str, p: &Installed) -> Option<Metadata> {
-    let commit = &p.current.commit;
-    if commit.is_empty() || !commit.bytes().all(|c| c.is_ascii_hexdigit()) {
-        return None;
-    }
-    let repo = root.join(p.clone_folder(id));
-    let file = match &p.path {
-        Some(path) => format!("{path}/plugin.json"),
-        None => "plugin.json".to_owned(),
-    };
-    let text = git(&repo, &["show", &format!("{commit}:{file}")]).ok()?;
-    let m: Manifest = serde_json::from_str(&text).ok()?;
-    Some(m.metadata())
-}
-
-/// `namespace/name` or a legacy unscoped ID; every component is a safe path part.
+/// Canonical lowercase, hyphenated UUID. Legacy names and namespace IDs are refused.
 pub fn valid_id(id: &str) -> Result<()> {
-    let parts: Vec<_> = id.split('/').collect();
     ensure!(
-        (1..=2).contains(&parts.len()),
+        id.len() == 36
+            && id.bytes().enumerate().all(|(i, b)| {
+                if [8, 13, 18, 23].contains(&i) {
+                    b == b'-'
+                } else {
+                    b.is_ascii_digit() || (b'a'..=b'f').contains(&b)
+                }
+            }),
         InvalidId,
-        "expected namespace/name (or a legacy unscoped ID)"
+        "invalid package ID {id:?}: expected a canonical lowercase UUID"
     );
-    for part in parts {
-        identity::valid_part(part)?;
-    }
     Ok(())
 }
 
@@ -403,12 +711,41 @@ pub(crate) fn manifest(repo: &Path) -> Result<Manifest> {
     let path = repo.join("plugin.json");
     let bytes = fs::read(&path).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => {
-            Error::InvalidManifest(format!("missing plugin.json: {}", path.display()))
+            Error::invalid_manifest(format!("missing plugin.json: {}", path.display()))
         }
         _ => Error::Io(format!("cannot read {}: {e}", path.display())),
     })?;
     let m: Manifest = serde_json::from_slice(&bytes)
-        .map_err(|e| Error::InvalidManifest(format!("invalid plugin.json: {e}")))?;
+        .map_err(|e| Error::invalid_manifest(format!("invalid plugin.json: {e}")))?;
+    validate_manifest(&m)?;
+    let folder = m.dist_folder();
+    if !repo.join(folder).is_dir() {
+        return Err(m.missing_dist(format!("package must contain a ready {folder}/ directory")));
+    }
+    if folder != "." {
+        let mut current = repo.to_path_buf();
+        for component in folder.split('/') {
+            current.push(component);
+            ensure!(
+                !fs::symlink_metadata(&current)?.file_type().is_symlink(),
+                Unsupported,
+                "symlinks are not supported: {}",
+                current.display()
+            );
+        }
+    }
+    Ok(m)
+}
+
+pub(crate) fn validate_manifest(m: &Manifest) -> Result<()> {
+    identity::valid_part(&m.name)
+        .map_err(|_| Error::invalid_manifest("invalid package name".into()))?;
+    validate_manifest_references(m)
+}
+
+// State stores UUID references without human aliases. Validate the same reference
+// contract for its synthetic manifest without requiring an alias field in state.
+fn validate_manifest_references(m: &Manifest) -> Result<()> {
     valid_id(&m.id)?;
     if let Some(base) = &m.fork_of {
         valid_id(&base.id)?;
@@ -428,6 +765,15 @@ pub(crate) fn manifest(repo: &Path) -> Result<Manifest> {
             InvalidManifest,
             "invalid forkOf.commit"
         );
+        if let Some(source) = &base.source {
+            ensure!(
+                !source.trim().is_empty(),
+                InvalidManifest,
+                "forkOf.source is empty"
+            );
+            crate::auth::validate_recorded(source)
+                .map_err(|e| Error::invalid_manifest(format!("invalid forkOf.source: {e}")))?;
+        }
     }
     ensure!(
         !m.version.trim().is_empty(),
@@ -443,17 +789,13 @@ pub(crate) fn manifest(repo: &Path) -> Result<Manifest> {
         ensure!(
             replaces.id != m.id,
             InvalidManifest,
-            "a plugin cannot replace itself"
+            "a package cannot replace itself"
         );
         crate::catalog::version_key(&replaces.version)?;
     }
-    crate::deps::validate(&m)?;
-    ensure!(
-        repo.join("dist").is_dir(),
-        InvalidManifest,
-        "plugin must contain a ready dist/ directory"
-    );
-    Ok(m)
+    crate::deps::validate(m)?;
+    m.validate_dist()?;
+    Ok(())
 }
 
 /// Manifest of the package in `path` (`None`: the root) of a checked-out repository.
@@ -467,7 +809,7 @@ pub(crate) fn package_manifest(repo: &Path, path: Option<&str>) -> Result<Manife
     for part in path.split('/') {
         current.push(part);
         let meta = fs::symlink_metadata(&current)
-            .map_err(|e| Error::InvalidManifest(format!("missing package {path}: {e}")))?;
+            .map_err(|e| Error::invalid_manifest(format!("missing package {path}: {e}")))?;
         ensure!(
             !meta.file_type().is_symlink(),
             Unsupported,
@@ -482,61 +824,103 @@ pub(crate) fn package_manifest(repo: &Path, path: Option<&str>) -> Result<Manife
     manifest(&current)
 }
 
-pub(crate) fn revision(repo: &Path, m: &Manifest) -> Result<Revision> {
+pub(crate) fn revision(repo: &Path, m: &Manifest, custom_ssh: bool) -> Result<Revision> {
     Ok(Revision {
         version: m.version.clone(),
-        commit: git(repo, &["rev-parse", "HEAD"])?,
+        commit: transport::object_id(repo, "HEAD", custom_ssh)?,
+        mode: Mode::Release,
     })
 }
 
-pub(crate) fn resolve_ref(repo: &Path, reference: &str) -> Result<String> {
+pub(crate) fn resolve_ref(repo: &Path, reference: &str, custom_ssh: bool) -> Result<String> {
     ensure!(
         !reference.is_empty() && !reference.starts_with('-'),
         InvalidArgument,
         "invalid git ref"
     );
-    git(
-        repo,
-        &[
-            "rev-parse",
-            "--verify",
-            "--end-of-options",
-            &format!("{reference}^{{commit}}"),
-        ],
-    )
+    transport::resolve_commit(repo, reference, custom_ssh)
 }
 
-/// Resolve a user ref in an installed clone after `fetch`: a tag, then the fetched
-/// upstream branch (`refs/remotes/origin/X`), then a commit ID. Local branches of the
-/// installed clone are never used: they are stale copies of upstream.
-pub(crate) fn resolve_upstream_ref(repo: &Path, reference: &str) -> Result<String> {
+/// The name of the origin's default branch (`refs/remotes/origin/HEAD`, set by a clone
+/// or by `git remote set-head origin --auto`).
+pub(crate) fn default_branch(repo: &Path, custom_ssh: bool) -> Result<String> {
+    let name = transport::origin_default_branch(repo, custom_ssh)
+        .map_err(|_| Error::Git("the origin has no default branch (HEAD)".into()))?;
+    let branch = name.strip_prefix("origin/").unwrap_or(&name).to_owned();
+    ensure!(
+        !branch.is_empty() && !branch.starts_with('-'),
+        Git,
+        "the origin has no default branch (HEAD)"
+    );
+    Ok(branch)
+}
+
+/// Resolve a user ref against the origin, in a fresh clone or in an installed clone
+/// after `fetch`. Only exact names count: a tag (`refs/tags/X`), then an origin branch
+/// (`refs/remotes/origin/X`), then a commit ID of 7 to 64 hex digits; `HEAD` (and
+/// `refs/remotes/origin/HEAD`) is the origin's default branch, by its name. Revision
+/// expressions (`HEAD~1`, `TAG^`) and local branches of a clone (stale copies of the
+/// origin) are refused with `invalid_argument`. Returns the commit and the mode that
+/// records it: a tag or commit pins, a branch is followed.
+pub(crate) fn resolve_upstream_ref(
+    repo: &Path,
+    reference: &str,
+    custom_ssh: bool,
+) -> Result<(String, Mode)> {
     ensure!(
         !reference.is_empty() && !reference.starts_with('-'),
         InvalidArgument,
         "invalid git ref"
     );
+    let exists = |full: &str| transport::verify_ref(repo, full, custom_ssh).is_ok();
+    let branch = |name: &str| -> Result<(String, Mode)> {
+        let commit = resolve_ref(repo, &format!("refs/remotes/origin/{name}"), custom_ssh)?;
+        Ok((commit, Mode::Branch(name.to_owned())))
+    };
+    if reference == "HEAD" || reference == "refs/remotes/origin/HEAD" {
+        return branch(&default_branch(repo, custom_ssh)?);
+    }
+    let unknown = || {
+        Error::InvalidArgument(format!(
+            "unknown ref {reference}: not a tag, origin branch or commit"
+        ))
+    };
     if let Some(rest) = reference.strip_prefix("refs/") {
         ensure!(
             !rest.starts_with("heads/"),
             InvalidArgument,
             "local branches of an installed clone are stale; use the branch name"
         );
-        return resolve_ref(repo, reference);
-    }
-    for candidate in [
-        format!("refs/tags/{reference}"),
-        format!("refs/remotes/origin/{reference}"),
-    ] {
-        if let Ok(commit) = resolve_ref(repo, &candidate) {
-            return Ok(commit);
+        if let Some(name) = rest.strip_prefix("remotes/origin/")
+            && exists(reference)
+        {
+            return branch(name);
         }
+        if rest.starts_with("tags/") && exists(reference) {
+            let commit = resolve_ref(repo, reference, custom_ssh)?;
+            return Ok((commit, Mode::Pinned(reference.to_owned())));
+        }
+        return Err(unknown());
     }
-    ensure!(
-        (4..=64).contains(&reference.len()) && reference.bytes().all(|c| c.is_ascii_hexdigit()),
-        InvalidArgument,
-        "unknown ref {reference}: not a tag, upstream branch or commit"
-    );
-    resolve_ref(repo, reference)
+    let tag = format!("refs/tags/{reference}");
+    if exists(&tag) {
+        return Ok((
+            resolve_ref(repo, &tag, custom_ssh)?,
+            Mode::Pinned(reference.to_owned()),
+        ));
+    }
+    if exists(&format!("refs/remotes/origin/{reference}")) {
+        return branch(reference);
+    }
+    if (7..=64).contains(&reference.len())
+        && reference
+            .bytes()
+            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+        && let Ok(commit) = resolve_ref(repo, reference, custom_ssh)
+    {
+        return Ok((commit.clone(), Mode::Pinned(commit)));
+    }
+    Err(unknown())
 }
 
 pub(crate) fn manifest_json(m: &Manifest) -> Result<String> {
@@ -552,32 +936,24 @@ mod tests {
     const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
 
     #[test]
-    fn valid_id_accepts_legacy_and_scoped_ids_only() {
+    fn valid_id_accepts_only_canonical_uuids() {
         for ok in [
-            "demo1",
-            "dan/demo1",
-            "a-b/c_d",
-            &format!("{}/{}", "x".repeat(80), "y".repeat(80)),
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+            "00000000-0000-0000-0000-000000000000",
         ] {
-            assert!(valid_id(ok).is_ok(), "{ok}");
+            assert!(valid_id(ok).is_ok());
         }
         for bad in [
             "",
-            "/",
-            "dan/",
-            "/demo1",
-            "a/b/c",
-            "../demo1",
-            "dan/..",
-            "dan/.",
-            "dan\\demo1",
-            "dan/demo 1",
-            "Dan/démo",
-            "-x/demo1",
-            "dan/-demo1",
-            &"x".repeat(81),
+            "demo1",
+            "all",
+            "dan/demo1",
+            "AB93B236-D66D-5FC1-9CBC-3EAA4CF4DDCC",
+            "ab93b236d66d5fc19cbc3eaa4cf4ddcc",
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcg",
+            "../ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
         ] {
-            assert_eq!(valid_id(bad).unwrap_err().kind(), "invalid_id", "{bad:?}");
+            assert_eq!(valid_id(bad).unwrap_err().kind(), "invalid_id");
         }
     }
 
@@ -596,16 +972,16 @@ mod tests {
         let dir = TempDir::new("model");
         let repo = repo_with(
             &dir,
-            r#"{"id":"dan/demo1","version":"0.1.0","name":"Demo","host":{"entry":"index.js","flags":[1,true,null]}}"#,
+            r#"{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","name":"Demo", "version":"0.1.0","host":{"entry":"index.js","flags":[1,true,null]}}"#,
             true,
         );
         let m = manifest(&repo).unwrap();
-        assert_eq!(m.extra["name"], "Demo");
+        assert_eq!(m.name, "Demo");
         assert_eq!(m.extra["host"]["entry"], "index.js");
         let text = manifest_json(&m).unwrap();
         let written: serde_json::Value = serde_json::from_str(&text).unwrap();
         let original: serde_json::Value = serde_json::from_str(
-            r#"{"id":"dan/demo1","version":"0.1.0","dependencies":{},"name":"Demo","host":{"entry":"index.js","flags":[1,true,null]}}"#,
+            r#"{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","name": "fixture", "version":"0.1.0","dependencies":{},"name":"Demo","host":{"entry":"index.js","flags":[1,true,null]}}"#,
         )
         .unwrap();
         assert_eq!(written, original);
@@ -623,7 +999,7 @@ mod tests {
         let dir = TempDir::new("model");
         let repo = repo_with(
             &dir,
-            r#"{"zeta":1,"id":"dan/demo1","alpha":{"z":1,"a":2},"version":"0.1.0","mid":true}"#,
+            r#"{"zeta":1,"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","alpha":{"z":1,"a":2},"name":"fixture","version":"0.1.0","mid":true}"#,
             true,
         );
         let text = manifest_json(&manifest(&repo).unwrap()).unwrap();
@@ -634,7 +1010,15 @@ mod tests {
             .collect();
         assert_eq!(
             keys,
-            ["id", "version", "dependencies", "zeta", "alpha", "mid"],
+            [
+                "id",
+                "name",
+                "version",
+                "dependencies",
+                "zeta",
+                "alpha",
+                "mid"
+            ],
             "{text}"
         );
         // Nested unknown objects keep their order too.
@@ -650,20 +1034,23 @@ mod tests {
         for (json, kind) in [
             // wrong type for a known key
             (
-                r#"{"id":"dan/demo1","version":1,"x":1}"#,
+                r#"{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","name": "fixture", "version":1,"x":1}"#,
                 "invalid_manifest",
             ),
             // invalid known value
             (
-                r#"{"id":"dan/demo1","version":"banana","x":1}"#,
+                r#"{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","name": "fixture", "version":"banana","x":1}"#,
                 "invalid_version",
             ),
-            (r#"{"id":"../x","version":"0.1.0","x":1}"#, "invalid_id"),
+            (
+                r#"{"id":"../x","name": "fixture", "version":"0.1.0","x":1}"#,
+                "invalid_id",
+            ),
             // missing required key
             (r#"{"version":"0.1.0","x":1}"#, "invalid_manifest"),
             // nested known objects stay strict
             (
-                r#"{"id":"dan/demo1","version":"0.1.0","replaces":{"id":"dan/other","version":"1.0.0","x":1}}"#,
+                r#"{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","name": "fixture", "version":"0.1.0","replaces":{"id":"95d14dc8-6dfc-5022-9fd1-7146ee6aee58","version":"1.0.0","x":1}}"#,
                 "invalid_manifest",
             ),
         ] {
@@ -677,7 +1064,7 @@ mod tests {
     #[test]
     fn manifest_metadata_is_typed_normalized_and_written_back_as_it_was() {
         let dir = TempDir::new("model");
-        let json = r#"{"id":"dan/demo1","version":"0.1.0","x":1,"provides":"theme","title":"Demo","tags":["a","b"],"description":null}"#;
+        let json = r#"{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","name": "fixture", "version":"0.1.0","x":1,"provides":"theme","title":"Demo","tags":["a","b"],"description":null}"#;
         let repo = repo_with(&dir, json, true);
         let m = manifest(&repo).unwrap();
         assert_eq!(
@@ -721,7 +1108,7 @@ mod tests {
             let repo = repo_with(
                 &dir,
                 &format!(
-                    r#"{{"id":"dan/demo1","version":"0.1.0","title":"T","provides":"p",{bad}}}"#
+                    r#"{{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","name": "fixture", "version":"0.1.0","title":"T","provides":"p",{bad}}}"#
                 ),
                 true,
             );
@@ -741,27 +1128,35 @@ mod tests {
     #[test]
     fn manifest_parses_minimal_and_fork_manifests() {
         let dir = TempDir::new("model");
-        let repo = repo_with(&dir, r#"{"id":"dan/demo1","version":"0.1.0"}"#, true);
+        let repo = repo_with(
+            &dir,
+            r#"{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","name": "fixture", "version":"0.1.0"}"#,
+            true,
+        );
         let m = manifest(&repo).unwrap();
-        assert_eq!((m.id.as_str(), m.version.as_str()), ("dan/demo1", "0.1.0"));
+        assert_eq!(
+            (m.id.as_str(), m.version.as_str()),
+            ("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.1.0")
+        );
         assert!(m.dependencies.is_empty() && m.fork_of.is_none());
 
         let json = format!(
-            r#"{{"id":"me/demo1","version":"0.2.0","dependencies":{{}},"forkOf":{{"id":"dan/demo1","version":"0.1.0","commit":"{COMMIT}"}}}}"#
+            r#"{{"id":"fd9b5add-4cae-5e71-b6bf-5e868519eb9c","name": "fixture", "version":"0.2.0","dependencies":{{}},"forkOf":{{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","version":"0.1.0","commit":"{COMMIT}"}}}}"#
         );
         fs::write(repo.join("plugin.json"), json).unwrap();
         let m = manifest(&repo).unwrap();
         assert_eq!(
             m.fork_of,
             Some(ForkOf {
-                id: "dan/demo1".into(),
+                id: "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc".into(),
                 version: "0.1.0".into(),
-                commit: COMMIT.into()
+                commit: COMMIT.into(),
+                source: None,
             })
         );
         // SHA-256 object IDs are accepted as fork commits too.
         let json = format!(
-            r#"{{"id":"me/demo1","version":"0.2.0","forkOf":{{"id":"dan/demo1","version":"0.1.0","commit":"{}"}}}}"#,
+            r#"{{"id":"fd9b5add-4cae-5e71-b6bf-5e868519eb9c","name": "fixture", "version":"0.2.0","forkOf":{{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","version":"0.1.0","commit":"{}"}}}}"#,
             "a".repeat(64)
         );
         fs::write(repo.join("plugin.json"), json).unwrap();
@@ -773,78 +1168,111 @@ mod tests {
         let dir = TempDir::new("model");
         let fork = |id: &str, version: &str, commit: &str| {
             format!(
-                r#"{{"id":"me/demo1","version":"0.2.0","forkOf":{{"id":"{id}","version":"{version}","commit":"{commit}"}}}}"#
+                r#"{{"id":"fd9b5add-4cae-5e71-b6bf-5e868519eb9c","name": "fixture", "version":"0.2.0","forkOf":{{"id":"{id}","version":"{version}","commit":"{commit}"}}}}"#
             )
         };
         let cases: Vec<(String, bool, &str)> = vec![
             ("{".into(), true, "invalid_manifest"),
-            (r#"{"id":"demo1"}"#.into(), true, "invalid_manifest"),
+            (r#"{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc"}"#.into(), true, "invalid_manifest"),
             (
-                r#"{"id":"../demo1","version":"0.1.0"}"#.into(),
+                r#"{"id":"../demo1","name": "fixture", "version":"0.1.0"}"#.into(),
                 true,
                 "invalid_id",
             ),
             (
-                r#"{"id":"a/b/c","version":"0.1.0"}"#.into(),
+                r#"{"id":"75494f24-1c7e-5480-9e39-738ff3d038c4/c","name": "fixture", "version":"0.1.0"}"#.into(),
                 true,
                 "invalid_id",
             ),
             (
-                r#"{"id":"demo1","version":"  "}"#.into(),
+                r#"{"id":"demo1","name": "fixture", "version":"0.1.0"}"#.into(),
+                true,
+                "invalid_id",
+            ),
+            (
+                r#"{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","name": "fixture", "version":"  "}"#.into(),
                 true,
                 "invalid_manifest",
             ),
             (
-                r#"{"id":"demo1","version":"0.1.0"}"#.into(),
+                r#"{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","name": "fixture", "version":"0.1.0"}"#.into(),
                 false,
                 "invalid_manifest",
             ),
             (
-                r#"{"id":"demo1","version":"0.1.0","dependencies":{"dan/base":"banana"}}"#.into(),
+                r#"{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","name": "fixture", "version":"0.1.0","dependencies":{"38a3dec9-2271-556d-9d10-c62ca9ba8d96":"banana"}}"#.into(),
                 true,
                 "invalid_manifest",
             ),
             (
-                r#"{"id":"demo1","version":"0.1.0","dependencies":{"demo1":"^1"}}"#.into(),
+                r#"{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","name": "fixture", "version":"0.1.0","dependencies":{"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc":"^1"}}"#.into(),
                 true,
                 "invalid_manifest",
             ),
             (
-                r#"{"id":"demo1","version":"0.1.0","dependencies":{"../x":"^1"}}"#.into(),
+                r#"{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","name": "fixture", "version":"0.1.0","dependencies":{"../x":"^1"}}"#.into(),
                 true,
                 "invalid_id",
             ),
             (
-                r#"{"id":"me/demo1","version":"0.1.0","replaces":{"id":"me/demo1","version":"0.1.0"}}"#.into(),
+                r#"{"id":"fd9b5add-4cae-5e71-b6bf-5e868519eb9c","name": "fixture", "version":"0.1.0","replaces":{"id":"fd9b5add-4cae-5e71-b6bf-5e868519eb9c","version":"0.1.0"}}"#.into(),
                 true,
                 "invalid_manifest",
             ),
             (
-                r#"{"id":"me/demo1","version":"0.1.0","replaces":{"id":"dan/demo1","version":"1.0"}}"#.into(),
+                r#"{"id":"fd9b5add-4cae-5e71-b6bf-5e868519eb9c","name": "fixture", "version":"0.1.0","replaces":{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","version":"1.0"}}"#.into(),
                 true,
                 "invalid_version",
             ),
             (
-                r#"{"id":"me/demo1","version":"0.1.0","replaces":{"id":"dan/demo1"}}"#.into(),
+                r#"{"id":"fd9b5add-4cae-5e71-b6bf-5e868519eb9c","name": "fixture", "version":"0.1.0","replaces":{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc"}}"#.into(),
                 true,
                 "invalid_manifest",
             ),
-            (fork("me/demo1", "0.1.0", COMMIT), true, "invalid_manifest"),
-            (fork("dan/demo1", " ", COMMIT), true, "invalid_manifest"),
+            (fork("fd9b5add-4cae-5e71-b6bf-5e868519eb9c", "0.1.0", COMMIT), true, "invalid_manifest"),
+            (fork("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", " ", COMMIT), true, "invalid_manifest"),
             (
-                fork("dan/demo1", "0.1.0", &COMMIT[..39]),
+                fork("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.1.0", &COMMIT[..39]),
                 true,
                 "invalid_manifest",
             ),
             (
-                fork("dan/demo1", "0.1.0", &"g".repeat(40)),
+                fork("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.1.0", &"g".repeat(40)),
                 true,
                 "invalid_manifest",
             ),
             (fork("../x", "0.1.0", COMMIT), true, "invalid_id"),
             (
                 format!(
-                    r#"{{"id":"me/demo1","version":"0.2.0","forkOf":{{"id":"dan/demo1","version":"0.1.0","commit":"{COMMIT}","extra":1}}}}"#
+                    r#"{{"id":"fd9b5add-4cae-5e71-b6bf-5e868519eb9c","name": "fixture", "version":"0.2.0","forkOf":{{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","version":"0.1.0","commit":"{COMMIT}","source":""}}}}"#
+                ),
+                true,
+                "invalid_manifest",
+            ),
+            (
+                format!(
+                    r#"{{"id":"fd9b5add-4cae-5e71-b6bf-5e868519eb9c","name": "fixture", "version":"0.2.0","forkOf":{{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","version":"0.1.0","commit":"{COMMIT}","source":"ext::sh -c id"}}}}"#
+                ),
+                true,
+                "invalid_manifest",
+            ),
+            (
+                format!(
+                    r#"{{"id":"fd9b5add-4cae-5e71-b6bf-5e868519eb9c","name": "fixture", "version":"0.2.0","forkOf":{{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","version":"0.1.0","commit":"{COMMIT}","source":"fd::5"}}}}"#
+                ),
+                true,
+                "invalid_manifest",
+            ),
+            (
+                format!(
+                    r#"{{"id":"fd9b5add-4cae-5e71-b6bf-5e868519eb9c","name": "fixture", "version":"0.2.0","forkOf":{{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","version":"0.1.0","commit":"{COMMIT}","source":"933fda30-c501-532d-9414-ed499eea3141"}}}}"#
+                ),
+                true,
+                "invalid_manifest",
+            ),
+            (
+                format!(
+                    r#"{{"id":"fd9b5add-4cae-5e71-b6bf-5e868519eb9c","name": "fixture", "version":"0.2.0","forkOf":{{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","version":"0.1.0","commit":"{COMMIT}","extra":1}}}}"#
                 ),
                 true,
                 "invalid_manifest",
@@ -867,47 +1295,82 @@ mod tests {
     #[test]
     fn manifest_rejects_non_numeric_versions() {
         let dir = TempDir::new("model");
-        for version in ["1.0", "1.0.0-beta", "1.0.0+build", "banana", "01.0.0"] {
+        for version in ["1.0", "1.0.0-01", "1.0.0+build", "banana", "01.0.0"] {
             let _ = fs::remove_dir_all(dir.join("repo"));
             let repo = repo_with(
                 &dir,
-                &format!(r#"{{"id":"demo1","version":"{version}"}}"#),
+                &format!(
+                    r#"{{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","name": "fixture", "version":"{version}"}}"#
+                ),
                 true,
             );
             assert!(manifest(&repo).is_err(), "{version} must be rejected");
         }
+        let _ = fs::remove_dir_all(dir.join("repo"));
+        let repo = repo_with(
+            &dir,
+            r#"{"id":"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc","name": "fixture", "version":"1.0.0-beta.1"}"#,
+            true,
+        );
+        assert_eq!(manifest(&repo).unwrap().version, "1.0.0-beta.1");
     }
 
     #[test]
     fn manifest_json_is_pretty_with_trailing_newline_and_stable_fields() {
         let mut m = Manifest {
-            id: "dan/demo1".into(),
+            id: "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc".into(),
+            name: "fixture".into(),
             version: "0.1.0".into(),
             ..Default::default()
         };
         assert_eq!(
             manifest_json(&m).unwrap(),
-            "{\n  \"id\": \"dan/demo1\",\n  \"version\": \"0.1.0\",\n  \"dependencies\": {}\n}\n"
+            "{\n  \"id\": \"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc\",\n  \"name\": \"fixture\",\n  \"version\": \"0.1.0\",\n  \"dependencies\": {}\n}\n"
         );
         m.fork_of = Some(ForkOf {
-            id: "vendor/demo1".into(),
+            id: "3e91bfd4-69a0-55a1-9f05-93c3e97dab8a".into(),
             version: "0.0.9".into(),
             commit: COMMIT.into(),
+            source: Some("https://git.example/3e91bfd4-69a0-55a1-9f05-93c3e97dab8a.git".into()),
         });
         let text = manifest_json(&m).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(value["forkOf"]["id"], "vendor/demo1");
+        assert_eq!(
+            value["forkOf"]["id"],
+            "3e91bfd4-69a0-55a1-9f05-93c3e97dab8a"
+        );
         assert!(text.contains("\"forkOf\""), "camelCase key: {text}");
         let back: Manifest = serde_json::from_str(&text).unwrap();
         assert_eq!(back.fork_of, m.fork_of);
     }
 
-    /// Byte format written by the stand prototype (`serde_json::to_vec_pretty`, no newline).
+    /// Byte format of `state.json` (`serde_json::to_vec_pretty`, no newline).
     const STATE: &str = r#"{
-  "format": 2,
-  "plugins": {
-    "dan/demo1": {
-      "source": "git@github.com:dan/demo1.git",
+  "format": 1,
+  "packages": {
+    "53d23fe9-4284-5d06-a9af-0dd04a6390d5": {
+      "name": "fixture",
+      "source": "/tmp/demo2",
+      "current": {
+        "version": "0.3.0",
+        "commit": "b6e1cb27e482634979ffcfb4f9cdd02ff99005db"
+      },
+      "previous": null,
+      "enabled": true,
+      "mode": {
+        "branch": "main"
+      },
+      "clone": "repo-0123456789abcdef",
+      "metadata": {
+        "title": null,
+        "description": null,
+        "provides": [],
+        "tags": []
+      }
+    },
+    "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc": {
+      "name": "fixture",
+      "source": "git@github.com:ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc.git",
       "current": {
         "version": "0.1.1",
         "commit": "e23af971029e7c8c4d7d069e20e543e3c2ee63ad"
@@ -916,9 +1379,19 @@ mod tests {
         "version": "0.1.0",
         "commit": "a17e286b69daa620096f78fa54153696b8459b6b"
       },
-      "enabled": false
+      "enabled": false,
+      "clone": "repo-0123456789abcdef",
+      "metadata": {
+        "title": "Demo",
+        "description": null,
+        "provides": [
+          "theme"
+        ],
+        "tags": []
+      }
     },
-    "demo1": {
+    "fd9b5add-4cae-5e71-b6bf-5e868519eb9c": {
+      "name": "fixture",
       "source": "/tmp/demo1",
       "current": {
         "version": "1.0.0",
@@ -926,10 +1399,20 @@ mod tests {
       },
       "previous": null,
       "enabled": true,
+      "mode": {
+        "pinned": "v1.0.0"
+      },
       "forkOf": {
-        "id": "vendor/demo1",
+        "id": "3e91bfd4-69a0-55a1-9f05-93c3e97dab8a",
         "version": "0.9.0",
         "commit": "0123456789abcdef0123456789abcdef01234567"
+      },
+      "clone": "repo-0123456789abcdef",
+      "metadata": {
+        "title": null,
+        "description": null,
+        "provides": [],
+        "tags": []
       }
     }
   }
@@ -937,47 +1420,82 @@ mod tests {
 
     #[test]
     fn state_round_trips_byte_for_byte() {
-        let state: State = serde_json::from_str(STATE).unwrap();
+        let state = State::parse(STATE.as_bytes()).unwrap();
         assert_eq!(
             String::from_utf8(serde_json::to_vec_pretty(&state).unwrap()).unwrap(),
             STATE
         );
-        let p = &state.plugins["dan/demo1"];
+        let p = &state.packages["ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc"];
         assert!(!p.enabled && p.fork_of.is_none());
         assert_eq!(p.previous.as_ref().unwrap().version, "0.1.0");
         assert_eq!(
-            state.plugins["demo1"].fork_of.as_ref().unwrap().id,
-            "vendor/demo1"
+            state.packages["fd9b5add-4cae-5e71-b6bf-5e868519eb9c"]
+                .fork_of
+                .as_ref()
+                .unwrap()
+                .id,
+            "3e91bfd4-69a0-55a1-9f05-93c3e97dab8a"
         );
+        // The recorded modes: omitted for release mode, else pinned or branch.
+        assert_eq!(p.mode, Mode::Release);
+        assert_eq!(
+            state.packages["fd9b5add-4cae-5e71-b6bf-5e868519eb9c"].mode,
+            Mode::Pinned("v1.0.0".into())
+        );
+        assert_eq!(
+            state.packages["53d23fe9-4284-5d06-a9af-0dd04a6390d5"].mode,
+            Mode::Branch("main".into())
+        );
+        for bad in [r#"{"pinned": ""}"#, r#"{"branch": "-x"}"#] {
+            let text = STATE.replace(
+                r#"{
+        "branch": "main"
+      }"#,
+                bad,
+            );
+            assert_eq!(
+                State::parse(text.as_bytes()).unwrap_err().kind(),
+                "invalid_data",
+                "{bad}"
+            );
+        }
         // Default state is the file a new workspace starts with.
         assert_eq!(
             serde_json::to_string_pretty(&State::default()).unwrap(),
-            "{\n  \"format\": 2,\n  \"plugins\": {}\n}"
+            "{\n  \"format\": 1,\n  \"packages\": {}\n}"
         );
     }
 
     #[test]
-    fn state_formats_one_and_two_are_read_newer_ones_refused() {
-        // gitpm 0.3: no `format`, no `clone`/`path`/`forgotten`.
-        let legacy = STATE.replace("  \"format\": 2,\n", "");
-        let state = State::parse(legacy.as_bytes()).unwrap();
-        assert_eq!(state.format, 1);
-        assert_eq!(state.plugins.len(), 2);
-        assert!(
-            state
-                .plugins
-                .values()
-                .all(|p| p.clone.is_none() && p.path.is_none())
-        );
-        assert_eq!(State::parse(STATE.as_bytes()).unwrap().format, 2);
-        let newer = STATE.replace("\"format\": 2", "\"format\": 3");
-        let error = State::parse(newer.as_bytes()).unwrap_err();
-        assert_eq!(error.kind(), "unsupported");
-        assert!(error.to_string().contains("format 3"), "{error}");
-        let zero = STATE.replace("\"format\": 2", "\"format\": 0");
+    fn state_format_other_than_current_is_refused() {
+        // gitpm 0.3: no `format`; gitpm 0.4/0.5: format 2 with `plugins`; a newer one.
+        let none = STATE
+            .replace("  \"format\": 1,\n", "")
+            .replace("\"packages\"", "\"plugins\"");
+        let two = STATE
+            .replace("\"format\": 1", "\"format\": 2")
+            .replace("\"packages\"", "\"plugins\"");
+        let three = STATE.replace("\"format\": 1", "\"format\": 3");
+        let text = STATE.replace("\"format\": 1", "\"format\": \"3\"");
+        for (old, found) in [
+            (none, "no format"),
+            (two, "format 2"),
+            (three, "format 3"),
+            (text, "format \"3\""),
+        ] {
+            let bytes = old.clone().into_bytes();
+            let error = State::parse(&bytes).unwrap_err();
+            assert_eq!(error.kind(), "unsupported", "{old}");
+            let message = error.to_string();
+            assert!(message.contains(found), "{message}");
+            assert!(message.contains("only format 1"), "{message}");
+            assert_eq!(bytes, old.as_bytes(), "bytes unchanged");
+        }
+        // Format 1 with the old key is not a valid state.
+        let mixed = STATE.replace("\"packages\"", "\"plugins\"");
         assert_eq!(
-            State::parse(zero.as_bytes()).unwrap_err().kind(),
-            "unsupported"
+            State::parse(mixed.as_bytes()).unwrap_err().kind(),
+            "invalid_data"
         );
     }
 
@@ -996,43 +1514,75 @@ mod tests {
             "../x-0123456789abcdef",
             "mono-0123456789abcde",
             "-0123456789abcdef",
-            "a/b-0123456789abcdef",
+            "1be2d420-3441-569b-a742-935172235830",
             ".hidden-0123456789abcdef",
         ] {
             let error = valid_clone_key(bad).unwrap_err();
             assert_eq!(error.kind(), "invalid_data", "{bad:?}");
             assert!(error.to_string().contains("invalid clone name"), "{error}");
         }
-        let entry = r#"{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true,"clone":"../evil","path":"packages/x"}"#;
-        let text = format!(r#"{{"format":2,"plugins":{{"a/b":{entry}}}}}"#);
+        let entry = r#"{"name":"fixture","source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true,"clone":"../evil","path":"packages/x","metadata":{}}"#;
+        let text = format!(
+            r#"{{"format":1,"packages":{{"75494f24-1c7e-5480-9e39-738ff3d038c4":{entry}}}}}"#
+        );
         assert_eq!(
             State::parse(text.as_bytes()).unwrap_err().kind(),
             "invalid_data"
         );
         // A forgotten record needs a shared clone and must not also be installed.
         let entry = entry.replace("../evil", "x-0123456789abcdef");
-        let both = format!(r#"{{"plugins":{{"a/b":{entry}}},"forgotten":{{"a/b":{entry}}}}}"#);
+        let both = format!(
+            r#"{{"format":1,"packages":{{"75494f24-1c7e-5480-9e39-738ff3d038c4":{entry}}},"forgotten":{{"75494f24-1c7e-5480-9e39-738ff3d038c4":{entry}}}}}"#
+        );
         assert_eq!(
             State::parse(both.as_bytes()).unwrap_err().kind(),
             "invalid_data"
         );
-        let ok = format!(r#"{{"plugins":{{}},"forgotten":{{"a/b":{entry}}}}}"#);
+        let ok = format!(
+            r#"{{"format":1,"packages":{{}},"forgotten":{{"75494f24-1c7e-5480-9e39-738ff3d038c4":{entry}}}}}"#
+        );
         assert_eq!(State::parse(ok.as_bytes()).unwrap().forgotten.len(), 1);
+    }
+
+    #[test]
+    fn git_records_require_clone_keys_even_when_forgotten() {
+        let without_keys = STATE.replace("      \"clone\": \"repo-0123456789abcdef\",\n", "");
+        assert_eq!(
+            State::parse(without_keys.as_bytes()).unwrap_err().kind(),
+            "invalid_data"
+        );
+        let forgotten = without_keys
+            .replacen("\"packages\"", "\"forgotten\"", 1)
+            .replace("\"format\": 1,", "\"format\": 1, \"packages\": {},");
+        assert_eq!(
+            State::parse(forgotten.as_bytes()).unwrap_err().kind(),
+            "invalid_data"
+        );
     }
 
     #[test]
     fn state_requires_core_fields() {
         for broken in [
             r#"{}"#,
-            r#"{"plugins":{"a":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null}}}"#,
-            r#"{"plugins":{"a":{"current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true}}}"#,
-            r#"{"plugins":{"a":{"source":"s","current":{"version":"1.0.0"},"previous":null,"enabled":true}}}"#,
+            r#"{"format":1,"packages":{"a":{"name":"fixture","source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null}}}"#,
+            r#"{"format":1,"packages":{"a":{"current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true}}}"#,
+            r#"{"format":1,"packages":{"a":{"name":"fixture","source":"s","current":{"version":"1.0.0"},"previous":null,"enabled":true}}}"#,
         ] {
             assert!(serde_json::from_str::<State>(broken).is_err(), "{broken}");
         }
         // forkOf is optional; previous may be null.
-        let ok = r#"{"plugins":{"a":{"source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true}}}"#;
+        let ok = r#"{"format":1,"packages":{"a":{"name":"fixture","source":"s","current":{"version":"1.0.0","commit":"c"},"previous":null,"enabled":true,"metadata":{}}}}"#;
         assert!(serde_json::from_str::<State>(ok).is_ok());
+        assert!(serde_json::from_str::<State>(&ok.replace(r#""name":"fixture","#, "")).is_err());
+        // metadata is required in format 1: a record without it is invalid data.
+        let no_metadata = ok.replace(r#","metadata":{}"#, "");
+        assert!(serde_json::from_str::<State>(&no_metadata).is_err());
+        let no_metadata =
+            no_metadata.replace(r#""a":"#, r#""807b9715-06b4-55c2-add2-59b487bfa42e":"#);
+        assert_eq!(
+            State::parse(no_metadata.as_bytes()).unwrap_err().kind(),
+            "invalid_data"
+        );
     }
 
     #[test]
@@ -1041,18 +1591,39 @@ mod tests {
         let list = state.installed();
         assert_eq!(
             list.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
-            ["dan/demo1", "demo1"]
+            [
+                "53d23fe9-4284-5d06-a9af-0dd04a6390d5",
+                "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+                "fd9b5add-4cae-5e71-b6bf-5e868519eb9c"
+            ]
         );
-        assert_eq!(list[0].source, "git@github.com:dan/demo1.git");
-        assert_eq!(list[0].current.version, "0.1.1");
+        assert_eq!(list[0].mode, Mode::Branch("main".into()));
         assert_eq!(
-            list[0].previous.as_ref().unwrap().commit,
+            serde_json::to_value(&list[0]).unwrap()["mode"]["branch"],
+            "main"
+        );
+        assert!(
+            serde_json::to_value(&list[1])
+                .unwrap()
+                .get("mode")
+                .is_none()
+        );
+        assert_eq!(
+            list[1].source,
+            "git@github.com:ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc.git"
+        );
+        assert_eq!(list[1].current.as_ref().unwrap().version, "0.1.1");
+        assert_eq!(
+            list[1].previous.as_ref().unwrap().commit,
             "a17e286b69daa620096f78fa54153696b8459b6b"
         );
-        assert!(!list[0].enabled);
-        assert_eq!(list[1].fork_of.as_ref().unwrap().version, "0.9.0");
-        let value = serde_json::to_value(&list[1]).unwrap();
-        assert_eq!(value["forkOf"]["id"], "vendor/demo1");
+        assert!(!list[1].enabled);
+        assert_eq!(list[2].fork_of.as_ref().unwrap().version, "0.9.0");
+        let value = serde_json::to_value(&list[2]).unwrap();
+        assert_eq!(
+            value["forkOf"]["id"],
+            "3e91bfd4-69a0-55a1-9f05-93c3e97dab8a"
+        );
         assert!(
             serde_json::to_value(&list[0])
                 .unwrap()
@@ -1065,33 +1636,42 @@ mod tests {
     fn resolve_ref_refuses_option_like_refs_and_resolves_commits() {
         for bad in ["", "-x", "--upload-pack=evil"] {
             // Rejected before git runs: the path does not even exist.
-            let error = resolve_ref(Path::new("/nonexistent-pm-repo"), bad).unwrap_err();
+            let error = resolve_ref(Path::new("/nonexistent-pm-repo"), bad, false).unwrap_err();
             assert_eq!(error.kind(), "invalid_argument", "{bad:?}");
         }
         let dir = TempDir::new("model");
-        let author = Author::new(dir.join("author"), "dan/demo1");
+        let author = Author::new(dir.join("author"), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let first = author.head();
         let second = author.commit("0.2.0");
-        assert_eq!(resolve_ref(&author.path, "dan/demo1@0.1.0").unwrap(), first);
+        assert_eq!(resolve_ref(&author.path, "v0.1.0", false).unwrap(), first);
         assert_eq!(
-            resolve_ref(&author.path, "refs/tags/dan/demo1@0.1.0").unwrap(),
+            resolve_ref(&author.path, "refs/tags/v0.1.0", false).unwrap(),
             first
         );
-        assert_eq!(resolve_ref(&author.path, "main").unwrap(), second);
-        assert_eq!(resolve_ref(&author.path, &first[..12]).unwrap(), first);
+        assert_eq!(resolve_ref(&author.path, "main", false).unwrap(), second);
         assert_eq!(
-            resolve_ref(&author.path, "missing").unwrap_err().kind(),
+            resolve_ref(&author.path, &first[..12], false).unwrap(),
+            first
+        );
+        assert_eq!(
+            resolve_ref(&author.path, "missing", false)
+                .unwrap_err()
+                .kind(),
             "git"
         );
         // A tree object is not a commit.
         let tree = fixture_git(&author.path, &["rev-parse", "HEAD^{tree}"]);
-        assert_eq!(resolve_ref(&author.path, &tree).unwrap_err().kind(), "git");
+        assert_eq!(
+            resolve_ref(&author.path, &tree, false).unwrap_err().kind(),
+            "git"
+        );
         let m = manifest(&author.path).unwrap();
         assert_eq!(
-            revision(&author.path, &m).unwrap(),
+            revision(&author.path, &m, false).unwrap(),
             Revision {
                 version: "0.2.0".into(),
-                commit: second
+                commit: second,
+                ..Default::default()
             }
         );
     }

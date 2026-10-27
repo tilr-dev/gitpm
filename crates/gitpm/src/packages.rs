@@ -5,7 +5,7 @@
 //! Everything here reads committed trees (`git ls-tree`/`git show` at a commit), never a
 //! working tree: the package set of a release is the one in its tagged commit.
 use crate::error::{Error, Result, ensure};
-use crate::{Manifest, exec::git, exec::git_raw, valid_id};
+use crate::{Manifest, transport, valid_id};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fs, path::Path};
 
@@ -99,11 +99,8 @@ pub(crate) fn validate_path(path: &str) -> Result<()> {
 }
 
 /// Mode and type of every entry of the commit's tree (recursive, folders included).
-fn tree(repo: &Path, commit: &str) -> Result<BTreeMap<String, (String, String)>> {
-    let raw = git_raw(
-        repo,
-        &["ls-tree", "-r", "-t", "-z", "--full-tree", commit, "--"],
-    )?;
+fn tree(repo: &Path, commit: &str, custom_ssh: bool) -> Result<BTreeMap<String, (String, String)>> {
+    let raw = transport::tree_entries(repo, commit, custom_ssh)?;
     let mut entries = BTreeMap::new();
     for entry in raw.split(|b| *b == 0).filter(|e| !e.is_empty()) {
         let entry = String::from_utf8_lossy(entry);
@@ -119,18 +116,45 @@ fn tree(repo: &Path, commit: &str) -> Result<BTreeMap<String, (String, String)>>
     Ok(entries)
 }
 
-fn show(repo: &Path, commit: &str, path: &str) -> Result<String> {
-    git(repo, &["show", &format!("{commit}:{path}")])
+fn show(repo: &Path, commit: &str, path: &str, custom_ssh: bool) -> Result<String> {
+    transport::show_file(repo, commit, path, custom_ssh)
+}
+
+/// Read and validate the manifest committed at a package's repository-relative path.
+pub(crate) fn manifest_at(
+    repo: &Path,
+    commit: &str,
+    package: Option<&str>,
+    custom_ssh: bool,
+) -> Result<Manifest> {
+    let path = match package.filter(|p| !p.is_empty()) {
+        Some(folder) => format!("{folder}/plugin.json"),
+        None => "plugin.json".to_owned(),
+    };
+    let manifest: Manifest = serde_json::from_str(&show(repo, commit, &path, custom_ssh)?)
+        .map_err(|e| Error::invalid_manifest(format!("invalid {path}: {e}")))?;
+    manifest
+        .validate_dist()
+        .map_err(|error| error.with_package(&manifest.id))?;
+    Ok(manifest)
 }
 
 /// `gitpm.json` at `commit`; `None` for a single-package repository.
 pub fn config_at(repo: &Path, commit: &str) -> Result<Option<Config>> {
-    let listed = git(repo, &["ls-tree", "--name-only", commit, "--", CONFIG])?;
+    config_at_with_ssh(repo, commit, false)
+}
+
+pub(crate) fn config_at_with_ssh(
+    repo: &Path,
+    commit: &str,
+    custom_ssh: bool,
+) -> Result<Option<Config>> {
+    let listed = transport::tree_paths(repo, commit, CONFIG, custom_ssh)?;
     if listed.is_empty() {
         return Ok(None);
     }
-    let config: Config = serde_json::from_str(&show(repo, commit, CONFIG)?)
-        .map_err(|e| Error::InvalidManifest(format!("invalid {CONFIG}: {e}")))?;
+    let config: Config = serde_json::from_str(&show(repo, commit, CONFIG, custom_ssh)?)
+        .map_err(|e| Error::invalid_manifest(format!("invalid {CONFIG}: {e}")))?;
     for pattern in &config.packages {
         validate_pattern(pattern)?;
     }
@@ -219,6 +243,7 @@ fn read_folder(
     commit: &str,
     entries: &BTreeMap<String, (String, String)>,
     folder: &str,
+    custom_ssh: bool,
 ) -> std::result::Result<Package, (Option<String>, Error)> {
     let path = format!("{folder}/plugin.json");
     let (mode, kind) = &entries[&path];
@@ -228,36 +253,30 @@ fn read_folder(
             Error::Unsupported(format!("symlinks are not supported: {path}")),
         ));
     }
-    let manifest: Manifest = show(repo, commit, &path)
-        .and_then(|text| {
-            serde_json::from_str(&text)
-                .map_err(|e| Error::InvalidManifest(format!("invalid {path}: {e}")))
-        })
-        .map_err(|e| (None, e))?;
+    let manifest = manifest_at(repo, commit, Some(folder), custom_ssh).map_err(|error| {
+        let id = match &error {
+            Error::InvalidManifest { id, .. } => id.clone(),
+            _ => None,
+        };
+        (id, error)
+    })?;
     let id = Some(manifest.id.clone());
     valid_id(&manifest.id).map_err(|e| (id.clone(), e))?;
-    if !manifest.id.contains('/') {
-        return Err((
-            id,
-            Error::InvalidId(format!(
-                "package {} in {folder} needs a namespace/name ID: a repository with several packages releases them with ID@VERSION tags",
-                manifest.id
-            )),
-        ));
-    }
-    match entries.get(&format!("{folder}/dist")) {
+    let output = manifest.dist_path(Some(folder));
+    match entries.get(&output) {
         Some((_, kind)) if kind == "tree" => {}
         Some(_) => {
             return Err((
                 id,
-                Error::Unsupported(format!("symlinks are not supported: {folder}/dist")),
+                Error::Unsupported(format!("symlinks are not supported: {output}")),
             ));
         }
         None => {
             return Err((
                 id,
-                Error::InvalidManifest(format!(
-                    "package {folder} must contain a ready dist/ directory"
+                manifest.missing_dist(format!(
+                    "package {folder} must contain a ready {}/ directory",
+                    manifest.dist_folder()
                 )),
             ));
         }
@@ -270,13 +289,21 @@ fn read_folder(
 
 /// Packages and defective folders listed by `gitpm.json` at `commit`; `None` without
 /// `gitpm.json`. A package needs a `plugin.json` file (not a symlink), a committed `dist/`
-/// folder and a `namespace/name` ID that no other folder uses (in any letter case);
+/// folder and a canonical UUID that no other folder uses;
 /// nested folders are defective. Only an invalid `gitpm.json` itself is an error.
 pub fn layout_at(repo: &Path, commit: &str) -> Result<Option<Layout>> {
-    let Some(config) = config_at(repo, commit)? else {
+    layout_at_with_ssh(repo, commit, false)
+}
+
+pub(crate) fn layout_at_with_ssh(
+    repo: &Path,
+    commit: &str,
+    custom_ssh: bool,
+) -> Result<Option<Layout>> {
+    let Some(config) = config_at_with_ssh(repo, commit, custom_ssh)? else {
         return Ok(None);
     };
-    let entries = tree(repo, commit)?;
+    let entries = tree(repo, commit, custom_ssh)?;
     let folders: Vec<&str> = entries
         .keys()
         .filter_map(|path| path.strip_suffix("/plugin.json"))
@@ -284,7 +311,7 @@ pub fn layout_at(repo: &Path, commit: &str) -> Result<Option<Layout>> {
         .collect();
     let mut layout = Layout::default();
     for folder in &folders {
-        match read_folder(repo, commit, &entries, folder) {
+        match read_folder(repo, commit, &entries, folder, custom_ssh) {
             Ok(package) => layout.packages.push(package),
             Err((id, error)) => layout.problems.push(Problem {
                 path: (*folder).to_owned(),
@@ -303,7 +330,7 @@ pub fn layout_at(repo: &Path, commit: &str) -> Result<Option<Layout>> {
                     a.path.clone(),
                     (
                         Some(a.manifest.id.clone()),
-                        Error::InvalidManifest(format!(
+                        Error::invalid_manifest(format!(
                             "package ID {} appears in both {} and {}",
                             a.manifest.id, first.path, second.path
                         )),
@@ -323,7 +350,7 @@ pub fn layout_at(repo: &Path, commit: &str) -> Result<Option<Layout>> {
                 a.path.clone(),
                 (
                     Some(a.manifest.id.clone()),
-                    Error::InvalidManifest(format!(
+                    Error::invalid_manifest(format!(
                         "package {inner} is nested inside package {outer}"
                     )),
                 ),
@@ -348,7 +375,15 @@ pub fn layout_at(repo: &Path, commit: &str) -> Result<Option<Layout>> {
 /// Packages listed by `gitpm.json` at `commit`, sorted by folder; `None` without
 /// `gitpm.json`. Strict: any defective folder (see [`layout_at`]) is an error.
 pub fn packages_at(repo: &Path, commit: &str) -> Result<Option<Vec<Package>>> {
-    let Some(layout) = layout_at(repo, commit)? else {
+    packages_at_with_ssh(repo, commit, false)
+}
+
+pub(crate) fn packages_at_with_ssh(
+    repo: &Path,
+    commit: &str,
+    custom_ssh: bool,
+) -> Result<Option<Vec<Package>>> {
+    let Some(layout) = layout_at_with_ssh(repo, commit, custom_ssh)? else {
         return Ok(None);
     };
     if let Some(problem) = layout.problems.into_iter().next() {
@@ -373,21 +408,25 @@ fn list(packages: &[Package]) -> String {
 /// is refused with the list of its packages. Only the selected package's folder must be
 /// valid (see [`Layout::select`]).
 pub fn find_at(repo: &Path, commit: &str, id: Option<&str>) -> Result<Package> {
+    find_at_with_ssh(repo, commit, id, false)
+}
+
+pub(crate) fn find_at_with_ssh(
+    repo: &Path,
+    commit: &str,
+    id: Option<&str>,
+    custom_ssh: bool,
+) -> Result<Package> {
     if let Some(id) = id {
         valid_id(id)?;
     }
-    let Some(layout) = layout_at(repo, commit)? else {
+    let Some(layout) = layout_at_with_ssh(repo, commit, custom_ssh)? else {
         ensure!(
-            !git(
-                repo,
-                &["ls-tree", "--name-only", commit, "--", "plugin.json"]
-            )?
-            .is_empty(),
+            !transport::tree_paths(repo, commit, "plugin.json", custom_ssh)?.is_empty(),
             InvalidManifest,
             "missing plugin.json in the repository root (and no {CONFIG} listing packages)"
         );
-        let manifest: Manifest = serde_json::from_str(&show(repo, commit, "plugin.json")?)
-            .map_err(|e| Error::InvalidManifest(format!("invalid plugin.json: {e}")))?;
+        let manifest = manifest_at(repo, commit, None, custom_ssh)?;
         if let Some(id) = id {
             ensure!(
                 manifest.id == id,
@@ -431,7 +470,7 @@ pub fn read_config(repo: &Path) -> Result<Option<Config>> {
         return Ok(None);
     }
     let config: Config = serde_json::from_slice(&fs::read(&path)?)
-        .map_err(|e| Error::InvalidManifest(format!("invalid {CONFIG}: {e}")))?;
+        .map_err(|e| Error::invalid_manifest(format!("invalid {CONFIG}: {e}")))?;
     for pattern in &config.packages {
         validate_pattern(pattern)?;
     }
@@ -488,17 +527,11 @@ pub fn packages_in(repo: &Path) -> Result<Option<Vec<Package>>> {
     for path in folders {
         let manifest: Manifest =
             serde_json::from_slice(&fs::read(repo.join(&path).join("plugin.json"))?)
-                .map_err(|e| Error::InvalidManifest(format!("invalid {path}/plugin.json: {e}")))?;
+                .map_err(|e| Error::invalid_manifest(format!("invalid {path}/plugin.json: {e}")))?;
+        manifest.validate_dist()?;
         packages.push(Package { path, manifest });
     }
     Ok(Some(packages))
-}
-
-/// The package ID a release tag names (`namespace/name@VERSION`), if it looks like one.
-pub(crate) fn tag_id(tag: &str) -> Option<&str> {
-    let (id, version) = tag.rsplit_once('@')?;
-    (id.contains('/') && valid_id(id).is_ok() && crate::catalog::version_key(version).is_ok())
-        .then_some(id)
 }
 
 #[cfg(test)]
@@ -513,8 +546,8 @@ mod tests {
         assert!(!matches("packages/*", "other/store"));
         assert!(!matches("packages/*", "packages/.hidden"));
         assert!(matches("apps/theme", "apps/theme"));
-        assert!(matches("plugins/gitpm-*", "plugins/gitpm-store"));
-        assert!(!matches("plugins/gitpm-*", "plugins/store"));
+        assert!(matches("packages/gitpm-*", "packages/gitpm-store"));
+        assert!(!matches("packages/gitpm-*", "packages/store"));
         assert!(matches("a*b*c", "aXbYc"));
         assert!(!matches("a*b*c", "aXc"));
         assert!(matches("*/*", "x/y"));
@@ -545,19 +578,11 @@ mod tests {
         assert!(validate_path("packages/store").is_ok());
     }
 
-    #[test]
-    fn tag_ids_need_a_namespace_and_a_version() {
-        assert_eq!(tag_id("tilr/store@1.2.3"), Some("tilr/store"));
-        assert_eq!(tag_id("v1.2.3"), None);
-        assert_eq!(tag_id("store@1.2.3"), None);
-        assert_eq!(tag_id("tilr/store@banana"), None);
-    }
-
     fn package(repo: &Path, folder: &str, id: &str) {
         fs::create_dir_all(repo.join(folder).join("dist")).unwrap();
         fs::write(
             repo.join(folder).join("plugin.json"),
-            format!(r#"{{"id":"{id}","version":"1.0.0"}}"#),
+            format!(r#"{{"id":"{id}","name": "fixture", "version":"1.0.0"}}"#),
         )
         .unwrap();
         fs::write(repo.join(folder).join("dist/index.js"), id).unwrap();
@@ -569,15 +594,63 @@ mod tests {
     }
 
     #[test]
+    fn invalid_output_path_keeps_package_identity() {
+        let dir = TempDir::new("invalid-output-path");
+        let repo = dir.join("mono");
+        fs::create_dir_all(&repo).unwrap();
+        fixture_git(&repo, &["init", "-q", "-b", "main"]);
+        fs::write(repo.join(CONFIG), r#"{"packages":["packages/*"]}"#).unwrap();
+        package(
+            &repo,
+            "packages/good",
+            "4069fb66-ac4d-5fd6-be14-f879cc2fe60b",
+        );
+        package(
+            &repo,
+            "packages/bad",
+            "6e70259e-8a87-54cb-af99-38e45820ef71",
+        );
+        fs::write(
+            repo.join("packages/bad/plugin.json"),
+            r#"{"id":"6e70259e-8a87-54cb-af99-38e45820ef71","name": "fixture", "version":"1.0.0","dist":"../escape"}"#,
+        )
+        .unwrap();
+        let head = commit(&repo);
+        let layout = layout_at(&repo, &head).unwrap().unwrap();
+        assert_eq!(layout.problems.len(), 1);
+        assert_eq!(
+            layout.problems[0].id.as_deref(),
+            Some("6e70259e-8a87-54cb-af99-38e45820ef71")
+        );
+        assert!(find_at(&repo, &head, Some("4069fb66-ac4d-5fd6-be14-f879cc2fe60b")).is_ok());
+        let error =
+            find_at(&repo, &head, Some("6e70259e-8a87-54cb-af99-38e45820ef71")).unwrap_err();
+        assert_eq!(error.kind(), "invalid_manifest");
+        assert!(error.to_string().contains("invalid manifest dist path"));
+    }
+
+    #[test]
     fn packages_are_read_from_the_commit_tree() {
         let dir = TempDir::new("packages");
         let repo = dir.join("mono");
         fs::create_dir_all(&repo).unwrap();
         fixture_git(&repo, &["init", "-q", "-b", "main"]);
         fs::write(repo.join(CONFIG), r#"{"packages":["packages/*"]}"#).unwrap();
-        package(&repo, "packages/store", "tilr/store");
-        package(&repo, "packages/theme", "tilr/theme");
-        package(&repo, "other/skip", "tilr/skip");
+        package(
+            &repo,
+            "packages/store",
+            "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+        );
+        package(
+            &repo,
+            "packages/theme",
+            "f851f609-bb81-52d6-bfef-33798624782c",
+        );
+        package(
+            &repo,
+            "540b12c6-1d6b-58c9-87ca-13a7122f4350",
+            "9c7f3d0b-d12f-5be1-949f-3ad17d3d141b",
+        );
         let first = commit(&repo);
         let found = packages_at(&repo, &first).unwrap().unwrap();
         assert_eq!(
@@ -585,17 +658,24 @@ mod tests {
             ["packages/store", "packages/theme"]
         );
         assert_eq!(
-            find_at(&repo, &first, Some("tilr/theme")).unwrap().path,
+            find_at(&repo, &first, Some("f851f609-bb81-52d6-bfef-33798624782c"))
+                .unwrap()
+                .path,
             "packages/theme"
         );
         let error = find_at(&repo, &first, None).unwrap_err();
         assert_eq!(error.kind(), "invalid_argument");
         assert!(
-            error.to_string().contains("tilr/store (packages/store)")
-                && error.to_string().contains("tilr/theme (packages/theme)"),
+            error
+                .to_string()
+                .contains("76a9b591-60f3-5c7f-9e1c-31648fc73bfd (packages/store)")
+                && error
+                    .to_string()
+                    .contains("f851f609-bb81-52d6-bfef-33798624782c (packages/theme)"),
             "{error}"
         );
-        let error = find_at(&repo, &first, Some("tilr/skip")).unwrap_err();
+        let error =
+            find_at(&repo, &first, Some("9c7f3d0b-d12f-5be1-949f-3ad17d3d141b")).unwrap_err();
         assert!(
             error.to_string().contains("not in this repository"),
             "{error}"
@@ -603,19 +683,19 @@ mod tests {
 
         // The working tree does not matter, only the commit.
         fs::remove_dir_all(repo.join("packages/theme")).unwrap();
-        assert!(find_at(&repo, &first, Some("tilr/theme")).is_ok());
+        assert!(find_at(&repo, &first, Some("f851f609-bb81-52d6-bfef-33798624782c")).is_ok());
 
         // Without gitpm.json the root is the package.
         let single = dir.join("single");
         fs::create_dir_all(&single).unwrap();
         fixture_git(&single, &["init", "-q", "-b", "main"]);
-        package(&single, ".", "tilr/single");
+        package(&single, ".", "883f0498-5990-55fe-8b2e-019b5d34a292");
         let head = commit(&single);
         assert!(packages_at(&single, &head).unwrap().is_none());
         let root = find_at(&single, &head, None).unwrap();
         assert_eq!((root.path.as_str(), root.subdir()), ("", None));
         assert_eq!(
-            find_at(&single, &head, Some("tilr/other"))
+            find_at(&single, &head, Some("44ae8198-322d-5d87-b3e0-d20d1fa2b6ed"))
                 .unwrap_err()
                 .kind(),
             "invalid_argument"
@@ -623,15 +703,15 @@ mod tests {
     }
 
     #[test]
-    fn ids_differing_only_in_case_make_both_folders_defective() {
+    fn duplicate_uuids_make_both_folders_defective() {
         let dir = TempDir::new("packages");
         let repo = dir.join("mono");
         fs::create_dir_all(&repo).unwrap();
         fixture_git(&repo, &["init", "-q", "-b", "main"]);
         fs::write(repo.join(CONFIG), r#"{"packages":["packages/*"]}"#).unwrap();
-        package(&repo, "packages/a", "tilr/Same");
-        package(&repo, "packages/b", "tilr/same");
-        package(&repo, "packages/c", "tilr/other");
+        package(&repo, "packages/a", "a42e9925-947e-561b-967e-2e14b4b94ab2");
+        package(&repo, "packages/b", "a42e9925-947e-561b-967e-2e14b4b94ab2");
+        package(&repo, "packages/c", "44ae8198-322d-5d87-b3e0-d20d1fa2b6ed");
         let head = commit(&repo);
         let layout = layout_at(&repo, &head).unwrap().unwrap();
         assert_eq!(
@@ -650,8 +730,8 @@ mod tests {
         assert_eq!(
             problems,
             [
-                ("packages/a", Some("tilr/Same")),
-                ("packages/b", Some("tilr/same"))
+                ("packages/a", Some("a42e9925-947e-561b-967e-2e14b4b94ab2")),
+                ("packages/b", Some("a42e9925-947e-561b-967e-2e14b4b94ab2"))
             ]
         );
         for problem in &layout.problems {
@@ -665,19 +745,26 @@ mod tests {
                 problem.error
             );
         }
-        // Selecting either spelling (or a third one) names the conflict.
-        for id in ["tilr/same", "tilr/Same", "TILR/SAME"] {
-            let error = layout.clone().select(Some(id), "").unwrap_err();
-            assert_eq!(error.kind(), "invalid_manifest", "{id}");
-            assert!(error.to_string().contains("appears in both"), "{error}");
-        }
+        // Selecting the duplicated UUID names the conflict.
+        let error = layout
+            .clone()
+            .select(Some("a42e9925-947e-561b-967e-2e14b4b94ab2"), "")
+            .unwrap_err();
+        assert_eq!(error.kind(), "invalid_manifest");
+        assert!(error.to_string().contains("appears in both"), "{error}");
         // The sibling is unaffected; the strict listing refuses.
         assert_eq!(
-            layout.clone().select(Some("tilr/other"), "").unwrap().path,
+            layout
+                .clone()
+                .select(Some("44ae8198-322d-5d87-b3e0-d20d1fa2b6ed"), "")
+                .unwrap()
+                .path,
             "packages/c"
         );
         assert_eq!(
-            find_at(&repo, &head, Some("tilr/same")).unwrap_err().kind(),
+            find_at(&repo, &head, Some("a42e9925-947e-561b-967e-2e14b4b94ab2"))
+                .unwrap_err()
+                .kind(),
             "invalid_manifest"
         );
         assert!(packages_at(&repo, &head).is_err());
@@ -690,8 +777,8 @@ mod tests {
         fs::create_dir_all(&repo).unwrap();
         fixture_git(&repo, &["init", "-q", "-b", "main"]);
         fs::write(repo.join(CONFIG), r#"{"packages":["packages/*"]}"#).unwrap();
-        package(&repo, "packages/a", "tilr/same");
-        package(&repo, "packages/b", "tilr/same");
+        package(&repo, "packages/a", "6f34fcf0-53ec-5e53-a400-9008722000be");
+        package(&repo, "packages/b", "6f34fcf0-53ec-5e53-a400-9008722000be");
         let head = commit(&repo);
         let error = packages_at(&repo, &head).unwrap_err();
         assert!(error.to_string().contains("appears in both"), "{error}");
@@ -700,7 +787,7 @@ mod tests {
         let head = commit(&repo);
         assert_eq!(packages_at(&repo, &head).unwrap_err().kind(), "invalid_id");
 
-        package(&repo, "packages/b", "tilr/b");
+        package(&repo, "packages/b", "27e49f66-16b0-5c76-b037-b3002a5a0b93");
         fs::remove_dir_all(repo.join("packages/b/dist")).unwrap();
         std::os::unix::fs::symlink("../a/dist", repo.join("packages/b/dist")).unwrap();
         let head = commit(&repo);

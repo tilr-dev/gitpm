@@ -1,17 +1,8 @@
 //! Check repository read access using the user's existing Git credentials.
 use crate::error::{Result, ensure, fail};
-use crate::exec;
+use crate::{Options, transport};
 use serde::Serialize;
 use std::path::Path;
-
-/// Options for [`check`]. The library never reads the environment itself.
-#[derive(Debug, Clone, Default)]
-pub struct AuthOptions {
-    /// The caller's environment already selects an SSH transport (`GIT_SSH_COMMAND` or
-    /// `GIT_SSH`). When false and Git has no `core.sshCommand`, a noninteractive SSH
-    /// command with strict host key checking is used.
-    pub custom_ssh: bool,
-}
 
 /// Successful read-access check.
 #[derive(Debug, Clone, Serialize)]
@@ -21,18 +12,50 @@ pub struct AuthCheck {
     pub message: String,
 }
 
-pub(crate) const NONINTERACTIVE_SSH: &str =
-    "ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes";
-
 fn validate(source: &str) -> Result<()> {
+    basic(source)?;
+    if Path::new(source).exists() {
+        return Ok(());
+    }
+    url_rules(source)
+}
+
+fn basic(source: &str) -> Result<()> {
     ensure!(
         !source.is_empty() && !source.starts_with('-') && !source.chars().any(char::is_control),
         InvalidArgument,
         "Specify a Git URL or a local path."
     );
-    if Path::new(source).exists() {
+    Ok(())
+}
+
+/// A recorded source that gitpm queries on its own (`packages.<id>.source` in `check`,
+/// `forkOf.source`), possibly from a foreign manifest: an absolute path, or a Git URL
+/// (`scheme://` of the supported schemes, or `host:path`) without remote helpers
+/// (`::`) or credentials. Pure syntax: nothing is read from disk or run.
+pub(crate) fn validate_recorded(source: &str) -> Result<()> {
+    basic(source)?;
+    ensure!(
+        !source.contains("::"),
+        InvalidArgument,
+        "Git remote helpers are not supported."
+    );
+    if Path::new(source).is_absolute() {
         return Ok(());
     }
+    let url = source.contains("://")
+        || source
+            .split_once(':')
+            .is_some_and(|(host, _)| !host.is_empty() && !host.contains('/'));
+    ensure!(
+        url,
+        InvalidArgument,
+        "Specify a Git URL or an absolute repository path."
+    );
+    url_rules(source)
+}
+
+fn url_rules(source: &str) -> Result<()> {
     if let Some((scheme, rest)) = source.split_once("://") {
         ensure!(
             matches!(scheme, "https" | "http" | "ssh" | "git" | "file"),
@@ -74,7 +97,7 @@ fn validate(source: &str) -> Result<()> {
     Ok(())
 }
 
-fn failure(stderr: &str) -> &'static str {
+pub(crate) fn failure(stderr: &str) -> &'static str {
     let message = stderr.to_lowercase();
     if message.contains("host key verification failed")
         || message.contains("remote host identification has changed")
@@ -120,15 +143,11 @@ fn failure(stderr: &str) -> &'static str {
 
 /// Does not clone, fetch, create a workspace, or store credentials in PM.
 /// A successful check also covers an empty repository with no refs.
-pub fn check(source: &str, options: &AuthOptions) -> Result<AuthCheck> {
+pub fn check(source: &str, options: &Options) -> Result<AuthCheck> {
     validate(source)?;
-    // Preserve explicitly configured SSH transports. Standard SSH remains
-    // noninteractive, uses the user's config/agent and requires a known host.
-    let custom_ssh =
-        options.custom_ssh || exec::git_config_defined("core.sshCommand", "cannot start git")?;
-    let output = exec::ls_remote(
+    let output = transport::ls_remote(
         source,
-        (!custom_ssh).then_some(NONINTERACTIVE_SSH),
+        options.custom_ssh,
         "cannot start git; check the Git installation and PATH",
     )?;
     if !output.success {
@@ -176,6 +195,36 @@ mod tests {
             assert!(validate(value).is_ok());
         }
     }
+    #[test]
+    fn recorded_sources_are_urls_or_absolute_paths_without_helpers() {
+        for ok in [
+            "/abs/repo",
+            "/abs/missing.git",
+            "https://git.example/acme/hello.git",
+            "ssh://git@git.example/acme/hello.git",
+            "git@git.example:acme/hello.git",
+            "file:///abs/repo",
+        ] {
+            assert!(validate_recorded(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "",
+            "fd::5",
+            "ext::sh -c id",
+            "foo/bar",
+            "./foo",
+            "../foo",
+            "foo",
+            "-uhelp",
+            "ftp://host/x",
+            "https://user:token@git.example/x.git",
+            "/abs/with\nnewline",
+        ] {
+            let error = validate_recorded(bad).unwrap_err();
+            assert_eq!(error.kind(), "invalid_argument", "{bad}");
+        }
+    }
+
     #[test]
     fn validate_covers_every_rule() {
         let cases: &[(&str, Option<&str>)] = &[
@@ -269,9 +318,12 @@ mod tests {
     fn check_reads_local_repositories_without_cloning() {
         use crate::test_support::{Author, TempDir};
         let dir = TempDir::new("auth");
-        let author = Author::new(dir.join("repo"), "dan/demo1");
+        let author = Author::new(dir.join("repo"), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let before = crate::test_support::tree_hash(dir.path());
-        let options = AuthOptions { custom_ssh: true };
+        let options = Options {
+            custom_ssh: true,
+            ..Default::default()
+        };
         let result = check(author.source(), &options).unwrap();
         assert_eq!(result.source, author.source());
         assert!(result.message.starts_with("Read access confirmed"));
@@ -281,11 +333,43 @@ mod tests {
         let empty = dir.join("empty");
         std::fs::create_dir(&empty).unwrap();
         crate::test_support::git(&empty, &["init", "-q", "--bare"]);
-        assert!(check(empty.to_str().unwrap(), &AuthOptions::default()).is_ok());
+        assert!(check(empty.to_str().unwrap(), &Options::default()).is_ok());
 
         let error = check(dir.join("missing").to_str().unwrap(), &options).unwrap_err();
         assert_eq!(error.kind(), "auth");
         assert!(error.to_string().contains("not found"), "{error}");
         assert_eq!(check("", &options).unwrap_err().kind(), "invalid_argument");
+    }
+
+    #[test]
+    fn access_check_is_bounded() {
+        // A server that accepts the connection and never answers: git waits for the
+        // ref advertisement forever unless the check kills it.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let source = format!("git://{}/silent.git", listener.local_addr().unwrap());
+        let (accepted_tx, accepted_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let server = std::thread::spawn(move || {
+            let (connection, _) = listener.accept().unwrap();
+            accepted_tx.send(()).unwrap();
+            let _ = release_rx.recv();
+            drop(connection);
+        });
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(check(&source, &Options::default()));
+        });
+        // Only a guard against hanging the test run; the check must end on its own limit.
+        let result = receiver
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .expect("auth check against a silent server did not finish");
+        accepted_rx
+            .try_recv()
+            .expect("git never connected to the silent server");
+        drop(release_tx);
+        server.join().unwrap();
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), "git");
+        assert!(error.to_string().contains("timed out after 10s"), "{error}");
     }
 }

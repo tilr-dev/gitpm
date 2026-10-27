@@ -19,4 +19,8 @@ thiserror = "2"
 libc = "0.2"
 pubgrub = "0.4"
 semver = "1"
-tar = { version = "0.4.46", default-features = false }
+tar = "0.4"
+flate2 = "1"
+
+[dev-dependencies]
+syn = { version = "2", features = ["full", "visit"] }

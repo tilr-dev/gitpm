@@ -1,13 +1,10 @@
-//! Detection of local work that deleting or replacing a plugin clone would lose.
+//! Detection of local work that deleting or replacing a package clone would lose.
 use crate::error::{Error, Result};
-use crate::exec::{git, git_raw};
+use crate::transport;
 use serde::Serialize;
 use std::path::Path;
 
-/// Upper bound of listed unpublished commits per plan (the check itself is exact).
-const MAX_COMMITS: &str = "--max-count=50";
-
-/// One item of local work in a plugin clone.
+/// One item of local work in a package clone.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum LostWork {
@@ -73,18 +70,19 @@ impl LostWork {
     }
 }
 
-const DIRTY: &str =
-    "plugin has local changes (including untracked/ignored files); keep or remove them first";
+const DIRTY: &str = "package has local changes (including untracked/ignored files); commit or discard the local changes first";
+/// [`refusal`]: an uninstall removes the listed lost work once it is confirmed.
+const CONFIRM: &str = "confirm the listed lost work to remove it";
 
 /// Modified, untracked and ignored files (`git status`, without taking optional locks).
-fn status(repo: &Path) -> Result<Vec<LostWork>> {
-    status_of(repo, true, &[])
+fn status(repo: &Path, custom_ssh: bool) -> Result<Vec<LostWork>> {
+    status_of(repo, true, &[], custom_ssh)
 }
 
 /// Paths under `paths` (pathspecs) that differ from HEAD: modified, staged or untracked
 /// (whatever `status.showUntrackedFiles` says), not ignored ones.
-pub(crate) fn changed_paths(repo: &Path, paths: &[&str]) -> Result<Vec<String>> {
-    Ok(status_of(repo, false, paths)?
+pub(crate) fn changed_paths(repo: &Path, paths: &[&str], custom_ssh: bool) -> Result<Vec<String>> {
+    Ok(status_of(repo, false, paths, custom_ssh)?
         .into_iter()
         .filter_map(|item| match item {
             LostWork::Modified { path } | LostWork::Untracked { path } => Some(path),
@@ -93,22 +91,13 @@ pub(crate) fn changed_paths(repo: &Path, paths: &[&str]) -> Result<Vec<String>> 
         .collect())
 }
 
-fn status_of(repo: &Path, ignored: bool, paths: &[&str]) -> Result<Vec<LostWork>> {
-    let mut args = vec![
-        "--no-optional-locks",
-        "status",
-        "--porcelain=v1",
-        "-z",
-        "--untracked-files=all",
-    ];
-    if ignored {
-        args.push("--ignored");
-    }
-    if !paths.is_empty() {
-        args.push("--");
-        args.extend(paths);
-    }
-    let raw = git_raw(repo, &args)?;
+fn status_of(
+    repo: &Path,
+    ignored: bool,
+    paths: &[&str],
+    custom_ssh: bool,
+) -> Result<Vec<LostWork>> {
+    let raw = transport::status(repo, ignored, paths, custom_ssh)?;
     let mut items = Vec::new();
     let mut entries = raw.split(|b| *b == 0).filter(|e| !e.is_empty());
     while let Some(entry) = entries.next() {
@@ -133,8 +122,8 @@ fn status_of(repo: &Path, ignored: bool, paths: &[&str]) -> Result<Vec<LostWork>
 }
 
 /// Refuse when the clone has modified, untracked or ignored files.
-pub(crate) fn clean(repo: &Path, id: &str) -> Result<()> {
-    let items = status(repo)?;
+pub(crate) fn clean(repo: &Path, id: &str, custom_ssh: bool) -> Result<()> {
+    let items = status(repo, custom_ssh)?;
     if items.is_empty() {
         return Ok(());
     }
@@ -146,8 +135,14 @@ pub(crate) fn clean(repo: &Path, id: &str) -> Result<()> {
 }
 
 /// Refuse when HEAD differs from the recorded installed commit.
-pub(crate) fn require_head(repo: &Path, id: &str, recorded: &str, message: &str) -> Result<()> {
-    let head = git(repo, &["rev-parse", "HEAD"])?;
+pub(crate) fn require_head(
+    repo: &Path,
+    id: &str,
+    recorded: &str,
+    message: &str,
+    custom_ssh: bool,
+) -> Result<()> {
+    let head = transport::object_id(repo, "HEAD", custom_ssh)?;
     if head == recorded {
         return Ok(());
     }
@@ -161,10 +156,29 @@ pub(crate) fn require_head(repo: &Path, id: &str, recorded: &str, message: &str)
     })
 }
 
-fn unpublished_refs(repo: &Path, prefix: &str) -> Result<Vec<(String, u64)>> {
+/// Where a clone records the origin's tags as of its last fetch (see
+/// [`record_origin_tags`]), so an offline check knows which tags are published.
+pub(crate) const ORIGIN_TAGS: &str = "refs/origin-tags/";
+
+/// Record the origin's tags under [`ORIGIN_TAGS`], read from the origin itself (never
+/// from local tags, so a tag made by hand never counts as published), pruning records of
+/// tags the origin deleted. Called after every clone and every fetch from the origin.
+pub(crate) fn record_origin_tags(repo: &Path, custom_ssh: bool) -> Result<()> {
+    crate::transport::fetch(
+        repo,
+        crate::transport::Fetch::RecordTags {
+            remote: "origin",
+            namespace: ORIGIN_TAGS,
+        },
+        custom_ssh,
+    )?;
+    Ok(())
+}
+
+fn unpublished_refs(repo: &Path, prefix: &str, custom_ssh: bool) -> Result<Vec<(String, u64)>> {
     let mut result = Vec::new();
-    for name in git(repo, &["for-each-ref", "--format=%(refname)", prefix])?.lines() {
-        let count: u64 = git(repo, &["rev-list", "--count", name, "--not", "--remotes"])?
+    for name in transport::refs(repo, prefix, custom_ssh)?.lines() {
+        let count: u64 = transport::unpublished_count(repo, name, custom_ssh)?
             .parse()
             .map_err(|e| Error::Git(format!("git rev-list --count: {e}")))?;
         if count > 0 {
@@ -177,30 +191,35 @@ fn unpublished_refs(repo: &Path, prefix: &str) -> Result<Vec<(String, u64)>> {
 
 /// Local branches and tags with commits no remote-tracking branch contains, and stash
 /// entries: work that survives a checkout but is easy to lose track of.
-fn hidden(repo: &Path, check_remote: bool) -> Result<Vec<LostWork>> {
+pub(crate) fn hidden(repo: &Path, check_remote: bool, custom_ssh: bool) -> Result<Vec<LostWork>> {
     let mut items = Vec::new();
-    for (name, commits) in unpublished_refs(repo, "refs/heads/")? {
+    for (name, commits) in unpublished_refs(repo, "refs/heads/", custom_ssh)? {
         items.push(LostWork::UnpublishedBranch { name, commits });
     }
-    let tags = unpublished_refs(repo, "refs/tags/")?;
-    // A published tag need not be reachable from any remote branch (forks
-    // commonly retain upstream tags). Verify the exact ref and object remotely.
+    let tags = unpublished_refs(repo, "refs/tags/", custom_ssh)?;
+    // A published tag need not be reachable from any remote branch (forks commonly
+    // retain upstream tags): a tag the origin had with the same object at the last
+    // fetch is published (offline); `check_remote` also accepts one it has now.
     let published = if tags.is_empty() || !check_remote {
         String::new()
     } else {
-        git(repo, &["ls-remote", "--tags", "origin"])?
+        crate::transport::remote_tags(repo, "origin", custom_ssh)?
     };
     for (name, _) in tags {
         let reference = format!("refs/tags/{name}");
-        let object = git(repo, &["rev-parse", &reference])?;
-        if !published
-            .lines()
-            .any(|line| line == format!("{object}\t{reference}"))
+        let object = transport::object_id(repo, &reference, custom_ssh)?;
+        let fetched =
+            transport::verified_object_id(repo, &format!("{ORIGIN_TAGS}{name}"), custom_ssh)
+                .is_ok_and(|seen| seen == object);
+        if !fetched
+            && !published
+                .lines()
+                .any(|line| line == format!("{object}\t{reference}"))
         {
             items.push(LostWork::UnpublishedTag { name });
         }
     }
-    for entry in git(repo, &["stash", "list"])?.lines() {
+    for entry in transport::stashes(repo, custom_ssh)?.lines() {
         items.push(LostWork::Stash {
             entry: entry.into(),
         });
@@ -209,8 +228,13 @@ fn hidden(repo: &Path, check_remote: bool) -> Result<Vec<LostWork>> {
 }
 
 /// Updating already needs the origin; account for tags published outside branches.
-pub(crate) fn require_no_hidden_for_update(repo: &Path, id: &str, message: &str) -> Result<()> {
-    let items = hidden(repo, true)?;
+pub(crate) fn require_no_hidden_for_update(
+    repo: &Path,
+    id: &str,
+    message: &str,
+    custom_ssh: bool,
+) -> Result<()> {
+    let items = hidden(repo, true, custom_ssh)?;
     if items.is_empty() {
         return Ok(());
     }
@@ -222,8 +246,13 @@ pub(crate) fn require_no_hidden_for_update(repo: &Path, id: &str, message: &str)
 }
 
 /// Refuse when local branches/tags hold unpublished commits or the stash is not empty.
-pub(crate) fn require_no_hidden(repo: &Path, id: &str, message: &str) -> Result<()> {
-    let items = hidden(repo, false)?;
+pub(crate) fn require_no_hidden(
+    repo: &Path,
+    id: &str,
+    message: &str,
+    custom_ssh: bool,
+) -> Result<()> {
+    let items = hidden(repo, false, custom_ssh)?;
     if items.is_empty() {
         return Ok(());
     }
@@ -236,9 +265,47 @@ pub(crate) fn require_no_hidden(repo: &Path, id: &str, message: &str) -> Result<
 
 /// Every kind of local work in `repo`. `recorded` is the installed commit from state
 /// (`None` for a forgotten repository).
-pub(crate) fn detect(repo: &Path, recorded: Option<&str>) -> Result<Vec<LostWork>> {
-    let mut items = status(repo)?;
-    let head = git(repo, &["rev-parse", "HEAD"])?;
+pub(crate) fn detect(
+    repo: &Path,
+    recorded: Option<&str>,
+    custom_ssh: bool,
+) -> Result<Vec<LostWork>> {
+    detect_with_history(
+        repo,
+        recorded,
+        transport::HeadHistory::Unpublished {
+            exclude_tags: false,
+        },
+        true,
+        custom_ssh,
+    )
+}
+
+/// Only work lost with this checkout; shared refs remain in the source store.
+pub(crate) fn worktree_removal(
+    repo: &Path,
+    id: &str,
+    recorded: &str,
+    custom_ssh: bool,
+) -> Result<Vec<LostWork>> {
+    detect_with_history(
+        repo,
+        Some(recorded),
+        transport::HeadHistory::WorktreeRemoval { id },
+        false,
+        custom_ssh,
+    )
+}
+
+fn detect_with_history(
+    repo: &Path,
+    recorded: Option<&str>,
+    history: transport::HeadHistory<'_>,
+    include_hidden: bool,
+    custom_ssh: bool,
+) -> Result<Vec<LostWork>> {
+    let mut items = status(repo, custom_ssh)?;
+    let head = transport::object_id(repo, "HEAD", custom_ssh)?;
     if let Some(recorded) = recorded
         && head != recorded
     {
@@ -247,17 +314,7 @@ pub(crate) fn detect(repo: &Path, recorded: Option<&str>) -> Result<Vec<LostWork
             recorded: recorded.into(),
         });
     }
-    let log = git(
-        repo,
-        &[
-            "log",
-            MAX_COMMITS,
-            "--format=%H%x09%s",
-            "HEAD",
-            "--not",
-            "--remotes",
-        ],
-    )?;
+    let log = transport::head_history(repo, history, custom_ssh)?;
     for line in log.lines() {
         let (commit, summary) = line.split_once('\t').unwrap_or((line, ""));
         items.push(LostWork::UnpublishedCommit {
@@ -265,66 +322,71 @@ pub(crate) fn detect(repo: &Path, recorded: Option<&str>) -> Result<Vec<LostWork
             summary: summary.into(),
         });
     }
-    items.extend(hidden(repo, false)?);
+    if include_hidden {
+        items.extend(hidden(repo, false, custom_ssh)?);
+    }
     Ok(items)
-}
-
-/// Commits that moving HEAD away would leave unreachable: reachable from HEAD but from
-/// no branch, tag, remote-tracking ref or `keep` commit.
-pub(crate) fn unreferenced_head_commits(repo: &Path, keep: &[&str]) -> Result<Vec<LostWork>> {
-    let mut args = vec![
-        "log",
-        MAX_COMMITS,
-        "--format=%H%x09%s",
-        "HEAD",
-        "--not",
-        "--branches",
-        "--tags",
-        "--remotes",
-    ];
-    args.extend(keep.iter().copied());
-    Ok(git(repo, &args)?
-        .lines()
-        .map(|line| {
-            let (commit, summary) = line.split_once('\t').unwrap_or((line, ""));
-            LostWork::UnpublishedCommit {
-                commit: commit.into(),
-                summary: summary.into(),
-            }
-        })
-        .collect())
 }
 
 /// `LocalChanges` with the message of the most important category (as before the split).
 pub(crate) fn refusal(id: &str, items: Vec<LostWork>) -> Error {
     let message = if items.iter().any(LostWork::is_file_change) {
-        DIRTY
+        "package has local changes (including untracked/ignored files)"
     } else if items.iter().any(|i| {
         matches!(
             i,
             LostWork::HeadMoved { .. } | LostWork::UnpublishedCommit { .. }
         )
     }) {
-        "local commits detected; discarding them requires force"
+        "local commits detected"
     } else if items.iter().any(|i| {
         matches!(
             i,
             LostWork::UnpublishedBranch { .. } | LostWork::UnpublishedTag { .. }
         )
     }) {
-        "local branches/tags contain unpublished commits; discarding them requires force"
+        "local branches/tags contain unpublished commits"
     } else {
-        "stash contains local work; discarding it requires force"
+        "stash contains local work"
     };
     Error::LocalChanges {
         id: id.into(),
-        message: message.into(),
+        message: format!("{message}; {CONFIRM}"),
         items,
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn changed_paths_sees_untracked_files_whatever_the_status_config_says() {
+        use crate::test_support::{TempDir, git as fixture_git};
+        let dir = TempDir::new("dirty");
+        let repo = dir.join("repo");
+        fs::create_dir_all(repo.join("packages/a")).unwrap();
+        fixture_git(&repo, &["init", "-q", "-b", "main"]);
+        fs::write(repo.join("packages/a/plugin.json"), "{}").unwrap();
+        fixture_git(&repo, &["add", "--all"]);
+        fixture_git(&repo, &["commit", "-q", "-m", "first"]);
+        // A setting of the user's that hides untracked files from a plain status.
+        fixture_git(&repo, &["config", "status.showUntrackedFiles", "no"]);
+        fs::write(repo.join("gitpm.json"), "{}").unwrap();
+        fs::write(repo.join("packages/a/new.js"), "x").unwrap();
+        fs::write(repo.join("packages/a/plugin.json"), "{ }").unwrap();
+        assert_eq!(
+            fixture_git(&repo, &["status", "--porcelain"]),
+            "M packages/a/plugin.json"
+        );
+        let paths = ["gitpm.json", "packages/a"];
+        let mut found = changed_paths(&repo, &paths, false).unwrap();
+        found.sort();
+        assert_eq!(
+            found,
+            ["gitpm.json", "packages/a/new.js", "packages/a/plugin.json"]
+        );
+        assert!(changed_paths(&repo, &["other"], false).unwrap().is_empty());
+    }
+
     use super::*;
     use crate::test_support::{Author, TempDir, git as fixture_git};
     use std::{fs, path::PathBuf};
@@ -422,14 +484,14 @@ mod tests {
         };
         let stash = LostWork::Stash { entry: "s".into() };
         let message = |items: Vec<LostWork>| {
-            let error = refusal("dan/demo1", items.clone());
+            let error = refusal("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", items.clone());
             match error {
                 Error::LocalChanges {
                     id,
                     message,
                     items: kept,
                 } => {
-                    assert_eq!(id, "dan/demo1");
+                    assert_eq!(id, "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
                     assert_eq!(kept, items, "items are kept unchanged");
                     message
                 }
@@ -438,35 +500,95 @@ mod tests {
         };
         assert_eq!(
             message(vec![stash.clone(), tag.clone(), commit.clone(), file]),
-            DIRTY
+            "package has local changes (including untracked/ignored files); confirm the listed lost work to remove it"
         );
         assert_eq!(
             message(vec![stash.clone(), branch.clone(), commit]),
-            "local commits detected; discarding them requires force"
+            "local commits detected; confirm the listed lost work to remove it"
         );
         assert_eq!(
             message(vec![head]),
-            "local commits detected; discarding them requires force"
+            "local commits detected; confirm the listed lost work to remove it"
         );
         assert_eq!(
             message(vec![stash.clone(), tag]),
-            "local branches/tags contain unpublished commits; discarding them requires force"
+            "local branches/tags contain unpublished commits; confirm the listed lost work to remove it"
         );
         assert_eq!(
             message(vec![branch]),
-            "local branches/tags contain unpublished commits; discarding them requires force"
+            "local branches/tags contain unpublished commits; confirm the listed lost work to remove it"
         );
         assert_eq!(
             message(vec![stash]),
-            "stash contains local work; discarding it requires force"
+            "stash contains local work; confirm the listed lost work to remove it"
         );
     }
 
-    /// A clone of a tagged author repository (has `origin`, like an installed plugin).
+    /// A clone of a tagged author repository (has `origin`, like an installed package).
     fn clone(dir: &TempDir) -> PathBuf {
-        let author = Author::new(dir.join("author"), "dan/demo1");
+        let author = Author::new(dir.join("author"), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         fixture_git(dir.path(), &["clone", "-q", author.source(), "clone"]);
         dir.join("clone")
+    }
+
+    #[test]
+    fn worktree_removal_excludes_only_surviving_refs() {
+        let dir = TempDir::new("worktree-removal");
+        let repo = clone(&dir);
+        let recorded = fixture_git(&repo, &["rev-parse", "HEAD"]);
+        fixture_git(&repo, &["checkout", "--detach"]);
+        fixture_git(&repo, &["commit", "--allow-empty", "-m", "only here"]);
+        let local = fixture_git(&repo, &["rev-parse", "HEAD"]);
+        for slot in ["current", "previous"] {
+            fixture_git(
+                &repo,
+                &[
+                    "update-ref",
+                    &format!("refs/gitpm/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/{slot}"),
+                    &local,
+                ],
+            );
+        }
+        let items = worktree_removal(
+            &repo,
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+            &recorded,
+            false,
+        )
+        .unwrap();
+        assert!(items.iter().any(
+            |item| matches!(item, LostWork::UnpublishedCommit { commit, .. } if commit == &local)
+        ));
+        for reference in [
+            "refs/gitpm/dan/sibling/current",
+            "refs/gitpm/dan/sibling/previous",
+            "refs/heads/topic",
+            "refs/tags/mine",
+            "refs/remotes/origin/retained",
+            "refs/stash",
+        ] {
+            fixture_git(&repo, &["update-ref", reference, &local]);
+            fs::write(repo.join("scratch.txt"), "keep").unwrap();
+            let items = worktree_removal(
+                &repo,
+                "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+                &recorded,
+                false,
+            )
+            .unwrap();
+            assert_eq!(items.len(), 2, "{reference}: {items:?}");
+            assert!(
+                items
+                    .iter()
+                    .any(|item| matches!(item, LostWork::HeadMoved { .. }))
+            );
+            assert!(
+                items
+                    .iter()
+                    .any(|item| matches!(item, LostWork::Untracked { .. }))
+            );
+            fixture_git(&repo, &["update-ref", "-d", reference]);
+        }
     }
 
     #[test]
@@ -474,11 +596,20 @@ mod tests {
         let dir = TempDir::new("lost-work");
         let repo = clone(&dir);
         let head = fixture_git(&repo, &["rev-parse", "HEAD"]);
-        assert!(status(&repo).unwrap().is_empty());
-        assert!(clean(&repo, "dan/demo1").is_ok());
-        assert!(require_head(&repo, "dan/demo1", &head, "m").is_ok());
-        assert_eq!(detect(&repo, Some(&head)).unwrap(), []);
-        assert_eq!(detect(&repo, None).unwrap(), []);
+        assert!(status(&repo, false).unwrap().is_empty());
+        assert!(clean(&repo, "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", false).is_ok());
+        assert!(
+            require_head(
+                &repo,
+                "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+                &head,
+                "m",
+                false
+            )
+            .is_ok()
+        );
+        assert_eq!(detect(&repo, Some(&head), false).unwrap(), []);
+        assert_eq!(detect(&repo, None, false).unwrap(), []);
     }
 
     #[test]
@@ -497,11 +628,11 @@ mod tests {
         fs::write(repo.join("staged.txt"), "new").unwrap();
         fixture_git(&repo, &["add", "staged.txt"]);
         fs::remove_file(repo.join("plugin.json")).unwrap();
-        fs::create_dir_all(repo.join("new/deep")).unwrap();
-        fs::write(repo.join("new/deep/u.txt"), "u").unwrap();
+        fs::create_dir_all(repo.join("47f645b0-9acc-5fed-8ebf-537034550bba")).unwrap();
+        fs::write(repo.join("47f645b0-9acc-5fed-8ebf-537034550bba/u.txt"), "u").unwrap();
         fs::write(repo.join("debug.log"), "l").unwrap();
 
-        let mut items = status(&repo).unwrap();
+        let mut items = status(&repo, false).unwrap();
         items.sort_by_key(|i| i.describe());
         let described: Vec<_> = items.iter().map(LostWork::describe).collect();
         assert_eq!(
@@ -512,10 +643,10 @@ mod tests {
                 "modified: plugin.json",
                 "modified: renamed файл.txt",
                 "modified: staged.txt",
-                "untracked: new/deep/u.txt",
+                "untracked: 47f645b0-9acc-5fed-8ebf-537034550bba/u.txt",
             ]
         );
-        let error = clean(&repo, "dan/demo1").unwrap_err();
+        let error = clean(&repo, "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", false).unwrap_err();
         assert_eq!(error.kind(), "local_changes");
         assert_eq!(error.to_string(), DIRTY);
         assert!(matches!(error, Error::LocalChanges { items, .. } if items.len() == 6));
@@ -534,7 +665,14 @@ mod tests {
         fs::write(repo.join("dist/index.js"), "stashed").unwrap();
         fixture_git(&repo, &["stash", "-q"]);
 
-        let error = require_head(&repo, "dan/demo1", &installed, "moved").unwrap_err();
+        let error = require_head(
+            &repo,
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+            &installed,
+            "moved",
+            false,
+        )
+        .unwrap_err();
         assert_eq!(error.to_string(), "moved");
         let Error::LocalChanges { items, .. } = error else {
             panic!()
@@ -547,7 +685,7 @@ mod tests {
             }]
         );
 
-        let items = detect(&repo, Some(&installed)).unwrap();
+        let items = detect(&repo, Some(&installed), false).unwrap();
         let described: Vec<_> = items.iter().map(LostWork::describe).collect();
         assert_eq!(described.len(), 6, "{described:?}");
         assert_eq!(
@@ -568,7 +706,7 @@ mod tests {
             described[5]
         );
         // A forgotten repository (no recorded commit) has no HeadMoved item.
-        let items = detect(&repo, None).unwrap();
+        let items = detect(&repo, None, false).unwrap();
         assert!(
             !items
                 .iter()
@@ -580,7 +718,7 @@ mod tests {
     #[test]
     fn detached_checkout_of_a_published_commit_is_only_a_head_move() {
         let dir = TempDir::new("lost-work");
-        let author = Author::new(dir.join("author"), "dan/demo1");
+        let author = Author::new(dir.join("author"), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let first = author.head();
         author.release("0.2.0");
         fixture_git(dir.path(), &["clone", "-q", author.source(), "clone"]);
@@ -588,7 +726,7 @@ mod tests {
         fixture_git(&repo, &["checkout", "-q", "--detach", &first]);
         let second = author.head();
         assert_eq!(
-            detect(&repo, Some(&second)).unwrap(),
+            detect(&repo, Some(&second), false).unwrap(),
             [LostWork::HeadMoved {
                 head: first,
                 recorded: second
@@ -606,7 +744,7 @@ mod tests {
                 &["commit", "-q", "--allow-empty", "-m", &format!("c{n}")],
             );
         }
-        let items = detect(&repo, None).unwrap();
+        let items = detect(&repo, None, false).unwrap();
         let commits = items
             .iter()
             .filter(|i| matches!(i, LostWork::UnpublishedCommit { .. }))

@@ -1,64 +1,7 @@
-//! Forks: installed packages of one repository become packages of a fork repository
-//! with new IDs `NAMESPACE/<same name>`. The fork repository is given explicitly; it is
-//! never derived from a package ID or a source. A new fork is a copy of the source
-//! clone (history and local edits), reduced to the forked packages; an existing
-//! multi-package repository gets the package folders added. A single fork is the
-//! one-package case of the same code. See [`Manager::fork_packages`].
+//! Fork installed packages or an explicit source without a workspace.
 use super::*;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 
-/// Step of a fork with `--replace` ([`Manager::fork_packages_replace`]) that failed after
-/// the fork repository was created or changed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ForkStep {
-    /// Committing/tagging the fork's first release.
-    Release,
-    /// Installing the released fork into the workspace.
-    Install,
-    /// Making the installed fork the provider of the original.
-    Replace,
-}
-impl ForkStep {
-    pub fn name(self) -> &'static str {
-        match self {
-            ForkStep::Release => "release",
-            ForkStep::Install => "install",
-            ForkStep::Replace => "replace",
-        }
-    }
-}
-/// What [`Manager::fork_packages_replace`] did for one forked package. The fork
-/// repository is never removed: a failure is reported in `failed`/`error` with what was
-/// done so far.
-#[derive(Clone, Debug, Serialize)]
-pub struct ForkReplacement {
-    pub original: String,
-    pub id: String,
-    /// The fork repository (author folder, outside the workspace).
-    pub path: PathBuf,
-    /// Release tag of the fork, once created.
-    pub tag: Option<String>,
-    pub installed: Option<InstallResult>,
-    pub replacement: Option<ReplacementPlan>,
-    pub failed: Option<ForkStep>,
-    #[serde(skip)]
-    pub error: Option<Error>,
-}
-
-/// A dependency of a package rewritten by a fork: `from` (an original) became `to` (its
-/// fork). `new_requirement` is set when `requirement` does not accept the fork's version
-/// and was replaced by `^VERSION`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct DependencyRewrite {
-    /// Package (its ID in the fork repository) whose `plugin.json` changed.
-    pub package: String,
-    pub from: String,
-    pub to: String,
-    pub requirement: String,
-    #[serde(rename = "newRequirement", skip_serializing_if = "Option::is_none")]
-    pub new_requirement: Option<String>,
-}
 /// One package forked by [`Manager::fork_packages`].
 #[derive(Clone, Debug, Serialize)]
 pub struct ForkedPackage {
@@ -75,33 +18,19 @@ pub struct ForkedPackage {
 pub struct PackageFork {
     /// The fork repository (author folder, outside the workspace).
     pub path: PathBuf,
-    /// `true`: a new repository; `false`: packages were added to an existing one.
+    /// Always `true`: forks are created in new repositories.
     pub created: bool,
-    /// The commit that created or added the packages.
+    /// The commit that created the fork identities.
     pub commit: String,
     pub packages: Vec<ForkedPackage>,
-    pub rewrites: Vec<DependencyRewrite>,
 }
-/// Result of [`Manager::fork_packages_replace`]: the fork plus one [`ForkReplacement`]
-/// per forked package (in install order) with what was done for it.
-#[derive(Clone, Debug, Serialize)]
-pub struct PackageForkReplacement {
-    pub fork: PackageFork,
-    pub packages: Vec<ForkReplacement>,
-}
-impl PackageForkReplacement {
-    /// The first failure (by package order), if any package did not finish.
-    pub fn error(&self) -> Option<&Error> {
-        self.packages.iter().find_map(|p| p.error.as_ref())
-    }
-}
-
 /// One package to fork: where it comes from and what it becomes.
 struct Source {
     original: String,
+    /// Recorded source of the original (`packages.<original>.source`).
+    original_source: String,
     id: String,
-    /// Revision the fork starts the package from: the installed commit (for an own
-    /// clone its HEAD, which may hold local commits on top of it).
+    /// Installed revision to read from the recorded source.
     commit: String,
     /// Folder at that commit; empty for a root package.
     path: String,
@@ -114,10 +43,6 @@ impl Source {
     }
 }
 
-/// A package folder as a pathspec (`.` for the root package).
-fn pathspec(folder: &str) -> &str {
-    if folder.is_empty() { "." } else { folder }
-}
 fn manifest_path(folder: &str) -> String {
     if folder.is_empty() {
         "plugin.json".to_owned()
@@ -126,212 +51,24 @@ fn manifest_path(folder: &str) -> String {
     }
 }
 
-/// Rewrite the dependencies of `m` that name a key of `forks` to the fork (ID, version
-/// the fork is released with); a requirement that does not accept that version becomes
-/// `^VERSION`. A manifest that already depends on the fork too (or on two originals of
-/// one fork) is refused, whatever the order of its keys.
-fn rewrite_dependencies(
-    m: &mut Manifest,
-    forks: &BTreeMap<String, (String, String)>,
-    rewrites: &mut Vec<DependencyRewrite>,
-) -> Result<()> {
-    let original = std::mem::take(&mut m.dependencies);
-    let mut dependencies = BTreeMap::new();
-    for (dependency, requirement) in &original {
-        let Some((fork, version)) = forks.get(dependency) else {
-            dependencies.insert(dependency.clone(), requirement.clone());
-            continue;
-        };
-        ensure!(
-            !original.contains_key(fork),
-            InvalidManifest,
-            "{} depends on both {dependency} and its fork {fork}; remove one of them first",
-            m.id
-        );
-        if let Some((other, _)) = original
-            .keys()
-            .filter(|other| *other != dependency)
-            .find_map(|other| forks.get(other).map(|f| (other, f)))
-            .filter(|(_, (f, _))| f == fork)
-        {
-            fail!(
-                InvalidManifest,
-                "{} depends on both {dependency} and {other}, which are both forked as {fork}",
-                m.id
-            );
-        }
-        let new_requirement = (!deps::matches(requirement, version)).then(|| format!("^{version}"));
-        rewrites.push(DependencyRewrite {
-            package: m.id.clone(),
-            from: dependency.clone(),
-            to: fork.clone(),
-            requirement: requirement.clone(),
-            new_requirement: new_requirement.clone(),
-        });
-        dependencies.insert(
-            fork.clone(),
-            new_requirement.unwrap_or_else(|| requirement.clone()),
-        );
-    }
-    m.dependencies = dependencies;
-    Ok(())
-}
-
-/// Paths that differ from HEAD (staged, unstaged or untracked), limited to `paths`.
-fn dirty(repo: &Path, paths: &[String]) -> Result<Vec<String>> {
-    let specs: Vec<&str> = paths.iter().map(|p| pathspec(p)).collect();
-    lost_work::changed_paths(repo, &specs)
-}
-
 impl Manager {
-    /// Fork one installed package as `NAMESPACE/<same name>`: [`Manager::fork_packages`]
+    /// Fork one installed package with a fresh UUID: [`Manager::fork_packages`]
     /// with one ID. Returns the fork repository.
-    pub fn fork_in_namespace(
-        &self,
-        id: &str,
-        destination: &Path,
-        namespace: &str,
-    ) -> Result<PathBuf> {
-        Ok(self.fork_packages(&[id], destination, namespace)?.path)
+    pub fn fork_into(&self, id: &str, destination: &Path) -> Result<PathBuf> {
+        Ok(self.fork_packages(&[id], destination)?.path)
     }
-    /// [`Manager::fork_packages_replace`] with one ID: fork, release the fork right away
-    /// (tag `NAMESPACE/NAME@VERSION`; `version` defaults to the forked version, local
-    /// edits of the package are committed with it), install it and make it the provider
-    /// of `id` for every consumer ([`Manager::replace`] with `confirm`).
-    pub fn fork_replace(
-        &self,
-        id: &str,
-        destination: &Path,
-        namespace: &str,
-        version: Option<&str>,
-        confirm: bool,
-    ) -> Result<ForkReplacement> {
-        let mut done =
-            self.fork_packages_replace(&[id], destination, namespace, version, confirm)?;
-        Ok(done.packages.remove(0))
-    }
-
-    /// Fork installed packages of one repository into `namespace` (new IDs
-    /// `NAMESPACE/<same name>`) as the fork repository `destination`:
+    /// Fork installed packages of one repository with fresh UUIDs into `destination`.
     ///
-    /// - `destination` does not exist: a copy of the source clone with history and local
-    ///   edits, on a new `fork` branch, the original repository as `upstream` remote.
-    ///   Each package starts from its installed revision (an own clone from its HEAD).
-    ///   For packages of a multi-package repository the folders of packages that are
-    ///   not forked are removed and `gitpm.json` lists exactly the forked folders; a root
-    ///   package (no `gitpm.json`) stays the root of the fork. One commit records the
-    ///   change; local edits stay uncommitted.
-    /// - `destination` is a multi-package repository (`gitpm.json`): the package folders
-    ///   (files of the installed revisions) are added at their original folders and to
-    ///   `gitpm.json` in one commit; only these paths are committed.
-    /// - anything else is refused, as is a destination inside the workspace, with `..`,
-    ///   or the source repository itself.
-    ///
-    /// Each `plugin.json` gets the new ID, `forkOf` and `replaces`. A dependency on a
-    /// package forked here, or (when adding) on an original that a package of the
-    /// repository forks (`forkOf`/`replaces`), is rewritten to the fork; existing packages
-    /// that depend on a newly forked original are rewritten too. A requirement that does
-    /// not accept the fork's version becomes `^VERSION`. Nothing is tagged.
-    pub fn fork_packages(
-        &self,
-        ids: &[&str],
-        destination: &Path,
-        namespace: &str,
-    ) -> Result<PackageFork> {
-        self.fork_packages_with(ids, destination, namespace, None, false)
-    }
-
-    /// [`Manager::fork_packages`], then release every forked package at once (one commit
-    /// of the changes in their folders, `version` set in each manifest when given, one
-    /// `ID@VERSION` tag per package), install them (dependencies first) and replace each
-    /// original for every consumer (`confirm` as in [`Manager::replace`]). Errors before
-    /// the fork exists are returned as errors and leave nothing behind; after that the
-    /// fork is kept and every package reports its own `failed` step and `error`. A failed
-    /// install or replace of one package does not stop the others.
-    pub fn fork_packages_replace(
-        &self,
-        ids: &[&str],
-        destination: &Path,
-        namespace: &str,
-        version: Option<&str>,
-        confirm: bool,
-    ) -> Result<PackageForkReplacement> {
-        if let Some(version) = version {
-            catalog::version_key(version)?;
-        }
-        let fork = self.fork_packages_with(ids, destination, namespace, version, true)?;
-        // Dependencies first (a cycle was refused before the fork was created).
-        let edges: Vec<(&str, BTreeSet<String>)> = fork
-            .packages
-            .iter()
-            .map(|p| {
-                let subdir = (!p.path.is_empty()).then_some(p.path.as_str());
-                let deps = package_manifest(&fork.path, subdir)
-                    .map(|m| m.dependencies.into_keys().collect())
-                    .unwrap_or_default();
-                (p.id.as_str(), deps)
-            })
-            .collect();
-        let order = install_order(&edges).unwrap_or_else(|_| (0..edges.len()).collect());
-        let mut results: Vec<ForkReplacement> = order
-            .into_iter()
-            .map(|index| {
-                let package = &fork.packages[index];
-                ForkReplacement {
-                    original: package.original.clone(),
-                    id: package.id.clone(),
-                    path: fork.path.clone(),
-                    tag: None,
-                    installed: None,
-                    replacement: None,
-                    failed: None,
-                    error: None,
-                }
-            })
-            .collect();
-        if let Err((tagged, error)) = release_packages(&fork, version) {
-            // The packages are released together: nothing is installed unless all are.
-            for result in &mut results {
-                result.tag = tagged.get(&result.id).cloned();
-                result.failed = Some(ForkStep::Release);
-                result.error = Some(error.clone());
-            }
-            return Ok(PackageForkReplacement {
-                fork,
-                packages: results,
-            });
-        }
-        let source = fork.path.to_string_lossy().into_owned();
-        for result in &mut results {
-            let version = version.map(str::to_owned).unwrap_or_else(|| {
-                fork.packages
-                    .iter()
-                    .find(|p| p.id == result.id)
-                    .map(|p| p.version.clone())
-                    .unwrap_or_default()
-            });
-            result.tag = Some(identity::release_tag(&result.id, &version));
-            match self.install_package(&source, Some(&result.id), None, false) {
-                Ok(installed) => result.installed = Some(installed),
-                Err(error) => {
-                    result.failed = Some(ForkStep::Install);
-                    result.error = Some(error);
-                }
-            }
-        }
-        for result in results.iter_mut().filter(|r| r.failed.is_none()) {
-            match self.replace(&result.original, &result.id, confirm) {
-                Ok(plan) => result.replacement = Some(plan),
-                Err(error) => {
-                    result.failed = Some(ForkStep::Replace);
-                    result.error = Some(error);
-                }
-            }
-        }
-        Ok(PackageForkReplacement {
-            fork,
-            packages: results,
-        })
+    /// The destination must be a new folder outside the workspace. Clone the recorded
+    /// source with history on a new `fork` branch, retaining submodule Git links.
+    /// Installed packages start at their recorded revisions; local installation work
+    /// is ignored. Other packages start at the newest installed revision. All packages
+    /// in the repository receive fresh identities, including uninstalled siblings;
+    /// names, repository files and the package layout are preserved.
+    /// Each manifest gets its new ID, `forkOf` and `replaces`; dependencies among
+    /// packages forked together are preserved until explicitly edited. Nothing is tagged.
+    pub fn fork_packages(&self, ids: &[&str], destination: &Path) -> Result<PackageFork> {
+        self.fork_packages_with(ids, destination)
     }
 
     /// Absolute fork repository `destination`: refused with `..`, inside the workspace
@@ -383,22 +120,12 @@ impl Manager {
         Ok(destination)
     }
 
-    /// `version`: the version the forks will be released with (for requirement checks).
-    /// `install`: the forks will be installed one after another, so a dependency cycle
-    /// between them is refused before anything is created.
-    fn fork_packages_with(
-        &self,
-        ids: &[&str],
-        destination: &Path,
-        namespace: &str,
-        version: Option<&str>,
-        install: bool,
-    ) -> Result<PackageFork> {
+    fn fork_packages_with(&self, ids: &[&str], destination: &Path) -> Result<PackageFork> {
         ensure!(!ids.is_empty(), InvalidArgument, "no package to fork");
         for id in ids {
             valid_id(id)?;
         }
-        identity::valid_part(namespace)?;
+
         let unique: BTreeSet<&str> = ids.iter().copied().collect();
         ensure!(
             unique.len() == ids.len(),
@@ -410,40 +137,27 @@ impl Manager {
         let mut installed = Vec::new();
         for id in ids {
             let p = state
-                .plugins
+                .packages
                 .get(*id)
                 .ok_or_else(|| Error::NotInstalled { id: (*id).into() })?;
             installed.push((*id, p));
         }
-        let clones: BTreeSet<String> = installed.iter().map(|(id, p)| p.clone_folder(id)).collect();
-        if clones.len() > 1 {
-            // One entry per source ("a, b from X; c from Y"); one source installed into
-            // several clones (an own clone and a shared one) names them.
-            let mut groups: Vec<(&str, Vec<&str>, BTreeSet<String>)> = Vec::new();
-            for (id, p) in &installed {
-                let index = match groups.iter().position(|g| g.0 == p.source) {
-                    Some(index) => index,
-                    None => {
-                        groups.push((p.source.as_str(), Vec::new(), BTreeSet::new()));
-                        groups.len() - 1
-                    }
-                };
-                groups[index].1.push(id);
-                groups[index].2.insert(p.clone_folder(id));
+        let sources: BTreeSet<&str> = installed.iter().map(|(_, p)| p.source.as_str()).collect();
+        if sources.len() > 1 {
+            let mut groups: Vec<(&str, Vec<&str>)> = Vec::new();
+            for (id, package) in &installed {
+                if let Some((_, ids)) = groups
+                    .iter_mut()
+                    .find(|(source, _)| *source == package.source)
+                {
+                    ids.push(id);
+                } else {
+                    groups.push((&package.source, vec![id]));
+                }
             }
             let list: Vec<String> = groups
                 .iter()
-                .map(|(source, ids, folders)| {
-                    let mut item = format!("{} from {source}", ids.join(", "));
-                    if folders.len() > 1 {
-                        let folders: Vec<&str> = folders.iter().map(String::as_str).collect();
-                        item.push_str(&format!(
-                            " (installed in separate clones {})",
-                            folders.join(", ")
-                        ));
-                    }
-                    item
-                })
+                .map(|(source, ids)| format!("{} from {source}", ids.join(", ")))
                 .collect();
             fail!(
                 InvalidArgument,
@@ -451,137 +165,310 @@ impl Manager {
                 list.join("; ")
             );
         }
-        let (first, first_installed) = installed[0];
-        let clone = installed_repo(&self.root, first, first_installed)?;
-        // An own clone is forked from its HEAD: local commits on top of the installed
-        // revision belong to the fork. A shared clone's HEAD can be another package's
-        // revision, so each package starts from its installed one.
-        let own_head = match first_installed.clone {
-            None => Some(git(&clone, &["rev-parse", "HEAD"])?),
-            Some(_) => None,
-        };
-        let mut sources = Vec::new();
-        let mut new_ids = BTreeSet::new();
-        for (id, p) in &installed {
-            let new_id = identity::qualified(namespace, id.rsplit('/').next().unwrap())?;
-            ensure!(
-                new_id != *id,
-                InvalidArgument,
-                "fork needs a different namespace; pass another namespace"
-            );
-            ensure!(
-                new_ids.insert(new_id.clone()),
-                InvalidArgument,
-                "two packages would get the same fork ID {new_id}"
-            );
-            ensure!(
-                !ids_collide(&new_id, id)
-                    && !state
-                        .plugins
-                        .keys()
-                        .chain(state.forgotten.keys())
-                        .any(|other| ids_collide(other, &new_id)),
-                InvalidArgument,
-                "fork ID {new_id} differs only in letter case from an installed plugin"
-            );
-            let commit = own_head.clone().unwrap_or_else(|| p.current.commit.clone());
-            let package = match packages::find_at(&clone, &commit, Some(id)) {
-                Ok(package) => package,
-                Err(Error::InvalidArgument(_)) if own_head.is_some() => fail!(
-                    InvalidManifest,
-                    "installed repository HEAD has a different plugin ID"
-                ),
+        // IDs identify a source repository, never a subset of its packages. Preserve
+        // recorded revisions of all installed siblings, even when only one ID was passed.
+        let source = installed[0].1.source.as_str();
+        for (id, package) in &state.packages {
+            if package.source == source && !installed.iter().any(|(seen, _)| *seen == id) {
+                installed.push((id.as_str(), package));
+            }
+        }
+        let (_, first_installed) = installed[0];
+        let users: Vec<&Installed> = installed.iter().map(|(_, p)| *p).collect();
+        let destination = self.fork_destination(destination, &users)?;
+        ensure!(
+            fs::symlink_metadata(&destination).is_err(),
+            InvalidArgument,
+            "destination already exists; pass a new folder"
+        );
+        clone_fork(
+            &first_installed.source,
+            &destination,
+            self.options.custom_ssh,
+            |destination| {
+                let clone = destination;
+                let mut sources = Vec::new();
+                let mut new_ids: BTreeSet<String> = BTreeSet::new();
+                let mut fresh_id = |original: &str| -> Result<String> {
+                    let id = identity::new_id()?;
+                    ensure!(
+                        id != original
+                            && !state.packages.contains_key(&id)
+                            && !state.forgotten.contains_key(&id)
+                            && new_ids.insert(id.clone()),
+                        Workspace,
+                        "generated fork UUID collides with an existing package"
+                    );
+                    Ok(id)
+                };
+                for (id, p) in &installed {
+                    let new_id = fresh_id(id)?;
+                    let commit = p.current.commit.clone();
+                    if transport::require_object(
+                        clone,
+                        &format!("{commit}^{{commit}}"),
+                        self.options.custom_ssh,
+                    )
+                    .is_err()
+                    {
+                        transport::fetch(
+                            clone,
+                            transport::Fetch::Revision {
+                                remote: "origin",
+                                revision: &commit,
+                            },
+                            self.options.custom_ssh,
+                        )?;
+                    }
+                    let package = packages::find_at_with_ssh(
+                        clone,
+                        &commit,
+                        Some(id),
+                        self.options.custom_ssh,
+                    )?;
+                    sources.push(Source {
+                        original: (*id).into(),
+                        original_source: p.source.clone(),
+                        id: new_id,
+                        commit,
+                        path: package.path,
+                        base: package.manifest,
+                    });
+                }
+                let base = fork_base(clone, &sources, self.options.custom_ssh)?;
+                let siblings =
+                    packages::packages_at_with_ssh(clone, &base, self.options.custom_ssh)?
+                        .unwrap_or_default();
+                for package in siblings {
+                    let id = &package.manifest.id;
+                    if sources.iter().any(|s| &s.original == id) {
+                        continue;
+                    }
+                    let new_id = fresh_id(id)?;
+                    sources.push(Source {
+                        original: id.clone(),
+                        original_source: first_installed.source.clone(),
+                        id: new_id,
+                        commit: base.clone(),
+                        path: package.path,
+                        base: package.manifest,
+                    });
+                }
+                new_fork(destination, &sources, self.options.custom_ssh)
+            },
+        )
+    }
+}
+
+/// Fork a Git path or URL without opening, creating or locking a workspace.
+/// Every package receives a fresh UUID; IDs select and validate the source
+/// revision, never a subset. With no IDs, the source must have a single package.
+/// By default select the latest stable repository release containing the first ID;
+/// every supplied ID must exist at that revision.
+/// `reference` accepts any Git revision, including branches and untagged commits.
+pub fn fork_source(
+    source: &str,
+    ids: &[&str],
+    reference: Option<&str>,
+    destination: &Path,
+) -> Result<PackageFork> {
+    fork_source_with(source, ids, reference, destination, &Options::default())
+}
+
+/// Source fork with explicit transport settings. No workspace settings are read.
+pub fn fork_source_with(
+    source: &str,
+    ids: &[&str],
+    reference: Option<&str>,
+    destination: &Path,
+    options: &Options,
+) -> Result<PackageFork> {
+    for id in ids {
+        valid_id(id)?;
+    }
+    ensure!(
+        ids.iter().copied().collect::<BTreeSet<_>>().len() == ids.len(),
+        InvalidArgument,
+        "a package is listed more than once"
+    );
+    let source = if Path::new(source).exists() {
+        fs::canonicalize(source)?.to_string_lossy().into_owned()
+    } else {
+        source.to_owned()
+    };
+    crate::auth::validate_recorded(&source)?;
+    ensure!(
+        !destination
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir)),
+        InvalidArgument,
+        "use a destination without '..'"
+    );
+    let destination = std::path::absolute(destination)?;
+    let ancestor = destination.ancestors().find(|p| p.exists()).require(
+        Error::InvalidArgument,
+        "destination has no existing ancestor",
+    )?;
+    let real = fs::canonicalize(ancestor)?.join(destination.strip_prefix(ancestor).unwrap());
+    let local_source = local_source_path(&source)?;
+    ensure!(
+        !local_source.is_some_and(|source| real.starts_with(source)),
+        InvalidArgument,
+        "fork destination must be outside the source repository"
+    );
+    let ssh = options.custom_ssh;
+    clone_fork(&source, &destination, ssh, |repo| {
+        let commit = match reference {
+            Some(reference) => resolve_source_ref(repo, reference, ssh)?,
+            None => match releases::latest_with_ssh(repo, ids.first().copied(), ssh) {
+                Ok(tag) => tag.commit,
+                Err(Error::NoReleases(message)) => {
+                    if let Some(id) = ids.first() {
+                        let head = transport::object_id(repo, "HEAD", ssh)?;
+                        packages::find_at_with_ssh(repo, &head, Some(id), ssh)?;
+                    }
+                    return Err(Error::NoReleases(message));
+                }
                 Err(error) => return Err(error),
-            };
+            },
+        };
+        // Validate every supplied ID at the resolved revision; the package helper
+        // reports available IDs on ambiguity or a missing package.
+        if ids.is_empty() {
+            packages::find_at_with_ssh(repo, &commit, None, ssh)?;
+        }
+        for id in ids {
+            packages::find_at_with_ssh(repo, &commit, Some(id), ssh)?;
+        }
+        let mut packages = match packages::packages_at_with_ssh(repo, &commit, ssh)? {
+            Some(packages) => packages,
+            None => vec![packages::find_at_with_ssh(
+                repo,
+                &commit,
+                ids.first().copied(),
+                ssh,
+            )?],
+        };
+        packages.sort_by_key(|p| {
+            ids.iter()
+                .position(|id| *id == p.manifest.id)
+                .unwrap_or(ids.len())
+        });
+        let mut new_ids = BTreeSet::new();
+        let mut sources = Vec::new();
+        for package in packages {
+            let original = package.manifest.id.clone();
+            let id = identity::new_id()?;
+            ensure!(
+                id != original && new_ids.insert(id.clone()),
+                Workspace,
+                "generated fork UUID collides with an existing package"
+            );
             sources.push(Source {
-                original: (*id).into(),
-                id: new_id,
-                commit,
+                original,
+                original_source: source.clone(),
+                id,
+                commit: commit.clone(),
                 path: package.path,
                 base: package.manifest,
             });
         }
-        if install {
-            // Dependencies between the forks are those between their originals.
-            let edges: Vec<(&str, BTreeSet<String>)> = sources
-                .iter()
-                .map(|s| {
-                    (
-                        s.original.as_str(),
-                        s.base.dependencies.keys().cloned().collect(),
-                    )
-                })
-                .collect();
-            install_order(&edges)?;
-        }
-        let users: Vec<&Installed> = installed.iter().map(|(_, p)| *p).collect();
-        let destination = self.fork_destination(destination, &users)?;
-        if fs::symlink_metadata(&destination).is_ok() {
-            ensure!(
-                destination.is_dir() && destination.join(packages::CONFIG).is_file(),
-                InvalidArgument,
-                "destination already exists and is not a multi-package repository ({}); pass a new folder or a repository with {}",
-                packages::CONFIG,
-                packages::CONFIG
-            );
-            if let Some(root) = sources.iter().find(|s| s.path.is_empty()) {
-                fail!(
-                    InvalidArgument,
-                    "{} is the root package of its repository and cannot be added to the multi-package repository {}; fork it into a new folder",
-                    root.original,
-                    destination.display()
-                );
-            }
-            return add_packages(&clone, &destination, &sources, version);
-        }
-        let parent = destination
-            .parent()
-            .require(Error::InvalidArgument, "destination needs a parent")?;
-        // The outermost folder this creates: a failed fork leaves none of them behind.
-        let created = destination
-            .ancestors()
-            .take_while(|p| fs::symlink_metadata(p).is_err())
-            .last()
-            .unwrap_or(&destination)
-            .to_path_buf();
-        let result = fs::create_dir_all(parent)
-            .and_then(|()| fs::create_dir(&destination))
-            .map_err(Error::from)
-            .and_then(|()| {
-                new_fork(
-                    &clone,
-                    &first_installed.source,
-                    &destination,
-                    &sources,
-                    version,
-                )
-            });
-        if result.is_err() {
-            let _ = fs::remove_dir_all(&created);
-        }
-        result
-    }
+        new_fork(repo, &sources, ssh)
+    })
 }
 
-/// The forks a dependency may be rewritten to: original ID → (fork ID, release version).
-fn fork_map(
-    sources: &[Source],
-    manifests: &[Manifest],
-    version: Option<&str>,
-) -> BTreeMap<String, (String, String)> {
-    sources
-        .iter()
-        .zip(manifests)
-        .map(|(s, m)| {
-            (
-                s.original.clone(),
-                (
-                    s.id.clone(),
-                    version.map_or_else(|| m.version.clone(), str::to_owned),
-                ),
-            )
-        })
-        .collect()
+/// A fresh clone has no stale local branches. Resolve normal Git expressions,
+/// translating branch names to origin refs when they are not local branches.
+fn resolve_source_ref(repo: &Path, reference: &str, custom_ssh: bool) -> Result<String> {
+    ensure!(
+        !reference.is_empty() && !reference.starts_with('-'),
+        InvalidArgument,
+        "invalid git ref"
+    );
+    if let Ok(commit) = resolve_ref(repo, reference, custom_ssh) {
+        return Ok(commit);
+    }
+    let branch = reference.strip_prefix("refs/heads/").unwrap_or(reference);
+    if let Ok(commit) = resolve_ref(repo, &format!("refs/remotes/origin/{branch}"), custom_ssh) {
+        return Ok(commit);
+    }
+    // A clone fetches heads and tags, but an explicit ref may live elsewhere.
+    // Fetch its base name, then apply any ancestry expression to the fetched commit.
+    let split = reference.find(['~', '^']).unwrap_or(reference.len());
+    let (base, expression) = reference.split_at(split);
+    transport::fetch(
+        repo,
+        transport::Fetch::Revision {
+            remote: "origin",
+            revision: base,
+        },
+        custom_ssh,
+    )?;
+    resolve_ref(repo, &format!("FETCH_HEAD{expression}"), custom_ssh)
+}
+
+/// Git treats file:// URLs as local paths, including their percent escapes.
+/// Check their canonical path too, without changing the source URL recorded in metadata.
+fn local_source_path(source: &str) -> Result<Option<PathBuf>> {
+    if Path::new(source).is_absolute() {
+        return Ok(Some(fs::canonicalize(source)?));
+    }
+    let Some(url) = source.strip_prefix("file://") else {
+        return Ok(None);
+    };
+    let (_, path) = url
+        .split_once('/')
+        .require(Error::InvalidArgument, "file URL needs an absolute path")?;
+    let mut decoded = Vec::new();
+    let mut bytes = path.bytes();
+    while let Some(byte) = bytes.next() {
+        if byte == b'%' {
+            let hex = |byte: Option<u8>| byte.and_then(|b| (b as char).to_digit(16));
+            let high =
+                hex(bytes.next()).require(Error::InvalidArgument, "invalid file URL escape")?;
+            let low =
+                hex(bytes.next()).require(Error::InvalidArgument, "invalid file URL escape")?;
+            decoded.push((high * 16 + low) as u8);
+        } else {
+            decoded.push(byte);
+        }
+    }
+    let path = String::from_utf8(decoded)
+        .map_err(|_| Error::InvalidArgument("file URL path must be UTF-8".into()))?;
+    Ok(Some(fs::canonicalize(format!("/{path}"))?))
+}
+
+/// Clone a fresh repository and remove only newly created paths if preparation fails.
+fn clone_fork(
+    source: &str,
+    destination: &Path,
+    custom_ssh: bool,
+    prepare: impl FnOnce(&Path) -> Result<PackageFork>,
+) -> Result<PackageFork> {
+    ensure!(
+        fs::symlink_metadata(destination).is_err(),
+        InvalidArgument,
+        "destination already exists; pass a new folder"
+    );
+    crate::auth::validate_recorded(source)?;
+    let parent = destination
+        .parent()
+        .require(Error::InvalidArgument, "destination needs a parent")?;
+    let created = destination
+        .ancestors()
+        .take_while(|p| fs::symlink_metadata(p).is_err())
+        .last()
+        .unwrap_or(destination)
+        .to_path_buf();
+    let result = (|| {
+        fs::create_dir_all(parent)?;
+        transport::clone_repo(parent, source, &destination.to_string_lossy(), custom_ssh)?;
+        prepare(destination)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&created);
+    }
+    result
 }
 
 /// Give the package manifest `m` (read from `source.path`) its fork identity.
@@ -595,33 +482,114 @@ fn identify(m: &mut Manifest, source: &Source) {
         id: source.original.clone(),
         version: source.base.version.clone(),
         commit: source.commit.clone(),
+        // Only a source `check` may query (a URL or an absolute path, no remote helper).
+        source: crate::auth::validate_recorded(&source.original_source)
+            .is_ok()
+            .then(|| source.original_source.clone()),
     });
 }
 
 /// Whether `path` has the same tree at both commits (`false` if it is missing in one).
-fn same_folder(repo: &Path, a: &str, b: &str, path: &str) -> bool {
+fn same_folder(repo: &Path, a: &str, b: &str, path: &str, custom_ssh: bool) -> bool {
     let tree = |commit: &str| {
-        git(
-            repo,
-            &["rev-parse", "--verify", "-q", &format!("{commit}:{path}")],
-        )
-        .ok()
+        transport::verify_revision(repo, &format!("{commit}:{path}"), true, custom_ssh).ok()
     };
     matches!((tree(a), tree(b)), (Some(x), Some(y)) if x == y)
 }
 
-fn new_fork(
-    clone: &Path,
-    upstream: &str,
-    destination: &Path,
-    sources: &[Source],
-    version: Option<&str>,
-) -> Result<PackageFork> {
+/// Rebuild submodule configuration from the same revisions as the selected trees.
+/// Keep repository-wide modules and modules of every package.
+fn select_submodules(repo: &Path, base: &str, sources: &[Source], custom_ssh: bool) -> Result<()> {
+    if sources.iter().any(|s| s.path.is_empty()) {
+        return Ok(());
+    }
+    let folders = packages::layout_at_with_ssh(repo, base, custom_ssh)?.unwrap_or_default();
+    let mut selected: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+    for (commit, package) in std::iter::once((base, None)).chain(
+        sources
+            .iter()
+            .map(|s| (s.commit.as_str(), Some(s.path.as_str()))),
+    ) {
+        let blob = format!("{commit}:.gitmodules");
+        if transport::require_object(repo, &blob, custom_ssh).is_err() {
+            continue;
+        }
+        let config = transport::config_blob(repo, &blob, custom_ssh)?;
+        let mut modules: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+        for entry in config.split('\0').filter(|e| !e.is_empty()) {
+            let Some((key, value)) = entry.split_once('\n') else {
+                continue;
+            };
+            let Some(name) = key
+                .strip_prefix("submodule.")
+                .and_then(|key| key.rsplit_once('.').map(|(name, _)| name))
+            else {
+                continue;
+            };
+            modules
+                .entry(name.to_owned())
+                .or_default()
+                .insert(key.to_owned(), value.to_owned());
+        }
+        for (name, values) in modules {
+            let Some(path) = values.get(&format!("submodule.{name}.path")) else {
+                continue;
+            };
+            let within = |folder: &str| path == folder || path.starts_with(&format!("{folder}/"));
+            let keep = match package {
+                Some(folder) => within(folder),
+                None => !folders.folders().into_iter().any(within),
+            };
+            if keep {
+                if let Some(previous) = selected.get(&name) {
+                    ensure!(
+                        previous == &values,
+                        InvalidArgument,
+                        "selected revisions have conflicting submodule configuration for {name}"
+                    );
+                }
+                selected.insert(name, values);
+            }
+        }
+    }
+    let file = repo.join(".gitmodules");
+    if file.exists() {
+        fs::remove_file(&file)?;
+    }
+    for values in selected.values() {
+        for (key, value) in values {
+            transport::config_file_add(repo, ".gitmodules", key, value, custom_ssh)?;
+        }
+    }
+    Ok(())
+}
+
+/// The newest installed revision must contain the other revisions in its history.
+fn fork_base(repo: &Path, sources: &[Source], custom_ssh: bool) -> Result<String> {
+    Ok(sources
+        .iter()
+        .map(|s| s.commit.as_str())
+        .find(|candidate| {
+            sources.iter().all(|s| {
+                s.commit == *candidate
+                    || transport::require_ancestor(repo, &s.commit, candidate, custom_ssh)
+                        .is_ok()
+            })
+        })
+        .require(
+            Error::InvalidArgument,
+            "the installed revisions of these packages are on diverged histories; update them to releases of one branch first",
+        )?
+        .to_owned())
+}
+
+fn new_fork(destination: &Path, sources: &[Source], custom_ssh: bool) -> Result<PackageFork> {
     let root = sources.iter().any(|s| s.path.is_empty());
     for source in sources {
-        git(
-            clone,
-            &["cat-file", "-e", &format!("{}^{{commit}}", source.commit)],
+        transport::require_object(
+            destination,
+            &format!("{}^{{commit}}", source.commit),
+            custom_ssh,
         )
         .map_err(|_| {
             Error::Git(format!(
@@ -631,165 +599,72 @@ fn new_fork(
             ))
         })?;
     }
-    // The base is the newest installed revision; every other one must be its ancestor.
-    let base = sources
-        .iter()
-        .map(|s| s.commit.as_str())
-        .find(|candidate| {
-            sources.iter().all(|s| {
-                s.commit == *candidate
-                    || git(
-                        clone,
-                        &["merge-base", "--is-ancestor", &s.commit, candidate],
-                    )
-                    .is_ok()
-            })
-        })
-        .require(
-            Error::InvalidArgument,
-            "the installed revisions of these packages are on diverged histories; update them to releases of one branch first",
-        )?
-        .to_owned();
-    copy_tree(clone, destination, true)?;
-    // The workspace's keep-alive refs of a shared clone are not the author's.
-    clones::drop_refs(destination)?;
-    let remotes = git(destination, &["remote"])?;
-    for remote in ["origin", "upstream"] {
-        if remotes.lines().any(|r| r == remote) {
-            git(destination, &["remote", "remove", remote])?;
-        }
-    }
-    git(destination, &["remote", "add", "--", "upstream", upstream])?;
+    let base = fork_base(destination, sources, custom_ssh)?;
+    // Renaming preserves remote branches and the URL used by relative submodules.
+    transport::rename_remote(destination, "origin", "upstream", custom_ssh)?;
     let mut branch = "fork".to_owned();
     let mut number = 2;
-    while !git(destination, &["branch", "--list", &branch])?.is_empty() {
+    while !transport::branches_matching(destination, &branch, custom_ssh)?.is_empty()
+        || transport::verify_revision(
+            destination,
+            &format!("refs/remotes/upstream/{branch}"),
+            false,
+            custom_ssh,
+        )
+        .is_ok()
+    {
         branch = format!("fork-{number}");
         number += 1;
     }
     // Attached to the new branch, so the fork commit is on it (whatever HEAD was).
-    git(destination, &["checkout", "-q", "-b", &branch, &base])?;
-    let mut committed: Vec<String> = Vec::new();
+    transport::create_branch(destination, &branch, &base, custom_ssh)?;
+
     if !root {
-        let kept: BTreeSet<&str> = sources.iter().map(|s| s.path.as_str()).collect();
-        // Siblings leave the tree (valid or not), so the fork can never release their IDs.
-        let layout = packages::layout_at(destination, &base)?.unwrap_or_default();
-        for folder in layout.folders() {
-            if kept.contains(folder) {
-                continue;
-            }
-            git(
-                destination,
-                &[
-                    "rm",
-                    "-r",
-                    "-q",
-                    "--cached",
-                    "--ignore-unmatch",
-                    "--",
-                    folder,
-                ],
-            )?;
-            match fs::remove_dir_all(destination.join(folder)) {
-                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
-                _ => {}
-            }
-            committed.push(folder.to_owned());
-        }
         // A package installed at an older revision starts from that revision's files.
         for source in sources.iter().filter(|s| s.commit != base) {
-            if same_folder(destination, &base, &source.commit, &source.path) {
+            if same_folder(destination, &base, &source.commit, &source.path, custom_ssh) {
                 continue;
             }
-            let edits = dirty(destination, std::slice::from_ref(&source.path))?;
-            if !edits.is_empty() {
-                return Err(Error::LocalChanges {
-                    id: source.original.clone(),
-                    message: format!(
-                        "{} is installed at an older revision than the fork starts from, and its folder {} has local edits in the clone that do not belong to that revision; update {} or commit or discard the edits first",
-                        source.original, source.path, source.original
-                    ),
-                    items: edits
-                        .into_iter()
-                        .map(|path| LostWork::Modified { path })
-                        .collect(),
-                });
-            }
-            git(
-                destination,
-                &[
-                    "rm",
-                    "-r",
-                    "-q",
-                    "--cached",
-                    "--ignore-unmatch",
-                    "--",
-                    &source.path,
-                ],
-            )?;
+            transport::remove_cached_path(destination, &source.path, custom_ssh)?;
             match fs::remove_dir_all(destination.join(&source.path)) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
                 _ => {}
             }
-            git(
-                destination,
-                &["checkout", &source.commit, "--", &source.path],
-            )?;
-            committed.push(source.path.clone());
+            transport::checkout_path(destination, &source.commit, &source.path, custom_ssh)?;
         }
-        let config = packages::Config {
-            packages: kept.iter().map(|p| (*p).to_owned()).collect(),
-        };
-        fs::write(
-            destination.join(packages::CONFIG),
-            format!("{}\n", serde_json::to_string_pretty(&config)?),
-        )?;
-        committed.push(packages::CONFIG.to_owned());
     }
+    select_submodules(destination, &base, sources, custom_ssh)?;
+    transport::config_set(
+        destination,
+        &format!("branch.{branch}.remote"),
+        "upstream",
+        custom_ssh,
+    )?;
     let mut manifests = Vec::new();
     for source in sources {
         manifests.push(package_manifest(destination, source.subdir())?);
     }
-    let forks = fork_map(sources, &manifests, version);
-    let mut rewrites = Vec::new();
     for (m, source) in manifests.iter_mut().zip(sources) {
         identify(m, source);
-        rewrite_dependencies(m, &forks, &mut rewrites)?;
         fs::write(
             destination.join(manifest_path(&source.path)),
             manifest_json(m)?,
         )?;
-        committed.push(manifest_path(&source.path));
     }
     // A new repository created by gitpm: a local demo identity only if the user has none.
-    scaffold::ensure_identity(destination)?;
-    // Commit only the fork's own changes; keep unrelated local edits and staged files.
+    scaffold::require_identity(destination, true, custom_ssh)?;
+    // Commit all fork identities and the source trees.
     let message = fork_message(sources);
-    // A new repository of gitpm's: hooks of the copied clone or the user's are not run.
-    let mut args = vec![
-        "commit",
-        "-q",
-        "--no-verify",
-        "--only",
-        "-m",
-        &message,
-        "--",
-    ];
-    args.extend(committed.iter().map(String::as_str));
-    git(destination, &args)?;
-    // The lineage belongs to this author checkout, not to installed state or the catalog.
-    git(destination, &["config", "--local", "pm.forkBase", &base])?;
-    if let [source] = sources {
-        git(
-            destination,
-            &["config", "--local", "pm.forkVersion", &source.base.version],
-        )?;
-    }
-    let commit = git(destination, &["rev-parse", "HEAD"])?;
+    // A new repository of gitpm's: user hooks are not run.
+    transport::stage_all(destination, custom_ssh)?;
+    transport::commit_without_hooks(destination, &message, custom_ssh)?;
+    let commit = transport::object_id(destination, "HEAD", custom_ssh)?;
     if root {
-        packages::find_at(destination, &commit, Some(&sources[0].id))?;
+        packages::find_at_with_ssh(destination, &commit, Some(&sources[0].id), custom_ssh)?;
     } else {
         // The fork must be a valid multi-package repository with exactly these packages.
-        let found = packages::packages_at(destination, &commit)?.unwrap_or_default();
+        let found =
+            packages::packages_at_with_ssh(destination, &commit, custom_ssh)?.unwrap_or_default();
         ensure!(
             found.len() == sources.len()
                 && sources
@@ -804,7 +679,6 @@ fn new_fork(
         created: true,
         commit,
         packages: forked(sources, &manifests),
-        rewrites,
     })
 }
 
@@ -827,424 +701,275 @@ fn forked(sources: &[Source], manifests: &[Manifest]) -> Vec<ForkedPackage> {
         .collect()
 }
 
-fn add_packages(
-    clone: &Path,
-    destination: &Path,
-    sources: &[Source],
-    version: Option<&str>,
-) -> Result<PackageFork> {
-    let repo = fs::canonicalize(destination)?;
-    ensure!(
-        Path::new(&git(&repo, &["rev-parse", "--show-toplevel"])?) == repo,
-        InvalidArgument,
-        "pass the repository root"
-    );
-    let mut config = packages::read_config(&repo)?.unwrap_or_default();
-    let existing = packages::packages_in(&repo)?.unwrap_or_default();
-    for source in sources {
-        ensure!(
-            !existing
-                .iter()
-                .any(|p| p.manifest.id.eq_ignore_ascii_case(&source.id)),
-            InvalidArgument,
-            "package {} already exists in {}",
-            source.id,
-            repo.display()
-        );
-        ensure!(
-            fs::symlink_metadata(repo.join(&source.path)).is_err(),
-            InvalidArgument,
-            "folder {} already exists in {}",
-            source.path,
-            repo.display()
-        );
-        for other in existing.iter().map(|p| p.path.as_str()).chain(
-            sources
-                .iter()
-                .filter(|s| s.path != source.path)
-                .map(|s| s.path.as_str()),
-        ) {
-            ensure!(
-                !other.starts_with(&format!("{}/", source.path))
-                    && !source.path.starts_with(&format!("{other}/")),
-                InvalidArgument,
-                "package folder {} would nest with {other}",
-                source.path
-            );
-        }
-    }
-    // The manifests at the installed revisions; the folders are exported only once
-    // everything is checked, straight to their place (no temporary folder in `repo`).
-    let mut new_manifests: Vec<Manifest> = sources.iter().map(|s| s.base.clone()).collect();
-    // Rewrite targets: the new forks, and originals already forked by this repository.
-    let forks = fork_map(sources, &new_manifests, version);
-    let mut aliases: BTreeMap<String, (String, String)> = BTreeMap::new();
-    for p in &existing {
-        for original in [
-            p.manifest.fork_of.as_ref().map(|f| &f.id),
-            p.manifest.replaces.as_ref().map(|r| &r.id),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            aliases.insert(
-                original.clone(),
-                (p.manifest.id.clone(), p.manifest.version.clone()),
-            );
-        }
-    }
-    let mut targets = aliases;
-    targets.extend(forks.clone());
-    let mut rewrites = Vec::new();
-    for (m, source) in new_manifests.iter_mut().zip(sources) {
-        identify(m, source);
-        rewrite_dependencies(m, &targets, &mut rewrites)?;
-    }
-    let mut changed = Vec::new();
-    for p in &existing {
-        let mut m = p.manifest.clone();
-        let before = rewrites.len();
-        rewrite_dependencies(&mut m, &forks, &mut rewrites)?;
-        if rewrites.len() > before {
-            changed.push((p.path.clone(), m));
-        }
-    }
-    let mut touched: Vec<String> = vec![packages::CONFIG.to_owned()];
-    touched.extend(changed.iter().map(|(path, _)| manifest_path(path)));
-    let unclean = dirty(&repo, &touched)?;
-    ensure!(
-        unclean.is_empty(),
-        InvalidArgument,
-        "commit or discard the changes to {} in {} first",
-        unclean.join(", "),
-        repo.display()
-    );
-    // gitpm never writes a Git identity into the author's repository.
-    scaffold::require_identity(&repo)?;
-    let originals: HashMap<String, Option<Vec<u8>>> = touched
-        .iter()
-        .map(|path| (path.clone(), fs::read(repo.join(path)).ok()))
-        .collect();
-    // A failed commit (hook, signing) must leave the index as it was, too.
-    let index = PathBuf::from(git(
-        &repo,
-        &["rev-parse", "--path-format=absolute", "--git-path", "index"],
-    )?);
-    let saved_index = fs::read(&index).ok();
-    let mut committed = touched.clone();
-    let written = (|| {
-        for (source, m) in sources.iter().zip(&new_manifests) {
-            let target = repo.join(&source.path);
-            committed.push(source.path.clone());
-            export_folder(clone, &source.commit, &source.path, &target)?;
-            // The exported package must be valid as it is (dist/, dependencies).
-            manifest(&target)?;
-            fs::write(target.join("plugin.json"), manifest_json(m)?)?;
-            if !config
-                .packages
-                .iter()
-                .any(|pattern| packages::matches(pattern, &source.path))
-            {
-                config.packages.push(source.path.clone());
-            }
-        }
-        for (path, m) in &changed {
-            fs::write(repo.join(manifest_path(path)), manifest_json(m)?)?;
-        }
-        fs::write(
-            repo.join(packages::CONFIG),
-            format!("{}\n", serde_json::to_string_pretty(&config)?),
-        )?;
-        let mut args = vec!["add", "--"];
-        args.extend(committed.iter().map(String::as_str));
-        git(&repo, &args)?;
-        let message = fork_message(sources);
-        let mut args = vec!["commit", "-q", "--only", "-m", &message, "--"];
-        args.extend(committed.iter().map(String::as_str));
-        git(&repo, &args)
-    })();
-    if let Err(error) = written {
-        match &saved_index {
-            Some(bytes) => {
-                let _ = fs::write(&index, bytes);
-            }
-            None => {
-                let mut args = vec!["reset", "-q", "--"];
-                args.extend(committed.iter().map(String::as_str));
-                let _ = git(&repo, &args);
-            }
-        }
-        for source in sources {
-            let _ = fs::remove_dir_all(repo.join(&source.path));
-        }
-        for (path, bytes) in &originals {
-            match bytes {
-                Some(bytes) => {
-                    let _ = fs::write(repo.join(path), bytes);
-                }
-                None => {
-                    let _ = fs::remove_file(repo.join(path));
-                }
-            }
-        }
-        return Err(match error {
-            Error::Git(message) => Error::Git(format!(
-                "adding the forked packages to {} failed; the repository was restored: {message}",
-                repo.display()
-            )),
-            error => error,
-        });
-    }
-    Ok(PackageFork {
-        path: repo.clone(),
-        created: false,
-        commit: git(&repo, &["rev-parse", "HEAD"])?,
-        packages: forked(sources, &new_manifests),
-        rewrites,
-    })
-}
-
-/// Install order of packages given as (ID, dependency IDs): indices with dependencies
-/// on other listed packages first. A dependency cycle between them is an error: such
-/// packages cannot be installed one after another.
-fn install_order(packages: &[(&str, BTreeSet<String>)]) -> Result<Vec<usize>> {
-    fn visit(
-        index: usize,
-        packages: &[(&str, BTreeSet<String>)],
-        path: &mut Vec<usize>,
-        done: &mut BTreeSet<usize>,
-        order: &mut Vec<usize>,
-    ) -> Result<()> {
-        if done.contains(&index) {
-            return Ok(());
-        }
-        if let Some(start) = path.iter().position(|i| *i == index) {
-            let cycle: Vec<&str> = path[start..]
-                .iter()
-                .chain([&index])
-                .map(|i| packages[*i].0)
-                .collect();
-            fail!(
-                DependencyConflict,
-                "dependency cycle between the forked packages: {}; they cannot be installed one after another",
-                cycle.join(" → ")
-            );
-        }
-        path.push(index);
-        for dependency in &packages[index].1 {
-            if let Some(other) = packages.iter().position(|(id, _)| id == dependency) {
-                visit(other, packages, path, done, order)?;
-            }
-        }
-        path.pop();
-        done.insert(index);
-        order.push(index);
-        Ok(())
-    }
-    let (mut path, mut done, mut order) = (Vec::new(), BTreeSet::new(), Vec::new());
-    for index in 0..packages.len() {
-        visit(index, packages, &mut path, &mut done, &mut order)?;
-    }
-    Ok(order)
-}
-
-/// Release the forked packages: set `version` (when given) in each manifest, commit the
-/// changes in their folders once (the whole repository for a root package, like
-/// `commit`), then tag each `ID@VERSION`. On failure: the tags created so far and the
-/// error.
-fn release_packages(
-    fork: &PackageFork,
-    version: Option<&str>,
-) -> std::result::Result<(), (BTreeMap<String, String>, Error)> {
-    let repo = &fork.path;
-    let mut tagged = BTreeMap::new();
-    let fail = |tagged: &BTreeMap<String, String>, error| Err((tagged.clone(), error));
-    let mut tags = Vec::new();
-    for package in &fork.packages {
-        let tag = identity::release_tag(&package.id, version.unwrap_or(&package.version));
-        match git(repo, &["tag", "--list", "--", &tag]) {
-            Ok(found) if found.is_empty() => tags.push((package.id.clone(), tag)),
-            Ok(_) => {
-                return fail(
-                    &tagged,
-                    Error::VersionConflict(format!("tag already exists: {tag}")),
-                );
-            }
-            Err(error) => return fail(&tagged, error),
-        }
-    }
-    let folders: Vec<&str> = fork.packages.iter().map(|p| pathspec(&p.path)).collect();
-    let committed = (|| {
-        let mut saved = Vec::new();
-        if let Some(version) = version {
-            for package in fork.packages.iter().filter(|p| p.version != version) {
-                let path = repo.join(manifest_path(&package.path));
-                let original = fs::read(&path)?;
-                let subdir = (!package.path.is_empty()).then_some(package.path.as_str());
-                let mut m = package_manifest(repo, subdir)?;
-                m.version = version.to_owned();
-                fs::write(&path, manifest_json(&m)?)?;
-                saved.push((path, original));
-            }
-        }
-        let result = (|| {
-            let mut args = vec!["add", "--all", "--"];
-            args.extend(&folders);
-            git(repo, &args)?;
-            let mut args = vec!["status", "--porcelain", "--"];
-            args.extend(&folders);
-            if git(repo, &args)?.is_empty() {
-                return Ok(());
-            }
-            let names: Vec<String> = fork
-                .packages
-                .iter()
-                .map(|p| format!("{} {}", p.id, version.unwrap_or(&p.version)))
-                .collect();
-            let message = format!("Release {}", names.join(", "));
-            let mut args = vec!["commit", "-q", "--only", "-m", &message, "--"];
-            args.extend(&folders);
-            git(repo, &args).map(drop)
-        })();
-        if let Err(error) = result {
-            for (path, bytes) in saved {
-                let _ = fs::write(path, bytes);
-            }
-            return Err(Error::Git(format!(
-                "release commit failed; the manifests were restored: {error}"
-            )));
-        }
-        Ok(())
-    })();
-    if let Err(error) = committed {
-        return fail(&tagged, error);
-    }
-    for (id, tag) in tags {
-        if let Err(error) = git(repo, &["tag", "--", &tag]) {
-            return fail(&tagged, error);
-        }
-        tagged.insert(id, tag);
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn with_dependencies(id: &str, dependencies: &[(&str, &str)]) -> Manifest {
-        Manifest {
-            id: id.into(),
-            version: "1.0.0".into(),
-            dependencies: dependencies
-                .iter()
-                .map(|(id, requirement)| ((*id).into(), (*requirement).into()))
-                .collect(),
-            ..Default::default()
-        }
-    }
-
     #[test]
-    fn a_dependency_on_an_original_and_its_fork_is_refused_in_any_key_order() {
-        // B9: the fork ID sorts after (zz) and before (aa) the original.
-        for namespace in ["zz", "aa"] {
-            let fork = format!("{namespace}/theme");
-            let forks =
-                BTreeMap::from([("tilr/theme".to_owned(), (fork.clone(), "1.0.0".to_owned()))]);
-            let mut m =
-                with_dependencies("me/panel", &[("tilr/theme", "^1"), (fork.as_str(), "^2")]);
-            let mut rewrites = Vec::new();
-            let error = rewrite_dependencies(&mut m, &forks, &mut rewrites).unwrap_err();
-            assert_eq!(error.kind(), "invalid_manifest", "{namespace}");
-            assert!(
-                error
-                    .to_string()
-                    .contains(&format!("depends on both tilr/theme and its fork {fork}")),
-                "{error}"
+    fn fork_source_retains_all_packages_at_resolved_revision_without_workspace() {
+        use crate::test_support::{TempDir, git, manifest, write_manifest};
+        let temp = TempDir::new("fork-source");
+        let repo = temp.join("source");
+        fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        fs::write(repo.join("gitpm.json"), r#"{"packages":["packages/*"]}"#).unwrap();
+        fs::write(repo.join("README.md"), "Repository files survive").unwrap();
+        for name in ["theme", "panel"] {
+            let folder = repo.join(format!("packages/{name}"));
+            fs::create_dir_all(folder.join("dist")).unwrap();
+            fs::write(folder.join("dist/index.js"), name).unwrap();
+            let mut m = manifest(
+                if name == "theme" {
+                    "11111111-1111-4111-8111-111111111111"
+                } else {
+                    "22222222-2222-4222-8222-222222222222"
+                },
+                "1.0.0",
+            );
+            if name == "panel" {
+                m.dependencies
+                    .insert("11111111-1111-4111-8111-111111111111".into(), "^1".into());
+            }
+            write_manifest(&folder, &m);
+        }
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-qm", "initial"]);
+        git(&repo, &["tag", "v1.0.0"]);
+        let released = git(&repo, &["rev-parse", "HEAD"]);
+        fs::write(repo.join("README.md"), "Unreleased commit").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-qm", "unreleased"]);
+        let head = git(&repo, &["rev-parse", "HEAD"]);
+        fs::write(repo.join("README.md"), "Uncommitted work").unwrap();
+        for (name, reference, expected) in [
+            ("latest", None, &released),
+            ("explicit", Some("main"), &head),
+        ] {
+            let dest = temp.join(name);
+            let fork = fork_source(
+                repo.to_str().unwrap(),
+                &["11111111-1111-4111-8111-111111111111"],
+                reference,
+                &dest,
+            )
+            .unwrap();
+            assert_eq!(fork.packages.len(), 2);
+            let panel = package_manifest(&dest, Some("packages/panel")).unwrap();
+            assert_eq!(
+                panel.dependencies["11111111-1111-4111-8111-111111111111"],
+                "^1"
+            );
+            let before = crate::repository_packages(&dest, None).unwrap();
+            let core = before.iter().find(|p| p.path == "packages/theme").unwrap();
+            let panel = before.iter().find(|p| p.path == "packages/panel").unwrap();
+            let edited = crate::edit_dependency(
+                &dest,
+                &panel.id,
+                &crate::DependencyEdit::Update {
+                    dependency: "11111111-1111-4111-8111-111111111111".into(),
+                    new_dependency: core.id.clone(),
+                    requirement: "^1".into(),
+                },
+            )
+            .unwrap();
+            assert_eq!(edited.dependencies[&core.id], "^1");
+            for package in &fork.packages {
+                let m = package_manifest(&dest, Some(&package.path)).unwrap();
+                valid_id(&m.id).unwrap();
+                assert_ne!(m.id, package.original);
+                assert_eq!(
+                    m.name,
+                    package_manifest(&repo, Some(&package.path)).unwrap().name
+                );
+                assert_eq!(m.fork_of.unwrap().commit, *expected);
+            }
+            assert_eq!(git(&dest, &["rev-parse", "HEAD^"]), *expected);
+            assert_eq!(
+                fs::read(dest.join("gitpm.json")).unwrap(),
+                fs::read(repo.join("gitpm.json")).unwrap()
+            );
+            assert_ne!(
+                fs::read_to_string(dest.join("README.md")).unwrap(),
+                "Uncommitted work"
             );
         }
-        // Two originals of one fork (forkOf and replaces of an existing package).
-        let forks = BTreeMap::from([
-            (
-                "a/theme".to_owned(),
-                ("me/theme".to_owned(), "1.0.0".to_owned()),
-            ),
-            (
-                "b/theme".to_owned(),
-                ("me/theme".to_owned(), "1.0.0".to_owned()),
-            ),
-        ]);
-        let mut m = with_dependencies("me/panel", &[("a/theme", "^1"), ("b/theme", "^1")]);
-        let error = rewrite_dependencies(&mut m, &forks, &mut Vec::new()).unwrap_err();
-        assert!(
-            error.to_string().contains("both forked as me/theme"),
-            "{error}"
-        );
-        // The plain case: rewritten, with a new requirement when needed.
-        let forks = BTreeMap::from([(
-            "tilr/theme".to_owned(),
-            ("me/theme".to_owned(), "2.0.0".to_owned()),
-        )]);
-        let mut m = with_dependencies("me/panel", &[("tilr/theme", "^1"), ("x/y", "*")]);
-        let mut rewrites = Vec::new();
-        rewrite_dependencies(&mut m, &forks, &mut rewrites).unwrap();
-        assert_eq!(m.dependencies["me/theme"], "^2.0.0");
-        assert_eq!(m.dependencies["x/y"], "*");
-        assert_eq!(rewrites[0].new_requirement.as_deref(), Some("^2.0.0"));
+        for ids in [
+            vec![],
+            vec!["33333333-3333-4333-8333-333333333333"],
+            vec![
+                "11111111-1111-4111-8111-111111111111",
+                "11111111-1111-4111-8111-111111111111",
+            ],
+        ] {
+            let dest = temp.join("failed/nested/fork");
+            let e = fork_source(repo.to_str().unwrap(), &ids, None, &dest).unwrap_err();
+            assert_eq!(e.kind(), "invalid_argument");
+            assert!(!temp.join("failed").exists());
+        }
+        assert!(!temp.join("workspace").exists());
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 3);
     }
 
     #[test]
-    fn dirty_sees_untracked_files_whatever_the_status_config_says() {
-        use crate::test_support::{TempDir, git as fixture_git};
-        let dir = TempDir::new("dirty");
-        let repo = dir.join("repo");
-        fs::create_dir_all(repo.join("packages/a")).unwrap();
-        fixture_git(&repo, &["init", "-q", "-b", "main"]);
-        fs::write(repo.join("packages/a/plugin.json"), "{}").unwrap();
-        fixture_git(&repo, &["add", "--all"]);
-        fixture_git(&repo, &["commit", "-q", "-m", "first"]);
-        // A setting of the user's that hides untracked files from a plain status.
-        fixture_git(&repo, &["config", "status.showUntrackedFiles", "no"]);
-        fs::write(repo.join(packages::CONFIG), "{}").unwrap();
-        fs::write(repo.join("packages/a/new.js"), "x").unwrap();
-        fs::write(repo.join("packages/a/plugin.json"), "{ }").unwrap();
-        assert_eq!(
-            fixture_git(&repo, &["status", "--porcelain"]),
-            "M packages/a/plugin.json"
+    fn fork_source_ignores_newer_tags_without_id_and_legacy_tags() {
+        use crate::test_support::{Author, TempDir, git};
+        let temp = TempDir::new("fork-source-releases");
+        let author = Author::new(temp.join("source"), "11111111-1111-4111-8111-111111111111");
+        let released = author.head();
+        let untagged = author.commit("2.0.0");
+        git(
+            &author.path,
+            &["tag", "11111111-1111-4111-8111-111111111111@2.0.0"],
         );
-        let paths = [packages::CONFIG.to_owned(), "packages/a".to_owned()];
-        let mut found = dirty(&repo, &paths).unwrap();
-        found.sort();
+        let mut m = package_manifest(&author.path, None).unwrap();
+        m.id = "44444444-4444-4444-8444-444444444444".into();
+        crate::test_support::write_manifest(&author.path, &m);
+        git(&author.path, &["add", "."]);
+        git(&author.path, &["commit", "-qm", "rename"]);
+        git(&author.path, &["tag", "v2.0.0"]);
+        let dest = temp.join("fork");
+        fork_source(
+            author.source(),
+            &["11111111-1111-4111-8111-111111111111"],
+            None,
+            &dest,
+        )
+        .unwrap();
         assert_eq!(
-            found,
-            [
-                packages::CONFIG,
-                "packages/a/new.js",
-                "packages/a/plugin.json"
-            ]
+            package_manifest(&dest, None)
+                .unwrap()
+                .fork_of
+                .unwrap()
+                .commit,
+            released
         );
-        assert!(dirty(&repo, &["other".to_owned()]).unwrap().is_empty());
+        let dest = temp.join("by-commit");
+        fork_source(
+            author.source(),
+            &["11111111-1111-4111-8111-111111111111"],
+            Some(&untagged),
+            &dest,
+        )
+        .unwrap();
+        assert_eq!(
+            package_manifest(&dest, None)
+                .unwrap()
+                .fork_of
+                .unwrap()
+                .commit,
+            untagged
+        );
+        fs::create_dir_all(temp.join("in-source")).unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&author.path, temp.join("in-source/link")).unwrap();
+            assert!(
+                fork_source(
+                    author.source(),
+                    &["11111111-1111-4111-8111-111111111111"],
+                    None,
+                    &temp.join("in-source/link/fork")
+                )
+                .is_err()
+            );
+        }
     }
 
     #[test]
-    fn install_order_puts_dependencies_first_and_names_a_cycle() {
-        let set = |ids: &[&str]| ids.iter().map(|s| (*s).to_owned()).collect::<BTreeSet<_>>();
-        let packages = [
-            ("me/panel", set(&["me/theme", "x/other"])),
-            ("me/theme", set(&["me/base"])),
-            ("me/base", set(&[])),
-        ];
-        assert_eq!(install_order(&packages).unwrap(), [2, 1, 0]);
-        let cyclic = [
-            ("me/a", set(&["me/b"])),
-            ("me/b", set(&["me/c"])),
-            ("me/c", set(&["me/a"])),
-        ];
-        let error = install_order(&cyclic).unwrap_err();
-        assert_eq!(error.kind(), "dependency_conflict");
-        assert!(
-            error.to_string().contains("me/a → me/b → me/c → me/a"),
-            "{error}"
+    fn fork_source_accepts_revision_expressions_and_nondefault_branches() {
+        use crate::test_support::{Author, TempDir, git};
+        let temp = TempDir::new("fork-source-expressions");
+        let author = Author::new(temp.join("source"), "11111111-1111-4111-8111-111111111111");
+        let first = author.head();
+        author.commit("0.2.0");
+        git(&author.path, &["branch", "topic"]);
+        for (i, reference) in ["HEAD~1", "topic~1", "refs/heads/topic~1", "v0.1.0^{commit}"]
+            .iter()
+            .enumerate()
+        {
+            let dest = temp.join(format!("fork-{i}"));
+            fork_source(
+                author.source(),
+                &["11111111-1111-4111-8111-111111111111"],
+                Some(reference),
+                &dest,
+            )
+            .unwrap();
+            assert_eq!(
+                package_manifest(&dest, None)
+                    .unwrap()
+                    .fork_of
+                    .unwrap()
+                    .commit,
+                first
+            );
+        }
+    }
+
+    #[test]
+    fn fork_source_fetches_explicit_refs_outside_heads_and_tags() {
+        use crate::test_support::{Author, TempDir, git};
+        let temp = TempDir::new("fork-source-custom-ref");
+        let author = Author::new(temp.join("source"), "11111111-1111-4111-8111-111111111111");
+        git(&author.path, &["checkout", "--orphan", "temporary"]);
+        let commit = author.commit("0.2.0");
+        git(&author.path, &["update-ref", "refs/custom/review", &commit]);
+        git(&author.path, &["checkout", "main"]);
+        git(&author.path, &["branch", "-D", "temporary"]);
+        let dest = temp.join("fork");
+        fork_source(
+            author.source(),
+            &["11111111-1111-4111-8111-111111111111"],
+            Some("refs/custom/review"),
+            &dest,
+        )
+        .unwrap();
+        assert_eq!(
+            package_manifest(&dest, None)
+                .unwrap()
+                .fork_of
+                .unwrap()
+                .commit,
+            commit
+        );
+    }
+
+    #[test]
+    fn fork_source_file_url_cannot_create_destination_inside_source() {
+        use crate::test_support::{Author, TempDir, git};
+        let temp = TempDir::new("fork-source-file-url");
+        let author = Author::new(
+            temp.join("source with spaces"),
+            "11111111-1111-4111-8111-111111111111",
+        );
+        let before = git(&author.path, &["status", "--porcelain"]);
+        for source in [
+            format!("file://{}", author.source()),
+            format!("file://localhost{}", author.source().replace(' ', "%20")),
+        ] {
+            let dest = author.path.join("nested/fork");
+            let error = fork_source(
+                &source,
+                &["11111111-1111-4111-8111-111111111111"],
+                None,
+                &dest,
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), "invalid_argument");
+            assert!(!author.path.join("nested").exists());
+        }
+        assert_eq!(git(&author.path, &["status", "--porcelain"]), before);
+        let url = format!("file://localhost{}", author.source().replace(' ', "%20"));
+        let dest = temp.join("outside-source");
+        fork_source(&url, &["11111111-1111-4111-8111-111111111111"], None, &dest).unwrap();
+        assert_eq!(
+            package_manifest(&dest, None)
+                .unwrap()
+                .fork_of
+                .unwrap()
+                .source
+                .as_deref(),
+            Some(url.as_str())
         );
     }
 }

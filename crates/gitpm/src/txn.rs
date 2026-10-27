@@ -1,6 +1,6 @@
 //! Workspace transactions that stage only what an operation touches.
 //!
-//! An operation prepares new plugin clones and `dist/` folders and the next
+//! An operation prepares new package clones and `dist/` folders and the next
 //! `state.json` inside `<root>/.pm-txn`; the live workspace is untouched until commit.
 //! Commit writes a journal and then moves each staged path into place (the replaced
 //! one goes to `.pm-txn/old`), `state.json` last via an atomic rename. A crash before
@@ -25,10 +25,116 @@ enum Change {
     Delete,
 }
 
-/// Paths (relative to the root, e.g. `plugins/dan/demo1`) and what commit does with them.
+/// Paths (relative to the root, e.g. `repos/demo-0123456789abcdef`) and what commit does with them.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Journal {
     paths: BTreeMap<String, Change>,
+    #[serde(default)]
+    worktrees: BTreeMap<String, String>,
+}
+
+fn worktree_admin(id: &str) -> String {
+    use sha2::{Digest, Sha256};
+    crate::catalog::hex(&Sha256::digest(id.as_bytes()))
+}
+
+/// Bind both sides explicitly: staging and journal renames change both locations.
+/// The writes are repeatable so recovery can finish after either side was persisted.
+fn bind_worktree(checkout: &Path, admin: &Path) -> Result<()> {
+    validate_worktree_links(checkout, admin)?;
+    write_worktree_links(checkout, admin)
+}
+
+fn validate_worktree_links(checkout: &Path, admin: &Path) -> Result<()> {
+    for directory in [checkout, admin] {
+        if !fs::symlink_metadata(directory)?.is_dir() {
+            return Err(Error::Workspace(format!(
+                "worktree directory is not a real directory: {}",
+                directory.display()
+            )));
+        }
+    }
+    for path in [
+        checkout.join(".git"),
+        admin.join("gitdir"),
+        admin.join("commondir"),
+    ] {
+        if fs::symlink_metadata(&path).is_ok_and(|meta| !meta.is_file()) {
+            return Err(Error::Workspace(format!(
+                "worktree metadata is not a regular file: {}",
+                path.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn write_worktree_links(checkout: &Path, admin: &Path) -> Result<()> {
+    fs::write(
+        checkout.join(".git"),
+        format!("gitdir: {}\n", admin.display()),
+    )?;
+    fs::write(
+        admin.join("gitdir"),
+        format!("{}\n", checkout.join(".git").display()),
+    )?;
+    fs::write(admin.join("commondir"), "../..\n")?;
+    Ok(())
+}
+
+fn worktree_link_matches(path: &Path, expected: &[u8]) -> Result<bool> {
+    match fs::read(path) {
+        Ok(content) => Ok(content == expected),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Opening a relocated workspace repairs links independently of transactions.
+/// Use state-derived paths only: a copied gitfile can still name another workspace.
+pub(crate) fn repair_worktree_links(root: &Path, state: &State) -> Result<()> {
+    let mut repairs = Vec::new();
+    for (id, package) in state.packages.iter().chain(&state.forgotten) {
+        if package.build.is_some() {
+            continue;
+        }
+        let Some(key) = &package.clone else { continue };
+        let checkout_relative = format!("worktrees/{id}");
+        let admin_relative = format!("repos/{key}/worktrees/{}", worktree_admin(id));
+        ensure_managed_parents(root, &checkout_relative)?;
+        ensure_managed_parents(root, &admin_relative)?;
+        let checkout = root.join(checkout_relative);
+        let admin = root.join(admin_relative);
+        // Missing repositories and worktrees keep their existing operation-specific
+        // handling. Opening must not fabricate a registration or a checkout.
+        if !present(&checkout) || !present(&admin) {
+            continue;
+        }
+        validate_worktree_links(&checkout, &admin)?;
+        let links = [
+            (
+                checkout.join(".git"),
+                format!("gitdir: {}\n", admin.display()),
+            ),
+            (
+                admin.join("gitdir"),
+                format!("{}\n", checkout.join(".git").display()),
+            ),
+            (admin.join("commondir"), "../..\n".to_owned()),
+        ];
+        let mut stale = false;
+        for (path, expected) in links {
+            stale |= !worktree_link_matches(&path, expected.as_bytes())?;
+        }
+        if stale {
+            repairs.push((checkout, admin));
+        }
+    }
+    // Validate all pairs before writing any, so an unsafe sibling refuses repair.
+    for (checkout, admin) in repairs {
+        write_worktree_links(&checkout, &admin)?;
+    }
+    Ok(())
 }
 
 pub(crate) struct Txn {
@@ -36,6 +142,7 @@ pub(crate) struct Txn {
     dir: PathBuf,
     journal: Journal,
     committed: bool,
+    pub(crate) warnings: Vec<String>,
 }
 
 fn remove(path: &Path) -> Result<()> {
@@ -48,10 +155,9 @@ fn remove(path: &Path) -> Result<()> {
     }
     Ok(())
 }
-/// Every directory between the root and a managed path (`plugins`, `plugins/<ns>`,
-/// `dist/<ns>`) must be a real directory: through a symlink a write or delete would
+/// Every directory between the root and a managed path (`dist`) must be a real directory: through a symlink a write or delete would
 /// land outside the workspace.
-fn ensure_managed_parents(root: &Path, relative: &str) -> Result<()> {
+pub(crate) fn ensure_managed_parents(root: &Path, relative: &str) -> Result<()> {
     let mut current = root.to_path_buf();
     let parts: Vec<&str> = relative.split('/').collect();
     for part in &parts[..parts.len() - 1] {
@@ -76,14 +182,86 @@ fn ensure_managed_parents(root: &Path, relative: &str) -> Result<()> {
     }
     Ok(())
 }
+/// A UUID deployment leaf is owned only when it is a real directory or the
+/// recorded dev-link entry. Foreign files and links are never replaced or removed.
+pub(crate) fn ensure_dist_leaf(root: &Path, id: &str) -> Result<()> {
+    let leaf = root.join("dist").join(id);
+    let metadata = match fs::symlink_metadata(&leaf) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if metadata.is_dir() {
+        return Ok(());
+    }
+    if metadata.file_type().is_symlink() {
+        let state = match fs::read(root.join("state.json")) {
+            Ok(bytes) => Some(State::parse(&bytes)?),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        if let Some(record) = state
+            .as_ref()
+            .and_then(|s| s.packages.get(id).or_else(|| s.forgotten.get(id)))
+            && let Some(link) = record.link()
+            && fs::read_link(&leaf)? == Path::new(&link.target)
+        {
+            return Ok(());
+        }
+    }
+    Err(Error::Workspace(format!(
+        "managed path is not a directory: {}",
+        leaf.display()
+    )))
+}
+
 fn present(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok()
+}
+fn sync_path(path: &Path) -> Result<()> {
+    #[cfg(test)]
+    SYNC_FAILURE.with(|failure| {
+        let should_fail = failure.borrow().as_ref().is_some_and(|(target, after)| {
+            target == path
+                && after.as_ref().is_none_or(|destination| {
+                    DURABILITY_EVENTS.with(|events| {
+                        events.borrow().as_ref().is_some_and(|events| {
+                            events.iter().any(|event| {
+                                matches!(event,
+                        DurabilityEvent::Rename(_, to) if to == destination)
+                            })
+                        })
+                    })
+                })
+        });
+        if should_fail {
+            Err(Error::Io("simulated sync failure".into()))
+        } else {
+            Ok(())
+        }
+    })?;
+    fs::File::open(path)?.sync_all()?;
+    #[cfg(test)]
+    record(DurabilityEvent::Sync(path.into()));
+    Ok(())
+}
+/// Create the workspace without syncing ancestors outside its metadata boundary.
+pub(crate) fn create_workspace_dirs(path: &Path) -> Result<()> {
+    fs::create_dir_all(path)?;
+    Ok(())
+}
+/// Persist the journal entry and the newly created transaction directory.
+fn sync_journal_parents(root: &Path, dir: &Path) -> Result<()> {
+    sync_path(dir)?;
+    sync_path(root)
 }
 fn rename(from: &Path, to: &Path) -> Result<()> {
     fs::create_dir_all(to.parent().unwrap())?;
     #[cfg(test)]
     crash_point()?;
     fs::rename(from, to)?;
+    #[cfg(test)]
+    record(DurabilityEvent::Rename(from.into(), to.into()));
     Ok(())
 }
 
@@ -98,6 +276,7 @@ impl Txn {
             dir,
             journal: Journal::default(),
             committed: false,
+            warnings: Vec::new(),
         })
     }
     /// The live workspace root (read-only during the transaction).
@@ -114,16 +293,15 @@ impl Txn {
     fn is_staged(&self, relative: &str) -> bool {
         self.journal.paths.get(relative) == Some(&Change::Replace)
     }
-    /// Writable copy of an installed clone at `relative` (`plugins/<id>` or
-    /// `repos/<key>`; `live` is its exact path in the workspace). Symlinks inside the
+    /// Writable copy of an installed clone at `relative` (`repos/<key>`; `live` is its exact path in the workspace). Symlinks inside the
     /// repository are kept as symlinks. Staged once per transaction.
-    // TODO: this copies the whole clone (all packages of a shared one, full history) for
-    // every operation that changes it; a worktree or a copy of `.git` plus the touched
-    // folders would be cheaper for large repositories.
+    // Bare objects and refs are copied once; package worktrees are staged separately.
     pub(crate) fn repo(&mut self, relative: &str, live: &Path) -> Result<PathBuf> {
         ensure_managed_parents(&self.root, relative)?;
         let staged = self.staged(relative);
         if !self.is_staged(relative) {
+            #[cfg(test)]
+            record(DurabilityEvent::StageRepo(staged.clone()));
             copy_tree(live, &staged, true)?;
             self.journal.paths.insert(relative.into(), Change::Replace);
         }
@@ -143,6 +321,87 @@ impl Txn {
         self.journal.paths.insert(relative.into(), Change::Replace);
         Ok(staged)
     }
+    /// Stage a detached package checkout using the transaction's staged bare store.
+    pub(crate) fn worktree(
+        &mut self,
+        id: &str,
+        bare_relative: &str,
+        commit: &str,
+        custom_ssh: bool,
+    ) -> Result<PathBuf> {
+        crate::model::valid_id(id)?;
+        let relative = format!("worktrees/{id}");
+        ensure_managed_parents(&self.root, &relative)?;
+        let bare = self.staged_repo(bare_relative).ok_or_else(|| {
+            Error::Workspace(format!(
+                "bare repository {bare_relative} must be staged before its worktree"
+            ))
+        })?;
+        let staged = self.staged(&relative);
+        let admin = bare.join("worktrees").join(worktree_admin(id));
+        if !self.is_staged(&relative) {
+            let live = self.root.join(&relative);
+            if present(&live) && !admin.is_dir() {
+                return Err(Error::Workspace(format!(
+                    "{relative} exists but is not a package worktree"
+                )));
+            }
+            if present(&live) && admin.is_dir() {
+                copy_tree(&live, &staged, true)?;
+                bind_worktree(&staged, &admin)?;
+            } else {
+                if let Some(parent) = staged.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                crate::transport::add_worktree(&bare, &staged, commit, custom_ssh)?;
+                let gitfile = fs::read_to_string(staged.join(".git"))?;
+                let original = gitfile.trim().strip_prefix("gitdir: ").ok_or_else(|| {
+                    Error::Workspace("Git created an invalid worktree link".into())
+                })?;
+                let original = Path::new(original);
+                if original.parent().map(fs::canonicalize).transpose()?
+                    != Some(fs::canonicalize(bare.join("worktrees"))?)
+                {
+                    return Err(Error::Workspace(
+                        "Git created a worktree outside its bare store".into(),
+                    ));
+                }
+                if original != admin {
+                    fs::rename(original, &admin)?;
+                }
+                bind_worktree(&staged, &admin)?;
+            }
+            self.journal.paths.insert(relative.clone(), Change::Replace);
+        }
+        crate::transport::checkout_detached(&staged, commit, false, custom_ssh)?;
+        self.journal.worktrees.insert(
+            relative,
+            format!("{bare_relative}/worktrees/{}", worktree_admin(id)),
+        );
+        Ok(staged)
+    }
+
+    /// Remove only this package's checkout and its registration in the staged bare store.
+    pub(crate) fn remove_worktree(&mut self, id: &str, bare_relative: &str) -> Result<()> {
+        crate::model::valid_id(id)?;
+        if let Some(bare) = self.staged_repo(bare_relative) {
+            remove(&bare.join("worktrees").join(worktree_admin(id)))?;
+        } else if self.journal.paths.get(bare_relative) != Some(&Change::Delete)
+            && present(
+                &self
+                    .root
+                    .join(bare_relative)
+                    .join("worktrees")
+                    .join(worktree_admin(id)),
+            )
+        {
+            let bare = self.repo(bare_relative, &self.root.join(bare_relative))?;
+            remove(&bare.join("worktrees").join(worktree_admin(id)))?;
+        }
+        let relative = format!("worktrees/{id}");
+        self.journal.worktrees.remove(&relative);
+        self.delete_repo(&relative)
+    }
     /// Stage `dist/<id>` from `<package>/dist` at `commit` of the (staged or live) clone
     /// at `repo_relative`; `package` is the folder inside the repository (`None`: root).
     /// Read from Git objects (see [`crate::workspace::export_dist`]), so the working tree
@@ -153,28 +412,46 @@ impl Txn {
         repo_relative: &str,
         package: Option<&str>,
         commit: &str,
-    ) -> Result<()> {
+        custom_ssh: bool,
+    ) -> Result<PathBuf> {
         ensure_managed_parents(&self.root, repo_relative)?;
         let repo = match self.staged_repo(repo_relative) {
             Some(staged) => staged,
             None => self.root.join(repo_relative),
         };
         let staged = self.stage_dist(id)?;
-        crate::workspace::export_dist(&repo, commit, package, &staged)
+        self.warnings.extend(crate::workspace::export_dist(
+            &repo, commit, package, &staged, custom_ssh,
+        )?);
+        Ok(staged)
     }
-    /// Remove a clone (`plugins/<id>` or `repos/<key>`) on commit.
+    /// Stage a leaf symlink. Journal and cleanup own the entry, never its target.
+    pub(crate) fn deploy_link(&mut self, id: &str, target: &Path) -> Result<()> {
+        let staged = self.stage_dist(id)?;
+        fs::remove_dir(&staged)?;
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, &staged)?;
+        #[cfg(not(unix))]
+        return Err(Error::Unsupported(
+            "live links require Unix symlinks".into(),
+        ));
+        Ok(())
+    }
+    /// Remove a clone (`repos/<key>`) on commit.
     pub(crate) fn delete_repo(&mut self, relative: &str) -> Result<()> {
         ensure_managed_parents(&self.root, relative)?;
         remove(&self.staged(relative))?;
         self.journal.paths.insert(relative.into(), Change::Delete);
         Ok(())
     }
-    /// Remove the plugin's deployed files on commit (also drops a staged deploy).
+    /// Remove the package's deployed files on commit (also drops a staged deploy).
     pub(crate) fn delete_dist(&mut self, id: &str) -> Result<()> {
+        ensure_dist_leaf(&self.root, id)?;
         self.delete_repo(&format!("dist/{id}"))
     }
     /// An empty staged `dist/<id>` to fill (replaces the live one on commit).
     pub(crate) fn stage_dist(&mut self, id: &str) -> Result<PathBuf> {
+        ensure_dist_leaf(&self.root, id)?;
         let relative = format!("dist/{id}");
         ensure_managed_parents(&self.root, &relative)?;
         let staged = self.staged(&relative);
@@ -196,22 +473,60 @@ impl Txn {
             .map(str::to_owned)
             .collect()
     }
+    /// Whether this transaction deploys (rather than deletes) `dist/<id>`.
+    pub(crate) fn deploys_dist(&self, id: &str) -> bool {
+        self.journal.paths.get(&format!("dist/{id}")) == Some(&Change::Replace)
+    }
     pub(crate) fn commit(mut self, state: &State) -> Result<()> {
-        // Always written in the current layout, whatever format was read.
-        let state = State {
-            format: crate::model::STATE_FORMAT,
-            ..state.clone()
-        };
+        // Replacing a bare store relocates even the admin directories belonging to
+        // untouched sibling checkouts. Journal all surviving links before deciding.
+        for (id, package) in state.packages.iter().chain(&state.forgotten) {
+            if package.build.is_some() {
+                continue;
+            }
+            let Some(key) = &package.clone else { continue };
+            let relative = format!("worktrees/{id}");
+            if self.journal.paths.get(&relative) == Some(&Change::Delete) {
+                continue;
+            }
+            let checkout = self
+                .staged_repo(&relative)
+                .unwrap_or_else(|| self.root.join(&relative));
+            if !present(&checkout) {
+                continue;
+            }
+            let bare_relative = format!("repos/{key}");
+            let Some(bare) = self.staged_repo(&bare_relative) else {
+                // Unchanged stores keep their existing checkout associations. A
+                // missing unrelated store must not block a dist-only operation.
+                continue;
+            };
+            if !bare.join("worktrees").join(worktree_admin(id)).is_dir() {
+                return Err(Error::Workspace(format!(
+                    "worktree registration missing for {id}"
+                )));
+            }
+            self.journal.worktrees.insert(
+                relative,
+                format!("{bare_relative}/worktrees/{}", worktree_admin(id)),
+            );
+        }
         fs::write(
             self.dir.join("state.json"),
-            serde_json::to_vec_pretty(&state)?,
+            serde_json::to_vec_pretty(state)?,
         )?;
         remove(&self.dir.join("scratch"))?;
+        // Persist gitpm state before publishing the commit decision.
+        sync_path(&self.dir.join("state.json"))?;
         let temporary = self.dir.join("journal.tmp");
         fs::write(&temporary, serde_json::to_vec_pretty(&self.journal)?)?;
+        sync_path(&temporary)?;
         // From here on the transaction is decided: recovery rolls it forward.
         fs::rename(&temporary, self.dir.join(JOURNAL))?;
         self.committed = true;
+        #[cfg(test)]
+        record(DurabilityEvent::Rename(temporary, self.dir.join(JOURNAL)));
+        sync_journal_parents(&self.root, &self.dir)?;
         apply(&self.root, &self.dir)
     }
 }
@@ -238,16 +553,11 @@ pub(crate) fn recover(root: &Path) -> Result<()> {
     }
 }
 
-/// After a delete, remove the parents it left empty (`dist/<ns>`, `plugins/<ns>`,
-/// `repos`); `plugins` and `dist` themselves stay, as `Manager::open` creates them.
+/// After a delete, remove the parents it left empty (`repos`); `dist` itself stays, as `Manager::open` creates them.
 /// Best effort: a folder that is not empty (or cannot be removed) is kept.
 fn remove_empty_parents(root: &Path, relative: &str) {
     let parts: Vec<&str> = relative.split('/').collect();
-    let keep = if matches!(parts[0], "plugins" | "dist") {
-        1
-    } else {
-        0
-    };
+    let keep = if parts[0] == "dist" { 1 } else { 0 };
     for depth in (keep + 1..parts.len()).rev() {
         if fs::remove_dir(root.join(parts[..depth].join("/"))).is_err() {
             break;
@@ -259,6 +569,9 @@ fn remove_empty_parents(root: &Path, relative: &str) {
 fn apply(root: &Path, dir: &Path) -> Result<()> {
     let journal: Journal = serde_json::from_slice(&fs::read(dir.join(JOURNAL))?)
         .map_err(|e| Error::Workspace(format!("corrupt transaction journal: {e}")))?;
+    // Recovery can follow a failed sync immediately after journal publication.
+    sync_path(&dir.join(JOURNAL))?;
+    sync_journal_parents(root, dir)?;
     for relative in journal.paths.keys() {
         ensure_managed_parents(root, relative)?;
     }
@@ -283,11 +596,21 @@ fn apply(root: &Path, dir: &Path) -> Result<()> {
             }
         }
     }
+    for (checkout, admin) in &journal.worktrees {
+        ensure_managed_parents(root, checkout)?;
+        ensure_managed_parents(root, admin)?;
+        bind_worktree(&root.join(checkout), &root.join(admin))?;
+    }
     let state = dir.join("state.json");
     if present(&state) {
+        sync_path(&state)?;
         rename(&state, &root.join("state.json"))?;
     }
-    remove(dir)
+    sync_path(&root.join("state.json"))?;
+    sync_path(root)?;
+    sync_path(dir)?;
+    remove(dir)?;
+    sync_path(root)
 }
 
 #[cfg(test)]
@@ -305,4 +628,285 @@ fn crash_point() -> Result<()> {
         }
         None => Ok(()),
     })
+}
+
+#[cfg(test)]
+#[derive(Debug, PartialEq, Eq)]
+enum DurabilityEvent {
+    StageRepo(PathBuf),
+    Sync(PathBuf),
+    Rename(PathBuf, PathBuf),
+}
+#[cfg(test)]
+thread_local! {
+    static SYNC_FAILURE: std::cell::RefCell<Option<(PathBuf, Option<PathBuf>)>> = const { std::cell::RefCell::new(None) };
+    static DURABILITY_EVENTS: std::cell::RefCell<Option<Vec<DurabilityEvent>>> = const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+fn record(event: DurabilityEvent) {
+    DURABILITY_EVENTS.with(|events| {
+        if let Some(events) = events.borrow_mut().as_mut() {
+            events.push(event);
+        }
+    });
+}
+
+#[cfg(test)]
+#[test]
+fn last_user_removal_does_not_stage_bare() {
+    for forget in [false, true] {
+        let temp = crate::test_support::TempDir::new("remove-no-bare-copy");
+        let created = crate::scaffold::init(&temp.join("source"), "root").unwrap();
+        let source = created.repo;
+        let id = created.id;
+        let root = temp.join("workspace");
+        let manager = crate::Manager::open(&root).unwrap();
+        manager.install(source.to_str().unwrap()).unwrap();
+        let key = manager.state().unwrap().packages[&id]
+            .clone
+            .clone()
+            .unwrap();
+        if forget {
+            fs::remove_dir_all(root.join("worktrees").join(&id)).unwrap();
+        }
+        let _capture = Capture::new();
+        if forget {
+            manager.forget(&id).unwrap();
+        } else {
+            manager.uninstall(&id, &[], false).unwrap();
+        }
+        let events = DURABILITY_EVENTS.with(|events| events.borrow_mut().take().unwrap());
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, DurabilityEvent::StageRepo(path)
+                if path.starts_with(root.join(DIR).join("new/repos")))),
+            "removal copied a bare repository"
+        );
+        assert!(!root.join("repos").join(key).exists());
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn absent_worktree_registration_does_not_stage_bare() {
+    let temp = crate::test_support::TempDir::new("remove-absent-registration");
+    let relative = "repos/source-0123456789abcdef";
+    fs::create_dir_all(temp.join(relative)).unwrap();
+    let mut txn = Txn::begin(temp.path()).unwrap();
+    txn.remove_worktree("7e6e8392-7be8-55ae-bd03-2b430b1c5d59", relative)
+        .unwrap();
+    assert!(!txn.staged(relative).exists());
+    assert!(!txn.journal.paths.contains_key(relative));
+}
+
+#[cfg(test)]
+#[test]
+fn commit_syncs_only_journal_state_and_metadata_parents() {
+    let temp = crate::test_support::TempDir::new("txn-sync");
+    let root = temp.path();
+    let mut txn = Txn::begin(root).unwrap();
+    // Stage directly to exercise nested new parents, replacements and deletion.
+    for relative in [
+        "dist/new/plugin",
+        "repos/existing-0123456789abcdef",
+        "worktrees/plugin",
+    ] {
+        let path = txn.dir.join("new").join(relative);
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("payload"), b"new").unwrap();
+        txn.journal.paths.insert(relative.into(), Change::Replace);
+    }
+    for relative in ["repos/existing-0123456789abcdef", "dist/deleted/plugin"] {
+        fs::create_dir_all(root.join(relative)).unwrap();
+        fs::write(root.join(relative).join("payload"), b"old").unwrap();
+    }
+    txn.journal
+        .paths
+        .insert("dist/deleted/plugin".into(), Change::Delete);
+    let _capture = Capture::new();
+    txn.commit(&State::default()).unwrap();
+    let events = DURABILITY_EVENTS.with(|events| events.borrow_mut().take().unwrap());
+    let sync_index = |path: &Path| {
+        events
+            .iter()
+            .position(|event| event == &DurabilityEvent::Sync(path.into()))
+            .unwrap_or_else(|| panic!("missing sync for {}: {events:?}", path.display()))
+    };
+    let journal = sync_index(&root.join(DIR).join("journal.tmp"));
+    let state = sync_index(&root.join(DIR).join("state.json"));
+    assert!(state < journal);
+    let allowed = [
+        root.join(DIR).join("state.json"),
+        root.join(DIR).join("journal.tmp"),
+        root.join(DIR).join(JOURNAL),
+        root.join("state.json"),
+        root.join(DIR),
+        root.to_path_buf(),
+    ];
+    for event in &events {
+        if let DurabilityEvent::Sync(path) = event {
+            assert!(allowed.contains(path), "unexpected fsync: {path:?}");
+        }
+    }
+    let published = events
+        .iter()
+        .position(|event| {
+            matches!(event,
+        DurabilityEvent::Rename(_, to) if to == &root.join(DIR).join(JOURNAL))
+        })
+        .unwrap();
+    assert!(journal < published);
+    let first_move = events
+        .iter()
+        .enumerate()
+        .skip(published + 1)
+        .find(|(_, event)| matches!(event, DurabilityEvent::Rename(..)))
+        .unwrap()
+        .0;
+    for path in [root.join(DIR), root.to_path_buf()] {
+        assert!(events[published + 1..first_move].contains(&DurabilityEvent::Sync(path)));
+    }
+    let state_move = events.iter().position(|event| {
+        matches!(event, DurabilityEvent::Rename(_, to) if to == &root.join("state.json"))
+    }).unwrap();
+    assert!(first_move < state_move);
+    for path in [root.join(DIR), root.to_path_buf()] {
+        assert!(events[state_move + 1..].contains(&DurabilityEvent::Sync(path)));
+    }
+    assert_eq!(events.last(), Some(&DurabilityEvent::Sync(root.into())));
+    assert!(!root.join(DIR).exists());
+    assert_eq!(
+        fs::read(root.join("dist/new/plugin/payload")).unwrap(),
+        b"new"
+    );
+    assert!(!root.join("dist/deleted").exists());
+}
+
+#[cfg(test)]
+struct Capture;
+#[cfg(test)]
+impl Capture {
+    fn new() -> Self {
+        DURABILITY_EVENTS.with(|events| *events.borrow_mut() = Some(Vec::new()));
+        Self
+    }
+}
+#[cfg(test)]
+impl Drop for Capture {
+    fn drop(&mut self) {
+        DURABILITY_EVENTS.with(|events| *events.borrow_mut() = None);
+        SYNC_FAILURE.with(|failure| *failure.borrow_mut() = None);
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn sync_errors_preserve_the_commit_decision_and_recovery() {
+    for phase in ["staged-state", "journal", "published", "moved", "state"] {
+        let temp = crate::test_support::TempDir::new("txn-sync-failure");
+        let root = temp.path();
+        let mut txn = Txn::begin(root).unwrap();
+        let relative = "dist/ns/plugin";
+        let staged = txn.dir.join("new").join(relative);
+        fs::create_dir_all(&staged).unwrap();
+        fs::write(staged.join("payload"), b"new").unwrap();
+        txn.journal.paths.insert(relative.into(), Change::Replace);
+        fs::create_dir_all(root.join(relative)).unwrap();
+        fs::write(root.join(relative).join("payload"), b"old").unwrap();
+        let _capture = Capture::new();
+        let (target, after) = match phase {
+            "staged-state" => (root.join(DIR).join("state.json"), None),
+            "journal" => (root.join(DIR).join("journal.tmp"), None),
+            "published" => (root.join(DIR), Some(root.join(DIR).join(JOURNAL))),
+            "moved" => (root.join(DIR).join("state.json"), Some(root.join(relative))),
+            "state" => (root.to_path_buf(), Some(root.join("state.json"))),
+            _ => unreachable!(),
+        };
+        SYNC_FAILURE.with(|failure| *failure.borrow_mut() = Some((target, after)));
+        let error = txn.commit(&State::default()).unwrap_err();
+        assert!(
+            error.to_string().contains("simulated sync failure"),
+            "{error}"
+        );
+        SYNC_FAILURE.with(|failure| *failure.borrow_mut() = None);
+        if matches!(phase, "staged-state" | "journal") {
+            assert!(!root.join(DIR).exists());
+            assert_eq!(
+                fs::read(root.join(relative).join("payload")).unwrap(),
+                b"old"
+            );
+        } else {
+            assert!(root.join(DIR).join(JOURNAL).exists());
+            if phase == "published" {
+                assert_eq!(
+                    fs::read(root.join(relative).join("payload")).unwrap(),
+                    b"old"
+                );
+            }
+            recover(root).unwrap();
+            assert_eq!(
+                fs::read(root.join(relative).join("payload")).unwrap(),
+                b"new"
+            );
+            assert!(root.join("state.json").exists());
+            assert!(!root.join(DIR).exists());
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn commit_does_not_sync_repository_symlinks_or_directories() {
+    use std::os::unix::fs::symlink;
+    let temp = crate::test_support::TempDir::new("txn-sync-symlink");
+    let root = temp.path();
+    let mut txn = Txn::begin(root).unwrap();
+    let staged = txn.dir.join("new/repos/plugin-0123456789abcdef");
+    fs::create_dir_all(&staged).unwrap();
+    symlink("missing-target", staged.join("link")).unwrap();
+    txn.journal
+        .paths
+        .insert("repos/plugin-0123456789abcdef".into(), Change::Replace);
+    let _capture = Capture::new();
+    txn.commit(&State::default()).unwrap();
+    assert_eq!(
+        fs::read_link(root.join("repos/plugin-0123456789abcdef/link")).unwrap(),
+        Path::new("missing-target")
+    );
+    DURABILITY_EVENTS.with(|events| {
+        let events = events.borrow();
+        let events = events.as_ref().unwrap();
+        assert!(!events.contains(&DurabilityEvent::Sync(staged.clone())));
+        assert!(!events.contains(&DurabilityEvent::Sync(staged.join("link"))));
+    });
+}
+
+#[cfg(test)]
+#[test]
+fn workspace_creation_does_not_sync_ancestors() {
+    let temp = crate::test_support::TempDir::new("txn-new-ancestors");
+    let existing = temp.join("existing");
+    fs::create_dir(&existing).unwrap();
+    let parent = existing.join("new");
+    let root = parent.join("workspace");
+    let _capture = Capture::new();
+    // Exercise the public creation path, including parents made before locking.
+    let manager = crate::Manager::open(&root).unwrap();
+    let events = DURABILITY_EVENTS.with(|events| events.borrow_mut().take().unwrap());
+    let synced: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            DurabilityEvent::Sync(path) => Some(path),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        synced.is_empty(),
+        "unexpected workspace creation fsync: {synced:?}"
+    );
+    DURABILITY_EVENTS.with(|events| *events.borrow_mut() = Some(Vec::new()));
+    drop(manager);
+    let _manager = crate::Manager::open(&root).unwrap();
+    assert!(DURABILITY_EVENTS.with(|events| events.borrow().as_ref().unwrap().is_empty()));
 }

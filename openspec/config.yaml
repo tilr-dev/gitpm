@@ -1,0 +1,149 @@
+schema: spec-driven
+
+# Project context: constraints an agent cannot infer from reading one file.
+# Each line was checked against the code, CI files or recorded decisions (2026-10-18).
+context: |
+  Language: every OpenSpec artifact (proposal, design, specs, tasks) is written in English,
+  as are library messages and CLI output. Discussions with the owner may be in Russian.
+
+  Product boundary: gitpm is a host-agnostic package manager where a package is a folder in
+  a Git repository (plugin.json + committed output folder selected by dist, default dist/),
+  or a catalog release with a prebuilt archive {url, sha256} that gitpm downloads, verifies
+  and deploys. The library (crates/gitpm) knows nothing
+  about Tilr or any other host: no host names, no slot/theme/exclusivity semantics, no build
+  step (buildCommand describes a build only), nothing is executed. Host concerns (which provider of a service is active, load
+  order, plugins.json generation, UI) stay in the host. Tilr is only the first consumer.
+
+  Library contract: the library never prints, prompts, reads stdin or reads environment
+  variables; every path and setting is passed explicitly (Options, arguments). The only
+  implicit input is the OS temp dir (git subprocesses inherit the process environment, so
+  git itself still honours e.g. GIT_SSH_COMMAND). Results are data (serde::Serialize);
+  failures are gitpm::Error with a stable snake_case kind() that never changes for an
+  existing variant. The CLI (crates/gitpm-cli) and the UniFFI wrapper (crates/gitpm-ffi)
+  only add presentation, env defaults (GITPM_ROOT/GITPM_CATALOG/GITPM_SOURCES; the CLI
+  derives `Options.custom_ssh` from GIT_SSH_COMMAND/GIT_SSH for every command), prompts and
+  bindings.
+
+  Subprocesses: every git and curl invocation lives in the transport module at
+  crates/gitpm/src/transport/, behind Transport/SystemTransport (the planned switch point
+  to gix/ureq). Every git command on a repository (`git -C`) is noninteractive
+  and bounded: closed stdin, GIT_TERMINAL_PROMPT=0, one BatchMode SSH command with keepalives and StrictHostKeyChecking=accept-new unless
+  Options.custom_ssh is set or the user configured core.sshCommand, http.lowSpeed limits, a 10-minute wall-clock kill. Exceptions:
+  the `auth check` ls-remote uses the same SSH policy and, like the `git config --get core.sshCommand` probe, has
+  closed stdin and a 10-second wall-clock kill. The repository-less `check` ls-remote (`ls_remote_refs`) has the repository
+  bounds plus LC_ALL=C, the temp dir as cwd and a transport allowlist (file, git, http(s),
+  ssh; never remote helpers), and runs only on sources passing `auth::validate_recorded`. curl has --connect-timeout 5 and --max-time 20. IDs and refs are validated
+  before they reach git, and positional names go after `--`.
+
+  Catalog transport: remote catalogs are HTTPS only; plain http:// is accepted only for
+  loopback hosts (tests). curl is limited to http(s), 16 MiB max-filesize and bounded
+  streaming responses. Catalogs follow no redirects; build archives follow at most five
+  redirects to HTTPS only, using the same timeouts and size bound.
+  Catalogs are written only to local folders; publishing/hosting is the user's job.
+
+  Compatibility: no backward compatibility before 1.0 (owner decision 2026-10-18, TILR-38):
+  package IDs are canonical lowercase UUIDs; names are nonunique aliases. There is no migration
+  (format 1). Release tags are always vVERSION (one version for every package in a repository), catalogs always the
+  static file tree; there are no CLI aliases, migrations or compatibility readers, and the FFI
+  promises no stability (gitpm-ffi carries the library version). state.json carries
+  "format": 1; a gitpm reads and writes only its own format, any other one (or none) is
+  refused with `unsupported` and never rewritten. Before the first public release, all gitpm
+  file formats stay at version 1 and evolve in place without backward compatibility or
+  version bumps. Afterward, bump a format only when gitpm from the previous public
+  release would misread the change, in one separate
+  step in the release milestone, at most once per release (no migration). Every breaking
+  CLI/API/FFI/file-format change
+  is marked BREAKING and documented in README "Changed in X.Y".
+
+  Git flow: work happens on `dev` (or feature branches off `dev`) and is tested locally.
+  Nothing goes to `main` (push, merge, PR, release-PR merge) without the owner's explicit
+  word "в main" at that moment. "Merge"/"commit" without a target means `dev`. No commit or
+  push without explicit permission. Never add "Generated with Claude Code" to commits.
+
+  Release: release-please (/.release-please-manifest.json, package `crates/gitpm`) keeps a
+  release PR on `main`, opened by the org GitHub App tilr-bot; PR titles are Conventional Commits, squash merges only;
+  pre-1.0 feat/BREAKING bump minor. gitpm, gitpm-cli and gitpm-ffi share one version (extra-files);
+  gitpm-ffi is publish = false. Merging the release PR is the release: tag vX.Y.Z, GitHub
+  Release, crates.io via Trusted Publishing (OIDC, environment crates-io, no tokens), and
+  prebuilt gitpm binaries (macOS/Linux, arm64/x86_64). A release is a separate explicit step.
+
+  CI gates (required checks on main): fmt + clippy -D warnings, cargo test --workspace,
+  MSRV 1.92 (`cargo check -p gitpm -p gitpm-cli`; pubgrub 0.4 needs 1.92), cargo-deny
+  (advisories, license allowlist, sources), gitleaks. Tests are hermetic: no network; they do
+  not inherit the developer's GITPM_*/PM_*, HOME or Git config (CLI tests env_clear and set
+  their own; Git config pinned by .cargo/config.toml); test-only reads of
+  GITPM_KEEP_TEST_ARTIFACTS and GITPM_TEST_HOLD_LOCK. Run Python via `uv run`. The Dagger
+  suite in itests/ (`./itests/dt`) is an additional, slower suite, not a CI gate.
+
+  Glossary (canonical terms for every spec, proposal and design):
+  - package: the unit gitpm manages (a folder with a manifest and committed output, or its catalog prebuilt archive). Prose
+    and literal names say "package": the state key `packages`, the workspace clone folder
+    `repos/`, the API names `PackageManager`, `InstalledPackage`, `PackageSummary`, and
+    messages. "plugin" remains only in the file name `plugin.json`.
+  - manifest: a package's `plugin.json`. catalog package index: the per-package file
+    `namespaces/<ns>/<name>/plugin.json` of the catalog. Never call either one "plugin.json"
+    without saying which.
+  - package dist: the manifest-selected output folder inside a package or the verified archive root. deployed folder: the
+    workspace folder `dist/<id>` gitpm copies it to.
+  - enabled: the `enabled` flag in state. active: installed, enabled and not replaced.
+    deployed: its deployed folder exists (exactly the active packages when dist/ is in sync).
+  - version: SemVer MAJOR.MINOR.PATCH with an optional pre-release `-PRE` (no build
+    metadata). release: a valid release tag (a version at a commit).
+    revision: the `{version, commit}` pair state records (`current`, `previous`). ref: a
+    tag, branch or commit the user names (`--ref`; FFI parameter `reference`). catalog
+    `reference`: the tag a catalog release record was generated from.
+  - replacement binding: `state.replacements[ORIGINAL] = FORK`. replacing package: FORK
+    while bound. Placeholders are ORIGINAL and FORK (not X/Y).
+  - upstream: only the original repository of a fork (its `upstream` remote). origin: the
+    Git remote `origin` of a package's clone. source: the string recorded as
+    `packages.<id>.source` (a local path canonicalized).
+  - register: only the catalog command. A workspace package is "recorded in state".
+  - forgotten: removed from `packages` in state (a package of a shared clone keeps a
+    `forgotten` record). retained: its clone still exists in the workspace.
+  - root: always qualified (workspace root, repository root, root package).
+  - multi-package repository (not "monorepo").
+  - lock files: `.<workspace root name>.lock` beside the workspace root,
+    `.<catalog name>.catalog.lock` beside the catalog.
+  - lost work: the items an uninstall plan lists (Modified, Untracked, Ignored, HeadMoved,
+    UnpublishedCommit, UnpublishedBranch, UnpublishedTag, Stash); refused as `local_changes`.
+  - ref modes: `--ref TAG|COMMIT` pins, `--ref BRANCH` follows a branch, `--dev` follows
+    the origin's default branch; FFI `Target`; the mode is recorded in state.
+  - exit codes: the CLI exits with "exit status 1" on every failure, 0 on success.
+
+rules:
+  proposal:
+    - State what is out of scope (a "Non-goals" or "Out of scope" bullet list).
+    - No backward compatibility before 1.0 (TILR-38): no aliases, legacy formats, migrations or compatibility shims; breaking changes are marked BREAKING.
+    - Mark every breaking change to the CLI, library API, FFI or file formats with **BREAKING** and name the migration.
+    - Keep host-specific (Tilr) work out of gitpm proposals; name it as out of scope instead.
+    - In Why, cite only recorded facts (commit, PR, note, session); write "Rationale not recorded" when unknown.
+  specs:
+    - Every requirement uses SHALL or MUST and has at least one #### Scenario with WHEN/THEN bullets.
+    - No backward compatibility before 1.0 (TILR-38): no aliases, legacy formats, migrations or compatibility shims; breaking changes are marked BREAKING.
+    - In spec prose say package; plugin appears only inside literal file or field names (`plugin.json`).
+    - Specs describe observable behavior (CLI output, error kinds, files in the workspace, API results), not internal function names.
+    - No internal names in specs (private types, functions, constants, source files such as `main.rs`); public API names and test names are fine.
+    - Specs describe current code. Not-yet-implemented behavior goes into a change, not into specs/; a known defect keeps the requirement as the contract, without tracker references.
+    - Use the glossary terms of the context; CLI failures are "exit status 1".
+    - When a requirement is backed by an existing test, name the test in the requirement text.
+    - Error cases name the stable error kind (for example `local_changes`, `has_dependents`).
+    - Thin CLI (TILR-33) - Domain rules and option combinations live in the library; CLI specs cover argv/env parsing, printing, TTY prompts and hints per error kind; every CLI capability has an FFI equivalent.
+  design:
+    - Keep subprocess, printing and environment access out of the library design; route git/curl through the transport module.
+    - Thin CLI (TILR-29..33): the CLI only parses argv and environment, calls the library, prints results, asks TTY prompts and adds command hints per error kind; library messages stay neutral (no CLI command names, no host or hosting names), and every CLI capability has an FFI equivalent.
+    - No backward compatibility before 1.0 (TILR-38): no aliases, legacy formats, migrations or compatibility shims; mark the break BREAKING instead.
+    - Spec deltas a design produces name no internal names (private functions, constants, source files); internal names belong in design.md and tasks.md only.
+    - Describe the transaction and crash-recovery story for any change that writes the workspace or a catalog.
+  tasks:
+    - Each task names how it is verified (test name, command or observable output).
+    - Each task group lands its own tests and README updates; no trailing "write tests" group.
+    - Include `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace` before marking a change done.
+
+operations:
+  apply:
+    guidance:
+      - Work on the dev branch; do not commit, push or open PRs without explicit permission.
+      - Update README.md (the user-facing contract) in the same change as the behavior.
+  archive:
+    guidance:
+      - Record the commit or PR that implemented the change in its proposal before archiving.

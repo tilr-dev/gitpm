@@ -1,0 +1,278 @@
+# workspace-layout Specification
+
+## Purpose
+
+Defines the on-disk workspace a `Manager` owns: its folders, `state.json` and its format version, what opening a workspace creates or refuses, and how state records installed, replaced and forgotten packages.
+
+## Requirements
+
+### Requirement: Workspace folders
+A workspace SHALL contain `state.json` (packages, replacements, forgotten records), `dist/<uuid>` (active deployed output), `repos/<source-key>` (bare source stores), `worktrees/<uuid>` (detached Git package worktrees), and `.pm-txn` only during transactions or recovery. `repos/` and `worktrees/` SHALL exist only while needed. Verified by `workspace::open_creates_the_workspace_layout_and_lock`.
+
+#### Scenario: A command on a missing workspace root
+- **WHEN** a command that opens a workspace (transactions-locking, "Workspace lock") names a workspace root that does not exist
+- **THEN** the workspace root is created first
+
+#### Scenario: Opening a new workspace
+- **WHEN** a Manager opens a root that does not exist
+- **THEN** the workspace root is created with `dist/` and a `state.json` of `{"format": 1, "packages": {}}` written to a temporary file and renamed into place, and the workspace lock file (transactions-locking, "Workspace lock") is created beside it
+
+#### Scenario: Crash while creating state.json
+- **WHEN** the process dies while a new workspace's `state.json` is written
+- **THEN** the root holds no partial `state.json`, and the next open creates it again
+- **AND** incomplete state is staged inside the root as `.state.json-<pid>-<counter>.tmp`, so the rename stays on one filesystem even when the root is a mount point
+- **AND** a root that holds only such files (and possibly `.DS_Store`) is not a foreign directory: the next open removes them while holding the workspace lock and creates `state.json`; any other entry refuses the directory as "Foreign directories are refused" says, and nothing inside it is removed
+- **AND** `.DS_Store` beside them keeps its bytes
+
+#### Scenario: Clone-free build storage
+- **WHEN** a catalog build is installed for the first time
+- **THEN** verified output is retained under builds/ID and there is no bare clone or worktree unless another Git revision needs the source
+
+#### Scenario: Build cache transactions
+- **WHEN** a build install or update changes its retained output
+- **THEN** `builds/<id>` keeps the verified current and previous output without a clone, and cache changes use workspace transactions
+
+#### Scenario: Existing legacy clone directory
+- **WHEN** a workspace contains a legacy `packages/` directory
+- **THEN** opening does not migrate, consult or automatically remove its clones, and new Git installs use only `repos/`
+
+### Requirement: Foreign directories are refused
+Opening a non-empty directory (one holding anything but `.DS_Store` and gitpm's own staged state `.state.json-<pid>-<counter>.tmp`, see "Workspace folders") that has no `state.json` SHALL fail with `workspace` ("refusing nonempty directory without state.json") and change nothing inside that directory (its parent folder and the workspace lock file beside it may already exist). Single source for a corrupt `state.json`: it SHALL block every operation with `invalid_data` and MUST NOT be overwritten.
+
+#### Scenario: Pointing the workspace at a project folder
+Verified by `workspace::open_refuses_foreign_directories_and_bad_state`.
+- **WHEN** the workspace root is an existing non-empty folder without `state.json`
+- **THEN** opening fails with `workspace` and no file is created in it (its parent and the lock file beside it may already exist)
+
+#### Scenario: Corrupt state
+Verified by `robustness::corrupt_state_is_not_overwritten`.
+- **WHEN** `state.json` is not valid JSON
+- **THEN** every operation fails with `invalid_data` and the file keeps its bytes
+
+#### Scenario: Folder with only .DS_Store
+Verified by `workspace::open_ds_store_only_root`.
+- **WHEN** the workspace root exists and holds only `.DS_Store`
+- **THEN** opening treats it as empty and creates the workspace in it
+- **AND** `.DS_Store` keeps its bytes
+
+#### Scenario: Folder with .DS_Store and other content
+Verified by `workspace::open_ds_store_with_other_content_is_refused`.
+- **WHEN** the workspace root holds `.DS_Store` and another file without `state.json`
+- **THEN** opening fails with `workspace` and changes nothing inside it
+
+### Requirement: State format versions
+`state.json` SHALL carry `"format": 1` and keep installed packages under `packages`. Other or missing formats SHALL fail with `unsupported` without rewriting or migration. Before the first public release, changes SHALL stay in format 1 without backward compatibility. Later, only changes gitpm from the previous public release would misread SHALL cause a bump. Verified by `model::state_format_other_than_current_is_refused`.
+
+#### Scenario: Release format bump
+- **WHEN** a change would be misread by gitpm from the previous public release
+- **THEN** the format is bumped as a separate step in the release milestone, at most once per release
+- **AND** before the first public release, changes are made in place under format 1 without bumps or backward compatibility
+
+#### Scenario: Workspace from gitpm 0.3
+- **WHEN** a Manager opens a workspace whose `state.json` has no `format`
+- **THEN** opening fails with `unsupported`, the message names the found and the supported format, and `state.json` keeps its bytes
+
+#### Scenario: Workspace of gitpm 0.5
+- **WHEN** a workspace written by gitpm 0.4 or 0.5 (`"format": 2`, packages under `plugins`) is opened
+- **THEN** opening fails with `unsupported` and `state.json` keeps its bytes
+
+#### Scenario: Newer format
+- **WHEN** `state.json` has a format number this gitpm does not write
+- **THEN** opening the state fails with `unsupported`
+
+### Requirement: Installed package record
+Each `state.json` `packages.<id>` managed record SHALL hold `source`, `current`, at most one `previous`, `enabled`, and optional `mode`, `forkOf`, `dependencies`, `replaces`, `catalog`, `clone`, `path`, `metadata`. Revisions contain `version` and `commit`; `previous` also retains mode. Links follow "Link record format". Git worktree paths SHALL derive from UUID; `path` selects the package folder inside that tree. Builds SHALL own no worktree. Verified by `model::state_round_trips_byte_for_byte`.
+
+#### Scenario: Fresh install has no previous revision
+- **WHEN** a package was just installed
+- **THEN** its record has no `previous` revision
+
+#### Scenario: Update keeps one previous revision
+- **WHEN** a package goes from 0.1.0 to 0.2.0 to 0.3.0
+- **THEN** `current` is 0.3.0 and `previous` is 0.2.0 only
+
+#### Scenario: Recorded modes
+- **WHEN** packages were installed without a ref, with `--ref v1.0.0`, and with `--ref feature`
+- **THEN** the first record has no `mode`, the second `"mode": {"pinned": "v1.0.0"}`, the third `"mode": {"branch": "feature"}`
+
+#### Scenario: Previous revision keeps its mode
+- **WHEN** a package in branch mode `main` is updated with `--release`
+- **THEN** `previous` is `{"version": …, "commit": …, "mode": {"branch": "main"}}` (a `previous` in release mode has no `mode`), so `rollback` restores both
+
+#### Scenario: Previous build provenance
+- **WHEN** a build revision is updated to a Git revision
+- **THEN** previous_build retains the release metadata and catalog location for offline rollback
+
+#### Scenario: Build record format
+- **WHEN** a current or previous revision is a build
+- **THEN** `build` or `previous_build` retains its full release record and catalog location separately from catalog protection; previous retains its mode and source kind for offline rollback, and only current/previous build output is retained
+
+#### Scenario: Managed field semantics
+- **WHEN** a managed package record includes optional fields
+- **THEN** mode is `{"pinned": REF}` or `{"branch": NAME}` (omitted for releases), catalog protects a verified catalog installation, and clone is the source-derived Git-clone key
+
+#### Scenario: UUID identity
+- **WHEN** a package is recorded in state
+- **THEN** its record is keyed only by UUID without an alias hint; format remains 1 and legacy scoped records are refused without migration
+
+### Requirement: Replacements and forgotten records
+`state.json` SHALL keep `replacements` (the replacement bindings ORIGINAL → FORK, global for the workspace; rules in fork-replacement) and `forgotten` (records of every forgotten package, same format as `packages.<id>`, with a source-keyed bare repository and package worktree, or retained build output; lifecycle in install-uninstall and multi-package-repos).
+
+#### Scenario: Forgetting a package of a shared clone
+- **WHEN** `76a9b591-60f3-5c7f-9e1c-31648fc73bfd` (installed from a multi-package repository) is forgotten
+- **THEN** `packages.76a9b591-60f3-5c7f-9e1c-31648fc73bfd` is removed and `forgotten.76a9b591-60f3-5c7f-9e1c-31648fc73bfd` keeps its revision and clone key
+
+#### Scenario: Forgetting a package with its own clone
+- **WHEN** `d135a7cf-1c63-549a-93cb-8f89656b2ced` (root package in `repos/<key>`) is forgotten
+- **THEN** `forgotten.d135a7cf-1c63-549a-93cb-8f89656b2ced` keeps its record, including `catalog`, `enabled` and mode, and its bare repository and worktree stay
+
+### Requirement: Downgrade is not protected
+A workspace SHALL be usable only by a gitpm that writes its state format, in either direction. README SHALL list the state format of each release and say that a workspace of another format is re-created (its packages installed again), never migrated.
+
+#### Scenario: Documented downgrade boundary
+- **WHEN** a user reads README "Rules of the library"
+- **THEN** it lists the state format per gitpm release and says that a workspace of another format is refused with `unsupported`
+
+### Requirement: Options are validated before anything is created
+`Manager::open_with` SHALL validate its root path and Options (for example the catalog location, catalog "A configured catalog location must exist") before it creates the workspace root, its folders, `state.json` or the lock file; a refusal SHALL leave the file system unchanged. Verified by `workspace::open_with_validates_options_before_creating_anything`.
+
+#### Scenario: Invalid options on a new root
+- **WHEN** a host opens `new-ws`, which does not exist, with an invalid Options value
+- **THEN** opening fails, and neither `new-ws` nor `.new-ws.lock` exists afterwards
+
+### Requirement: Unified Git clone identity
+Every Git package record SHALL include a source-derived `clone` key for a bare repository under `repos/`; `path` SHALL identify its folder within its package worktree and be absent for a root package. Clone-free build records SHALL remain valid without a clone key. A retained clone SHALL be reusable when switching a build back to Git without requiring the build commit to remain on the origin.
+
+#### Scenario: Git clone identity
+- **WHEN** a root or nested Git package is installed
+- **THEN** its record includes the source-derived `clone` key; `path` is absent for the root and names the package folder otherwise
+- **AND** a Git record without a clone key is invalid data; build-only records remain valid without a clone
+
+#### Scenario: Retained clone after a build commit is removed upstream
+- **WHEN** a Git install switches to a build, retains its clone, and the build commit is later removed from the origin
+- **THEN** an explicit update to an available Git ref reuses the retained clone and succeeds without resolving the removed build commit first
+- **AND** build provenance is retained for offline rollback
+
+#### Scenario: Git to build and back
+- **WHEN** a Git package switches to a build and later returns to Git, including by offline rollback
+- **THEN** the build has no worktree, necessary Git objects remain reachable in the bare repository, and returning to Git creates a worktree at the target revision
+
+### Requirement: State distinguishes external links from managed revisions
+State SHALL support explicit link records with canonical absolute package and installation-folder paths, enabled status, a validated manifest snapshot and release-discovery source when available. Link records MUST NOT claim their contents equal an installed commit or the external repository is a managed clone.
+
+#### Scenario: Record a live folder
+- **WHEN** a local package is linked successfully
+- **THEN** state explicitly records link mode and its canonical target, without an invented installed commit or managed-clone key
+
+#### Scenario: Manifest edited outside gitpm
+- **WHEN** the author edits the linked package manifest after linking
+- **THEN** state keeps its last validated manifest snapshot until an explicit validated relink refreshes it
+
+### Requirement: Link record format
+A link record SHALL hold `mode` as `{"link": {"packageRoot": PATH, "target": PATH}}`, optional validated `mode.link.discovery` provenance, plus `source` (when available), `enabled`, `version` (declared), `dependencies`, `metadata` and optional validated top-level `replaces` in the managed-record format. It MUST NOT hold `current`, `previous`, `clone`, `path`, `catalog` or `forkOf`.
+
+#### Scenario: Link record fields
+- **WHEN** a package is linked
+- **THEN** its record has `mode.link.packageRoot` and `mode.link.target` and no `current`, `previous` or `clone`
+
+#### Scenario: Replacement offer is a validated snapshot
+- **WHEN** the author edits the linked manifest's `replaces` after linking
+- **THEN** state retains the validated top-level offer until an explicit validated relink refreshes the manifest snapshot under existing dependency and replacement checks
+
+### Requirement: Linked fork discovery preserves validated provenance
+A fork link SHALL record its validated `forkOf` snapshot as `mode.link.discovery.forkOf`, with the same field shapes and source validation as package-manifest. Check and update SHALL use this snapshot for original-upstream discovery until validated relink refreshes it, without rereading external manifest edits into state.
+
+#### Scenario: Fork manifest changed outside gitpm
+- **WHEN** the author changes or removes `forkOf` in the linked manifest after linking
+- **THEN** check still reports original-upstream availability from the recorded provenance; a validated relink may refresh it
+
+#### Scenario: Link a newly prepared fork
+- **WHEN** a repository prepared by fork is explicitly installed in link mode
+- **THEN** the selected package's validated manifest `forkOf` is recorded in `mode.link.discovery.forkOf`, without a top-level `forkOf`; its validated manifest `replaces` offer is stored at the record top level in the managed-record format, without creating a replacement binding
+
+#### Scenario: Refresh fork provenance explicitly
+- **WHEN** the author explicitly relinks a package after changing its manifest `forkOf` to another valid provenance descriptor
+- **THEN** successful validation refreshes the recorded discovery snapshot and subsequent check and update use the refreshed original-upstream provenance
+
+### Requirement: Link records follow the workspace format policy
+Link record schema changes SHALL follow workspace-layout "State format versions": format 1 in place before the first public release; later bumps only under its release-milestone policy. No migration or compatibility reader SHALL be added. Foreign formats SHALL be refused with `unsupported` unchanged; README SHALL document workspace recreation.
+
+#### Scenario: Old workspace reader
+- **WHEN** a gitpm opens state of another format
+- **THEN** it refuses with `unsupported` without rewriting it; README directs the user to recreate the workspace rather than migrate it
+
+#### Scenario: Forgotten external link
+- **WHEN** a linked package is forgotten
+- **THEN** its forgotten record retains link identity and target without treating the author's repository as a retained managed clone
+
+### Requirement: Workspaces are isolated
+Every public workspace operation SHALL take an explicit root, directly or through a Manager or FFI handle. CLI workspace commands SHALL accept `--root`; the documented default MAY remain. State, clones, deployed files, builds, transactions and locks SHALL belong to the selected root. Operations SHALL NOT change another workspace's state or files. Repository-only operations SHALL use explicit repository paths without opening an implicit workspace.
+
+#### Scenario: Preparing a second workspace
+- **GIVEN** two workspaces with the same root basename in different parent directories containing the same package IDs
+- **WHEN** a package is installed or removed in one workspace
+- **THEN** the other workspace's state and files keep their contents
+- **AND** both workspaces can remain open through independent Manager handles
+
+#### Scenario: Explicit command selection
+- **GIVEN** the process working directory and the environment point at a different workspace
+- **WHEN** an existing public CLI workspace command is invoked with an explicit `--root`
+- **THEN** the command uses the selected root
+- **AND** the workspace selected by the working directory or environment keeps its state and files
+
+#### Scenario: Repository-only operation
+- **WHEN** a repository-only command receives an explicit repository path
+- **THEN** it operates on that path without opening a default workspace
+
+### Requirement: Package worktrees are created on demand
+Only a current Git installation SHALL own a package worktree, retained while forgotten. A build-only install SHALL create neither a worktree nor an unnecessary bare repository. Switching a Git installation to a build SHALL remove its worktree while retaining objects required for offline Git rollback. Legacy checked-out source clones SHALL NOT be migrated or automatically removed when opening a workspace.
+
+#### Scenario: Fresh prebuilt install
+- **WHEN** a package is installed from a verified catalog build with no retained Git revision
+- **THEN** no package worktree or source bare repository is created
+
+#### Scenario: Forgotten Git package
+- **WHEN** a Git package is forgotten and restored
+- **THEN** its own worktree is retained and reused at the recorded commit
+
+#### Scenario: Build transition preserves unpublished source refs
+- **WHEN** a retained build or a clone-free build beside a sibling switches to Git and fetching would discard unpublished refs in the reused bare repository
+- **THEN** the transition refuses with `local_changes` and preserves refs and state, without guarding the sibling worktree's HEAD or files
+
+### Requirement: Moved and copied workspaces keep usable worktrees
+On open, a Manager SHALL repair stale Git links between existing managed checkouts and admin directories under the workspace lock, after journal recovery and state validation. This maintenance SHALL derive pairs from installed and forgotten state at the selected root and preserve checkout contents, HEAD, state and the source workspace.
+
+#### Scenario: Copied workspace
+- **GIVEN** an installed Git package and a copy of its complete workspace at another root
+- **WHEN** the copy is opened and its packages are listed, updated, rolled back and uninstalled
+- **THEN** those operations succeed, each retained worktree has a clean Git status, and the source workspace remains unchanged
+- **AND** repair never follows stale links into the source workspace
+
+#### Scenario: Moved workspace
+- **GIVEN** a workspace moved to another path and its old path no longer exists
+- **WHEN** a Manager opens it
+- **THEN** installed and forgotten Git worktrees resolve to the new root without manual rebinding
+
+#### Scenario: Repeated open
+- **WHEN** a workspace with correct worktree links is opened again
+- **THEN** its Git metadata is not rewritten
+- **AND** this holds when the selected root contains a symlink alias
+
+#### Scenario: Missing link files
+- **GIVEN** a managed checkout and its admin directory both exist but `.git`, `gitdir` or `commondir` is missing
+- **WHEN** a Manager opens the workspace
+- **THEN** the missing link files are restored and the worktree remains usable
+- **AND** other I/O errors are propagated
+
+#### Scenario: Records without a worktree
+- **WHEN** the workspace contains build or external link records, absent checkouts or absent registrations
+- **THEN** opening does not recreate checkouts or registrations or require Git metadata for build and external link records
+
+#### Scenario: Read-only view
+- **WHEN** a read-only view reads a moved workspace without opening a Manager
+- **THEN** it keeps its existing behavior without repairing links
+
+#### Scenario: Unsafe metadata
+- **GIVEN** a managed worktree metadata file or managed parent has been replaced by a symlink
+- **WHEN** a Manager opens the workspace
+- **THEN** opening refuses the unsafe path without writing through the symlink

@@ -1,14 +1,12 @@
 //! Catalog client and author operations. The catalog stores metadata, never code.
-use crate::error::{Context, Error, Require, Result, ensure};
+use crate::error::{Context, Error, Require, Result, ensure, fail};
 use crate::{
-    Manifest, exec, exec::git, identity, model::package_manifest, model::resolve_ref, packages,
-    valid_id,
+    Manifest, identity, model::package_manifest, model::resolve_ref, packages, transport, valid_id,
 };
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     fs,
-    io::Write,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -28,13 +26,13 @@ pub struct Release {
     pub path: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Plugin {
+pub struct Package {
     pub source: String,
     pub versions: BTreeMap<String, Release>,
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Catalog {
-    pub plugins: BTreeMap<String, Plugin>,
+    pub packages: BTreeMap<String, Package>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -53,24 +51,64 @@ pub struct Build {
 #[serde(deny_unknown_fields)]
 struct Directory {
     schema: u32,
+    /// Only in the top-level `catalog.json`: set by the catalog's owner by hand. Writers
+    /// keep it; a verified catalog takes versions only through [`register`].
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    verified: bool,
     directories: BTreeMap<String, String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PluginIndex {
+struct PackageIndex {
     schema: u32,
     id: String,
     source: String,
     versions: BTreeMap<String, String>,
+    // Display-only data stays untyped here so a malformed summary never prevents
+    // installs or hides other packages in an overview.
+    #[serde(default)]
+    latest: serde_json::Value,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct IndexSummary {
+    version: String,
+    title: Option<String>,
+    description: Option<String>,
+    provides: Vec<String>,
+    tags: Vec<String>,
+}
+impl IndexSummary {
+    fn from_release(release: &Release) -> Self {
+        let metadata = release.metadata();
+        Self {
+            version: release.manifest.version.clone(),
+            title: metadata.title,
+            description: metadata.description,
+            provides: metadata.provides,
+            tags: metadata.tags,
+        }
+    }
 }
 fn folder(id: &str) -> Result<String> {
     valid_id(id)?;
-    // Separate legacy IDs so a plugin cannot collide with a namespace.
-    Ok(if id.contains('/') {
-        format!("namespaces/{id}")
-    } else {
-        format!("legacy/{id}")
-    })
+    Ok(format!("packages/{id}"))
+}
+/// The root `catalog.json` at `location` as a directory file; anything else (a v1
+/// monolithic catalog included) is refused with `catalog`.
+fn root_directory(location: &str) -> Result<Directory> {
+    directory_of(list(location)?)
+}
+/// A directory file `{"schema": 1, "directories": {…}}`.
+fn directory_of(value: serde_json::Value) -> Result<Directory> {
+    ensure!(
+        value.get("plugins").is_none(),
+        Catalog,
+        "unsupported catalog schema: v1 catalogs are no longer read; regenerate the catalog from the release tags"
+    );
+    let directory: Directory =
+        serde_json::from_value(value).context(Error::Catalog, "invalid directory catalog")?;
+    ensure!(directory.schema == 1, Catalog, "unsupported catalog schema");
+    Ok(directory)
 }
 /// Lowercase hex of a digest (sha2 0.11 output no longer implements `LowerHex`).
 pub(crate) fn hex(bytes: &[u8]) -> String {
@@ -131,6 +169,33 @@ pub fn hash_files(dist: &Path) -> Result<BTreeMap<String, FileDigest>> {
     walk(dist, dist, &mut result)?;
     Ok(result)
 }
+
+pub(crate) struct HashedDist {
+    pub files: BTreeMap<String, FileDigest>,
+    pub warnings: Vec<String>,
+}
+
+/// Hash the same committed export that a workspace stages at `dist/<id>`.
+pub(crate) fn hash_exported_dist(
+    repo: &Path,
+    commit: &str,
+    package: Option<&str>,
+    staged: &Path,
+    custom_ssh: bool,
+) -> Result<HashedDist> {
+    if staged.exists() {
+        fs::remove_dir_all(staged)?;
+    }
+    let warnings = crate::workspace::export_dist(repo, commit, package, staged, custom_ssh)
+        .map_err(|error| match error {
+            Error::Unsupported(_) => Error::Unsupported("build contains a symlink".into()),
+            other => other,
+        })?;
+    Ok(HashedDist {
+        files: hash_files(staged)?,
+        warnings,
+    })
+}
 fn valid_hash(hash: &str) -> bool {
     hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit())
 }
@@ -152,12 +217,11 @@ fn validate_release_payload(release: &Release, id: &str) -> Result<()> {
         Catalog,
         "invalid catalog commit"
     );
-    // Releases of v1 catalogs (legacy unscoped IDs) may lack file hashes; every
-    // namespaced release must carry them, or dist could not be verified on install.
+    // Every release carries file hashes, or dist could not be verified on install.
     ensure!(
-        !id.contains('/') || !release.files.is_empty(),
+        !release.files.is_empty(),
         Catalog,
-        "catalog release has no file hashes"
+        "catalog release of {id} has no file hashes"
     );
     if let Some(path) = &release.path {
         crate::packages::validate_path(path)
@@ -178,7 +242,8 @@ fn validate_release_payload(release: &Release, id: &str) -> Result<()> {
     }
     if let Some(build) = &release.build {
         ensure!(
-            build.url.starts_with("https://")
+            (build.url.starts_with("https://")
+                || (build.url.starts_with("http://") && ensure_secure_url(&build.url).is_ok()))
                 && build.url.len() > 8
                 && !build.url.chars().any(char::is_whitespace),
             Catalog,
@@ -189,19 +254,112 @@ fn validate_release_payload(release: &Release, id: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn version_key(version: &str) -> Result<(u64, u64, u64)> {
-    let parts: Vec<_> = version.split('.').collect();
-    ensure!(
-        parts.len() == 3
-            && parts.iter().all(|p| !p.is_empty()
-                && p.bytes().all(|c| c.is_ascii_digit())
-                && (p.len() == 1 || !p.starts_with('0'))),
-        InvalidVersion,
-        "version must be MAJOR.MINOR.PATCH without leading zeros"
-    );
-    Ok((parts[0].parse()?, parts[1].parse()?, parts[2].parse()?))
+/// Parse a package version: SemVer `MAJOR.MINOR.PATCH` with an optional pre-release
+/// `-PRE` (dot-separated identifiers of ASCII letters, digits and hyphens; numbers
+/// without leading zeros), never build metadata. The result orders by SemVer
+/// precedence (`1.0.0-alpha < 1.0.0-beta < 1.0.0`).
+pub fn version_key(version: &str) -> Result<semver::Version> {
+    let invalid = || {
+        Error::InvalidVersion(
+            "version must be MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-PRE without leading zeros or build metadata"
+                .into(),
+        )
+    };
+    let number = |part: &str| {
+        !part.is_empty()
+            && part.bytes().all(|c| c.is_ascii_digit())
+            && (part.len() == 1 || !part.starts_with('0'))
+    };
+    let (core, pre) = match version.split_once('-') {
+        Some((core, pre)) => (core, Some(pre)),
+        None => (version, None),
+    };
+    let parts: Vec<_> = core.split('.').collect();
+    if parts.len() != 3 || !parts.iter().all(|p| number(p)) {
+        return Err(invalid());
+    }
+    let pre = match pre {
+        None => semver::Prerelease::EMPTY,
+        Some(pre) => {
+            let valid = pre.split('.').all(|identifier| {
+                !identifier.is_empty()
+                    && identifier
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || c == b'-')
+                    && (!identifier.bytes().all(|c| c.is_ascii_digit()) || number(identifier))
+            });
+            if !valid {
+                return Err(invalid());
+            }
+            semver::Prerelease::new(pre).map_err(|_| invalid())?
+        }
+    };
+    let parse = |part: &str| part.parse::<u64>().map_err(|_| invalid());
+    Ok(semver::Version {
+        major: parse(parts[0])?,
+        minor: parse(parts[1])?,
+        patch: parse(parts[2])?,
+        pre,
+        build: semver::BuildMetadata::EMPTY,
+    })
 }
 
+/// The version `latest` stands for among `versions` (unparsable ones ignored): the
+/// newest release that is not a pre-release, or, when `installed` is a pre-release,
+/// also a newer pre-release of the same `MAJOR.MINOR.PATCH` (see
+/// [`crate::deps::follows`]).
+pub fn newest_eligible<'a>(
+    versions: impl IntoIterator<Item = &'a str>,
+    installed: Option<&str>,
+) -> Option<&'a str> {
+    let installed = installed.and_then(|v| version_key(v).ok());
+    versions
+        .into_iter()
+        .filter_map(|v| Some((version_key(v).ok()?, v)))
+        .filter(|(key, _)| crate::deps::follows(installed.as_ref(), key))
+        .max()
+        .map(|(_, v)| v)
+}
+
+/// The newest pre-release among `versions` that is newer than `than` and `installed`
+/// and not eligible for `installed` (see [`newest_eligible`]): shown, never offered.
+pub fn newest_prerelease<'a>(
+    versions: impl IntoIterator<Item = &'a str>,
+    installed: Option<&str>,
+    than: &str,
+) -> Option<&'a str> {
+    let installed = installed.and_then(|v| version_key(v).ok());
+    let than = version_key(than).ok()?;
+    versions
+        .into_iter()
+        .filter_map(|v| Some((version_key(v).ok()?, v)))
+        .filter(|(key, _)| {
+            !key.pre.is_empty()
+                && *key > than
+                && installed.as_ref().is_none_or(|installed| key > installed)
+                && !crate::deps::follows(installed.as_ref(), key)
+        })
+        .max()
+        .map(|(_, v)| v)
+}
+
+/// Refusal of a catalog write to an HTTP(S) location (catalogs are written only locally).
+const WRITE_NEEDS_LOCAL: &str =
+    "writing a catalog requires a local folder; HTTP(S) catalogs are read-only";
+/// Check a catalog location before it is used for reading: an HTTP(S) URL must be
+/// secure (see the transport rules), anything else is a local folder or JSON file that
+/// must exist ([`Error::InvalidArgument`] "catalog location PATH does not exist"). A
+/// missing local catalog never counts as "no catalog"; only the catalog writers create it.
+pub fn validate_location(location: &str) -> Result<()> {
+    if local_file(location)?.is_some() {
+        ensure!(
+            fs::symlink_metadata(location).is_ok(),
+            InvalidArgument,
+            "catalog location {location} does not exist"
+        );
+    }
+    Ok(())
+}
 /// True if `location` is a local folder or JSON file (not HTTP).
 pub fn is_local(location: &str) -> Result<bool> {
     Ok(local_file(location)?.is_some())
@@ -273,7 +431,7 @@ fn read_json(location: &str, relative: &str) -> Result<Option<serde_json::Value>
         } else {
             format!("{base}/{relative}")
         };
-        match exec::http_get(&url)? {
+        match transport::http_get(&url)? {
             Some(bytes) => bytes,
             None => return Ok(None),
         }
@@ -282,19 +440,45 @@ fn read_json(location: &str, relative: &str) -> Result<Option<serde_json::Value>
         serde_json::from_slice(&bytes).context(Error::Catalog, "invalid catalog JSON")?,
     ))
 }
+/// The directory links at one catalog level: its root `catalog.json` (schema 1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CatalogLinks {
+    pub schema: u32,
+    /// Directory name → relative link of its own `catalog.json` level.
+    pub directories: BTreeMap<String, String>,
+}
+/// [`CatalogLinks`] of the catalog level at `location` (refused with `catalog` when its
+/// `catalog.json` is missing or not a directory file).
+pub fn links(location: &str) -> Result<CatalogLinks> {
+    let directory = root_directory(location)?;
+    Ok(CatalogLinks {
+        schema: directory.schema,
+        directories: directory.directories,
+    })
+}
+/// Whether the catalog at `location` is verified: its top-level `catalog.json` has
+/// `"verified": true` (set by its owner by hand). A verified catalog protects the
+/// packages installed from it; any other catalog serves discovery only.
+pub fn is_verified(location: &str) -> Result<bool> {
+    Ok(root_directory(location)?.verified)
+}
+/// Refusal of bulk generation into a verified catalog.
+const VERIFIED_TAKES_REGISTER_ONLY: &str =
+    "a verified catalog takes versions only one by one through register";
 /// Raw root `catalog.json` at this catalog level.
 pub fn list(location: &str) -> Result<serde_json::Value> {
+    validate_location(location)?;
     read_json(location, "catalog.json")?.require(Error::Catalog, "catalog not found")
 }
-fn plugin_index(location: &str, id: &str) -> Result<Option<PluginIndex>> {
+fn package_index(location: &str, id: &str) -> Result<Option<PackageIndex>> {
     let Some(value) = read_json(location, &format!("{}/plugin.json", folder(id)?))? else {
         return Ok(None);
     };
-    let index: PluginIndex = serde_json::from_value(value)?;
+    let index: PackageIndex = serde_json::from_value(value)?;
     ensure!(
-        index.schema == 2 && index.id == id,
+        index.schema == 1 && index.id == id,
         Catalog,
-        "invalid plugin index"
+        "invalid package index"
     );
     for (version, link) in &index.versions {
         version_key(version)?;
@@ -306,39 +490,46 @@ fn plugin_index(location: &str, id: &str) -> Result<Option<PluginIndex>> {
     }
     Ok(Some(index))
 }
-/// Catalog entries relevant to the installed plugins: latest and currently installed versions.
+/// Catalog entries relevant to the installed packages: latest and currently installed versions.
 pub fn selected(location: &str, state: &crate::State) -> Result<Catalog> {
     selected_impl(location, state, false)
 }
 
-/// Read-only diagnostics retain identity mismatches for per-plugin status reporting.
+/// Read-only diagnostics retain identity mismatches for per-package status reporting.
 /// Transport, syntax and unsafe payload errors still fail the operation.
 pub(crate) fn selected_for_check(location: &str, state: &crate::State) -> Result<Catalog> {
     selected_impl(location, state, true)
 }
 
 fn selected_impl(location: &str, state: &crate::State, diagnostic: bool) -> Result<Catalog> {
+    validate_location(location)?;
     let mut result = Catalog::default();
-    // Installed plugins with their current and latest release; originals of forks
+    // Installed packages with their current and latest release; originals of forks
     // with their latest release only.
     let mut wanted: BTreeMap<&str, Option<&str>> = BTreeMap::new();
-    for installed in state.plugins.values() {
+    for installed in state.packages.values() {
         if let Some(base) = &installed.fork_of {
             wanted.entry(base.id.as_str()).or_insert(None);
         }
     }
-    for (id, installed) in &state.plugins {
+    for (id, installed) in &state.packages {
         wanted.insert(id, Some(installed.current.version.as_str()));
     }
     for (id, current) in wanted {
-        if let Some(index) = plugin_index(location, id)? {
+        if let Some(index) = package_index(location, id)? {
             let mut versions = BTreeMap::new();
-            let latest = index
-                .versions
-                .keys()
-                .max_by_key(|v| version_key(v).unwrap());
+            // `check` compares with the newest version offered to the installed one and
+            // notes the newest pre-release.
+            let all = || index.versions.keys().map(String::as_str);
+            let latest = newest_eligible(all(), current);
+            let prerelease =
+                newest_prerelease(all(), current, latest.or(current).unwrap_or("0.0.0"));
+            let latest = latest.and_then(|v| index.versions.get_key_value(v).map(|(v, _)| v));
+            let prerelease =
+                prerelease.and_then(|v| index.versions.get_key_value(v).map(|(v, _)| v));
             for version in latest
                 .into_iter()
+                .chain(prerelease)
                 .chain(current.and_then(|c| index.versions.get_key_value(c).map(|(v, _)| v)))
             {
                 if !versions.contains_key(version) {
@@ -348,26 +539,20 @@ fn selected_impl(location: &str, state: &crate::State, diagnostic: bool) -> Resu
                     );
                 }
             }
-            result.plugins.insert(
+            result.packages.insert(
                 id.to_owned(),
-                Plugin {
+                Package {
                     source: index.source,
                     versions,
                 },
             );
         } else {
-            let value = list(location)?;
-            if value.get("plugins").is_some() {
-                let old: Catalog = serde_json::from_value(value)?;
-                if let Some(plugin) = old.plugins.get(id) {
-                    result.plugins.insert(id.to_owned(), plugin.clone());
-                }
-            }
+            root_directory(location)?;
         }
     }
     Ok(result)
 }
-fn read_release(location: &str, id: &str, version: &str, index: &PluginIndex) -> Result<Release> {
+fn read_release(location: &str, id: &str, version: &str, index: &PackageIndex) -> Result<Release> {
     read_release_impl(location, id, version, index, false)
 }
 
@@ -375,7 +560,7 @@ fn read_release_impl(
     location: &str,
     id: &str,
     version: &str,
-    index: &PluginIndex,
+    index: &PackageIndex,
     diagnostic: bool,
 ) -> Result<Release> {
     let link = index.versions.get(version).require(
@@ -404,34 +589,18 @@ pub fn ensure_publishable(location: &str) -> Result<PathBuf> {
     ensure!(
         local_file(location)?.is_some() && Path::new(location).is_dir(),
         InvalidArgument,
-        "sync requires a local directory containing catalog.json"
+        "a publishable catalog is a local folder containing catalog.json"
     );
     Ok(fs::canonicalize(location)?)
 }
 
 fn atomic_json(path: &Path, value: &impl Serialize) -> Result<()> {
     fs::create_dir_all(path.parent().unwrap())?;
-    // Unique per writer: a file left by a killed writer never blocks the next one.
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let temporary = path.with_extension(format!(
-        "json.{}-{}.tmp",
-        std::process::id(),
-        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temporary)?;
-    let result = (|| {
-        file.write_all(format!("{}\n", serde_json::to_string_pretty(value)?).as_bytes())?;
-        file.sync_all()?;
-        fs::rename(&temporary, path)?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(temporary);
-    }
-    result
+    crate::atomic_write::write_atomically(
+        path,
+        path,
+        format!("{}\n", serde_json::to_string_pretty(value)?).as_bytes(),
+    )
 }
 /// Writer lock of a local catalog. Released with the process, so a killed writer
 /// never blocks the catalog; its leftover temporary files are removed here.
@@ -474,11 +643,11 @@ fn link_directory(path: &Path, name: &str, link: &str) -> Result<()> {
         serde_json::from_slice(&fs::read(path)?)?
     } else {
         Directory {
-            schema: 2,
+            schema: 1,
             ..Default::default()
         }
     };
-    ensure!(directory.schema == 2, Catalog, "unsupported catalog schema");
+    ensure!(directory.schema == 1, Catalog, "unsupported catalog schema");
     if directory.directories.get(name).is_some_and(|s| s == link) {
         return Ok(());
     }
@@ -496,32 +665,29 @@ fn write_release(root: &Path, release: &Release) -> Result<()> {
     validate_release(release, id, version)?;
     let folder = folder(id)?;
     let path = root.join(&folder).join("plugin.json");
-    let mut index: PluginIndex = if path.exists() {
+    let mut index: PackageIndex = if path.exists() {
         serde_json::from_slice(&fs::read(&path)?)?
     } else {
-        PluginIndex {
-            schema: 2,
+        PackageIndex {
+            schema: 1,
             id: id.clone(),
             source: release.source.clone(),
             versions: BTreeMap::new(),
+            latest: serde_json::Value::Null,
         }
     };
     ensure!(
-        index.schema == 2 && index.id == *id && index.source == release.source,
+        index.schema == 1 && index.id == *id && index.source == release.source,
         Catalog,
-        "plugin {id} is registered from a different source or identity"
+        "package {id} is registered from a different source or identity"
     );
     let link = format!("versions/{version}/release.json");
     let release_path = root.join(&folder).join(&link);
     if release_path.exists() {
         let old: Release = serde_json::from_slice(&fs::read(&release_path)?)?;
         let mut candidate = release.clone();
-        // Alternate Git refs can resolve to the same immutable commit. Legacy
-        // releases without file digests remain byte-for-byte unchanged on retry.
+        // Alternate Git refs can resolve to the same immutable commit.
         candidate.reference = old.reference.clone();
-        if old.files.is_empty() {
-            candidate.files.clear();
-        }
         ensure!(
             serde_json::to_value(&old)? == serde_json::to_value(&candidate)?,
             VersionConflict,
@@ -532,8 +698,14 @@ fn write_release(root: &Path, release: &Release) -> Result<()> {
     }
     if !index.versions.contains_key(version) {
         index.versions.insert(version.clone(), link);
-        atomic_json(&path, &index)?;
     }
+    let newest = summary_version(index.versions.keys().map(String::as_str))
+        .require(Error::Catalog, "package has no versions")?;
+    let newest_release: Release =
+        serde_json::from_slice(&fs::read(root.join(&folder).join(&index.versions[newest]))?)?;
+    validate_release(&newest_release, id, newest)?;
+    index.latest = serde_json::to_value(IndexSummary::from_release(&newest_release))?;
+    atomic_json(&path, &index)?;
     // Publish directory links bottom-up, only when a child first appears.
     let parts: Vec<_> = folder.split('/').collect();
     for depth in (1..parts.len()).rev() {
@@ -547,7 +719,7 @@ fn prepare_root(path: &Path) -> Result<()> {
         return atomic_json(
             path,
             &Directory {
-                schema: 2,
+                schema: 1,
                 ..Default::default()
             },
         );
@@ -556,52 +728,8 @@ fn prepare_root(path: &Path) -> Result<()> {
         Error::Catalog,
         "invalid existing catalog; refusing overwrite",
     )?;
-    if value.get("plugins").is_some() {
-        let old: Catalog = serde_json::from_value(value)?;
-        let root = path.parent().unwrap();
-        for (id, plugin) in &old.plugins {
-            for (version, release) in &plugin.versions {
-                validate_release(release, id, version)?;
-                ensure!(
-                    release.source == plugin.source,
-                    Catalog,
-                    "legacy source mismatch"
-                );
-            }
-        }
-        for plugin in old.plugins.values() {
-            for release in plugin.versions.values() {
-                write_release(root, release)?;
-            }
-        }
-        let mut directory = Directory {
-            schema: 2,
-            ..Default::default()
-        };
-        for id in old.plugins.keys() {
-            let folder = folder(id)?;
-            let first = folder.split('/').next().unwrap();
-            directory
-                .directories
-                .insert(first.into(), format!("{first}/"));
-        }
-        let backup = root.join(".catalog-v1.json");
-        if !backup.exists() {
-            fs::copy(path, backup)?;
-        }
-        atomic_json(path, &directory)?;
-    } else {
-        let directory: Directory = serde_json::from_value(value)?;
-        ensure!(directory.schema == 2, Catalog, "unsupported catalog schema");
-    }
+    directory_of(value)?;
     Ok(())
-}
-/// Split a local v1 catalog into plugin folders (keeps a `.catalog-v1.json` backup).
-pub fn migrate(location: &str) -> Result<()> {
-    let path = local_file(location)?
-        .require(Error::InvalidArgument, "migration requires local catalog")?;
-    let _lock = lock(&path)?;
-    prepare_root(&path)
 }
 fn save_release(path: &Path, release: &Release) -> Result<Release> {
     let _lock = lock(path)?;
@@ -616,27 +744,18 @@ fn save_release(path: &Path, release: &Release) -> Result<Release> {
     ));
     Ok(serde_json::from_slice(&fs::read(stored)?)?)
 }
-/// Exact release of `id` (the latest one if `version` is `None`).
-/// Published versions of `id` (unordered); empty if the catalog does not know the plugin.
+/// Published versions of `id` (unordered); empty if the catalog does not know the package.
 pub fn versions(location: &str, id: &str) -> Result<Vec<String>> {
     valid_id(id)?;
-    if let Some(index) = plugin_index(location, id)? {
+    validate_location(location)?;
+    if let Some(index) = package_index(location, id)? {
         return Ok(index.versions.into_keys().collect());
     }
-    let root = list(location)?;
-    if root.get("plugins").is_none() {
-        return Ok(Vec::new());
-    }
-    let catalog: Catalog =
-        serde_json::from_value(root).context(Error::Catalog, "invalid catalog")?;
-    Ok(catalog
-        .plugins
-        .get(id)
-        .map(|plugin| plugin.versions.keys().cloned().collect())
-        .unwrap_or_default())
+    root_directory(location)?;
+    Ok(Vec::new())
 }
 
-/// One spelling per catalog, for remembering where a plugin came from: the real path
+/// One spelling per catalog, for remembering where a package came from: the real path
 /// of a local `catalog.json`, or an HTTP(S) base URL without `/catalog.json`.
 pub fn canonical_location(location: &str) -> Result<String> {
     Ok(match local_file(location)? {
@@ -655,65 +774,35 @@ pub fn canonical_location(location: &str) -> Result<String> {
     })
 }
 
+/// Exact release of `id` (the latest one if `version` is `None`).
 pub fn lookup(location: &str, id: &str, version: Option<&str>) -> Result<Release> {
     valid_id(id)?;
     if let Some(version) = version {
         version_key(version)?;
     }
-    if let Some(index) = plugin_index(location, id)? {
+    validate_location(location)?;
+    if let Some(index) = package_index(location, id)? {
         let version = match version {
             Some(v) => v,
-            None => index
-                .versions
-                .keys()
-                .max_by_key(|v| version_key(v).unwrap())
-                .require(Error::Catalog, "plugin has no versions")?,
+            // The latest is the newest release; a pre-release is taken only by name.
+            None => match newest_eligible(index.versions.keys().map(String::as_str), None) {
+                Some(v) => v,
+                None if index.versions.is_empty() => fail!(Catalog, "package has no versions"),
+                None => fail!(
+                    Catalog,
+                    "{id} has only pre-release versions in the catalog; name one with a version"
+                ),
+            },
         };
         return read_release(location, id, version, &index);
     }
-    let value = list(location)?;
-    ensure!(
-        value.get("schema").and_then(|v| v.as_u64()) != Some(2),
-        Catalog,
-        "plugin not found in catalog: {id}"
-    );
-    let catalog: Catalog = serde_json::from_value(value).context(
-        Error::Catalog,
-        format!("invalid catalog while looking up {id}"),
-    )?;
-    let plugin = catalog
-        .plugins
-        .get(id)
-        .require(Error::Catalog, format!("plugin not found in catalog: {id}"))?;
-    let version = match version {
-        Some(v) => v.to_owned(),
-        None => {
-            plugin
-                .versions
-                .keys()
-                .map(|v| Ok((version_key(v)?, v.clone())))
-                .collect::<Result<Vec<_>>>()?
-                .into_iter()
-                .max()
-                .require(Error::Catalog, "plugin has no versions")?
-                .1
-        }
-    };
-    let release = plugin
-        .versions
-        .get(&version)
-        .require(
-            Error::Catalog,
-            format!("version not found in catalog: {id}@{version}"),
-        )?
-        .clone();
-    validate_release(&release, id, &version)?;
-    Ok(release)
+    root_directory(location)?;
+    fail!(Catalog, "package not found in catalog: {id}")
 }
-struct Scratch(PathBuf);
+pub(crate) struct Scratch(pub(crate) PathBuf);
 impl Scratch {
     /// Unique directory under the OS temporary directory (also across threads).
-    fn new(prefix: &str) -> Result<Self> {
+    pub(crate) fn new(prefix: &str) -> Result<Self> {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
             "{prefix}-{}-{}-{}",
@@ -732,7 +821,26 @@ impl Drop for Scratch {
 }
 /// Read the exact committed manifest, rather than an author's uncommitted working tree.
 pub fn register(url: &str, source: &str, reference: &str) -> Result<Release> {
-    register_build(url, source, reference, None)
+    register_with_ssh(url, source, reference, false)
+}
+
+/// Run with the caller's SSH policy.
+pub fn register_with_options(
+    url: &str,
+    source: &str,
+    reference: &str,
+    ssh_options: &crate::Options,
+) -> Result<Release> {
+    register_with_ssh(url, source, reference, ssh_options.custom_ssh)
+}
+
+pub(crate) fn register_with_ssh(
+    url: &str,
+    source: &str,
+    reference: &str,
+    custom_ssh: bool,
+) -> Result<Release> {
+    register_build_with_ssh(url, source, reference, None, custom_ssh)
 }
 pub fn register_build(
     url: &str,
@@ -740,10 +848,31 @@ pub fn register_build(
     reference: &str,
     build: Option<Build>,
 ) -> Result<Release> {
-    register_package(url, source, reference, None, build)
+    register_build_with_ssh(url, source, reference, build, false)
+}
+
+/// Run with the caller's SSH policy.
+pub fn register_build_with_options(
+    url: &str,
+    source: &str,
+    reference: &str,
+    build: Option<Build>,
+    ssh_options: &crate::Options,
+) -> Result<Release> {
+    register_build_with_ssh(url, source, reference, build, ssh_options.custom_ssh)
+}
+
+pub(crate) fn register_build_with_ssh(
+    url: &str,
+    source: &str,
+    reference: &str,
+    build: Option<Build>,
+    custom_ssh: bool,
+) -> Result<Release> {
+    register_package_with_ssh(url, source, reference, None, build, custom_ssh)
 }
 /// [`register_build`] of one package of a multi-package repository: `package` picks it
-/// (an `ID@VERSION` reference names it too); for a single-package repository a given
+/// (a repository tag does not select a package); for a single-package repository a given
 /// `package` must match the root manifest.
 pub fn register_package(
     url: &str,
@@ -752,10 +881,75 @@ pub fn register_package(
     package: Option<&str>,
     build: Option<Build>,
 ) -> Result<Release> {
-    let catalog_path = local_file(url)?.require(
-        Error::InvalidArgument,
-        "register writes only to a local catalog; prepare locally, then sync files to R2",
-    )?;
+    register_package_with_ssh(url, source, reference, package, build, false)
+}
+
+/// Run with the caller's SSH policy.
+pub fn register_package_with_options(
+    url: &str,
+    source: &str,
+    reference: &str,
+    package: Option<&str>,
+    build: Option<Build>,
+    ssh_options: &crate::Options,
+) -> Result<Release> {
+    register_package_with_ssh(
+        url,
+        source,
+        reference,
+        package,
+        build,
+        ssh_options.custom_ssh,
+    )
+}
+
+pub(crate) fn register_package_with_ssh(
+    url: &str,
+    source: &str,
+    reference: &str,
+    package: Option<&str>,
+    build: Option<Build>,
+    custom_ssh: bool,
+) -> Result<Release> {
+    Ok(register_package_report_with_options(
+        url,
+        source,
+        reference,
+        package,
+        build,
+        &crate::Options {
+            custom_ssh,
+            ..Default::default()
+        },
+    )?
+    .release)
+}
+
+/// Publication result; warnings are not stored in the catalog release.
+#[derive(Debug, Clone, Serialize)]
+pub struct RegisterReport {
+    pub release: Release,
+    pub warnings: Vec<String>,
+}
+
+/// Register a committed package and report warnings about omitted submodule contents.
+pub fn register_package_report_with_options(
+    url: &str,
+    source: &str,
+    reference: &str,
+    package: Option<&str>,
+    build: Option<Build>,
+    ssh_options: &crate::Options,
+) -> Result<RegisterReport> {
+    if let Some(build) = &build {
+        ensure!(
+            build.url.starts_with("https://"),
+            Catalog,
+            "build URL must use HTTPS"
+        );
+    }
+    let custom_ssh = ssh_options.custom_ssh;
+    let catalog_path = local_file(url)?.require(Error::InvalidArgument, WRITE_NEEDS_LOCAL)?;
     ensure!(
         !source.starts_with('-'),
         InvalidArgument,
@@ -767,47 +961,50 @@ pub fn register_package(
         source.to_owned()
     };
     let temp = Scratch::new("pm-register")?;
-    git(&temp.0, &["clone", "--no-hardlinks", "--", &source, "repo"])?;
+    transport::clone_repo(&temp.0, &source, "repo", custom_ssh)?;
     let repo = temp.0.join("repo");
-    let commit = resolve_ref(&repo, reference)?;
-    let found = packages::find_at(
-        &repo,
-        &commit,
-        package.or_else(|| packages::tag_id(reference)),
-    )?;
+    let commit = resolve_ref(&repo, reference, custom_ssh)?;
+    let found = packages::find_at_with_ssh(&repo, &commit, package, custom_ssh)?;
     let path = found.subdir().map(str::to_owned);
-    git(&repo, &["checkout", "--detach", &commit])?;
+    transport::checkout_detached(&repo, &commit, false, custom_ssh)?;
     let manifest = package_manifest(&repo, path.as_deref())?;
     version_key(&manifest.version)?;
+    let exported = hash_exported_dist(
+        &repo,
+        &commit,
+        path.as_deref(),
+        &temp.0.join("staged-dist"),
+        custom_ssh,
+    )?;
     let release = Release {
         manifest,
         source,
         commit,
         reference: reference.to_owned(),
-        files: hash_files(&package_dir(&repo, path.as_deref()).join("dist"))?,
+        files: exported.files,
         build,
         path,
     };
-    save_release(&catalog_path, &release)
+    Ok(RegisterReport {
+        release: save_release(&catalog_path, &release)?,
+        warnings: exported.warnings,
+    })
 }
 
-fn package_dir(repo: &Path, path: Option<&str>) -> PathBuf {
-    match path {
-        Some(path) => repo.join(path),
-        None => repo.to_path_buf(),
-    }
-}
 /// Packages whose releases a source publishes: `[None]` (the root package) for a
 /// single-package repository, every package listed at HEAD for a `gitpm.json` one. As
 /// for a root package, HEAD decides the identity: tags a fork keeps from its upstream
 /// are not releases of the fork. Folders at HEAD that are not valid packages are
 /// returned as warnings (the other packages are still published).
-fn source_packages(repo: &Path) -> Result<(Vec<Option<String>>, Vec<crate::releases::SkippedTag>)> {
-    if packages::config_at(repo, "HEAD")?.is_none() {
+fn source_packages(
+    repo: &Path,
+    custom_ssh: bool,
+) -> Result<(Vec<Option<String>>, Vec<crate::releases::SkippedTag>)> {
+    if packages::config_at_with_ssh(repo, "HEAD", custom_ssh)?.is_none() {
         return Ok((vec![None], Vec::new()));
     }
-    let head = git(repo, &["rev-parse", "HEAD"])?;
-    let layout = packages::layout_at(repo, &head)?.unwrap_or_default();
+    let head = transport::object_id(repo, "HEAD", custom_ssh)?;
+    let layout = packages::layout_at_with_ssh(repo, &head, custom_ssh)?.unwrap_or_default();
     let warnings = layout
         .problems
         .iter()
@@ -842,6 +1039,11 @@ pub struct UpdateSourcesReport {
     pub sources: Vec<String>,
     /// Release-looking tags that were skipped (broken manifest, version mismatch).
     pub skipped: Vec<SkippedSourceTag>,
+    /// Published versions whose regenerated release differs from the record (a moved
+    /// tag, or a manifest or file hashes that changed): the published record is kept.
+    /// Also includes warnings about submodules whose contents are not installed.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 /// A skipped tag of one source in [`UpdateSourcesReport`].
@@ -852,17 +1054,47 @@ pub struct SkippedSourceTag {
     pub tag: crate::releases::SkippedTag,
 }
 
-/// Read-only source discovery and hashing precede any catalog changes.
+/// `catalog-update` never writes into a verified catalog (an existing top-level
+/// `catalog.json` must also be a valid directory file).
+fn refuse_verified(location: &str) -> Result<()> {
+    if let Some(value) = read_json(location, "catalog.json")? {
+        ensure!(
+            !directory_of(value)?.verified,
+            InvalidArgument,
+            "{VERIFIED_TAKES_REGISTER_ONLY}"
+        );
+    }
+    Ok(())
+}
+/// Read-only source discovery and hashing precede any catalog changes. A verified
+/// catalog is refused with `invalid_argument` before anything is read or written.
 /// Removal from the source list never deletes already published releases.
 pub fn update_sources(
     location: &str,
     sources_file: &Path,
     progress: &mut dyn FnMut(Progress),
 ) -> Result<UpdateSourcesReport> {
-    let path = local_file(location)?.require(
-        Error::InvalidArgument,
-        "catalog-update requires a local output catalog",
-    )?;
+    update_sources_with_ssh(location, sources_file, progress, false)
+}
+
+/// Run with the caller's SSH policy.
+pub fn update_sources_with_options(
+    location: &str,
+    sources_file: &Path,
+    progress: &mut dyn FnMut(Progress),
+    ssh_options: &crate::Options,
+) -> Result<UpdateSourcesReport> {
+    update_sources_with_ssh(location, sources_file, progress, ssh_options.custom_ssh)
+}
+
+pub(crate) fn update_sources_with_ssh(
+    location: &str,
+    sources_file: &Path,
+    progress: &mut dyn FnMut(Progress),
+    custom_ssh: bool,
+) -> Result<UpdateSourcesReport> {
+    let path = local_file(location)?.require(Error::InvalidArgument, WRITE_NEEDS_LOCAL)?;
+    refuse_verified(location)?;
     let text = fs::read_to_string(sources_file).context(Error::Io, "cannot read sources file")?;
     let base = sources_file
         .parent()
@@ -898,6 +1130,7 @@ pub fn update_sources(
         "sources file has no repositories"
     );
     let temp = Scratch::new("pm-generate")?;
+    let mut warnings = Vec::new();
     let mut pending = BTreeMap::new();
     let mut owners = BTreeMap::new();
     let mut skipped = Vec::new();
@@ -906,28 +1139,25 @@ pub fn update_sources(
             source: source.clone(),
         });
         let repo = temp.0.join(number.to_string());
-        git(
+        transport::clone_repo(
             &temp.0,
-            &[
-                "clone",
-                "--no-hardlinks",
-                "--",
-                source,
-                repo.to_str().require(Error::Io, "invalid temporary path")?,
-            ],
+            source,
+            repo.to_str().require(Error::Io, "invalid temporary path")?,
+            custom_ssh,
         )?;
         let mut tags = Vec::new();
-        let (ids, warnings) = source_packages(&repo)?;
-        skipped.extend(warnings.into_iter().map(|tag| SkippedSourceTag {
+        let (ids, source_warnings) = source_packages(&repo, custom_ssh)?;
+        skipped.extend(source_warnings.into_iter().map(|tag| SkippedSourceTag {
             source: source.clone(),
             tag,
         }));
         for id in ids {
-            let found = match crate::releases::discover_all(&repo, id.as_deref()) {
-                // A package listed at HEAD without a release yet has nothing to publish.
-                Err(Error::NoReleases(_)) if id.is_some() => continue,
-                other => other?,
-            };
+            let found =
+                match crate::releases::discover_all_with_ssh(&repo, id.as_deref(), custom_ssh) {
+                    // A package listed at HEAD without a release yet has nothing to publish.
+                    Err(Error::NoReleases(_)) if id.is_some() => continue,
+                    other => other?,
+                };
             found.ensure_latest_is_valid()?;
             skipped.extend(found.skipped.into_iter().map(|tag| SkippedSourceTag {
                 source: source.clone(),
@@ -941,17 +1171,25 @@ pub fn update_sources(
                 ensure!(
                     owner == *source,
                     Catalog,
-                    "multiple sources claim plugin {id}"
+                    "multiple sources claim package {id}"
                 );
             }
-            git(&repo, &["checkout", "--detach", &tag.commit])?;
+            transport::checkout_detached(&repo, &tag.commit, false, custom_ssh)?;
             let path = (!tag.path.is_empty()).then_some(tag.path);
+            let exported = hash_exported_dist(
+                &repo,
+                &tag.commit,
+                path.as_deref(),
+                &temp.0.join("staged-dist"),
+                custom_ssh,
+            )?;
+            warnings.extend(exported.warnings);
             let release = Release {
                 manifest: package_manifest(&repo, path.as_deref())?,
                 source: source.clone(),
                 commit: tag.commit,
                 reference: tag.name,
-                files: hash_files(&package_dir(&repo, path.as_deref()).join("dist"))?,
+                files: exported.files,
                 build: None,
                 path,
             };
@@ -960,63 +1198,54 @@ pub fn update_sources(
         }
     }
     let _lock = lock(&path)?;
-    let root_value = read_json(location, "catalog.json")?;
-    let legacy = if let Some(value) = &root_value {
-        if value.get("plugins").is_some() {
-            Some(serde_json::from_value::<Catalog>(value.clone())?)
-        } else {
-            let directory: Directory = serde_json::from_value(value.clone())?;
-            ensure!(directory.schema == 2, Catalog, "unsupported catalog schema");
-            None
-        }
-    } else {
-        None
-    };
+    refuse_verified(location)?;
     // Check every source and immutable version before writing any release.
     for ((id, version), release) in &mut pending {
-        let old = if let Some(legacy) = &legacy {
-            if let Some(plugin) = legacy.plugins.get(id) {
-                ensure!(
-                    plugin.source == release.source,
-                    Catalog,
-                    "plugin {id} is registered from a different source"
-                );
-                plugin.versions.get(version).cloned()
-            } else {
-                None
+        if let Some(index) = package_index(location, id)? {
+            ensure!(
+                index.source == release.source,
+                Catalog,
+                "package {id} is registered from a different source"
+            );
+            if index.versions.contains_key(version) {
+                read_release(location, id, version, &index)?;
             }
-        } else {
-            if let Some(index) = plugin_index(location, id)? {
-                ensure!(
-                    index.source == release.source,
-                    Catalog,
-                    "plugin {id} is registered from a different source"
-                );
-                if index.versions.contains_key(version) {
-                    read_release(location, id, version, &index)?;
-                }
+            // Summary regeneration can also read a published version whose tag
+            // disappeared upstream. Validate it before publishing any package.
+            if let Some(latest) = summary_version(index.versions.keys().map(String::as_str)) {
+                read_release(location, id, latest, &index)?;
             }
-            read_json(
-                location,
-                &format!("{}/versions/{version}/release.json", folder(id)?),
-            )?
-            .map(serde_json::from_value::<Release>)
-            .transpose()?
-        };
+        }
+        let old = read_json(
+            location,
+            &format!("{}/versions/{version}/release.json", folder(id)?),
+        )?
+        .map(serde_json::from_value::<Release>)
+        .transpose()?;
         if let Some(old) = old {
             validate_release(&old, id, version)?;
             release.reference = old.reference.clone();
             release.build = old.build.clone();
-            if old.files.is_empty() {
-                release.files.clear();
+            // A published record is never replaced: a moved tag or a regenerated
+            // release that differs keeps the record, with a warning.
+            if serde_json::to_value(&old)? != serde_json::to_value(&*release)? {
+                warnings.push(if old.commit != release.commit {
+                    format!(
+                        "release {id}@{version}: tag now points to {}; the published record is kept",
+                        &release.commit[..release.commit.len().min(12)]
+                    )
+                } else {
+                    format!(
+                        "release {id}@{version} differs from the published record; the published record is kept"
+                    )
+                });
+                // Re-publish the index from the immutable record as well: an old
+                // catalog may still need its display summary regenerated.
+                *release = old;
             }
-            ensure!(
-                serde_json::to_value(&old)? == serde_json::to_value(&release)?,
-                VersionConflict,
-                "release {id}@{version} changed; refusing to replace published version"
-            );
         }
     }
+    let releases = pending.len();
     prepare_root(&path)?;
     for release in pending.values() {
         write_release(path.parent().unwrap(), release)?;
@@ -1025,27 +1254,22 @@ pub fn update_sources(
         link_directory(&path, first, &format!("{first}/"))?;
     }
     Ok(UpdateSourcesReport {
-        releases: pending.len(),
+        releases,
         sources: sources.into_iter().collect(),
         skipped,
+        warnings,
     })
 }
 
-/// Catalog layout version.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub enum CatalogFormat {
-    /// One monolithic JSON with all plugins.
-    V1,
-    /// Directory tree of static JSON files.
-    V2,
-}
-/// Plugin entry of the overview.
+/// Package entry of the overview.
 #[derive(Debug, Clone, Serialize)]
-pub struct PluginSummary {
+pub struct PackageSummary {
     pub id: String,
     pub source: String,
-    /// Versions in ascending numeric order.
+    /// Versions in ascending SemVer order, pre-releases included.
     pub versions: Vec<String>,
+    /// The newest version that is not a pre-release (what `install-catalog` without a
+    /// version installs); `None` when there is none.
     pub latest: Option<String>,
     /// Descriptive metadata of the latest release's manifest (`plugin.json`).
     pub title: Option<String>,
@@ -1067,44 +1291,65 @@ pub enum OverviewItem {
     Directory { depth: u32, name: String },
     /// The directory listing at `depth` has no children.
     Empty { depth: u32 },
-    /// A plugin index directly below the directory at `depth` (v1: depth 1).
-    Plugin { depth: u32, plugin: PluginSummary },
+    /// A package index directly below the directory at `depth`.
+    Package { depth: u32, package: PackageSummary },
 }
 /// Bounded, read-only catalog overview.
 #[derive(Debug, Clone, Serialize)]
 pub struct CatalogOverview {
     pub location: String,
     pub remote: bool,
-    pub format: CatalogFormat,
+    /// The top-level `catalog.json` has `"verified": true` (see [`is_verified`]).
+    pub verified: bool,
     pub items: Vec<OverviewItem>,
     /// The entry limit was reached; browse a subdirectory for more.
     pub truncated: bool,
 }
 pub const OVERVIEW_LIMIT: usize = 40;
 
+// Metadata follows the newest stable version, falling back to the newest
+// prerelease only for a package with no stable versions.
+fn summary_version<'a>(versions: impl Iterator<Item = &'a str> + Clone) -> Option<&'a str> {
+    newest_eligible(versions.clone(), None).or_else(|| {
+        versions
+            .filter_map(|v| version_key(v).ok().map(|key| (key, v)))
+            .max()
+            .map(|(_, v)| v)
+    })
+}
+
 fn summary(
     id: &str,
     source: &str,
     versions: impl Iterator<Item = String>,
-    latest: impl FnOnce(&str) -> Result<Release>,
-) -> Result<PluginSummary> {
+    latest: serde_json::Value,
+) -> Result<PackageSummary> {
     valid_id(id)?;
     let mut versions = versions
         .map(|v| Ok((version_key(&v)?, v)))
         .collect::<Result<Vec<_>>>()?;
     versions.sort();
     let versions: Vec<String> = versions.into_iter().map(|(_, v)| v).collect();
-    // Display only: a missing or broken latest release gives no metadata (install
-    // verifies releases); the overview never fails because of it.
-    let metadata = versions
-        .last()
-        .and_then(|version| latest(version).ok())
-        .map(|release| release.metadata())
+    let newest = newest_eligible(versions.iter().map(String::as_str), None).map(str::to_owned);
+    // A summary must describe the selected version; invalid display data only
+    // removes this package's metadata and never triggers a release request.
+    let metadata = serde_json::from_value::<IndexSummary>(latest)
+        .ok()
+        .filter(|latest| {
+            Some(latest.version.as_str()) == summary_version(versions.iter().map(String::as_str))
+        });
+    let metadata = metadata
+        .map(|latest| crate::Metadata {
+            title: latest.title,
+            description: latest.description,
+            provides: latest.provides,
+            tags: latest.tags,
+        })
         .unwrap_or_default();
-    Ok(PluginSummary {
+    Ok(PackageSummary {
         id: id.into(),
         source: source.into(),
-        latest: versions.last().cloned(),
+        latest: newest,
         versions,
         title: metadata.title,
         description: metadata.description,
@@ -1115,6 +1360,7 @@ fn summary(
 
 /// Bounded, read-only overview. Follows only validated relative directory links.
 pub fn browse(location: &str) -> Result<CatalogOverview> {
+    validate_location(location)?;
     fn walk(
         location: &str,
         prefix: &str,
@@ -1124,9 +1370,7 @@ pub fn browse(location: &str) -> Result<CatalogOverview> {
         items: &mut Vec<OverviewItem>,
     ) -> Result<()> {
         ensure!(depth <= 8, Catalog, "catalog nesting is too deep");
-        let directory: Directory =
-            serde_json::from_value(value).context(Error::Catalog, "invalid directory catalog")?;
-        ensure!(directory.schema == 2, Catalog, "unsupported catalog schema");
+        let directory = directory_of(value)?;
         if directory.directories.is_empty() {
             items.push(OverviewItem::Empty { depth });
         }
@@ -1147,8 +1391,8 @@ pub fn browse(location: &str) -> Result<CatalogOverview> {
                 name: name.clone(),
             });
             if let Some(value) = read_json(location, &format!("{child}plugin.json"))? {
-                let plugin: PluginIndex = serde_json::from_value(value)?;
-                ensure!(plugin.schema == 2, Catalog, "unsupported plugin schema");
+                let plugin: PackageIndex = serde_json::from_value(value)?;
+                ensure!(plugin.schema == 1, Catalog, "unsupported package schema");
                 for (version, link) in &plugin.versions {
                     version_key(version)?;
                     ensure!(
@@ -1161,22 +1405,16 @@ pub fn browse(location: &str) -> Result<CatalogOverview> {
                     &plugin.id,
                     &plugin.source,
                     plugin.versions.keys().cloned(),
-                    |version| {
-                        let link = &plugin.versions[version];
-                        let value = read_json(location, &format!("{child}{link}"))?
-                            .require(Error::Catalog, "release not found")?;
-                        serde_json::from_value(value)
-                            .context(Error::Catalog, "invalid catalog release")
-                    },
+                    plugin.latest,
                 )?;
-                items.push(OverviewItem::Plugin {
+                items.push(OverviewItem::Package {
                     depth,
-                    plugin: entry,
+                    package: entry,
                 });
             } else {
                 let value =
                     read_json(location, &format!("{child}catalog.json"))?.ok_or_else(|| {
-                        Error::Catalog(format!("missing catalog/plugin index in {child}"))
+                        Error::Catalog(format!("missing catalog/package index in {child}"))
                     })?;
                 walk(location, &child, value, depth + 1, remaining, items)?;
             }
@@ -1185,33 +1423,14 @@ pub fn browse(location: &str) -> Result<CatalogOverview> {
     }
     let remote = local_file(location)?.is_none();
     let value = list(location)?;
+    let verified = directory_of(value.clone())?.verified;
     let mut remaining = OVERVIEW_LIMIT;
     let mut items = Vec::new();
-    let format = if value.get("plugins").is_some() {
-        let catalog: Catalog = serde_json::from_value(value)?;
-        for (id, plugin) in catalog.plugins.iter().take(OVERVIEW_LIMIT) {
-            items.push(OverviewItem::Plugin {
-                depth: 1,
-                plugin: summary(id, &plugin.source, plugin.versions.keys().cloned(), |v| {
-                    Ok(plugin.versions[v].clone())
-                })?,
-            });
-        }
-        if catalog.plugins.is_empty() {
-            items.push(OverviewItem::Empty { depth: 1 });
-        }
-        if catalog.plugins.len() > OVERVIEW_LIMIT {
-            remaining = 0;
-        }
-        CatalogFormat::V1
-    } else {
-        walk(location, "", value, 1, &mut remaining, &mut items)?;
-        CatalogFormat::V2
-    };
+    walk(location, "", value, 1, &mut remaining, &mut items)?;
     Ok(CatalogOverview {
         location: location.into(),
         remote,
-        format,
+        verified,
         items,
         truncated: remaining == 0,
     })
@@ -1225,6 +1444,7 @@ pub(crate) mod tests {
         write_json,
     };
     use serde_json::json;
+    use std::process::Command;
 
     const SOURCE: &str = "https://example.com/demo1.git";
     const ABC: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
@@ -1262,14 +1482,33 @@ pub(crate) mod tests {
     // ---- versions, IDs, hashes ------------------------------------------------------
 
     #[test]
-    fn version_key_is_numeric_major_minor_patch() {
-        assert_eq!(version_key("0.0.0").unwrap(), (0, 0, 0));
-        assert_eq!(version_key("1.10.0").unwrap(), (1, 10, 0));
-        assert!(version_key("1.10.0").unwrap() > version_key("1.9.0").unwrap());
-        assert!(version_key("2.0.0").unwrap() > version_key("1.99.99").unwrap());
-        assert!(version_key("0.1.10").unwrap() > version_key("0.1.9").unwrap());
+    fn version_key_follows_semver_precedence() {
+        let v = |text: &str| version_key(text).unwrap();
+        assert_eq!(v("0.0.0"), semver::Version::new(0, 0, 0));
+        assert_eq!(v("1.10.0"), semver::Version::new(1, 10, 0));
+        assert!(v("1.10.0") > v("1.9.0"));
+        assert!(v("2.0.0") > v("1.99.99"));
+        assert!(v("0.1.10") > v("0.1.9"));
         let max = format!("{0}.{0}.{0}", u64::MAX);
-        assert_eq!(version_key(&max).unwrap(), (u64::MAX, u64::MAX, u64::MAX));
+        assert_eq!(v(&max), semver::Version::new(u64::MAX, u64::MAX, u64::MAX));
+        // Pre-releases come before their release, ordered by identifiers.
+        let ordered = [
+            "1.0.0-0",
+            "1.0.0-alpha",
+            "1.0.0-alpha.1",
+            "1.0.0-alpha.beta",
+            "1.0.0-beta",
+            "1.0.0-beta.2",
+            "1.0.0-beta.11",
+            "1.0.0-rc.1",
+            "1.0.0",
+            "1.0.1-x-y",
+            "1.0.1",
+        ];
+        for pair in ordered.windows(2) {
+            assert!(v(pair[0]) < v(pair[1]), "{} < {}", pair[0], pair[1]);
+        }
+        assert_eq!(v("1.3.0-beta.1").to_string(), "1.3.0-beta.1");
     }
 
     #[test]
@@ -1280,9 +1519,15 @@ pub(crate) mod tests {
             "1.0",
             "1.0.0.0",
             "v1.0.0",
-            "1.0.0-beta",
-            "1.0.0-rc.1",
             "1.0.0+build.5",
+            "1.0.0-beta+build",
+            "1.0.0-",
+            "1.0.0-beta.",
+            "1.0.0-.beta",
+            "1.0.0-01",
+            "1.0.0-beta.01",
+            "1.0.0-beta_1",
+            "1.0.0-bêta",
             "01.0.0",
             "1.00.0",
             "1.0.01",
@@ -1301,14 +1546,31 @@ pub(crate) mod tests {
                 "{bad:?}"
             );
         }
+        for good in [
+            "1.0.0-beta",
+            "1.0.0-rc.1",
+            "1.0.0-0",
+            "1.0.0-x-y.7",
+            "1.0.0--",
+        ] {
+            assert!(version_key(good).is_ok(), "{good:?}");
+        }
     }
 
     #[test]
-    fn folders_separate_legacy_and_namespaced_ids() {
-        assert_eq!(folder("demo1").unwrap(), "legacy/demo1");
-        assert_eq!(folder("dan/demo1").unwrap(), "namespaces/dan/demo1");
+    fn folders_are_uuid_ids() {
+        assert_eq!(
+            folder("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc").unwrap(),
+            "packages/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc"
+        );
+        assert_eq!(folder("demo1").unwrap_err().kind(), "invalid_id");
         assert_eq!(folder("../x").unwrap_err().kind(), "invalid_id");
-        assert_eq!(folder("a/b/c").unwrap_err().kind(), "invalid_id");
+        assert_eq!(
+            folder("75494f24-1c7e-5480-9e39-738ff3d038c4/c")
+                .unwrap_err()
+                .kind(),
+            "invalid_id"
+        );
     }
 
     #[test]
@@ -1366,43 +1628,42 @@ pub(crate) mod tests {
 
     #[test]
     fn validate_release_checks_identity_commit_paths_and_build() {
-        let good = release("dan/demo1", "1.0.0", SOURCE, 'a');
-        assert!(validate_release(&good, "dan/demo1", "1.0.0").is_ok());
+        let good = release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "1.0.0", SOURCE, 'a');
+        assert!(validate_release(&good, "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "1.0.0").is_ok());
         let mut sha256 = good.clone();
         sha256.commit = "b".repeat(64);
-        assert!(validate_release(&sha256, "dan/demo1", "1.0.0").is_ok());
+        assert!(validate_release(&sha256, "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "1.0.0").is_ok());
         let mut with_build = good.clone();
         with_build.build = Some(Build {
             url: "https://pkg.example/demo1.tar.zst".into(),
             sha256: ABC.to_uppercase(),
         });
-        assert!(validate_release(&with_build, "dan/demo1", "1.0.0").is_ok());
+        assert!(
+            validate_release(&with_build, "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "1.0.0").is_ok()
+        );
         let mut no_files = good.clone();
         no_files.files.clear();
         assert_eq!(
-            validate_release(&no_files, "dan/demo1", "1.0.0")
+            validate_release(&no_files, "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "1.0.0")
                 .unwrap_err()
                 .to_string(),
-            "catalog release has no file hashes"
+            "catalog release of ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc has no file hashes"
         );
-        let mut legacy = release("demo1", "1.0.0", SOURCE, 'a');
-        legacy.files.clear();
-        assert!(validate_release(&legacy, "demo1", "1.0.0").is_ok());
 
         assert_eq!(
-            validate_release(&good, "dan/other", "1.0.0")
+            validate_release(&good, "95d14dc8-6dfc-5022-9fd1-7146ee6aee58", "1.0.0")
                 .unwrap_err()
                 .kind(),
             "catalog"
         );
         assert_eq!(
-            validate_release(&good, "dan/demo1", "1.0.1")
+            validate_release(&good, "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "1.0.1")
                 .unwrap_err()
                 .kind(),
             "catalog"
         );
         assert_eq!(
-            validate_release(&good, "dan/demo1", "1.0")
+            validate_release(&good, "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "1.0")
                 .unwrap_err()
                 .kind(),
             "invalid_version"
@@ -1464,20 +1725,26 @@ pub(crate) mod tests {
         for (name, change) in cases {
             let mut r = good.clone();
             change(&mut r);
-            let error = validate_release(&r, "dan/demo1", "1.0.0").unwrap_err();
+            let error =
+                validate_release(&r, "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "1.0.0").unwrap_err();
             assert_eq!(error.kind(), "catalog", "{name}");
         }
     }
 
     #[test]
-    fn release_json_omits_empty_files_and_missing_build_and_reads_old_releases() {
-        let mut r = release("demo1", "0.1.2", "git@github.com:x/demo1.git", '3');
+    fn release_json_omits_empty_files_and_missing_build() {
+        let mut r = release(
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+            "0.1.2",
+            "git@github.com:x/demo1.git",
+            '3',
+        );
         r.files.clear();
         let value = serde_json::to_value(&r).unwrap();
         assert_eq!(
             value,
             json!({
-                "manifest": {"id": "demo1", "version": "0.1.2", "dependencies": {}},
+                "manifest": {"id": "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "name": "fixture", "version": "0.1.2", "dependencies": {}},
                 "source": "git@github.com:x/demo1.git",
                 "commit": "3".repeat(40),
                 "reference": "v0.1.2"
@@ -1487,8 +1754,8 @@ pub(crate) mod tests {
         assert!(back.files.is_empty() && back.build.is_none());
 
         let full = json!({
-            "manifest": {"id": "dan/demo1", "version": "0.1.0", "dependencies": {}},
-            "source": SOURCE, "commit": "a".repeat(40), "reference": "dan/demo1@0.1.0",
+            "manifest": {"id": "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "name": "fixture", "version": "0.1.0", "dependencies": {}},
+            "source": SOURCE, "commit": "a".repeat(40), "reference": "v0.1.0",
             "files": {"index.js": {"sha256": ABC, "size": 3}},
             "build": {"url": "https://pkg.example/x.tar.zst", "sha256": ABC}
         });
@@ -1551,58 +1818,66 @@ pub(crate) mod tests {
     fn v2_layout_links_directories_bottom_up() {
         let dir = TempDir::new("catalog");
         let cat = dir.join("catalog");
-        let stored = save(&cat, &release("dan/demo1", "0.1.0", SOURCE, 'a'));
-        assert_eq!(stored.manifest.id, "dan/demo1");
+        let stored = save(
+            &cat,
+            &release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.1.0", SOURCE, 'a'),
+        );
+        assert_eq!(stored.manifest.id, "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         assert_eq!(
             files(&cat),
             [
                 "catalog.json",
-                "namespaces/catalog.json",
-                "namespaces/dan/catalog.json",
-                "namespaces/dan/demo1/plugin.json",
-                "namespaces/dan/demo1/versions/0.1.0/release.json",
+                "packages/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/plugin.json",
+                "packages/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/versions/0.1.0/release.json",
+                "packages/catalog.json",
             ]
         );
         let dirs = |p: &str| read(&cat.join(p));
         assert_eq!(
             dirs("catalog.json"),
-            json!({"schema": 2, "directories": {"namespaces": "namespaces/"}})
+            json!({"schema": 1, "directories": {"packages": "packages/"}})
         );
         assert_eq!(
-            dirs("namespaces/catalog.json"),
-            json!({"schema": 2, "directories": {"dan": "dan/"}})
+            dirs("packages/catalog.json"),
+            json!({"schema": 1, "directories": {"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc": "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/"}})
         );
         assert_eq!(
-            dirs("namespaces/dan/catalog.json"),
-            json!({"schema": 2, "directories": {"demo1": "demo1/"}})
+            dirs("packages/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/plugin.json"),
+            json!({"schema": 1, "id": "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "source": SOURCE,
+                   "versions": {"0.1.0": "versions/0.1.0/release.json"},
+                   "latest": {"version": "0.1.0", "title": null, "description": null,
+                              "provides": [], "tags": []}})
         );
         assert_eq!(
-            dirs("namespaces/dan/demo1/plugin.json"),
-            json!({"schema": 2, "id": "dan/demo1", "source": SOURCE,
-                   "versions": {"0.1.0": "versions/0.1.0/release.json"}})
-        );
-        assert_eq!(
-            dirs("namespaces/dan/demo1/versions/0.1.0/release.json"),
+            dirs("packages/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/versions/0.1.0/release.json"),
             serde_json::to_value(&stored).unwrap()
         );
         let text = fs::read_to_string(cat.join("catalog.json")).unwrap();
         assert!(text.ends_with("}\n"), "pretty JSON with newline");
 
-        save(&cat, &release("dan/demo1", "0.2.0", SOURCE, 'b'));
         save(
             &cat,
-            &release("demo2", "1.0.0", "https://example.com/demo2.git", 'c'),
+            &release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.2.0", SOURCE, 'b'),
+        );
+        save(
+            &cat,
+            &release(
+                "cad8c1f7-4992-5780-b000-dec19c545b24",
+                "1.0.0",
+                "https://example.com/demo2.git",
+                'c',
+            ),
         );
         assert_eq!(
             dirs("catalog.json"),
-            json!({"schema": 2, "directories": {"legacy": "legacy/", "namespaces": "namespaces/"}})
+            json!({"schema": 1, "directories": {"packages": "packages/"}})
         );
         assert_eq!(
-            dirs("legacy/catalog.json"),
-            json!({"schema": 2, "directories": {"demo2": "demo2/"}})
+            dirs("packages/catalog.json"),
+            json!({"schema": 1, "directories": {"ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc": "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/", "cad8c1f7-4992-5780-b000-dec19c545b24": "cad8c1f7-4992-5780-b000-dec19c545b24/"}})
         );
         assert_eq!(
-            dirs("namespaces/dan/demo1/plugin.json")["versions"],
+            dirs("packages/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/plugin.json")["versions"],
             json!({"0.1.0": "versions/0.1.0/release.json", "0.2.0": "versions/0.2.0/release.json"})
         );
         // No lock or temporary files remain.
@@ -1617,7 +1892,7 @@ pub(crate) mod tests {
     fn published_versions_are_immutable() {
         let dir = TempDir::new("catalog");
         let cat = dir.join("catalog");
-        let original = release("dan/demo1", "0.1.0", SOURCE, 'a');
+        let original = release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.1.0", SOURCE, 'a');
         save(&cat, &original);
         let before = tree_hash(&cat);
         // Identical retry and an alternate ref to the same commit are no-ops.
@@ -1625,7 +1900,7 @@ pub(crate) mod tests {
         let mut alias = original.clone();
         alias.reference = "a".repeat(40);
         let stored = save(&cat, &alias);
-        assert_eq!(stored.reference, "dan/demo1@0.1.0");
+        assert_eq!(stored.reference, "v0.1.0");
         assert_eq!(tree_hash(&cat), before);
 
         let path = cat.join("catalog.json");
@@ -1643,10 +1918,15 @@ pub(crate) mod tests {
             assert_eq!(error.kind(), "version_conflict");
             assert_eq!(
                 error.to_string(),
-                "version dan/demo1@0.1.0 already exists and is immutable"
+                "version ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc@0.1.0 already exists and is immutable"
             );
         }
-        let mut other_source = release("dan/demo1", "0.2.0", "https://elsewhere/x.git", 'c');
+        let mut other_source = release(
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+            "0.2.0",
+            "https://elsewhere/x.git",
+            'c',
+        );
         let error = save_release(&path, &other_source).unwrap_err();
         assert_eq!(error.kind(), "catalog");
         assert!(error.to_string().contains("different source"));
@@ -1660,17 +1940,32 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn legacy_release_without_files_stays_without_files_on_retry() {
+    fn release_without_hashes_is_refused() {
         let dir = TempDir::new("catalog");
         let cat = dir.join("catalog");
-        let mut legacy = release("demo1", "0.1.0", SOURCE, 'a');
-        legacy.files.clear();
-        save(&cat, &legacy);
-        let before = tree_hash(&cat);
-        // A new registration computes hashes; they are not added to the old release.
-        let stored = save(&cat, &release("demo1", "0.1.0", SOURCE, 'a'));
-        assert!(stored.files.is_empty());
-        assert_eq!(tree_hash(&cat), before);
+        let mut bare = release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.1.0", SOURCE, 'a');
+        bare.files.clear();
+        let error = save_release(&cat.join("catalog.json"), &bare).unwrap_err();
+        assert_eq!(error.kind(), "catalog", "{error}");
+        assert!(!cat.join("packages").exists(), "nothing written");
+        // A published record without `files` is refused when it is read.
+        save(
+            &cat,
+            &release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.1.0", SOURCE, 'a'),
+        );
+        let stored =
+            cat.join("packages/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/versions/0.1.0/release.json");
+        let mut value = read(&stored);
+        value.as_object_mut().unwrap().remove("files");
+        write_json(&stored, &value);
+        let error = lookup(
+            loc(&cat),
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+            Some("0.1.0"),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), "catalog");
+        assert!(error.to_string().contains("no file hashes"), "{error}");
     }
 
     #[test]
@@ -1681,18 +1976,64 @@ pub(crate) mod tests {
         let lock_path = dir.join(".catalog.catalog.lock");
         let path = cat.join("catalog.json");
         let held = lock(&path).unwrap();
-        let error = save_release(&path, &release("dan/demo1", "0.1.0", SOURCE, 'a')).unwrap_err();
+        let error = save_release(
+            &path,
+            &release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.1.0", SOURCE, 'a'),
+        )
+        .unwrap_err();
         assert_eq!(error.kind(), "locked");
-        assert_eq!(migrate(loc(&cat)).unwrap_err().kind(), "locked");
         assert!(files(&cat).is_empty(), "nothing written while locked");
         drop(held);
-        save(&cat, &release("dan/demo1", "0.1.0", SOURCE, 'a'));
+        save(
+            &cat,
+            &release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.1.0", SOURCE, 'a'),
+        );
         // A failed write releases the lock too.
-        let mut bad = release("dan/demo1", "0.1.0", SOURCE, 'b');
+        let mut bad = release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.1.0", SOURCE, 'b');
         bad.commit = "c".repeat(40);
         assert!(save_release(&path, &bad).is_err());
         drop(lock(&path).expect("released after a failed write"));
         assert!(lock_path.exists(), "the lock file is kept");
+    }
+
+    #[test]
+    fn refused_second_catalog_writer_keeps_the_first_lock() {
+        let dir = TempDir::new("catalog");
+        let path = dir.join("catalog/catalog.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let first = lock(&path).unwrap();
+        let error = save_release(
+            &path,
+            &release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.1.0", SOURCE, 'a'),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), "locked");
+
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "catalog::tests::probe_catalog_lock_helper",
+                "--ignored",
+            ])
+            .env("GITPM_TEST_PROBE_CATALOG", &path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success()
+                && String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"),
+            "child acquired the first catalog writer's lock: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        drop(first);
+    }
+
+    #[test]
+    #[ignore = "helper process for refused_second_catalog_writer_keeps_the_first_lock"]
+    fn probe_catalog_lock_helper() {
+        let Some(path) = std::env::var_os("GITPM_TEST_PROBE_CATALOG") else {
+            return;
+        };
+        assert_eq!(lock(Path::new(&path)).err().unwrap().kind(), "locked");
     }
 
     #[test]
@@ -1704,7 +2045,7 @@ pub(crate) mod tests {
         fs::write(dir.join(".catalog.catalog.lock"), "").unwrap();
         save_release(
             &cat.join("catalog.json"),
-            &release("dan/demo1", "0.1.0", SOURCE, 'a'),
+            &release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.1.0", SOURCE, 'a'),
         )
         .expect("a lock without a live owner must not block forever");
     }
@@ -1713,14 +2054,24 @@ pub(crate) mod tests {
     fn stale_temporary_file_from_a_dead_writer_does_not_block() {
         let dir = TempDir::new("catalog");
         let cat = dir.join("catalog");
-        save(&cat, &release("dan/demo1", "0.1.0", SOURCE, 'a'));
-        fs::write(cat.join("namespaces/dan/demo1/plugin.json.tmp"), "{partial").unwrap();
+        save(
+            &cat,
+            &release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.1.0", SOURCE, 'a'),
+        );
+        fs::write(
+            cat.join("packages/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/plugin.json.tmp"),
+            "{partial",
+        )
+        .unwrap();
         save_release(
             &cat.join("catalog.json"),
-            &release("dan/demo1", "0.2.0", SOURCE, 'b'),
+            &release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.2.0", SOURCE, 'b'),
         )
         .expect("a stale temporary file must not block new releases");
-        assert!(!cat.join("namespaces/dan/demo1/plugin.json.tmp").exists());
+        assert!(
+            !cat.join("packages/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/plugin.json.tmp")
+                .exists()
+        );
     }
 
     // ---- reading --------------------------------------------------------------------
@@ -1730,9 +2081,12 @@ pub(crate) mod tests {
         let dir = TempDir::new("catalog");
         let cat = dir.join("catalog");
         for (v, c) in [("1.9.0", 'a'), ("1.10.0", 'b'), ("1.2.0", 'c')] {
-            save(&cat, &release("dan/demo1", v, SOURCE, c));
+            save(
+                &cat,
+                &release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", v, SOURCE, c),
+            );
         }
-        let latest = lookup(loc(&cat), "dan/demo1", None).unwrap();
+        let latest = lookup(loc(&cat), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", None).unwrap();
         assert_eq!(
             (latest.manifest.version.as_str(), latest.commit),
             ("1.10.0", "b".repeat(40))
@@ -1740,54 +2094,80 @@ pub(crate) mod tests {
         // Also through the JSON file path.
         let file = cat.join("catalog.json");
         assert_eq!(
-            lookup(file.to_str().unwrap(), "dan/demo1", Some("1.2.0"))
-                .unwrap()
-                .commit,
+            lookup(
+                file.to_str().unwrap(),
+                "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+                Some("1.2.0")
+            )
+            .unwrap()
+            .commit,
             "c".repeat(40)
         );
-        let error = lookup(loc(&cat), "dan/demo1", Some("2.0.0")).unwrap_err();
+        let error = lookup(
+            loc(&cat),
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+            Some("2.0.0"),
+        )
+        .unwrap_err();
         assert_eq!(
             (error.kind(), error.to_string()),
             (
                 "catalog",
-                "version not found in catalog: dan/demo1@2.0.0".into()
+                "version not found in catalog: ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc@2.0.0".into()
             )
         );
         assert_eq!(
-            lookup(loc(&cat), "dan/demo1", Some("2.0"))
-                .unwrap_err()
-                .kind(),
+            lookup(
+                loc(&cat),
+                "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+                Some("2.0")
+            )
+            .unwrap_err()
+            .kind(),
             "invalid_version"
         );
         assert_eq!(
             lookup(loc(&cat), "../x", None).unwrap_err().kind(),
             "invalid_id"
         );
-        let error = lookup(loc(&cat), "dan/missing", None).unwrap_err();
+        let error = lookup(loc(&cat), "a68376c0-a262-545a-a4f8-afe9998880a6", None).unwrap_err();
         assert_eq!(
-            (error.kind(), error.to_string().contains("plugin not found")),
+            (
+                error.kind(),
+                error.to_string().contains("package not found")
+            ),
             ("catalog", true)
         );
-        assert_eq!(
-            lookup(loc(&dir.join("nowhere")), "dan/demo1", None)
-                .unwrap_err()
-                .kind(),
-            "catalog"
-        );
+        // A local catalog location that does not exist is a caller error, not "no catalog".
+        let error = lookup(
+            loc(&dir.join("nowhere")),
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), "invalid_argument");
+        assert!(error.to_string().ends_with("does not exist"), "{error}");
     }
 
     #[test]
     fn tampered_v2_files_are_rejected() {
         let dir = TempDir::new("catalog");
         let cat = dir.join("catalog");
-        save(&cat, &release("dan/demo1", "0.1.0", SOURCE, 'a'));
-        let index = cat.join("namespaces/dan/demo1/plugin.json");
-        let release_path = cat.join("namespaces/dan/demo1/versions/0.1.0/release.json");
+        save(
+            &cat,
+            &release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.1.0", SOURCE, 'a'),
+        );
+        let index = cat.join("packages/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/plugin.json");
+        let release_path =
+            cat.join("packages/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/versions/0.1.0/release.json");
         let original_index = read(&index);
         let original_release = read(&release_path);
         let index_cases = [
-            (json!({"schema": 3}), "catalog"),
-            (json!({"id": "dan/other"}), "catalog"),
+            (json!({"schema": 2}), "catalog"),
+            (
+                json!({"id": "95d14dc8-6dfc-5022-9fd1-7146ee6aee58"}),
+                "catalog",
+            ),
             (
                 json!({"versions": {"0.1.0": "../../evil/release.json"}}),
                 "catalog",
@@ -1804,7 +2184,8 @@ pub(crate) mod tests {
                 value[k] = v.clone();
             }
             write_json(&index, &value);
-            let error = lookup(loc(&cat), "dan/demo1", None).unwrap_err();
+            let error =
+                lookup(loc(&cat), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", None).unwrap_err();
             assert_eq!(error.kind(), kind, "{patch}: {error}");
         }
         write_json(&index, &original_index);
@@ -1815,7 +2196,7 @@ pub(crate) mod tests {
             ),
             (json!({"commit": "xyz"}), "invalid catalog commit"),
             (
-                json!({"manifest": {"id": "dan/demo1", "version": "0.1.1"}}),
+                json!({"manifest": {"id": "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "name": "fixture", "version": "0.1.1"}}),
                 "catalog identity mismatch",
             ),
         ];
@@ -1825,7 +2206,12 @@ pub(crate) mod tests {
                 value[k] = v.clone();
             }
             write_json(&release_path, &value);
-            let error = lookup(loc(&cat), "dan/demo1", Some("0.1.0")).unwrap_err();
+            let error = lookup(
+                loc(&cat),
+                "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+                Some("0.1.0"),
+            )
+            .unwrap_err();
             assert_eq!(
                 (error.kind(), error.to_string()),
                 ("catalog", message.into())
@@ -1833,13 +2219,13 @@ pub(crate) mod tests {
         }
         fs::remove_file(&release_path).unwrap();
         assert_eq!(
-            lookup(loc(&cat), "dan/demo1", None)
+            lookup(loc(&cat), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", None)
                 .unwrap_err()
                 .to_string(),
             "release not found"
         );
         fs::write(&release_path, "{not json").unwrap();
-        let error = lookup(loc(&cat), "dan/demo1", None).unwrap_err();
+        let error = lookup(loc(&cat), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", None).unwrap_err();
         assert!(
             error.to_string().starts_with("invalid catalog JSON"),
             "{error}"
@@ -1851,21 +2237,36 @@ pub(crate) mod tests {
         let dir = TempDir::new("catalog");
         let cat = dir.join("catalog");
         for (v, c) in [("1.9.0", 'a'), ("1.10.0", 'b'), ("1.2.0", 'c')] {
-            save(&cat, &release("dan/demo1", v, SOURCE, c));
+            save(
+                &cat,
+                &release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", v, SOURCE, c),
+            );
         }
-        save(&cat, &release("dan/other", "1.0.0", SOURCE, 'd'));
-        // Another plugin's broken index is never read.
-        fs::write(cat.join("namespaces/dan/other/plugin.json"), "{broken").unwrap();
+        save(
+            &cat,
+            &release("95d14dc8-6dfc-5022-9fd1-7146ee6aee58", "1.0.0", SOURCE, 'd'),
+        );
+        // Another package's broken index is never read.
+        fs::write(
+            cat.join("packages/95d14dc8-6dfc-5022-9fd1-7146ee6aee58/plugin.json"),
+            "{broken",
+        )
+        .unwrap();
         // So is a version that is neither latest nor installed.
         fs::write(
-            cat.join("namespaces/dan/demo1/versions/1.9.0/release.json"),
+            cat.join("packages/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/versions/1.9.0/release.json"),
             "{broken",
         )
         .unwrap();
 
-        let state = state_with("dan/demo1", SOURCE, "1.2.0", &"c".repeat(40));
+        let state = state_with(
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+            SOURCE,
+            "1.2.0",
+            &"c".repeat(40),
+        );
         let selected = selected(loc(&cat), &state).unwrap();
-        let plugin = &selected.plugins["dan/demo1"];
+        let plugin = &selected.packages["ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc"];
         assert_eq!(plugin.source, SOURCE);
         assert_eq!(
             plugin.versions.keys().collect::<Vec<_>>(),
@@ -1873,204 +2274,319 @@ pub(crate) mod tests {
         );
 
         // Installed version unknown to the catalog: only the latest.
-        let state = state_with("dan/demo1", SOURCE, "1.5.0", &"e".repeat(40));
-        let selected_versions = super::selected(loc(&cat), &state).unwrap().plugins["dan/demo1"]
+        let state = state_with(
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+            SOURCE,
+            "1.5.0",
+            &"e".repeat(40),
+        );
+        let selected_versions = super::selected(loc(&cat), &state).unwrap().packages["ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc"]
             .versions
             .keys()
             .cloned()
             .collect::<Vec<_>>();
         assert_eq!(selected_versions, ["1.10.0"]);
 
-        // A plugin absent from a v2 catalog is simply missing.
-        let state = state_with("dan/absent", SOURCE, "1.0.0", &"e".repeat(40));
+        // A package absent from a v2 catalog is simply missing.
+        let state = state_with(
+            "cb558618-2f22-51d5-8502-e570cadb5534",
+            SOURCE,
+            "1.0.0",
+            &"e".repeat(40),
+        );
         assert!(
             super::selected(loc(&cat), &state)
                 .unwrap()
-                .plugins
+                .packages
                 .is_empty()
         );
-    }
-
-    fn v1(dir: &Path) -> serde_json::Value {
-        let mut legacy =
-            serde_json::to_value(release("demo1", "0.1.2", "git@github.com:x/demo1.git", '3'))
-                .unwrap();
-        legacy.as_object_mut().unwrap().remove("files");
-        let value = json!({
-            "plugins": {
-                "demo1": {
-                    "source": "git@github.com:x/demo1.git",
-                    "versions": {"0.1.2": legacy}
-                },
-                "dan/demo2": {
-                    "source": SOURCE,
-                    "versions": {
-                        "1.9.0": release("dan/demo2", "1.9.0", SOURCE, 'a'),
-                        "1.10.0": release("dan/demo2", "1.10.0", SOURCE, 'b')
-                    }
-                }
-            }
-        });
-        write_json(&dir.join("catalog.json"), &value);
-        value
     }
 
     #[test]
-    fn v1_monolith_is_still_readable() {
+    fn latest_skips_pre_releases_and_check_marks_major() {
         let dir = TempDir::new("catalog");
         let cat = dir.join("catalog");
-        v1(&cat);
-        let latest = lookup(loc(&cat), "dan/demo2", None).unwrap();
-        assert_eq!(latest.manifest.version, "1.10.0");
-        assert!(
-            lookup(loc(&cat), "demo1", Some("0.1.2"))
-                .unwrap()
-                .files
-                .is_empty()
-        );
-        assert_eq!(
-            lookup(loc(&cat), "demo1", Some("0.1.3"))
-                .unwrap_err()
-                .kind(),
-            "catalog"
-        );
-        assert_eq!(
-            lookup(loc(&cat), "dan/none", None).unwrap_err().kind(),
-            "catalog"
-        );
-
-        let state = state_with("dan/demo2", SOURCE, "1.9.0", &"a".repeat(40));
-        let selected = selected(loc(&cat), &state).unwrap();
-        assert_eq!(selected.plugins["dan/demo2"].versions.len(), 2);
-
-        let overview = browse(loc(&cat)).unwrap();
-        assert_eq!(overview.format, CatalogFormat::V1);
-        assert!(!overview.remote && !overview.truncated);
-        let plugins: Vec<_> = overview
+        for (v, c) in [
+            ("1.2.0", 'a'),
+            ("1.3.0-beta.1", 'b'),
+            ("2.0.0", 'c'),
+            ("2.1.0-rc.1", 'd'),
+        ] {
+            save(
+                &cat,
+                &release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", v, SOURCE, c),
+            );
+        }
+        // SemVer order; latest is the newest release; a pre-release is taken by name.
+        let summary = browse(loc(&cat)).unwrap();
+        let package = summary
             .items
             .iter()
-            .map(|item| match item {
-                OverviewItem::Plugin { depth: 1, plugin } => (
-                    plugin.id.clone(),
-                    plugin.versions.clone(),
-                    plugin.latest.clone(),
-                ),
-                other => panic!("{other:?}"),
+            .find_map(|item| match item {
+                OverviewItem::Package { package, .. } => Some(package),
+                _ => None,
             })
-            .collect();
+            .unwrap();
         assert_eq!(
-            plugins,
-            [
-                (
-                    "dan/demo2".into(),
-                    vec!["1.9.0".to_owned(), "1.10.0".into()],
-                    Some("1.10.0".into())
-                ),
-                (
-                    "demo1".into(),
-                    vec!["0.1.2".to_owned()],
-                    Some("0.1.2".into())
-                ),
-            ]
+            package.versions,
+            ["1.2.0", "1.3.0-beta.1", "2.0.0", "2.1.0-rc.1"]
         );
-    }
-
-    #[test]
-    fn migrate_splits_v1_without_inventing_hashes() {
-        let dir = TempDir::new("catalog");
-        let cat = dir.join("catalog");
-        let original = v1(&cat);
-        let original_bytes = fs::read(cat.join("catalog.json")).unwrap();
-        let before_demo1 = lookup(loc(&cat), "demo1", None).unwrap();
-        migrate(loc(&cat)).unwrap();
+        assert_eq!(package.latest.as_deref(), Some("2.0.0"));
         assert_eq!(
-            fs::read(cat.join(".catalog-v1.json")).unwrap(),
-            original_bytes
-        );
-        assert_eq!(
-            read(&cat.join("catalog.json")),
-            json!({"schema": 2, "directories": {"legacy": "legacy/", "namespaces": "namespaces/"}})
-        );
-        let stored = read(&cat.join("legacy/demo1/versions/0.1.2/release.json"));
-        assert_eq!(stored, original["plugins"]["demo1"]["versions"]["0.1.2"]);
-        assert!(stored.get("files").is_none());
-        let after = lookup(loc(&cat), "demo1", None).unwrap();
-        assert_eq!(
-            serde_json::to_value(after).unwrap(),
-            serde_json::to_value(before_demo1).unwrap()
-        );
-        assert_eq!(
-            lookup(loc(&cat), "dan/demo2", None)
-                .unwrap()
-                .manifest
-                .version,
-            "1.10.0"
-        );
-        assert_eq!(browse(loc(&cat)).unwrap().format, CatalogFormat::V2);
-
-        // Migrating again is a no-op.
-        let before = tree_hash(&cat);
-        migrate(loc(&cat)).unwrap();
-        assert_eq!(tree_hash(&cat), before);
-        // Registering into a v1 catalog migrates it first.
-        let other = dir.join("other");
-        v1(&other);
-        save(&other, &release("dan/demo2", "2.0.0", SOURCE, 'f'));
-        assert!(other.join(".catalog-v1.json").exists());
-        assert_eq!(
-            lookup(loc(&other), "dan/demo2", None)
+            lookup(loc(&cat), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", None)
                 .unwrap()
                 .manifest
                 .version,
             "2.0.0"
         );
+        assert_eq!(
+            lookup(
+                loc(&cat),
+                "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+                Some("1.3.0-beta.1")
+            )
+            .unwrap()
+            .commit,
+            "b".repeat(40)
+        );
+        // check: 2.0.0 is a major update; the newer 2.1.0-rc.1 is named, not offered.
+        let state = state_with(
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+            SOURCE,
+            "1.2.0",
+            &"a".repeat(40),
+        );
+        let snapshot = selected(loc(&cat), &state).unwrap();
+        let row = crate::check::compare(&state, &snapshot).remove(0);
+        assert_eq!(
+            (
+                row.status,
+                row.latest.as_deref(),
+                row.major,
+                row.prerelease.as_deref()
+            ),
+            (
+                crate::check::CheckStatus::UpdateAvailable,
+                Some("2.0.0"),
+                true,
+                Some("2.1.0-rc.1")
+            )
+        );
+        // An installed pre-release follows its own track to the release.
+        let state = state_with(
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+            SOURCE,
+            "1.3.0-beta.1",
+            &"b".repeat(40),
+        );
+        let row = crate::check::compare(&state, &selected(loc(&cat), &state).unwrap()).remove(0);
+        assert_eq!((row.latest.as_deref(), row.major), (Some("2.0.0"), true));
+        // Only pre-releases: nothing to install without a version.
+        save(
+            &cat,
+            &release(
+                "461e020c-ac68-5226-bf76-9de83ab836d8",
+                "1.0.0-beta.1",
+                SOURCE,
+                'e',
+            ),
+        );
+        let error = lookup(loc(&cat), "461e020c-ac68-5226-bf76-9de83ab836d8", None).unwrap_err();
+        assert_eq!(error.kind(), "catalog");
+        assert!(error.to_string().contains("only pre-release"), "{error}");
+        assert_eq!(newest_eligible(["1.0.0-beta.1"], None), None);
+        assert_eq!(
+            newest_eligible(
+                ["1.0.0-beta.1", "1.0.0-beta.2", "1.1.0-beta"],
+                Some("1.0.0-beta.1")
+            ),
+            Some("1.0.0-beta.2")
+        );
     }
 
     #[test]
-    fn migrate_refuses_invalid_catalogs_without_writing() {
+    fn v1_catalog_is_refused() {
         let dir = TempDir::new("catalog");
-        assert_eq!(
-            migrate("https://pkg.example").unwrap_err().kind(),
-            "invalid_argument"
-        );
         let cat = dir.join("catalog");
-        let mut value = v1(&cat);
-        value["plugins"]["dan/demo2"]["versions"]["1.9.0"]["commit"] = json!("bad");
-        write_json(&cat.join("catalog.json"), &value);
+        let v1 = json!({
+            "plugins": {
+                "cad8c1f7-4992-5780-b000-dec19c545b24": {
+                    "source": SOURCE,
+                    "versions": {"1.9.0": release("cad8c1f7-4992-5780-b000-dec19c545b24", "1.9.0", SOURCE, 'a')}
+                }
+            }
+        });
+        write_json(&cat.join("catalog.json"), &v1);
         let before = tree_hash(&cat);
-        assert_eq!(migrate(loc(&cat)).unwrap_err().kind(), "catalog");
-        assert_eq!(tree_hash(&cat), before);
-
-        value["plugins"]["dan/demo2"]["versions"]["1.9.0"]["commit"] = json!("a".repeat(40));
-        value["plugins"]["dan/demo2"]["versions"]["1.9.0"]["source"] = json!("https://elsewhere");
-        write_json(&cat.join("catalog.json"), &value);
-        let before = tree_hash(&cat);
-        let error = migrate(loc(&cat)).unwrap_err();
-        assert_eq!(
-            (error.kind(), error.to_string()),
-            ("catalog", "legacy source mismatch".into())
+        let refused = |error: Error| {
+            assert_eq!(error.kind(), "catalog", "{error}");
+            assert!(error.to_string().contains("v1 catalogs"), "{error}");
+        };
+        refused(lookup(loc(&cat), "cad8c1f7-4992-5780-b000-dec19c545b24", None).unwrap_err());
+        refused(versions(loc(&cat), "cad8c1f7-4992-5780-b000-dec19c545b24").unwrap_err());
+        refused(browse(loc(&cat)).unwrap_err());
+        let state = state_with(
+            "cad8c1f7-4992-5780-b000-dec19c545b24",
+            SOURCE,
+            "1.9.0",
+            &"a".repeat(40),
         );
-        assert_eq!(tree_hash(&cat), before);
+        refused(selected(loc(&cat), &state).unwrap_err());
+        refused(
+            save_release(
+                &cat.join("catalog.json"),
+                &release("cad8c1f7-4992-5780-b000-dec19c545b24", "2.0.0", SOURCE, 'f'),
+            )
+            .unwrap_err(),
+        );
+        assert_eq!(tree_hash(&cat), before, "nothing is written");
+        assert!(!cat.join(".catalog-v1.json").exists());
+    }
 
-        fs::write(cat.join("catalog.json"), "{garbage").unwrap();
-        let error = migrate(loc(&cat)).unwrap_err();
+    #[test]
+    fn existing_root_must_be_a_directory() {
+        let dir = TempDir::new("catalog");
+        let cat = dir.join("catalog");
+        let path = cat.join("catalog.json");
+        fs::create_dir_all(&cat).unwrap();
+        fs::write(&path, "{garbage").unwrap();
+        let error = save_release(
+            &path,
+            &release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.1.0", SOURCE, 'a'),
+        )
+        .unwrap_err();
         assert!(
             error.to_string().starts_with("invalid existing catalog"),
             "{error}"
         );
-        assert_eq!(fs::read(cat.join("catalog.json")).unwrap(), b"{garbage");
-        write_json(
-            &cat.join("catalog.json"),
-            &json!({"schema": 1, "directories": {}}),
-        );
-        assert_eq!(migrate(loc(&cat)).unwrap_err().kind(), "catalog");
-        // An empty folder gets a fresh v2 root.
+        assert_eq!(fs::read(&path).unwrap(), b"{garbage");
+        write_json(&path, &json!({"schema": 2, "directories": {}}));
+        let error = save_release(
+            &path,
+            &release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.1.0", SOURCE, 'a'),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), "catalog");
+        // An empty folder gets a fresh root.
         let fresh = dir.join("fresh");
-        migrate(loc(&fresh)).unwrap();
+        save(
+            &fresh,
+            &release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.1.0", SOURCE, 'a'),
+        );
         assert_eq!(
             read(&fresh.join("catalog.json")),
-            json!({"schema": 2, "directories": {}})
+            json!({"schema": 1, "directories": {"packages": "packages/"}})
         );
+    }
+
+    #[test]
+    fn index_summary_matches_the_latest_release() {
+        let dir = TempDir::new("catalog-summary");
+        let cat = dir.join("catalog");
+        let index_path = cat.join("packages/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/plugin.json");
+        let check = |version: &str| {
+            let index = read(&index_path);
+            assert_eq!(index["schema"], 1);
+            let stored = lookup(
+                loc(&cat),
+                "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+                Some(version),
+            )
+            .unwrap();
+            let metadata = stored.metadata();
+            assert_eq!(
+                index["latest"],
+                json!({
+                    "version": version, "title": metadata.title,
+                    "description": metadata.description, "provides": metadata.provides,
+                    "tags": metadata.tags,
+                })
+            );
+        };
+        for version in [
+            "3.0.0-beta.2",
+            "3.0.0-beta.10",
+            "1.10.0",
+            "1.9.0",
+            "4.0.0-alpha",
+        ] {
+            let mut record = release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", version, SOURCE, 'a');
+            record.manifest.extra = serde_json::from_value(json!({
+                "title": version, "description": "Details", "provides": "theme",
+                "tags": ["ui", "colors"],
+            }))
+            .unwrap();
+            save(&cat, &record);
+            check(if version.starts_with("3.") {
+                version
+            } else {
+                "1.10.0"
+            });
+        }
+        // Re-registering repairs a missing summary without changing version links.
+        let mut index = read(&index_path);
+        index.as_object_mut().unwrap().remove("latest");
+        write_json(&index_path, &index);
+        let old = lookup(
+            loc(&cat),
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+            Some("1.9.0"),
+        )
+        .unwrap();
+        save(&cat, &old);
+        check("1.10.0");
+    }
+
+    #[test]
+    fn browse_reads_only_indexes() {
+        let dir = TempDir::new("catalog-summary");
+        let cat = dir.join("catalog");
+        for (name, id) in [
+            ("a", "00000000-0000-0000-0000-000000000001"),
+            ("b", "00000000-0000-0000-0000-000000000002"),
+        ] {
+            let mut record = release(id, "1.0.0", SOURCE, 'a');
+            record.manifest.extra.insert("title".into(), json!(name));
+            save(&cat, &record);
+            fs::remove_file(cat.join(format!("packages/{id}/versions/1.0.0/release.json")))
+                .unwrap();
+        }
+        let rows = || {
+            browse(loc(&cat))
+                .unwrap()
+                .items
+                .into_iter()
+                .filter_map(|item| {
+                    if let OverviewItem::Package { package, .. } = item {
+                        Some(package)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            rows()
+                .iter()
+                .map(|p| p.title.as_deref())
+                .collect::<Vec<_>>(),
+            [Some("a"), Some("b")]
+        );
+        let path = cat.join("packages/00000000-0000-0000-0000-000000000001/plugin.json");
+        let original = read(&path);
+        for bad in [
+            serde_json::Value::Null,
+            json!({"version": "1.0.0", "provides": false}),
+            json!({"version": "9.0.0", "title": "Wrong", "description": null, "provides": [], "tags": []}),
+        ] {
+            let mut index = original.clone();
+            index["latest"] = bad;
+            write_json(&path, &index);
+            let rows = rows();
+            assert_eq!(rows[0].title, None);
+            assert_eq!(rows[0].latest.as_deref(), Some("1.0.0"));
+            assert_eq!(rows[1].title.as_deref(), Some("b"));
+        }
     }
 
     // ---- browse ---------------------------------------------------------------------
@@ -2080,16 +2596,32 @@ pub(crate) mod tests {
         let dir = TempDir::new("catalog");
         let cat = dir.join("catalog");
         let items = |cat: &Path| browse(loc(cat)).unwrap().items;
-        migrate(loc(&cat)).unwrap();
+        write_json(
+            &cat.join("catalog.json"),
+            &json!({"schema": 1, "directories": {}}),
+        );
         assert!(matches!(
             items(&cat)[..],
             [OverviewItem::Empty { depth: 1 }]
         ));
-        save(&cat, &release("dan/demo1", "1.10.0", SOURCE, 'a'));
-        save(&cat, &release("dan/demo1", "1.9.0", SOURCE, 'b'));
-        save(&cat, &release("demo2", "0.1.0", SOURCE, 'c'));
+        save(
+            &cat,
+            &release(
+                "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+                "1.10.0",
+                SOURCE,
+                'a',
+            ),
+        );
+        save(
+            &cat,
+            &release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "1.9.0", SOURCE, 'b'),
+        );
+        save(
+            &cat,
+            &release("80b84611-1d3c-5cd6-be71-ad33787c0b53", "0.1.0", SOURCE, 'c'),
+        );
         let overview = browse(loc(&cat)).unwrap();
-        assert_eq!(overview.format, CatalogFormat::V2);
         assert_eq!(overview.location, loc(&cat));
         assert!(!overview.remote && !overview.truncated);
         let rows: Vec<String> = overview
@@ -2098,22 +2630,20 @@ pub(crate) mod tests {
             .map(|item| match item {
                 OverviewItem::Directory { depth, name } => format!("{depth} dir {name}"),
                 OverviewItem::Empty { depth } => format!("{depth} empty"),
-                OverviewItem::Plugin { depth, plugin } => format!(
-                    "{depth} plugin {} {:?} {:?}",
-                    plugin.id, plugin.versions, plugin.latest
+                OverviewItem::Package { depth, package } => format!(
+                    "{depth} package {} {:?} {:?}",
+                    package.id, package.versions, package.latest
                 ),
             })
             .collect();
         assert_eq!(
             rows,
             [
-                "1 dir legacy",
-                "2 dir demo2",
-                r#"2 plugin demo2 ["0.1.0"] Some("0.1.0")"#,
-                "1 dir namespaces",
-                "2 dir dan",
-                "3 dir demo1",
-                r#"3 plugin dan/demo1 ["1.9.0", "1.10.0"] Some("1.10.0")"#,
+                "1 dir packages",
+                "2 dir 80b84611-1d3c-5cd6-be71-ad33787c0b53",
+                r#"2 package 80b84611-1d3c-5cd6-be71-ad33787c0b53 ["0.1.0"] Some("0.1.0")"#,
+                "2 dir ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+                r#"2 package ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc ["1.9.0", "1.10.0"] Some("1.10.0")"#,
             ]
         );
     }
@@ -2127,25 +2657,25 @@ pub(crate) mod tests {
             write_json(&root, &value);
             browse(loc(&cat)).unwrap_err()
         };
-        let error = error_of(json!({"schema": 2, "directories": {"up": "../"}}));
+        let error = error_of(json!({"schema": 1, "directories": {"up": "../"}}));
         assert_eq!(
             (error.kind(), error.to_string()),
             ("catalog", "invalid directory link: ../".into())
         );
         assert_eq!(
-            error_of(json!({"schema": 2, "directories": {"a b": "a b/"}})).kind(),
+            error_of(json!({"schema": 1, "directories": {"a b": "a b/"}})).kind(),
             "invalid_id"
         );
         assert_eq!(
-            error_of(json!({"schema": 1, "directories": {}})).kind(),
+            error_of(json!({"schema": 2, "directories": {}})).kind(),
             "catalog"
         );
-        assert_eq!(error_of(json!({"schema": 2})).kind(), "catalog");
-        let error = error_of(json!({"schema": 2, "directories": {"gone": "gone/"}}));
+        assert_eq!(error_of(json!({"schema": 1})).kind(), "catalog");
+        let error = error_of(json!({"schema": 1, "directories": {"gone": "gone/"}}));
         assert!(
             error
                 .to_string()
-                .contains("missing catalog/plugin index in gone/")
+                .contains("missing catalog/package index in gone/")
         );
         fs::remove_file(&root).unwrap();
         assert_eq!(
@@ -2155,12 +2685,12 @@ pub(crate) mod tests {
 
         // Nesting deeper than 8 levels is refused.
         let mut path = cat.clone();
-        write_json(&root, &json!({"schema": 2, "directories": {"a": "a/"}}));
+        write_json(&root, &json!({"schema": 1, "directories": {"a": "a/"}}));
         for _ in 0..9 {
             path = path.join("a");
             write_json(
                 &path.join("catalog.json"),
-                &json!({"schema": 2, "directories": {"a": "a/"}}),
+                &json!({"schema": 1, "directories": {"a": "a/"}}),
             );
         }
         let error = browse(loc(&cat)).unwrap_err();
@@ -2170,20 +2700,20 @@ pub(crate) mod tests {
         let wide = dir.join("wide");
         let mut directories = serde_json::Map::new();
         for n in 0..OVERVIEW_LIMIT + 5 {
-            let name = format!("p{n:02}");
+            let name = format!("00000000-0000-4000-8000-{n:012x}");
             directories.insert(name.clone(), json!(format!("{name}/")));
             write_json(
-                &wide.join(format!("legacy/{name}/plugin.json")),
-                &json!({"schema": 2, "id": name, "source": SOURCE, "versions": {}}),
+                &wide.join(format!("packages/{name}/plugin.json")),
+                &json!({"schema": 1, "id": name.clone(), "source": SOURCE, "versions": {}}),
             );
         }
         write_json(
             &wide.join("catalog.json"),
-            &json!({"schema": 2, "directories": {"legacy": "legacy/"}}),
+            &json!({"schema": 1, "directories": {"packages": "packages/"}}),
         );
         write_json(
-            &wide.join("legacy/catalog.json"),
-            &json!({"schema": 2, "directories": directories}),
+            &wide.join("packages/catalog.json"),
+            &json!({"schema": 1, "directories": directories}),
         );
         let overview = browse(loc(&wide)).unwrap();
         assert!(overview.truncated);
@@ -2193,35 +2723,15 @@ pub(crate) mod tests {
             .filter(|i| matches!(i, OverviewItem::Directory { .. }))
             .count();
         assert_eq!(directories, OVERVIEW_LIMIT);
-        let plugin = overview.items.iter().find_map(|i| match i {
-            OverviewItem::Plugin { plugin, .. } => Some(plugin),
+        let package = overview.items.iter().find_map(|i| match i {
+            OverviewItem::Package { package, .. } => Some(package),
             _ => None,
         });
         assert_eq!(
-            plugin.unwrap().latest,
+            package.unwrap().latest,
             None,
-            "a plugin without versions has no latest"
+            "a package without versions has no latest"
         );
-
-        // v1 with more plugins than the limit.
-        let big = dir.join("big");
-        let plugins: serde_json::Map<_, _> = (0..OVERVIEW_LIMIT + 1)
-            .map(|n| {
-                (
-                    format!("p{n:02}"),
-                    json!({"source": SOURCE, "versions": {}}),
-                )
-            })
-            .collect();
-        write_json(&big.join("catalog.json"), &json!({"plugins": plugins}));
-        let overview = browse(loc(&big)).unwrap();
-        assert!(overview.truncated);
-        assert_eq!(overview.items.len(), OVERVIEW_LIMIT);
-        write_json(&big.join("catalog.json"), &json!({"plugins": {}}));
-        assert!(matches!(
-            browse(loc(&big)).unwrap().items[..],
-            [OverviewItem::Empty { depth: 1 }]
-        ));
     }
 
     #[test]
@@ -2248,33 +2758,36 @@ pub(crate) mod tests {
     #[test]
     fn register_records_the_committed_tree_with_hashes() {
         let dir = TempDir::new("catalog");
-        let author = Author::new(dir.join("author"), "dan/demo1");
+        let author = Author::new(dir.join("author"), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let commit = author.head();
         let committed = fs::read(author.path.join("dist/index.js")).unwrap();
         // Uncommitted edits never reach the catalog.
         fs::write(author.path.join("dist/index.js"), "uncommitted").unwrap();
         fs::write(author.path.join("dist/extra.js"), "uncommitted").unwrap();
         let cat = dir.join("catalog");
-        let r = register(loc(&cat), author.source(), "dan/demo1@0.1.0").unwrap();
+        let r = register(loc(&cat), author.source(), "v0.1.0").unwrap();
         assert_eq!(r.commit, commit);
-        assert_eq!(r.reference, "dan/demo1@0.1.0");
+        assert_eq!(r.reference, "v0.1.0");
         assert_eq!(r.source, author.source());
         assert_eq!(r.files.keys().collect::<Vec<_>>(), ["index.js"]);
         assert_eq!(r.files["index.js"].size, committed.len() as u64);
         assert!(r.build.is_none());
         assert_eq!(
-            serde_json::to_value(lookup(loc(&cat), "dan/demo1", None).unwrap()).unwrap(),
+            serde_json::to_value(
+                lookup(loc(&cat), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", None).unwrap()
+            )
+            .unwrap(),
             serde_json::to_value(&r).unwrap()
         );
         // Same commit through another ref: accepted, the stored reference is kept.
         let again = register(loc(&cat), author.source(), &commit).unwrap();
-        assert_eq!(again.reference, "dan/demo1@0.1.0");
+        assert_eq!(again.reference, "v0.1.0");
     }
 
     #[test]
     fn register_build_validates_metadata_and_inputs() {
         let dir = TempDir::new("catalog");
-        let author = Author::new(dir.join("author"), "dan/demo1");
+        let author = Author::new(dir.join("author"), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let cat = dir.join("catalog");
         let bad = Build {
             url: "http://pkg.example/x.tar.zst".into(),
@@ -2285,7 +2798,7 @@ pub(crate) mod tests {
             (error.kind(), error.to_string()),
             ("catalog", "build URL must use HTTPS".into())
         );
-        assert!(!cat.join("namespaces").exists());
+        assert!(!cat.join("packages").exists());
         let good = Build {
             url: "https://pkg.example/x.tar.zst".into(),
             sha256: ABC.into(),
@@ -2316,7 +2829,7 @@ pub(crate) mod tests {
         // A non-numeric manifest version is refused at registration.
         crate::test_support::write_manifest(
             &author.path,
-            &crate::test_support::manifest("dan/demo1", "1.0"),
+            &crate::test_support::manifest("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "1.0"),
         );
         fixture_git(&author.path, &["commit", "-q", "-am", "bad version"]);
         assert_eq!(
@@ -2328,9 +2841,55 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn verified_catalog_takes_only_registered_versions() {
+        let dir = TempDir::new("catalog");
+        let author = Author::new(dir.join("repo"), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
+        let cat = dir.join("catalog");
+        register(loc(&cat), author.source(), "v0.1.0").unwrap();
+        assert!(!is_verified(loc(&cat)).unwrap());
+        assert!(!browse(loc(&cat)).unwrap().verified);
+        crate::test_support::verify_catalog(&cat);
+        assert!(is_verified(loc(&cat)).unwrap());
+        assert!(browse(loc(&cat)).unwrap().verified);
+        // register keeps the flag.
+        author.release("0.2.0");
+        register(loc(&cat), author.source(), "v0.2.0").unwrap();
+        assert_eq!(read(&cat.join("catalog.json"))["verified"], json!(true));
+        assert_eq!(
+            versions(loc(&cat), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc")
+                .unwrap()
+                .len(),
+            2
+        );
+        // Bulk generation is refused before anything is read or written.
+        author.release("0.3.0");
+        let list = sources(dir.path(), "repo\n");
+        let before = tree_hash(&cat);
+        let error = update_sources(loc(&cat), &list, &mut |_| {}).unwrap_err();
+        assert_eq!(error.kind(), "invalid_argument");
+        assert_eq!(
+            error.to_string(),
+            "a verified catalog takes versions only one by one through register"
+        );
+        assert_eq!(tree_hash(&cat), before);
+        // The ID stays bound to its first source (UUID ownership).
+        let other = Author::new(dir.join("other"), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
+        other.release("0.4.0");
+        let error = register(loc(&cat), other.source(), "v0.4.0").unwrap_err();
+        assert_eq!(error.kind(), "catalog");
+        assert!(error.to_string().contains("different source"), "{error}");
+        assert_eq!(tree_hash(&cat), before);
+        // An unverified catalog still takes catalog-update.
+        let open = dir.join("open-catalog");
+        let report = update_sources(loc(&open), &list, &mut |_| {}).unwrap();
+        assert_eq!(report.releases, 3);
+        assert!(!is_verified(loc(&open)).unwrap());
+    }
+
+    #[test]
     fn update_sources_skips_and_reports_a_broken_historical_tag() {
         let dir = TempDir::new("catalog");
-        let author = Author::new(dir.join("repo"), "dan/demo1");
+        let author = Author::new(dir.join("repo"), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         // Old tag pointing at a commit whose manifest says another version.
         fixture_git(&author.path, &["tag", "v0.0.9"]);
         author.release("0.2.0");
@@ -2342,7 +2901,7 @@ pub(crate) mod tests {
         assert_eq!(report.skipped[0].source, author.source());
         assert_eq!(report.skipped[0].tag.name, "v0.0.9");
         assert_eq!(
-            lookup(loc(&cat), "dan/demo1", None)
+            lookup(loc(&cat), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", None)
                 .unwrap()
                 .manifest
                 .version,
@@ -2354,20 +2913,28 @@ pub(crate) mod tests {
     fn update_sources_and_register_read_every_package_of_a_monorepo() {
         let dir = TempDir::new("catalog");
         let repo = dir.join("mono");
-        crate::scaffold::create_package(&repo, "tilr", "store").unwrap();
-        crate::scaffold::create_package(&repo, "tilr", "theme").unwrap();
-        fs::write(repo.join("packages/store/dist/index.js"), "store 2").unwrap();
-        crate::scaffold::commit_package(&repo, "0.2.0", Some("tilr/store")).unwrap();
+        let store_path = crate::scaffold::create_package(&repo, "store").unwrap();
+        let store_id = crate::model::manifest(&store_path).unwrap().id;
+        let theme_path = crate::scaffold::create_package(&repo, "theme").unwrap();
+        let theme_id = crate::model::manifest(&theme_path).unwrap().id;
+        fs::write(store_path.join("dist/index.js"), "store 2").unwrap();
+        crate::scaffold::commit_package(&repo, "0.2.0", Some(&store_id)).unwrap();
         let cat = dir.join("catalog");
         let list = sources(dir.path(), "mono\n");
         let report = update_sources(loc(&cat), &list, &mut |_| {}).unwrap();
         assert_eq!(report.releases, 3);
-        let store = lookup(loc(&cat), "tilr/store", None).unwrap();
+        let store = lookup(loc(&cat), &store_id, None).unwrap();
         assert_eq!(store.manifest.version, "0.2.0");
-        assert_eq!(store.path.as_deref(), Some("packages/store"));
+        assert_eq!(
+            store.path.as_deref(),
+            Some(format!("packages/{store_id}").as_str())
+        );
         assert_eq!(store.files["index.js"].size, 7);
-        let theme = lookup(loc(&cat), "tilr/theme", None).unwrap();
-        assert_eq!(theme.path.as_deref(), Some("packages/theme"));
+        let theme = lookup(loc(&cat), &theme_id, None).unwrap();
+        assert_eq!(
+            theme.path.as_deref(),
+            Some(format!("packages/{theme_id}").as_str())
+        );
         // Running again changes nothing (releases are immutable and equal).
         update_sources(loc(&cat), &list, &mut |_| {}).unwrap();
 
@@ -2375,10 +2942,13 @@ pub(crate) mod tests {
         let source = repo.to_str().unwrap();
         let error = register(loc(&other), source, "main").unwrap_err();
         assert_eq!(error.kind(), "invalid_argument");
-        let release = register(loc(&other), source, "tilr/theme@0.1.0").unwrap();
-        assert_eq!(release.path.as_deref(), Some("packages/theme"));
         let release =
-            register_package(loc(&other), source, "main", Some("tilr/store"), None).unwrap();
+            register_package(loc(&other), source, "v0.2.0", Some(&theme_id), None).unwrap();
+        assert_eq!(
+            release.path.as_deref(),
+            Some(format!("packages/{theme_id}").as_str())
+        );
+        let release = register_package(loc(&other), source, "main", Some(&store_id), None).unwrap();
         assert_eq!(release.manifest.version, "0.2.0");
     }
 
@@ -2391,11 +2961,11 @@ pub(crate) mod tests {
     #[test]
     fn update_sources_publishes_every_release_tag_once() {
         let dir = TempDir::new("catalog");
-        let scoped = Author::new(dir.join("scoped"), "dan/demo1");
+        let scoped = Author::new(dir.join("scoped"), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         scoped.release("1.10.0");
-        let legacy = Author::new(dir.join("legacy"), "demo2");
+        let other = Author::new(dir.join("other"), "80b84611-1d3c-5cd6-be71-ad33787c0b53");
         let cat = dir.join("catalog");
-        let list = sources(dir.path(), "# comment\n\n  scoped  \nlegacy\nscoped\n");
+        let list = sources(dir.path(), "# comment\n\n  scoped  \nother\nscoped\n");
         let mut seen = Vec::new();
         let report = update_sources(loc(&cat), &list, &mut |p| match p {
             Progress::ReadingReleases { source } => seen.push(source),
@@ -2403,14 +2973,16 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(report.releases, 3);
         assert!(report.skipped.is_empty());
-        assert_eq!(report.sources, [legacy.source(), scoped.source()]);
+        assert_eq!(report.sources, [other.source(), scoped.source()]);
         assert_eq!(seen, report.sources);
-        let latest = lookup(loc(&cat), "dan/demo1", None).unwrap();
+        let latest = lookup(loc(&cat), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", None).unwrap();
         assert_eq!(latest.manifest.version, "1.10.0");
-        assert_eq!(latest.reference, "dan/demo1@1.10.0");
+        assert_eq!(latest.reference, "v1.10.0");
         assert_eq!(latest.files.len(), 1);
         assert_eq!(
-            lookup(loc(&cat), "demo2", None).unwrap().reference,
+            lookup(loc(&cat), "80b84611-1d3c-5cd6-be71-ad33787c0b53", None)
+                .unwrap()
+                .reference,
             "v0.1.0"
         );
         // A second run changes nothing.
@@ -2420,44 +2992,129 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn update_sources_keeps_build_metadata_and_refuses_changed_releases() {
+    fn summary_generation_preserves_export_warnings() {
+        let dir = TempDir::new("catalog-summary");
+        let author = Author::new(dir.join("author"), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
+        let entry = format!("160000,{},dist/vendor", author.head());
+        fixture_git(
+            &author.path,
+            &["update-index", "--add", "--cacheinfo", &entry],
+        );
+        fixture_git(&author.path, &["commit", "-q", "-m", "add gitlink"]);
+        fixture_git(&author.path, &["tag", "-f", "v0.1.0"]);
+        let cat = dir.join("catalog");
+        let list = sources(dir.path(), "author\n");
+        let report = update_sources(loc(&cat), &list, &mut |_| {}).unwrap();
+        assert_eq!(report.warnings.len(), 1);
+        assert!(report.warnings[0].contains("dist/vendor is a Git submodule"));
+        assert_eq!(
+            read(&cat.join("packages/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/plugin.json"))["latest"]
+                ["version"],
+            "0.1.0"
+        );
+    }
+
+    #[test]
+    fn failed_summary_regeneration_leaves_catalog_unchanged() {
+        let dir = TempDir::new("catalog-summary");
+        let first = Author::new(dir.join("first"), "807b9715-06b4-55c2-add2-59b487bfa42e");
+        let second = Author::new(dir.join("second"), "03c25ec4-f583-513d-adfb-092fb98d8dba");
+        second.release("0.2.0");
+        let cat = dir.join("catalog");
+        let list = sources(dir.path(), "first\nsecond\n");
+        update_sources(loc(&cat), &list, &mut |_| {}).unwrap();
+        first.release("0.2.0");
+        fixture_git(&second.path, &["tag", "-d", "v0.2.0"]);
+        // The published newest release is no longer part of source discovery.
+        fs::write(
+            cat.join("packages/03c25ec4-f583-513d-adfb-092fb98d8dba/versions/0.2.0/release.json"),
+            "{broken",
+        )
+        .unwrap();
+        let before = tree_hash(&cat);
+        assert!(update_sources(loc(&cat), &list, &mut |_| {}).is_err());
+        assert_eq!(
+            tree_hash(&cat),
+            before,
+            "preflight must finish before any publication"
+        );
+    }
+
+    #[test]
+    fn update_sources_keeps_build_metadata_and_published_records() {
         let dir = TempDir::new("catalog");
-        let author = Author::new(dir.join("author"), "dan/demo1");
+        let author = Author::new(dir.join("author"), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let cat = dir.join("catalog");
         let build = Build {
             url: "https://pkg.example/x.tar.zst".into(),
             sha256: ABC.into(),
         };
-        register_build(loc(&cat), author.source(), "dan/demo1@0.1.0", Some(build)).unwrap();
+        register_build(loc(&cat), author.source(), "v0.1.0", Some(build)).unwrap();
         let list = sources(dir.path(), "author\n");
         update_sources(loc(&cat), &list, &mut |_| {}).unwrap();
-        let stored = lookup(loc(&cat), "dan/demo1", None).unwrap();
-        assert_eq!(stored.build.unwrap().url, "https://pkg.example/x.tar.zst");
+        let stored = lookup(
+            loc(&cat),
+            "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc",
+            Some("0.1.0"),
+        )
+        .unwrap();
+        assert_eq!(
+            stored.build.as_ref().unwrap().url,
+            "https://pkg.example/x.tar.zst"
+        );
+        let record =
+            cat.join("packages/ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc/versions/0.1.0/release.json");
+        let published = fs::read(&record).unwrap();
 
-        // The published tag is moved to another commit with the same version.
+        // The published tag is moved to another commit with the same version: the record
+        // stays, with a warning, and the other versions are published.
         fs::write(author.path.join("dist/index.js"), "rewritten").unwrap();
         fixture_git(&author.path, &["commit", "-q", "-am", "rewrite"]);
-        fixture_git(&author.path, &["tag", "-f", "dan/demo1@0.1.0"]);
+        let moved = author.head();
+        fixture_git(&author.path, &["tag", "-f", "v0.1.0"]);
         author.release("0.2.0");
-        let before = tree_hash(&cat);
-        let error = update_sources(loc(&cat), &list, &mut |_| {}).unwrap_err();
-        assert_eq!(error.kind(), "version_conflict");
-        assert!(
-            error.to_string().contains("dan/demo1@0.1.0 changed"),
-            "{error}"
-        );
+        let report = update_sources(loc(&cat), &list, &mut |_| {}).unwrap();
+        assert_eq!(report.releases, 2);
         assert_eq!(
-            tree_hash(&cat),
-            before,
-            "no release is written when one conflicts"
+            report.warnings,
+            [format!(
+                "release ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc@0.1.0: tag now points to {}; the published record is kept",
+                &moved[..12]
+            )]
         );
+        assert_eq!(fs::read(&record).unwrap(), published);
+        assert_eq!(
+            lookup(loc(&cat), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", None)
+                .unwrap()
+                .manifest
+                .version,
+            "0.2.0"
+        );
+
+        // The release commit is unchanged but the record's file hashes differ (a manual
+        // edit): kept as well.
+        fixture_git(&author.path, &["tag", "-f", "v0.1.0", &stored.commit]);
+        let mut edited: serde_json::Value = serde_json::from_slice(&published).unwrap();
+        let files = edited["files"].as_object_mut().unwrap();
+        let first = files.keys().next().unwrap().clone();
+        files[&first]["sha256"] = serde_json::Value::String(ABC.into());
+        let edited = serde_json::to_vec_pretty(&edited).unwrap();
+        fs::write(&record, &edited).unwrap();
+        let report = update_sources(loc(&cat), &list, &mut |_| {}).unwrap();
+        assert_eq!(
+            report.warnings,
+            [
+                "release ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc@0.1.0 differs from the published record; the published record is kept"
+            ]
+        );
+        assert_eq!(fs::read(&record).unwrap(), edited);
     }
 
     #[test]
     fn update_sources_rejects_bad_inputs() {
         let dir = TempDir::new("catalog");
-        let one = Author::new(dir.join("one"), "dan/demo1");
-        Author::new(dir.join("two"), "dan/demo1");
+        let one = Author::new(dir.join("one"), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
+        Author::new(dir.join("two"), "ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc");
         let cat = dir.join("catalog");
         let run = |lines: &str| {
             let list = sources(dir.path(), lines);
@@ -2469,7 +3126,10 @@ pub(crate) mod tests {
         let error = run("one\ntwo\n");
         assert_eq!(
             (error.kind(), error.to_string()),
-            ("catalog", "multiple sources claim plugin dan/demo1".into())
+            (
+                "catalog",
+                "multiple sources claim package ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc".into()
+            )
         );
         assert!(
             !cat.exists(),
@@ -2489,7 +3149,10 @@ pub(crate) mod tests {
             "io"
         );
         // The catalog already has this ID from another source.
-        save(&cat, &release("dan/demo1", "0.0.1", SOURCE, 'a'));
+        save(
+            &cat,
+            &release("ab93b236-d66d-5fc1-9cbc-3eaa4cf4ddcc", "0.0.1", SOURCE, 'a'),
+        );
         let error = update_sources(loc(&cat), &list, &mut |_| {}).unwrap_err();
         assert_eq!(error.kind(), "catalog");
         assert!(error.to_string().contains("different source"));

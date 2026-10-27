@@ -1,0 +1,190 @@
+"""UC-052: Library API and CLI behavioral parity (P0).
+
+The compiled gitpm-api helper (crates/gitpm/examples/api-parity.rs) calls the public
+Manager API without a Rust toolchain in scenario containers. The paired lifecycle compares state and deployed bytes
+against the CLI after every operation.
+"""
+
+import json
+
+from gitpmtest import Failure, T, case
+
+HELLO = "3dce1568-569c-5b53-9321-37185e751947"
+
+
+def resolved(t: T) -> dict:
+    return {p["id"]: p for p in t.gitpm_ok("list").json()["resolved"]}
+
+
+def normalized(t: T, id: str) -> dict:
+    """Installed entry without paths/timestamps: what must match the library's Installed."""
+    p = t.package(id)
+    out = {k: p.get(k) for k in ("current", "previous", "enabled", "forkOf", "replaces", "dependencies")}
+    if out["previous"]:
+        # The mode a previous revision had is checked separately.
+        out["previous"] = {k: v for k, v in out["previous"].items() if k != "mode"}
+    return out
+
+
+def rev(t: T, version: str) -> dict:
+    return {"version": version, "commit": t.rev(HELLO, f"v{version}")}
+
+
+@case(fixture="hello_releases", spec=["install-uninstall/three-removal-levels#forget-then-restore", "fork-replacement/fork-copies-an-installed-package#fork-one-package", "dist/forget-restore-and-uninstall-settle-dist"])
+def lifecycle_matches_library_contract(t: T):
+    """install / update / rollback / enable / disable / forget / restore / fork / uninstall."""
+    t.gitpm_ok("install", t.repo(HELLO), "--ref", f"v0.1.0")
+    t.eq(normalized(t, HELLO), {"current": rev(t, "0.1.0"), "previous": None, "enabled": True,
+                                "forkOf": None, "replaces": None, "dependencies": None}, "install")
+    t.gitpm_ok("update", HELLO, "--ref", f"v0.1.1")
+    t.eq(t.package(HELLO)["previous"].get("mode"), {"pinned": f"v0.1.0"}, "previous keeps its mode")
+    t.eq((normalized(t, HELLO)["current"], normalized(t, HELLO)["previous"]), (rev(t, "0.1.1"), rev(t, "0.1.0")),
+         "update: current/previous")
+    t.has((t.dist(HELLO) / "index.js").read_text(), "3dce1568-569c-5b53-9321-37185e751947 0.1.1")
+    t.gitpm_ok("rollback", HELLO)
+    t.eq((normalized(t, HELLO)["current"], normalized(t, HELLO)["previous"]), (rev(t, "0.1.0"), rev(t, "0.1.1")),
+         "rollback swaps")
+    t.has((t.dist(HELLO) / "index.js").read_text(), "3dce1568-569c-5b53-9321-37185e751947 0.1.0")
+    t.gitpm_ok("disable", HELLO)
+    t.eq(t.package(HELLO)["enabled"], False, "disable")
+    t.gitpm_ok("enable", HELLO)
+    t.eq(t.package(HELLO)["enabled"], True, "enable")
+    t.gitpm_ok("forget", HELLO)
+    t.ok(HELLO not in t.state()["packages"] and t.worktree(HELLO).is_dir(), "forget keeps the clone")
+    t.ok(not t.dist(HELLO).exists(), "forget removes dist/ (only active packages are deployed)")
+    t.gitpm_ok("restore", HELLO)
+    t.eq((normalized(t, HELLO)["current"], normalized(t, HELLO)["previous"]), (rev(t, "0.1.0"), rev(t, "0.1.1")),
+         "restore: the record as it was")
+    t.has((t.dist(HELLO) / "index.js").read_text(), "3dce1568-569c-5b53-9321-37185e751947 0.1.0")
+    fork = t.root / "d2e59a73-093a-59d2-912a-78d95856c963"
+    r = t.gitpm_ok("fork", HELLO, "--into", fork)
+    fork_id = t.manifest_id(fork)
+    t.has(r.out, f"{fork_id} forked from {HELLO} (repository root)", "Next steps (choose the packages to install and replace):")
+    m = json.loads((fork / "plugin.json").read_text())
+    t.eq((m["id"], m["forkOf"]["id"], m["forkOf"]["commit"], m["replaces"]),
+         (fork_id, HELLO, rev(t, "0.1.0")["commit"], {"id": HELLO, "version": "0.1.0"}), "fork manifest")
+    t.eq(t.git(fork, "branch", "--show-current"), "fork", "fork branch")
+    t.gitpm_ok("uninstall", HELLO)
+    t.not_installed(HELLO)
+    t.ok(fork.is_dir(), "uninstall leaves the fork")
+
+
+@case(fixture="g6_core_catalog", spec=["dependencies/install-resolves-dependencies#dependency-pulled-from-the-catalog"])
+def catalog_install_with_dependency(t: T):
+    """install-catalog 9692fc07-23c7-5f20-8779-f09374f1a571: the library's catalog_install_resolves_dependencies_and_records_edges outcome
+    (the catalog verified, so the pulled dependency records it)."""
+    t.edit_json(t.catalog / "catalog.json", lambda c: c.update(verified=True))
+    t.gitpm_ok("install-catalog", "9692fc07-23c7-5f20-8779-f09374f1a571")
+    state = t.state()
+    t.eq(sorted(state["packages"]), sorted(["9692fc07-23c7-5f20-8779-f09374f1a571", "757fd5ca-2b6a-5b2f-8a5d-60980b028665"]), "ids")
+    t.eq(state["packages"]["757fd5ca-2b6a-5b2f-8a5d-60980b028665"]["current"]["version"], "1.1.0", "highest version matching ^1.0")
+    t.eq(state["packages"]["9692fc07-23c7-5f20-8779-f09374f1a571"]["dependencies"], {"757fd5ca-2b6a-5b2f-8a5d-60980b028665": "^1.0"}, "edge")
+    t.eq(state["packages"]["757fd5ca-2b6a-5b2f-8a5d-60980b028665"]["catalog"], str(t.catalog / "catalog.json"), "canonical catalog origin")
+    view = resolved(t)
+    t.eq(view["757fd5ca-2b6a-5b2f-8a5d-60980b028665"]["dependents"], ["9692fc07-23c7-5f20-8779-f09374f1a571"], "dependents")
+    row = view["9692fc07-23c7-5f20-8779-f09374f1a571"]["dependencies"][0]
+    t.eq((row["provider"], row["satisfied"]), ("757fd5ca-2b6a-5b2f-8a5d-60980b028665", True), "provider")
+    t.ok((t.dist("757fd5ca-2b6a-5b2f-8a5d-60980b028665") / "index.js").is_file(), "dist")
+
+
+@case(fixture="g6_forked", spec=["fork-replacement/replacement-is-explicit-and-global#replace-for-all-consumers", "fork-replacement/switching-back"])
+def replace_and_switch_back(t: T):
+    """replace / switch back: the library's fork_replacement_main_scenario outcome."""
+    r = t.gitpm_ok("replace", "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9", "--with", "db33e43e-e652-5767-8e21-27fb3cef9723")
+    t.has(r.out, "for: 9692fc07-23c7-5f20-8779-f09374f1a571, f5984d44-92bd-51ac-8e8f-d911dd824ef3")  # ReplacementPlan.consumers
+    view = resolved(t)
+    t.eq(t.state()["replacements"], {"c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9": "db33e43e-e652-5767-8e21-27fb3cef9723"}, "replacements")
+    t.eq(view["db33e43e-e652-5767-8e21-27fb3cef9723"]["replacing"], ["c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9"], "replacing")
+    t.eq(view["db33e43e-e652-5767-8e21-27fb3cef9723"]["dependents"], ["9692fc07-23c7-5f20-8779-f09374f1a571", "f5984d44-92bd-51ac-8e8f-d911dd824ef3"], "dependents")
+    for c in ["9692fc07-23c7-5f20-8779-f09374f1a571", "f5984d44-92bd-51ac-8e8f-d911dd824ef3"]:
+        row = view[c]["dependencies"][0]
+        t.eq((row["provider"], row["satisfied"]), ("db33e43e-e652-5767-8e21-27fb3cef9723", True), f"{c} provider")
+    t.gitpm_ok("replace", "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9", "--with", "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9")
+    t.ok("replacements" not in t.state(), "replacements empty (skipped when empty)")
+    view = resolved(t)
+    t.ok(not view["db33e43e-e652-5767-8e21-27fb3cef9723"].get("dependents"), "fork has no dependents")
+    for c in ["9692fc07-23c7-5f20-8779-f09374f1a571", "f5984d44-92bd-51ac-8e8f-d911dd824ef3"]:
+        t.eq(view[c]["dependencies"][0]["provider"], "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9", f"{c} back on the original")
+
+
+@case(fixture="hello", spec=["dist/a-revision-without-dist-is-refused#release-without-dist", "errors/stable-error-kinds"])
+def bad_manifest_kind(t: T):
+    """A release without dist/ and one with broken plugin.json: invalid_manifest, nothing installed."""
+    t.commit(HELLO, "no dist", {"dist/index.js": None, "plugin.json": json.dumps({"id": HELLO, "name": "fixture", "version": "0.2.0"})})
+    t.tag(HELLO, f"v0.2.0")
+    t.gitpm_err("install", t.repo(HELLO), "--ref", f"v0.2.0", kind="invalid_manifest",
+             contains="dist/ directory")
+    t.not_installed(HELLO)
+    t.commit(HELLO, "broken", {"plugin.json": '{"id": ', "dist/index.js": "x\n"})
+    t.gitpm_err("install", t.repo(HELLO), "--ref", "HEAD", kind="invalid_manifest", contains="invalid plugin.json")
+    t.not_installed(HELLO)
+
+
+@case(fixture="hello_installed", spec=["updates/local-work-blocks-update-and-rollback", "install-uninstall/cli-confirmation-flow-for-uninstall#no-tty"])
+def dirty_clone_kind(t: T):
+    """A dirty clone: update and uninstall (no TTY) refuse with local_changes listing the work."""
+    t.release(HELLO, "0.1.1")
+    (t.worktree(HELLO) / "dist/index.js").write_text("edited\n")
+    before = t.snap(t.ws)
+    t.gitpm_err("update", HELLO, kind="local_changes")
+    t.gitpm_err("uninstall", HELLO, kind="local_changes", contains="modified: dist/index.js")
+    t.same(before, "workspace")
+
+
+@case(fixture="hello_installed", spec=["install-uninstall/install-is-idempotent-for-the-same-source#repeat-install"])
+def repeated_install_is_idempotent(t: T):
+    """Installing an installed ID again from the same source: exit 0, `ID already installed (V)`,
+    nothing changes (the library's AlreadyInstalled outcome)."""
+    before = t.snap(t.ws, git=True)
+    r = t.gitpm_ok("install", t.repo(HELLO))
+    t.has(r.out, f"{HELLO} already installed (0.1.0)")
+    t.same(before, "workspace")
+
+
+@case(fixture="g6_core_deps_installed", spec=["dependencies/dependents-guard-removal", "errors/display-is-the-complete-message#has-dependents"])
+def dependent_guard_kind(t: T):
+    """has_dependents with the library's message for uninstall/forget/disable of 757fd5ca-2b6a-5b2f-8a5d-60980b028665."""
+    before = t.snap(t.ws)
+    for action in ["uninstall", "forget", "disable"]:
+        t.gitpm_err(action, "757fd5ca-2b6a-5b2f-8a5d-60980b028665", kind="has_dependents",
+                 contains=f"cannot {action} 757fd5ca-2b6a-5b2f-8a5d-60980b028665: required by 1a620c0a-aa3c-533c-9960-3d49016fa231, 9692fc07-23c7-5f20-8779-f09374f1a571; doing it anyway requires force")
+    t.same(before, "workspace")
+
+
+@case(fixture="g6_compat_installed", spec=["fork-replacement/compatibility-is-checked-by-versions-only"])
+def incompatible_replacement_kind(t: T):
+    """Replacement leaving f5984d44-92bd-51ac-8e8f-d911dd824ef3 unsatisfied: incompatible_replacement with no confirmation bypass."""
+    before = t.snap(t.ws)
+    t.gitpm_err("replace", "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9", "--with", "4e02af40-ea75-510c-b524-5f21e6de2d55", kind="incompatible_replacement",
+             contains="4e02af40-ea75-510c-b524-5f21e6de2d55 provides c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 1.2.0, which some consumers do not accept: "
+                      "f5984d44-92bd-51ac-8e8f-d911dd824ef3 needs c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 >=1.3")
+    t.same(before, "workspace")
+
+
+@case(fixture="g6_core_deps_installed", spec=["cli/json-output-for-state-and-catalog#list", "dependencies/state-keeps-dependency-edges#list-after-install"])
+def list_is_library_state_plus_resolved(t: T):
+    """`list` prints Manager::state() verbatim plus Manager::list() as `resolved` — no CLI-side logic."""
+    out = t.gitpm_ok("list").json()
+    resolved_view = out.pop("resolved")
+    t.eq(out, t.state(), "list without resolved == state.json")
+    t.eq([p["id"] for p in resolved_view], sorted(t.state()["packages"]), "resolved is the sorted flat view")
+
+
+@case(fixture="hello_releases", spec=["cli/json-output-for-state-and-catalog#list", "dist/dist-holds-exactly-the-active-packages", "cli/the-library-owns-domain-behavior#equivalent-lifecycle-through-cli-and-library"])
+def side_by_side_library_run(t: T):
+    """Run a lifecycle through the public API and CLI, comparing state and deployed bytes after each step."""
+    paired = t.root / "api-workspace"
+    steps = [
+        ("install", str(t.repo(HELLO)), f"v0.1.0"),
+        ("update", HELLO, f"v0.1.1"),
+        ("rollback", HELLO), ("disable", HELLO), ("enable", HELLO),
+        ("forget", HELLO), ("restore", HELLO),
+    ]
+    def files(root):
+        return {str(p.relative_to(root)): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    for step in steps:
+        cli = list(step[:2]) + (["--ref", step[2]] if len(step) == 3 else [])
+        t.gitpm_ok(*cli)
+        api = t.run("gitpm-api", str(paired), *step, check=True)
+        t.eq(json.loads(api.out), t.state(), f"{step[0]} state parity")
+        t.eq(files(paired / "dist"), files(t.ws / "dist"), f"{step[0]} deployed bytes parity")

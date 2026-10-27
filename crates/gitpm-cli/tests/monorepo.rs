@@ -1,6 +1,7 @@
-//! End-to-end tests of multi-package repositories (`gitpm.json`) and `fork --replace`.
+//! End-to-end tests of multi-package repositories (`gitpm.json`) and explicit fork workflows.
 //! Hermetic: the CLI and Git run with a cleared environment, a fixture HOME/TMPDIR and
 //! Git config; every path is inside a per-test temp directory removed on drop.
+mod common;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -15,7 +16,7 @@ struct Fixture {
     mono: PathBuf,
 }
 impl Fixture {
-    /// Repository `mono` with `tilr/store` and `tilr/theme` at 1.0.0 (one commit, two tags).
+    /// Repository `mono` with `76a9b591-60f3-5c7f-9e1c-31648fc73bfd` and `f851f609-bb81-52d6-bfef-33798624782c` at 1.0.0 (one commit, one repository tag).
     fn new() -> Self {
         let dir = std::env::temp_dir().join(format!(
             "gitpm-cli-mono-{}-{}",
@@ -25,11 +26,14 @@ impl Fixture {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("home")).unwrap();
         fs::create_dir_all(dir.join("tmp")).unwrap();
+        // The catalog location every command gets must exist (it starts empty).
+        fs::create_dir_all(dir.join("catalog")).unwrap();
         fs::write(
             dir.join("home/.gitconfig"),
             "[user]\n\tname = Test\n\temail = test@example.invalid\n[init]\n\tdefaultBranch = main\n[commit]\n\tgpgsign = false\n[tag]\n\tgpgsign = false\n",
         )
         .unwrap();
+        let dir = fs::canonicalize(dir).unwrap();
         let f = Self {
             mono: dir.join("mono"),
             dir,
@@ -41,8 +45,7 @@ impl Fixture {
         f.write("theme", "1.0.0", "");
         f.git(&f.mono, &["add", "--all"]);
         f.git(&f.mono, &["commit", "-q", "-m", "first"]);
-        f.git(&f.mono, &["tag", "tilr/store@1.0.0"]);
-        f.git(&f.mono, &["tag", "tilr/theme@1.0.0"]);
+        f.git(&f.mono, &["tag", "v1.0.0"]);
         f
     }
     fn command(&self, program: impl AsRef<std::ffi::OsStr>) -> Command {
@@ -71,24 +74,39 @@ impl Fixture {
         );
     }
     fn write(&self, name: &str, version: &str, extra: &str) {
+        let id = match name {
+            "store" => "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+            "theme" => "f851f609-bb81-52d6-bfef-33798624782c",
+            "panel" => "955bf29f-2893-56ef-9439-369c50455ae7",
+            _ => panic!("unknown fixture package"),
+        };
         let folder = self.mono.join("packages").join(name);
         fs::create_dir_all(folder.join("dist")).unwrap();
         fs::write(
             folder.join("plugin.json"),
-            format!(r#"{{"id":"tilr/{name}","version":"{version}"{extra}}}"#),
+            format!(r#"{{"id":"{id}","name": "fixture", "version":"{version}"{extra}}}"#),
         )
         .unwrap();
         fs::write(folder.join("dist/index.js"), format!("{name} {version}")).unwrap();
     }
-    /// Commit a new version of one package and tag only that package.
+    /// Commit one payload change, bump every package and tag the repository.
     fn release(&self, name: &str, version: &str) {
         self.write(name, version, "");
+        for entry in fs::read_dir(self.mono.join("packages")).unwrap() {
+            let path = entry.unwrap().path().join("plugin.json");
+            if path.is_file() {
+                let mut manifest: serde_json::Value =
+                    serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                manifest["version"] = version.into();
+                fs::write(path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+            }
+        }
         self.git(&self.mono, &["add", "--all"]);
         self.git(
             &self.mono,
             &["commit", "-q", "-m", &format!("{name} {version}")],
         );
-        self.git(&self.mono, &["tag", &format!("tilr/{name}@{version}")]);
+        self.git(&self.mono, &["tag", &format!("v{version}")]);
     }
     fn run(&self, args: &[&str]) -> Output {
         self.command(env!("CARGO_BIN_EXE_gitpm"))
@@ -142,50 +160,96 @@ impl Drop for Fixture {
 }
 
 #[test]
-fn two_packages_of_one_repository_share_one_clone_and_update_independently() {
+fn two_packages_share_one_clone_and_follow_repository_releases() {
     let f = Fixture::new();
     // Positional ID and --package are equivalent.
-    f.ok(&["install", f.source(), "tilr/store"]);
-    f.ok(&["install", f.source(), "--package", "tilr/theme"]);
-    assert_eq!(f.dist("tilr/store"), "store 1.0.0");
-    assert_eq!(f.dist("tilr/theme"), "theme 1.0.0");
+    f.ok(&[
+        "install",
+        f.source(),
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+    ]);
+    f.ok(&[
+        "install",
+        f.source(),
+        "--package",
+        "f851f609-bb81-52d6-bfef-33798624782c",
+    ]);
+    assert_eq!(
+        f.dist("76a9b591-60f3-5c7f-9e1c-31648fc73bfd"),
+        "store 1.0.0"
+    );
+    assert_eq!(
+        f.dist("f851f609-bb81-52d6-bfef-33798624782c"),
+        "theme 1.0.0"
+    );
     assert_eq!(f.clones(), 1);
-    assert!(!f.dir.join("workspace/plugins/tilr").exists());
+    assert!(!f.dir.join("workspace/packages/tilr").exists());
     let state = f.state();
     assert_eq!(
-        state["plugins"]["tilr/store"]["path"], "packages/store",
+        state["packages"]["76a9b591-60f3-5c7f-9e1c-31648fc73bfd"]["path"], "packages/store",
         "{state:#}"
     );
     assert_eq!(
-        state["plugins"]["tilr/store"]["repo"],
-        state["plugins"]["tilr/theme"]["repo"]
+        state["packages"]["76a9b591-60f3-5c7f-9e1c-31648fc73bfd"]["repo"],
+        state["packages"]["f851f609-bb81-52d6-bfef-33798624782c"]["repo"]
     );
 
-    // Releasing A moves only A.
+    // Publishing a shared version still lets the caller update one installation.
     f.release("store", "1.1.0");
-    f.ok(&["update", "tilr/store"]);
-    assert_eq!(f.dist("tilr/store"), "store 1.1.0");
-    assert_eq!(f.dist("tilr/theme"), "theme 1.0.0");
+    f.ok(&["update", "76a9b591-60f3-5c7f-9e1c-31648fc73bfd"]);
     assert_eq!(
-        f.state()["plugins"]["tilr/theme"]["current"]["version"],
+        f.dist("76a9b591-60f3-5c7f-9e1c-31648fc73bfd"),
+        "store 1.1.0"
+    );
+    assert_eq!(
+        f.dist("f851f609-bb81-52d6-bfef-33798624782c"),
+        "theme 1.0.0"
+    );
+    assert_eq!(
+        f.state()["packages"]["f851f609-bb81-52d6-bfef-33798624782c"]["current"]["version"],
         "1.0.0"
     );
-    f.ok(&["rollback", "tilr/store"]);
-    assert_eq!(f.dist("tilr/store"), "store 1.0.0");
+    f.ok(&["rollback", "76a9b591-60f3-5c7f-9e1c-31648fc73bfd"]);
+    assert_eq!(
+        f.dist("76a9b591-60f3-5c7f-9e1c-31648fc73bfd"),
+        "store 1.0.0"
+    );
     f.release("theme", "1.2.0");
     let out = f.ok(&["update", "all"]);
     assert!(out.contains("2 updates"), "{out}");
-    assert_eq!(f.dist("tilr/store"), "store 1.1.0");
-    assert_eq!(f.dist("tilr/theme"), "theme 1.2.0");
+    assert_eq!(
+        f.dist("76a9b591-60f3-5c7f-9e1c-31648fc73bfd"),
+        "store 1.1.0"
+    );
+    assert_eq!(
+        f.state()["packages"]["76a9b591-60f3-5c7f-9e1c-31648fc73bfd"]["current"]["version"],
+        "1.2.0"
+    );
+    assert_eq!(
+        f.dist("f851f609-bb81-52d6-bfef-33798624782c"),
+        "theme 1.2.0"
+    );
 
-    // The dev channel works per package (HEAD of the default branch).
+    // --dev works per package (HEAD of the default branch, then followed).
     f.write("theme", "1.3.0", "");
+    f.write("store", "1.3.0", "");
     f.git(&f.mono, &["commit", "-q", "-am", "theme work"]);
-    f.ok(&["update", "tilr/theme", "--channel", "dev"]);
-    assert_eq!(f.dist("tilr/theme"), "theme 1.3.0");
+    f.ok(&["update", "f851f609-bb81-52d6-bfef-33798624782c", "--dev"]);
+    assert_eq!(
+        f.dist("f851f609-bb81-52d6-bfef-33798624782c"),
+        "theme 1.3.0"
+    );
     // An explicit ref names a release tag of the package.
-    f.ok(&["update", "tilr/store", "--ref", "tilr/store@1.0.0"]);
-    assert_eq!(f.dist("tilr/store"), "store 1.0.0");
+    f.ok(&[
+        "update",
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+        "--ref",
+        "v1.0.0",
+    ]);
+    assert_eq!(
+        f.dist("76a9b591-60f3-5c7f-9e1c-31648fc73bfd"),
+        "store 1.0.0"
+    );
 }
 
 #[test]
@@ -194,61 +258,135 @@ fn installing_a_monorepo_without_a_package_id_lists_the_packages() {
     let error = f.fails(&["install", f.source()]);
     assert!(
         error.contains("choose one by ID")
-            && error.contains("tilr/store (packages/store)")
-            && error.contains("tilr/theme (packages/theme)"),
+            && error.contains("76a9b591-60f3-5c7f-9e1c-31648fc73bfd (packages/store)")
+            && error.contains("f851f609-bb81-52d6-bfef-33798624782c (packages/theme)"),
         "{error}"
     );
     assert!(error.contains("Error kind: invalid_argument"), "{error}");
-    let error = f.fails(&["install", f.source(), "tilr/nothing"]);
+    let error = f.fails(&[
+        "install",
+        f.source(),
+        "0d443f2c-f4a2-5909-811c-922e87fc056a",
+    ]);
     assert!(error.contains("not in this repository"), "{error}");
     f.fails(&[
         "install",
         f.source(),
-        "tilr/store",
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
         "--package",
-        "tilr/store",
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
     ]);
-    // --ref with an ID@VERSION tag names the package; the dev channel needs an ID.
-    f.ok(&["install", f.source(), "--ref", "tilr/theme@1.0.0"]);
-    f.fails(&["install", f.source(), "--channel", "dev"]);
-    f.ok(&["install", f.source(), "tilr/store", "--channel", "dev"]);
-    assert_eq!(f.dist("tilr/store"), "store 1.0.0");
+    // A repository tag selects a revision, so a package ID is still required.
+    f.fails(&["install", f.source(), "--ref", "v1.0.0"]);
+    f.ok(&[
+        "install",
+        f.source(),
+        "f851f609-bb81-52d6-bfef-33798624782c",
+        "--ref",
+        "v1.0.0",
+    ]);
+    f.fails(&["install", f.source(), "--dev"]);
+    f.ok(&[
+        "install",
+        f.source(),
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+        "--dev",
+    ]);
+    assert_eq!(
+        f.dist("76a9b591-60f3-5c7f-9e1c-31648fc73bfd"),
+        "store 1.0.0"
+    );
 }
 
 #[test]
 fn uninstalling_one_package_keeps_the_other_working() {
     let f = Fixture::new();
-    f.ok(&["install", f.source(), "tilr/store"]);
-    f.ok(&["install", f.source(), "tilr/theme"]);
-    f.ok(&["uninstall", "tilr/store"]);
-    assert!(!f.dir.join("workspace/dist/tilr/store").exists());
+    f.ok(&[
+        "install",
+        f.source(),
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+    ]);
+    f.ok(&[
+        "install",
+        f.source(),
+        "f851f609-bb81-52d6-bfef-33798624782c",
+    ]);
+    f.ok(&["uninstall", "76a9b591-60f3-5c7f-9e1c-31648fc73bfd"]);
+    assert!(
+        !f.dir
+            .join("workspace/dist/76a9b591-60f3-5c7f-9e1c-31648fc73bfd")
+            .exists()
+    );
     assert_eq!(f.clones(), 1);
     f.release("theme", "1.1.0");
-    f.ok(&["update", "tilr/theme"]);
-    assert_eq!(f.dist("tilr/theme"), "theme 1.1.0");
-    f.ok(&["uninstall", "tilr/theme"]);
+    f.ok(&["update", "f851f609-bb81-52d6-bfef-33798624782c"]);
+    assert_eq!(
+        f.dist("f851f609-bb81-52d6-bfef-33798624782c"),
+        "theme 1.1.0"
+    );
+    f.ok(&["uninstall", "f851f609-bb81-52d6-bfef-33798624782c"]);
     assert_eq!(f.clones(), 0);
     assert!(
-        f.state()["plugins"].as_object().unwrap().is_empty(),
+        f.state()["packages"].as_object().unwrap().is_empty(),
         "nothing left"
     );
 }
 
 #[test]
-fn a_tag_on_a_commit_without_its_package_is_a_clear_error() {
+fn repository_tags_without_the_package_are_ignored_without_warnings() {
     let f = Fixture::new();
+    f.ok(&[
+        "install",
+        f.source(),
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+    ]);
     fs::remove_dir_all(f.mono.join("packages/store")).unwrap();
+    f.write("theme", "2.0.0", "");
     f.git(&f.mono, &["add", "--all"]);
     f.git(&f.mono, &["commit", "-q", "-m", "drop store"]);
-    f.git(&f.mono, &["tag", "tilr/store@2.0.0"]);
-    let error = f.fails(&["install", f.source(), "tilr/store"]);
+    f.git(&f.mono, &["tag", "v2.0.0"]);
+    let check = f
+        .command(env!("CARGO_BIN_EXE_gitpm"))
+        .args(["--root", f.dir.join("workspace").to_str().unwrap(), "check"])
+        .output()
+        .unwrap();
     assert!(
-        error.contains("tilr/store@2.0.0 points to commit") && error.contains("without package"),
-        "{error}"
+        check.status.success(),
+        "{}",
+        String::from_utf8_lossy(&check.stderr)
     );
-    let error = f.fails(&["install", f.source(), "--ref", "tilr/store@2.0.0"]);
+    assert!(!String::from_utf8_lossy(&check.stdout).contains("update available"));
+    let update = f.run(&["update", "76a9b591-60f3-5c7f-9e1c-31648fc73bfd"]);
+    assert!(
+        update.status.success(),
+        "{}",
+        String::from_utf8_lossy(&update.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&update.stderr).contains("Warning:"));
+    f.ok(&["uninstall", "76a9b591-60f3-5c7f-9e1c-31648fc73bfd"]);
+    let install = f.run(&[
+        "install",
+        f.source(),
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+    ]);
+    assert!(
+        install.status.success(),
+        "{}",
+        String::from_utf8_lossy(&install.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&install.stderr).contains("Warning:"));
+    assert_eq!(
+        f.state()["packages"]["76a9b591-60f3-5c7f-9e1c-31648fc73bfd"]["current"]["version"],
+        "1.0.0"
+    );
+    let error = f.fails(&[
+        "install",
+        f.source(),
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+        "--ref",
+        "v2.0.0",
+    ]);
     assert!(error.contains("not in this repository"), "{error}");
-    assert!(!f.dir.join("workspace/dist/tilr").exists());
 }
 
 #[test]
@@ -260,42 +398,58 @@ fn legacy_root_repository_installs_and_updates_as_before() {
     let release = |version: &str| {
         fs::write(
             legacy.join("plugin.json"),
-            format!(r#"{{"id":"acme/hello","version":"{version}"}}"#),
+            format!(r#"{{"id":"7e6e8392-7be8-55ae-bd03-2b430b1c5d59","name": "fixture", "version":"{version}"}}"#),
         )
         .unwrap();
         fs::write(legacy.join("dist/index.js"), format!("hello {version}")).unwrap();
         f.git(&legacy, &["add", "--all"]);
         f.git(&legacy, &["commit", "-q", "-m", version]);
-        f.git(&legacy, &["tag", &format!("acme/hello@{version}")]);
+        f.git(&legacy, &["tag", &format!("v{version}")]);
     };
     release("1.0.0");
     f.ok(&["install", legacy.to_str().unwrap()]);
-    assert!(f.dir.join("workspace/plugins/acme/hello/.git").is_dir());
-    assert_eq!(f.clones(), 0);
-    let entry = &f.state()["plugins"]["acme/hello"];
+    assert!(
+        f.dir
+            .join("workspace/worktrees/7e6e8392-7be8-55ae-bd03-2b430b1c5d59/.git")
+            .is_file()
+    );
+    assert_eq!(f.clones(), 1);
+    let entry = &f.state()["packages"]["7e6e8392-7be8-55ae-bd03-2b430b1c5d59"];
     assert!(
         entry.get("path").is_none() && entry.get("repo").is_none(),
         "{entry}"
     );
     release("1.1.0");
-    f.ok(&["update", "acme/hello"]);
-    assert_eq!(f.dist("acme/hello"), "hello 1.1.0");
+    f.ok(&["update", "7e6e8392-7be8-55ae-bd03-2b430b1c5d59"]);
+    assert_eq!(
+        f.dist("7e6e8392-7be8-55ae-bd03-2b430b1c5d59"),
+        "hello 1.1.0"
+    );
     // A matching ID is accepted for a root repository too, a different one is not.
-    f.ok(&["uninstall", "acme/hello"]);
-    f.fails(&["install", legacy.to_str().unwrap(), "acme/other"]);
-    f.ok(&["install", legacy.to_str().unwrap(), "acme/hello"]);
+    f.ok(&["uninstall", "7e6e8392-7be8-55ae-bd03-2b430b1c5d59"]);
+    f.fails(&[
+        "install",
+        legacy.to_str().unwrap(),
+        "cde71d60-4de0-5f8d-a3c9-26b40d4af02a",
+    ]);
+    f.ok(&[
+        "install",
+        legacy.to_str().unwrap(),
+        "7e6e8392-7be8-55ae-bd03-2b430b1c5d59",
+    ]);
     // commit and catalog-update keep working without gitpm.json.
     fs::write(legacy.join("dist/index.js"), "hello 1.2.0").unwrap();
     let out = f.ok(&["commit", legacy.to_str().unwrap(), "1.2.0"]);
-    assert!(out.contains("acme/hello@1.2.0"), "{out}");
+    assert!(out.contains("v1.2.0"), "{out}");
     fs::write(f.dir.join("sources.txt"), "hello\n").unwrap();
-    let out = f.ok(&["catalog-update"]);
+    let out = f.ok(&["catalog", "update"]);
     assert!(out.contains("3 release(s)"), "{out}");
     let release = &f.ok(&[
+        "catalog",
         "register",
         legacy.to_str().unwrap(),
         "--ref",
-        "acme/hello@1.2.0",
+        "v1.2.0",
     ]);
     assert!(!release.contains("\"path\""), "{release}");
 }
@@ -305,275 +459,108 @@ fn catalog_update_publishes_every_package_with_its_path() {
     let f = Fixture::new();
     f.release("store", "1.1.0");
     fs::write(f.dir.join("sources.txt"), "mono\n").unwrap();
-    let out = f.ok(&["catalog-update"]);
-    assert!(out.contains("3 release(s)"), "{out}");
-    let info = f.ok(&["info"]);
+    let out = f.ok(&["catalog", "update"]);
+    assert!(out.contains("4 release(s)"), "{out}");
+    let info = f.ok(&["catalog", "show"]);
     assert!(
-        info.contains("tilr/store — latest: 1.1.0") && info.contains("tilr/theme — latest: 1.0.0"),
+        info.contains("76a9b591-60f3-5c7f-9e1c-31648fc73bfd — latest: 1.1.0")
+            && info.contains("f851f609-bb81-52d6-bfef-33798624782c — latest: 1.1.0"),
         "{info}"
     );
     let release: serde_json::Value = serde_json::from_slice(
-        &fs::read(
-            f.dir
-                .join("catalog/namespaces/tilr/store/versions/1.1.0/release.json"),
-        )
+        &fs::read(f.dir.join(
+            "catalog/packages/76a9b591-60f3-5c7f-9e1c-31648fc73bfd/versions/1.1.0/release.json",
+        ))
         .unwrap(),
     )
     .unwrap();
     assert_eq!(release["path"], "packages/store");
-    f.ok(&["install-catalog", "tilr/store"]);
-    f.ok(&["install-catalog", "tilr/theme"]);
-    assert_eq!(f.dist("tilr/store"), "store 1.1.0");
-    assert_eq!(f.dist("tilr/theme"), "theme 1.0.0");
+    f.ok(&["install-catalog", "76a9b591-60f3-5c7f-9e1c-31648fc73bfd"]);
+    f.ok(&["install-catalog", "f851f609-bb81-52d6-bfef-33798624782c"]);
+    assert_eq!(
+        f.dist("76a9b591-60f3-5c7f-9e1c-31648fc73bfd"),
+        "store 1.1.0"
+    );
+    assert_eq!(
+        f.dist("f851f609-bb81-52d6-bfef-33798624782c"),
+        "theme 1.0.0"
+    );
     assert_eq!(f.clones(), 1);
     let check = f.ok(&["check"]);
     assert!(check.contains("Updates: 0."), "{check}");
     // register needs the package for a ref that does not name it.
-    let error = f.fails(&["register", f.source(), "--ref", "main"]);
+    let error = f.fails(&["catalog", "register", f.source(), "--ref", "main"]);
     assert!(error.contains("choose one by ID"), "{error}");
     let out = f.ok(&[
+        "catalog",
         "register",
         f.source(),
         "--ref",
         "main",
         "--package",
-        "tilr/store",
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
     ]);
     assert!(out.contains("\"path\": \"packages/store\""), "{out}");
 }
 
 #[test]
-fn init_into_and_commit_with_a_package() {
+fn init_into_and_commit_releases_all_packages_and_additions_inherit_version() {
     let f = Fixture::new();
     let repo = f.dir.join("apps");
-    // An existing repository without a root package becomes a multi-package one.
     fs::create_dir_all(&repo).unwrap();
     f.git(&repo, &["init", "-q", "-b", "main"]);
-    let out = f.ok(&["init", "acme/one", "--into", repo.to_str().unwrap()]);
-    assert!(out.contains("acme/one@0.1.0"), "{out}");
-    assert!(repo.join("gitpm.json").is_file());
-    assert!(repo.join("packages/one/dist/index.js").is_file());
-    f.ok(&["init", "acme/two", "--into", repo.to_str().unwrap()]);
-    // Folders are named after the package name: other/two cannot join acme/two, and
-    // IDs are unique in any letter case.
-    let error = f.fails(&["init", "other/two", "--into", repo.to_str().unwrap()]);
-    assert!(
-        error.contains("package acme/two already uses that folder"),
-        "{error}"
-    );
-    let error = f.fails(&["init", "Acme/One", "--into", repo.to_str().unwrap()]);
-    assert!(error.contains("acme/one already exists"), "{error}");
-    fs::write(repo.join("packages/two/dist/index.js"), "two v2").unwrap();
-    let error = f.fails(&["commit", repo.to_str().unwrap(), "0.2.0"]);
-    assert!(error.contains("acme/one (packages/one)"), "{error}");
-    let out = f.ok(&[
-        "commit",
-        repo.to_str().unwrap(),
-        "0.2.0",
-        "--package",
-        "acme/two",
-    ]);
-    assert!(out.contains("acme/two@0.2.0"), "{out}");
-    f.ok(&["install", repo.to_str().unwrap(), "acme/two"]);
-    assert_eq!(f.dist("acme/two"), "two v2");
-    f.ok(&["install", repo.to_str().unwrap(), "acme/one"]);
-    assert_eq!(f.clones(), 1);
-    // A new folder becomes a single-package repository (the root is the package);
-    // nothing is derived from the ID.
-    let root = f.dir.join("single");
-    let out = f.ok(&["init", "acme/root", "--into", root.to_str().unwrap()]);
-    assert!(out.contains("acme/root@0.1.0"), "{out}");
-    assert!(root.join("plugin.json").is_file() && !root.join("gitpm.json").exists());
-    assert!(!f.dir.join("acme").exists());
-    // A root package is not converted to a multi-package repository implicitly.
-    let error = f.fails(&["init", "acme/three", "--into", root.to_str().unwrap()]);
-    assert!(error.contains("repository root is a package"), "{error}");
-    assert!(!root.join("gitpm.json").exists());
-    let error = f.fails(&["init", "acme/four", "--in", root.to_str().unwrap()]);
-    assert!(error.contains("unknown option: --in"), "{error}");
-}
-
-/// A consumer repository that depends on `tilr/theme`.
-fn consumer(f: &Fixture) -> PathBuf {
-    let repo = f.dir.join("consumer");
-    fs::create_dir_all(repo.join("dist")).unwrap();
-    f.git(&repo, &["init", "-q", "-b", "main"]);
-    fs::write(
-        repo.join("plugin.json"),
-        r#"{"id":"app/consumer","version":"1.0.0","dependencies":{"tilr/theme":"^1.0"}}"#,
-    )
-    .unwrap();
-    fs::write(repo.join("dist/index.js"), "consumer").unwrap();
-    f.git(&repo, &["add", "--all"]);
-    f.git(&repo, &["commit", "-q", "-m", "consumer"]);
-    f.git(&repo, &["tag", "app/consumer@1.0.0"]);
-    repo
-}
-fn provider(state: &serde_json::Value) -> String {
-    let consumer = state["resolved"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|p| p["id"] == "app/consumer")
+    f.ok(&["init", "one", "--into", repo.to_str().unwrap()]);
+    let one = common::package_by_name(&repo, "one");
+    let one_id = common::manifest_id(&one);
+    assert_eq!(one.file_name().unwrap(), one_id.as_str());
+    f.ok(&["commit", repo.to_str().unwrap(), "0.2.0"]);
+    let out = f.ok(&["init", "two", "--into", repo.to_str().unwrap()]);
+    assert!(!out.contains("Git commit and tag"), "{out}");
+    let two = common::package_by_name(&repo, "two");
+    let two_id = common::manifest_id(&two);
+    assert_eq!(manifest(&two)["version"], "0.2.0");
+    // The alias is nonunique even inside the same repository.
+    f.ok(&["init", "two", "--into", repo.to_str().unwrap()]);
+    assert_eq!(fs::read_dir(repo.join("packages")).unwrap().count(), 3);
+    let tags = f
+        .command("git")
+        .arg("-C")
+        .arg(&repo)
+        .args(["tag", "--list"])
+        .output()
         .unwrap();
-    consumer["dependencies"][0]["provider"]
-        .as_str()
-        .unwrap()
-        .to_owned()
+    assert_eq!(String::from_utf8(tags.stdout).unwrap(), "v0.2.0\n");
+    fs::write(two.join("dist/index.js"), "two v2").unwrap();
+    f.ok(&["commit", repo.to_str().unwrap(), "0.3.0"]);
+    assert_eq!(manifest(&one)["version"], "0.3.0");
+    assert_eq!(manifest(&two)["version"], "0.3.0");
+    f.ok(&["install", repo.to_str().unwrap(), &two_id]);
+    f.ok(&["install", repo.to_str().unwrap(), &one_id]);
+    assert_eq!(f.dist(&two_id), "two v2");
+    assert_eq!(f.clones(), 1);
+    let root = f.dir.join("single");
+    f.ok(&["init", "single", "--into", root.to_str().unwrap()]);
+    assert!(root.join("plugin.json").is_file() && !root.join("gitpm.json").exists());
+    assert!(
+        f.fails(&["init", "three", "--into", root.to_str().unwrap()])
+            .contains("repository root is a package")
+    );
 }
 
-#[test]
-fn fork_replace_releases_installs_and_replaces_in_one_step() {
-    let f = Fixture::new();
-    f.ok(&["install", f.source(), "tilr/theme"]);
-    let consumer = consumer(&f);
-    f.ok(&["install", consumer.to_str().unwrap()]);
-    assert_eq!(provider(&f.state()), "tilr/theme");
-    // Local edits of the installed package go into the fork's first release.
-    let clone = fs::read_dir(f.dir.join("workspace/repos"))
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
-    fs::write(clone.join("packages/theme/dist/index.js"), "my theme").unwrap();
-    let out = f.ok(&[
-        "fork",
-        "tilr/theme",
-        "--ns",
-        "me",
-        "--into",
-        "forks/me/theme",
-        "--replace",
-    ]);
-    assert!(out.contains("Released: me/theme@1.0.0"), "{out}");
-    assert!(out.contains("Installed: me/theme 1.0.0"), "{out}");
-    assert!(
-        out.contains("tilr/theme replaced by me/theme 1.0.0 for: app/consumer"),
-        "{out}"
-    );
-    let fork = f.dir.join("forks/me/theme");
-    assert!(fork.join("packages/theme/plugin.json").is_file());
-    assert_eq!(f.dist("me/theme"), "my theme");
-    // dist/ holds only active packages: the replaced original is not deployed.
-    assert!(!f.dir.join("workspace/dist/tilr/theme").exists());
-    let state = f.state();
-    assert_eq!(state["replacements"]["tilr/theme"], "me/theme");
-    assert_eq!(provider(&state), "me/theme");
-    // A later fork release with another version shows the installed version.
-    fs::write(fork.join("packages/theme/dist/index.js"), "my theme 2").unwrap();
-    f.ok(&["commit", fork.to_str().unwrap(), "1.5.0"]);
-    f.ok(&["update", "me/theme"]);
-    let out = f.ok(&["replace", "tilr/theme", "--with", "me/theme"]);
-    assert!(
-        out.contains(
-            "tilr/theme replaced by me/theme 1.5.0 (as tilr/theme 1.0.0) for: app/consumer"
-        ),
-        "{out}"
-    );
-    // Switching back restores the original for the consumer.
-    let out = f.ok(&["replace", "tilr/theme", "--back"]);
-    assert!(
-        out.contains(
-            "tilr/theme switched back from me/theme (tilr/theme 1.0.0 for: app/consumer); me/theme stays installed and enabled (disable or uninstall it if not wanted)"
-        ),
-        "{out}"
-    );
-    let state = f.state();
-    assert!(state.get("replacements").is_none(), "{state:#}");
-    assert_eq!(provider(&state), "tilr/theme");
-    // Deployed again from the installed commit (the clone's local edit is not released).
-    assert_eq!(f.dist("tilr/theme"), "theme 1.0.0");
-    assert_eq!(f.dist("me/theme"), "my theme 2");
-}
-
-#[test]
-fn fork_replace_keeps_the_fork_and_says_how_to_finish_when_a_step_fails() {
-    let f = Fixture::new();
-    let legacy = f.dir.join("hello");
-    fs::create_dir_all(legacy.join("dist")).unwrap();
-    f.git(&legacy, &["init", "-q", "-b", "main"]);
-    fs::write(
-        legacy.join("plugin.json"),
-        r#"{"id":"acme/hello","version":"1.0.0"}"#,
-    )
-    .unwrap();
-    fs::write(legacy.join("dist/index.js"), "hello").unwrap();
-    f.git(&legacy, &["add", "--all"]);
-    f.git(&legacy, &["commit", "-q", "-m", "hello"]);
-    f.git(&legacy, &["tag", "acme/hello@1.0.0"]);
-    f.ok(&["install", legacy.to_str().unwrap()]);
-    // A symlink in the edited dist gets released with the fork but cannot be installed.
-    let installed = f.dir.join("workspace/plugins/acme/hello");
-    std::os::unix::fs::symlink("index.js", installed.join("dist/link.js")).unwrap();
-    let error = f.fails(&[
-        "fork",
-        "acme/hello",
-        "--ns",
-        "me",
-        "--into",
-        "me/hello",
-        "--replace",
-    ]);
-    assert!(
-        error.contains("me/hello: the install step failed"),
-        "{error}"
-    );
-    assert!(error.contains("gitpm install"), "{error}");
-    assert!(
-        error.contains("To undo everything: uninstall the installed forks, then delete"),
-        "{error}"
-    );
-    assert!(error.contains("Error kind: unsupported"), "{error}");
-    let fork = f.dir.join("me/hello");
-    assert!(fork.join("plugin.json").is_file(), "fork folder is kept");
-    let state = f.state();
-    assert!(state["plugins"].get("me/hello").is_none());
-    assert!(state.get("replacements").is_none());
-    // Without --replace the output names the next steps.
-    fs::remove_file(installed.join("dist/link.js")).unwrap();
-    let out = f.ok(&["fork", "acme/hello", "--ns", "me", "--into", "other"]);
-    assert!(
-        out.contains("Next steps") && out.contains("gitpm replace acme/hello --with me/hello"),
-        "{out}"
-    );
-    assert!(f.dir.join("other/plugin.json").is_file());
-    // Invalid input is refused before any folder is created.
-    f.fails(&[
-        "fork",
-        "acme/hello",
-        "--ns",
-        "you",
-        "--into",
-        "you",
-        "--replace",
-        "--version",
-        "1.0",
-    ]);
-    assert!(!f.dir.join("you").exists());
-    f.fails(&[
-        "fork",
-        "acme/hello",
-        "--ns",
-        "you",
-        "--into",
-        "you",
-        "--version",
-        "2.0.0",
-    ]);
-    assert!(!f.dir.join("you").exists());
-}
-
-// ---- forks of several packages ------------------------------------------------------
-
-/// Add `tilr/panel` (depends on `tilr/theme ^1.0`) to the fixture repository, released
-/// as 1.0.0, and install all three packages.
 fn three_installed(f: &Fixture) {
-    f.write("panel", "1.0.0", r#","dependencies":{"tilr/theme":"^1.0"}"#);
+    f.write(
+        "panel",
+        "1.0.0",
+        r#","dependencies":{"f851f609-bb81-52d6-bfef-33798624782c":"^1.0"}"#,
+    );
     f.git(&f.mono, &["add", "--all"]);
     f.git(&f.mono, &["commit", "-q", "-m", "panel"]);
-    f.git(&f.mono, &["tag", "tilr/panel@1.0.0"]);
-    for id in ["tilr/store", "tilr/theme", "tilr/panel"] {
+    f.git(&f.mono, &["tag", "-f", "v1.0.0"]);
+    for id in [
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+        "f851f609-bb81-52d6-bfef-33798624782c",
+        "955bf29f-2893-56ef-9439-369c50455ae7",
+    ] {
         f.ok(&["install", f.source(), id]);
     }
 }
@@ -583,22 +570,27 @@ fn manifest(path: &Path) -> serde_json::Value {
 fn config(repo: &Path) -> serde_json::Value {
     serde_json::from_slice(&fs::read(repo.join("gitpm.json")).unwrap()).unwrap()
 }
-/// A root consumer `app/NAME` depending on `DEPENDENCY ^1.0`, installed.
+/// A root consumer `4248595a-3373-52d6-b64e-fbc505c1b144` depending on `DEPENDENCY ^1.0`, installed.
 fn install_consumer(f: &Fixture, name: &str, dependency: &str) {
+    let id = match name {
+        "uses-theme" => "4c71f036-f988-52f8-87db-af543d39cac7",
+        "uses-panel" => "42361f17-3146-5bb1-a7d6-04973b2aac4a",
+        _ => panic!("unknown consumer fixture"),
+    };
     let repo = f.dir.join(name);
     fs::create_dir_all(repo.join("dist")).unwrap();
     f.git(&repo, &["init", "-q", "-b", "main"]);
     fs::write(
         repo.join("plugin.json"),
         format!(
-            r#"{{"id":"app/{name}","version":"1.0.0","dependencies":{{"{dependency}":"^1.0"}}}}"#
+            r#"{{"id":"{id}","name":"{name}","version":"1.0.0","dependencies":{{"{dependency}":"^1.0"}}}}"#
         ),
     )
     .unwrap();
     fs::write(repo.join("dist/index.js"), name).unwrap();
     f.git(&repo, &["add", "--all"]);
     f.git(&repo, &["commit", "-q", "-m", name]);
-    f.git(&repo, &["tag", &format!("app/{name}@1.0.0")]);
+    f.git(&repo, &["tag", "v1.0.0"]);
     f.ok(&["install", repo.to_str().unwrap()]);
 }
 fn provider_of(state: &serde_json::Value, consumer: &str) -> String {
@@ -615,50 +607,63 @@ fn provider_of(state: &serde_json::Value, consumer: &str) -> String {
 }
 
 #[test]
-fn fork_of_two_packages_keeps_exactly_those_and_rewrites_their_dependency() {
+fn fork_ids_select_the_repository_and_preserve_dependencies_until_explicit_edit() {
     let f = Fixture::new();
     three_installed(&f);
     let out = f.ok(&[
         "fork",
-        "tilr/theme",
-        "tilr/panel",
-        "--ns",
-        "me",
+        "f851f609-bb81-52d6-bfef-33798624782c",
+        "955bf29f-2893-56ef-9439-369c50455ae7",
         "--into",
-        "forks/me/mono",
+        "7200845d-5956-5ec3-85d1-a7161d3592de/mono",
     ]);
-    let fork = f.dir.join("forks/me/mono");
+    let fork = f.dir.join("7200845d-5956-5ec3-85d1-a7161d3592de/mono");
+    let fork_store = common::manifest_id(&fork.join("packages/store"));
+    let fork_theme = common::manifest_id(&fork.join("packages/theme"));
+    let fork_panel = common::manifest_id(&fork.join("packages/panel"));
+
     assert!(
-        out.contains("Fork created: /") && out.contains("forks/me/mono\n"),
+        out.contains("Fork created: /")
+            && out.contains("7200845d-5956-5ec3-85d1-a7161d3592de/mono\n"),
         "{out}"
     );
     assert!(
-        out.contains("me/panel forked from tilr/panel (packages/panel)"),
+        out.contains(
+            format!(
+                "{fork_panel} forked from 955bf29f-2893-56ef-9439-369c50455ae7 (packages/panel)"
+            )
+            .as_str()
+        ),
         "{out}"
     );
-    assert!(
-        out.contains("Dependency: me/panel now depends on me/theme ^1.0 (was tilr/theme)"),
-        "{out}"
-    );
+    assert!(!out.contains("Dependency:"), "{out}");
+    assert!(out.contains("gitpm packages"), "{out}");
+    assert!(out.find("gitpm packages").unwrap() < out.find("gitpm commit").unwrap());
+    assert_eq!(config(&fork)["packages"], serde_json::json!(["packages/*"]));
     assert_eq!(
-        config(&fork)["packages"],
-        serde_json::json!(["packages/panel", "packages/theme"])
-    );
-    assert!(
-        !fork.join("packages/store").exists(),
-        "unforked sibling removed"
+        manifest(&fork.join("packages/store"))["id"],
+        fork_store.as_str()
     );
     let panel = manifest(&fork.join("packages/panel"));
-    assert_eq!(panel["id"], "me/panel");
+    assert_eq!(panel["id"], fork_panel.as_str());
     assert_eq!(
         panel["dependencies"],
-        serde_json::json!({"me/theme": "^1.0"})
+        serde_json::json!({"f851f609-bb81-52d6-bfef-33798624782c": "^1.0"})
     );
-    assert_eq!(panel["forkOf"]["id"], "tilr/panel");
-    assert_eq!(panel["replaces"]["id"], "tilr/panel");
-    assert_eq!(manifest(&fork.join("packages/theme"))["id"], "me/theme");
+    assert_eq!(
+        panel["forkOf"]["id"],
+        "955bf29f-2893-56ef-9439-369c50455ae7"
+    );
+    assert_eq!(
+        panel["replaces"]["id"],
+        "955bf29f-2893-56ef-9439-369c50455ae7"
+    );
+    assert_eq!(
+        manifest(&fork.join("packages/theme"))["id"],
+        fork_theme.as_str()
+    );
     // History is kept, the change is one commit, nothing is left uncommitted.
-    f.git(&fork, &["cat-file", "-e", "tilr/store@1.0.0"]);
+    f.git(&fork, &["cat-file", "-e", "v1.0.0"]);
     let out = f
         .command("git")
         .arg("-C")
@@ -671,42 +676,201 @@ fn fork_of_two_packages_keeps_exactly_those_and_rewrites_their_dependency() {
         "{}",
         String::from_utf8_lossy(&out.stdout)
     );
-    // The fork lists only its two packages.
-    let error = f.fails(&["install", fork.to_str().unwrap(), "--channel", "dev"]);
+    let workspace_before = fs::read(f.dir.join("workspace/state.json")).unwrap();
+    let inspected: serde_json::Value =
+        serde_json::from_str(&f.ok(&["packages", fork.to_str().unwrap()])).unwrap();
     assert!(
-        error.contains("me/panel (packages/panel)")
-            && error.contains("me/theme (packages/theme)")
-            && !error.contains("store"),
+        inspected
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["installed"] == false)
+    );
+    f.ok(&[
+        "dependency",
+        "update",
+        &fork_panel,
+        "f851f609-bb81-52d6-bfef-33798624782c",
+        &fork_theme,
+        "^1.0",
+        "--repo",
+        fork.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        manifest(&fork.join("packages/panel"))["dependencies"],
+        serde_json::json!({(fork_theme.as_str()): "^1.0"})
+    );
+    assert_eq!(
+        fs::read(f.dir.join("workspace/state.json")).unwrap(),
+        workspace_before
+    );
+    f.git(&fork, &["add", "."]);
+    f.git(&fork, &["commit", "-qm", "Rewrite fork dependencies"]);
+    // Every package in the source repository is available in the fork.
+    let error = f.fails(&["install", fork.to_str().unwrap(), "--dev"]);
+    assert!(
+        error.contains(format!("{fork_panel} (packages/panel)").as_str())
+            && error.contains(format!("{fork_theme} (packages/theme)").as_str())
+            && error.contains(format!("{fork_store} (packages/store)").as_str()),
         "{error}"
     );
     f.ok(&[
         "install",
         fork.to_str().unwrap(),
-        "me/theme",
-        "--channel",
-        "dev",
+        fork_theme.as_str(),
+        "--dev",
     ]);
     f.ok(&[
         "install",
         fork.to_str().unwrap(),
-        "me/panel",
-        "--channel",
-        "dev",
+        fork_panel.as_str(),
+        "--dev",
     ]);
-    assert_eq!(f.dist("me/panel"), "panel 1.0.0");
+    assert_eq!(f.dist(fork_panel.as_str()), "panel 1.0.0");
 
-    // Forking only the dependent package keeps its dependency on the original.
-    f.ok(&["fork", "tilr/panel", "--ns", "solo", "--into", "forks/solo"]);
-    let solo = f.dir.join("forks/solo");
-    assert_eq!(
-        config(&solo)["packages"],
-        serde_json::json!(["packages/panel"])
-    );
+    // A single ID selects the same repository and preserves internal dependencies.
+    f.ok(&[
+        "fork",
+        "955bf29f-2893-56ef-9439-369c50455ae7",
+        "--into",
+        "a4210d34-bc7b-5749-b830-728c343a20e5",
+    ]);
+    let solo = f.dir.join("a4210d34-bc7b-5749-b830-728c343a20e5");
+    let solo_store = common::manifest_id(&solo.join("packages/store"));
+    let solo_theme = common::manifest_id(&solo.join("packages/theme"));
+
+    assert_eq!(config(&solo)["packages"], serde_json::json!(["packages/*"]));
     assert_eq!(
         manifest(&solo.join("packages/panel"))["dependencies"],
-        serde_json::json!({"tilr/theme": "^1.0"})
+        serde_json::json!({"f851f609-bb81-52d6-bfef-33798624782c": "^1.0"})
     );
-    assert!(!solo.join("packages/theme").exists());
+    assert_eq!(
+        manifest(&solo.join("packages/theme"))["id"],
+        solo_theme.as_str()
+    );
+    assert_eq!(
+        manifest(&solo.join("packages/store"))["id"],
+        solo_store.as_str()
+    );
+}
+
+#[test]
+fn fork_one_id_preserves_uninstalled_siblings_layout_and_installed_revisions() {
+    let f = Fixture::new();
+    f.ok(&[
+        "install",
+        f.source(),
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+    ]);
+    let store_commit =
+        f.state()["packages"]["76a9b591-60f3-5c7f-9e1c-31648fc73bfd"]["current"]["commit"].clone();
+    f.write("store", "1.1.0", "");
+    f.write(
+        "theme",
+        "1.1.0",
+        r#","dependencies":{"76a9b591-60f3-5c7f-9e1c-31648fc73bfd":"^1.0"}"#,
+    );
+    f.write(
+        "panel",
+        "1.1.0",
+        r#","dependencies":{"f851f609-bb81-52d6-bfef-33798624782c":"^1.0"}"#,
+    );
+    fs::create_dir_all(f.mono.join("tools")).unwrap();
+    fs::create_dir_all(f.mono.join("packages/support")).unwrap();
+    fs::write(f.mono.join("tools/build.sh"), "echo build\n").unwrap();
+    fs::write(f.mono.join("packages/support/data.txt"), "shared data\n").unwrap();
+    f.git(&f.mono, &["add", "--all"]);
+    f.git(
+        &f.mono,
+        &["commit", "-q", "-m", "Add siblings and shared tooling"],
+    );
+    f.git(&f.mono, &["tag", "v1.1.0"]);
+    f.ok(&[
+        "install",
+        f.source(),
+        "f851f609-bb81-52d6-bfef-33798624782c",
+    ]);
+    let before = f.state();
+    let theme_commit =
+        before["packages"]["f851f609-bb81-52d6-bfef-33798624782c"]["current"]["commit"].clone();
+    assert!(
+        before["packages"]
+            .get("955bf29f-2893-56ef-9439-369c50455ae7")
+            .is_none()
+    );
+
+    f.ok(&[
+        "fork",
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+        "--into",
+        "d5f9ad6e-280b-5cc4-958d-30e4356fae7a",
+    ]);
+    let fork = f.dir.join("d5f9ad6e-280b-5cc4-958d-30e4356fae7a");
+    let fork_store = common::manifest_id(&fork.join("packages/store"));
+    let fork_theme = common::manifest_id(&fork.join("packages/theme"));
+    let fork_panel = common::manifest_id(&fork.join("packages/panel"));
+
+    assert_eq!(config(&fork), config(&f.mono));
+    assert_eq!(
+        fs::read(fork.join("tools/build.sh")).unwrap(),
+        b"echo build\n"
+    );
+    assert_eq!(
+        fs::read(fork.join("packages/support/data.txt")).unwrap(),
+        b"shared data\n"
+    );
+    let store = manifest(&fork.join("packages/store"));
+    let theme = manifest(&fork.join("packages/theme"));
+    let panel = manifest(&fork.join("packages/panel"));
+    assert_eq!(store["id"], fork_store.as_str());
+    assert_eq!(store["version"], "1.0.0");
+    assert_eq!(store["forkOf"]["commit"], store_commit);
+    assert_eq!(theme["id"], fork_theme.as_str());
+    assert_eq!(theme["version"], "1.1.0");
+    assert_eq!(theme["forkOf"]["commit"], theme_commit);
+    assert_eq!(
+        theme["dependencies"],
+        serde_json::json!({"76a9b591-60f3-5c7f-9e1c-31648fc73bfd": "^1.0"})
+    );
+    assert_eq!(panel["id"], fork_panel.as_str());
+    assert_eq!(
+        panel["forkOf"]["id"],
+        "955bf29f-2893-56ef-9439-369c50455ae7"
+    );
+    assert_eq!(panel["forkOf"]["commit"], theme_commit);
+    assert_eq!(
+        panel["dependencies"],
+        serde_json::json!({"f851f609-bb81-52d6-bfef-33798624782c": "^1.0"})
+    );
+    f.ok(&[
+        "dependency",
+        "update",
+        &fork_theme,
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+        &fork_store,
+        "^1.0",
+        "--repo",
+        fork.to_str().unwrap(),
+    ]);
+    f.ok(&[
+        "dependency",
+        "update",
+        &fork_panel,
+        "f851f609-bb81-52d6-bfef-33798624782c",
+        &fork_theme,
+        "^1.0",
+        "--repo",
+        fork.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        manifest(&fork.join("packages/theme"))["dependencies"],
+        serde_json::json!({(fork_store.as_str()): "^1.0"})
+    );
+    assert_eq!(
+        manifest(&fork.join("packages/panel"))["dependencies"],
+        serde_json::json!({(fork_theme.as_str()): "^1.0"})
+    );
+    assert_eq!(f.state(), before);
 }
 
 #[test]
@@ -718,276 +882,203 @@ fn packages_forked_together_must_come_from_one_repository() {
     f.git(&legacy, &["init", "-q", "-b", "main"]);
     fs::write(
         legacy.join("plugin.json"),
-        r#"{"id":"acme/hello","version":"1.0.0"}"#,
+        r#"{"id":"7e6e8392-7be8-55ae-bd03-2b430b1c5d59","name": "fixture", "version":"1.0.0"}"#,
     )
     .unwrap();
     fs::write(legacy.join("dist/index.js"), "hello").unwrap();
     f.git(&legacy, &["add", "--all"]);
     f.git(&legacy, &["commit", "-q", "-m", "hello"]);
-    f.git(&legacy, &["tag", "acme/hello@1.0.0"]);
+    f.git(&legacy, &["tag", "v1.0.0"]);
     f.ok(&["install", legacy.to_str().unwrap()]);
     let error = f.fails(&[
         "fork",
-        "tilr/store",
-        "acme/hello",
-        "--ns",
-        "me",
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+        "7e6e8392-7be8-55ae-bd03-2b430b1c5d59",
         "--into",
-        "me/mono",
+        "4abc5c91-33eb-5b47-bb82-5c8b4a6dae44",
     ]);
     assert!(
         error.contains("must come from one repository")
-            && error.contains("tilr/store from /")
-            && error.contains("/mono; acme/hello from /")
+            && error.contains("76a9b591-60f3-5c7f-9e1c-31648fc73bfd from /")
+            && error.contains("/mono; 7e6e8392-7be8-55ae-bd03-2b430b1c5d59 from /")
             && error.ends_with("/hello\nError kind: invalid_argument\n"),
         "{error}"
     );
     assert!(error.contains("Error kind: invalid_argument"), "{error}");
     let error = f.fails(&[
         "fork",
-        "tilr/store",
-        "tilr/nothing",
-        "--ns",
-        "me",
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+        "0d443f2c-f4a2-5909-811c-922e87fc056a",
         "--into",
-        "me/mono",
+        "4abc5c91-33eb-5b47-bb82-5c8b4a6dae44",
     ]);
     assert!(error.contains("Error kind: not_installed"), "{error}");
     let error = f.fails(&[
         "fork",
-        "tilr/store",
-        "tilr/store",
-        "--ns",
-        "me",
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
         "--into",
-        "me/mono",
+        "4abc5c91-33eb-5b47-bb82-5c8b4a6dae44",
     ]);
     assert!(error.contains("more than once"), "{error}");
-    let error = f.fails(&["fork", "tilr/store", "--ns", "tilr", "--into", "tilr"]);
-    assert!(error.contains("different namespace"), "{error}");
     // The source repository is never the fork repository.
-    let error = f.fails(&["fork", "tilr/store", "--ns", "me", "--into", "mono"]);
+    let error = f.fails(&[
+        "fork",
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+        "--into",
+        "mono",
+    ]);
     assert!(error.contains("is the source repository"), "{error}");
     assert!(!f.dir.join("me").exists() && !f.dir.join("tilr").exists());
     // A root package forks through the same command (no gitpm.json in the fork).
-    let out = f.ok(&["fork", "acme/hello", "--ns", "me", "--into", "me/hello"]);
-    assert!(
-        out.contains("me/hello forked from acme/hello (repository root)"),
-        "{out}"
-    );
-    assert!(f.dir.join("me/hello/plugin.json").is_file());
-    assert!(!f.dir.join("me/hello/gitpm.json").exists());
-    // ...but cannot be added to a multi-package repository.
-    f.ok(&["fork", "tilr/store", "--ns", "me", "--into", "me/mono"]);
-    let error = f.fails(&["fork", "acme/hello", "--ns", "you", "--into", "me/mono"]);
-    assert!(
-        error.contains("is the root package of its repository"),
-        "{error}"
-    );
-}
-
-#[test]
-fn fork_replace_of_two_packages_replaces_both_and_switches_back() {
-    let f = Fixture::new();
-    three_installed(&f);
-    install_consumer(&f, "uses-theme", "tilr/theme");
-    install_consumer(&f, "uses-panel", "tilr/panel");
     let out = f.ok(&[
         "fork",
-        "tilr/panel",
-        "tilr/theme",
-        "--ns",
-        "me",
+        "7e6e8392-7be8-55ae-bd03-2b430b1c5d59",
         "--into",
-        "forks/me/mono",
-        "--replace",
-        "--version",
-        "2.0.0",
+        "ce6c8a3b-b2f8-5391-8ef8-4cbb7873f5d4",
     ]);
-    // me/panel needs me/theme; ^1.0 does not accept the released 2.0.0.
-    assert!(
-        out.contains("Dependency: me/panel now depends on me/theme ^2.0.0 (was tilr/theme ^1.0"),
-        "{out}"
-    );
-    assert!(
-        out.contains("Released: me/theme@2.0.0") && out.contains("Released: me/panel@2.0.0"),
-        "{out}"
-    );
-    // Dependencies are installed first.
-    assert!(
-        out.find("Installed: me/theme").unwrap() < out.find("Installed: me/panel").unwrap(),
-        "{out}"
-    );
+    let root_fork_id = common::manifest_id(&f.dir.join("ce6c8a3b-b2f8-5391-8ef8-4cbb7873f5d4"));
+
     assert!(
         out.contains(
-            "tilr/theme replaced by me/theme 2.0.0 (as tilr/theme 1.0.0) for: app/uses-theme"
+            format!(
+                "{root_fork_id} forked from 7e6e8392-7be8-55ae-bd03-2b430b1c5d59 (repository root)"
+            )
+            .as_str()
         ),
         "{out}"
     );
+    assert!(
+        f.dir
+            .join("ce6c8a3b-b2f8-5391-8ef8-4cbb7873f5d4/plugin.json")
+            .is_file()
+    );
+    assert!(
+        !f.dir
+            .join("ce6c8a3b-b2f8-5391-8ef8-4cbb7873f5d4/gitpm.json")
+            .exists()
+    );
+    // ...but cannot be added to a multi-package repository.
+    f.ok(&[
+        "fork",
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+        "--into",
+        "4abc5c91-33eb-5b47-bb82-5c8b4a6dae44",
+    ]);
+    let error = f.fails(&[
+        "fork",
+        "7e6e8392-7be8-55ae-bd03-2b430b1c5d59",
+        "--into",
+        "4abc5c91-33eb-5b47-bb82-5c8b4a6dae44",
+    ]);
+    assert!(error.contains("destination already exists"), "{error}");
+}
+
+#[test]
+fn explicit_forks_replace_two_packages_and_switch_back() {
+    let f = Fixture::new();
+    three_installed(&f);
+    install_consumer(&f, "uses-theme", "f851f609-bb81-52d6-bfef-33798624782c");
+    install_consumer(&f, "uses-panel", "955bf29f-2893-56ef-9439-369c50455ae7");
+    f.ok(&[
+        "fork",
+        "955bf29f-2893-56ef-9439-369c50455ae7",
+        "f851f609-bb81-52d6-bfef-33798624782c",
+        "--into",
+        "7200845d-5956-5ec3-85d1-a7161d3592de/mono",
+    ]);
+    let fork = f.dir.join("7200845d-5956-5ec3-85d1-a7161d3592de/mono");
+    let fork_theme = common::manifest_id(&fork.join("packages/theme"));
+    let fork_panel = common::manifest_id(&fork.join("packages/panel"));
+
+    f.ok(&["commit", fork.to_str().unwrap(), "1.0.1"]);
+    for name in ["store", "theme", "panel"] {
+        let package = manifest(&fork.join(format!("packages/{name}")));
+        let id = package["id"].as_str().unwrap();
+        let original = package["forkOf"]["id"].as_str().unwrap();
+        f.ok(&["install", fork.to_str().unwrap(), id]);
+        f.ok(&["replace", original, "--with", id]);
+    }
     let state = f.state();
-    assert_eq!(provider_of(&state, "app/uses-theme"), "me/theme");
-    assert_eq!(provider_of(&state, "app/uses-panel"), "me/panel");
-    assert_eq!(state["replacements"]["tilr/panel"], "me/panel");
-    let fork = f.dir.join("forks/me/mono");
-    assert_eq!(manifest(&fork.join("packages/theme"))["version"], "2.0.0");
-    f.ok(&["replace", "tilr/theme", "--back"]);
-    f.ok(&["replace", "tilr/panel", "--back"]);
+    assert_eq!(
+        provider_of(&state, "4c71f036-f988-52f8-87db-af543d39cac7"),
+        fork_theme.as_str()
+    );
+    assert_eq!(
+        provider_of(&state, "42361f17-3146-5bb1-a7d6-04973b2aac4a"),
+        fork_panel.as_str()
+    );
+    assert_eq!(
+        state["replacements"]["955bf29f-2893-56ef-9439-369c50455ae7"],
+        fork_panel.as_str()
+    );
+    let fork = f.dir.join("7200845d-5956-5ec3-85d1-a7161d3592de/mono");
+    assert_eq!(manifest(&fork.join("packages/theme"))["version"], "1.0.1");
+    f.ok(&[
+        "replace",
+        "f851f609-bb81-52d6-bfef-33798624782c",
+        "--with",
+        "f851f609-bb81-52d6-bfef-33798624782c",
+    ]);
+    f.ok(&[
+        "replace",
+        "955bf29f-2893-56ef-9439-369c50455ae7",
+        "--with",
+        "955bf29f-2893-56ef-9439-369c50455ae7",
+    ]);
+    f.ok(&[
+        "replace",
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+        "--with",
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+    ]);
     let state = f.state();
-    assert_eq!(provider_of(&state, "app/uses-theme"), "tilr/theme");
-    assert_eq!(provider_of(&state, "app/uses-panel"), "tilr/panel");
+    assert_eq!(
+        provider_of(&state, "4c71f036-f988-52f8-87db-af543d39cac7"),
+        "f851f609-bb81-52d6-bfef-33798624782c"
+    );
+    assert_eq!(
+        provider_of(&state, "42361f17-3146-5bb1-a7d6-04973b2aac4a"),
+        "955bf29f-2893-56ef-9439-369c50455ae7"
+    );
     assert!(state.get("replacements").is_none(), "{state:#}");
 }
 
 #[test]
-fn packages_are_added_to_an_existing_fork_with_dependencies_rewritten_both_ways() {
+fn an_existing_fork_is_refused_without_rewriting_dependencies() {
     let f = Fixture::new();
     three_installed(&f);
-    f.write("dock", "1.0.0", r#","dependencies":{"tilr/theme":"^1.0"}"#);
-    f.git(&f.mono, &["add", "--all"]);
-    f.git(&f.mono, &["commit", "-q", "-m", "dock"]);
-    f.git(&f.mono, &["tag", "tilr/dock@1.0.0"]);
-    f.ok(&["install", f.source(), "tilr/dock"]);
-    // Only the dependent first: it keeps depending on the original.
     f.ok(&[
         "fork",
-        "tilr/panel",
-        "--ns",
-        "me",
+        "955bf29f-2893-56ef-9439-369c50455ae7",
         "--into",
-        "forks/me/mono",
+        "7200845d-5956-5ec3-85d1-a7161d3592de/mono",
     ]);
-    let fork = f.dir.join("forks/me/mono");
-    assert_eq!(
-        manifest(&fork.join("packages/panel"))["dependencies"],
-        serde_json::json!({"tilr/theme": "^1.0"})
-    );
-    // Adding the dependency later rewrites the existing package (explicit repository).
-    let out = f.ok(&[
-        "fork",
-        "tilr/theme",
-        "--ns",
-        "me",
-        "--into",
-        fork.to_str().unwrap(),
-    ]);
-    assert!(
-        out.contains("Packages added to: /") && out.contains("forks/me/mono\n"),
-        "{out}"
-    );
-    assert!(
-        out.contains("Dependency: me/panel now depends on me/theme ^1.0 (was tilr/theme)"),
-        "{out}"
-    );
-    assert_eq!(
-        manifest(&fork.join("packages/panel"))["dependencies"],
-        serde_json::json!({"me/theme": "^1.0"})
-    );
-    assert_eq!(
-        config(&fork)["packages"],
-        serde_json::json!(["packages/panel", "packages/theme"])
-    );
-    // A new package depending on an original that the fork already has: rewritten to the
-    // fork.
-    let out = f.ok(&["fork", "tilr/dock", "--ns", "me", "--into", "forks/me/mono"]);
-    assert!(out.contains("Packages added to"), "{out}");
-    let dock = manifest(&fork.join("packages/dock"));
-    assert_eq!(dock["id"], "me/dock");
-    assert_eq!(dock["forkOf"]["id"], "tilr/dock");
-    assert_eq!(
-        dock["dependencies"],
-        serde_json::json!({"me/theme": "^1.0"})
-    );
-    assert_eq!(
-        config(&fork)["packages"],
-        serde_json::json!(["packages/panel", "packages/theme", "packages/dock"])
-    );
-    let out = f
-        .command("git")
-        .arg("-C")
-        .arg(&fork)
-        .args(["log", "--format=%s", "-3"])
-        .output()
-        .unwrap();
-    assert_eq!(
-        String::from_utf8_lossy(&out.stdout),
-        "Fork tilr/dock as me/dock\nFork tilr/theme as me/theme\nFork tilr/panel as me/panel\n"
-    );
-    // IDs stay unique.
+    let fork = f.dir.join("7200845d-5956-5ec3-85d1-a7161d3592de/mono");
+    let fork_theme = common::manifest_id(&fork.join("packages/theme"));
+
+    let before = fs::read(fork.join("packages/panel/plugin.json")).unwrap();
+    let config_before = fs::read(fork.join("gitpm.json")).unwrap();
     let error = f.fails(&[
         "fork",
-        "tilr/theme",
-        "--ns",
-        "me",
+        "f851f609-bb81-52d6-bfef-33798624782c",
         "--into",
-        "forks/me/mono",
+        "7200845d-5956-5ec3-85d1-a7161d3592de/mono",
     ]);
-    assert!(error.contains("me/theme already exists"), "{error}");
-    // The added packages release and install like any other.
-    f.ok(&[
-        "commit",
-        fork.to_str().unwrap(),
-        "1.0.1",
-        "--package",
-        "me/theme",
-    ]);
-    f.ok(&["install", fork.to_str().unwrap(), "me/theme"]);
-    assert_eq!(f.dist("me/theme"), "theme 1.0.0");
-}
-
-#[test]
-fn fork_replace_of_several_packages_reports_each_failure_and_keeps_the_fork() {
-    let f = Fixture::new();
-    three_installed(&f);
-    // A symlink in panel's edited dist is released with the fork but cannot be installed.
-    let clone = fs::read_dir(f.dir.join("workspace/repos"))
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
-    std::os::unix::fs::symlink("index.js", clone.join("packages/panel/dist/link.js")).unwrap();
-    let out = f.run(&[
-        "fork",
-        "tilr/theme",
-        "tilr/panel",
-        "--ns",
-        "me",
-        "--into",
-        "me/mono",
-        "--replace",
-    ]);
-    assert!(!out.status.success());
-    let (stdout, stderr) = (
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr),
+    assert!(error.contains("destination already exists"), "{error}");
+    assert_eq!(
+        fs::read(fork.join("packages/panel/plugin.json")).unwrap(),
+        before
     );
-    assert!(stdout.contains("Released: me/theme@1.0.0"), "{stdout}");
-    assert!(stdout.contains("Released: me/panel@1.0.0"), "{stdout}");
-    assert!(
-        stdout.contains("tilr/theme replaced by me/theme 1.0.0"),
-        "{stdout}"
+    assert_eq!(fs::read(fork.join("gitpm.json")).unwrap(), config_before);
+    assert_eq!(
+        manifest(&fork.join("packages/theme"))["id"],
+        fork_theme.as_str()
     );
-    assert!(
-        stderr.contains("me/panel: the install step failed")
-            && stderr.contains("kind: unsupported"),
-        "{stderr}"
+    assert_eq!(
+        manifest(&fork.join("packages/panel"))["dependencies"],
+        serde_json::json!({"f851f609-bb81-52d6-bfef-33798624782c": "^1.0"})
     );
-    assert!(stderr.contains("gitpm install"), "{stderr}");
-    assert!(
-        stderr.contains("gitpm replace tilr/panel --with me/panel"),
-        "{stderr}"
-    );
-    assert!(stderr.contains("is kept"), "{stderr}");
-    assert!(stderr.contains("Error kind: unsupported"), "{stderr}");
-    let fork = f.dir.join("me/mono");
-    assert!(
-        fork.join("packages/panel/plugin.json").is_file(),
-        "fork kept"
-    );
-    let state = f.state();
-    assert_eq!(state["replacements"]["tilr/theme"], "me/theme");
-    assert!(state["plugins"].get("me/panel").is_none());
-    assert!(state["replacements"].get("tilr/panel").is_none());
 }
 
 #[test]
@@ -1002,14 +1093,747 @@ fn a_url_rewrite_in_the_git_config_does_not_hide_the_shared_clone() {
         real.display()
     ));
     fs::write(f.dir.join("home/.gitconfig"), config).unwrap();
-    f.ok(&["install", f.source(), "tilr/store"]);
-    f.ok(&["install", f.source(), "tilr/theme"]);
+    f.ok(&[
+        "install",
+        f.source(),
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+    ]);
+    f.ok(&[
+        "install",
+        f.source(),
+        "f851f609-bb81-52d6-bfef-33798624782c",
+    ]);
     assert_eq!(f.clones(), 1);
     f.release("theme", "1.1.0");
-    f.ok(&["update", "tilr/theme"]);
-    assert_eq!(f.dist("tilr/theme"), "theme 1.1.0");
+    f.ok(&["update", "f851f609-bb81-52d6-bfef-33798624782c"]);
+    assert_eq!(
+        f.dist("f851f609-bb81-52d6-bfef-33798624782c"),
+        "theme 1.1.0"
+    );
     // forget/restore of a shared package goes through the same clone.
-    f.ok(&["forget", "tilr/store"]);
-    f.ok(&["restore", "tilr/store"]);
-    assert_eq!(f.dist("tilr/store"), "store 1.0.0");
+    f.ok(&["forget", "76a9b591-60f3-5c7f-9e1c-31648fc73bfd"]);
+    f.ok(&["restore", "76a9b591-60f3-5c7f-9e1c-31648fc73bfd"]);
+    assert_eq!(
+        f.dist("76a9b591-60f3-5c7f-9e1c-31648fc73bfd"),
+        "store 1.0.0"
+    );
+}
+
+#[test]
+fn legacy_id_version_tags_are_ignored_without_a_warning() {
+    let f = Fixture::new();
+    // Legacy per-package tags never participate in release discovery.
+    f.release("store", "1.1.0");
+    f.git(
+        &f.mono,
+        &["tag", "76a9b591-60f3-5c7f-9e1c-31648fc73bfd@9.0.0"],
+    );
+    let quiet = |args: &[&str]| {
+        let out = f.run(args);
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(out.status.success(), "{args:?}: {stderr}");
+        assert!(
+            !stderr.contains("76a9b591-60f3-5c7f-9e1c-31648fc73bfd@9.0.0")
+                && !stdout.contains("76a9b591-60f3-5c7f-9e1c-31648fc73bfd@9.0.0"),
+            "{args:?}: {stdout}{stderr}"
+        );
+        stdout
+    };
+    quiet(&[
+        "install",
+        f.source(),
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+        "--ref",
+        "v1.0.0",
+    ]);
+    quiet(&[
+        "install",
+        f.source(),
+        "f851f609-bb81-52d6-bfef-33798624782c",
+    ]);
+    assert_eq!(
+        f.dist("f851f609-bb81-52d6-bfef-33798624782c"),
+        "theme 1.0.0"
+    );
+    let out = quiet(&[
+        "update",
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+        "--release",
+    ]);
+    assert!(
+        out.contains("76a9b591-60f3-5c7f-9e1c-31648fc73bfd updated 1.0.0 → 1.1.0"),
+        "{out}"
+    );
+    quiet(&["update", "all"]);
+    fs::write(f.dir.join("sources.txt"), "mono\n").unwrap();
+    let out = quiet(&["catalog", "update"]);
+    assert!(out.contains("4 release(s)"), "{out}");
+    assert!(
+        !f.dir
+            .join("catalog/packages/76a9b591-60f3-5c7f-9e1c-31648fc73bfd/versions/9.0.0")
+            .exists()
+    );
+}
+
+/// A repository-wide fork remains separate from releasing or activating one package.
+#[test]
+fn plain_fork_preserves_workspace_until_explicit_install_and_replace() {
+    let f = Fixture::new();
+    for (name, id) in [
+        ("store", "d63a8a6b-85d6-509c-87db-9a6096daa66c"),
+        ("theme", "e66d8976-2209-50e5-abaf-9360c0a03411"),
+    ] {
+        let path = f.mono.join(format!("packages/{name}/plugin.json"));
+        fs::write(
+            path,
+            serde_json::json!({"id": id, "name": "fixture", "version": "0.2.0"}).to_string(),
+        )
+        .unwrap();
+    }
+    f.git(&f.mono, &["add", "--all"]);
+    f.git(&f.mono, &["commit", "-qm", "Independent A and B"]);
+    for tag in [
+        "d63a8a6b-85d6-509c-87db-9a6096daa66c@0.2.0",
+        "e66d8976-2209-50e5-abaf-9360c0a03411@0.2.0",
+        "v0.2.0",
+    ] {
+        f.git(&f.mono, &["tag", tag]);
+    }
+    for id in [
+        "d63a8a6b-85d6-509c-87db-9a6096daa66c",
+        "e66d8976-2209-50e5-abaf-9360c0a03411",
+    ] {
+        f.ok(&["install", f.source(), id]);
+    }
+    let state_path = f.dir.join("workspace/state.json");
+    let state_before = fs::read(&state_path).unwrap();
+    let before = f.state();
+    let a_dist = f.dist("d63a8a6b-85d6-509c-87db-9a6096daa66c");
+    let b_dist = f.dist("e66d8976-2209-50e5-abaf-9360c0a03411");
+    let tags = |repo: &Path| {
+        let output = f
+            .command("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["show-ref", "--tags"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        output.stdout
+    };
+    let source_tags = tags(&f.mono);
+    let out = f.ok(&[
+        "fork",
+        "d63a8a6b-85d6-509c-87db-9a6096daa66c",
+        "--into",
+        "my-fork",
+    ]);
+    let fork = f.dir.join("my-fork");
+    let fork_a = common::manifest_id(&fork.join("packages/store"));
+    let fork_b = common::manifest_id(&fork.join("packages/theme"));
+
+    assert!(
+        out.contains("Next steps (choose the packages to install and replace):"),
+        "{out}"
+    );
+    assert!(
+        out.contains("gitpm commit")
+            && out.contains("gitpm install")
+            && out.contains(
+                format!("gitpm replace d63a8a6b-85d6-509c-87db-9a6096daa66c --with {fork_a}")
+                    .as_str()
+            ),
+        "{out}"
+    );
+    assert_eq!(tags(&fork), source_tags);
+    assert_eq!(fs::read(&state_path).unwrap(), state_before);
+    assert_eq!(f.state(), before);
+    assert_eq!(f.dist("d63a8a6b-85d6-509c-87db-9a6096daa66c"), a_dist);
+    assert_eq!(f.dist("e66d8976-2209-50e5-abaf-9360c0a03411"), b_dist);
+    assert!(!f.dir.join("workspace/dist/my").exists());
+    for (name, id, original) in [
+        (
+            "store",
+            fork_a.as_str(),
+            "d63a8a6b-85d6-509c-87db-9a6096daa66c",
+        ),
+        (
+            "theme",
+            fork_b.as_str(),
+            "e66d8976-2209-50e5-abaf-9360c0a03411",
+        ),
+    ] {
+        let manifest = manifest(&fork.join(format!("packages/{name}")));
+        assert_eq!(manifest["id"], id);
+        assert_eq!(manifest["forkOf"]["id"], original);
+        assert_eq!(manifest["replaces"]["id"], original);
+    }
+    f.ok(&[
+        "commit",
+        fork.to_str().unwrap(),
+        "0.3.0",
+        "--package",
+        fork_a.as_str(),
+    ]);
+    let release_head = f
+        .command("git")
+        .arg("-C")
+        .arg(&fork)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap()
+        .stdout;
+    let error = f.fails(&[
+        "commit",
+        fork.to_str().unwrap(),
+        "0.3.0",
+        "--package",
+        fork_a.as_str(),
+    ]);
+    assert!(error.contains("tag already exists"), "{error}");
+    assert_eq!(
+        f.command("git")
+            .arg("-C")
+            .arg(&fork)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+        release_head
+    );
+    assert_eq!(fs::read(&state_path).unwrap(), state_before);
+    f.ok(&["install", fork.to_str().unwrap(), fork_a.as_str()]);
+    assert!(f.state().get("replacements").is_none());
+    f.ok(&[
+        "replace",
+        "d63a8a6b-85d6-509c-87db-9a6096daa66c",
+        "--with",
+        fork_a.as_str(),
+    ]);
+    let after = f.state();
+    assert_eq!(
+        after["packages"]["e66d8976-2209-50e5-abaf-9360c0a03411"],
+        before["packages"]["e66d8976-2209-50e5-abaf-9360c0a03411"]
+    );
+    assert_eq!(
+        after["replacements"],
+        serde_json::json!({"d63a8a6b-85d6-509c-87db-9a6096daa66c": fork_a.as_str()})
+    );
+    assert!(after["packages"].get(fork_b.as_str()).is_none());
+    assert_eq!(f.dist("e66d8976-2209-50e5-abaf-9360c0a03411"), b_dist);
+    assert_eq!(f.dist(fork_a.as_str()), a_dist);
+    assert!(
+        !f.dir
+            .join("workspace/dist/d63a8a6b-85d6-509c-87db-9a6096daa66c")
+            .exists()
+    );
+    assert!(
+        !f.dir
+            .join(format!("workspace/dist/{fork_b}").as_str())
+            .exists()
+    );
+}
+
+#[test]
+fn removed_fork_options_have_no_side_effects() {
+    let f = Fixture::new();
+    f.ok(&[
+        "install",
+        f.source(),
+        "f851f609-bb81-52d6-bfef-33798624782c",
+    ]);
+    let state = fs::read(f.dir.join("workspace/state.json")).unwrap();
+    let dist = f.dist("f851f609-bb81-52d6-bfef-33798624782c");
+    let clones = f.clones();
+    for options in [
+        vec!["--replace"],
+        vec!["--version", "0.3.0"],
+        vec!["--force"],
+    ] {
+        let mut args = vec![
+            "fork",
+            "f851f609-bb81-52d6-bfef-33798624782c",
+            "--into",
+            "rejected/fork",
+        ];
+        args.extend(options);
+        f.fails(&args);
+        assert!(!f.dir.join("rejected").exists());
+        assert_eq!(fs::read(f.dir.join("workspace/state.json")).unwrap(), state);
+        assert_eq!(f.dist("f851f609-bb81-52d6-bfef-33798624782c"), dist);
+        assert_eq!(f.clones(), clones);
+    }
+    // Validation also happens before creating an otherwise absent workspace.
+    let fresh = Fixture::new();
+    for option in ["--replace", "--version", "--force"] {
+        let mut args = vec![
+            "fork",
+            "d63a8a6b-85d6-509c-87db-9a6096daa66c",
+            "--into",
+            "rejected/fork",
+            option,
+        ];
+        if option == "--version" {
+            args.push("0.3.0");
+        }
+        fresh.fails(&args);
+        assert!(!fresh.dir.join("workspace").exists());
+        assert!(!fresh.dir.join("rejected").exists());
+    }
+}
+
+#[test]
+fn explicit_fork_release_preserves_inherited_release_tag() {
+    let f = Fixture::new();
+    f.ok(&[
+        "install",
+        f.source(),
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+    ]);
+    let source_tag = f
+        .command("git")
+        .arg("-C")
+        .arg(&f.mono)
+        .args(["rev-parse", "refs/tags/v1.0.0"])
+        .output()
+        .unwrap();
+    assert!(source_tag.status.success());
+    f.ok(&[
+        "fork",
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+        "--into",
+        "656af2d4-f94e-5ede-a8ae-e70fb52fef03",
+    ]);
+    let error = f.fails(&[
+        "commit",
+        f.dir
+            .join("656af2d4-f94e-5ede-a8ae-e70fb52fef03")
+            .to_str()
+            .unwrap(),
+        "1.0.0",
+    ]);
+    assert!(error.contains("tag already exists: v1.0.0"), "{error}");
+    assert!(error.contains("version_conflict"), "{error}");
+    let inherited = f
+        .command("git")
+        .arg("-C")
+        .arg(f.dir.join("656af2d4-f94e-5ede-a8ae-e70fb52fef03"))
+        .args(["rev-parse", "refs/tags/v1.0.0"])
+        .output()
+        .unwrap();
+    assert!(inherited.status.success());
+    assert_eq!(inherited.stdout, source_tag.stdout);
+    assert!(
+        f.state()["packages"]
+            .get("f86c5a66-031a-5b0e-9a54-7ceefc6fd352")
+            .is_none()
+    );
+    assert!(
+        f.state()["packages"]
+            .get("d4377c45-ac7f-55f6-97f8-bd1c9ae7ca50")
+            .is_none()
+    );
+    assert!(f.state().get("replacements").is_none());
+}
+
+#[test]
+fn commit_honors_ssh_tag_signing_without_an_editor() {
+    let f = Fixture::new();
+    let key = f.dir.join("signing-key");
+    let generated = f
+        .command("ssh-keygen")
+        .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+        .arg(&key)
+        .output()
+        .unwrap();
+    assert!(
+        generated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&generated.stderr)
+    );
+    let public = fs::read_to_string(key.with_extension("pub")).unwrap();
+    let allowed = f.dir.join("allowed-signers");
+    fs::write(&allowed, format!("test@example.invalid {public}")).unwrap();
+    f.git(&f.mono, &["config", "gpg.format", "ssh"]);
+    f.git(
+        &f.mono,
+        &["config", "user.signingkey", key.to_str().unwrap()],
+    );
+    f.git(
+        &f.mono,
+        &[
+            "config",
+            "gpg.ssh.allowedSignersFile",
+            allowed.to_str().unwrap(),
+        ],
+    );
+    f.git(&f.mono, &["config", "tag.gpgSign", "true"]);
+    let out = f
+        .command(env!("CARGO_BIN_EXE_gitpm"))
+        .env("GIT_EDITOR", "false")
+        .args(["commit", f.source(), "1.1.0"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let kind = f
+        .command("git")
+        .arg("-C")
+        .arg(&f.mono)
+        .args(["cat-file", "-t", "refs/tags/v1.1.0"])
+        .output()
+        .unwrap();
+    assert!(kind.status.success());
+    assert_eq!(String::from_utf8(kind.stdout).unwrap().trim(), "tag");
+    f.git(&f.mono, &["verify-tag", "v1.1.0"]);
+    for name in ["store", "theme"] {
+        assert_eq!(
+            manifest(&f.mono.join("packages").join(name))["version"],
+            "1.1.0"
+        );
+    }
+}
+
+#[test]
+fn commit_package_selects_result_and_still_releases_every_package() {
+    let f = Fixture::new();
+    let out = f.ok(&[
+        "commit",
+        f.source(),
+        "1.1.0",
+        "--package",
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+    ]);
+    assert!(
+        out.contains("76a9b591-60f3-5c7f-9e1c-31648fc73bfd committed 1.1.0"),
+        "{out}"
+    );
+    for name in ["store", "theme"] {
+        assert_eq!(
+            manifest(&f.mono.join("packages").join(name))["version"],
+            "1.1.0"
+        );
+    }
+    f.git(
+        &f.mono,
+        &["tag", "76a9b591-60f3-5c7f-9e1c-31648fc73bfd@9.0.0"],
+    );
+    f.ok(&[
+        "install",
+        f.source(),
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+    ]);
+    assert_eq!(
+        f.state()["packages"]["76a9b591-60f3-5c7f-9e1c-31648fc73bfd"]["current"]["version"],
+        "1.1.0"
+    );
+}
+
+#[test]
+fn check_uses_catalog_then_forced_partial_origin_fallback() {
+    let f = Fixture::new();
+    f.ok(&[
+        "install",
+        f.source(),
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+    ]);
+    f.ok(&[
+        "catalog",
+        "register",
+        f.source(),
+        "--ref",
+        "v1.0.0",
+        "--package",
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+    ]);
+    f.release("store", "2.0.0");
+    // The newest repository release no longer contains the installed package.
+    fs::remove_dir_all(f.mono.join("packages/store")).unwrap();
+    f.release("theme", "3.0.0");
+    let catalog = f.ok(&["check"]);
+    assert!(catalog.contains("Updates: 0."), "{catalog}");
+    assert!(catalog.contains("catalog"), "{catalog}");
+    let forced = f.ok(&["check", "--no-catalog"]);
+    assert!(
+        forced.contains("2.0.0") && forced.contains("update available"),
+        "{forced}"
+    );
+    assert!(!forced.contains("3.0.0"), "{forced}");
+    assert!(forced.contains("origin"), "{forced}");
+    // A source missing from the selected catalog takes the same fallback.
+    fs::remove_dir_all(f.dir.join("catalog/packages")).unwrap();
+    let fallback = f.ok(&["check"]);
+    assert!(
+        fallback.contains("2.0.0") && fallback.contains("update available"),
+        "{fallback}"
+    );
+    // Explicit bypass also ignores an invalid configured catalog.
+    fs::remove_dir_all(f.dir.join("catalog")).unwrap();
+    let bypass = f.ok(&["check", "--no-catalog"]);
+    assert!(bypass.contains("2.0.0"), "{bypass}");
+    assert_eq!(
+        f.state()["packages"]["76a9b591-60f3-5c7f-9e1c-31648fc73bfd"]["current"]["version"],
+        "1.0.0"
+    );
+}
+
+#[test]
+fn fork_source_without_workspace_matches_installed_fork_output() {
+    let f = Fixture::new();
+    f.write("store", "1.1.0", "");
+    f.write(
+        "theme",
+        "1.1.0",
+        r#", "dependencies": {"76a9b591-60f3-5c7f-9e1c-31648fc73bfd": "^1.0"}"#,
+    );
+    f.git(&f.mono, &["add", "."]);
+    f.git(&f.mono, &["commit", "-qm", "Add internal dependency"]);
+    f.git(&f.mono, &["tag", "v1.1.0"]);
+    let dest = f.dir.join("source-fork");
+    let dest_text = dest.to_str().unwrap();
+    let source_output = f.ok(&[
+        "fork",
+        "f851f609-bb81-52d6-bfef-33798624782c",
+        "--from",
+        f.source(),
+        "--into",
+        dest_text,
+    ]);
+    assert!(!f.dir.join("workspace").exists());
+    let m: serde_json::Value =
+        serde_json::from_slice(&fs::read(dest.join("packages/store/plugin.json")).unwrap())
+            .unwrap();
+    let source_store = m["id"].as_str().unwrap();
+    gitpm::valid_id(source_store).unwrap();
+    assert_ne!(source_store, "76a9b591-60f3-5c7f-9e1c-31648fc73bfd");
+    assert_eq!(m["name"], "fixture");
+    assert_eq!(m["forkOf"]["id"], "76a9b591-60f3-5c7f-9e1c-31648fc73bfd");
+    let theme_path = dest.join("packages/theme");
+    assert_eq!(
+        manifest(&theme_path)["dependencies"],
+        serde_json::json!({"76a9b591-60f3-5c7f-9e1c-31648fc73bfd": "^1.0"})
+    );
+    let theme = manifest(&theme_path);
+    f.ok(&[
+        "dependency",
+        "update",
+        theme["id"].as_str().unwrap(),
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+        source_store,
+        "^1.0",
+        "--repo",
+        dest_text,
+    ]);
+    assert_eq!(
+        manifest(&theme_path)["dependencies"],
+        serde_json::json!({(source_store): "^1.0"})
+    );
+    assert!(!f.dir.join("workspace").exists());
+    assert!(!f.dir.join("workspace").exists());
+    f.ok(&[
+        "install",
+        f.source(),
+        "76a9b591-60f3-5c7f-9e1c-31648fc73bfd",
+    ]);
+    f.ok(&[
+        "install",
+        f.source(),
+        "f851f609-bb81-52d6-bfef-33798624782c",
+    ]);
+    let installed_dest = f.dir.join("installed-fork");
+    let installed_output = f.ok(&[
+        "fork",
+        "f851f609-bb81-52d6-bfef-33798624782c",
+        "--into",
+        installed_dest.to_str().unwrap(),
+    ]);
+    let normalize = |mut output: String, repo: &Path| {
+        for name in ["store", "theme"] {
+            let manifest: serde_json::Value = serde_json::from_slice(
+                &fs::read(repo.join(format!("packages/{name}/plugin.json"))).unwrap(),
+            )
+            .unwrap();
+            let id = manifest["id"].as_str().unwrap();
+            gitpm::valid_id(id).unwrap();
+            output = output.replace(id, &format!("FORK_{name}"));
+        }
+        output.replace(repo.to_str().unwrap(), "DEST")
+    };
+    assert_eq!(
+        normalize(source_output, &dest),
+        normalize(installed_output, &installed_dest)
+    );
+}
+
+#[test]
+fn fork_source_ref_and_usage_errors_do_not_open_workspace() {
+    let f = Fixture::new();
+    let dest = f.dir.join("fork");
+    let dest_text = dest.to_str().unwrap();
+    let e = f.fails(&[
+        "fork",
+        "f851f609-bb81-52d6-bfef-33798624782c",
+        "--into",
+        dest_text,
+        "--ref",
+        "main",
+    ]);
+    assert!(e.contains("--ref"), "{e}");
+    let e = f.fails(&[
+        "fork",
+        "f851f609-bb81-52d6-bfef-33798624782c",
+        "--from",
+        f.source(),
+        "--into",
+        dest_text,
+        "--replace",
+    ]);
+    assert!(e.contains("unknown option: --replace"), "{e}");
+    let e = f.fails(&["list", "--from", f.source()]);
+    assert!(e.contains("--from is only valid with fork"), "{e}");
+    let e = f.fails(&["fork", "--from", f.source(), "--into", dest_text]);
+    assert!(e.contains("choose one by ID"), "{e}");
+    assert!(!dest.exists());
+    assert!(!f.dir.join("workspace").exists());
+    // A pre-existing locked workspace must not be opened by source fork.
+    let manager = gitpm::Manager::open(f.dir.join("workspace")).unwrap();
+    let before = fs::read(f.dir.join("workspace/state.json")).ok();
+    f.ok(&[
+        "fork",
+        "f851f609-bb81-52d6-bfef-33798624782c",
+        "--from",
+        f.source(),
+        "--ref",
+        "main",
+        "--into",
+        dest_text,
+    ]);
+    assert_eq!(fs::read(f.dir.join("workspace/state.json")).ok(), before);
+    drop(manager);
+}
+
+#[test]
+fn fork_source_readme_example() {
+    let f = Fixture::new();
+    let e = f.ok(&["init", "hello", "--into", "./hello"]);
+    let original: serde_json::Value =
+        serde_json::from_slice(&fs::read(f.dir.join("hello/plugin.json")).unwrap()).unwrap();
+    let original_id = original["id"].as_str().unwrap();
+    gitpm::valid_id(original_id).unwrap();
+    assert!(e.contains(original_id));
+    f.ok(&[
+        "fork",
+        original_id,
+        "--from",
+        "./hello",
+        "--into",
+        "./hello-fork",
+    ]);
+    assert!(!f.dir.join("workspace").exists());
+    let m: serde_json::Value =
+        serde_json::from_slice(&fs::read(f.dir.join("hello-fork/plugin.json")).unwrap()).unwrap();
+    gitpm::valid_id(m["id"].as_str().unwrap()).unwrap();
+    assert_ne!(m["id"], original["id"]);
+    assert_eq!(m["name"], "hello");
+    assert_eq!(m["forkOf"]["id"], original["id"]);
+}
+
+#[test]
+fn dependency_commands_edit_author_and_installed_forks() {
+    let f = Fixture::new();
+    assert!(
+        f.ok(&["dependency", "--help"])
+            .contains("dependency update")
+    );
+    assert!(
+        f.ok(&["dependency", "update", "--help"])
+            .contains("dependency update")
+    );
+    let original = "76a9b591-60f3-5c7f-9e1c-31648fc73bfd";
+    let dep = "22222222-2222-4222-8222-222222222222";
+    let new = "33333333-3333-4333-8333-333333333333";
+    let inspected: serde_json::Value =
+        serde_json::from_str(&f.ok(&["packages", f.source()])).unwrap();
+    assert_eq!(inspected.as_array().unwrap().len(), 2);
+    assert!(
+        inspected
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["name"] == "fixture"
+                && p["installed"] == false
+                && p["forkOf"].is_null()
+                && p["dependencies"] == serde_json::json!({}))
+    );
+    assert!(!f.dir.join("workspace").exists());
+    f.ok(&["install", f.source(), original]);
+    let fork = f.dir.join("editable-fork");
+    f.ok(&["fork", original, "--into", fork.to_str().unwrap()]);
+    let package = manifest(&fork.join("packages/store"));
+    let id = package["id"].as_str().unwrap();
+    f.ok(&["commit", fork.to_str().unwrap(), "1.1.0"]);
+    f.ok(&["install", fork.to_str().unwrap(), id]);
+    let listed: serde_json::Value = serde_json::from_str(&f.ok(&["list"])).unwrap();
+    let installed = listed["resolved"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == id)
+        .unwrap();
+    assert_eq!(installed["name"], "fixture");
+    assert_eq!(installed["installed"], true);
+    assert_eq!(installed["forkOf"]["id"], original);
+    let state = fs::read(f.dir.join("workspace/state.json")).unwrap();
+    for author in [true, false] {
+        let suffix: Vec<&str> = if author {
+            vec!["--repo", fork.to_str().unwrap()]
+        } else {
+            vec![]
+        };
+        let run = |args: Vec<&str>| {
+            let mut owned: Vec<String> = args.into_iter().map(str::to_owned).collect();
+            owned.extend(suffix.iter().map(|s| (*s).to_owned()));
+            f.ok(&owned.iter().map(String::as_str).collect::<Vec<_>>())
+        };
+        let added: serde_json::Value =
+            serde_json::from_str(&run(vec!["dependency", "add", id, dep, "^1"])).unwrap();
+        assert_eq!(added["dependencies"][dep], "^1");
+        assert_eq!(added["installed"], !author);
+        let folder = if author {
+            fork.join("packages/store")
+        } else {
+            f.dir
+                .join("workspace/worktrees")
+                .join(id)
+                .join("packages/store")
+        };
+        let before = fs::read(folder.join("plugin.json")).unwrap();
+        let mut invalid = vec!["dependency", "update", id, dep, id, "*"];
+        invalid.extend_from_slice(&suffix);
+        assert!(f.fails(&invalid).contains("depends on itself"));
+        assert_eq!(fs::read(folder.join("plugin.json")).unwrap(), before);
+        let changed: serde_json::Value =
+            serde_json::from_str(&run(vec!["dependency", "update", id, dep, new, "~2"])).unwrap();
+        assert_eq!(changed["dependencies"][new], "~2");
+        assert!(changed["dependencies"].get(dep).is_none());
+        let removed: serde_json::Value =
+            serde_json::from_str(&run(vec!["dependency", "remove", id, new])).unwrap();
+        assert_eq!(removed["dependencies"], serde_json::json!({}));
+        assert_eq!(fs::read(f.dir.join("workspace/state.json")).unwrap(), state);
+    }
+    let inspected: serde_json::Value =
+        serde_json::from_str(&f.ok(&["packages", fork.to_str().unwrap()])).unwrap();
+    assert_eq!(
+        inspected
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == id)
+            .unwrap()["installed"],
+        true
+    );
 }

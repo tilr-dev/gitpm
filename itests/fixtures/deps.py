@@ -1,0 +1,56 @@
+"""Dependency graph with replacement forks, as in the stand's requirements.rs."""
+
+import json
+
+from gitpmtest import T, fixture
+
+GRAPH = {
+    "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9": ({}, {}),
+    "9692fc07-23c7-5f20-8779-f09374f1a571": ({"c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9": "^1.0"}, {}),
+    "f5984d44-92bd-51ac-8e8f-d911dd824ef3": ({"c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9": ">=0.9.0"}, {}),
+    "db33e43e-e652-5767-8e21-27fb3cef9723": ({}, {"replaces": {"id": "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9", "version": "1.0.0"}}),
+    "4e02af40-ea75-510c-b524-5f21e6de2d55": ({}, {"replaces": {"id": "c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9", "version": "0.9.0"}}),
+}
+
+
+@fixture()
+def deps(t: T):
+    """c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9, its consumers 9692fc07-23c7-5f20-8779-f09374f1a571 (^1.0) and f5984d44-92bd-51ac-8e8f-d911dd824ef3 (>=0.9.0), and forks db33e43e-e652-5767-8e21-27fb3cef9723
+    (replaces c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 1.0.0) and 4e02af40-ea75-510c-b524-5f21e6de2d55 (replaces 0.9.0); each released at 1.0.0."""
+    for id, (dependencies, extra) in GRAPH.items():
+        t.new_package(id, "1.0.0", deps=dependencies, extra=extra)
+
+
+@deps.check
+def _(t: T):
+    for id, (dependencies, extra) in GRAPH.items():
+        manifest = json.loads(t.git(id, "show", f"v1.0.0:plugin.json"))
+        t.eq(manifest.get("dependencies", {}), dependencies, f"{id} dependencies")
+        t.eq(manifest.get("replaces"), extra.get("replaces"), f"{id} replaces")
+
+
+@fixture(requires=["deps"], gitpm=True)
+def deps_catalog(t: T):
+    """All five packages of `deps` registered at 1.0.0 in /fx/catalog; empty workspace."""
+    for id in GRAPH:
+        t.gitpm_ok("register", t.repo(id), "--ref", f"v1.0.0")
+
+
+@deps_catalog.check
+def _(t: T):
+    t.has(t.gitpm_ok("--catalog", t.catalog, "info").out, *GRAPH)
+    t.ok(not t.ws.exists(), "workspace untouched")
+
+
+@fixture(requires=["deps_catalog"], gitpm=True)
+def deps_installed(t: T):
+    """9692fc07-23c7-5f20-8779-f09374f1a571, f5984d44-92bd-51ac-8e8f-d911dd824ef3, db33e43e-e652-5767-8e21-27fb3cef9723, 4e02af40-ea75-510c-b524-5f21e6de2d55 installed from the catalog; c19e4ca3-3f37-5b79-8e3c-b87c6ec12cb9 pulled in as a dependency."""
+    for id in ["9692fc07-23c7-5f20-8779-f09374f1a571", "f5984d44-92bd-51ac-8e8f-d911dd824ef3", "db33e43e-e652-5767-8e21-27fb3cef9723", "4e02af40-ea75-510c-b524-5f21e6de2d55"]:
+        t.gitpm_ok("install-catalog", id)
+
+
+@deps_installed.check
+def _(t: T):
+    state = t.gitpm_ok("list").json()
+    t.eq(sorted(state["packages"]), sorted(GRAPH), "installed packages")
+    t.ok("replacements" not in state or not state["replacements"], "no active replacement")

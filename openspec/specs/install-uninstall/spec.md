@@ -1,0 +1,298 @@
+# install-uninstall Specification
+
+## Purpose
+
+Defines how packages enter and leave a workspace: installing from a Git source or the catalog, idempotent re-install, the three removal levels (disable, forget, uninstall), restore, and the plan-and-confirm protocol that protects local work.
+
+## Requirements
+
+### Requirement: Install the latest release of a Git source
+`install SOURCE` (`Manager::install`) SHALL bare-clone the source, select its newest valid stable release tag (package-ids), create a detached package worktree at that commit, verify the manifest and deploy its output, installing missing dependencies (dependencies). Untagged commits are ignored; no stable releases SHALL fail with `no_releases`. Verified by `stable_install_and_update_ignore_untagged_head_and_sort_versions`.
+
+#### Scenario: Newest numeric tag wins
+- **WHEN** a repository has tags `v0.9.0` and `v0.10.0` and a newer untagged commit
+- **THEN** install checks out `0.10.0` and prints `installed d135a7cf-1c63-549a-93cb-8f89656b2ced@0.10.0 from SOURCE`
+
+#### Scenario: Repository without releases
+- **WHEN** the source has no release tags
+- **THEN** install fails with `no_releases` and the workspace is unchanged
+
+#### Scenario: Install enables pulled dependencies
+- **WHEN** `install-catalog app` pulls the missing `lib` from the catalog
+- **THEN** both are recorded `enabled: true` and deployed in the same transaction: an install is a download plus enabling the package and the dependencies it downloaded
+
+#### Scenario: Forced install next to a disabled dependency
+- **WHEN** `lib` is installed but disabled and the user runs `install ./app --force` (`Manager::install_package_with` with `force`; `install-catalog app --force`, `install_from_catalog_with`), where `app` requires `lib ^1`
+- **THEN** `app` is recorded enabled and deployed although its dependency is not active (dependencies, "enable needs active dependencies"), `lib` stays disabled, missing dependencies are installed as usual, and `list` reports `app`'s dependency on `lib` unsatisfied (`forced_install_and_install_over_a_download`)
+
+#### Scenario: Pre-release tag is not picked
+- **WHEN** a repository has `v1.2.0` and the newer `v1.3.0-beta.1`
+- **THEN** `install` installs 1.2.0; `install SOURCE --ref v1.3.0-beta.1` installs the beta (pinned, as every `--ref` tag)
+
+#### Scenario: Bare source storage
+- **WHEN** a root or nested Git package is installed
+- **THEN** `repos/<key>` is a bare repository with no working tree, and `worktrees/<id>` is its detached package worktree
+
+### Requirement: Install an explicit ref or a branch
+`install SOURCE --ref REF` SHALL resolve REF against the origin (tag, origin branch, commit) and record the mode (workspace-layout): a tag or commit pins the package, a branch makes it follow that branch; `--dev` SHALL follow the origin's default branch. Without either, the newest release is installed in release mode. A ref starting with `-` is refused as in git-safety. Verified by `workspace::install_records_the_ref_mode` and `model::resolve_ref_refuses_option_like_refs_and_resolves_commits`.
+
+#### Scenario: One install target in the library
+- **WHEN** the user runs `gitpm install SOURCE --ref x --dev`, or `--channel dev`
+- **THEN** the first is a CLI usage error (`--dev conflicts with --ref`) and `--channel` is an unknown option; the library takes one install target, so the combination cannot reach it
+
+#### Scenario: Install by exact commit
+- **WHEN** the user runs `install SOURCE --ref <40-hex commit>`
+- **THEN** that commit is installed, recorded as `current.commit`, and the record says the package is pinned to that commit
+
+#### Scenario: Install a branch
+- **WHEN** the origin has the branch `feature` and the user runs `install SOURCE --ref feature`
+- **THEN** the fresh clone resolves the fetched `origin/feature`, installs its HEAD and records branch mode `feature`
+
+#### Scenario: Install the default branch
+- **WHEN** the origin's default branch is `main` and the user runs `install SOURCE --dev`
+- **THEN** the HEAD of `origin/main` is installed and the record says branch mode `main`
+
+### Requirement: Install is idempotent for the same source
+Installing an installed and enabled package again from the same source SHALL change nothing and succeed, reporting `ID already installed (VERSION)` (with a mode: `(VERSION, pinned at REF)`), with `; run update` when the source resolves to another revision or mode (`; requested --ref REF — run update ID --ref REF`). `InstallResult` SHALL carry `already_installed`, `available`, the recorded `mode`, `requested_mode` and `enabled`.
+
+#### Scenario: Repeat install
+- **WHEN** `d135a7cf-1c63-549a-93cb-8f89656b2ced` 0.2.0 is installed from `./greeter` and the user runs `gitpm install ./greeter`
+- **THEN** it prints `d135a7cf-1c63-549a-93cb-8f89656b2ced already installed (0.2.0)`, exits 0 and the workspace is byte-identical
+- **AND** this is covered by `install_again_reports_already_installed_and_changes_nothing`
+
+#### Scenario: Newer release available
+- **WHEN** the source has a newer release than the installed one
+- **THEN** it prints `d135a7cf-1c63-549a-93cb-8f89656b2ced already installed (0.2.0); run update` and changes nothing
+
+#### Scenario: Same source
+- **WHEN** the recorded source is `/…/greeter` and the user installs `./greeter`
+- **THEN** it is the same source: "same source" means the same string as recorded after canonicalizing a local path
+
+#### Scenario: Install over a download
+- **WHEN** `app` was downloaded from `./app` and the user runs `install ./app`
+- **THEN** it fails with `dependency_conflict` while a dependency is not active (dependencies, "enable needs active dependencies"); with every dependency active, or with `--force`, `app` is enabled and deployed at its recorded revision and mode, and the line is `installed app@V from SOURCE`; verified by `forced_install_and_install_over_a_download`
+- **AND** the result has `enabled` true and `already_installed` false, `available` and `requested_mode` as for an installed package, and a warning when the requested mode differs from the recorded one (`install_over_a_download_reports_the_requested_mode`)
+
+### Requirement: Same ID from another source is refused
+Installing an ID that is installed from a different source (including a `file://` URL against a plain path, or a URL with and without `.git`) SHALL fail with `already_installed`. Installing an ID that is forgotten but retained SHALL be refused with `already_installed` until it is restored or uninstalled. Verified by `forgotten_repository_blocks_reinstall_until_restored`.
+
+#### Scenario: Other source
+- **WHEN** `d135a7cf-1c63-549a-93cb-8f89656b2ced` is installed from `./greeter` and the user installs `file:///…/greeter`
+- **THEN** the command fails with `already_installed`
+
+#### Scenario: Forgotten but retained
+- **WHEN** `d135a7cf-1c63-549a-93cb-8f89656b2ced` was forgotten and its clone `repos/<key>` is retained, and the user installs it again
+- **THEN** the command fails with `already_installed` ("d135a7cf-1c63-549a-93cb-8f89656b2ced was forgotten and its clone is kept") and the workspace is unchanged
+- **AND** the message names no command; the CLI adds a `Hint:` line naming `gitpm restore ID` and `gitpm uninstall ID` (the same holds for a forgotten package of a shared clone)
+
+### Requirement: Install from the catalog
+`install-catalog ID [--version V]` (`Manager::install_from_catalog`) SHALL install the exact release (latest if omitted), verifying the manifest and file hashes before any change. Git installs SHALL check out the recorded source commit; builds SHALL verify archive SHA-256 and deploy without cloning. Mismatches SHALL fail with `catalog`, unavailable artifacts with `http`. Only verified catalogs protect. Verified by `catalog_manifest_is_verified_before_install`.
+
+#### Scenario: Tampered dist
+- **WHEN** the catalog's file hashes do not match the release commit's `dist/`
+- **THEN** install fails with `catalog` ("catalog file hashes do not match git dist") and nothing is installed
+- **AND** installing from a second catalog is refused as specified in catalog ("One catalog per workspace")
+
+#### Scenario: Catalog install over a direct install
+- **WHEN** `d135a7cf-1c63-549a-93cb-8f89656b2ced` 0.1.0 was installed or downloaded with `install`/`download ./greeter` and the user runs `install-catalog d135a7cf-1c63-549a-93cb-8f89656b2ced` from a verified catalog
+- **THEN** the installed revision must be the catalog's record of 0.1.0 (same source and commit, package folder, manifest and file hashes): the record gets `catalog` (a download is also enabled) and the result warns `d135a7cf-1c63-549a-93cb-8f89656b2ced is now protected by catalog LOCATION`
+- **AND** another commit or other files fail with `catalog` ("… it cannot be protected by that catalog") and nothing changes; this is covered by `workspace::install_from_a_verified_catalog_protects_a_direct_install_of_its_release`
+
+#### Scenario: Install from an unverified catalog
+- **WHEN** the catalog has no `"verified": true` and the user runs `install-catalog d135a7cf-1c63-549a-93cb-8f89656b2ced`
+- **THEN** the release is verified as above, the record has no `catalog`, and a Git installation later updates from the origin; a build installation follows its separately recorded catalog location
+
+#### Scenario: Install a build with unavailable source
+- **WHEN** a catalog release has a valid build and its source repository is unavailable
+- **THEN** install-catalog deploys the verified archive output without a clone
+
+#### Scenario: Catalog verification before mutation
+- **WHEN** `Manager::install_from_catalog` selects a Git release
+- **THEN** the committed package folder, whole manifest and output file hashes are verified against the catalog before any workspace change
+- **AND** verification is covered by `workspace::install_from_catalog_verifies_and_check_compares`
+
+### Requirement: Refused input creates nothing
+Input SHALL be validated before anything is created: the CLI checks argv syntax and parses IDs and versions with the library's parsers before opening, and `open_with` validates Options first (workspace-layout). A refused install SHALL leave no clone, no `dist/<id>`, no state entry and no `.pm-txn` (errors). Verified by `usage_errors_name_the_problem_and_create_nothing` and `workspace::install_refusals_leave_the_workspace_unchanged`.
+
+#### Scenario: Invalid ID on a fresh root
+- **WHEN** the user runs `gitpm --root new-ws update ../evil`
+- **THEN** the command fails with `invalid_id` and `new-ws` is not created
+
+### Requirement: Three removal levels
+gitpm SHALL offer `disable` (disable and undeploy), `forget` (undeploy, move the full record to `forgotten`, retain Git storage or cached build), and `uninstall` (remove record, worktree, output and unused bare storage). `restore` SHALL re-register forgotten packages. All levels use dependent guards (dependencies). Verified by `lifecycle_and_three_removal_levels` and `forget_says_whether_the_clone_was_kept`.
+
+#### Scenario: Uninstall one package of a shared clone
+- **WHEN** another package still uses the shared clone of the package being uninstalled
+- **THEN** the clone stays; it is removed only with its last package (multi-package-repos, "One shared clone per source")
+
+#### Scenario: Forget then restore
+- **WHEN** the user runs `forget d135a7cf-1c63-549a-93cb-8f89656b2ced` then `restore d135a7cf-1c63-549a-93cb-8f89656b2ced`
+- **THEN** the first prints `d135a7cf-1c63-549a-93cb-8f89656b2ced forgotten (clone kept; restore re-registers it)`, the second `d135a7cf-1c63-549a-93cb-8f89656b2ced restored 0.2.0`, and `dist/d135a7cf-1c63-549a-93cb-8f89656b2ced/` is back
+
+#### Scenario: Restore without a clone
+- **WHEN** the user restores an ID that has no `forgotten` record
+- **THEN** the command fails with `repository_not_found`, as does a forgotten package whose clone (own or shared) is gone (multi-package-repos, "Forgotten packages of shared clones")
+
+#### Scenario: Forget result
+- **WHEN** `forget` succeeds
+- **THEN** it returns `ForgetResult { clone_kept, dist }`; `clone_kept` is false when the clone was gone and no `forgotten` record was kept ("Removing a package whose clone is gone")
+
+### Requirement: Restore preconditions
+`restore ID` SHALL record the package again from its forgotten Git or build record as it was, checking dependencies. A Git worktree SHALL be clean and at its recorded commit, also in branch mode; restore SHALL NOT adopt a different HEAD. Restore SHALL refuse with `local_changes` on lost work, `repository_not_found` when required Git storage is missing, and `already_installed` when the ID is recorded, and print `ID restored V`.
+
+#### Scenario: Restored record
+- **WHEN** a clean package worktree at its recorded commit is restored
+- **THEN** the forgotten revisions, catalog binding, enabled flag and mode are preserved, and deployment follows the enabled flag
+- **AND** Verified by `restore_keeps_the_forgotten_record`, `restore_refuses_dirty_clones_and_needs_a_forgotten_record`, `restore_refuses_an_unpublished_commit_in_every_mode`, `branch_mode_restore_refuses_a_published_moved_head`, and `root_and_nested_worktrees_guard_dirty_files_and_every_moved_head`.
+
+#### Scenario: Dirty retained clone
+- **WHEN** a forgotten package worktree was edited, including outside its nested package folder
+- **THEN** restore fails with `local_changes` and keeps the forgotten record
+
+#### Scenario: Unpublished commit in a retained clone
+- **WHEN** a forgotten package worktree HEAD is an unpublished commit different from its recorded current commit
+- **THEN** restore fails with `local_changes` listing `HeadMoved`, also in branch mode, and preserves the forgotten record
+
+#### Scenario: Branch mode restore
+- **WHEN** a forgotten branch-mode package worktree HEAD differs from its recorded commit
+- **THEN** restore fails with `local_changes` listing `HeadMoved`, including when the new commit is published
+
+### Requirement: Uninstall is planned and confirmed
+`uninstall_plan(id)` SHALL be read-only and list `deletes`, `registered`, `dependents`, `dependency_conflict` (a reactivated original's, dependencies) and `lost_work`; `UninstallPlan::refusal` SHALL return the error `uninstall` raises without force (`has_dependents` with `lost_work`, else `dependency_conflict`). Lost-work items: `Modified`, `Untracked`, `Ignored`, `HeadMoved`, `UnpublishedCommit`, `UnpublishedBranch`, `UnpublishedTag`, `Stash`. A clean clone needs no confirmation.
+
+#### Scenario: Dependents without force
+- **WHEN** the package has dependents and `force` is false
+- **THEN** `uninstall` fails with `has_dependents` (dependencies), and the error carries both `dependents` and the plan's `lost_work`, so one refusal tells everything
+
+#### Scenario: Stash alone blocks
+- **WHEN** the clone is clean except for a `git stash` entry and uninstall is not confirmed
+- **THEN** it fails with `local_changes` listing the stash and nothing is deleted
+- **AND** this is covered by `uninstall::plan_lists_each_lost_work_type_including_stash_without_changes`
+
+#### Scenario: Confirmed uninstall
+- **WHEN** the plan has lost work and the caller passes exactly those items as `confirmed`
+- **THEN** the clone, `dist/<id>` and the state entry are deleted
+
+#### Scenario: Lost work grew after the plan
+- **WHEN** a file is added to the clone after the plan was shown and the caller confirms only the plan's items
+- **THEN** `uninstall` fails with `local_changes` listing the new item and nothing is deleted
+- **AND** this is covered by `uninstall::confirmation_is_bound_to_the_planned_lost_work`
+
+#### Scenario: Confirmed items and force
+- **WHEN** a caller runs `uninstall(id, confirmed, force)` (FFI `uninstall(confirmed, force)`)
+- **THEN** lost work not in `confirmed` refuses with `local_changes` listing it, and the plan's refusal applies unless `force`
+
+### Requirement: CLI confirmation flow for uninstall
+Without `--force`, the CLI SHALL report the plan's refusal when it has one, before asking about lost work, and otherwise list what `uninstall_plan` reports and ask `Delete anyway? [y/N]` on stderr on a TTY; anything but `y`/`yes` SHALL change nothing and fail with `uninstall cancelled; nothing was changed`. Verified by `uninstall_on_tty_asks_before_losing_work`, `uninstall_without_tty_refuses_and_lists_lost_work_including_stash` and `uninstall_refusal_of_a_reactivation_comes_before_the_prompt`.
+
+#### Scenario: No TTY
+- **WHEN** a clone has modified files and `gitpm uninstall ID` runs with stdin not a terminal
+- **THEN** it prints `Error: …`, one `  - …` line per lost item and `Error kind: local_changes`, and the exit status is 1
+- **AND** a declined prompt is a CLI error without `Error kind` (exit status 1), and `--force` passes the plan's items as `confirmed` and sets `force`
+
+#### Scenario: Confirmation and force
+- **WHEN** the user answers `y`, runs without a TTY, or passes `--force`
+- **THEN** `y` passes the plan's items as `confirmed`, without a TTY nothing is confirmed (the library refuses), and `--force` confirms the plan's items without asking and ignores dependents
+
+### Requirement: Only manager-owned files are deleted
+Uninstall SHALL delete only what the workspace owns (the clone inside the workspace, `dist/<id>`, the state entry); a fork repository or author repository outside the workspace MUST NOT be touched.
+
+#### Scenario: Uninstalling a fork
+- **WHEN** `ce6c8a3b-b2f8-5391-8ef8-4cbb7873f5d4` was installed from `./hello-fork` and is uninstalled
+- **THEN** `./hello-fork` still exists unchanged
+
+### Requirement: Download without enabling
+`download SOURCE [ID] [--package ID] [--ref REF | --dev]` (`Manager::download`) and `download-catalog ID [--version V]` (`Manager::download_from_catalog`) SHALL clone, verify and record a package exactly as `install`/`install-catalog` do, but with `enabled: false` and nothing deployed; missing dependencies SHALL be downloaded the same way, disabled. The CLI prints `downloaded ID@V from SOURCE (disabled)` per package. Verified by `workspace::download_records_disabled_packages_and_dependencies`.
+
+#### Scenario: Download with a missing dependency
+- **WHEN** `app` requires `lib ^1`, only the catalog has `lib`, and the user runs `gitpm download ./app`
+- **THEN** both are recorded with `enabled: false`, neither `dist/app/` nor `dist/lib/` exists, and the output has one `downloaded …` line per package
+
+#### Scenario: Enable after download
+- **WHEN** the user then runs `enable app`
+- **THEN** it fails with `dependency_conflict` naming `lib` as disabled (dependencies, "enable needs active dependencies"), while `enable lib` followed by `enable app` succeeds
+
+### Requirement: Removing a package whose clone is gone
+`uninstall ID` and `forget ID` of a recorded Git package whose bare repository or package worktree is gone SHALL succeed without confirmation, drop the record and deployed folder, keep no forgotten record, and retain dependent guards (dependencies, "Dependents guard removal"). Builds intentionally have no clone and SHALL follow the cache lifecycle below. Verified by `workspace::uninstall_and_forget_of_a_package_without_clone_drop_the_record`.
+
+#### Scenario: Clone deleted by hand
+- **WHEN** `repos/<key>` or its package worktree was deleted by hand while `d135a7cf-1c63-549a-93cb-8f89656b2ced` is recorded and active, and the user runs `uninstall d135a7cf-1c63-549a-93cb-8f89656b2ced`
+- **THEN** it prints `d135a7cf-1c63-549a-93cb-8f89656b2ced uninstalled`, the record and `dist/d135a7cf-1c63-549a-93cb-8f89656b2ced/` are gone, and later commands warn no more
+
+#### Scenario: Orphan worktree survives missing source storage
+- **WHEN** a package bare repository was deleted by hand while its worktree still contains local files, and the package is uninstalled or forgotten
+- **THEN** the record and deployed folder are removed while the orphan worktree and its files remain untouched
+
+#### Scenario: Forget without a clone
+- **WHEN** the same package is forgotten instead
+- **THEN** it prints `d135a7cf-1c63-549a-93cb-8f89656b2ced forgotten (no clone; record and dist removed)` (`clone_kept` false), the record is dropped and no `forgotten` record is kept, because there is nothing to restore; a later `restore d135a7cf-1c63-549a-93cb-8f89656b2ced` fails with `repository_not_found`
+
+#### Scenario: Forget and restore a build
+- **WHEN** a build package is forgotten and restored
+- **THEN** its cached output and record survive forget and restore redeploys them without Git
+
+#### Scenario: Managed build output is not lost Git work
+- **WHEN** a build is forgotten or uninstalled
+- **THEN** managed cached output needs no lost-work confirmation; forget retains its record and cached output for restore, while uninstall removes the cache, subject to dependent guards
+
+#### Scenario: Reinstall refuses an orphan worktree
+- **WHEN** an orphan `worktrees/<uuid>` remains after missing source storage and the same package is installed again
+- **THEN** install refuses with `workspace`, preserves the orphan files and leaves package state unchanged
+
+### Requirement: Explicit local linking is distinct from branch following
+gitpm SHALL provide a library link operation and equivalent FFI and CLI entry points for a local author package. It SHALL validate identity and resolve the installation folder before publishing a symlink or changing state, using the same `plugin.json.dist` selection as managed installation (`"dist"` when omitted, `"."` for the package root). It MUST NOT redefine `--dev`, which continues to follow the origin default branch.
+
+#### Scenario: Link a package folder
+- **WHEN** a valid local package folder is linked
+- **THEN** gitpm records the package in link mode and publishes its installation folder through a symlink, without creating a managed clone or executing package code
+
+#### Scenario: Multi-package repository
+- **WHEN** the selected local package belongs to a multi-package repository
+- **THEN** the link identifies that package and resolves its installation folder relative to its package folder
+
+#### Scenario: Explicitly link a prepared fork
+- **WHEN** the author prepares a repository with `gitpm fork 7e6e8392-7be8-55ae-bd03-2b430b1c5d59 --into hello-fork` and then explicitly links its `ce6c8a3b-b2f8-5391-8ef8-4cbb7873f5d4` package
+- **THEN** only that selected package is installed in link mode, without requiring a new release or changing the original's installation or replacement bindings
+- **AND** fork preparation alone neither installs the fork nor publishes a linked deployment; sibling packages remain uninstalled
+
+#### Scenario: Explicitly replace with a linked fork
+- **WHEN** an installed, enabled linked fork declares a validated `replaces.id` matching the original and the user runs `replace ORIGINAL --with FORK`
+- **THEN** the existing explicit replacement operation reads the link record's top-level `replaces` offer and applies the existing replacement and dependency rules
+- **AND** consumers of the original use the linked fork's live deployment; linking alone never creates that binding
+
+### Requirement: Invalid link targets leave no changes
+Linking SHALL refuse invalid manifests with `invalid_manifest` (unparsable JSON with `invalid_data`) and missing installation folders, conflicting deployment entries, non-UTF-8 paths, workspace cycles or targets in workspace managed storage with `workspace`, without changing state or the author folder.
+
+#### Scenario: Missing build output
+- **WHEN** the manifest's installation folder does not exist
+- **THEN** linking fails with `workspace`, leaving state and the author tree unchanged, without running a build
+
+#### Scenario: Invalid manifest
+- **WHEN** the package manifest has no valid identifier
+- **THEN** linking fails with `invalid_manifest`, leaving state and the author tree unchanged
+
+#### Scenario: Unrelated deployment entry
+- **WHEN** the selected package ID has an unowned deployment entry, including a dangling symlink
+- **THEN** linking refuses with `workspace`, preserving that entry, state and the external folder
+
+#### Scenario: Path cannot be represented in state
+- **WHEN** a canonical package root or installation-folder path contains non-UTF-8 bytes
+- **THEN** linking refuses with `workspace` before staging, preserving state and external files rather than recording a lossy path
+
+### Requirement: Rollback refuses linked packages
+`rollback` of a linked package SHALL fail with `no_previous_version`, leaving the symlink, state and the external folder unchanged: a link keeps no previous revision.
+
+#### Scenario: Roll back a link
+- **WHEN** rollback is requested for a linked package
+- **THEN** it fails with `no_previous_version` and the symlink, state and external folder are unchanged
+
+### Requirement: Link removal preserves all author work
+For a link record, removal plans SHALL describe only owned workspace entries and state changes. The external repository and installation folder MUST NOT appear in `deletes` and MUST NOT be deleted, reset or cleaned, including with force or lost-work confirmation. External dirty files, staged files, ignored files, unpublished refs and stashes SHALL NOT prevent removal of the link, since removal cannot lose them. Managed-clone lost-work checks SHALL remain unchanged.
+
+#### Scenario: Uninstall a dirty linked package
+- **WHEN** a linked author's repository has staged edits, ignored output, an unpublished commit and a stash and the user uninstalls the package
+- **THEN** only its workspace symlink and recorded package are removed, and the external files, refs and stash are unchanged
+
+#### Scenario: Forced removal
+- **WHEN** the user forces removal of a linked package
+- **THEN** force does not authorize traversal or deletion of the link target

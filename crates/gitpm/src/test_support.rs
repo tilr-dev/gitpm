@@ -1,4 +1,4 @@
-//! Shared fixtures for unit tests: unique temp directories, hermetic `git`, small plugin
+//! Shared fixtures for unit tests: unique temp directories, hermetic `git`, small package
 //! repositories and a tree hash for byte-identical comparisons. Test-only.
 use crate::catalog::{FileDigest, Release};
 use crate::{Manifest, State};
@@ -85,6 +85,7 @@ pub(crate) fn git(repo: &Path, args: &[&str]) -> String {
 pub(crate) fn manifest(id: &str, version: &str) -> Manifest {
     Manifest {
         id: id.into(),
+        name: "fixture".into(),
         version: version.into(),
         ..Default::default()
     }
@@ -104,13 +105,13 @@ pub(crate) fn read_json(path: &Path) -> serde_json::Value {
     serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
 }
 
-/// An author's plugin repository: `plugin.json` + `dist/index.js`, branch `main`.
+/// An author's package repository: `plugin.json` + `dist/index.js`, branch `main`.
 pub(crate) struct Author {
     pub(crate) path: PathBuf,
     pub(crate) id: String,
 }
 impl Author {
-    /// Create, commit and tag `id@0.1.0` (`v0.1.0` for a legacy ID).
+    /// Create, commit and tag `v0.1.0`.
     pub(crate) fn new(path: PathBuf, id: &str) -> Self {
         let author = Self::untagged(path, id, "0.1.0");
         author.tag("0.1.0");
@@ -154,10 +155,7 @@ impl Author {
         commit
     }
     pub(crate) fn tag(&self, version: &str) {
-        git(
-            &self.path,
-            &["tag", &crate::identity::release_tag(&self.id, version)],
-        );
+        git(&self.path, &["tag", &crate::identity::release_tag(version)]);
     }
     pub(crate) fn head(&self) -> String {
         git(&self.path, &["rev-parse", "HEAD"])
@@ -209,13 +207,13 @@ pub(crate) fn tree_hash_except(root: &Path, skip: &[&str]) -> String {
     crate::catalog::hex(&hasher.finalize())
 }
 
-/// A syntactically valid catalog release for `id@version` (no Git needed).
+/// A syntactically valid catalog release for `vVERSION` (no Git needed).
 pub(crate) fn release(id: &str, version: &str, source: &str, commit_char: char) -> Release {
     Release {
         manifest: manifest(id, version),
         source: source.into(),
         commit: commit_char.to_string().repeat(40),
-        reference: crate::identity::release_tag(id, version),
+        reference: crate::identity::release_tag(version),
         files: BTreeMap::from([(
             "index.js".to_owned(),
             FileDigest {
@@ -228,16 +226,18 @@ pub(crate) fn release(id: &str, version: &str, source: &str, commit_char: char) 
     }
 }
 
-/// State with one installed plugin.
+/// State with one installed package.
 pub(crate) fn state_with(id: &str, source: &str, version: &str, commit: &str) -> State {
     State {
-        plugins: BTreeMap::from([(
+        packages: BTreeMap::from([(
             id.to_owned(),
             crate::Installed {
                 source: source.into(),
+                clone: Some(crate::workspace::clones::repo_key(source)),
                 current: crate::Revision {
                     version: version.into(),
                     commit: commit.into(),
+                    ..Default::default()
                 },
                 previous: None,
                 enabled: true,
@@ -246,4 +246,11 @@ pub(crate) fn state_with(id: &str, source: &str, version: &str, commit: &str) ->
         )]),
         ..Default::default()
     }
+}
+/// Mark the catalog folder `dir` verified, as its owner does by hand.
+pub(crate) fn verify_catalog(dir: &Path) {
+    let path = dir.join("catalog.json");
+    let mut value = read_json(&path);
+    value["verified"] = serde_json::Value::Bool(true);
+    write_json(&path, &value);
 }

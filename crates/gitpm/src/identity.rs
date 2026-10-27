@@ -1,5 +1,4 @@
-//! Namespaces, stable plugin IDs and release tags. There is no default namespace: every
-//! ID is given in full (`namespace/name`).
+//! Stable UUID package IDs, human aliases and repository release tags.
 use crate::error::{Result, ensure};
 
 pub fn valid_part(part: &str) -> Result<()> {
@@ -11,21 +10,30 @@ pub fn valid_part(part: &str) -> Result<()> {
                 .bytes()
                 .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_'),
         InvalidId,
-        "namespace/name must use 1–80 ASCII letters, digits, '-' or '_' per component, not starting with '-'"
+        "package names must use 1–80 ASCII letters, digits, '-' or '_', not starting with '-'"
     );
     Ok(())
 }
-pub fn qualified(namespace: &str, name: &str) -> Result<String> {
-    valid_part(namespace)?;
-    valid_part(name)?;
-    Ok(format!("{namespace}/{name}"))
+/// Generate a UUID v4 using the operating system's random source.
+pub fn new_id() -> Result<String> {
+    use std::io::Read;
+    let mut bytes = [0u8; 16];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    Ok(format!(
+        "{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..]
+    ))
 }
-pub fn release_tag(id: &str, version: &str) -> String {
-    if id.contains('/') {
-        format!("{id}@{version}")
-    } else {
-        format!("v{version}")
-    }
+/// The repository release tag `vVERSION`, the only tag spelling gitpm creates and reads.
+pub fn release_tag(version: &str) -> String {
+    format!("v{version}")
 }
 
 #[cfg(test)]
@@ -70,16 +78,16 @@ mod tests {
     }
 
     #[test]
-    fn qualified_validates_both_parts() {
-        assert_eq!(qualified("dan", "demo1").unwrap(), "dan/demo1");
-        assert_eq!(qualified("", "demo1").unwrap_err().kind(), "invalid_id");
-        assert_eq!(qualified("dan", "..").unwrap_err().kind(), "invalid_id");
-        assert_eq!(qualified("dan", "a/b").unwrap_err().kind(), "invalid_id");
+    fn generated_ids_are_canonical_v4() {
+        let id = new_id().unwrap();
+        crate::valid_id(&id).unwrap();
+        assert_eq!(id.as_bytes()[14], b'4');
+        assert!(matches!(id.as_bytes()[19], b'8' | b'9' | b'a' | b'b'));
     }
 
     #[test]
-    fn release_tag_is_v_for_legacy_and_at_for_scoped_ids() {
-        assert_eq!(release_tag("demo1", "1.2.3"), "v1.2.3");
-        assert_eq!(release_tag("dan/demo1", "1.2.3"), "dan/demo1@1.2.3");
+    fn release_tag_is_repository_version() {
+        assert_eq!(release_tag("1.2.3"), "v1.2.3");
+        assert_eq!(release_tag("2.0.0-beta.1"), "v2.0.0-beta.1");
     }
 }
