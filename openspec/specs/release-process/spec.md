@@ -7,35 +7,43 @@ Defines how gitpm itself is developed and released: the dev/main branch flow, re
 ## Requirements
 
 ### Requirement: Branch flow
-Work SHALL happen on `dev` or feature branches off `dev`; changes SHALL reach `main` only through a pull request (from `dev`, or the release PR) on the owner's explicit instruction; Dependabot SHALL target `dev`. `main` SHALL be protected (PR only, squash merges, linear history, required checks, no deletion or force-push), and tags `v*` SHALL NOT be deleted or moved. These rules live in the GitHub rulesets (`main`, `release tags`; `gh api repos/OWNER/REPO/rulesets`) and `.github/dependabot.yml`.
+Work SHALL happen on task branches off `main`; changes SHALL reach `main` only through a pull request; Dependabot SHALL target `main`, the default branch (no `target-branch` in `.github/dependabot.yml`). `main` SHALL be protected (PR only, squash merges, linear history, required checks, no deletion or force-push), and tags `v*` SHALL NOT be deleted or moved. Nothing SHALL be released from `main`: on the owner's explicit instruction a release branch `release/X.Y` is cut from a commit of `main`, and fixes for it SHALL land in `main` first and then be cherry-picked into `release/X.Y`. Release branches SHALL be created only by repository admins, who may bypass their ruleset; anyone else changes them only through squash pull requests (linear history, no deletion or force-push), and their CI checks are not required. These rules live in the GitHub rulesets (`main`, `release branches`, `release tags`; `gh api repos/OWNER/REPO/rulesets`) and `.github/dependabot.yml`.
 
 #### Scenario: Merge without a target
 - **WHEN** an agent is told to "merge" without naming a branch
-- **THEN** it merges into `dev`, not `main`
+- **THEN** it merges a pull request into `main`
 
 #### Scenario: Dependabot update
 - **WHEN** Dependabot proposes a cargo or GitHub Actions update
-- **THEN** the pull request's base branch is `dev`
-- **AND** every update block of `.github/dependabot.yml` sets `target-branch: dev`
+- **THEN** the pull request's base branch is `main`
+- **AND** no update block of `.github/dependabot.yml` sets `target-branch`
 
 #### Scenario: After a release merge
-- **WHEN** the release PR `chore(main): release X.Y.Z` is squash-merged into `main`
-- **THEN** `dev` is reset or fast-forwarded to `main` before the next change lands on it
-- **AND** so the next pull request from `dev` carries only new commits
+- **WHEN** the release PR is squash-merged into `release/0.6` and a later fix is needed for 0.6
+- **THEN** nothing is merged from `release/0.6` back into `main`
+- **AND** the fix is merged into `main` through a pull request first and then cherry-picked into `release/0.6`
 
 ### Requirement: Required CI checks
-Every pull request and every push to `main` SHALL run `fmt + clippy` (`cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`), `test` (`cargo test --workspace --locked` plus a `gitpm --version`/`--help` smoke test), `msrv (core crate)` (Rust 1.92, `cargo check -p gitpm -p gitpm-cli --all-targets --locked`), `cargo-deny` and `gitleaks`, with tools pinned by version and SHA-256 and actions pinned by commit.
+Every pull request into `main` or a release branch `release/**`, every merge queue group (`merge_group`) and every push to `main` or `release/**` SHALL run `fmt + clippy` (`cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`), `test` (`cargo test --workspace --locked` plus a `gitpm --version`/`--help` smoke test), `msrv (core crate)` (Rust 1.92, `cargo check -p gitpm -p gitpm-cli --all-targets --locked`), `cargo-deny` and `gitleaks`, with tools pinned by version and SHA-256 and actions pinned by commit.
 
 #### Scenario: MSRV break
 - **WHEN** a change uses an API newer than Rust 1.92 in `gitpm` or `gitpm-cli`
 - **THEN** the `msrv (core crate)` check fails and the PR cannot merge
 
+#### Scenario: Release PR is checked
+- **WHEN** the release PR into `release/0.6` is opened or updated
+- **THEN** the same checks run on it as on a pull request into `main`
+
 ### Requirement: Versioning by Conventional Commits
-Pull request titles SHALL be Conventional Commits (they become the squash commit). release-please SHALL maintain a release PR `chore(main): release X.Y.Z` from `main`: `fix`/`perf` bump patch (release-please defaults; `perf` is not configured here), `feat` bumps minor, and before 1.0 `feat!`/BREAKING also bumps minor (`bump-minor-pre-major` in `release-please-config.json`). The release PR SHALL be opened by the GitHub App `tilr-bot` so CI runs on it without bypass.
+Pull request titles SHALL be Conventional Commits (they become the squash commit). release-please SHALL run only on pushes to release branches `release/**` and maintain there a release PR `chore(release/X.Y): release X.Y.Z` into the pushed branch (`target-branch`); a push to `main` SHALL NOT open or update a release PR. `fix`/`perf` bump patch (release-please defaults; `perf` is not configured here), `feat` bumps minor, and before 1.0 `feat!`/BREAKING also bumps minor (`bump-minor-pre-major` in `release-please-config.json`). The release PR SHALL be opened by the GitHub App `tilr-bot` so CI runs on it without bypass.
 
 #### Scenario: Feature release
-- **WHEN** `feat: …` is merged into `main` at version 0.5.0
-- **THEN** the release PR proposes 0.6.0 with a CHANGELOG entry
+- **WHEN** `feat: …` is merged into `main` at version 0.5.0 and `release/0.6` is cut from that commit
+- **THEN** the release PR into `release/0.6` proposes 0.6.0 with a CHANGELOG entry
+
+#### Scenario: Push to main
+- **WHEN** a pull request is merged into `main`
+- **THEN** no release PR is opened or updated and nothing is published
 
 ### Requirement: Lockstep crates
 `gitpm` (the release-please package), `gitpm-cli` and `gitpm-ffi` SHALL share one version: release-please SHALL update the versions of `gitpm-cli` and `gitpm-ffi`, their `gitpm` dependency versions and the `Cargo.lock` entries. `gitpm-ffi` is versioned but not released (ffi-bindings, "FFI is not published").
@@ -45,7 +53,7 @@ Pull request titles SHALL be Conventional Commits (they become the squash commit
 - **THEN** `crates/gitpm/Cargo.toml`, `crates/gitpm-cli/Cargo.toml` and `crates/gitpm-ffi/Cargo.toml` say 0.6.0
 
 ### Requirement: Merging the release PR is the release
-Merging the release PR SHALL create tag `vX.Y.Z` and a GitHub Release, then publish `gitpm` and then `gitpm-cli` to crates.io through Trusted Publishing (OIDC, environment `crates-io` restricted to `main`, no long-lived tokens), skipping a version already on crates.io, after re-running fmt, clippy and tests on the tag. Releasing SHALL be a separate explicit step by the owner.
+Merging the release PR into its release branch SHALL create tag `vX.Y.Z` and a GitHub Release, then publish `gitpm` and then `gitpm-cli` to crates.io through Trusted Publishing (OIDC, environment `crates-io` restricted to `release/*` branches, no long-lived tokens), skipping a version already on crates.io, after re-running fmt, clippy and tests on the tag. Releasing SHALL be a separate explicit step by the owner.
 
 #### Scenario: Re-run after partial publish
 - **WHEN** `gitpm` was published but `gitpm-cli` failed and the job is re-run
@@ -77,8 +85,8 @@ secrets and advisories SHALL remain subject to the existing checks.
 - **AND** all other advisory checks stay enabled
 - **AND** the exception is removed once an upstream update removes basic-toml
 
-### Requirement: Specification change authorization on dev
-Pull requests into dev SHALL pass the required spec-change check. One shared checker SHALL enforce intake Spec scope and accept authorization only from Dan's comments, using the dedicated read-only task credential. The check SHALL run only from the trusted pull_request_target workflow in main; the dev tree SHALL carry no copy of that workflow. Other tests SHALL remain local for dev.
+### Requirement: Specification change authorization on main
+Pull requests into main SHALL pass the required spec-change check. One shared checker SHALL enforce intake Spec scope and accept authorization only from Dan's comments, using the dedicated read-only task credential. The check SHALL run only from the trusted pull_request_target workflow in main; a copy of that workflow in the pull request is never run. The other checks run in CI (Required CI checks).
 
 #### Scenario: Existing specification is changed without authorization
 - **WHEN** an intake-ready comment declares Spec scope and a pull request removes or changes existing specification lines without a matching spec-change entry from Dan
@@ -115,7 +123,7 @@ Pull requests into dev SHALL pass the required spec-change check. One shared che
 
 #### Scenario: Candidate code cannot replace the checker
 - **WHEN** a pull request changes checker scripts or workflow definitions
-- **THEN** the check still runs the workflow from main, not a workflow file from the pull request or dev
+- **THEN** the check still runs the workflow from main, not a workflow file from the pull request
 - **AND** the trusted workflow reads candidate Git objects without checking out or executing candidate files
 - **AND** the shared checker content is verified against a digest pinned in main's workflow before execution, and a new digest takes effect only through a pull request into main
 - **AND** only the checker process receives the read-only task credential
@@ -134,7 +142,7 @@ Pull requests into dev SHALL pass the required spec-change check. One shared che
 - **THEN** both archive and edit authorization are required for that change
 
 #### Scenario: Text is inserted into an existing requirement
-- **WHEN** a pull request adds a sentence, scenario, or scenario step inside a requirement already present in dev
+- **WHEN** a pull request adds a sentence, scenario, or scenario step inside a requirement already present in main
 - **THEN** matching modify authorization for that existing requirement is required
 - **AND** adding a separate new requirement remains allowed without authorization
 
@@ -148,7 +156,7 @@ Pull requests into dev SHALL pass the required spec-change check. One shared che
 
 #### Scenario: Chained requirement renames retain their original authorization
 - **WHEN** an own delta renames an existing requirement through intermediate names and modifies or removes it
-- **THEN** the operation requires authorization for the original requirement in dev
+- **THEN** the operation requires authorization for the original requirement in main
 - **AND** cyclic or ambiguous rename mappings fail the check
 
 #### Scenario: A new requirement takes an existing scenario
@@ -157,11 +165,11 @@ Pull requests into dev SHALL pass the required spec-change check. One shared che
 
 #### Scenario: Reusing a renamed requirement's former name
 - **WHEN** an own delta renames an existing requirement and another requirement takes its former name
-- **THEN** each rename remains authorized against its own original requirement in dev
+- **THEN** each rename remains authorized against its own original requirement in main
 - **AND** modifying or removing the first requirement under its new name requires permission for that original requirement
 
 #### Scenario: A requirement's text moves under another existing requirement
-- **WHEN** a pull request deletes or moves the heading of an existing requirement so that some of its text or scenarios fall under another requirement already present in dev
+- **WHEN** a pull request deletes or moves the heading of an existing requirement so that some of its text or scenarios fall under another requirement already present in main
 - **THEN** authorization to remove or modify the requirement whose heading changed does not cover the change
 - **AND** modify authorization for the requirement that absorbs the text is required
 
@@ -170,7 +178,7 @@ Pull requests into dev SHALL pass the required spec-change check. One shared che
 - **THEN** the check fails with an error instead of treating any other word as the own change
 
 #### Scenario: An existing archive shares the own change name
-- **WHEN** a pull request edits an archive that already exists in dev under the same change name as the task's own change
+- **WHEN** a pull request edits an archive that already exists in main under the same change name as the task's own change
 - **THEN** the archive is treated as a foreign change and edit authorization is required
 
 #### Scenario: A new capability differs from an existing one only by letter case or Unicode form
@@ -178,12 +186,12 @@ Pull requests into dev SHALL pass the required spec-change check. One shared che
 - **THEN** the check fails with an error instead of treating it as a new capability
 - **AND** the same applies when a delta in the task's own change names a capability that differs from an existing one only by letter case or Unicode form
 
-### Requirement: Specification merge readiness diagnostics
-Before fetching a pull request test merge for specification authorization, the trusted check SHALL read the pull request through the GitHub API with pull-requests read permission. It SHALL distinguish a conflict with dev from a pending or stale merge result, and SHALL inspect candidate Git objects without executing candidate code.
+### Requirement: Specification merge readiness diagnostics on main
+Before fetching a pull request test merge for specification authorization, the trusted check SHALL read the pull request through the GitHub API with pull-requests read permission. It SHALL distinguish a conflict with main from a pending or stale merge result, and SHALL inspect candidate Git objects without executing candidate code.
 
-#### Scenario: Pull request conflicts with dev
+#### Scenario: Pull request conflicts with main
 - **WHEN** the API reports mergeable false for a head SHA matching the requested candidate SHA
-- **THEN** the check fails immediately with a conflict diagnostic naming the task branch and instructing the author to merge dev with `git merge dev` and push
+- **THEN** the check fails immediately with a conflict diagnostic naming the task branch and instructing the author to merge main with `git merge main` and push
 - **AND** it does not advise re-running the job
 
 #### Scenario: GitHub is still computing the merge
