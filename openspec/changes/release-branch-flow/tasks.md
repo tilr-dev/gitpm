@@ -1,6 +1,7 @@
 ## 1. Specification
 - [x] Rewrite branch flow, CI checks, versioning and release requirements for `main` and `release/*`.
-- [x] Rename spec-change authorization to `main` and update the merge diagnostics and the CLI dev build example.
+- [x] Rename spec-change authorization to `main` and update the CLI dev build example.
+- [x] Replace the merge diagnostics requirement with "Specification merge readiness diagnostics on main" (scenario "Pull request conflicts with main"): a modified requirement cannot rename a scenario.
 
 ## 2. Implementation
 - [x] Run release-please only on `release/**` with the pushed branch as `target-branch`.

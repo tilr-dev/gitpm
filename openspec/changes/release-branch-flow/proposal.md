@@ -8,7 +8,7 @@ The `dev` branch is gone: `main` is the only integration branch, and releases ar
 - CI also runs on pull requests into and pushes to `release/**`, so the release PR and cherry-picks are checked.
 - Dependabot targets the default branch `main`.
 - The shared merge readiness helper tells the author to merge `main`; its digest pin in this repository's spec-change workflow is updated.
-- Specifications: branch flow, CI triggers, release-please branch, `crates-io` environment branch policy, spec-change authorization and merge diagnostics refer to `main` and `release/*`; the CLI dev build example is built from `main`.
+- Specifications: branch flow, CI triggers, release-please branch, `crates-io` environment branch policy, and spec-change authorization refer to `main` and `release/*`; the merge diagnostics requirement is replaced by "Specification merge readiness diagnostics on main", whose conflict scenario names `main` (a modified requirement cannot rename a scenario); the CLI dev build example is built from `main`.
 
 ## Impact
 - `.github/workflows/release.yml`, `ci.yml`, `spec-change.yml`, `.github/dependabot.yml`, `scripts/spec_merge.py` with its fixtures, tests and notes, README.
