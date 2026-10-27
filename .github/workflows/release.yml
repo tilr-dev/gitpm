@@ -59,12 +59,22 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read # all writes go through the tilr-bot token below
-    # The package lives at crates/gitpm, not ".", so release-please-action prefixes its
+    # The package lives at crates/gitpm, not ".", so the release runner prefixes its
     # per-release outputs with the path (`crates/gitpm--release_created`, ...).
     outputs:
       release_created: ${{ steps.release.outputs['crates/gitpm--release_created'] }}
       tag_name: ${{ steps.release.outputs['crates/gitpm--tag_name'] }}
     steps:
+      - id: line
+        name: Check the branch name
+        env:
+          BRANCH: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          if ! [[ $BRANCH =~ ^release/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::release branches are named release/X.Y, not $BRANCH"
+            exit 1
+          fi
       - id: app
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
@@ -74,13 +84,22 @@ jobs:
           permission-contents: write # the release PR's branch, the tag, the GitHub release
           permission-pull-requests: write # the release PR
           permission-issues: write # release-please's labels on the release PR
-      - id: release
-        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          token: ${{ steps.app.outputs.token }}
-          target-branch: ${{ github.ref_name }}
-          config-file: release-please-config.json
-          manifest-file: .release-please-manifest.json
+          ref: ${{ github.ref_name }} # release-please reads the current target branch
+          fetch-depth: 0 # stable tags on earlier release branches are the shipped baseline
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+      - name: Install the release-please engine
+        run: npm ci --prefix .github/release-please --ignore-scripts --no-audit --no-fund
+      - id: release
+        name: Release from the branch line and shipped history
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          BRANCH: ${{ github.ref_name }}
+        run: node .github/release-please/run.cjs
 
   publish:
     needs: release-please
