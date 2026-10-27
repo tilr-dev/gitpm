@@ -7,7 +7,7 @@ before fetching candidate objects. It never checks out or executes PR files.
 
 For an API response whose `head.sha` matches `HEAD_SHA`, a false `mergeable`
 value fails immediately with a conflict diagnostic and
-`git merge dev` instructions for the candidate branch. An API response for another head, a null value or a merge
+`git merge main` instructions for the candidate branch. An API response for another head, a null value or a merge
 whose second parent differs from `HEAD_SHA` triggers another API read after two
 seconds, for approximately 60 seconds in total. Only expiration produces the
 GitHub-not-updated / re-run diagnostic. A valid result sets the comparison base
@@ -15,12 +15,12 @@ to its first parent. API/command failures fail closed and preserve the command e
 
 ## Deployment from main
 
-The helper and deterministic tests are prepared in dev. Activation is a separate
-explicit deployment to main in gitpm, cloud and desktop-mac. No workflow copy
-belongs in dev or a task branch. The existing shared authorization checker and
-its content pin remain unchanged.
+The helper is deployed in gitpm, cloud and desktop-mac: each trusted
+`.github/workflows/spec-change.yml` in main downloads it from gitpm main and
+checks its pinned digest. A helper change in gitpm main fails that download until
+each component's main updates the digest.
 
-In each main-only `.github/workflows/spec-change.yml`:
+In each `.github/workflows/spec-change.yml` in main:
 
 1. Add `pull-requests: read` alongside `contents: read` in `permissions`.
 2. Add `TASK_BRANCH: ${{ github.event.pull_request.head.ref }}` to the environment

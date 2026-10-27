@@ -13,7 +13,7 @@ scripts/build-apple.sh           universal macOS staticlib + Swift bindings
 scripts/package-cli.sh           release archive of the `gitpm` binary (release.yml)
 ```
 
-The shared specification authorization checker for dev pull requests is documented
+The shared specification authorization checker for pull requests into main is documented
 in [Specification authorization checker](docs/spec-change.md), including local use.
 
 A package is a folder in a Git repository with a `plugin.json` manifest (`id`, `version`,

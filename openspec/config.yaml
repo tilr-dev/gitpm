@@ -55,13 +55,13 @@ context: |
   CLI/API/FFI/file-format change
   is marked BREAKING and documented in README "Changed in X.Y".
 
-  Git flow: work happens on `dev` (or feature branches off `dev`) and is tested locally.
-  Nothing goes to `main` (push, merge, PR, release-PR merge) without the owner's explicit
-  word "в main" at that moment. "Merge"/"commit" without a target means `dev`. No commit or
-  push without explicit permission. Never add "Generated with Claude Code" to commits.
+  Git flow: `main` is the only integration branch; work happens on task branches off `main`
+  and reaches it only through a pull request (squash). Nothing is released from `main`: on the
+  owner's explicit word a release branch `release/X.Y` is cut from a commit of `main`; fixes for
+  it land in `main` first and are cherry-picked. No commit or push without explicit permission. Never add "Generated with Claude Code" to commits.
 
   Release: release-please (/.release-please-manifest.json, package `crates/gitpm`) keeps a
-  release PR on `main`, opened by the org GitHub App tilr-bot; PR titles are Conventional Commits, squash merges only;
+  release PR on each `release/X.Y` branch (never on `main`), opened by the org GitHub App tilr-bot; PR titles are Conventional Commits, squash merges only;
   pre-1.0 feat/BREAKING bump minor. gitpm, gitpm-cli and gitpm-ffi share one version (extra-files);
   gitpm-ffi is publish = false. Merging the release PR is the release: tag vX.Y.Z, GitHub
   Release, crates.io via Trusted Publishing (OIDC, environment crates-io, no tokens), and
@@ -142,7 +142,7 @@ rules:
 operations:
   apply:
     guidance:
-      - Work on the dev branch; do not commit, push or open PRs without explicit permission.
+      - Work on a task branch off main; do not commit, push or open PRs without explicit permission.
       - Update README.md (the user-facing contract) in the same change as the behavior.
   archive:
     guidance:
