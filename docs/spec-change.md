@@ -73,8 +73,9 @@ script does not protect the workflow file itself.
 The deployed `pull_request_target` workflow `.github/workflows/spec-change.yml`
 is loaded from each component's main branch: GitHub loads `pull_request_target`
 workflows from the default branch, so a task branch cannot change the workflow
-that checks it. It downloads the shared checker from gitpm main, verifies a
-SHA-256 digest pinned in main's workflow, and fetches candidate
+that checks it. It downloads the shared checker scripts from gitpm (gitpm and
+tilrd from gitpm main, cloud and desktop-mac from a fixed gitpm commit), verifies
+a SHA-256 digest pinned in main's workflow, and fetches candidate
 Git objects into a bare repository solely for inspection. It targets PRs into main, has `contents: read`, supplies only the
 read-only task token to the checker, and never executes candidate files. Its job
 is named `spec-change`, with no path filter or skip condition.
@@ -82,10 +83,12 @@ is named `spec-change`, with no path filter or skip condition.
 The shared checker and trusted workflows are deployed in main for gitpm, cloud,
 desktop-mac and tilrd, with `spec-change` required by their `main` rulesets.
 
-A checker change reaches CI in two steps: the new `scripts/spec_change.py` (or
-`scripts/spec_merge.py`) lands in gitpm main, and a pull request into main of each
-component updates the pinned digest (`shasum -a 256 scripts/<file>`) in its workflow.
-Until the digest is updated, the download fails the check closed.
+A checker change (`scripts/spec_change.py` or `scripts/spec_merge.py`) lands in
+gitpm main together with gitpm's own pinned digest (`shasum -a 256 scripts/<file>`).
+A component that downloads the file from gitpm main fails the check closed until a
+pull request into its main updates the digest; a component pinned to a gitpm commit
+keeps the old checker until a pull request into its main moves the commit and the
+digest together.
 
 See GitHub's [trusted event behavior](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target)
 and [required check evaluation](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks).

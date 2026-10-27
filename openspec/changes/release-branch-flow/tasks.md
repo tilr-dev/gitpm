@@ -13,4 +13,4 @@
 ## 3. Validation
 - [x] Shared helper tests pass.
 - [x] `openspec validate release-branch-flow --strict` passes.
-- [x] `git grep -w dev` leaves only `/dev/null`, the `-dev+HASH` version suffix, the `--dev` option, history and the spec text this change replaces on archive.
+- [x] `git grep -w dev` leaves only `/dev/null`, the `-dev+HASH` version suffix, the `--dev` option, history, the spec text this change replaces on archive and one comment in `scripts/spec_change.py` (tilrd pins that file's digest from gitpm main, so it stays byte-identical).

@@ -16,9 +16,10 @@ to its first parent. API/command failures fail closed and preserve the command e
 ## Deployment from main
 
 The helper is deployed in gitpm, cloud and desktop-mac: each trusted
-`.github/workflows/spec-change.yml` in main downloads it from gitpm main and
-checks its pinned digest. A helper change in gitpm main fails that download until
-each component's main updates the digest.
+`.github/workflows/spec-change.yml` in main downloads it and checks its pinned
+digest. gitpm downloads it from its own main, so a helper change updates gitpm's
+pin in the same pull request. cloud and desktop-mac download it from a fixed gitpm
+commit and move the commit and the digest together when they adopt a new helper.
 
 In each `.github/workflows/spec-change.yml` in main:
 

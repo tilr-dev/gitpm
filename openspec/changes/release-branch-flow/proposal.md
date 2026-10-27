@@ -12,5 +12,5 @@ The `dev` branch is gone: `main` is the only integration branch, and releases ar
 
 ## Impact
 - `.github/workflows/release.yml`, `ci.yml`, `spec-change.yml`, `.github/dependabot.yml`, `scripts/spec_merge.py` with its fixtures, tests and notes, README.
-- Repositories that fetch `scripts/spec_merge.py` from `main` with a pinned digest need the new digest.
+- cloud and desktop-mac download the shared spec-change scripts from a fixed gitpm commit, so the new helper reaches them only when they move that pin; tilrd downloads only `scripts/spec_change.py`, which stays byte-identical.
 - The `crates-io` environment must allow `release/*` before the first release from a release branch (GitHub settings).
