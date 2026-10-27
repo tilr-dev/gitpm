@@ -88,7 +88,7 @@ loaded from the candidate merge commit, so a PR can replace the checker job with
 a successful no-op or capture the read-only task token. Checking out a trusted
 script does not protect the workflow file itself.
 
-The deployed `pull_request_target` workflow `.github/workflows/spec-change.yml`
+For PR authorization, the deployed `.github/workflows/spec-change.yml`
 is loaded from each component's main branch: GitHub loads `pull_request_target`
 workflows from the default branch, so a task branch cannot change the workflow
 that checks it. It downloads the shared checker scripts from gitpm (gitpm from
@@ -96,7 +96,20 @@ gitpm main; cloud, desktop-mac, and tilrd from a fixed gitpm commit), verifies
 a SHA-256 digest pinned in main's workflow, and fetches candidate
 Git objects into a bare repository solely for inspection. It targets PRs into main, has `contents: read`, supplies only the
 read-only task token to the checker, and never executes candidate files. Its job
-is named `spec-change`, with no path filter or skip condition.
+is named `spec-change`, with no path filter or job-level skip condition. The
+fetch, download and authorization steps run only on `pull_request_target`.
+
+The same workflow also handles `merge_group` with activity type
+`checks_requested`. On that event, the `spec-change` job reports pass-through
+success: it does not fetch PR trees, download or run the checker, or supply the
+read-only task token. Queue admission requires each PR to have passed the trusted
+`pull_request_target` authorization check; the queue's combined merge result is
+tested by CI. This path therefore acknowledges authorization already performed
+on the PRs rather than authorizing the combined specification again.
+
+For `merge_group`, GitHub loads the workflow from the merge group commit, not
+from main. It does not have the PR authorization path's trusted workflow source.
+See GitHub's [merge group event documentation](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#merge_group).
 
 The shared checker and trusted workflows are deployed in main for gitpm, cloud,
 desktop-mac and tilrd, with `spec-change` required by their `main` rulesets.
@@ -120,6 +133,12 @@ GitHub's [ruleset troubleshooting documentation](https://docs.github.com/en/repo
 says that required status checks identify jobs by name and ignore the workflow
 and event type. Restricting the source to the GitHub Actions app still permits
 other Actions workflows to produce the same job name.
+
+The `merge_group` pass-through uses that same `spec-change` context, but its
+workflow comes from the merge group commit and does not run authorization.
+A successful queue result is therefore not evidence of a fresh trusted checker
+run. Its authorization rests on the prior trusted PR checks described above;
+adding this event does not bind the required context to a particular workflow.
 
 A candidate could add this independent workflow alongside an unauthorized spec
 edit:
