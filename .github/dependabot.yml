@@ -2,7 +2,6 @@ version: 2
 updates:
   - package-ecosystem: cargo
     directory: /
-    target-branch: dev
     schedule:
       interval: weekly
     commit-message:
@@ -16,7 +15,6 @@ updates:
   # Tools downloaded by URL + SHA-256 in the workflows (gitleaks, cargo-deny) are bumped by hand.
   - package-ecosystem: github-actions
     directory: /
-    target-branch: dev
     schedule:
       interval: weekly
     commit-message:
