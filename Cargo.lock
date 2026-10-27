@@ -302,7 +302,7 @@ dependencies = [
 
 [[package]]
 name = "gitpm"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "flate2",
  "libc",
@@ -318,7 +318,7 @@ dependencies = [
 
 [[package]]
 name = "gitpm-cli"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "gitpm",
@@ -327,7 +327,7 @@ dependencies = [
 
 [[package]]
 name = "gitpm-ffi"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "gitpm",
  "thiserror",
