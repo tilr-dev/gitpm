@@ -29,7 +29,7 @@ Changes SHALL reach `main` only through a pull request from a task branch off `m
 - **AND** no update block of `.github/dependabot.yml` sets `target-branch`
 
 #### Scenario: After a release merge
-- **WHEN** the release PR is squash-merged into `release/0.6` and a later fix is needed for 0.6
+- **WHEN** stable `v0.6.0` is tagged from `release/0.6` and a later fix is needed for 0.6
 - **THEN** nothing is merged from `release/0.6` back into `main`
 - **AND** the fix is merged into `main` through a pull request first and then cherry-picked into `release/0.6`
 
@@ -47,78 +47,17 @@ Every pull request into `main` or `release/**`, every merge queue group (`merge_
 - **THEN** the `msrv (core crate)` check fails and the PR cannot merge
 
 #### Scenario: Release PR is checked
-- **WHEN** the release PR into `release/0.6` is opened or updated
+- **WHEN** a pull request into `release/0.6` is opened or updated
 - **THEN** the same checks run on it as on a pull request into `main`
 
-### Requirement: Versioning by Conventional Commits
-Pull request titles SHALL be Conventional Commits (they become the squash commit). release-please SHALL run only on pushes to release branches `release/**` and maintain there a release PR `chore(release/X.Y): release X.Y.Z` into the pushed branch (`target-branch`), opened by the GitHub App `tilr-bot` so CI runs on it without bypass; a push to `main` SHALL NOT open or update a release PR.
-
-#### Scenario: Version bumps
-- **WHEN** release-please computes the next version
-- **THEN** the branch `release/X.Y` selects `X.Y.0` until a stable `vX.Y.*` exists, then the highest stable patch plus one
-- **AND** Conventional Commits select releasable changes and changelog sections; they SHALL NOT move the version outside the branch line, including breaking changes
-
-#### Scenario: Feature release
-- **WHEN** `feat: …` is merged into `main` at version 0.5.0 and `release/0.6` is cut from that commit
-- **THEN** the release PR into `release/0.6` proposes 0.6.0 with a CHANGELOG entry
-
-#### Scenario: Push to main
-- **WHEN** a pull request is merged into `main`
-- **THEN** no release PR is opened or updated and nothing is published
-
-#### Scenario: A new release branch follows another line
-- **GIVEN** `v0.1.0` exists on `release/0.1` and its release commit is absent from `main`
-- **WHEN** a new feature lands in `main` and `release/0.2` is cut from it
-- **THEN** the release PR proposes 0.2.0 and its changelog contains the new feature only, excluding changes already shipped in 0.1.0
-
-#### Scenario: A new line contains only a fix
-- **GIVEN** the inherited manifest says 0.2.1
-- **WHEN** only a `fix:` commit is added and `release/0.3` is cut
-- **THEN** the release PR proposes 0.3.0
-
-#### Scenario: A feature on an existing line
-- **GIVEN** stable `v0.3.2` exists in the history of `release/0.3`
-- **WHEN** a new `feat:` commit is pushed to that branch
-- **THEN** the release PR proposes 0.3.3, even if another line has a newer stable release
-
-#### Scenario: A fix already shipped by cherry-pick
-- **GIVEN** a fix landed in `main` and its cherry-pick shipped on the previous release line
-- **WHEN** the next release branch is cut from `main`
-- **THEN** the changelog excludes shared history and that patch-equivalent fix
-
-#### Scenario: Candidate tags do not select stable versions
-- **GIVEN** candidate tags exist on a release line
-- **WHEN** the runner selects its next version and changelog baseline
-- **THEN** only stable tags are considered: the highest stable tag of the same line, otherwise the highest earlier stable version
-- **AND** the first release is `X.Y.0`, and subsequent releases increment the highest stable patch
-
-#### Scenario: A stable tag is outside the same-line history
-- **GIVEN** a stable tag exists for the target release line outside the branch history
-- **WHEN** the runner prepares a release
-- **THEN** it fails before creating a release PR or publishing
-
-#### Scenario: No earlier stable release exists
-- **GIVEN** no earlier stable tag exists
-- **WHEN** the runner prepares the first release
-- **THEN** the configured bootstrap SHA bounds the changelog history
-
-#### Scenario: Runtime overrides remain local
-- **WHEN** the runner selects a version and changelog baseline
-- **THEN** it copies no release commits or version files into `main`
-
 ### Requirement: Lockstep crates
-`gitpm` (the release-please package), `gitpm-cli` and `gitpm-ffi` SHALL share one version: release-please SHALL update the versions of `gitpm-cli` and `gitpm-ffi`, their `gitpm` dependency versions and the `Cargo.lock` entries. `gitpm-ffi` is versioned but not released (ffi-bindings, "FFI is not published").
+`gitpm`, `gitpm-cli` and `gitpm-ffi` SHALL share one version. CI SHALL set their manifest versions, local `gitpm` dependency versions and workspace lockfile entries from the selected tag before publication or artifact builds, without committing version changes. `gitpm-ffi` SHALL remain unpublished.
 
 #### Scenario: Release PR contents
-- **WHEN** the release PR for 0.6.0 is opened
-- **THEN** `crates/gitpm/Cargo.toml`, `crates/gitpm-cli/Cargo.toml` and `crates/gitpm-ffi/Cargo.toml` say 0.6.0
-
-### Requirement: Merging the release PR is the release
-Merging the release PR into its release branch SHALL create tag `vX.Y.Z` and a GitHub Release, then publish `gitpm` and then `gitpm-cli` to crates.io through Trusted Publishing (OIDC, environment `crates-io` restricted to `release/*` branches, no long-lived tokens), skipping a version already on crates.io, after re-running fmt, clippy and tests on the tag. Releasing SHALL be a separate explicit step by the owner.
-
-#### Scenario: Re-run after partial publish
-- **WHEN** `gitpm` was published but `gitpm-cli` failed and the job is re-run
-- **THEN** `gitpm` is skipped as already published and `gitpm-cli` is published
+- **GIVEN** checked-in crate versions differ from the selected tag
+- **WHEN** CI prepares stable `v0.6.0` or candidate `v0.6.0-rc.1`
+- **THEN** all three crate versions and local dependency and lockfile versions match the tag without its leading `v`
+- **AND** locked builds use these versions without changing unrelated dependencies
 
 ### Requirement: Prebuilt binaries
 Each stable release and RC prerelease SHALL attach CLI archives for both Apple and Linux architectures and a universal macOS FFI archive with matching Swift bindings, each with a SHA-256 sidecar. Native CLI builds MUST check their version against the tag. Apple builds MUST use strict release mode. Uploads MUST verify checksums and require successful CLI and Apple builds. Build jobs SHALL be read-only; only the asset upload job SHALL receive release asset write permission.
@@ -338,13 +277,13 @@ The specification change checker SHALL end a requirement's ownership at a Markdo
 - **THEN** the checker still requires modify authorization for the existing requirement
 
 ### Requirement: Shared release branch orchestration
-The release workflow SHALL delegate release-line version selection and release candidate tagging to `tilr-dev/.github/.github/workflows/release-branch.yml`. Callers SHALL pin the workflow to an immutable commit and retain artifact builds and publication in their own repositories.
+The release workflow SHALL delegate release-line version selection, tag validation and GitHub Release creation to `tilr-dev/.github/.github/workflows/release-branch.yml`, pinned by the same immutable commit in `uses` and `workflow-sha`. Callers SHALL retain artifact builds and publication, serialize release runs without cancellation, and trigger on `release/**` branch pushes and `v*` tag pushes excluding `v*-rc.*`.
 
 #### Scenario: A release branch is pushed
-- **WHEN** a push to `release/X.Y` creates no stable release
-- **THEN** release-please opens or updates its PR targeting the pushed branch using the tilr-bot token
-- **AND** the pushed commit receives `vX.Y.Z-rc.N`, with the next stable patch of the line and the next candidate number
-- **AND** the caller builds the candidate and publishes a GitHub prerelease with the same target archives and checksums as a stable release
+- **WHEN** a new commit is pushed to `release/X.Y`
+- **THEN** the shared workflow selects `X.Y.0` if the line has no stable tag, otherwise the highest stable patch plus one, and creates `vX.Y.Z-rc.N` with the next candidate number
+- **AND** it creates a GitHub prerelease and the caller uploads CLI and Apple archives with checksums
+- **AND** crates.io is unchanged and no release PR or generated CHANGELOG is maintained
 
 #### Scenario: Another push and a rerun
 - **WHEN** another commit is pushed on the same release line
@@ -352,21 +291,26 @@ The release workflow SHALL delegate release-line version selection and release c
 - **AND** rerunning a commit already tagged as a candidate reuses its tag
 
 #### Scenario: A stable release is created
-- **WHEN** the release PR is merged and release-please creates a stable release
-- **THEN** no candidate is tagged and the caller retains its stable publication behavior
+- **WHEN** the owner pushes a stable tag from its release line
+- **THEN** the shared workflow creates its GitHub Release and the caller publishes crates and artifacts
+- **AND** no candidate tag is created
 
 #### Scenario: Invalid branch
 - **WHEN** a branch named `release/next` invokes the workflow
-- **THEN** it fails with `release branches are named release/X.Y` before opening a PR, tagging or building
+- **THEN** it fails before tagging, building or publishing
 
 #### Scenario: A stable commit is rerun
-- **WHEN** the pushed commit already has a stable tag on its line
+- **WHEN** the pushed branch commit already has a stable tag on its line
 - **THEN** no new candidate or candidate build is produced
 
 #### Scenario: Candidate binaries identify the selected version
 - **WHEN** a candidate tag is built
-- **THEN** `gitpm --version` prints the tag version selected by the shared workflow
-- **AND** crates.io publication remains restricted to newly created stable releases
+- **THEN** `gitpm --version` prints the selected version including its RC suffix
+- **AND** crates.io publication is skipped
+
+#### Scenario: Candidate tag does not re-enter the caller
+- **WHEN** tilr-bot pushes an RC tag
+- **THEN** the tag trigger excludes it
 
 ### Requirement: CI scans secrets in the checked commit's history only
 The `gitleaks` CI check SHALL scan every commit reachable from the checked-out
@@ -385,3 +329,24 @@ fetched branches. It MUST retain full checkout history and use
 #### Scenario: Checked merge introduces a secret
 - **WHEN** the checked pull request or merge queue merge commit includes a parent containing a recognized secret
 - **THEN** the `gitleaks` check fails with a redacted finding
+
+### Requirement: A release tag is the release
+A stable tag `vX.Y.Z` created by the owner through `bin/release` SHALL trigger a GitHub Release and publication of `gitpm` followed by `gitpm-cli`. The shared workflow MUST validate that the tagged commit belongs to the matching `release/X.Y` branch before publication. The tag SHALL select the version independently of commit types; pull request titles SHALL NOT require Conventional Commits.
+
+#### Scenario: Stable tag on its release line
+- **WHEN** `v0.6.0` is pushed from a commit contained in `release/0.6`
+- **THEN** CI sets versions from the tag and reruns fmt, clippy and tests before publishing
+- **AND** it publishes version 0.6.0 through crates.io Trusted Publishing (OIDC, environment `crates-io` permitting `v*` tags, no long-lived tokens)
+- **AND** it uploads CLI and Apple artifacts to its GitHub Release
+
+#### Scenario: Stable tag outside its release line
+- **WHEN** a stable tag points outside the matching release branch or that branch is absent
+- **THEN** release validation fails before crates.io publication or artifact upload
+
+#### Scenario: Re-run after partial publish
+- **WHEN** `gitpm` was published but `gitpm-cli` failed and the job is re-run
+- **THEN** `gitpm` is skipped as already published and `gitpm-cli` is published
+
+#### Scenario: Push to main
+- **WHEN** a pull request is merged into `main`
+- **THEN** no release is created and nothing is published

@@ -60,12 +60,17 @@ context: |
   owner's explicit word a release branch `release/X.Y` is cut from a commit of `main`; fixes for
   it land in `main` first and are cherry-picked. No commit or push without explicit permission. Never add "Generated with Claude Code" to commits.
 
-  Release: release-please (/.release-please-manifest.json, package `crates/gitpm`) keeps a
-  release PR on each `release/X.Y` branch (never on `main`), opened by the org GitHub App tilr-bot; PR titles are Conventional Commits, squash merges only;
-  pre-1.0 feat/BREAKING bump minor. gitpm, gitpm-cli and gitpm-ffi share one version (extra-files);
-  gitpm-ffi is publish = false. Merging the release PR is the release: tag vX.Y.Z, GitHub
-  Release, crates.io via Trusted Publishing (OIDC, environment crates-io, no tokens), and
-  prebuilt gitpm binaries (macOS/Linux, arm64/x86_64). A release is a separate explicit step.
+  Release: pushes to `release/X.Y` create RC tags and GitHub prereleases through the pinned
+  shared workflow in tilr-dev/.github, without publishing to crates.io. A stable release is
+  the owner's explicit `vX.Y.Z` tag through `bin/release`; the shared workflow validates that
+  its commit belongs to the matching `release/X.Y` branch before publication. CI runs
+  scripts/set-release-version.py to set the shared gitpm, gitpm-cli and gitpm-ffi version,
+  local dependency versions and lockfile entries from the tag without committing changes;
+  gitpm-ffi is publish = false. Stable tags publish gitpm then gitpm-cli via crates.io
+  Trusted Publishing (OIDC, environment crates-io, no tokens). Both release types attach
+  CLI binaries (macOS/Linux, arm64/x86_64) and the universal Apple FFI archive with Swift
+  bindings and checksums. There is no release PR or Conventional Commits requirement;
+  versions are selected independently of commit types. Pull requests use squash merges.
 
   CI gates (required checks on main): fmt + clippy -D warnings, cargo test --workspace,
   MSRV 1.92 (`cargo check -p gitpm -p gitpm-cli`; pubgrub 0.4 needs 1.92), cargo-deny
