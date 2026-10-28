@@ -3,7 +3,7 @@
 # keeps a release PR into that branch (target-branch) open from its Conventional Commits
 # (version bump in crates/gitpm/Cargo.toml and Cargo.lock, CHANGELOG); merging it
 # tags vX.Y.Z and creates the GitHub release; `publish` then publishes that tag to crates.io
-# and `upload` attaches prebuilt `gitpm` binaries to the release.
+# and `upload` attaches prebuilt CLI and Apple FFI archives to the release.
 # Pushes without a stable release also build RC binaries and attach them to a prerelease;
 # candidates are never published to crates.io.
 # Two crates are released, in lockstep: gitpm (the library, the release-please package) and
@@ -161,10 +161,40 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  build-apple:
+    needs: release-please
+    if: needs.release-please.outputs.tag != ''
+    runs-on: macos-15
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      TAG: ${{ needs.release-please.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release-please.outputs.tag }}
+          persist-credentials: false
+      - name: Install Rust (stable, both Apple targets)
+        run: |
+          rustup toolchain install stable --profile minimal --target aarch64-apple-darwin,x86_64-apple-darwin
+          rustup default stable
+      - name: Build universal Apple FFI and Swift bindings
+        run: scripts/build-apple.sh --release
+      - name: Package Apple FFI
+        run: scripts/package-apple.sh "$TAG" target/apple dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gitpm-ffi-universal-apple-darwin
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
   upload:
-    needs: [release-please, publish, build]
+    needs: [release-please, publish, build, build-apple]
     if: >-
       ${{ !cancelled() && needs.build.result == 'success' &&
+      needs.build-apple.result == 'success' &&
       (needs.publish.result == 'success' || needs.release-please.outputs.is_rc == 'true') &&
       needs.release-please.outputs.tag != '' }}
     runs-on: ubuntu-latest
@@ -174,7 +204,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: gitpm-cli-*
+          pattern: gitpm-*
           path: dist
           merge-multiple: true
       - name: Verify checksums
