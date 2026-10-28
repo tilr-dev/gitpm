@@ -129,7 +129,7 @@ secrets and advisories SHALL remain subject to the existing checks.
 - **AND** the exception is removed once an upstream update removes basic-toml
 
 ### Requirement: Specification change authorization on main
-Pull requests into main SHALL pass the required spec-change check. One shared checker SHALL enforce intake Spec scope and accept authorization only from Dan's comments, using the dedicated read-only task credential. The check SHALL run only from the trusted pull_request_target workflow in main; a copy of that workflow in the pull request is never run. The other checks run in CI (Required CI checks).
+Pull requests into main SHALL pass spec-change using the shared checker and read-only task credential to enforce intake Spec scope and Dan's authorization. PR authorization SHALL run only from the trusted pull_request_target workflow in main, never from candidate code. On merge_group checks_requested, the workflow SHALL report success as spec-change without repeating PR authorization; queue admission requires green PR checks.
 
 #### Scenario: Existing specification is changed without authorization
 - **WHEN** an intake-ready comment declares Spec scope and a pull request removes or changes existing specification lines without a matching spec-change entry from Dan
@@ -249,6 +249,11 @@ Pull requests into main SHALL pass the required spec-change check. One shared ch
 - **THEN** the same existence, creation date, closed-state, scope, and grant-lifetime rules apply
 - **AND** a comments-only array or metadata naming a different task fails with an actionable error
 
+#### Scenario: Merge queue requests the required check
+- **WHEN** GitHub sends merge_group checks_requested for queued pull requests
+- **THEN** the spec-change job reports success without reading pull_request fields, fetching candidate trees, downloading checkers, or accessing the task credential
+- **AND** PR authorization still runs on pull_request_target and fails for unauthorized specification changes
+
 ### Requirement: Specification merge readiness diagnostics on main
 Before fetching a pull request test merge for specification authorization, the trusted check SHALL read the pull request through the GitHub API with pull-requests read permission. It SHALL distinguish a conflict with main from a pending or stale merge result, and SHALL inspect candidate Git objects without executing candidate code.
 
@@ -280,3 +285,20 @@ Before fetching a pull request test merge for specification authorization, the t
 - **WHEN** merge readiness decisions are tested
 - **THEN** API responses, fetched parents, elapsed time and waits are controlled by fixtures without real waiting
 - **AND** coverage includes a pending result becoming current, an immediate conflict, a stale API head becoming current, and stale results reaching the deadline
+
+### Requirement: Specification authorization respects requirement boundaries
+The specification change checker SHALL end a requirement's ownership at a Markdown heading of the same or higher level. A trailing section outside requirements SHALL NOT be attributed to the preceding requirement.
+
+#### Scenario: Add a requirement before an unchanged trailing section
+- **GIVEN** an existing requirement followed by a `## Notes` section
+- **WHEN** a new requirement is inserted before that unchanged section without changing existing requirement content
+- **THEN** the checker reports no uncovered modification of the existing requirement
+
+#### Scenario: Higher and same-level headings end ownership
+- **WHEN** a heading of level one, two or three follows a requirement
+- **THEN** the heading and following text are outside that requirement
+- **AND** a subsequent requirement heading starts a new owner
+
+#### Scenario: Existing scenarios remain protected
+- **WHEN** a new requirement takes a scenario from an existing requirement
+- **THEN** the checker still requires modify authorization for the existing requirement

@@ -106,6 +106,9 @@ def requirement_at(lines, index):
         match = REQUIREMENT.fullmatch(line)
         if match:
             name = match[1]
+        elif re.match(r'^#{1,3}(?:\s|$)', line):
+            # Peer and parent sections are outside the preceding requirement.
+            name = None
     return name
 
 
