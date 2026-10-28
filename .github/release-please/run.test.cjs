@@ -90,8 +90,9 @@ test('subsequent features and breaking changes stay in the line as patches',asyn
 test('already shipped cherry-picks are removed by patch equivalence',async t=>{
   const f=fixture(t); f.commit('feat: already shipped'); const cut=f.git('rev-parse','HEAD');
   f.commit('chore: separate main history','unrelated.txt','main\n');
-  const fix=f.commit('fix: shipped by cherry-pick','fix.txt','fixed\n');
+  const fix=f.commit('fix: shipped by cherry-pick',`${f.packagePath}/src/fix.rs`,'fixed\n');
   f.git('checkout','-b','release/0.1',cut); f.git('cherry-pick',fix);
+  assert.notEqual(f.git('rev-parse','HEAD'),fix);
   f.commit('chore: release 0.1.0'); f.git('tag','v0.1.0');
   f.git('checkout','main'); f.commit('fix: unshipped fix'); f.git('checkout','-b','release/0.2');
   const [pr]=await f.proposal('release/0.2');

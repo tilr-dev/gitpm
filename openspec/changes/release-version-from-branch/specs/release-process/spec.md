@@ -16,8 +16,6 @@ Pull request titles SHALL be Conventional Commits (they become the squash commit
 - **WHEN** a pull request is merged into `main`
 - **THEN** no release PR is opened or updated and nothing is published
 
-The release version SHALL be `X.Y.0` for the first stable release of `release/X.Y`, then the highest stable `vX.Y.Z` plus one patch. Candidate tags SHALL NOT select the version or baseline. The changelog SHALL include only changes not shipped in the highest stable tag of that line, or the highest earlier stable version when this line has none. The runner SHALL exclude shared history and patch-equivalent cherry-picked changes. An existing same-line stable tag outside the branch history SHALL fail safely. With no earlier stable tag, the configured bootstrap SHA SHALL bound the history. The runtime overrides SHALL NOT copy release commits or version files into `main`.
-
 #### Scenario: A new release branch follows another line
 - **GIVEN** `v0.1.0` exists on `release/0.1` and its release commit is absent from `main`
 - **WHEN** a new feature lands in `main` and `release/0.2` is cut from it
@@ -36,4 +34,24 @@ The release version SHALL be `X.Y.0` for the first stable release of `release/X.
 #### Scenario: A fix already shipped by cherry-pick
 - **GIVEN** a fix landed in `main` and its cherry-pick shipped on the previous release line
 - **WHEN** the next release branch is cut from `main`
-- **THEN** the changelog excludes that patch-equivalent fix
+- **THEN** the changelog excludes shared history and that patch-equivalent fix
+
+#### Scenario: Candidate tags do not select stable versions
+- **GIVEN** candidate tags exist on a release line
+- **WHEN** the runner selects its next version and changelog baseline
+- **THEN** only stable tags are considered: the highest stable tag of the same line, otherwise the highest earlier stable version
+- **AND** the first release is `X.Y.0`, and subsequent releases increment the highest stable patch
+
+#### Scenario: A stable tag is outside the same-line history
+- **GIVEN** a stable tag exists for the target release line outside the branch history
+- **WHEN** the runner prepares a release
+- **THEN** it fails before creating a release PR or publishing
+
+#### Scenario: No earlier stable release exists
+- **GIVEN** no earlier stable tag exists
+- **WHEN** the runner prepares the first release
+- **THEN** the configured bootstrap SHA bounds the changelog history
+
+#### Scenario: Runtime overrides remain local
+- **WHEN** the runner selects a version and changelog baseline
+- **THEN** it copies no release commits or version files into `main`
