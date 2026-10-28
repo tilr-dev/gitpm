@@ -113,6 +113,8 @@ See GitHub's [merge group event documentation](https://docs.github.com/en/action
 
 The shared checker and trusted workflows are deployed in main for gitpm, cloud,
 desktop-mac and tilrd, with `spec-change` required by their `main` rulesets.
+In gitpm, desktop-mac and tilrd, pull requests into main go through the merge queue
+(squash, all required checks green); cloud, a private repository, merges them directly.
 
 A checker change (`scripts/spec_change.py` or `scripts/spec_merge.py`) lands in
 gitpm main together with gitpm's own pinned digest (`shasum -a 256 scripts/<file>`).
