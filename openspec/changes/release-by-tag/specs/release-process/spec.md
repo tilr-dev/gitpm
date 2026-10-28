@@ -97,11 +97,13 @@ The release workflow SHALL delegate release-line version selection, tag validati
 ## ADDED Requirements
 
 ### Requirement: A release tag is the release
-A stable tag `vX.Y.Z` created by the owner through `bin/release` SHALL trigger a GitHub Release and publication of `gitpm` followed by `gitpm-cli` through crates.io Trusted Publishing (OIDC, environment `crates-io` permitting `v*` tags, no long-lived tokens). The shared workflow MUST validate that the tagged commit belongs to the matching `release/X.Y` branch before publication. CI SHALL rerun fmt, clippy and tests on the selected tag with versions set from that tag. Pull request titles SHALL NOT require Conventional Commits; the tag selects the version independently of commit types.
+A stable tag `vX.Y.Z` created by the owner through `bin/release` SHALL trigger a GitHub Release and publication of `gitpm` followed by `gitpm-cli`. The shared workflow MUST validate that the tagged commit belongs to the matching `release/X.Y` branch before publication. The tag SHALL select the version independently of commit types; pull request titles SHALL NOT require Conventional Commits.
 
 #### Scenario: Stable tag on its release line
 - **WHEN** `v0.6.0` is pushed from a commit contained in `release/0.6`
-- **THEN** CI publishes version 0.6.0 to crates.io and uploads CLI and Apple artifacts to its GitHub Release
+- **THEN** CI sets versions from the tag and reruns fmt, clippy and tests before publishing
+- **AND** it publishes version 0.6.0 through crates.io Trusted Publishing (OIDC, environment `crates-io` permitting `v*` tags, no long-lived tokens)
+- **AND** it uploads CLI and Apple artifacts to its GitHub Release
 
 #### Scenario: Stable tag outside its release line
 - **WHEN** a stable tag points outside the matching release branch or that branch is absent
