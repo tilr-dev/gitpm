@@ -396,6 +396,18 @@ class TaskBinding(unittest.TestCase):
 
 
 class GitCLIIntegration(unittest.TestCase):
+    def test_component_is_one_of_the_workflow_components(self):
+        base = ['--base', 'main', '--head', 'HEAD', '--branch', 'task/TILR-9999', '--comments-json', '/nonexistent']
+        for component in ['gitpm', 'tilrd', 'cloud', 'desktop-mac', 'github']:
+            with self.subTest(component=component), contextlib.redirect_stderr(io.StringIO()):
+                # Parsed, then fails closed on the missing export: exit 1, not argparse's 2.
+                self.assertEqual(1, checker.main(base + ['--component', component]))
+        for component in ['wf', '.github', 'Github']:
+            with self.subTest(component=component), contextlib.redirect_stderr(io.StringIO()), \
+                    self.assertRaises(SystemExit) as raised:
+                checker.main(base + ['--component', component])
+            self.assertEqual(2, raised.exception.code)
+
     def test_comments_only_export_cannot_prove_legacy_task(self):
         with tempfile.TemporaryDirectory() as directory:
             exported = Path(directory) / 'comments.json'
