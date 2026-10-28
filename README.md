@@ -1749,6 +1749,16 @@ and `.lostWork`, `IncompatibleReplacement.consumers`, `NotDeployed.sync` (the di
 version; before 1.0 its bindings promise no stability (renames are listed under
 "Changed in X.Y").
 
+Every GitHub Release and RC prerelease includes
+`gitpm-ffi-TAG-universal-apple-darwin.tar.gz` and a `.tar.gz.sha256` sidecar
+(`TAG` is the full tag, for example `v0.2.0` or its RC tag). Verify with
+`shasum -a 256 -c gitpm-ffi-TAG-universal-apple-darwin.tar.gz.sha256`.
+The archive has a folder with the same basename containing `GitpmFFI.xcframework`
+(universal arm64 + x86_64 macOS `libgitpm_ffi`), `swift/Gitpm.swift`,
+`include/GitpmFFI.h`, `include/module.modulemap`, licenses and README.
+Use the xcframework as a SwiftPM `binaryTarget` and the matching `Gitpm.swift`
+in a source target. Always take both from the same release.
+
 ## Hosts
 
 Tilr's Mac app consumes the library through the UniFFI xcframework: `scripts/build-apple.sh`
@@ -1838,6 +1848,11 @@ cargo run -p gitpm-ffi --features bindgen --bin uniffi-bindgen -- \
 `build-apple.sh` works from any directory (it runs cargo and the bindgen from the repo root).
 It skips (and reports) a rustup target that is not installed; it never
 installs toolchains. UniFFI version: 0.32.
+Release builds use `scripts/build-apple.sh --release`, which requires both
+`aarch64-apple-darwin` and `x86_64-apple-darwin` plus `xcodebuild`, and fails
+instead of producing a partial artifact. Both library builds and binding
+generation use the locked Cargo dependencies. The release workflow installs the
+targets explicitly and packages the output with `scripts/package-apple.sh`.
 
 ## License
 

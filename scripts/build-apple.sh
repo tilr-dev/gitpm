@@ -2,7 +2,9 @@
 # Build the FFI static library for macOS (arm64 + x86_64, lipo universal) and
 # generate Swift bindings.
 #
-#   scripts/build-apple.sh [OUT_DIR]        default OUT_DIR: $CARGO_TARGET_DIR/apple or target/apple
+#   scripts/build-apple.sh [--release] [OUT_DIR]
+#   default OUT_DIR: $CARGO_TARGET_DIR/apple or target/apple
+#   --release requires both Apple targets and xcodebuild (no partial artifacts).
 #
 # Output:
 #   OUT_DIR/lib/libgitpm_ffi.a       universal (or host-only, see below)
@@ -13,6 +15,15 @@
 # A missing rustup target is reported and skipped (install with `rustup target add`);
 # the script never installs toolchains itself.
 set -euo pipefail
+STRICT=false
+if [ "${1:-}" = --release ]; then
+  STRICT=true
+  shift
+fi
+if [ $# -gt 1 ]; then
+  echo "usage: $0 [--release] [OUT_DIR]" >&2
+  exit 2
+fi
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
 OUT=${1:-$TARGET_DIR/apple}
@@ -24,12 +35,24 @@ case $OUT in /*) ;; *) OUT=$PWD/$OUT ;; esac
 cd "$ROOT"
 
 installed=$(rustup target list --installed)
+if "$STRICT"; then
+  for target in aarch64-apple-darwin x86_64-apple-darwin; do
+    if ! grep -qx "$target" <<<"$installed"; then
+      echo "Release build requires rustup target $target" >&2
+      exit 1
+    fi
+  done
+  if ! command -v xcodebuild >/dev/null 2>&1; then
+    echo "Release build requires xcodebuild" >&2
+    exit 1
+  fi
+fi
 built=()
 missing=()
 for target in aarch64-apple-darwin x86_64-apple-darwin; do
   if grep -qx "$target" <<<"$installed"; then
     echo "Building $target"
-    cargo build --manifest-path "$ROOT/Cargo.toml" -p "$CRATE" --release --target "$target"
+    cargo build --locked --manifest-path "$ROOT/Cargo.toml" -p "$CRATE" --release --target "$target"
     built+=("$TARGET_DIR/$target/release/$LIB")
   else
     missing+=("$target")
@@ -51,7 +74,7 @@ fi
 lipo -info "$OUT/lib/$LIB"
 
 # Bindings are read from the library's embedded UniFFI metadata (library mode).
-cargo run --manifest-path "$ROOT/Cargo.toml" -p "$CRATE" --features bindgen --bin uniffi-bindgen --quiet -- \
+cargo run --locked --manifest-path "$ROOT/Cargo.toml" -p "$CRATE" --features bindgen --bin uniffi-bindgen --quiet -- \
   generate --library "${built[0]}" --language swift --out-dir "$OUT/swift"
 mv "$OUT/swift/"*.h "$OUT/include/"
 mv "$OUT/swift/"*.modulemap "$OUT/include/module.modulemap"
