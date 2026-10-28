@@ -22,7 +22,7 @@ Changes SHALL reach `main` only through a pull request from a task branch off `m
 - **THEN** the pull request's base branch is `main`
 - **AND** no update block of `.github/dependabot.yml` sets `target-branch`
 
-#### Scenario: After a release tag
+#### Scenario: After a release merge
 - **WHEN** stable `v0.6.0` is tagged from `release/0.6` and a later fix is needed for 0.6
 - **THEN** nothing is merged from `release/0.6` back into `main`
 - **AND** the fix is merged into `main` through a pull request first and then cherry-picked into `release/0.6`
@@ -40,7 +40,7 @@ Every pull request into `main` or `release/**`, every merge queue group (`merge_
 - **WHEN** a change uses an API newer than Rust 1.92 in `gitpm` or `gitpm-cli`
 - **THEN** the `msrv (core crate)` check fails and the PR cannot merge
 
-#### Scenario: Release branch fix is checked
+#### Scenario: Release PR is checked
 - **WHEN** a pull request into `release/0.6` is opened or updated
 - **THEN** the same checks run on it as on a pull request into `main`
 
@@ -66,6 +66,11 @@ The release workflow SHALL delegate release-line version selection, tag validati
 - **WHEN** another commit is pushed on the same release line
 - **THEN** it receives the next candidate number
 - **AND** rerunning a commit already tagged as a candidate reuses its tag
+
+#### Scenario: A stable release is created
+- **WHEN** the owner pushes a stable tag from its release line
+- **THEN** the shared workflow creates its GitHub Release and the caller publishes crates and artifacts
+- **AND** no candidate tag is created
 
 #### Scenario: Invalid branch
 - **WHEN** a branch named `release/next` invokes the workflow
