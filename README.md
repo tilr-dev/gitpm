@@ -45,6 +45,13 @@ attached to each [GitHub release](https://github.com/tilr-dev/gitpm/releases) as
 `gitpm-cli-vX.Y.Z-TARGET.tar.gz` with a `.sha256` next to it; the archive holds the `gitpm`
 binary, the licenses and the README.
 
+Pushes to `release/X.Y` that create no stable release publish release candidates as
+GitHub prereleases, with the same target archives and checksums. Download a candidate
+archive from the releases page; candidates are not published to crates.io.
+A candidate binary reports its tag version, for example `gitpm 0.3.0-rc.7` from
+`gitpm --version`. Stable publication to crates.io and GitHub remains tied to merging
+the release PR.
+
 From this repository: `cargo install --path crates/gitpm-cli`.
 
 ## CLI quickstart
