@@ -16,6 +16,14 @@ scripts/package-cli.sh           release archive of the `gitpm` binary (release.
 The shared specification authorization checker for pull requests into main is documented
 in [Specification authorization checker](docs/spec-change.md), including local use.
 
+The CI `gitleaks` check on pushes, pull requests and merge queue groups scans HEAD
+and all its ancestors, excluding unrelated fetched branches. Run the same scan locally:
+
+```sh
+gitleaks git --redact --no-banner --exit-code 1 --log-opts=HEAD .
+python3 scripts/test_gitleaks_workflow.py
+```
+
 A package is a folder in a Git repository with a `plugin.json` manifest (`id`, `version`,
 `dependencies`, optional `forkOf` and `replaces`, descriptive
 [metadata](#package-metadata); other keys are kept as they are) and a
