@@ -3,7 +3,9 @@
 # keeps a release PR into that branch (target-branch) open from its Conventional Commits
 # (version bump in crates/gitpm/Cargo.toml and Cargo.lock, CHANGELOG); merging it
 # tags vX.Y.Z and creates the GitHub release; `publish` then publishes that tag to crates.io
-# and `binaries` attaches prebuilt `gitpm` binaries to the release.
+# and `upload` attaches prebuilt `gitpm` binaries to the release.
+# Pushes without a stable release also build RC binaries and attach them to a prerelease;
+# candidates are never published to crates.io.
 # Two crates are released, in lockstep: gitpm (the library, the release-please package) and
 # gitpm-cli (binary `gitpm`), whose version and gitpm dependency follow through extra-files.
 # The FFI crate (publish = false) keeps its own version.
@@ -56,50 +58,15 @@ env:
 
 jobs:
   release-please:
-    runs-on: ubuntu-latest
     permissions:
-      contents: read # all writes go through the tilr-bot token below
-    # The package lives at crates/gitpm, not ".", so the release runner prefixes its
-    # per-release outputs with the path (`crates/gitpm--release_created`, ...).
-    outputs:
-      release_created: ${{ steps.release.outputs['crates/gitpm--release_created'] }}
-      tag_name: ${{ steps.release.outputs['crates/gitpm--tag_name'] }}
-    steps:
-      - id: line
-        name: Check the branch name
-        env:
-          BRANCH: ${{ github.ref_name }}
-        shell: bash
-        run: |
-          if ! [[ $BRANCH =~ ^release/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-            echo "::error::release branches are named release/X.Y, not $BRANCH"
-            exit 1
-          fi
-      - id: app
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          client-id: ${{ vars.TILR_BOT_CLIENT_ID }}
-          private-key: ${{ secrets.TILR_BOT_PRIVATE_KEY }}
-          repositories: ${{ github.event.repository.name }}
-          permission-contents: write # the release PR's branch, the tag, the GitHub release
-          permission-pull-requests: write # the release PR
-          permission-issues: write # release-please's labels on the release PR
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.ref_name }} # release-please reads the current target branch
-          fetch-depth: 0 # stable tags on earlier release branches are the shipped baseline
-          persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: '24'
-      - name: Install the release-please engine
-        run: npm ci --prefix .github/release-please --ignore-scripts --no-audit --no-fund
-      - id: release
-        name: Release from the branch line and shipped history
-        env:
-          GH_TOKEN: ${{ steps.app.outputs.token }}
-          BRANCH: ${{ github.ref_name }}
-        run: node .github/release-please/run.cjs
+      contents: read
+    uses: tilr-dev/.github/.github/workflows/release-branch.yml@9d718afb7718a84e6658b91c518f0692660f170e
+    with:
+      workflow-sha: 9d718afb7718a84e6658b91c518f0692660f170e
+      package-path: 'crates/gitpm'
+      app-client-id: ${{ vars.TILR_BOT_CLIENT_ID }}
+    secrets:
+      app-private-key: ${{ secrets.TILR_BOT_PRIVATE_KEY }}
 
   publish:
     needs: release-please
@@ -113,7 +80,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.release-please.outputs.tag_name }}
+          ref: ${{ needs.release-please.outputs.tag }}
           persist-credentials: false
       - name: Install Rust (stable, rustfmt + clippy)
         run: |
@@ -134,7 +101,7 @@ jobs:
       - name: Publish gitpm, then gitpm-cli
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
-          TAG: ${{ needs.release-please.outputs.tag_name }}
+          TAG: ${{ needs.release-please.outputs.tag }}
         run: |
           version="${TAG#v}"
           for crate in gitpm gitpm-cli; do
@@ -146,11 +113,11 @@ jobs:
             cargo publish -p "$crate" --locked
           done
 
-  # Builds start with publish (not after it), so the release is not held up; the upload
-  # waits for publish, so a tag that fails publish's checks gets no binaries.
+  # Stable uploads wait for crates.io publication. Candidates skip crates.io and upload
+  # after their build succeeds; !cancelled() allows that skipped dependency.
   build:
     needs: release-please
-    if: needs.release-please.outputs.release_created == 'true'
+    if: needs.release-please.outputs.tag != ''
     name: build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -158,7 +125,7 @@ jobs:
       contents: read
     env:
       TARGET: ${{ matrix.target }}
-      TAG: ${{ needs.release-please.outputs.tag_name }}
+      TAG: ${{ needs.release-please.outputs.tag }}
     strategy:
       fail-fast: false
       matrix:
@@ -175,14 +142,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.release-please.outputs.tag_name }}
+          ref: ${{ needs.release-please.outputs.tag }}
           persist-credentials: false
       - name: Install Rust (stable, ${{ matrix.target }})
         run: |
           rustup toolchain install stable --profile minimal --target "$TARGET"
           rustup default stable
       # No cache, as in publish: a release build starts clean.
-      - run: cargo build --release --locked -p gitpm-cli --target "$TARGET"
+      - run: GITPM_BUILD_VERSION="${TAG#v}" cargo build --release --locked -p gitpm-cli --target "$TARGET"
       - name: Check the version
         if: matrix.native
         run: test "$(target/"$TARGET"/release/gitpm --version)" = "gitpm ${TAG#v}"
@@ -196,7 +163,10 @@ jobs:
 
   upload:
     needs: [release-please, publish, build]
-    if: needs.release-please.outputs.release_created == 'true'
+    if: >-
+      ${{ !cancelled() && needs.build.result == 'success' &&
+      (needs.publish.result == 'success' || needs.release-please.outputs.is_rc == 'true') &&
+      needs.release-please.outputs.tag != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -214,5 +184,5 @@ jobs:
       - name: Upload to the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.release-please.outputs.tag_name }}
+          TAG: ${{ needs.release-please.outputs.tag }}
         run: gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
