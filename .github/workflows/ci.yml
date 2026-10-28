@@ -1,5 +1,5 @@
 # CI: format, lint, tests, MSRV, cargo-deny and gitleaks on every PR, merge queue group and push
-# to main or a release branch (release/**: the release PR and cherry-picked fixes).
+# to main or a release branch (release/**: cherry-picked fixes).
 # The whole workspace runs on ubuntu-latest, the UniFFI crate included (uniffi is portable;
 # only scripts/build-apple.sh is macOS-specific and is not run here).
 # Only `pull_request` (never pull_request_target): a PR's code runs without secrets.
@@ -36,17 +36,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: tilr-dev/.github
-          ref: aba9d554444e5a4bde8c6e45bbc8b4a7ef915d47
-          path: shared-release
-          persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '24'
-      - run: npm ci --prefix shared-release/.github/release-please --ignore-scripts --no-audit --no-fund
-      - run: npm test --prefix shared-release/.github/release-please
 
       - run: node --test .github/release-workflow.test.cjs
 
@@ -93,7 +85,7 @@ jobs:
           "$RUNNER_TEMP/workflow-tests/bin/python" scripts/test_spec_change_workflow.py
       # Smoke test of the CLI binary as installed: the binary is already built for the
       # tests above (no rebuild); its tests cover --help, this checks --version against
-      # the crate version (kept in lockstep with gitpm by release-please).
+      # the crate version (kept in lockstep with gitpm).
       - name: Smoke test gitpm binary
         run: |
           cargo build -p gitpm-cli --locked

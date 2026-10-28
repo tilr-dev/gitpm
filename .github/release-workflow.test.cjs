@@ -10,35 +10,37 @@ const workflow=readFileSync(path.join(root,'.github/workflows/release.yml'),'utf
 const ci=readFileSync(path.join(root,'.github/workflows/ci.yml'),'utf8');
 function job(name) {return workflow.split(`\n  ${name}:\n`)[1].split(/\n  [a-z][\w-]*:\n/)[0];}
 test('caller pins the shared implementation and keeps its repository-scoped bot credentials',()=>{
-  const release=job('release-please');
+  const release=job('release');
   const [,sha]=release.match(/uses: tilr-dev\/\.github\/\.github\/workflows\/release-branch.yml@([a-f0-9]{40})\n/);
-  assert.equal(sha, 'aba9d554444e5a4bde8c6e45bbc8b4a7ef915d47');
+  assert.equal(sha, 'c31b80fcfd5cb9398a193d422c212326302d0c44');
   assert.ok(release.includes(`workflow-sha: ${sha}\n`));
-  assert.ok(ci.includes(`ref: ${sha}\n`));
+  assert.doesNotMatch(ci, /shared-release|npm test/);
   assert.match(release,/contents: read/);
   assert.match(release,/app-client-id: \$\{\{ vars.TILR_BOT_CLIENT_ID \}\}/);
   assert.match(release,/app-private-key: \$\{\{ secrets.TILR_BOT_PRIVATE_KEY \}\}/);
   assert.match(workflow,/on:\n  push:\n    branches: \['release\/\*\*'\]/);
-  assert.match(workflow,/cancel-in-progress: false/);
-  assert.match(job('build'),/if: needs.release-please.outputs.tag != ''/);
-  assert.match(job('build'),/ref: \$\{\{ needs.release-please.outputs.tag \}\}/);
+  assert.match(workflow,/tags: \['v\*', '!v\*-rc\.\*'\]/);
+  assert.match(workflow,/cancel-in-progress: false\n  queue: max/);
+  assert.match(job('build'),/if: needs.release.outputs.tag != ''/);
+  assert.match(job('build'),/ref: \$\{\{ needs.release.outputs.tag \}\}/);
   assert.match(job('upload'),/gh release upload/);
 });
 test('candidates build with their tag version and bypass only crates.io publication',()=>{
-  assert.match(job('release-please'),/package-path: 'crates\/gitpm'/);
-  assert.match(job('publish'),/if: needs.release-please.outputs.release_created == 'true'/);
+  assert.doesNotMatch(job('release'), /package-path|release_created/);
+  assert.doesNotMatch(workflow, /release-please|release_created/);
+  assert.match(job('publish'),/if: needs.release.outputs.tag != '' && needs.release.outputs.is_rc == 'false' && startsWith\(github.ref, 'refs\/tags\/v'\)/);
   assert.match(job('publish'),/environment: crates-io/);
   assert.match(job('publish'),/id-token: write/);
   assert.match(job('build'),/GITPM_BUILD_VERSION="\$\{TAG#v\}" cargo build/);
   assert.match(job('upload'),/!cancelled\(\) && needs.build.result == 'success'/);
-  assert.match(job('upload'),/needs.publish.result == 'success' \|\| needs.release-please.outputs.is_rc == 'true'/);
+  assert.match(job('upload'),/needs.publish.result == 'success' \|\| needs.release.outputs.is_rc == 'true'/);
 });
 
 test('Apple assets use the tag and gate stable and candidate uploads',()=>{
   const apple=job('build-apple');
-  assert.match(apple,/if: needs.release-please.outputs.tag != ''/);
+  assert.match(apple,/if: needs.release.outputs.tag != ''/);
   assert.match(apple,/runs-on: macos-15/);
-  assert.match(apple,/ref: \$\{\{ needs.release-please.outputs.tag \}\}/);
+  assert.match(apple,/ref: \$\{\{ needs.release.outputs.tag \}\}/);
   assert.match(apple,/contents: read/);
   assert.doesNotMatch(apple,/contents: write|id-token: write/);
   assert.match(apple,/--target aarch64-apple-darwin,x86_64-apple-darwin/);
@@ -46,9 +48,88 @@ test('Apple assets use the tag and gate stable and candidate uploads',()=>{
   assert.match(apple,/name: gitpm-ffi-universal-apple-darwin/);
   assert.match(apple,/path: dist\/\*/);
   assert.match(apple,/if-no-files-found: error/);
-  assert.match(job('upload'),/needs: \[release-please, publish, build, build-apple\]/);
+  assert.match(job('upload'),/needs: \[release, publish, build, build-apple\]/);
   assert.match(job('upload'),/needs.build-apple.result == 'success'/);
   assert.match(job('upload'),/pattern: gitpm-\*/);
+});
+
+test('every release checkout prepares tag versions before Cargo; dirty publish is intentional',()=>{
+  for (const name of ['publish','build','build-apple']) {
+    const content=job(name);
+    assert.match(content, /needs: release/);
+    assert.match(content, /RELEASE_TAG: \$\{\{ needs.release.outputs.tag \}\}/);
+    assert.match(content, /python3 scripts\/set-release-version.py "\$RELEASE_TAG"/);
+    assert.ok(content.indexOf('set-release-version.py') < content.indexOf('rustup toolchain'));
+  }
+  assert.match(job('publish'), /cargo publish -p "\$crate" --locked --allow-dirty/);
+  assert.ok(job('publish').indexOf('cargo test') < job('publish').indexOf('id: auth'));
+});
+
+test('release-please configuration is removed',()=>{
+  for (const file of ['release-please-config.json','.release-please-manifest.json']) {
+    assert.equal(existsSync(path.join(root,file)), false);
+  }
+});
+
+// Exercise the real helper and Cargo resolver on tiny isolated workspaces. External
+// dependencies in the repository lockfile must remain byte-for-byte unchanged too.
+for (const tag of ['v2.3.4','v2.3.4-rc.12']) {
+  test(`Cargo accepts prepared versions and lockfile for ${tag}`,()=>{
+    const dir=mkdtempSync(path.join(tmpdir(),'gitpm-version-'));
+    try {
+      writeFileSync(path.join(dir,'Cargo.toml'), '[workspace]\nmembers = ["crates/*"]\nresolver = "2"\n');
+      const names=['gitpm','gitpm-cli','gitpm-ffi'];
+      for (const name of names) {
+        const crate=path.join(dir,'crates',name);
+        mkdirSync(path.join(crate,'src'),{recursive:true});
+        writeFileSync(path.join(crate,'Cargo.toml'), `[package]\nname = "${name}"\nversion = "0.5.0"\nedition = "2021"\n`+
+          (name==='gitpm' ? '' : '[dependencies]\ngitpm = { path = "../gitpm", version = "0.5.0" }\n'));
+        writeFileSync(path.join(crate,'src/lib.rs'), 'pub const VERSION: &str = env!("CARGO_PKG_VERSION");\n');
+      }
+      const cargo=args=>spawnSync('cargo',args,{cwd:dir,encoding:'utf8'});
+      const initial=cargo(['generate-lockfile','--offline']);
+      assert.equal(initial.status,0,initial.stderr);
+      const run=()=>spawnSync('python3',[path.join(root,'scripts/set-release-version.py'),tag],{cwd:dir,encoding:'utf8'});
+      const prepared=run(); assert.equal(prepared.status,0,prepared.stderr);
+      const lock=readFileSync(path.join(dir,'Cargo.lock'),'utf8');
+      const metadata=cargo(['metadata','--locked','--offline','--format-version','1']);
+      assert.equal(metadata.status,0,metadata.stderr);
+      for (const pkg of JSON.parse(metadata.stdout).packages) {
+        assert.equal(pkg.version,tag.slice(1));
+        for (const dep of pkg.dependencies) assert.equal(dep.req,`^${tag.slice(1)}`);
+      }
+      assert.equal(readFileSync(path.join(dir,'Cargo.lock'),'utf8'),lock);
+      assert.equal(run().status,0);
+      assert.equal(readFileSync(path.join(dir,'Cargo.lock'),'utf8'),lock);
+      // Real manifest/lockfile shape, including all registry entries.
+      for (const name of names) cpSync(path.join(root,'crates',name,'Cargo.toml'),path.join(dir,'crates',name,'Cargo.toml'));
+      cpSync(path.join(root,'Cargo.lock'),path.join(dir,'Cargo.lock'));
+      const actual=run(); assert.equal(actual.status,0,actual.stderr);
+      const normalized=readFileSync(path.join(dir,'Cargo.lock'),'utf8').replaceAll(`version = "${tag.slice(1)}"`,`version = "0.5.0"`);
+      assert.equal(normalized,readFileSync(path.join(root,'Cargo.lock'),'utf8'));
+    } finally {rmSync(dir,{recursive:true,force:true});}
+  });
+}
+
+test('invalid tags and malformed metadata fail before writing files',()=>{
+  const dir=mkdtempSync(path.join(tmpdir(),'gitpm-version-invalid-'));
+  try {
+    for (const name of ['gitpm','gitpm-cli','gitpm-ffi']) {
+      const crate=path.join(dir,'crates',name);
+      mkdirSync(crate,{recursive:true});
+      cpSync(path.join(root,'crates',name,'Cargo.toml'),path.join(crate,'Cargo.toml'));
+    }
+    const manifest=path.join(dir,'crates/gitpm/Cargo.toml');
+    const before=readFileSync(manifest,'utf8');
+    for (const tag of ['2.3.4','v02.3.4','v2.3.4-rc.0','v2.3.4-beta.1','v2.3.4\n']) {
+      const result=spawnSync('python3',[path.join(root,'scripts/set-release-version.py'),tag],{cwd:dir,encoding:'utf8'});
+      assert.notEqual(result.status,0); assert.match(result.stderr,/expected vX.Y.Z/);
+    }
+    writeFileSync(path.join(dir,'Cargo.lock'),'# missing workspace records\n');
+    const result=spawnSync('python3',[path.join(root,'scripts/set-release-version.py'),'v2.3.4'],{cwd:dir,encoding:'utf8'});
+    assert.notEqual(result.status,0); assert.match(result.stderr,/expected one match/);
+    assert.equal(readFileSync(manifest,'utf8'),before);
+  } finally {rmSync(dir,{recursive:true,force:true});}
 });
 
 // These tools replace compilation/Xcode/GitHub; the real scripts, tar and hash

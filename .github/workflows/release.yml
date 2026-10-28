@@ -1,76 +1,39 @@
-# Releases: nothing is released from main. On the owner's instruction a release branch
-# release/X.Y is cut from a commit of main; release-please runs on pushes to release/** only and
-# keeps a release PR into that branch (target-branch) open from its Conventional Commits
-# (version bump in crates/gitpm/Cargo.toml and Cargo.lock, CHANGELOG); merging it
-# tags vX.Y.Z and creates the GitHub release; `publish` then publishes that tag to crates.io
-# and `upload` attaches prebuilt CLI and Apple FFI archives to the release.
-# Pushes without a stable release also build RC binaries and attach them to a prerelease;
-# candidates are never published to crates.io.
-# Two crates are released, in lockstep: gitpm (the library, the release-please package) and
-# gitpm-cli (binary `gitpm`), whose version and gitpm dependency follow through extra-files.
-# The FFI crate (publish = false) keeps its own version.
-# Cargo.lock is bumped through an extra-files TOML jsonpath in release-please-config.json: the
-# `rust` strategy only updates a Cargo.lock next to the crate, and the cargo-workspace plugin
-# would also release the FFI crate as a dependent. The filter reads `@.name.value` because
-# release-please parses TOML into position-tagged values (checked with release-please 17.6.0,
-# the version release-please-action v5.0.0 bundles, and 17.11.2).
-#
-# The release-please job acts as the org GitHub App tilr-bot (a short-lived installation token
-# from actions/create-github-app-token, scoped to this repository): the release PR is opened by
-# tilr-bot, not by the GITHUB_TOKEN, so CI runs on it like on any PR. There is no bypass: the
-# release PR goes through the same required checks, and merging it is the release approval.
-#
-# publish: crates.io trusted publishing (OIDC, no long-lived CARGO_REGISTRY_TOKEN secret).
-# Both crates (gitpm and gitpm-cli) have a trusted publisher on crates.io bound to this
-# repository, this file (release.yml) and the `crates-io` environment. That environment is
-# restricted to `release/*` branches and has no required reviewer (org decision, as in plugin-sdk): the
-# merged release PR is the gate. rust-lang/crates-io-auth-action exchanges the job's OIDC
-# token for a short-lived publish token.
-# Trusted publishing can only be configured for a crate that already exists, so each crate's
-# first version was published by hand: gitpm 0.1.0 (`cargo publish -p gitpm`, tagged v0.1.0;
-# release-please starts from there, .release-please-manifest.json) and gitpm-cli at the
-# then-current gitpm version (`cargo publish -p gitpm-cli`).
-# `publish` runs in this workflow, gated on release-please's `release_created`, rather than on
-# `release: published`, so the trusted publisher stays bound to release.yml.
-#
-# binaries: `build` compiles `gitpm` per target with read-only permissions (dependency build
-# scripts run there), and `upload` attaches the archives to the tag's GitHub release. Only
-# `upload` gets a writable token: the GITHUB_TOKEN with contents: write, for that job alone.
-# GITHUB_TOKEN can upload assets to a release created by tilr-bot (release assets are a
-# repository permission, not tied to the release's author), so the App's private key is not
-# needed here and the App token keeps only the release-please job's scope. Asset names match
-# [package.metadata.binstall] in crates/gitpm-cli/Cargo.toml (scripts/package-cli.sh).
-
+# Release branches create RC prereleases; owner-created stable tags publish to crates.io.
+# The shared workflow validates stable tags against release/X.Y before downstream jobs run.
+# Each checkout sets all crate versions from the tag without committing version changes.
+# Trusted Publishing uses OIDC and the crates-io environment; reruns skip published crates.
+# Read-only builds produce CLI and Apple archives; only upload gets asset write permission.
 name: release
 
 on:
   push:
     branches: ['release/**']
+    tags: ['v*', '!v*-rc.*']
 
 permissions: {}
 
 concurrency:
   group: release
   cancel-in-progress: false
+  queue: max
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  release-please:
+  release:
     permissions:
       contents: read
-    uses: tilr-dev/.github/.github/workflows/release-branch.yml@aba9d554444e5a4bde8c6e45bbc8b4a7ef915d47
+    uses: tilr-dev/.github/.github/workflows/release-branch.yml@c31b80fcfd5cb9398a193d422c212326302d0c44
     with:
-      workflow-sha: aba9d554444e5a4bde8c6e45bbc8b4a7ef915d47
-      package-path: 'crates/gitpm'
+      workflow-sha: c31b80fcfd5cb9398a193d422c212326302d0c44
       app-client-id: ${{ vars.TILR_BOT_CLIENT_ID }}
     secrets:
       app-private-key: ${{ secrets.TILR_BOT_PRIVATE_KEY }}
 
   publish:
-    needs: release-please
-    if: needs.release-please.outputs.release_created == 'true'
+    needs: release
+    if: needs.release.outputs.tag != '' && needs.release.outputs.is_rc == 'false' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: crates-io
@@ -80,8 +43,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.release-please.outputs.tag }}
+          ref: ${{ needs.release.outputs.tag }}
           persist-credentials: false
+      - name: Set crate versions from the release tag
+        env:
+          RELEASE_TAG: ${{ needs.release.outputs.tag }}
+        run: python3 scripts/set-release-version.py "$RELEASE_TAG"
       - name: Install Rust (stable, rustfmt + clippy)
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt,clippy
@@ -101,7 +68,7 @@ jobs:
       - name: Publish gitpm, then gitpm-cli
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
-          TAG: ${{ needs.release-please.outputs.tag }}
+          TAG: ${{ needs.release.outputs.tag }}
         run: |
           version="${TAG#v}"
           for crate in gitpm gitpm-cli; do
@@ -110,14 +77,14 @@ jobs:
               echo "$crate $version is already on crates.io; skipping"
               continue
             fi
-            cargo publish -p "$crate" --locked
+            cargo publish -p "$crate" --locked --allow-dirty
           done
 
   # Stable uploads wait for crates.io publication. Candidates skip crates.io and upload
   # after their build succeeds; !cancelled() allows that skipped dependency.
   build:
-    needs: release-please
-    if: needs.release-please.outputs.tag != ''
+    needs: release
+    if: needs.release.outputs.tag != ''
     name: build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -125,7 +92,7 @@ jobs:
       contents: read
     env:
       TARGET: ${{ matrix.target }}
-      TAG: ${{ needs.release-please.outputs.tag }}
+      TAG: ${{ needs.release.outputs.tag }}
     strategy:
       fail-fast: false
       matrix:
@@ -142,8 +109,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.release-please.outputs.tag }}
+          ref: ${{ needs.release.outputs.tag }}
           persist-credentials: false
+      - name: Set crate versions from the release tag
+        env:
+          RELEASE_TAG: ${{ needs.release.outputs.tag }}
+        run: python3 scripts/set-release-version.py "$RELEASE_TAG"
       - name: Install Rust (stable, ${{ matrix.target }})
         run: |
           rustup toolchain install stable --profile minimal --target "$TARGET"
@@ -162,19 +133,23 @@ jobs:
           retention-days: 7
 
   build-apple:
-    needs: release-please
-    if: needs.release-please.outputs.tag != ''
+    needs: release
+    if: needs.release.outputs.tag != ''
     runs-on: macos-15
     timeout-minutes: 30
     permissions:
       contents: read
     env:
-      TAG: ${{ needs.release-please.outputs.tag }}
+      TAG: ${{ needs.release.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.release-please.outputs.tag }}
+          ref: ${{ needs.release.outputs.tag }}
           persist-credentials: false
+      - name: Set crate versions from the release tag
+        env:
+          RELEASE_TAG: ${{ needs.release.outputs.tag }}
+        run: python3 scripts/set-release-version.py "$RELEASE_TAG"
       - name: Install Rust (stable, both Apple targets)
         run: |
           rustup toolchain install stable --profile minimal --target aarch64-apple-darwin,x86_64-apple-darwin
@@ -191,12 +166,12 @@ jobs:
           retention-days: 7
 
   upload:
-    needs: [release-please, publish, build, build-apple]
+    needs: [release, publish, build, build-apple]
     if: >-
       ${{ !cancelled() && needs.build.result == 'success' &&
       needs.build-apple.result == 'success' &&
-      (needs.publish.result == 'success' || needs.release-please.outputs.is_rc == 'true') &&
-      needs.release-please.outputs.tag != '' }}
+      (needs.publish.result == 'success' || needs.release.outputs.is_rc == 'true') &&
+      needs.release.outputs.tag != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -214,5 +189,5 @@ jobs:
       - name: Upload to the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.release-please.outputs.tag }}
+          TAG: ${{ needs.release.outputs.tag }}
         run: gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
