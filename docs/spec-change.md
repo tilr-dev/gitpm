@@ -1,7 +1,7 @@
 # Specification authorization checker
 
 `spec_change.py` is the single Python 3 standard-library checker shared by gitpm,
-tilrd, cloud, and desktop-mac. It reads Git blobs as data without checking out or
+tilrd, cloud, desktop-mac, and github (the organization repository `tilr-dev/.github`). It reads Git blobs as data without checking out or
 executing candidate code. Exit 0 means authorization succeeds, including legacy
 tasks created before the rule with trusted intake ready; exit 1 means uncovered changes or an input/API error.
 
@@ -92,7 +92,7 @@ For PR authorization, the deployed `.github/workflows/spec-change.yml`
 is loaded from each component's main branch: GitHub loads `pull_request_target`
 workflows from the default branch, so a task branch cannot change the workflow
 that checks it. It downloads the shared checker scripts from gitpm (gitpm from
-gitpm main; cloud, desktop-mac, and tilrd from a fixed gitpm commit), verifies
+gitpm main; cloud, desktop-mac, tilrd, and github from a fixed gitpm commit), verifies
 a SHA-256 digest pinned in main's workflow, and fetches candidate
 Git objects into a bare repository solely for inspection. It targets PRs into main, has `contents: read`, supplies only the
 read-only task token to the checker, and never executes candidate files. Its job

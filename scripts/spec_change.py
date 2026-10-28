@@ -22,6 +22,9 @@ ENDPOINT = 'https://api-plan.rexuni.dev/mcp'
 # Cloudflare in front of Plan answers 403 to the default Python-urllib User-Agent.
 USER_AGENT = 'tilr-spec-change/1'
 REQUIREMENT = re.compile(r'^### Requirement: (.+?)\s*$')
+# Components of the workflow (wf components.conf): the repos whose main runs this check.
+# github is the organization repo tilr-dev/.github.
+COMPONENTS = ('gitpm', 'tilrd', 'cloud', 'desktop-mac', 'github')
 ENTRY = re.compile(r'^- ([\w-]+): (?:specs/([^\s]+) — «(.+)»: (modify|remove|rename)|changes/([^\s:]+): (edit|archive))\s*$')
 
 
@@ -405,7 +408,7 @@ def main(argv=None):
     parser.add_argument('--base', required=True)
     parser.add_argument('--head', required=True)
     parser.add_argument('--branch', required=True)
-    parser.add_argument('--component', required=True, choices=['gitpm', 'tilrd', 'cloud', 'desktop-mac'])
+    parser.add_argument('--component', required=True, choices=COMPONENTS)
     parser.add_argument('--comments-json', type=Path, help='trusted exported object with issue metadata and complete comments for offline checks')
     args = parser.parse_args(argv)
     try:
