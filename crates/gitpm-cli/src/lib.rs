@@ -1,10 +1,13 @@
 //! Text rendering for the `gitpm` command-line client.
 //! All business logic lives in the `gitpm` library; this crate only adds presentation.
 
-/// The version `gitpm --version` prints: the package version, plus `-dev+<short hash>`
-/// when built from a Git checkout of this repository that is not at a release tag (see
-/// `build.rs`; packaged builds, such as from crates.io, print the plain version).
+/// The version `gitpm --version` prints: `GITPM_BUILD_VERSION` in release workflow
+/// builds, otherwise the package version plus `-dev+<short hash>` when this checkout
+/// is not at a release tag (see `build.rs`). Packaged crates print the plain version.
 pub fn version() -> String {
+    if let Some(version) = option_env!("GITPM_BUILD_VERSION") {
+        return version.to_owned();
+    }
     format!(
         "{}{}",
         env!("CARGO_PKG_VERSION"),
