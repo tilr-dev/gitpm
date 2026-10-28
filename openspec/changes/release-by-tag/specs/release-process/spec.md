@@ -47,7 +47,7 @@ Every pull request into `main` or `release/**`, every merge queue group (`merge_
 ### Requirement: Lockstep crates
 `gitpm`, `gitpm-cli` and `gitpm-ffi` SHALL share one version. CI SHALL set their manifest versions, local `gitpm` dependency versions and workspace lockfile entries from the selected tag before publication or artifact builds, without committing version changes. `gitpm-ffi` SHALL remain unpublished.
 
-#### Scenario: Tag overrides inherited manifests
+#### Scenario: Release PR contents
 - **GIVEN** checked-in crate versions differ from the selected tag
 - **WHEN** CI prepares stable `v0.6.0` or candidate `v0.6.0-rc.1`
 - **THEN** all three crate versions and local dependency and lockfile versions match the tag without its leading `v`
