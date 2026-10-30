@@ -1,5 +1,6 @@
 """Deterministic authorization fixtures plus a real Git/CLI boundary test."""
 import contextlib
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -514,6 +515,16 @@ class MCPContract(unittest.TestCase):
         with patch.object(client, 'call', side_effect=[task(sequenceNumber=245), [ready()]]):
             with self.assertRaisesRegex(checker.CheckError, 'complete'):
                 client.task(245)
+
+
+class PinnedDigest(unittest.TestCase):
+    def test_workflow_pins_the_digest_of_each_shared_script(self):
+        scripts = Path(__file__).parent
+        workflow = (scripts.parent / '.github/workflows/spec-change.yml').read_text()
+        for name in ('spec_change.py', 'spec_merge.py'):
+            with self.subTest(script=name):
+                digest = hashlib.sha256((scripts / name).read_bytes()).hexdigest()
+                self.assertIn(f"printf '{digest}  %s\\n' \"$RUNNER_TEMP/{name}\"", workflow)
 
 
 if __name__ == '__main__':
