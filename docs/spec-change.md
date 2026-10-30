@@ -36,7 +36,10 @@ stable user IDs rather than display names. It does not use task descriptions or
 bot-authored blocks as permission. Task metadata is required even when scope is absent. Comment arrays must be complete and preserve
 activity metadata. Malformed scope or incomplete reads fail closed. The own
 change is the single `change <id>` inside `own (...)` of the latest `Spec scope:`
-line; no id, several ids, or a `change <id>` outside `own (...)` fail closed.
+line; the other `;`-separated parts of `own (...)` may only be `ADDED ...` notes. A
+task in several repos has one change name, the same in every repo, so `own (...)`
+never lists repos. No id, several ids (with or without the word `change`), any other
+part, or a `change <id>` outside `own (...)` fail closed.
 
 A legacy exception applies only when the task was created strictly before
 `2026-10-22T21:02:26Z`, has a trusted intake-ready comment and no Spec scope, and is

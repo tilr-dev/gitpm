@@ -72,11 +72,16 @@ def trusted_scope(comments):
     # Latest intake scope supersedes earlier ready comments.
     scope = scopes[-1]
     # Only `change <id>` inside a single own (...) names the own change; "spec-change" is not the word.
+    # The ;-separated parts of own (...) are that one change and ADDED notes: a task in several repos has one
+    # change name in all of them, so any other part (a second id, an "in <repo>" list) fails closed.
     word = r'(?<![\w-])change\s+`?([a-z0-9][a-z0-9-]*)`?'
     groups = re.findall(r'\bown\s*\(([^()]*)\)', scope)
-    own = re.findall(word, groups[0]) if len(groups) == 1 else []
-    if len(own) != 1 or len(re.findall(word, scope)) != 1:
-        raise CheckError('Spec scope does not identify exactly one own change')
+    parts = [part.strip() for part in groups[0].split(';')] if len(groups) == 1 else []
+    own = [m[1] for part in parts if (m := re.fullmatch(r'`?change\s+`?([a-z0-9][a-z0-9-]*)`?`?(?:\s+per repo)?', part))]
+    added = [part for part in parts if re.match(r'ADDED\b', part)]
+    if len(own) != 1 or len(own) + len(added) != len(parts) or len(re.findall(word, scope)) != 1:
+        raise CheckError('Spec scope does not identify exactly one own change: own (...) holds one `change <id>`,'
+                         ' the same in every repo of the task, and only ADDED notes besides it')
     return set(own)
 
 
