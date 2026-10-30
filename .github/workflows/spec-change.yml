@@ -58,7 +58,7 @@ jobs:
           curl --fail --silent --show-error --location \
             https://raw.githubusercontent.com/tilr-dev/gitpm/main/scripts/spec_change.py \
             --output "$RUNNER_TEMP/spec_change.py"
-          printf 'f0d5346569dde4fffdbb47a2c19102d790e3ccf76f75e00a03577b5dc6c736de  %s\n' "$RUNNER_TEMP/spec_change.py" | sha256sum --check --strict
+          printf '63b77c967f83317c91ff7ca19c7d096a760c4dcc0b3b87642937bf4c00f91247  %s\n' "$RUNNER_TEMP/spec_change.py" | sha256sum --check --strict
       - name: Authorize specification changes
         if: github.event_name == 'pull_request_target'
         env:

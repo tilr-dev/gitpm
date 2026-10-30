@@ -1,5 +1,6 @@
 """Deterministic authorization fixtures plus a real Git/CLI boundary test."""
 import contextlib
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -294,6 +295,23 @@ class AuthorizationFixtures(unittest.TestCase):
             with self.subTest(scope=scope), self.assertRaises(checker.CheckError):
                 checker.trusted_scope([comment(checker.INTAKE, 'Ready\nSpec scope: ' + scope)])
 
+    def test_scope_naming_a_second_id_without_the_word_change_fails_closed(self):
+        # A task in two repos has one change name in every repo; a per-repo list must not yield its first id.
+        for scope in ['own (change app-installs-latest-tilrd in desktop-mac, drop-desktop-pin-bump in tilrd)',
+                      'own (change add-check in gitpm)',
+                      'own (change add-check, other-check)',
+                      'own (change add-check other-check)',
+                      'own (change add-check; other-check)',
+                      'own (change add-check; ADDED to terminal; other-check)']:
+            with self.subTest(scope=scope), self.assertRaisesRegex(checker.CheckError, 'exactly one own change'):
+                checker.trusted_scope([comment(checker.INTAKE, 'Ready\nSpec scope: ' + scope)])
+
+    def test_scope_with_one_change_and_added_parts_names_it(self):
+        for scope in ['own (change add-check)', 'own (`change add-check`)', 'own (change `add-check`; ADDED to terminal)',
+                      'own (ADDED to release-process, terminal; change add-check per repo)']:
+            with self.subTest(scope=scope):
+                self.assertEqual({'add-check'}, checker.trusted_scope([comment(checker.INTAKE, 'Ready\nSpec scope: ' + scope)]))
+
     def test_existing_archive_with_own_name_needs_edit(self):
         path = 'openspec/changes/archive/2026-01-01-add-check/tasks.md'
         self.assertEqual(['gitpm: changes/add-check: edit'],
@@ -497,6 +515,16 @@ class MCPContract(unittest.TestCase):
         with patch.object(client, 'call', side_effect=[task(sequenceNumber=245), [ready()]]):
             with self.assertRaisesRegex(checker.CheckError, 'complete'):
                 client.task(245)
+
+
+class PinnedDigest(unittest.TestCase):
+    def test_workflow_pins_the_digest_of_each_shared_script(self):
+        scripts = Path(__file__).parent
+        workflow = (scripts.parent / '.github/workflows/spec-change.yml').read_text()
+        for name in ('spec_change.py', 'spec_merge.py'):
+            with self.subTest(script=name):
+                digest = hashlib.sha256((scripts / name).read_bytes()).hexdigest()
+                self.assertIn(f"printf '{digest}  %s\\n' \"$RUNNER_TEMP/{name}\"", workflow)
 
 
 if __name__ == '__main__':
