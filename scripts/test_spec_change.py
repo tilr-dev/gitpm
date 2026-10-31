@@ -416,7 +416,7 @@ class TaskBinding(unittest.TestCase):
 class GitCLIIntegration(unittest.TestCase):
     def test_component_is_one_of_the_workflow_components(self):
         base = ['--base', 'main', '--head', 'HEAD', '--branch', 'task/TILR-9999', '--comments-json', '/nonexistent']
-        for component in ['gitpm', 'tilrd', 'cloud', 'desktop-mac', 'github', 'web']:
+        for component in ['gitpm', 'tilrd', 'cloud', 'desktop-mac', 'github']:
             with self.subTest(component=component), contextlib.redirect_stderr(io.StringIO()):
                 # Parsed, then fails closed on the missing export: exit 1, not argparse's 2.
                 self.assertEqual(1, checker.main(base + ['--component', component]))
@@ -437,11 +437,6 @@ class GitCLIIntegration(unittest.TestCase):
                 self.assertEqual(1, checker.main(args))
 
     def test_real_diff_exit_status_and_uncovered_requirement(self):
-        for component in ['gitpm', 'web']:
-            with self.subTest(component=component):
-                self.check_real_diff_exit_status_and_uncovered_requirement(component)
-
-    def check_real_diff_exit_status_and_uncovered_requirement(self, component):
         with tempfile.TemporaryDirectory() as directory:
             repo = Path(directory)
             def git(*args):
@@ -459,13 +454,12 @@ class GitCLIIntegration(unittest.TestCase):
             git('commit', '-qam', 'candidate')
             comments = repo / 'comments.json'
             comments.write_text(json.dumps(export([ready()])))
-            args = ['--repo', directory, '--base', base, '--head', 'HEAD', '--branch', 'task/TILR-123', '--component', component, '--comments-json', str(comments)]
+            args = ['--repo', directory, '--base', base, '--head', 'HEAD', '--branch', 'task/TILR-123', '--component', 'gitpm', '--comments-json', str(comments)]
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 self.assertEqual(1, checker.main(args))
             self.assertIn('specs/terminal — «Existing»: modify', output.getvalue())
-            authorization = comment(checker.DAN, f'spec-change:\n- {component}: specs/terminal — «Existing»: modify')
-            comments.write_text(json.dumps(export([ready(), authorization])))
+            comments.write_text(json.dumps(export([ready(), grant('specs/terminal — «Existing»: modify')])))
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(0, checker.main(args))
 

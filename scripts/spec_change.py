@@ -24,7 +24,7 @@ USER_AGENT = 'tilr-spec-change/1'
 REQUIREMENT = re.compile(r'^### Requirement: (.+?)\s*$')
 # Components of the workflow (wf components.conf): the repos whose main runs this check.
 # github is the organization repo tilr-dev/.github.
-COMPONENTS = ('gitpm', 'tilrd', 'cloud', 'desktop-mac', 'github', 'web')
+COMPONENTS = ('gitpm', 'tilrd', 'cloud', 'desktop-mac', 'github')
 ENTRY = re.compile(r'^- ([\w-]+): (?:specs/([^\s]+) — «(.+)»: (modify|remove|rename)|changes/([^\s:]+): (edit|archive))\s*$')
 
 
