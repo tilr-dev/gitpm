@@ -1,7 +1,8 @@
 # Specification authorization checker
 
 `spec_change.py` is the single Python 3 standard-library checker shared by gitpm,
-tilrd, cloud, desktop-mac, and github (the organization repository `tilr-dev/.github`). It reads Git blobs as data without checking out or
+tilrd, cloud, desktop-mac, github (the organization repository `tilr-dev/.github`),
+and web (the runtime and plugin monorepo `tilr-dev/web-new`). It reads Git blobs as data without checking out or
 executing candidate code. Exit 0 means authorization succeeds, including legacy
 tasks created before the rule with trusted intake ready; exit 1 means uncovered changes or an input/API error.
 
