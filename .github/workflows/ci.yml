@@ -5,6 +5,7 @@
 # fast tier (nextest profile `pr` in .config/nextest.toml leaves out the long scenario tests), as
 # the merge queue then runs every test on the commit that lands; every other event, a pull request
 # into release/** included (release branches have no merge queue), runs every test.
+# The nonrequired Dagger `itests` job runs only nightly, manually and on release/** pushes.
 # Caches: a PR can restore only caches of its own ref and of main, not those written in the merge
 # queue (gh-readonly-queue/*), so the queue does not save them and the nightly run on main keeps
 # the rust-cache entries warm for PRs.

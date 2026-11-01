@@ -20,12 +20,15 @@ replacement. CI also runs the complete suite in the nonrequired `itests` job on
 Ubuntu with a local Dagger engine: nightly on `main`, on `workflow_dispatch`, and on
 pushes to `release/**`. It does not run on pull requests or in the merge queue.
 The CLI download is pinned to the module engine version and verified by SHA-256.
-CI runs two tests concurrently; compilation and clippy use `CARGO_BUILD_JOBS=2`.
+CI runs two tests concurrently. On every engine, including pb, compilation and
+clippy use `CARGO_BUILD_JOBS=2` (previously 6). This conservative shared limit
+reduces peak memory use after OOMs on pb and fits hosted CI runners; pb builds
+may take longer. The test concurrency controlled by `--jobs` is separate.
 
 The job restores a versioned engine-state archive through `actions/cache`, including
 the engine's cargo home and source-specific target cache volumes. Only successful
 nightly runs on `main` save a new archive, after stopping the engine; manual and
-release runs only restore it. The first nightly run starts cold. To verify reuse,
+release runs only restore it. The first nightly run starts cold; failed nightly runs do not warm the cache. To verify reuse,
 check the restore step on a later run after a successful nightly cache save.
 `itests-results` contains `results/`, uploaded even when the suite fails. The job's
 90-minute limit bounds the entire run; individual test timeouts are unchanged.

@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Nightly CI run
-CI SHALL run the full test tier on nightly `main` and manual runs. A nonrequired Ubuntu `itests` job SHALL additionally run the complete Dagger suite on nightly `main`, manual runs and pushes to `release/**` only, with bounded compilation and test concurrency. The merge queue SHALL NOT save build caches; nightly `main` SHALL keep them warm. The Dagger job SHALL restore engine caches and save them only after successful nightly `main` runs, with the engine stopped.
+CI SHALL run every check with the full test tier on `main` once a night and on a manual run (`workflow_dispatch`). Build caches SHALL be saved only where pull requests can restore them: the merge queue SHALL NOT save them, and the nightly run on `main` keeps them warm. A nonrequired Ubuntu `itests` job SHALL additionally run the complete Dagger suite on nightly `main`, manual runs and pushes to `release/**` only, with bounded compilation and test concurrency.
 
 #### Scenario: Nightly run
 - **WHEN** the nightly schedule fires
@@ -21,7 +21,7 @@ CI SHALL run the full test tier on nightly `main` and manual runs. A nonrequired
 #### Scenario: Reuse the nightly engine cache
 - **WHEN** a subsequent eligible run finds a cache saved by a successful nightly run on main
 - **THEN** it restores cargo home and source-owned target cache volumes before starting Dagger
-- **AND** manual runs and release pushes do not save caches
+- **AND** only successful nightly main runs save the engine cache, after stopping the engine; manual runs and release pushes do not save caches
 
 #### Scenario: Failed Dagger tests retain reports
 - **WHEN** a suite run exports results containing failed cases
