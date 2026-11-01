@@ -1789,7 +1789,12 @@ cargo test -p gitpm --lib      # unit tests only
 cargo test -p gitpm --lib -- --ignored   # known-defect tests (expected to fail)
 cargo test -p gitpm-cli                  # CLI tests only
 cargo clippy --all-targets -- -D warnings
+cargo nextest run --workspace --profile pr   # the fast tier CI runs on pull requests
 ```
+
+CI runs the tests with [cargo-nextest](https://nexte.st) in two tiers (`.config/nextest.toml`): pull
+requests run the fast tier `pr`, which leaves out the long scenario tests; the merge queue, pushes to
+`release/**` and the nightly run on `main` run every test.
 
 Unit tests cover pure parts directly (UUID and alias rules, version keys and ordering,
 manifest/state/catalog serialization, catalog validation, check statuses, auth
@@ -1817,7 +1822,7 @@ attribute together with the fix.
 `itests/` holds a black-box suite in a Dagger module (engine and CLI v0.21.10): every
 libtest of the workspace, clippy, and 638 scenario cases driving the `gitpm` binary built
 from the working tree (only `GITPM_*`, loopback HTTP, local Git repositories), each in its
-own container. It is an additional, slower suite; `cargo test --workspace` stays the CI gate.
+own container. It is an additional, slower suite; the workspace's Rust tests (cargo-nextest) stay the CI gate.
 
 ```sh
 ./itests/dt                                   # everything, on the pb engine (dagger-pb)
