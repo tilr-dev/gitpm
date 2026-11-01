@@ -1,0 +1,22 @@
+# cargo-nextest profiles used by CI (.github/workflows/ci.yml).
+#
+# default — the full tier: every test of the workspace. CI runs it in the merge queue, on pushes to
+#           release/**, nightly on main and on manual runs.
+# pr      — the fast tier for pull requests: leaves out the long scenario tests below. The merge queue
+#           still runs all of them on the exact commit that lands in main.
+#
+# The boundary was chosen by measuring `cargo nextest run --workspace` (2026-11-01, 4 threads): the four
+# scenario test binaries and the library's workspace scenarios (`workspace::tests`) take three quarters of
+# the total test time; the fast tier runs the rest (about half of the tests) in about a quarter of the time.
+# Filters name binaries and a module, not single tests, so new slow tests there stay out of the fast tier.
+#
+# Tests keep the hermetic Git environment of .cargo/config.toml ([env]) under nextest as under cargo test.
+
+[profile.pr]
+default-filter = """
+not (
+    (package(gitpm) & binary(dependencies))
+  | (package(gitpm-cli) & (binary(lifecycle) | binary(dist_active) | binary(monorepo)))
+  | (package(gitpm) & kind(lib) & test(/^workspace::tests::/))
+)
+"""
