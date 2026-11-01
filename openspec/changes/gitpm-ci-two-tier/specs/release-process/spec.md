@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Required CI checks
-Every pull request into `main` or `release/**`, every merge queue group (`merge_group`) and every push to `release/**` SHALL run the checks `fmt + clippy`, `test`, `msrv (core crate)`, `cargo-deny` and `gitleaks`, with tools pinned by version and SHA-256 and actions pinned by commit. A push to `main` SHALL NOT run them: the merge queue has already checked the commit that lands there. The check names SHALL be the same on every event; only the depth of `test` depends on the event: a pull request into `main` runs the fast tier, because the merge queue then runs every test on the commit that lands; every other event, a pull request into `release/**` included, runs every test.
+Every pull request into `main` or `release/**`, every merge queue group (`merge_group`) and every push to `release/**` SHALL run the checks `fmt + clippy`, `test`, `msrv (core crate)`, `cargo-deny` and `gitleaks`, with tools pinned by version and SHA-256 and actions pinned by commit. A push to `main` SHALL NOT run them. The check names SHALL NOT depend on the event; only `test` SHALL run a fast tier, on pull requests into `main`.
 
 #### Scenario: Check commands
 - **WHEN** the checks run
@@ -20,7 +20,7 @@ Every pull request into `main` or `release/**`, every merge queue group (`merge_
 
 #### Scenario: Merge into main
 - **WHEN** the merge queue merges a pull request into `main`
-- **THEN** the push to `main` does not start CI
+- **THEN** the push to `main` does not start CI, as the queue has already checked that commit
 
 #### Scenario: MSRV break
 - **WHEN** a change uses an API newer than Rust 1.92 in `gitpm` or `gitpm-cli`
