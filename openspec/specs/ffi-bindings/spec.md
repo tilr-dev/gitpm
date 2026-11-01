@@ -37,9 +37,9 @@ The FFI crate SHALL generate the Swift module `Gitpm` over the C module `GitpmFF
 - **WHEN** Swift bindings are generated
 - **THEN** `PackageManager` has `install` (optional `package`, `force`), `installFromCatalog(force)`, `download`, `downloadFromCatalog`, `update`, `updateAllPlan`, `updateAll`, `rollback`, `enable(force)`, `disable(force)`, `forget(force)` (returning `ForgetResult`), `restore`, `uninstallPlan`, `uninstall(confirmed, force)` (`confirmed` the lost-work items the user saw), `fork`, `forkPackages`, `replacePlan`, `replaceCheck`, `replaceResolve`, `replace` (without confirmation), `syncDistPlan` and `syncDist`; `check` is a free function, not a method
 
-#### Scenario: Catalog generation is not exposed
-- **WHEN** a host looks for `catalog update`, `catalog register`, `init` or `commit` in the bindings
-- **THEN** none exist; those stay library/CLI functions
+#### Scenario: Author operations and catalog writes
+- **WHEN** a host needs `init`, `commit`, `remote`, `catalog update` or `catalog register`
+- **THEN** free functions expose the same library operations with explicit repository paths, options and structured results, without requiring a workspace
 
 #### Scenario: Fork is a separate operation
 - **WHEN** a host uses the fork API
