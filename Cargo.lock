@@ -330,6 +330,9 @@ name = "gitpm-ffi"
 version = "0.5.0"
 dependencies = [
  "gitpm",
+ "serde_json",
+ "syn 2.0.119",
+ "tempfile",
  "thiserror",
  "uniffi",
 ]
