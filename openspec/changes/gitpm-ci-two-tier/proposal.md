@@ -5,7 +5,7 @@ The full test set ran up to four times for one change: locally before review, on
 
 ## What Changes
 - The required checks keep their names and run on every pull request, merge queue group and push to `release/**`; the push to `main` no longer triggers CI.
-- `test` runs the tests with cargo-nextest. On pull requests it runs a fast tier that leaves out the long scenario tests; the merge queue, pushes to `release/**`, the nightly run and manual runs execute every test.
+- `test` runs the tests with cargo-nextest. On pull requests into `main` it runs a fast tier that leaves out the long scenario tests; the merge queue, pull requests into and pushes to `release/**` (no merge queue there), the nightly run and manual runs execute every test.
 - A nightly run on `main` executes the full set and keeps build caches readable by pull requests; the merge queue no longer saves caches that pull requests cannot read.
 - A contract test checks the triggers, the tiers and the pinned nextest.
 

@@ -17,8 +17,10 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
 NEXTEST = tomllib.loads((ROOT / ".config/nextest.toml").read_text())
 REQUIRED = ["fmt + clippy", "test", "msrv (core crate)", "cargo-deny", "gitleaks"]
-# The fast profile on pull requests only; every other event gets the full default profile.
-TIER = "${{ github.event_name == 'pull_request' && 'pr' || 'default' }}"
+# The fast profile only on pull requests into main (the merge queue then runs every test);
+# release branches have no merge queue, so their pull requests and every other event run all.
+TIER = ("${{ github.event_name == 'pull_request' && github.base_ref == 'main' "
+        "&& 'pr' || 'default' }}")
 
 
 def step(job, run_prefix):
@@ -54,11 +56,12 @@ class CiTiers(unittest.TestCase):
         job = self.jobs["test"]
         run = step(job, "cargo nextest run")
         self.assertEqual(run["run"], 'cargo nextest run --workspace --locked --profile "$TIER"')
-        self.assertEqual(run["env"]["TIER"], TIER)
+        self.assertEqual(job["env"]["TIER"], TIER)
+        self.assertNotIn("env", run)
         self.assertFalse(any(s.get("run", "").startswith("cargo test --workspace --locked")
                              and "--doc" not in s["run"] for s in job["steps"]))
         doc = step(job, "cargo test --workspace --locked --doc")
-        self.assertEqual(doc["if"], "github.event_name != 'pull_request'")
+        self.assertEqual(doc["if"], "env.TIER == 'default'")
 
     def test_nextest_is_pinned(self):
         install = next(s for s in self.jobs["test"]["steps"]

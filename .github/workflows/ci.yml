@@ -1,9 +1,10 @@
 # CI: format, lint, tests, MSRV, cargo-deny and gitleaks on every PR, merge queue group and push
 # to a release branch (release/**), nightly on main and on manual runs. There is no run on push to
 # main: the merge queue has already checked exactly the commit that lands there.
-# Two tiers, the same jobs and required check names: on pull_request `test` runs the fast tier
-# (nextest profile `pr` in .config/nextest.toml leaves out the long scenario tests); every other
-# event runs every test.
+# Two tiers, the same jobs and required check names: on a pull request into main `test` runs the
+# fast tier (nextest profile `pr` in .config/nextest.toml leaves out the long scenario tests), as
+# the merge queue then runs every test on the commit that lands; every other event, a pull request
+# into release/** included (release branches have no merge queue), runs every test.
 # Caches: a PR can restore only caches of its own ref and of main, not those written in the merge
 # queue (gh-readonly-queue/*), so the queue does not save them and the nightly run on main keeps
 # the rust-cache entries warm for PRs.
@@ -76,6 +77,9 @@ jobs:
     name: test
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      # nextest profile: the fast tier only on a pull request into main (the merge queue follows).
+      TIER: ${{ github.event_name == 'pull_request' && github.base_ref == 'main' && 'pr' || 'default' }}
     permissions:
       contents: read
     steps:
@@ -103,12 +107,10 @@ jobs:
       # The tests shell out to the runner's git; .cargo/config.toml points them at
       # tests/gitconfig (nextest applies its [env] as cargo test does), so the runner's
       # Git config does not matter. Every test binary is built in both tiers.
-      - name: Run tests (pull_request — fast tier, otherwise all)
+      - name: Run tests (pull request into main — fast tier, otherwise all)
         run: cargo nextest run --workspace --locked --profile "$TIER"
-        env:
-          TIER: ${{ github.event_name == 'pull_request' && 'pr' || 'default' }}
       # nextest does not run doctests; the full tier runs them with cargo.
-      - if: github.event_name != 'pull_request'
+      - if: env.TIER == 'default'
         run: cargo test --workspace --locked --doc
       - name: Test specification workflow event routing and CI tiers
         run: |

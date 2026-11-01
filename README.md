@@ -1793,8 +1793,8 @@ cargo nextest run --workspace --profile pr   # the fast tier CI runs on pull req
 ```
 
 CI runs the tests with [cargo-nextest](https://nexte.st) in two tiers (`.config/nextest.toml`): pull
-requests run the fast tier `pr`, which leaves out the long scenario tests; the merge queue, pushes to
-`release/**` and the nightly run on `main` run every test.
+requests into `main` run the fast tier `pr`, which leaves out the long scenario tests; the merge
+queue, pull requests into and pushes to `release/**` and the nightly run on `main` run every test.
 
 Unit tests cover pure parts directly (UUID and alias rules, version keys and ordering,
 manifest/state/catalog serialization, catalog validation, check statuses, auth
