@@ -1,7 +1,8 @@
-//! UniFFI bindings for native apps (Swift/Kotlin). Consumer operations only: open a
+//! UniFFI bindings for native apps (Swift/Kotlin). All CLI operations: open a
 //! workspace, browse a catalog, install/update/rollback/enable/disable/forget/restore,
 //! plan and confirm uninstall, fork, replace a package by a fork and switch back,
-//! bring `dist/` in line with state (`syncDist`), check repository access.
+//! bring `dist/` in line with state (`syncDist`), check repository access,
+//! initialize and release author repositories, set origins and write catalogs.
 //!
 //! `dist/<id>` exists exactly for the active packages (installed, enabled, not
 //! replaced): a host loads everything under `dist/` without resolving replacements.
@@ -1691,6 +1692,176 @@ impl PackageManager {
 // ---------------------------------------------------------------------------------------
 // Free functions (no workspace needed)
 
+/// Create a package in an explicit repository, optionally without its initial release.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct InitOptions {
+    #[uniffi(default = false)]
+    pub multi: bool,
+    #[uniffi(default = true)]
+    pub release: bool,
+}
+impl Default for InitOptions {
+    fn default() -> Self {
+        Self {
+            multi: false,
+            release: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct InitResult {
+    pub id: String,
+    pub repo: String,
+    pub folder: Option<String>,
+    pub version: String,
+    pub new_repository: bool,
+    pub tag: Option<String>,
+}
+
+#[uniffi::export]
+pub fn init(directory: String, name: String, options: InitOptions) -> Result<InitResult> {
+    let created = pm::scaffold::init_with(
+        std::path::Path::new(&directory),
+        &name,
+        pm::scaffold::InitOptions {
+            multi: options.multi,
+            release: options.release,
+        },
+    )?;
+    Ok(InitResult {
+        id: created.id,
+        repo: created.repo.to_string_lossy().into_owned(),
+        folder: created.folder,
+        version: created.version,
+        new_repository: created.new_repository,
+        tag: created.tag,
+    })
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct CommitResult {
+    pub package: String,
+    pub version: String,
+    pub tag: String,
+}
+
+/// Commit all repository changes and create a local release tag; never pushes.
+#[uniffi::export]
+pub fn commit(directory: String, version: String, package: Option<String>) -> Result<CommitResult> {
+    let done = pm::scaffold::commit_package(
+        std::path::Path::new(&directory),
+        &version,
+        package.as_deref(),
+    )?;
+    Ok(CommitResult {
+        package: done.package,
+        version: done.version,
+        tag: done.tag,
+    })
+}
+
+/// Add or replace the fetch and push origin without contacting it.
+#[uniffi::export]
+pub fn set_remote(directory: String, url: String) -> Result<()> {
+    Ok(pm::scaffold::set_remote(
+        std::path::Path::new(&directory),
+        &url,
+    )?)
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct CatalogBuild {
+    pub url: String,
+    pub sha256: String,
+}
+
+/// Registration retains the complete published release, including arbitrary manifest
+/// metadata and file digests, as the JSON printed by the CLI, plus a typed summary.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct CatalogRegistration {
+    pub release: CatalogRelease,
+    pub release_json: String,
+    pub warnings: Vec<String>,
+}
+
+#[uniffi::export]
+pub fn catalog_register(
+    location: String,
+    source: String,
+    reference: String,
+    package: Option<String>,
+    build: Option<CatalogBuild>,
+    custom_ssh: bool,
+) -> Result<CatalogRegistration> {
+    let report = pm::catalog::register_package_report_with_options(
+        &location,
+        &source,
+        &reference,
+        package.as_deref(),
+        build.map(|b| pm::catalog::Build {
+            url: b.url,
+            sha256: b.sha256,
+        }),
+        &pm::Options {
+            custom_ssh,
+            ..Default::default()
+        },
+    )?;
+    // Release contains only JSON-compatible library data.
+    let release_json = serde_json::to_string(&report.release).expect("catalog release serializes");
+    Ok(CatalogRegistration {
+        release: report.release.into(),
+        release_json,
+        warnings: report.warnings,
+    })
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct CatalogSkippedTag {
+    pub source: String,
+    pub tag: SkippedTag,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct CatalogUpdate {
+    pub releases: u64,
+    pub sources: Vec<String>,
+    pub skipped: Vec<CatalogSkippedTag>,
+    pub warnings: Vec<String>,
+}
+
+/// Update a writable local catalog from an explicit sources file.
+#[uniffi::export]
+pub fn catalog_update(
+    location: String,
+    sources_file: String,
+    custom_ssh: bool,
+) -> Result<CatalogUpdate> {
+    let report = pm::catalog::update_sources_with_options(
+        &location,
+        std::path::Path::new(&sources_file),
+        &mut |_| {},
+        &pm::Options {
+            custom_ssh,
+            ..Default::default()
+        },
+    )?;
+    Ok(CatalogUpdate {
+        releases: report.releases as u64,
+        sources: report.sources,
+        skipped: report
+            .skipped
+            .into_iter()
+            .map(|s| CatalogSkippedTag {
+                source: s.source,
+                tag: s.tag.into(),
+            })
+            .collect(),
+        warnings: report.warnings,
+    })
+}
+
 /// Inspect working-tree packages without opening or creating a workspace.
 #[uniffi::export]
 pub fn repository_packages(directory: String, root: Option<String>) -> Result<Vec<PackageDetails>> {
@@ -2916,13 +3087,35 @@ mod tests {
         ));
     }
 
-    /// Every CLI command that reads or changes a workspace, reads a catalog or checks
-    /// access has an FFI call returning what it prints; the author commands and the
-    /// catalog writers are the stated exceptions.
+    /// Every CLI command has an exported FFI call returning what it prints.
     #[test]
-    fn ffi_covers_every_workspace_and_catalog_read_command() {
+    fn ffi_covers_every_cli_command() {
         // The references fail to compile when a call is removed or renamed.
         let covered: Vec<(&str, Vec<&str>)> = vec![
+            ("init", {
+                let _ = init;
+                vec!["init"]
+            }),
+            ("commit", {
+                let _ = commit;
+                vec!["commit"]
+            }),
+            ("remote", {
+                let _ = set_remote;
+                vec!["setRemote"]
+            }),
+            ("catalog", {
+                let _ = browse_catalog;
+                vec!["browseCatalog"]
+            }),
+            ("catalog update", {
+                let _ = catalog_update;
+                vec!["catalogUpdate"]
+            }),
+            ("catalog register", {
+                let _ = catalog_register;
+                vec!["catalogRegister"]
+            }),
             ("auth", {
                 let _ = auth_check;
                 vec!["authCheck"]
@@ -3044,14 +3237,56 @@ mod tests {
                 vec!["syncDistPlan", "syncDist"]
             }),
         ];
-        let exceptions = [
-            "init",
-            "commit",
-            "remote",
-            "catalog",
-            "catalog update",
-            "catalog register",
-        ];
+        // Check actual UniFFI export annotations as well as compilable function references.
+        let source = syn::parse_file(include_str!("lib.rs")).unwrap();
+        let is_export = |attrs: &[syn::Attribute]| {
+            attrs.iter().any(|attr| {
+                let parts: Vec<_> = attr
+                    .path()
+                    .segments
+                    .iter()
+                    .map(|s| s.ident.to_string())
+                    .collect();
+                parts == ["uniffi", "export"]
+            })
+        };
+        let mut exported = Vec::new();
+        for item in source.items {
+            match item {
+                syn::Item::Fn(f) if is_export(&f.attrs) => exported.push(f.sig.ident.to_string()),
+                syn::Item::Impl(i) if is_export(&i.attrs) => {
+                    for member in i.items {
+                        if let syn::ImplItem::Fn(f) = member
+                            && matches!(f.vis, syn::Visibility::Public(_))
+                        {
+                            exported.push(f.sig.ident.to_string());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        let swift_names: Vec<String> = exported
+            .iter()
+            .map(|name| {
+                let mut parts = name.split('_');
+                let mut swift = parts.next().unwrap().to_owned();
+                for part in parts {
+                    let mut chars = part.chars();
+                    swift.extend(chars.next().unwrap().to_uppercase());
+                    swift.extend(chars);
+                }
+                swift
+            })
+            .collect();
+        for (command, calls) in &covered {
+            for call in calls {
+                assert!(
+                    swift_names.iter().any(|name| name == call),
+                    "CLI command {command}: {call} is not exported through UniFFI"
+                );
+            }
+        }
         let cli = include_str!("../../gitpm-cli/src/main.rs");
         let block = cli
             .split("const COMMANDS: &[&str] = &[")
@@ -3062,7 +3297,7 @@ mod tests {
         assert!(commands.len() > 20, "{commands:?}");
         for command in &commands {
             assert!(
-                covered.iter().any(|(c, _)| c == command) || exceptions.contains(command),
+                covered.iter().any(|(c, _)| c == command),
                 "CLI command {command} has no FFI equivalent"
             );
         }

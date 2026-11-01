@@ -1741,9 +1741,15 @@ workspace: `list(root, provides)` and `readState(root)` (`ListView`: `format`,
 with its `source`, replacements, unsatisfied dependencies; `catalog` may be `nil`), `catalogLinks(location)`,
 `authCheck(source, customSsh)`, `browseCatalog`, `catalogRelease`, `describeLostWork`,
 `uninstallRefusal(plan)`.
-Every CLI command that reads or changes a workspace, reads a catalog or checks access has
-its FFI call; `init`, `commit`, `remote`, `catalog update` and `catalog register` stay library and
-CLI functions. Errors are the `PmError` enum (one case per kind, each with `message`;
+Every CLI command has an FFI call ([command mapping](docs/cli-ffi.md)). Author operations are free functions:
+`init(directory, name, options: InitOptions { multi, release })` returns `InitResult`,
+`commit(directory, version, package)` returns `CommitResult`, and
+`setRemote(directory, url)` sets the fetch and push origin. They do not open a workspace.
+`catalogUpdate(location, sourcesFile, customSsh)` returns release counts, sources,
+skipped tags and warnings. `catalogRegister(location, source, reference, package,
+build: CatalogBuild?, customSsh)` returns `CatalogRegistration`: the typed release,
+the complete `releaseJson` (including arbitrary manifest metadata and file digests),
+and warnings. All use the same library functions as the CLI. Errors are the `PmError` enum (one case per kind, each with `message`;
 `id` where the library error has one, `LocalChanges.items`, `HasDependents.dependents`
 and `.lostWork`, `IncompatibleReplacement.consumers`, `NotDeployed.sync` (the dist report), and
 `Other { kind, message }` for kinds added later). `gitpm-ffi` carries the library's
