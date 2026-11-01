@@ -16,7 +16,19 @@ served by the case itself. The registry refuses a case or fixture that mentions 
 variables or the old stand binary `pm`.
 
 This suite is in addition to `cargo test --workspace` (the required CI gate), not a
-replacement; it runs on pb only (no GitHub Actions job).
+replacement. CI also runs the complete suite in the nonrequired `itests` job on
+Ubuntu with a local Dagger engine: nightly on `main`, on `workflow_dispatch`, and on
+pushes to `release/**`. It does not run on pull requests or in the merge queue.
+The CLI download is pinned to the module engine version and verified by SHA-256.
+CI runs two tests concurrently; compilation and clippy use `CARGO_BUILD_JOBS=2`.
+
+The job restores a versioned engine-state archive through `actions/cache`, including
+the engine's cargo home and source-specific target cache volumes. Only successful
+nightly runs on `main` save a new archive, after stopping the engine; manual and
+release runs only restore it. The first nightly run starts cold. To verify reuse,
+check the restore step on a later run after a successful nightly cache save.
+`itests-results` contains `results/`, uploaded even when the suite fails. The job's
+90-minute limit bounds the entire run; individual test timeouts are unchanged.
 
 Workspace layout changes (bare storage, package worktrees and transaction activation)
 require the **full suite before review and merge**, in addition to the default workflow

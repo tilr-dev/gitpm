@@ -171,8 +171,8 @@ class GitpmItests:
             .with_mounted_cache(TARGET, dag.cache_volume(target_cache))
             .with_env_variable("CARGO_TARGET_DIR", TARGET)
             .with_env_variable("CARGO_TERM_COLOR", "never")
-            # Bounded parallelism: the build and clippy share the engine (24 GiB on pb).
-            .with_env_variable("CARGO_BUILD_JOBS", "6")
+            # Bounded parallelism: the build and clippy also share a hosted CI runner.
+            .with_env_variable("CARGO_BUILD_JOBS", "2")
             .with_workdir(SRC)
         )
 

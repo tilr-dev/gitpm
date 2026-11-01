@@ -1823,6 +1823,10 @@ attribute together with the fix.
 libtest of the workspace, clippy, and 638 scenario cases driving the `gitpm` binary built
 from the working tree (only `GITPM_*`, loopback HTTP, local Git repositories), each in its
 own container. It is an additional, slower suite; the workspace's Rust tests (cargo-nextest) stay the CI gate.
+The nonrequired CI `itests` job runs on nightly `main`, manual dispatch and pushes to
+`release/**`, using local Dagger, two cargo jobs and two concurrent tests. It restores
+the nightly engine cache and uploads `itests-results`, including failed-case reports.
+Pull requests and merge groups do not run this job.
 
 ```sh
 ./itests/dt                                   # everything, on the pb engine (dagger-pb)
