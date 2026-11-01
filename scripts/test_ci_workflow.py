@@ -7,6 +7,7 @@
 Run with uv run scripts/test_ci_workflow.py (CI runs it in the `test` job).
 """
 from pathlib import Path
+import json
 import re
 import tomllib
 import unittest
@@ -88,6 +89,111 @@ class CiTiers(unittest.TestCase):
             with self.subTest(job=job_id):
                 self.assertEqual(cache["with"]["save-if"],
                                  "${{ github.event_name != 'merge_group' }}")
+
+
+def event_condition(expression, event, ref):
+    """Evaluate the small Actions expression subset used by job/cache routing."""
+    expression = expression.removeprefix("${{").removesuffix("}}")
+    expression = expression.replace("github.event_name", repr(event))
+    expression = expression.replace("github.ref", repr(ref))
+    expression = expression.replace("&&", " and ").replace("||", " or ")
+    return eval(expression, {"__builtins__": {}},
+                {"startsWith": str.startswith, "success": lambda: True})
+
+
+class DaggerCi(unittest.TestCase):
+    def setUp(self):
+        self.job = WORKFLOW["jobs"]["itests"]
+        self.steps = self.job["steps"]
+
+    def named(self, name):
+        return next(s for s in self.steps if s.get("name") == name)
+
+    def test_event_routing_and_nightly_cache_ownership(self):
+        save_steps = [self.named(name) for name in
+                      ("Export stopped Dagger cache", "Save Dagger cache")]
+        cases = [
+            ("schedule", "refs/heads/main", True, True),
+            ("schedule", "refs/heads/release/1.2", False, False),
+            ("workflow_dispatch", "refs/heads/main", True, False),
+            ("workflow_dispatch", "refs/heads/task/example", True, False),
+            ("push", "refs/heads/release/1.2", True, False),
+            ("push", "refs/heads/main", False, False),
+            ("push", "refs/heads/task/example", False, False),
+            ("pull_request", "refs/pull/1/merge", False, False),
+            ("pull_request", "refs/heads/release/1.2", False, False),
+            ("merge_group", "refs/heads/gh-readonly-queue/main/example", False, False),
+        ]
+        for event, ref, run, save in cases:
+            with self.subTest(event=event, ref=ref):
+                self.assertEqual(event_condition(self.job["if"], event, ref), run)
+                for step in save_steps:
+                    self.assertEqual(event_condition(step["if"], event, ref), save)
+                    self.assertIn("success()", step["if"])
+        self.assertEqual(self.job["name"], "itests")
+        self.assertNotIn(self.job["name"], REQUIRED)
+        self.assertEqual(self.job["runs-on"], "ubuntu-latest")
+        self.assertEqual(self.job["permissions"], {"contents": "read"})
+        self.assertFalse(self.steps[0]["with"]["persist-credentials"])
+        self.assertFalse(any("continue-on-error" in s for s in self.steps))
+        self.assertNotIn("continue-on-error", self.job)
+
+    def test_cli_matches_module_and_checks_download(self):
+        env = self.job["env"]
+        engine = json.loads((ROOT / "itests/dagger.json").read_text())["engineVersion"]
+        self.assertEqual("v" + env["DAGGER_VERSION"], engine)
+        self.assertIn("DAGGER_VERSION=" + engine, (ROOT / "itests/dt").read_text())
+        self.assertRegex(env["DAGGER_SHA256"], r"^[0-9a-f]{64}$")
+        install = self.named("Install the Dagger CLI")["run"]
+        self.assertIn("dagger_v${DAGGER_VERSION}_linux_amd64.tar.gz", install)
+        self.assertIn('${DAGGER_SHA256}  $RUNNER_TEMP/dagger.tgz', install)
+        self.assertLess(install.index("sha256sum -c -"), install.index("tar -xzf"))
+        start = self.named("Start local Dagger engine")["run"]
+        self.assertIn('registry.dagger.io/engine:v${DAGGER_VERSION}', start)
+        self.assertIn('--name gitpm-itests --privileged', start)
+        self.assertEqual(env["_EXPERIMENTAL_DAGGER_RUNNER_HOST"],
+                         "docker-container://gitpm-itests")
+
+    def test_complete_suite_is_bounded_and_reports_survive_failure(self):
+        self.assertEqual(self.job["env"]["DT_ENGINE"], "dagger")
+        run = self.named("Run the complete Dagger suite")
+        self.assertEqual(run["run"], "env -u SSH_AUTH_SOCK itests/dt --jobs 2")
+        module = (ROOT / "itests/src/gitpm_itests/main.py").read_text()
+        self.assertIn('.with_env_variable("CARGO_BUILD_JOBS", "2")', module)
+        self.assertNotIn("if", run)
+        upload = self.named("Upload Dagger results")
+        self.assertEqual(upload["if"], "always()")
+        self.assertTrue(upload["uses"].startswith("actions/upload-artifact@"))
+        self.assertEqual(upload["with"]["path"], "itests/results/")
+        self.assertIn("uv==", self.named("Install report tools")["run"])
+
+    def test_engine_cache_round_trip_order_and_keys(self):
+        restore = self.named("Restore Dagger cache")
+        save = self.named("Save Dagger cache")
+        self.assertTrue(restore["uses"].startswith("actions/cache/restore@"))
+        self.assertTrue(save["uses"].startswith("actions/cache/save@"))
+        self.assertNotIn("if", restore)
+        self.assertEqual(restore["with"]["path"], save["with"]["path"])
+        self.assertEqual(save["with"]["key"],
+                         "${{ steps.dagger-cache.outputs.cache-primary-key }}")
+        self.assertIn("${{ env.DAGGER_VERSION }}", restore["with"]["restore-keys"])
+        self.assertTrue(restore["with"]["key"].startswith(
+            restore["with"]["restore-keys"].strip()))
+        self.assertIn("${{ github.run_id }}", restore["with"]["key"])
+        self.assertIn("${{ github.run_attempt }}", restore["with"]["key"])
+        start = self.named("Start local Dagger engine")["run"]
+        self.assertLess(start.index("tar --numeric-owner"), start.index("docker run"))
+        self.assertIn('$RUNNER_TEMP/dagger-state:/var/lib/dagger', start)
+        stop = self.named("Stop local Dagger engine")
+        self.assertEqual(stop["if"], "always()")
+        self.assertIn("docker stop gitpm-itests", stop["run"])
+        export = self.named("Export stopped Dagger cache")
+        self.assertIn('-C "$RUNNER_TEMP/dagger-state" .', export["run"])
+        self.assertIn('chown', export["run"])
+        ordered = [restore, self.named("Start local Dagger engine"),
+                   self.named("Run the complete Dagger suite"), stop, export, save]
+        indices = [self.steps.index(s) for s in ordered]
+        self.assertEqual(indices, sorted(indices))
 
 
 if __name__ == "__main__":

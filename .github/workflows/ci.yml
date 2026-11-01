@@ -5,6 +5,7 @@
 # fast tier (nextest profile `pr` in .config/nextest.toml leaves out the long scenario tests), as
 # the merge queue then runs every test on the commit that lands; every other event, a pull request
 # into release/** included (release branches have no merge queue), runs every test.
+# The nonrequired Dagger `itests` job runs only nightly, manually and on release/** pushes.
 # Caches: a PR can restore only caches of its own ref and of main, not those written in the merge
 # queue (gh-readonly-queue/*), so the queue does not save them and the nightly run on main keeps
 # the rust-cache entries warm for PRs.
@@ -206,3 +207,80 @@ jobs:
       - run: '"$GITLEAKS" git --redact --no-banner --exit-code 1 --log-opts=HEAD .'
       - name: Test gitleaks history scope
         run: python3 scripts/test_gitleaks_workflow.py
+
+  # Additional black-box coverage; never a required PR/merge-queue check.
+  itests:
+    name: itests
+    if: (github.event_name == 'schedule' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      DAGGER_VERSION: 0.21.10
+      DAGGER_SHA256: f9ee083767dd12cdac583f9db3fedbebbbb3064f69152998be1f121d1a6cc103
+      DT_ENGINE: dagger
+      _EXPERIMENTAL_DAGGER_RUNNER_HOST: docker-container://gitpm-itests
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the Dagger CLI
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/dagger.tgz" \
+            "https://github.com/dagger/dagger/releases/download/v${DAGGER_VERSION}/dagger_v${DAGGER_VERSION}_linux_amd64.tar.gz"
+          echo "${DAGGER_SHA256}  $RUNNER_TEMP/dagger.tgz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$RUNNER_TEMP/dagger.tgz" -C "$RUNNER_TEMP/bin" dagger
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Install report tools
+        run: |
+          python3 -m venv "$RUNNER_TEMP/report-tools"
+          "$RUNNER_TEMP/report-tools/bin/pip" install uv==0.6.6
+          echo "$RUNNER_TEMP/report-tools/bin" >> "$GITHUB_PATH"
+      # The engine owns cargo home and source-specific target cache volumes. Cache its
+      # stopped state, not the host target/ directory (which Dagger never uses).
+      - name: Restore Dagger cache
+        id: dagger-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/dagger-cache.tar
+          key: itests-${{ runner.os }}-${{ runner.arch }}-${{ env.DAGGER_VERSION }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            itests-${{ runner.os }}-${{ runner.arch }}-${{ env.DAGGER_VERSION }}-
+      - name: Start local Dagger engine
+        run: |
+          mkdir -p "$RUNNER_TEMP/dagger-state"
+          if [ -f "$RUNNER_TEMP/dagger-cache.tar" ]; then
+            sudo tar --numeric-owner --xattrs -xpf "$RUNNER_TEMP/dagger-cache.tar" -C "$RUNNER_TEMP/dagger-state"
+          fi
+          docker run -d --name gitpm-itests --privileged \
+            -v "$RUNNER_TEMP/dagger-state:/var/lib/dagger" \
+            "registry.dagger.io/engine:v${DAGGER_VERSION}"
+      # Two concurrent tests; compilation in the module also uses two cargo jobs.
+      - name: Run the complete Dagger suite
+        run: env -u SSH_AUTH_SOCK itests/dt --jobs 2
+      - name: Upload Dagger results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: itests-results
+          path: itests/results/
+          if-no-files-found: warn
+      - name: Stop local Dagger engine
+        if: always()
+        run: |
+          if docker container inspect gitpm-itests >/dev/null 2>&1; then
+            docker stop gitpm-itests
+          fi
+      - name: Export stopped Dagger cache
+        if: success() && github.event_name == 'schedule' && github.ref == 'refs/heads/main'
+        run: |
+          sudo tar --numeric-owner --xattrs --sparse -cpf "$RUNNER_TEMP/dagger-cache.tar" -C "$RUNNER_TEMP/dagger-state" .
+          sudo chown "$(id -u):$(id -g)" "$RUNNER_TEMP/dagger-cache.tar"
+      - name: Save Dagger cache
+        if: success() && github.event_name == 'schedule' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/dagger-cache.tar
+          key: ${{ steps.dagger-cache.outputs.cache-primary-key }}
