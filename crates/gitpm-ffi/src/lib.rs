@@ -3090,152 +3090,80 @@ mod tests {
     /// Every CLI command has an exported FFI call returning what it prints.
     #[test]
     fn ffi_covers_every_cli_command() {
-        // The references fail to compile when a call is removed or renamed.
-        let covered: Vec<(&str, Vec<&str>)> = vec![
-            ("init", {
-                let _ = init;
-                vec!["init"]
-            }),
-            ("commit", {
-                let _ = commit;
-                vec!["commit"]
-            }),
-            ("remote", {
-                let _ = set_remote;
-                vec!["setRemote"]
-            }),
-            ("catalog", {
-                let _ = browse_catalog;
-                vec!["browseCatalog"]
-            }),
-            ("catalog update", {
-                let _ = catalog_update;
-                vec!["catalogUpdate"]
-            }),
-            ("catalog register", {
-                let _ = catalog_register;
-                vec!["catalogRegister"]
-            }),
-            ("auth", {
-                let _ = auth_check;
-                vec!["authCheck"]
-            }),
-            ("catalog show", {
-                let _ = browse_catalog;
-                let _ = PackageManager::browse_catalog;
-                vec!["browseCatalog"]
-            }),
-            ("catalog links", {
-                let _ = catalog_links;
-                vec!["catalogLinks"]
-            }),
-            ("install-catalog", {
-                let _ = PackageManager::install_from_catalog;
-                let _ = catalog_release;
-                vec!["installFromCatalog", "catalogRelease"]
-            }),
-            ("link", {
-                let _ = PackageManager::link;
-                vec!["link"]
-            }),
-            ("install", {
-                let _ = PackageManager::install;
-                vec!["install"]
-            }),
-            ("list", {
-                let _ = list;
-                let _ = read_state;
-                vec!["list", "readState"]
-            }),
-            ("check", {
-                let _ = check;
-                vec!["check"]
-            }),
-            ("update", {
-                let _ = PackageManager::update;
-                let _ = PackageManager::update_all;
-                let _ = PackageManager::update_all_plan;
-                vec!["update", "updateAll", "updateAllPlan"]
-            }),
-            ("rollback", {
-                let _ = PackageManager::rollback;
-                vec!["rollback"]
-            }),
-            ("enable", {
-                let _ = PackageManager::enable;
-                vec!["enable"]
-            }),
-            ("disable", {
-                let _ = PackageManager::disable;
-                vec!["disable"]
-            }),
-            ("download", {
-                let _ = PackageManager::download;
-                vec!["download"]
-            }),
-            ("download-catalog", {
-                let _ = PackageManager::download_from_catalog;
-                vec!["downloadFromCatalog"]
-            }),
-            ("forget", {
-                let _ = PackageManager::forget;
-                vec!["forget"]
-            }),
-            ("restore", {
-                let _ = PackageManager::restore;
-                vec!["restore"]
-            }),
-            ("uninstall", {
-                let _ = PackageManager::uninstall_plan;
-                let _ = PackageManager::uninstall;
-                let _ = describe_lost_work;
-                let _ = uninstall_refusal;
-                vec!["uninstallPlan", "uninstall", "uninstallRefusal"]
-            }),
-            ("packages", {
-                let _ = repository_packages;
-                vec!["repositoryPackages"]
-            }),
-            ("dependency", {
-                let _ = edit_dependency;
-                let _ = PackageManager::edit_dependency;
-                vec!["editDependency"]
-            }),
-            ("dependency add", {
-                let _ = edit_dependency;
-                vec!["editDependency"]
-            }),
-            ("dependency update", {
-                let _ = edit_dependency;
-                vec!["editDependency"]
-            }),
-            ("dependency remove", {
-                let _ = edit_dependency;
-                vec!["editDependency"]
-            }),
-            ("fork", {
-                let _ = PackageManager::fork_packages;
-                let _ = fork_source;
-                vec!["forkPackages", "forkSource"]
-            }),
-            ("replace", {
-                let _ = PackageManager::replace_plan;
-                let _ = PackageManager::replace;
-                vec!["replacePlan", "replace"]
-            }),
-            ("replace-check", {
-                let _ = PackageManager::replace_check;
-                vec!["replaceCheck"]
-            }),
-            ("replace-resolve", {
-                let _ = PackageManager::replace_resolve;
-                vec!["replaceResolve"]
-            }),
-            ("sync-dist", {
-                let _ = PackageManager::sync_dist_plan;
-                let _ = PackageManager::sync_dist;
-                vec!["syncDistPlan", "syncDist"]
-            }),
+        // Each path is both a compilable reference and the expected export identity.
+        macro_rules! calls {
+            ($($function:path),+ $(,)?) => {{
+                $(let _ = $function;)+
+                vec![$(stringify!($function).replace(' ', "")),+]
+            }};
+        }
+        let covered: Vec<(&str, Vec<String>)> = vec![
+            ("init", calls!(init)),
+            ("commit", calls!(commit)),
+            ("remote", calls!(set_remote)),
+            ("catalog", calls!(browse_catalog)),
+            ("catalog update", calls!(catalog_update)),
+            ("catalog register", calls!(catalog_register)),
+            ("auth", calls!(auth_check)),
+            (
+                "catalog show",
+                calls!(browse_catalog, PackageManager::browse_catalog),
+            ),
+            ("catalog links", calls!(catalog_links)),
+            (
+                "install-catalog",
+                calls!(PackageManager::install_from_catalog, catalog_release),
+            ),
+            ("link", calls!(PackageManager::link)),
+            ("install", calls!(PackageManager::install)),
+            ("list", calls!(list, read_state)),
+            ("check", calls!(check)),
+            (
+                "update",
+                calls!(
+                    PackageManager::update,
+                    PackageManager::update_all,
+                    PackageManager::update_all_plan
+                ),
+            ),
+            ("rollback", calls!(PackageManager::rollback)),
+            ("enable", calls!(PackageManager::enable)),
+            ("disable", calls!(PackageManager::disable)),
+            ("download", calls!(PackageManager::download)),
+            (
+                "download-catalog",
+                calls!(PackageManager::download_from_catalog),
+            ),
+            ("forget", calls!(PackageManager::forget)),
+            ("restore", calls!(PackageManager::restore)),
+            (
+                "uninstall",
+                calls!(
+                    PackageManager::uninstall_plan,
+                    PackageManager::uninstall,
+                    describe_lost_work,
+                    uninstall_refusal
+                ),
+            ),
+            ("packages", calls!(repository_packages)),
+            (
+                "dependency",
+                calls!(edit_dependency, PackageManager::edit_dependency),
+            ),
+            ("dependency add", calls!(edit_dependency)),
+            ("dependency update", calls!(edit_dependency)),
+            ("dependency remove", calls!(edit_dependency)),
+            ("fork", calls!(PackageManager::fork_packages, fork_source)),
+            (
+                "replace",
+                calls!(PackageManager::replace_plan, PackageManager::replace),
+            ),
+            ("replace-check", calls!(PackageManager::replace_check)),
+            ("replace-resolve", calls!(PackageManager::replace_resolve)),
+            (
+                "sync-dist",
+                calls!(PackageManager::sync_dist_plan, PackageManager::sync_dist),
+            ),
         ];
         // Check actual UniFFI export annotations as well as compilable function references.
         let source = syn::parse_file(include_str!("lib.rs")).unwrap();
@@ -3255,34 +3183,31 @@ mod tests {
             match item {
                 syn::Item::Fn(f) if is_export(&f.attrs) => exported.push(f.sig.ident.to_string()),
                 syn::Item::Impl(i) if is_export(&i.attrs) => {
+                    let syn::Type::Path(owner) = *i.self_ty else {
+                        panic!("expected a named exported object");
+                    };
+                    let owner = owner
+                        .path
+                        .segments
+                        .iter()
+                        .map(|s| s.ident.to_string())
+                        .collect::<Vec<_>>()
+                        .join("::");
                     for member in i.items {
                         if let syn::ImplItem::Fn(f) = member
                             && matches!(f.vis, syn::Visibility::Public(_))
                         {
-                            exported.push(f.sig.ident.to_string());
+                            exported.push(format!("{owner}::{}", f.sig.ident));
                         }
                     }
                 }
                 _ => {}
             }
         }
-        let swift_names: Vec<String> = exported
-            .iter()
-            .map(|name| {
-                let mut parts = name.split('_');
-                let mut swift = parts.next().unwrap().to_owned();
-                for part in parts {
-                    let mut chars = part.chars();
-                    swift.extend(chars.next().unwrap().to_uppercase());
-                    swift.extend(chars);
-                }
-                swift
-            })
-            .collect();
         for (command, calls) in &covered {
             for call in calls {
                 assert!(
-                    swift_names.iter().any(|name| name == call),
+                    exported.contains(call),
                     "CLI command {command}: {call} is not exported through UniFFI"
                 );
             }
