@@ -19,6 +19,8 @@ on:
   merge_group:
   pull_request:
     branches: [main, 'release/**']
+    # edited: a PR retargeted from main to release/** must rerun with the full tier.
+    types: [opened, synchronize, reopened, edited]
   push:
     branches: ['release/**']
   schedule:

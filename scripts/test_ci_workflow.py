@@ -41,6 +41,8 @@ class CiTiers(unittest.TestCase):
         self.assertEqual(self.on["push"], {"branches": ["release/**"]},
                          "no run on push to main: the merge queue checked that commit")
         self.assertEqual(self.on["pull_request"]["branches"], ["main", "release/**"])
+        self.assertIn("edited", self.on["pull_request"]["types"],
+                      "a PR retargeted to release/** reruns with the full tier")
         self.assertEqual(len(self.on["schedule"]), 1)
         self.assertEqual(WORKFLOW["concurrency"],
                          {"group": "ci-${{ github.ref }}", "cancel-in-progress": True})
