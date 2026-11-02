@@ -171,8 +171,9 @@ class GitpmItests:
             .with_mounted_cache(TARGET, dag.cache_volume(target_cache))
             .with_env_variable("CARGO_TARGET_DIR", TARGET)
             .with_env_variable("CARGO_TERM_COLOR", "never")
-            # Bounded parallelism: the build and clippy share the engine (24 GiB on pb).
-            .with_env_variable("CARGO_BUILD_JOBS", "6")
+            # Bound build/clippy memory on every engine, including pb (which had OOMs),
+            # and hosted CI runners. This trades pb build throughput for lower peak memory.
+            .with_env_variable("CARGO_BUILD_JOBS", "2")
             .with_workdir(SRC)
         )
 

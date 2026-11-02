@@ -1741,9 +1741,15 @@ workspace: `list(root, provides)` and `readState(root)` (`ListView`: `format`,
 with its `source`, replacements, unsatisfied dependencies; `catalog` may be `nil`), `catalogLinks(location)`,
 `authCheck(source, customSsh)`, `browseCatalog`, `catalogRelease`, `describeLostWork`,
 `uninstallRefusal(plan)`.
-Every CLI command that reads or changes a workspace, reads a catalog or checks access has
-its FFI call; `init`, `commit`, `remote`, `catalog update` and `catalog register` stay library and
-CLI functions. Errors are the `PmError` enum (one case per kind, each with `message`;
+Every CLI command has an FFI call ([command mapping](docs/cli-ffi.md)). Author operations are free functions:
+`init(directory, name, options: InitOptions { multi, release })` returns `InitResult`,
+`commit(directory, version, package)` returns `CommitResult`, and
+`setRemote(directory, url)` sets the fetch and push origin. They do not open a workspace.
+`catalogUpdate(location, sourcesFile, customSsh)` returns release counts, sources,
+skipped tags and warnings. `catalogRegister(location, source, reference, package,
+build: CatalogBuild?, customSsh)` returns `CatalogRegistration`: the typed release,
+the complete `releaseJson` (including arbitrary manifest metadata and file digests),
+and warnings. All use the same library functions as the CLI. Errors are the `PmError` enum (one case per kind, each with `message`;
 `id` where the library error has one, `LocalChanges.items`, `HasDependents.dependents`
 and `.lostWork`, `IncompatibleReplacement.consumers`, `NotDeployed.sync` (the dist report), and
 `Other { kind, message }` for kinds added later). `gitpm-ffi` carries the library's
@@ -1789,7 +1795,12 @@ cargo test -p gitpm --lib      # unit tests only
 cargo test -p gitpm --lib -- --ignored   # known-defect tests (expected to fail)
 cargo test -p gitpm-cli                  # CLI tests only
 cargo clippy --all-targets -- -D warnings
+cargo nextest run --workspace --profile pr   # the fast tier CI runs on pull requests
 ```
+
+CI runs the tests with [cargo-nextest](https://nexte.st) in two tiers (`.config/nextest.toml`): pull
+requests into `main` run the fast tier `pr`, which leaves out the long scenario tests; the merge
+queue, pull requests into and pushes to `release/**` and the nightly run on `main` run every test.
 
 Unit tests cover pure parts directly (UUID and alias rules, version keys and ordering,
 manifest/state/catalog serialization, catalog validation, check statuses, auth
@@ -1817,7 +1828,11 @@ attribute together with the fix.
 `itests/` holds a black-box suite in a Dagger module (engine and CLI v0.21.10): every
 libtest of the workspace, clippy, and 638 scenario cases driving the `gitpm` binary built
 from the working tree (only `GITPM_*`, loopback HTTP, local Git repositories), each in its
-own container. It is an additional, slower suite; `cargo test --workspace` stays the CI gate.
+own container. It is an additional, slower suite; the workspace's Rust tests (cargo-nextest) stay the CI gate.
+The nonrequired CI `itests` job runs on nightly `main`, manual dispatch and pushes to
+`release/**`, using local Dagger, two cargo jobs and two concurrent tests. It restores
+the nightly engine cache and uploads `itests-results`, including failed-case reports.
+Pull requests and merge groups do not run this job.
 
 ```sh
 ./itests/dt                                   # everything, on the pb engine (dagger-pb)
