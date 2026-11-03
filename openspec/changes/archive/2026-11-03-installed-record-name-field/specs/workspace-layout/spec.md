@@ -34,4 +34,3 @@ Each `state.json` `packages.<id>` managed record SHALL hold `source`, `name`, `c
 #### Scenario: UUID identity
 - **WHEN** a package is recorded in state
 - **THEN** its record is keyed only by UUID without an alias hint; format remains 1 and legacy scoped records are refused without migration
-
