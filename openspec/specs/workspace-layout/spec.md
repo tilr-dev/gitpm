@@ -81,7 +81,7 @@ Verified by `workspace::open_ds_store_with_other_content_is_refused`.
 - **THEN** opening the state fails with `unsupported`
 
 ### Requirement: Installed package record
-Each `state.json` `packages.<id>` managed record SHALL hold `source`, `current`, at most one `previous`, `enabled`, and optional `mode`, `forkOf`, `dependencies`, `replaces`, `catalog`, `clone`, `path`, `metadata`. Revisions contain `version` and `commit`; `previous` also retains mode. Links follow "Link record format". Git worktree paths SHALL derive from UUID; `path` selects the package folder inside that tree. Builds SHALL own no worktree. Verified by `model::state_round_trips_byte_for_byte`.
+Each `state.json` `packages.<id>` managed record SHALL hold `source`, `name`, `current`, at most one `previous`, `enabled`, and optional `mode`, `forkOf`, `dependencies`, `replaces`, `catalog`, `clone`, `path`, `metadata`. Revisions hold `version` and `commit`; `previous` retains mode. Links follow "Link record format". Git worktree paths SHALL derive from UUID; `path` selects the package folder inside that tree. Builds SHALL own no worktree. Verified by `model::state_round_trips_byte_for_byte`.
 
 #### Scenario: Fresh install has no previous revision
 - **WHEN** a package was just installed
